@@ -243,16 +243,16 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
 - [x] TLS version enforcement (block TLS < 1.2)
 
 ### Phase 12 — High Availability & Clustering
-- [ ] CARP (Common Address Redundancy Protocol)
-  - [ ] Virtual IP management
-  - [ ] Failover configuration
-- [ ] pfsync integration
-  - [ ] State table synchronization between nodes
-  - [ ] Dedicated sync interface
-- [ ] Configuration sync
-  - [ ] Rule replication across cluster nodes
-  - [ ] Consensus-based config changes
-- [ ] Health checks and monitoring
+- [x] CARP (Common Address Redundancy Protocol)
+  - [x] Virtual IP management
+  - [x] Failover configuration
+- [x] pfsync integration
+  - [x] State table synchronization between nodes
+  - [x] Dedicated sync interface
+- [x] Configuration sync
+  - [x] Rule replication across cluster nodes
+  - [x] Consensus-based config changes
+- [x] Health checks and monitoring
 
 ### Phase 13 — Web UI
 - [ ] aifw-ui: NextJS web interface

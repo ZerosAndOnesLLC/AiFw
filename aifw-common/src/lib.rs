@@ -1,5 +1,6 @@
 pub mod error;
 pub mod geoip;
+pub mod ha;
 pub mod nat;
 pub mod ratelimit;
 pub mod rule;
@@ -10,6 +11,10 @@ pub mod types;
 pub mod vpn;
 
 pub use error::{AifwError, Result};
+pub use ha::{
+    CarpStatus, CarpVip, ClusterNode, ClusterRole, ConfigSnapshot, HealthCheck, HealthCheckType,
+    NodeHealth, PfsyncConfig,
+};
 pub use geoip::{
     CountryCode, GeoIpAction, GeoIpDbConfig, GeoIpEntry, GeoIpLookupResult, GeoIpRule,
     GeoIpRuleStatus,

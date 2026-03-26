@@ -5,6 +5,7 @@ mod tests {
     use crate::rule::*;
     use crate::types::*;
     use crate::geoip::*;
+    use crate::ha::*;
     use crate::tls::*;
     use crate::vpn::*;
     use chrono::Utc;
@@ -839,5 +840,123 @@ mod tests {
         policy.blocked_ja3.push("abc123def456".to_string());
         assert!(policy.is_ja3_blocked("abc123def456"));
         assert!(!policy.is_ja3_blocked("other_hash"));
+    }
+
+    // --- HA / Clustering tests ---
+
+    #[test]
+    fn test_carp_vip_creation() {
+        let vip = CarpVip::new(
+            1,
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 100)),
+            24,
+            Interface("em0".to_string()),
+            "s3cret".to_string(),
+        );
+        assert_eq!(vip.vhid, 1);
+        assert_eq!(vip.status, CarpStatus::Init);
+        assert_eq!(vip.advskew, 0);
+    }
+
+    #[test]
+    fn test_carp_ifconfig_cmds() {
+        let vip = CarpVip::new(
+            5,
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
+            24,
+            Interface("em0".to_string()),
+            "pass123".to_string(),
+        );
+        let cmds = vip.to_ifconfig_cmds();
+        assert_eq!(cmds.len(), 1);
+        assert!(cmds[0].contains("vhid 5"));
+        assert!(cmds[0].contains("pass pass123"));
+        assert!(cmds[0].contains("192.168.1.100/24"));
+        assert!(cmds[0].contains("inet"));
+    }
+
+    #[test]
+    fn test_carp_pf_rules() {
+        let vip = CarpVip::new(
+            1,
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            24,
+            Interface("em0".to_string()),
+            "pw".to_string(),
+        );
+        let rules = vip.to_pf_rules();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].contains("proto carp"));
+        assert!(rules[0].contains("carp-vhid-1"));
+    }
+
+    #[test]
+    fn test_pfsync_ifconfig_cmds() {
+        let mut config = PfsyncConfig::new(Interface("em1".to_string()));
+        config.sync_peer = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+
+        let cmds = config.to_ifconfig_cmds();
+        assert_eq!(cmds.len(), 2);
+        assert!(cmds[0].contains("pfsync0 create"));
+        assert!(cmds[1].contains("syncdev em1"));
+        assert!(cmds[1].contains("syncpeer 10.0.0.2"));
+        assert!(cmds[1].contains("defer"));
+    }
+
+    #[test]
+    fn test_pfsync_disabled() {
+        let mut config = PfsyncConfig::new(Interface("em1".to_string()));
+        config.enabled = false;
+        assert!(config.to_ifconfig_cmds().is_empty());
+        assert!(config.to_pf_rules().is_empty());
+    }
+
+    #[test]
+    fn test_pfsync_pf_rules() {
+        let mut config = PfsyncConfig::new(Interface("em1".to_string()));
+        config.sync_peer = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+        let rules = config.to_pf_rules();
+        assert_eq!(rules.len(), 2);
+        assert!(rules[0].contains("proto pfsync"));
+        assert!(rules[1].contains("from 10.0.0.2"));
+    }
+
+    #[test]
+    fn test_cluster_role_parse() {
+        assert_eq!(ClusterRole::parse("primary").unwrap(), ClusterRole::Primary);
+        assert_eq!(ClusterRole::parse("secondary").unwrap(), ClusterRole::Secondary);
+        assert_eq!(ClusterRole::parse("master").unwrap(), ClusterRole::Primary);
+        assert_eq!(ClusterRole::parse("backup").unwrap(), ClusterRole::Secondary);
+        assert!(ClusterRole::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn test_cluster_node() {
+        let node = ClusterNode::new(
+            "fw1".to_string(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            ClusterRole::Primary,
+        );
+        assert_eq!(node.health, NodeHealth::Unknown);
+        assert!(!node.is_reachable());
+    }
+
+    #[test]
+    fn test_health_check_type_parse() {
+        assert_eq!(HealthCheckType::parse("ping").unwrap(), HealthCheckType::Ping);
+        assert_eq!(HealthCheckType::parse("tcp").unwrap(), HealthCheckType::TcpPort);
+        assert_eq!(HealthCheckType::parse("http").unwrap(), HealthCheckType::HttpGet);
+        assert_eq!(HealthCheckType::parse("pf").unwrap(), HealthCheckType::PfStatus);
+        assert!(HealthCheckType::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn test_config_snapshot_diff() {
+        let a = ConfigSnapshot::new(1, uuid::Uuid::new_v4(), "hash1".into(), "nat1".into(), "{}".into());
+        let b = ConfigSnapshot::new(2, uuid::Uuid::new_v4(), "hash1".into(), "nat1".into(), "{}".into());
+        let c = ConfigSnapshot::new(2, uuid::Uuid::new_v4(), "hash2".into(), "nat1".into(), "{}".into());
+
+        assert!(!a.differs_from(&b)); // same hashes
+        assert!(a.differs_from(&c));  // different rules_hash
     }
 }
