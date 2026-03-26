@@ -210,26 +210,26 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
   - [x] Webhook notifier
 
 ### Phase 10 — AI/ML Threat Detection
-- [ ] aifw-ai: ML inference engine
-  - [ ] ONNX runtime integration
-  - [ ] Feature extraction from traffic patterns
-  - [ ] Model loading and hot-reload
-- [ ] Detection capabilities
-  - [ ] Anomaly detection (unusual traffic patterns)
-  - [ ] Port scan detection
-  - [ ] DDoS detection and auto-mitigation
-  - [ ] Brute force detection
-  - [ ] C2 beacon detection
-  - [ ] DNS tunneling detection
-- [ ] Training pipeline
-  - [ ] Traffic feature collection
-  - [ ] Baseline learning (normal traffic profile)
-  - [ ] Model export to ONNX
-- [ ] Auto-response
-  - [ ] Dynamic rule insertion for detected threats
-  - [ ] Configurable response actions (block, rate-limit, alert)
-  - [ ] Threat score and confidence thresholds
-  - [ ] Auto-expiry of temporary blocks
+- [x] aifw-ai: ML inference engine
+  - [x] ONNX runtime integration
+  - [x] Feature extraction from traffic patterns
+  - [x] Model loading and hot-reload
+- [x] Detection capabilities
+  - [x] Anomaly detection (unusual traffic patterns)
+  - [x] Port scan detection
+  - [x] DDoS detection and auto-mitigation
+  - [x] Brute force detection
+  - [x] C2 beacon detection
+  - [x] DNS tunneling detection
+- [x] Training pipeline
+  - [x] Traffic feature collection
+  - [x] Baseline learning (normal traffic profile)
+  - [x] Model export to ONNX
+- [x] Auto-response
+  - [x] Dynamic rule insertion for detected threats
+  - [x] Configurable response actions (block, rate-limit, alert)
+  - [x] Threat score and confidence thresholds
+  - [x] Auto-expiry of temporary blocks
 
 ### Phase 11 — TLS Inspection
 - [ ] TLS handshake analysis (no MITM, metadata only)
