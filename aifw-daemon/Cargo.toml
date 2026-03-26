@@ -1,0 +1,22 @@
+[package]
+name = "aifw-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aifw-daemon"
+path = "src/main.rs"
+
+[dependencies]
+aifw-common = { workspace = true }
+aifw-pf = { workspace = true }
+aifw-core = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+clap = { workspace = true }
+anyhow = "1"

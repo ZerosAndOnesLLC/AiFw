@@ -1,0 +1,16 @@
+[package]
+name = "aifw-pf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aifw-common = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+freebsd-integration = []
