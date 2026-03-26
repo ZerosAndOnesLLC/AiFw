@@ -5,5 +5,8 @@ mod tests;
 pub mod types;
 
 pub use error::{AifwError, Result};
-pub use rule::{Action, Direction, Protocol, Rule, RuleMatch, RuleStatus};
+pub use rule::{
+    Action, AdaptiveTimeouts, Direction, Protocol, Rule, RuleMatch, RuleStatus, StateOptions,
+    StatePolicy, StateTracking,
+};
 pub use types::{Address, Interface, Port, PortRange};

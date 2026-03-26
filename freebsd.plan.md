@@ -118,19 +118,19 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
 - [x] README
 
 ### Phase 2 — Stateful Inspection & Connection Tracking
-- [ ] aifw-conntrack: connection tracking
-  - [ ] Track TCP/UDP/ICMP connections via pf state table
-  - [ ] Connection state queries (list, count, search)
-  - [ ] State table statistics
-  - [ ] Automatic state expiry monitoring
-- [ ] Stateful rule support
-  - [ ] `keep state`, `modulate state`, `synproxy state`
-  - [ ] State policy options (if-bound, floating)
-  - [ ] Adaptive timeouts
-- [ ] Logging and audit
-  - [ ] pflog interface integration
-  - [ ] Structured log parsing and storage
-  - [ ] Audit trail for rule changes
+- [x] aifw-conntrack: connection tracking
+  - [x] Track TCP/UDP/ICMP connections via pf state table
+  - [x] Connection state queries (list, count, search)
+  - [x] State table statistics
+  - [x] Automatic state expiry monitoring
+- [x] Stateful rule support
+  - [x] `keep state`, `modulate state`, `synproxy state`
+  - [x] State policy options (if-bound, floating)
+  - [x] Adaptive timeouts
+- [x] Logging and audit
+  - [x] pflog interface integration
+  - [x] Structured log parsing and storage
+  - [x] Audit trail for rule changes
 
 ### Phase 3 — NAT
 - [ ] SNAT (source NAT / outbound NAT)

@@ -85,6 +85,81 @@ pub enum RuleStatus {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StateTracking {
+    /// No state tracking
+    None,
+    /// Standard keep state
+    KeepState,
+    /// Modulate state (randomize ISN for TCP)
+    ModulateState,
+    /// SYN proxy state (proxy TCP handshake)
+    SynproxyState,
+}
+
+impl Default for StateTracking {
+    fn default() -> Self {
+        StateTracking::KeepState
+    }
+}
+
+impl std::fmt::Display for StateTracking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateTracking::None => write!(f, ""),
+            StateTracking::KeepState => write!(f, "keep state"),
+            StateTracking::ModulateState => write!(f, "modulate state"),
+            StateTracking::SynproxyState => write!(f, "synproxy state"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StatePolicy {
+    /// State is bound to the interface
+    IfBound,
+    /// State floats between interfaces
+    Floating,
+}
+
+impl std::fmt::Display for StatePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StatePolicy::IfBound => write!(f, "if-bound"),
+            StatePolicy::Floating => write!(f, "floating"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdaptiveTimeouts {
+    /// Start adapting when state count exceeds this
+    pub start: u32,
+    /// All timeouts become zero at this state count
+    pub end: u32,
+}
+
+impl std::fmt::Display for AdaptiveTimeouts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}, {})", self.start, self.end)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct StateOptions {
+    pub tracking: StateTracking,
+    pub policy: Option<StatePolicy>,
+    pub adaptive_timeouts: Option<AdaptiveTimeouts>,
+    /// TCP timeout in seconds
+    pub timeout_tcp: Option<u32>,
+    /// UDP timeout in seconds
+    pub timeout_udp: Option<u32>,
+    /// ICMP timeout in seconds
+    pub timeout_icmp: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuleMatch {
     pub src_addr: Address,
@@ -105,6 +180,7 @@ pub struct Rule {
     pub log: bool,
     pub quick: bool,
     pub label: Option<String>,
+    pub state_options: StateOptions,
     pub status: RuleStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -129,6 +205,7 @@ impl Rule {
             log: false,
             quick: true,
             label: None,
+            state_options: StateOptions::default(),
             status: RuleStatus::Active,
             created_at: now,
             updated_at: now,
@@ -180,6 +257,19 @@ impl Rule {
             }
         } else if let Some(ref port) = self.rule_match.dst_port {
             parts.push(format!("to any port {port}"));
+        }
+
+        // state tracking
+        let state_str = self.state_options.tracking.to_string();
+        if !state_str.is_empty() {
+            let mut state_part = state_str;
+            if let Some(ref policy) = self.state_options.policy {
+                state_part.push_str(&format!(" ({policy})"));
+            }
+            if let Some(ref adaptive) = self.state_options.adaptive_timeouts {
+                state_part.push_str(&format!(" (adaptive.start {}, adaptive.end {})", adaptive.start, adaptive.end));
+            }
+            parts.push(state_part);
         }
 
         // log

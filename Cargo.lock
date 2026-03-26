@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -41,8 +41,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "aifw-conntrack"
+version = "0.2.0"
+dependencies = [
+ "aifw-common",
+ "aifw-pf",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "aifw-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -59,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -76,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-pf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aifw-common",
  "async-trait",

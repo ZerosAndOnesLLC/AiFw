@@ -3,6 +3,7 @@ use aifw_pf::PfBackend;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::audit::{AuditAction, AuditLog};
 use crate::db::Database;
 use crate::validation::validate_rule;
 
@@ -11,14 +12,17 @@ const DEFAULT_ANCHOR: &str = "aifw";
 pub struct RuleEngine {
     db: Database,
     pf: Arc<dyn PfBackend>,
+    audit: AuditLog,
     anchor: String,
 }
 
 impl RuleEngine {
     pub fn new(db: Database, pf: Arc<dyn PfBackend>) -> Self {
+        let audit = AuditLog::new(db.pool().clone());
         Self {
             db,
             pf,
+            audit,
             anchor: DEFAULT_ANCHOR.to_string(),
         }
     }
@@ -31,6 +35,15 @@ impl RuleEngine {
     pub async fn add_rule(&self, rule: Rule) -> Result<Rule> {
         validate_rule(&rule)?;
         self.db.insert_rule(&rule).await?;
+        let pf_syntax = rule.to_pf_rule(&self.anchor);
+        self.audit
+            .log(
+                AuditAction::RuleAdded,
+                Some(rule.id),
+                &format!("pf: {pf_syntax}"),
+                "engine",
+            )
+            .await?;
         tracing::info!(id = %rule.id, label = ?rule.label, "rule added");
         Ok(rule)
     }
@@ -49,12 +62,23 @@ impl RuleEngine {
     pub async fn update_rule(&self, rule: Rule) -> Result<()> {
         validate_rule(&rule)?;
         self.db.update_rule(&rule).await?;
+        self.audit
+            .log(
+                AuditAction::RuleUpdated,
+                Some(rule.id),
+                &format!("pf: {}", rule.to_pf_rule(&self.anchor)),
+                "engine",
+            )
+            .await?;
         tracing::info!(id = %rule.id, "rule updated");
         Ok(())
     }
 
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
         self.db.delete_rule(id).await?;
+        self.audit
+            .log(AuditAction::RuleRemoved, Some(id), "rule deleted", "engine")
+            .await?;
         tracing::info!(%id, "rule deleted");
         Ok(())
     }
@@ -79,6 +103,15 @@ impl RuleEngine {
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
 
+        self.audit
+            .log(
+                AuditAction::RulesApplied,
+                None,
+                &format!("{} rules applied to anchor {}", pf_rules.len(), self.anchor),
+                "engine",
+            )
+            .await?;
+
         Ok(())
     }
 
@@ -88,8 +121,20 @@ impl RuleEngine {
             .flush_rules(&self.anchor)
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
+        self.audit
+            .log(
+                AuditAction::RulesFlushed,
+                None,
+                &format!("flushed anchor {}", self.anchor),
+                "engine",
+            )
+            .await?;
         tracing::info!(anchor = %self.anchor, "flushed pf rules");
         Ok(())
+    }
+
+    pub fn audit(&self) -> &AuditLog {
+        &self.audit
     }
 
     pub fn pf(&self) -> &dyn PfBackend {

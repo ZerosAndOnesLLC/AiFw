@@ -100,7 +100,7 @@ mod tests {
             },
         );
         let pf = rule.to_pf_rule("aifw");
-        assert_eq!(pf, "block in quick proto tcp to any port 22");
+        assert_eq!(pf, "block in quick proto tcp to any port 22 keep state");
     }
 
     #[test]
@@ -124,7 +124,7 @@ mod tests {
         let pf = rule.to_pf_rule("aifw");
         assert_eq!(
             pf,
-            "pass in quick proto tcp to any port 443 log label \"allow-https\""
+            "pass in quick proto tcp to any port 443 keep state log label \"allow-https\""
         );
     }
 
@@ -142,7 +142,7 @@ mod tests {
             },
         );
         let pf = rule.to_pf_rule("aifw");
-        assert_eq!(pf, "block drop in quick from 192.168.1.0/24");
+        assert_eq!(pf, "block drop in quick from 192.168.1.0/24 keep state");
     }
 
     #[test]
@@ -159,6 +159,61 @@ mod tests {
             },
         );
         let pf = rule.to_pf_rule("aifw");
-        assert_eq!(pf, "block return in quick from <bruteforce>");
+        assert_eq!(pf, "block return in quick from <bruteforce> keep state");
+    }
+
+    #[test]
+    fn test_rule_to_pf_modulate_state() {
+        let mut rule = Rule::new(
+            Action::Pass,
+            Direction::In,
+            Protocol::Tcp,
+            RuleMatch {
+                src_addr: Address::Any,
+                src_port: None,
+                dst_addr: Address::Any,
+                dst_port: Some(PortRange { start: 22, end: 22 }),
+            },
+        );
+        rule.state_options.tracking = StateTracking::ModulateState;
+        let pf = rule.to_pf_rule("aifw");
+        assert_eq!(pf, "pass in quick proto tcp to any port 22 modulate state");
+    }
+
+    #[test]
+    fn test_rule_to_pf_synproxy_state() {
+        let mut rule = Rule::new(
+            Action::Pass,
+            Direction::In,
+            Protocol::Tcp,
+            RuleMatch {
+                src_addr: Address::Any,
+                src_port: None,
+                dst_addr: Address::Any,
+                dst_port: Some(PortRange { start: 80, end: 80 }),
+            },
+        );
+        rule.state_options.tracking = StateTracking::SynproxyState;
+        rule.state_options.policy = Some(StatePolicy::IfBound);
+        let pf = rule.to_pf_rule("aifw");
+        assert_eq!(pf, "pass in quick proto tcp to any port 80 synproxy state (if-bound)");
+    }
+
+    #[test]
+    fn test_rule_to_pf_no_state() {
+        let mut rule = Rule::new(
+            Action::Block,
+            Direction::In,
+            Protocol::Any,
+            RuleMatch {
+                src_addr: Address::Any,
+                src_port: None,
+                dst_addr: Address::Any,
+                dst_port: None,
+            },
+        );
+        rule.state_options.tracking = StateTracking::None;
+        let pf = rule.to_pf_rule("aifw");
+        assert_eq!(pf, "block in quick");
     }
 }

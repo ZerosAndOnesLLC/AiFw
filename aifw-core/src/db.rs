@@ -1,6 +1,6 @@
 use aifw_common::{
-    Action, Address, AifwError, Direction, Interface, PortRange, Protocol, Result, Rule, RuleMatch,
-    RuleStatus,
+    Action, AdaptiveTimeouts, Address, AifwError, Direction, Interface, PortRange, Protocol, Result,
+    Rule, RuleMatch, RuleStatus, StateOptions, StatePolicy, StateTracking,
 };
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -59,6 +59,13 @@ impl Database {
                 log INTEGER NOT NULL DEFAULT 0,
                 quick INTEGER NOT NULL DEFAULT 1,
                 label TEXT,
+                state_tracking TEXT NOT NULL DEFAULT 'keep_state',
+                state_policy TEXT,
+                adaptive_start INTEGER,
+                adaptive_end INTEGER,
+                timeout_tcp INTEGER,
+                timeout_udp INTEGER,
+                timeout_icmp INTEGER,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -80,6 +87,10 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Audit log table
+        let audit_log = crate::audit::AuditLog::new(self.pool.clone());
+        audit_log.migrate().await?;
+
         Ok(())
     }
 
@@ -88,8 +99,10 @@ impl Database {
             r#"
             INSERT INTO rules (id, priority, action, direction, interface, protocol,
                 src_addr, src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end,
-                log, quick, label, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                log, quick, label, state_tracking, state_policy, adaptive_start, adaptive_end,
+                timeout_tcp, timeout_udp, timeout_icmp, status, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
             "#,
         )
         .bind(rule.id.to_string())
@@ -107,6 +120,16 @@ impl Database {
         .bind(rule.log)
         .bind(rule.quick)
         .bind(rule.label.as_deref())
+        .bind(state_tracking_to_str(&rule.state_options.tracking))
+        .bind(rule.state_options.policy.as_ref().map(|p| match p {
+            StatePolicy::IfBound => "if_bound",
+            StatePolicy::Floating => "floating",
+        }))
+        .bind(rule.state_options.adaptive_timeouts.as_ref().map(|a| a.start as i64))
+        .bind(rule.state_options.adaptive_timeouts.as_ref().map(|a| a.end as i64))
+        .bind(rule.state_options.timeout_tcp.map(|t| t as i64))
+        .bind(rule.state_options.timeout_udp.map(|t| t as i64))
+        .bind(rule.state_options.timeout_icmp.map(|t| t as i64))
         .bind(match rule.status {
             RuleStatus::Active => "active",
             RuleStatus::Disabled => "disabled",
@@ -156,7 +179,11 @@ impl Database {
             UPDATE rules SET priority = ?2, action = ?3, direction = ?4, interface = ?5,
                 protocol = ?6, src_addr = ?7, src_port_start = ?8, src_port_end = ?9,
                 dst_addr = ?10, dst_port_start = ?11, dst_port_end = ?12,
-                log = ?13, quick = ?14, label = ?15, status = ?16, updated_at = ?17
+                log = ?13, quick = ?14, label = ?15,
+                state_tracking = ?16, state_policy = ?17,
+                adaptive_start = ?18, adaptive_end = ?19,
+                timeout_tcp = ?20, timeout_udp = ?21, timeout_icmp = ?22,
+                status = ?23, updated_at = ?24
             WHERE id = ?1
             "#,
         )
@@ -175,6 +202,16 @@ impl Database {
         .bind(rule.log)
         .bind(rule.quick)
         .bind(rule.label.as_deref())
+        .bind(state_tracking_to_str(&rule.state_options.tracking))
+        .bind(rule.state_options.policy.as_ref().map(|p| match p {
+            StatePolicy::IfBound => "if_bound",
+            StatePolicy::Floating => "floating",
+        }))
+        .bind(rule.state_options.adaptive_timeouts.as_ref().map(|a| a.start as i64))
+        .bind(rule.state_options.adaptive_timeouts.as_ref().map(|a| a.end as i64))
+        .bind(rule.state_options.timeout_tcp.map(|t| t as i64))
+        .bind(rule.state_options.timeout_udp.map(|t| t as i64))
+        .bind(rule.state_options.timeout_icmp.map(|t| t as i64))
         .bind(match rule.status {
             RuleStatus::Active => "active",
             RuleStatus::Disabled => "disabled",
@@ -206,6 +243,31 @@ impl Database {
     }
 }
 
+fn state_tracking_to_str(t: &StateTracking) -> &'static str {
+    match t {
+        StateTracking::None => "none",
+        StateTracking::KeepState => "keep_state",
+        StateTracking::ModulateState => "modulate_state",
+        StateTracking::SynproxyState => "synproxy_state",
+    }
+}
+
+fn parse_state_tracking(s: &str) -> StateTracking {
+    match s {
+        "none" => StateTracking::None,
+        "modulate_state" => StateTracking::ModulateState,
+        "synproxy_state" => StateTracking::SynproxyState,
+        _ => StateTracking::KeepState,
+    }
+}
+
+fn parse_state_policy(s: &str) -> StatePolicy {
+    match s {
+        "floating" => StatePolicy::Floating,
+        _ => StatePolicy::IfBound,
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct RuleRow {
     id: String,
@@ -223,6 +285,13 @@ struct RuleRow {
     log: bool,
     quick: bool,
     label: Option<String>,
+    state_tracking: String,
+    state_policy: Option<String>,
+    adaptive_start: Option<i64>,
+    adaptive_end: Option<i64>,
+    timeout_tcp: Option<i64>,
+    timeout_udp: Option<i64>,
+    timeout_icmp: Option<i64>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -276,6 +345,20 @@ impl RuleRow {
             log: self.log,
             quick: self.quick,
             label: self.label,
+            state_options: StateOptions {
+                tracking: parse_state_tracking(&self.state_tracking),
+                policy: self.state_policy.as_deref().map(parse_state_policy),
+                adaptive_timeouts: match (self.adaptive_start, self.adaptive_end) {
+                    (Some(s), Some(e)) => Some(AdaptiveTimeouts {
+                        start: s as u32,
+                        end: e as u32,
+                    }),
+                    _ => None,
+                },
+                timeout_tcp: self.timeout_tcp.map(|t| t as u32),
+                timeout_udp: self.timeout_udp.map(|t| t as u32),
+                timeout_icmp: self.timeout_icmp.map(|t| t as u32),
+            },
             status: match self.status.as_str() {
                 "active" => RuleStatus::Active,
                 _ => RuleStatus::Disabled,

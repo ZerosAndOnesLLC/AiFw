@@ -208,4 +208,69 @@ mod tests {
         assert_eq!(rules[1].priority, 100);
         assert_eq!(rules[2].priority, 200);
     }
+
+    #[tokio::test]
+    async fn test_db_state_options_roundtrip() {
+        let db = Database::new_in_memory().await.unwrap();
+
+        let mut rule = make_test_rule();
+        rule.state_options = StateOptions {
+            tracking: StateTracking::ModulateState,
+            policy: Some(StatePolicy::IfBound),
+            adaptive_timeouts: Some(AdaptiveTimeouts {
+                start: 5000,
+                end: 10000,
+            }),
+            timeout_tcp: Some(3600),
+            timeout_udp: Some(60),
+            timeout_icmp: None,
+        };
+        let id = rule.id;
+        db.insert_rule(&rule).await.unwrap();
+
+        let fetched = db.get_rule(id).await.unwrap().unwrap();
+        assert_eq!(fetched.state_options.tracking, StateTracking::ModulateState);
+        assert_eq!(fetched.state_options.policy, Some(StatePolicy::IfBound));
+        let adaptive = fetched.state_options.adaptive_timeouts.unwrap();
+        assert_eq!(adaptive.start, 5000);
+        assert_eq!(adaptive.end, 10000);
+        assert_eq!(fetched.state_options.timeout_tcp, Some(3600));
+        assert_eq!(fetched.state_options.timeout_udp, Some(60));
+        assert_eq!(fetched.state_options.timeout_icmp, None);
+    }
+
+    #[tokio::test]
+    async fn test_audit_trail() {
+        let db = Database::new_in_memory().await.unwrap();
+        let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
+        let engine = RuleEngine::new(db, pf);
+
+        let rule = make_test_rule();
+        let id = rule.id;
+        engine.add_rule(rule).await.unwrap();
+        engine.delete_rule(id).await.unwrap();
+
+        let entries = engine.audit().list(10).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        // Most recent first
+        assert_eq!(entries[0].action, crate::audit::AuditAction::RuleRemoved);
+        assert_eq!(entries[1].action, crate::audit::AuditAction::RuleAdded);
+    }
+
+    #[tokio::test]
+    async fn test_audit_for_apply_and_flush() {
+        let db = Database::new_in_memory().await.unwrap();
+        let mock = Arc::new(aifw_pf::PfMock::new());
+        let pf: Arc<dyn PfBackend> = mock.clone();
+        let engine = RuleEngine::new(db, pf);
+
+        engine.add_rule(make_test_rule()).await.unwrap();
+        engine.apply_rules().await.unwrap();
+        engine.flush_rules().await.unwrap();
+
+        let entries = engine.audit().list(10).await.unwrap();
+        assert_eq!(entries.len(), 3); // add + apply + flush
+        assert_eq!(entries[0].action, crate::audit::AuditAction::RulesFlushed);
+        assert_eq!(entries[1].action, crate::audit::AuditAction::RulesApplied);
+    }
 }
