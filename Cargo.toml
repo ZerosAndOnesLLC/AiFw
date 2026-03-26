@@ -4,6 +4,7 @@ members = [
     "aifw-pf",
     "aifw-core",
     "aifw-conntrack",
+    "aifw-plugins",
     "aifw-api",
     "aifw-tui",
     "aifw-daemon",
@@ -12,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"

@@ -194,20 +194,20 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
 - [x] CIDR aggregation for efficient table loading
 
 ### Phase 9 — Plugin System
-- [ ] aifw-plugins: plugin framework
-  - [ ] Native Rust plugin API (trait-based)
-  - [ ] WASM sandboxed plugins (wasmtime)
-  - [ ] Plugin lifecycle (load, init, execute, unload)
-  - [ ] Plugin configuration
-- [ ] Hook points
-  - [ ] Pre/post rule evaluation
-  - [ ] Connection events (new, established, closed)
-  - [ ] Log events
-  - [ ] API request hooks
-- [ ] Example plugins
-  - [ ] IP reputation checker
-  - [ ] Custom logging plugin
-  - [ ] Webhook notifier
+- [x] aifw-plugins: plugin framework
+  - [x] Native Rust plugin API (trait-based)
+  - [x] WASM sandboxed plugins (wasmtime)
+  - [x] Plugin lifecycle (load, init, execute, unload)
+  - [x] Plugin configuration
+- [x] Hook points
+  - [x] Pre/post rule evaluation
+  - [x] Connection events (new, established, closed)
+  - [x] Log events
+  - [x] API request hooks
+- [x] Example plugins
+  - [x] IP reputation checker
+  - [x] Custom logging plugin
+  - [x] Webhook notifier
 
 ### Phase 10 — AI/ML Threat Detection
 - [ ] aifw-ai: ML inference engine
