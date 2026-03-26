@@ -133,12 +133,12 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
   - [x] Audit trail for rule changes
 
 ### Phase 3 — NAT
-- [ ] SNAT (source NAT / outbound NAT)
-- [ ] DNAT (port forwarding / RDR)
-- [ ] Masquerading (dynamic outbound NAT)
-- [ ] NAT64 / NAT46
-- [ ] Bidirectional NAT (binat)
-- [ ] NAT rule management via CLI and API
+- [x] SNAT (source NAT / outbound NAT)
+- [x] DNAT (port forwarding / RDR)
+- [x] Masquerading (dynamic outbound NAT)
+- [x] NAT64 / NAT46
+- [x] Bidirectional NAT (binat)
+- [x] NAT rule management via CLI and API
 
 ### Phase 4 — REST API
 - [ ] aifw-api: Axum-based API server

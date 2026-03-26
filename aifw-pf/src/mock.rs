@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 
 pub struct PfMock {
     rules: RwLock<HashMap<String, Vec<String>>>,
+    nat_rules: RwLock<HashMap<String, Vec<String>>>,
     tables: RwLock<HashMap<String, Vec<IpAddr>>>,
     states: RwLock<Vec<PfState>>,
     running: RwLock<bool>,
@@ -17,6 +18,7 @@ impl PfMock {
     pub fn new() -> Self {
         Self {
             rules: RwLock::new(HashMap::new()),
+            nat_rules: RwLock::new(HashMap::new()),
             tables: RwLock::new(HashMap::new()),
             states: RwLock::new(Vec::new()),
             running: RwLock::new(true),
@@ -126,5 +128,24 @@ impl PfBackend for PfMock {
 
     async fn is_running(&self) -> Result<bool, PfError> {
         Ok(*self.running.read().await)
+    }
+
+    async fn load_nat_rules(&self, anchor: &str, rules: &[String]) -> Result<(), PfError> {
+        tracing::debug!(anchor, count = rules.len(), "mock: load_nat_rules");
+        let mut nat_rules = self.nat_rules.write().await;
+        nat_rules.insert(anchor.to_string(), rules.to_vec());
+        Ok(())
+    }
+
+    async fn get_nat_rules(&self, anchor: &str) -> Result<Vec<String>, PfError> {
+        let nat_rules = self.nat_rules.read().await;
+        Ok(nat_rules.get(anchor).cloned().unwrap_or_default())
+    }
+
+    async fn flush_nat_rules(&self, anchor: &str) -> Result<(), PfError> {
+        tracing::debug!(anchor, "mock: flush_nat_rules");
+        let mut nat_rules = self.nat_rules.write().await;
+        nat_rules.remove(anchor);
+        Ok(())
     }
 }

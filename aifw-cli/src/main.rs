@@ -27,10 +27,72 @@ enum Commands {
         #[command(subcommand)]
         action: RulesAction,
     },
+    /// Manage NAT rules
+    Nat {
+        #[command(subcommand)]
+        action: NatAction,
+    },
     /// Show firewall status
     Status,
     /// Reload rules from database and apply to pf
     Reload,
+}
+
+#[derive(Subcommand)]
+enum NatAction {
+    /// Add a NAT rule
+    Add {
+        /// NAT type: snat, dnat, masquerade, binat, nat64, nat46
+        #[arg(long, name = "type")]
+        nat_type: String,
+
+        /// Network interface (required)
+        #[arg(long)]
+        interface: String,
+
+        /// Protocol: tcp, udp, any
+        #[arg(long, default_value = "any")]
+        proto: String,
+
+        /// Source address
+        #[arg(long, default_value = "any")]
+        src: String,
+
+        /// Source port
+        #[arg(long)]
+        src_port: Option<String>,
+
+        /// Destination address
+        #[arg(long, default_value = "any")]
+        dst: String,
+
+        /// Destination port
+        #[arg(long)]
+        dst_port: Option<String>,
+
+        /// Redirect target address
+        #[arg(long)]
+        redirect: String,
+
+        /// Redirect target port
+        #[arg(long)]
+        redirect_port: Option<String>,
+
+        /// Rule label
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Remove a NAT rule by ID
+    Remove {
+        /// Rule UUID
+        id: String,
+    },
+    /// List all NAT rules
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -135,6 +197,41 @@ async fn main() -> anyhow::Result<()> {
             }
             RulesAction::List { json } => {
                 commands::rules_list(&cli.db, json).await?;
+            }
+        },
+        Commands::Nat { action } => match action {
+            NatAction::Add {
+                nat_type,
+                interface,
+                proto,
+                src,
+                src_port,
+                dst,
+                dst_port,
+                redirect,
+                redirect_port,
+                label,
+            } => {
+                commands::nat_add(
+                    &cli.db,
+                    &nat_type,
+                    &interface,
+                    &proto,
+                    &src,
+                    src_port.as_deref(),
+                    &dst,
+                    dst_port.as_deref(),
+                    &redirect,
+                    redirect_port.as_deref(),
+                    label.as_deref(),
+                )
+                .await?;
+            }
+            NatAction::Remove { id } => {
+                commands::nat_remove(&cli.db, &id).await?;
+            }
+            NatAction::List { json } => {
+                commands::nat_list(&cli.db, json).await?;
             }
         },
         Commands::Status => {

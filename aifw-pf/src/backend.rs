@@ -47,4 +47,13 @@ pub trait PfBackend: Send + Sync {
 
     /// Check if pf is enabled and running
     async fn is_running(&self) -> Result<bool, crate::PfError>;
+
+    /// Load NAT rules into the specified anchor (replaces existing)
+    async fn load_nat_rules(&self, anchor: &str, rules: &[String]) -> Result<(), crate::PfError>;
+
+    /// Get all NAT rules in the specified anchor
+    async fn get_nat_rules(&self, anchor: &str) -> Result<Vec<String>, crate::PfError>;
+
+    /// Flush all NAT rules from the specified anchor
+    async fn flush_nat_rules(&self, anchor: &str) -> Result<(), crate::PfError>;
 }

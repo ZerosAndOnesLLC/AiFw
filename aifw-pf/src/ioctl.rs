@@ -74,4 +74,16 @@ impl PfBackend for PfIoctl {
     async fn is_running(&self) -> Result<bool, PfError> {
         todo!("FreeBSD ioctl: is_running")
     }
+
+    async fn load_nat_rules(&self, _anchor: &str, _rules: &[String]) -> Result<(), PfError> {
+        todo!("FreeBSD ioctl: load_nat_rules")
+    }
+
+    async fn get_nat_rules(&self, _anchor: &str) -> Result<Vec<String>, PfError> {
+        todo!("FreeBSD ioctl: get_nat_rules")
+    }
+
+    async fn flush_nat_rules(&self, _anchor: &str) -> Result<(), PfError> {
+        todo!("FreeBSD ioctl: flush_nat_rules")
+    }
 }

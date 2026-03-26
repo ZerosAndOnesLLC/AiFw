@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::nat::*;
     use crate::rule::*;
     use crate::types::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -215,5 +216,130 @@ mod tests {
         rule.state_options.tracking = StateTracking::None;
         let pf = rule.to_pf_rule("aifw");
         assert_eq!(pf, "block in quick");
+    }
+
+    // --- NAT tests ---
+
+    #[test]
+    fn test_nat_type_parse() {
+        assert_eq!(NatType::parse("snat").unwrap(), NatType::Snat);
+        assert_eq!(NatType::parse("dnat").unwrap(), NatType::Dnat);
+        assert_eq!(NatType::parse("rdr").unwrap(), NatType::Dnat);
+        assert_eq!(NatType::parse("masquerade").unwrap(), NatType::Masquerade);
+        assert_eq!(NatType::parse("masq").unwrap(), NatType::Masquerade);
+        assert_eq!(NatType::parse("binat").unwrap(), NatType::Binat);
+        assert_eq!(NatType::parse("nat64").unwrap(), NatType::Nat64);
+        assert_eq!(NatType::parse("nat46").unwrap(), NatType::Nat46);
+        assert!(NatType::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn test_nat_snat_pf_rule() {
+        let rule = NatRule::new(
+            NatType::Snat,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Network(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24),
+            Address::Any,
+            NatRedirect {
+                address: Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
+                port: None,
+            },
+        );
+        let pf = rule.to_pf_rule();
+        assert_eq!(pf, "nat on em0 from 192.168.1.0/24 to any -> 203.0.113.1");
+    }
+
+    #[test]
+    fn test_nat_dnat_pf_rule() {
+        let mut rule = NatRule::new(
+            NatType::Dnat,
+            Interface("em0".to_string()),
+            Protocol::Tcp,
+            Address::Any,
+            Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
+            NatRedirect {
+                address: Address::Single(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+                port: Some(PortRange { start: 8080, end: 8080 }),
+            },
+        );
+        rule.dst_port = Some(PortRange { start: 80, end: 80 });
+        let pf = rule.to_pf_rule();
+        assert_eq!(
+            pf,
+            "rdr on em0 proto tcp to 203.0.113.1 port 80 -> 192.168.1.10 port 8080"
+        );
+    }
+
+    #[test]
+    fn test_nat_masquerade_pf_rule() {
+        let rule = NatRule::new(
+            NatType::Masquerade,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
+            Address::Any,
+            NatRedirect {
+                address: Address::Any,
+                port: None,
+            },
+        );
+        let pf = rule.to_pf_rule();
+        assert_eq!(pf, "nat on em0 from 10.0.0.0/8 to any -> (em0)");
+    }
+
+    #[test]
+    fn test_nat_binat_pf_rule() {
+        let rule = NatRule::new(
+            NatType::Binat,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Single(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            Address::Any,
+            NatRedirect {
+                address: Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10))),
+                port: None,
+            },
+        );
+        let pf = rule.to_pf_rule();
+        assert_eq!(
+            pf,
+            "binat on em0 from 192.168.1.10 to any -> 203.0.113.10"
+        );
+    }
+
+    #[test]
+    fn test_nat_with_label() {
+        let mut rule = NatRule::new(
+            NatType::Snat,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
+            Address::Any,
+            NatRedirect {
+                address: Address::Single(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))),
+                port: None,
+            },
+        );
+        rule.label = Some("outbound-nat".to_string());
+        let pf = rule.to_pf_rule();
+        assert!(pf.ends_with("label \"outbound-nat\""));
+    }
+
+    #[test]
+    fn test_nat64_pf_rule() {
+        let rule = NatRule::new(
+            NatType::Nat64,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Network(IpAddr::V6("64:ff9b::".parse().unwrap()), 96),
+            Address::Any,
+            NatRedirect {
+                address: Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 0))),
+                port: None,
+            },
+        );
+        let pf = rule.to_pf_rule();
+        assert!(pf.starts_with("nat on em0 inet6"));
     }
 }

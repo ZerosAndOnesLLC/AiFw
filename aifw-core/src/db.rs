@@ -91,6 +91,10 @@ impl Database {
         let audit_log = crate::audit::AuditLog::new(self.pool.clone());
         audit_log.migrate().await?;
 
+        // NAT rules table
+        let nat_engine = crate::nat::NatEngine::new(self.pool.clone(), std::sync::Arc::from(aifw_pf::create_backend()));
+        nat_engine.migrate().await?;
+
         Ok(())
     }
 

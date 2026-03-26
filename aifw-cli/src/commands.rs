@@ -1,7 +1,8 @@
 use aifw_common::{
-    Action, Address, Direction, Interface, PortRange, Protocol, Rule, RuleMatch,
+    Action, Address, Direction, Interface, NatRedirect, NatRule, NatType, PortRange, Protocol, Rule,
+    RuleMatch,
 };
-use aifw_core::{Database, RuleEngine};
+use aifw_core::{Database, NatEngine, RuleEngine};
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -194,6 +195,125 @@ pub async fn reload(db_path: &Path) -> anyhow::Result<()> {
     let engine = create_engine(db_path).await?;
     engine.apply_rules().await?;
     let rules = engine.list_rules().await?;
-    println!("Reloaded {} rules into pf anchor", rules.len());
+
+    let nat = create_nat_engine(db_path).await?;
+    nat.apply_rules().await?;
+    let nat_rules = nat.list_rules().await?;
+
+    println!(
+        "Reloaded {} filter rules and {} NAT rules into pf anchor",
+        rules.len(),
+        nat_rules.len()
+    );
+    Ok(())
+}
+
+async fn create_nat_engine(db_path: &Path) -> anyhow::Result<NatEngine> {
+    let db = Database::new(db_path).await?;
+    let pf = Arc::from(aifw_pf::create_backend());
+    Ok(NatEngine::new(db.pool().clone(), pf))
+}
+
+pub async fn nat_add(
+    db_path: &Path,
+    nat_type: &str,
+    interface: &str,
+    proto: &str,
+    src: &str,
+    src_port: Option<&str>,
+    dst: &str,
+    dst_port: Option<&str>,
+    redirect: &str,
+    redirect_port: Option<&str>,
+    label: Option<&str>,
+) -> anyhow::Result<()> {
+    let nat = create_nat_engine(db_path).await?;
+
+    let mut rule = NatRule::new(
+        NatType::parse(nat_type)?,
+        Interface(interface.to_string()),
+        Protocol::parse(proto)?,
+        Address::parse(src)?,
+        Address::parse(dst)?,
+        NatRedirect {
+            address: Address::parse(redirect)?,
+            port: redirect_port.map(parse_port).transpose()?,
+        },
+    );
+    rule.src_port = src_port.map(parse_port).transpose()?;
+    rule.dst_port = dst_port.map(parse_port).transpose()?;
+    rule.label = label.map(String::from);
+
+    let rule = nat.add_rule(rule).await?;
+    println!("Added NAT rule {}", rule.id);
+    println!("  pf: {}", rule.to_pf_rule());
+    Ok(())
+}
+
+pub async fn nat_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
+    let nat = create_nat_engine(db_path).await?;
+    let uuid = Uuid::parse_str(id)?;
+    nat.delete_rule(uuid).await?;
+    println!("Removed NAT rule {id}");
+    Ok(())
+}
+
+pub async fn nat_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    let nat = create_nat_engine(db_path).await?;
+    let rules = nat.list_rules().await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rules)?);
+        return Ok(());
+    }
+
+    if rules.is_empty() {
+        println!("No NAT rules configured");
+        return Ok(());
+    }
+
+    println!(
+        "{:<38} {:<12} {:<8} {:<5} {:<20} {:<20} {:<20} {}",
+        "ID", "TYPE", "IFACE", "PROTO", "SOURCE", "DESTINATION", "REDIRECT", "LABEL"
+    );
+    println!("{}", "-".repeat(130));
+
+    for rule in &rules {
+        let src = format!(
+            "{}{}",
+            rule.src_addr,
+            rule.src_port
+                .as_ref()
+                .map(|p| format!(":{p}"))
+                .unwrap_or_default()
+        );
+        let dst = format!(
+            "{}{}",
+            rule.dst_addr,
+            rule.dst_port
+                .as_ref()
+                .map(|p| format!(":{p}"))
+                .unwrap_or_default()
+        );
+        let redir = format!("{}", rule.redirect);
+        let status = match rule.status {
+            aifw_common::NatStatus::Active => "",
+            aifw_common::NatStatus::Disabled => " [disabled]",
+        };
+        println!(
+            "{:<38} {:<12} {:<8} {:<5} {:<20} {:<20} {:<20} {}{}",
+            rule.id,
+            rule.nat_type,
+            rule.interface,
+            rule.protocol,
+            src,
+            dst,
+            redir,
+            rule.label.as_deref().unwrap_or(""),
+            status,
+        );
+    }
+
+    println!("\n{} NAT rule(s) total", rules.len());
     Ok(())
 }
