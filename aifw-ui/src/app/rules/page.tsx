@@ -244,11 +244,11 @@ export default function RulesPage() {
 
       {/* Rules Table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-        <DataTable<Record<string, unknown>>
-          columns={columns as { key: string; label: string; render?: (row: Record<string, unknown>) => React.ReactNode; className?: string }[]}
-          data={rules as unknown as Record<string, unknown>[]}
+        <DataTable<any>
+          columns={columns as any}
+          data={rules as any}
           keyField="id"
-          onDelete={(row) => handleDelete(row as unknown as Rule)}
+          onDelete={(row) => handleDelete(row as any)}
           emptyMessage="No firewall rules configured"
         />
       </div>

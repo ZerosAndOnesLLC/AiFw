@@ -230,9 +230,10 @@ export default function ConnectionsPage() {
 
       {/* Connections Table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-        <DataTable<Record<string, unknown>>
-          columns={columns as { key: string; label: string; render?: (row: Record<string, unknown>) => React.ReactNode; className?: string }[]}
-          data={connections as unknown as Record<string, unknown>[]}
+        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+        <DataTable<any>
+          columns={columns as any}
+          data={connections as any}
           keyField="id"
           emptyMessage="No active connections"
         />

@@ -252,11 +252,11 @@ export default function NatPage() {
 
       {/* NAT Rules Table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-        <DataTable<Record<string, unknown>>
-          columns={columns as { key: string; label: string; render?: (row: Record<string, unknown>) => React.ReactNode; className?: string }[]}
-          data={natRules as unknown as Record<string, unknown>[]}
+        <DataTable<any>
+          columns={columns as any}
+          data={natRules as any}
           keyField="id"
-          onDelete={(row) => handleDelete(row as unknown as NatRule)}
+          onDelete={(row) => handleDelete(row as any)}
           emptyMessage="No NAT rules configured"
         />
       </div>
