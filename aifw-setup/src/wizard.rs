@@ -1,6 +1,8 @@
 use crate::config::{DefaultPolicy, SetupConfig, WanMode};
 use crate::console;
+use crate::hwdetect::SystemProfile;
 use crate::totp;
+use crate::tuning::{self, TuningItem};
 
 /// Detect network interfaces (FreeBSD: ifconfig -l, Linux: mock)
 fn detect_interfaces() -> Vec<String> {
@@ -34,8 +36,14 @@ fn detect_interfaces() -> Vec<String> {
     vec!["em0".to_string(), "em1".to_string()]
 }
 
+/// Result of the setup wizard
+pub struct WizardResult {
+    pub config: SetupConfig,
+    pub tuning: Vec<TuningItem>,
+}
+
 /// Run the full setup wizard
-pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
+pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     let mut config = SetupConfig::default();
 
     // ── Step 1: Welcome ──────────────────────────────────────
@@ -55,11 +63,15 @@ pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
     }
 
     // ── Step 2: Hostname ─────────────────────────────────────
-    console::header("Step 1/10 — Hostname");
+    console::header("Step 1/11 — Hostname");
     config.hostname = console::prompt("Hostname", &config.hostname);
 
+    // ── Step 2: System Detection & Tuning ──────────────────
+    let profile = SystemProfile::detect();
+    let tuning_items = tuning::run_tuning_wizard(&profile);
+
     // ── Step 3: Network Interfaces ───────────────────────────
-    console::header("Step 2/10 — Network Interfaces");
+    console::header("Step 3/11 — Network Interfaces");
     let interfaces = detect_interfaces();
 
     if interfaces.is_empty() {
@@ -91,7 +103,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
     }
 
     // ── Step 4: WAN Configuration ────────────────────────────
-    console::header("Step 3/10 — WAN Configuration");
+    console::header("Step 4/11 — WAN Configuration");
     let wan_mode_idx = console::select(
         "WAN IP configuration",
         &["DHCP (automatic)", "Static IP", "PPPoE"],
@@ -124,7 +136,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
 
     // ── Step 5: LAN Configuration ────────────────────────────
     if config.lan_interface.is_some() {
-        console::header("Step 4/10 — LAN Configuration");
+        console::header("Step 5/11 — LAN Configuration");
         loop {
             let ip = console::prompt("LAN IP address", "192.168.1.1/24");
             if console::validate_cidr(&ip) {
@@ -134,12 +146,12 @@ pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
             console::warn("Invalid IP/prefix format.");
         }
     } else {
-        console::header("Step 4/10 — LAN Configuration");
+        console::header("Step 5/11 — LAN Configuration");
         console::info("No LAN interface configured. Skipping.");
     }
 
     // ── Step 6: Admin Account ────────────────────────────────
-    console::header("Step 5/10 — Admin Account");
+    console::header("Step 6/11 — Admin Account");
     console::info("Create the administrator account.");
     console::info("Password must be 8+ characters with uppercase, lowercase, and number.");
     println!();
@@ -162,7 +174,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
     }
 
     // ── Step 7: MFA Setup ────────────────────────────────────
-    console::header("Step 6/10 — Multi-Factor Authentication");
+    console::header("Step 7/11 — Multi-Factor Authentication");
     console::info("TOTP-based MFA protects against password compromise.");
     console::info("You'll need an authenticator app (Google Authenticator, Authy, etc.).");
     println!();
@@ -203,19 +215,19 @@ pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
     console::confirm("I have saved my recovery codes", false);
 
     // ── Step 8: API / UI Access ──────────────────────────────
-    console::header("Step 7/10 — API & Web UI");
+    console::header("Step 8/11 — API & Web UI");
     config.api_listen = console::prompt("API listen address", &config.api_listen);
     let port_str = console::prompt("API port", &config.api_port.to_string());
     config.api_port = port_str.parse().unwrap_or(8080);
     config.ui_enabled = console::confirm("Enable web UI?", true);
 
     // ── Step 9: DNS ──────────────────────────────────────────
-    console::header("Step 8/10 — DNS Servers");
+    console::header("Step 9/11 — DNS Servers");
     let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8");
     config.dns_servers = dns.split(',').map(|s| s.trim().to_string()).collect();
 
     // ── Step 10: Firewall Policy ─────────────────────────────
-    console::header("Step 9/10 — Default Firewall Policy");
+    console::header("Step 10/11 — Default Firewall Policy");
     let policy_idx = console::select(
         "Default firewall policy",
         &[
@@ -232,7 +244,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
     };
 
     // ── Summary ──────────────────────────────────────────────
-    console::header("Step 10/10 — Summary");
+    console::header("Step 11/11 — Summary");
     console::info(&format!("Hostname:       {}", config.hostname));
     console::info(&format!("WAN:            {} ({})", config.wan_interface, config.wan_mode));
     if let Some(ref ip) = config.wan_ip {
@@ -254,10 +266,12 @@ pub fn run_wizard(reconfigure: bool) -> Option<SetupConfig> {
     console::info(&format!("DNS:            {}", config.dns_servers.join(", ")));
     console::info(&format!("Policy:         {}", config.default_policy));
     console::info(&format!("Database:       {}", config.db_path));
+    let tuning_enabled = tuning_items.iter().filter(|t| t.enabled).count();
+    console::info(&format!("Tuning:         {} optimizations", tuning_enabled));
     println!();
 
     if console::confirm("Apply this configuration?", true) {
-        Some(config)
+        Some(WizardResult { config, tuning: tuning_items })
     } else {
         console::info("Setup cancelled.");
         None

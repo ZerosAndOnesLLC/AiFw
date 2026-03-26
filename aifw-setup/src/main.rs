@@ -1,7 +1,9 @@
 mod apply;
 mod config;
 mod console;
+mod hwdetect;
 mod totp;
+mod tuning;
 mod wizard;
 
 #[cfg(test)]
@@ -39,21 +41,21 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
 
-        apply::apply(&config).await.map_err(|e| anyhow::anyhow!(e))?;
+        apply::apply(&config, &[]).await.map_err(|e| anyhow::anyhow!(e))?;
         return Ok(());
     }
 
     // Run interactive wizard
-    let Some(config) = wizard::run_wizard(args.reconfigure) else {
+    let Some(result) = wizard::run_wizard(args.reconfigure) else {
         std::process::exit(0);
     };
 
     if args.pf_only {
-        println!("{}", apply::generate_pf_conf(&config));
+        println!("{}", apply::generate_pf_conf(&result.config));
         return Ok(());
     }
 
-    apply::apply(&config).await.map_err(|e| anyhow::anyhow!(e))?;
+    apply::apply(&result.config, &result.tuning).await.map_err(|e| anyhow::anyhow!(e))?;
 
     Ok(())
 }

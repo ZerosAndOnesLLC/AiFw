@@ -1,8 +1,9 @@
 use crate::config::{DefaultPolicy, SetupConfig};
 use crate::console;
+use crate::tuning::{self, TuningItem};
 
 /// Apply the setup configuration: write files, init DB, start services
-pub async fn apply(config: &SetupConfig) -> Result<(), String> {
+pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<(), String> {
     console::header("Applying Configuration");
 
     // 1. Create directories
@@ -31,7 +32,39 @@ pub async fn apply(config: &SetupConfig) -> Result<(), String> {
     write_rcd_scripts(config)?;
     console::success("Service scripts installed");
 
-    // 6. Write resolv.conf
+    // 6. Write tuning files
+    let enabled_tunings = tuning_items.iter().filter(|t| t.enabled).count();
+    if enabled_tunings > 0 {
+        console::info("Writing kernel tuning files...");
+
+        let sysctl_conf = tuning::generate_sysctl_conf(tuning_items);
+        if !sysctl_conf.lines().filter(|l| l.contains('=')).count() == 0 {
+            write_file("/etc/sysctl.conf.aifw", &sysctl_conf)?;
+            console::success("sysctl.conf.aifw written");
+        }
+
+        let loader_conf = tuning::generate_loader_conf(tuning_items);
+        if !loader_conf.lines().filter(|l| l.contains('=')).count() == 0 {
+            write_file("/boot/loader.conf.aifw", &loader_conf)?;
+            console::success("loader.conf.aifw written");
+        }
+
+        let nic_cmds = tuning::generate_nic_commands(tuning_items);
+        if !nic_cmds.is_empty() {
+            let script = nic_cmds.join("\n");
+            write_file(&format!("{}/nic_tuning.sh", config.config_dir), &script)?;
+            console::success(&format!("{} NIC tuning commands written", nic_cmds.len()));
+        }
+
+        let modules = tuning::kernel_modules_to_load(tuning_items);
+        if !modules.is_empty() {
+            console::success(&format!("Kernel modules to load: {}", modules.join(", ")));
+        }
+
+        console::success(&format!("{enabled_tunings} kernel/network tunings applied"));
+    }
+
+    // 7. Write resolv.conf
     if !config.dns_servers.is_empty() {
         console::info("Configuring DNS...");
         let resolv: Vec<String> = config.dns_servers.iter().map(|s| format!("nameserver {s}")).collect();
