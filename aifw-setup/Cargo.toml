@@ -1,0 +1,25 @@
+[package]
+name = "aifw-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aifw-setup"
+path = "src/main.rs"
+
+[dependencies]
+aifw-common = { workspace = true }
+aifw-pf = { workspace = true }
+aifw-core = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+argon2 = { workspace = true }
+chrono = { workspace = true }
+anyhow = "1"
+libc = "0.2"
