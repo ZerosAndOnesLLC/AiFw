@@ -52,10 +52,46 @@ enum Commands {
         #[command(subcommand)]
         action: VpnAction,
     },
+    /// Manage versioned configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Show firewall status
     Status,
     /// Reload rules from database and apply to pf
     Reload,
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Show current active config
+    Show,
+    /// Export current config to stdout as JSON
+    Export,
+    /// Import config from a JSON file
+    Import {
+        /// Path to JSON config file
+        file: String,
+    },
+    /// Show config version history
+    History {
+        /// Number of versions to show
+        #[arg(long, default_value = "20")]
+        limit: i64,
+    },
+    /// Rollback to a specific config version
+    Rollback {
+        /// Version number to rollback to
+        version: i64,
+    },
+    /// Diff two config versions
+    Diff {
+        /// First version
+        v1: i64,
+        /// Second version
+        v2: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -522,6 +558,14 @@ async fn main() -> anyhow::Result<()> {
             VpnAction::List { json } => {
                 commands::vpn_list(&cli.db, json).await?;
             }
+        },
+        Commands::Config { action } => match action {
+            ConfigAction::Show => commands::config_show(&cli.db).await?,
+            ConfigAction::Export => commands::config_export(&cli.db).await?,
+            ConfigAction::Import { file } => commands::config_import(&cli.db, &file).await?,
+            ConfigAction::History { limit } => commands::config_history(&cli.db, limit).await?,
+            ConfigAction::Rollback { version } => commands::config_rollback(&cli.db, version).await?,
+            ConfigAction::Diff { v1, v2 } => commands::config_diff(&cli.db, v1, v2).await?,
         },
         Commands::Status => {
             commands::status(&cli.db).await?;

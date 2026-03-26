@@ -759,3 +759,125 @@ pub async fn geoip_lookup(db_path: &Path, ip_str: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+// --- Config commands ---
+
+async fn create_config_manager(db_path: &Path) -> anyhow::Result<aifw_core::ConfigManager> {
+    let db = Database::new(db_path).await?;
+    let mgr = aifw_core::ConfigManager::new(db.pool().clone());
+    mgr.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    Ok(mgr)
+}
+
+pub async fn config_show(db_path: &Path) -> anyhow::Result<()> {
+    let mgr = create_config_manager(db_path).await?;
+    match mgr.get_active().await.map_err(|e| anyhow::anyhow!(e))? {
+        Some((version, config)) => {
+            println!("Active config version: {version}");
+            println!("Resources: {}", config.resource_count());
+            println!("Hash: {}", config.hash());
+            println!();
+            println!("{}", config.to_json());
+        }
+        None => {
+            println!("No active configuration. Run 'aifw-setup' or 'aifw config import'.");
+        }
+    }
+    Ok(())
+}
+
+pub async fn config_export(db_path: &Path) -> anyhow::Result<()> {
+    let mgr = create_config_manager(db_path).await?;
+    match mgr.get_active().await.map_err(|e| anyhow::anyhow!(e))? {
+        Some((_, config)) => print!("{}", config.to_json()),
+        None => anyhow::bail!("no active configuration"),
+    }
+    Ok(())
+}
+
+pub async fn config_import(db_path: &Path, file: &str) -> anyhow::Result<()> {
+    let mgr = create_config_manager(db_path).await?;
+    let content = std::fs::read_to_string(file)?;
+    let config = aifw_core::FirewallConfig::from_json(&content).map_err(|e| anyhow::anyhow!(e))?;
+
+    println!("Importing config: {} resources", config.resource_count());
+
+    // Save and mark as applied (no pf apply on CLI import — use 'aifw reload' after)
+    let version = mgr.save_version(&config, "cli-import", Some(&format!("imported from {file}")))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    mgr.mark_applied(version).await.map_err(|e| anyhow::anyhow!(e))?;
+
+    println!("Imported as config version {version}");
+    println!("Run 'aifw reload' to apply to pf");
+    Ok(())
+}
+
+pub async fn config_history(db_path: &Path, limit: i64) -> anyhow::Result<()> {
+    let mgr = create_config_manager(db_path).await?;
+    let versions = mgr.history(limit).await.map_err(|e| anyhow::anyhow!(e))?;
+
+    if versions.is_empty() {
+        println!("No config versions found.");
+        return Ok(());
+    }
+
+    println!("{:<8} {:<10} {:<12} {:<22} {:<10} {}", "VERSION", "STATUS", "RESOURCES", "CREATED", "BY", "COMMENT");
+    println!("{}", "-".repeat(90));
+
+    for v in &versions {
+        let status = if v.applied {
+            "ACTIVE"
+        } else if v.rolled_back {
+            "ROLLED_BACK"
+        } else {
+            "saved"
+        };
+        let ts = &v.created_at[..19]; // trim timezone
+        println!(
+            "{:<8} {:<10} {:<12} {:<22} {:<10} {}",
+            v.version,
+            status,
+            v.resource_count,
+            ts,
+            v.created_by,
+            v.comment.as_deref().unwrap_or(""),
+        );
+    }
+
+    let total = mgr.version_count().await.map_err(|e| anyhow::anyhow!(e))?;
+    println!("\n{total} total version(s)");
+    Ok(())
+}
+
+pub async fn config_rollback(db_path: &Path, version: i64) -> anyhow::Result<()> {
+    let mgr = create_config_manager(db_path).await?;
+
+    println!("Rolling back to config version {version}...");
+    mgr.rollback(version, |_config| async { Ok(()) })
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    println!("Rolled back to version {version}");
+    println!("Run 'aifw reload' to apply to pf");
+    Ok(())
+}
+
+pub async fn config_diff(db_path: &Path, v1: i64, v2: i64) -> anyhow::Result<()> {
+    let mgr = create_config_manager(db_path).await?;
+    let diff = mgr.diff(v1, v2).await.map_err(|e| anyhow::anyhow!(e))?;
+
+    println!("Config diff: v{} vs v{}", diff.v1, diff.v2);
+    println!();
+    if diff.identical {
+        println!("  Configs are identical (same hash)");
+    } else {
+        println!("  Hash v{}: {}", diff.v1, &diff.v1_hash[..16]);
+        println!("  Hash v{}: {}", diff.v2, &diff.v2_hash[..16]);
+        println!();
+        println!("  Rules:     {} -> {} (+{} -{})", diff.rules_diff.v1_count, diff.rules_diff.v2_count, diff.rules_diff.added, diff.rules_diff.removed);
+        println!("  NAT:       {} -> {} (+{} -{})", diff.nat_diff.v1_count, diff.nat_diff.v2_count, diff.nat_diff.added, diff.nat_diff.removed);
+        println!("  Total:     {} -> {}", diff.total_v1, diff.total_v2);
+    }
+    Ok(())
+}
