@@ -4,21 +4,25 @@ mod tests {
     use axum_test::TestServer;
     use serde_json::{json, Value};
 
-    use crate::auth::AuthConfig;
+    use crate::auth::AuthSettings;
 
-    async fn test_app() -> (TestServer, AuthConfig) {
-        let auth_config = AuthConfig {
+    async fn test_app() -> (TestServer, AuthSettings) {
+        let auth_settings = AuthSettings {
             jwt_secret: "test-secret-key".to_string(),
-            token_expiry_hours: 24,
+            access_token_expiry_mins: 60,
+            refresh_token_expiry_days: 7,
+            require_totp: false,
+            require_totp_for_oauth: false,
+            auto_create_oauth_users: true,
         };
 
-        let state = crate::create_app_state_in_memory(auth_config.clone())
+        let state = crate::create_app_state_in_memory(auth_settings.clone())
             .await
             .unwrap();
 
         let app = crate::build_router(state);
         let server = TestServer::new(app).unwrap();
-        (server, auth_config)
+        (server, auth_settings)
     }
 
     async fn create_user_and_login(server: &TestServer) -> String {
@@ -31,7 +35,7 @@ mod tests {
             }))
             .await;
 
-        // Login
+        // Login — now returns tokens object
         let resp = server
             .post("/api/v1/auth/login")
             .json(&json!({
@@ -41,7 +45,8 @@ mod tests {
             .await;
 
         let body: Value = resp.json();
-        body["token"].as_str().unwrap().to_string()
+        // New format: { tokens: { access_token, refresh_token, ... }, totp_required: false }
+        body["tokens"]["access_token"].as_str().unwrap().to_string()
     }
 
     #[tokio::test]
@@ -84,7 +89,9 @@ mod tests {
 
         resp.assert_status_ok();
         let body: Value = resp.json();
-        assert!(body["token"].as_str().is_some());
+        assert!(body["tokens"]["access_token"].as_str().is_some());
+        assert!(body["tokens"]["refresh_token"].as_str().is_some());
+        assert_eq!(body["totp_required"], false);
     }
 
     #[tokio::test]
@@ -356,6 +363,287 @@ mod tests {
         let resp = server
             .delete(&format!("/api/v1/nat/{id}"))
             .authorization_bearer(&token)
+            .await;
+
+        resp.assert_status_ok();
+    }
+
+    // --- New auth system tests ---
+
+    #[tokio::test]
+    async fn test_refresh_token_flow() {
+        let (server, _) = test_app().await;
+
+        server
+            .post("/api/v1/auth/users")
+            .json(&json!({"username": "rfuser", "password": "pass123"}))
+            .await;
+
+        // Login to get tokens
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username": "rfuser", "password": "pass123"}))
+            .await;
+
+        let body: Value = resp.json();
+        let refresh = body["tokens"]["refresh_token"].as_str().unwrap();
+
+        // Use refresh token to get new pair
+        let resp = server
+            .post("/api/v1/auth/refresh")
+            .json(&json!({"refresh_token": refresh}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["access_token"].as_str().is_some());
+        assert!(body["refresh_token"].as_str().is_some());
+        // New refresh token should be different
+        assert_ne!(body["refresh_token"].as_str().unwrap(), refresh);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_token_reuse_detection() {
+        let (server, _) = test_app().await;
+
+        server
+            .post("/api/v1/auth/users")
+            .json(&json!({"username": "reuseuser", "password": "pass123"}))
+            .await;
+
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username": "reuseuser", "password": "pass123"}))
+            .await;
+
+        let body: Value = resp.json();
+        let old_refresh = body["tokens"]["refresh_token"].as_str().unwrap().to_string();
+
+        // Use it once (valid)
+        server
+            .post("/api/v1/auth/refresh")
+            .json(&json!({"refresh_token": &old_refresh}))
+            .await;
+
+        // Use it again (reuse — should fail and revoke family)
+        let resp = server
+            .post("/api/v1/auth/refresh")
+            .json(&json!({"refresh_token": &old_refresh}))
+            .await;
+
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_logout() {
+        let (server, _) = test_app().await;
+
+        server
+            .post("/api/v1/auth/users")
+            .json(&json!({"username": "logoutuser", "password": "pass123"}))
+            .await;
+
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username": "logoutuser", "password": "pass123"}))
+            .await;
+
+        let body: Value = resp.json();
+        let access = body["tokens"]["access_token"].as_str().unwrap().to_string();
+        let refresh = body["tokens"]["refresh_token"].as_str().unwrap().to_string();
+
+        // Logout
+        let resp = server
+            .post("/api/v1/auth/logout")
+            .authorization_bearer(&access)
+            .json(&json!({"refresh_token": &refresh}))
+            .await;
+
+        resp.assert_status_ok();
+
+        // Refresh token should no longer work
+        let resp = server
+            .post("/api/v1/auth/refresh")
+            .json(&json!({"refresh_token": &refresh}))
+            .await;
+
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_totp_setup_and_verify() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Setup TOTP
+        let resp = server
+            .post("/api/v1/auth/totp/setup")
+            .authorization_bearer(&token)
+            .await;
+
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["secret"].as_str().is_some());
+        assert!(body["provisioning_uri"].as_str().unwrap().starts_with("otpauth://"));
+        let recovery_codes = body["recovery_codes"].as_array().unwrap();
+        assert_eq!(recovery_codes.len(), 8);
+
+        // Generate a valid TOTP code from the secret
+        let secret = body["secret"].as_str().unwrap();
+        let code = crate::auth::totp::generate_current(secret).unwrap();
+
+        // Verify (activates TOTP)
+        let resp = server
+            .post("/api/v1/auth/totp/verify")
+            .authorization_bearer(&token)
+            .json(&json!({"code": code}))
+            .await;
+
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn test_totp_login_flow() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Setup + verify TOTP
+        let resp = server
+            .post("/api/v1/auth/totp/setup")
+            .authorization_bearer(&token)
+            .await;
+
+        let body: Value = resp.json();
+        let secret = body["secret"].as_str().unwrap().to_string();
+        let code = crate::auth::totp::generate_current(&secret).unwrap();
+
+        server
+            .post("/api/v1/auth/totp/verify")
+            .authorization_bearer(&token)
+            .json(&json!({"code": &code}))
+            .await;
+
+        // Now login should require TOTP
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username": "admin", "password": "testpass123"}))
+            .await;
+
+        let body: Value = resp.json();
+        assert_eq!(body["totp_required"], true);
+        assert!(body["tokens"].is_null() || body["access_token"].is_null());
+
+        // Complete login with TOTP
+        let code = crate::auth::totp::generate_current(&secret).unwrap();
+        let resp = server
+            .post("/api/v1/auth/totp/login")
+            .json(&json!({"username": "admin", "totp_code": &code}))
+            .await;
+
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["access_token"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_recovery_code_login() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Setup + verify TOTP
+        let resp = server
+            .post("/api/v1/auth/totp/setup")
+            .authorization_bearer(&token)
+            .await;
+
+        let body: Value = resp.json();
+        let secret = body["secret"].as_str().unwrap().to_string();
+        let recovery = body["recovery_codes"][0].as_str().unwrap().to_string();
+        let code = crate::auth::totp::generate_current(&secret).unwrap();
+
+        server
+            .post("/api/v1/auth/totp/verify")
+            .authorization_bearer(&token)
+            .json(&json!({"code": &code}))
+            .await;
+
+        // Login with recovery code instead of TOTP
+        let resp = server
+            .post("/api/v1/auth/totp/login")
+            .json(&json!({"username": "admin", "totp_code": &recovery}))
+            .await;
+
+        resp.assert_status_ok();
+
+        // Same recovery code should not work again
+        let resp = server
+            .post("/api/v1/auth/totp/login")
+            .json(&json!({"username": "admin", "totp_code": &recovery}))
+            .await;
+
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_oauth_provider_crud() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Create Google provider
+        let resp = server
+            .post("/api/v1/auth/oauth/providers")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "name": "Google",
+                "provider_type": "google",
+                "client_id": "test-client-id",
+                "client_secret": "test-secret"
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        let provider_id = body["data"]["id"].as_str().unwrap().to_string();
+
+        // List providers
+        let resp = server
+            .get("/api/v1/auth/oauth/providers")
+            .authorization_bearer(&token)
+            .await;
+
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+
+        // Delete
+        let resp = server
+            .delete(&format!("/api/v1/auth/oauth/providers/{provider_id}"))
+            .authorization_bearer(&token)
+            .await;
+
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn test_auth_settings() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Get settings
+        let resp = server
+            .get("/api/v1/auth/settings")
+            .authorization_bearer(&token)
+            .await;
+
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["require_totp"], false);
+
+        // Update settings
+        let resp = server
+            .put("/api/v1/auth/settings")
+            .authorization_bearer(&token)
+            .json(&json!({"require_totp": true, "access_token_expiry_mins": 30}))
             .await;
 
         resp.assert_status_ok();

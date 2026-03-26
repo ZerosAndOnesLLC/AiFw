@@ -28,7 +28,7 @@ pub struct AppState {
     pub rule_engine: Arc<RuleEngine>,
     pub nat_engine: Arc<NatEngine>,
     pub conntrack: Arc<ConnectionTracker>,
-    pub auth_config: auth::AuthConfig,
+    pub auth_settings: auth::AuthSettings,
 }
 
 #[derive(Parser)]
@@ -64,7 +64,11 @@ pub fn build_router(state: AppState) -> Router {
     // Public routes (no auth)
     let public_routes = Router::new()
         .route("/api/v1/auth/login", post(routes::login))
-        .route("/api/v1/auth/users", post(routes::create_user));
+        .route("/api/v1/auth/totp/login", post(routes::totp_login))
+        .route("/api/v1/auth/refresh", post(routes::refresh_token))
+        .route("/api/v1/auth/users", post(routes::create_user))
+        .route("/api/v1/auth/oauth/{provider}/authorize", get(routes::oauth_authorize))
+        .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback));
 
     // Protected routes (require auth)
     let protected_routes = Router::new()
@@ -78,6 +82,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/metrics", get(routes::metrics))
         .route("/api/v1/logs", get(routes::list_logs))
         .route("/api/v1/auth/api-keys", post(routes::create_api_key))
+        .route("/api/v1/auth/logout", post(routes::logout))
+        .route("/api/v1/auth/totp/setup", post(routes::totp_setup))
+        .route("/api/v1/auth/totp/verify", post(routes::totp_verify))
+        .route("/api/v1/auth/totp/disable", post(routes::totp_disable))
+        .route("/api/v1/auth/settings", get(routes::get_auth_settings).put(routes::update_auth_settings))
+        .route("/api/v1/auth/oauth/providers", get(routes::list_oauth_providers).post(routes::create_oauth_provider))
+        .route("/api/v1/auth/oauth/providers/{id}", delete(routes::delete_oauth_provider))
         .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
 
     Router::new()
@@ -93,27 +104,27 @@ pub fn build_router(state: AppState) -> Router {
 
 pub async fn create_app_state(
     db_path: &std::path::Path,
-    auth_config: auth::AuthConfig,
+    auth_settings: auth::AuthSettings,
 ) -> anyhow::Result<AppState> {
     if let Some(parent) = db_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
     let db = Database::new(db_path).await?;
-    create_state_from_db(db, auth_config).await
+    create_state_from_db(db, auth_settings).await
 }
 
 #[cfg(test)]
 pub async fn create_app_state_in_memory(
-    auth_config: auth::AuthConfig,
+    auth_settings: auth::AuthSettings,
 ) -> anyhow::Result<AppState> {
     let db = Database::new_in_memory().await?;
-    create_state_from_db(db, auth_config).await
+    create_state_from_db(db, auth_settings).await
 }
 
 async fn create_state_from_db(
     db: Database,
-    auth_config: auth::AuthConfig,
+    auth_settings: auth::AuthSettings,
 ) -> anyhow::Result<AppState> {
     let pool = db.pool().clone();
     let pf: Arc<dyn PfBackend> = Arc::from(aifw_pf::create_backend());
@@ -131,7 +142,7 @@ async fn create_state_from_db(
         rule_engine,
         nat_engine,
         conntrack,
-        auth_config,
+        auth_settings,
     })
 }
 
@@ -146,12 +157,12 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let mut auth_config = auth::AuthConfig::default();
+    let mut auth_settings = auth::AuthSettings::default();
     if let Some(secret) = args.jwt_secret {
-        auth_config.jwt_secret = secret;
+        auth_settings.jwt_secret = secret;
     }
 
-    let state = create_app_state(&args.db, auth_config).await?;
+    let state = create_app_state(&args.db, auth_settings).await?;
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;

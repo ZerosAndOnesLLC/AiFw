@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -119,8 +119,260 @@ pub async fn login(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let response = auth::create_token(&user, &state.auth_config)?;
-    Ok(Json(response))
+    // Check if TOTP is required
+    if user.totp_enabled {
+        return Ok(Json(auth::LoginResponse {
+            tokens: None,
+            totp_required: true,
+        }));
+    }
+
+    // Check if TOTP enforcement is on but user hasn't set it up
+    if state.auth_settings.require_totp && !user.totp_enabled {
+        return Ok(Json(auth::LoginResponse {
+            tokens: None,
+            totp_required: true,
+        }));
+    }
+
+    let tokens = auth::tokens::issue_token_pair(
+        &state.pool,
+        &user.id.to_string(),
+        &user.username,
+        &state.auth_settings,
+    )
+    .await
+    .map_err(|_| internal())?;
+
+    Ok(Json(auth::LoginResponse {
+        tokens: Some(tokens),
+        totp_required: false,
+    }))
+}
+
+pub async fn totp_login(
+    State(state): State<AppState>,
+    Json(req): Json<auth::totp::TotpLoginRequest>,
+) -> Result<Json<auth::TokenPair>, StatusCode> {
+    let user = auth::get_user_by_username(&state.pool, &req.username)
+        .await?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Verify TOTP code or recovery code
+    let totp_valid = if let Some(ref secret) = user.totp_secret {
+        auth::totp::verify(secret, &req.totp_code)
+    } else {
+        false
+    };
+
+    let recovery_valid = if !totp_valid {
+        auth::use_recovery_code(&state.pool, &user.id.to_string(), &req.totp_code).await
+    } else {
+        false
+    };
+
+    if !totp_valid && !recovery_valid {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let tokens = auth::tokens::issue_token_pair(
+        &state.pool,
+        &user.id.to_string(),
+        &user.username,
+        &state.auth_settings,
+    )
+    .await
+    .map_err(|_| internal())?;
+
+    Ok(Json(tokens))
+}
+
+pub async fn refresh_token(
+    State(state): State<AppState>,
+    Json(req): Json<auth::tokens::RefreshRequest>,
+) -> Result<Json<auth::TokenPair>, StatusCode> {
+    let tokens = auth::tokens::rotate_refresh_token(
+        &state.pool,
+        &req.refresh_token,
+        &state.auth_settings,
+    )
+    .await
+    .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    Ok(Json(tokens))
+}
+
+pub async fn logout(
+    State(state): State<AppState>,
+    Json(req): Json<auth::tokens::LogoutRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    auth::tokens::revoke_refresh_token(&state.pool, &req.refresh_token)
+        .await
+        .map_err(|_| bad_request())?;
+    Ok(Json(MessageResponse { message: "Logged out".to_string() }))
+}
+
+pub async fn totp_setup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<auth::totp::TotpSetupResponse>, StatusCode> {
+    let user_id = extract_user_id(&headers, &state)?;
+    let user = auth::get_user_by_id(&state.pool, &user_id)
+        .await?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let secret = auth::totp::generate_secret();
+    let uri = auth::totp::provisioning_uri(&secret, &user.username, "AiFw");
+    let recovery_codes = auth::totp::generate_recovery_codes(8);
+
+    // Save secret (not yet enabled — needs verification)
+    auth::save_totp_secret(&state.pool, &user_id, &secret).await?;
+    auth::save_recovery_codes(&state.pool, &user_id, &recovery_codes).await?;
+
+    Ok(Json(auth::totp::TotpSetupResponse {
+        secret,
+        provisioning_uri: uri,
+        recovery_codes,
+    }))
+}
+
+pub async fn totp_verify(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<auth::totp::TotpVerifyRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let user_id = extract_user_id(&headers, &state)?;
+    let user = auth::get_user_by_id(&state.pool, &user_id)
+        .await?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let secret = user.totp_secret.ok_or(bad_request())?;
+    if !auth::totp::verify(&secret, &req.code) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    auth::enable_totp(&state.pool, &user_id).await?;
+    Ok(Json(MessageResponse { message: "TOTP enabled".to_string() }))
+}
+
+pub async fn totp_disable(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<auth::totp::TotpDisableRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let user_id = extract_user_id(&headers, &state)?;
+    let user = auth::get_user_by_id(&state.pool, &user_id)
+        .await?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let secret = user.totp_secret.ok_or(bad_request())?;
+    if !auth::totp::verify(&secret, &req.code) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    auth::disable_totp(&state.pool, &user_id).await?;
+    Ok(Json(MessageResponse { message: "TOTP disabled".to_string() }))
+}
+
+pub async fn get_auth_settings(
+    State(state): State<AppState>,
+) -> Result<Json<auth::AuthSettings>, StatusCode> {
+    Ok(Json(state.auth_settings.clone()))
+}
+
+pub async fn update_auth_settings(
+    State(state): State<AppState>,
+    Json(req): Json<auth::config::UpdateAuthSettingsRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    if let Some(v) = req.access_token_expiry_mins {
+        auth::config::AuthSettings::save_setting(&state.pool, "access_token_expiry_mins", &v.to_string()).await.map_err(|_| internal())?;
+    }
+    if let Some(v) = req.refresh_token_expiry_days {
+        auth::config::AuthSettings::save_setting(&state.pool, "refresh_token_expiry_days", &v.to_string()).await.map_err(|_| internal())?;
+    }
+    if let Some(v) = req.require_totp {
+        auth::config::AuthSettings::save_setting(&state.pool, "require_totp", &v.to_string()).await.map_err(|_| internal())?;
+    }
+    if let Some(v) = req.require_totp_for_oauth {
+        auth::config::AuthSettings::save_setting(&state.pool, "require_totp_for_oauth", &v.to_string()).await.map_err(|_| internal())?;
+    }
+    if let Some(v) = req.auto_create_oauth_users {
+        auth::config::AuthSettings::save_setting(&state.pool, "auto_create_oauth_users", &v.to_string()).await.map_err(|_| internal())?;
+    }
+    Ok(Json(MessageResponse { message: "Settings updated".to_string() }))
+}
+
+pub async fn list_oauth_providers(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<auth::oauth::OAuthProvider>>>, StatusCode> {
+    let providers = auth::oauth::list_providers(&state.pool).await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: providers }))
+}
+
+pub async fn create_oauth_provider(
+    State(state): State<AppState>,
+    Json(req): Json<auth::oauth::CreateProviderRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<auth::oauth::OAuthProvider>>), StatusCode> {
+    let provider = match req.provider_type.as_str() {
+        "google" => auth::oauth::OAuthProvider::google(&req.client_id, &req.client_secret),
+        "github" => auth::oauth::OAuthProvider::github(&req.client_id, &req.client_secret),
+        _ => auth::oauth::OAuthProvider {
+            id: Uuid::new_v4(),
+            name: req.name.clone(),
+            provider_type: auth::oauth::OAuthProviderType::Oidc,
+            client_id: req.client_id,
+            client_secret: req.client_secret,
+            auth_url: req.auth_url.unwrap_or_default(),
+            token_url: req.token_url.unwrap_or_default(),
+            userinfo_url: req.userinfo_url.unwrap_or_default(),
+            scopes: req.scopes.unwrap_or_else(|| "openid email profile".to_string()),
+            enabled: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+    };
+
+    auth::oauth::save_provider(&state.pool, &provider).await.map_err(|_| internal())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: provider })))
+}
+
+pub async fn delete_oauth_provider(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    auth::oauth::delete_provider(&state.pool, uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(MessageResponse { message: format!("Provider {id} deleted") }))
+}
+
+pub async fn oauth_authorize(
+    State(state): State<AppState>,
+    Path(provider_name): Path<String>,
+) -> Result<Json<auth::oauth::AuthorizeResponse>, StatusCode> {
+    let provider = auth::oauth::get_provider_by_name(&state.pool, &provider_name)
+        .await
+        .map_err(|_| internal())?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let oauth_state = Uuid::new_v4().to_string();
+    let redirect_uri = format!("/api/v1/auth/oauth/{}/callback", provider_name);
+    let url = provider.authorize_url(&redirect_uri, &oauth_state);
+
+    Ok(Json(auth::oauth::AuthorizeResponse {
+        authorize_url: url,
+        state: oauth_state,
+    }))
+}
+
+pub async fn oauth_callback(
+    State(_state): State<AppState>,
+    Path(_provider_name): Path<String>,
+    axum::extract::Query(_query): axum::extract::Query<auth::oauth::CallbackQuery>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    // In production: exchange code for token, fetch userinfo, create/link user, issue tokens
+    // This requires HTTP client calls to the provider which need reqwest or similar
+    Ok(Json(MessageResponse {
+        message: "OAuth callback received — token exchange requires HTTP client (reqwest)".to_string(),
+    }))
 }
 
 pub async fn create_user(
@@ -144,6 +396,21 @@ pub async fn create_api_key(
     let user_id = Uuid::parse_str(&row.0).map_err(|_| internal())?;
     let response = auth::create_api_key(&state.pool, user_id, &req.name).await?;
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+fn extract_user_id(headers: &HeaderMap, state: &AppState) -> Result<String, StatusCode> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if let Some(token) = auth_header.strip_prefix("Bearer ") {
+        let data = auth::verify_access_token(token, &state.auth_settings)
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        Ok(data.claims.sub)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
 }
 
 // --- Rules endpoints ---
