@@ -86,4 +86,16 @@ impl PfBackend for PfIoctl {
     async fn flush_nat_rules(&self, _anchor: &str) -> Result<(), PfError> {
         todo!("FreeBSD ioctl: flush_nat_rules")
     }
+
+    async fn load_queues(&self, _anchor: &str, _queues: &[String]) -> Result<(), PfError> {
+        todo!("FreeBSD ioctl: load_queues")
+    }
+
+    async fn get_queues(&self, _anchor: &str) -> Result<Vec<String>, PfError> {
+        todo!("FreeBSD ioctl: get_queues")
+    }
+
+    async fn flush_queues(&self, _anchor: &str) -> Result<(), PfError> {
+        todo!("FreeBSD ioctl: flush_queues")
+    }
 }

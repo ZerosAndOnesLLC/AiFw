@@ -158,12 +158,12 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
 - [ ] OpenAPI docs
 
 ### Phase 5 — Rate Limiting & Traffic Shaping
-- [ ] pf queue integration (ALTQ / CoDel)
-- [ ] Per-IP rate limiting via pf tables + overload
-- [ ] Bandwidth throttling
-- [ ] Priority queues (VoIP, interactive, bulk)
-- [ ] SYN flood protection (synproxy)
-- [ ] Rule-based rate limit configuration
+- [x] pf queue integration (ALTQ / CoDel)
+- [x] Per-IP rate limiting via pf tables + overload
+- [x] Bandwidth throttling
+- [x] Priority queues (VoIP, interactive, bulk)
+- [x] SYN flood protection (synproxy)
+- [x] Rule-based rate limit configuration
 
 ### Phase 6 — TUI
 - [ ] aifw-tui: ratatui-based terminal UI

@@ -56,4 +56,13 @@ pub trait PfBackend: Send + Sync {
 
     /// Flush all NAT rules from the specified anchor
     async fn flush_nat_rules(&self, anchor: &str) -> Result<(), crate::PfError>;
+
+    /// Load queue definitions
+    async fn load_queues(&self, anchor: &str, queues: &[String]) -> Result<(), crate::PfError>;
+
+    /// Get current queue definitions
+    async fn get_queues(&self, anchor: &str) -> Result<Vec<String>, crate::PfError>;
+
+    /// Flush all queue definitions
+    async fn flush_queues(&self, anchor: &str) -> Result<(), crate::PfError>;
 }

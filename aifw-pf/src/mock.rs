@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 pub struct PfMock {
     rules: RwLock<HashMap<String, Vec<String>>>,
     nat_rules: RwLock<HashMap<String, Vec<String>>>,
+    queues: RwLock<HashMap<String, Vec<String>>>,
     tables: RwLock<HashMap<String, Vec<IpAddr>>>,
     states: RwLock<Vec<PfState>>,
     running: RwLock<bool>,
@@ -19,6 +20,7 @@ impl PfMock {
         Self {
             rules: RwLock::new(HashMap::new()),
             nat_rules: RwLock::new(HashMap::new()),
+            queues: RwLock::new(HashMap::new()),
             tables: RwLock::new(HashMap::new()),
             states: RwLock::new(Vec::new()),
             running: RwLock::new(true),
@@ -146,6 +148,25 @@ impl PfBackend for PfMock {
         tracing::debug!(anchor, "mock: flush_nat_rules");
         let mut nat_rules = self.nat_rules.write().await;
         nat_rules.remove(anchor);
+        Ok(())
+    }
+
+    async fn load_queues(&self, anchor: &str, queue_defs: &[String]) -> Result<(), PfError> {
+        tracing::debug!(anchor, count = queue_defs.len(), "mock: load_queues");
+        let mut queues = self.queues.write().await;
+        queues.insert(anchor.to_string(), queue_defs.to_vec());
+        Ok(())
+    }
+
+    async fn get_queues(&self, anchor: &str) -> Result<Vec<String>, PfError> {
+        let queues = self.queues.read().await;
+        Ok(queues.get(anchor).cloned().unwrap_or_default())
+    }
+
+    async fn flush_queues(&self, anchor: &str) -> Result<(), PfError> {
+        tracing::debug!(anchor, "mock: flush_queues");
+        let mut queues = self.queues.write().await;
+        queues.remove(anchor);
         Ok(())
     }
 }

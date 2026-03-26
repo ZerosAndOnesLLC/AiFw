@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::nat::*;
+    use crate::ratelimit::*;
     use crate::rule::*;
     use crate::types::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -341,5 +342,152 @@ mod tests {
         );
         let pf = rule.to_pf_rule();
         assert!(pf.starts_with("nat on em0 inet6"));
+    }
+
+    // --- Rate limiting / queue tests ---
+
+    #[test]
+    fn test_bandwidth_parse() {
+        let bw = Bandwidth::parse("100Mb").unwrap();
+        assert_eq!(bw.value, 100);
+        assert_eq!(bw.unit, BandwidthUnit::Mbps);
+        assert_eq!(bw.to_bits_per_sec(), 100_000_000);
+
+        let bw = Bandwidth::parse("1Gb").unwrap();
+        assert_eq!(bw.to_bits_per_sec(), 1_000_000_000);
+
+        let bw = Bandwidth::parse("500Kb").unwrap();
+        assert_eq!(bw.to_string(), "500Kb");
+    }
+
+    #[test]
+    fn test_bandwidth_display() {
+        let bw = Bandwidth { value: 10, unit: BandwidthUnit::Mbps };
+        assert_eq!(bw.to_string(), "10Mb");
+        let bw = Bandwidth { value: 1000, unit: BandwidthUnit::Bps };
+        assert_eq!(bw.to_string(), "1000b");
+    }
+
+    #[test]
+    fn test_queue_type_parse() {
+        assert_eq!(QueueType::parse("codel").unwrap(), QueueType::Codel);
+        assert_eq!(QueueType::parse("hfsc").unwrap(), QueueType::Hfsc);
+        assert_eq!(QueueType::parse("priq").unwrap(), QueueType::Priq);
+        assert!(QueueType::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn test_traffic_class_priority() {
+        assert!(TrafficClass::Voip.priority() > TrafficClass::Interactive.priority());
+        assert!(TrafficClass::Interactive.priority() > TrafficClass::Default.priority());
+        assert!(TrafficClass::Default.priority() > TrafficClass::Bulk.priority());
+    }
+
+    #[test]
+    fn test_queue_config_pf() {
+        let mut q = QueueConfig::new(
+            Interface("em0".to_string()),
+            QueueType::Priq,
+            Bandwidth { value: 100, unit: BandwidthUnit::Mbps },
+            "voip_queue".to_string(),
+            TrafficClass::Voip,
+        );
+        q.default = false;
+        let pf = q.to_pf_queue();
+        assert!(pf.contains("queue voip_queue"));
+        assert!(pf.contains("priority 7"));
+
+        assert_eq!(q.to_pf_parent_queue(), "queue on em0 bandwidth 100Mb");
+    }
+
+    #[test]
+    fn test_queue_config_default() {
+        let mut q = QueueConfig::new(
+            Interface("em0".to_string()),
+            QueueType::Codel,
+            Bandwidth { value: 50, unit: BandwidthUnit::Mbps },
+            "std".to_string(),
+            TrafficClass::Default,
+        );
+        q.default = true;
+        let pf = q.to_pf_queue();
+        assert!(pf.contains("default"));
+    }
+
+    #[test]
+    fn test_queue_config_bandwidth_pct() {
+        let mut q = QueueConfig::new(
+            Interface("em0".to_string()),
+            QueueType::Hfsc,
+            Bandwidth { value: 100, unit: BandwidthUnit::Mbps },
+            "web".to_string(),
+            TrafficClass::Default,
+        );
+        q.bandwidth_pct = Some(30);
+        let pf = q.to_pf_queue();
+        assert!(pf.contains("bandwidth 30%"));
+    }
+
+    #[test]
+    fn test_rate_limit_pf_rule() {
+        let mut rl = RateLimitRule::new(
+            "ssh-brute".to_string(),
+            Protocol::Tcp,
+            5,
+            30,
+            "bruteforce".to_string(),
+        );
+        rl.dst_port = Some(PortRange { start: 22, end: 22 });
+        let pf = rl.to_pf_rule();
+        assert!(pf.contains("proto tcp"));
+        assert!(pf.contains("port 22"));
+        assert!(pf.contains("max-src-conn 5"));
+        assert!(pf.contains("max-src-conn-rate 5/30"));
+        assert!(pf.contains("overload <bruteforce>"));
+        assert!(pf.contains("flush global"));
+    }
+
+    #[test]
+    fn test_rate_limit_table() {
+        let rl = RateLimitRule::new(
+            "test".to_string(),
+            Protocol::Tcp,
+            10,
+            60,
+            "flood".to_string(),
+        );
+        assert_eq!(rl.to_pf_table(), "table <flood> persist");
+        assert!(rl.to_pf_block_rule().contains("block in quick from <flood>"));
+    }
+
+    #[test]
+    fn test_rate_limit_no_flush() {
+        let mut rl = RateLimitRule::new(
+            "test".to_string(),
+            Protocol::Tcp,
+            10,
+            60,
+            "overload".to_string(),
+        );
+        rl.flush_states = false;
+        let pf = rl.to_pf_rule();
+        assert!(!pf.contains("flush"));
+    }
+
+    #[test]
+    fn test_syn_flood_config() {
+        let cfg = SynFloodConfig {
+            interface: Interface("em0".to_string()),
+            max_src_conn: 100,
+            max_src_conn_rate: 15,
+            rate_window_secs: 5,
+            overload_table: "synflood".to_string(),
+        };
+        let rules = cfg.to_pf_rules();
+        assert_eq!(rules.len(), 3);
+        assert!(rules[0].contains("table <synflood>"));
+        assert!(rules[1].contains("block in quick from <synflood>"));
+        assert!(rules[2].contains("max-src-conn 100"));
+        assert!(rules[2].contains("max-src-conn-rate 15/5"));
     }
 }

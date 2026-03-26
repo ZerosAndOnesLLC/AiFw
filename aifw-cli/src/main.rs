@@ -32,10 +32,106 @@ enum Commands {
         #[command(subcommand)]
         action: NatAction,
     },
+    /// Manage traffic queues
+    Queue {
+        #[command(subcommand)]
+        action: QueueAction,
+    },
+    /// Manage rate limiting rules
+    Ratelimit {
+        #[command(subcommand)]
+        action: RateLimitAction,
+    },
     /// Show firewall status
     Status,
     /// Reload rules from database and apply to pf
     Reload,
+}
+
+#[derive(Subcommand)]
+enum QueueAction {
+    /// Add a traffic queue
+    Add {
+        /// Queue name
+        #[arg(long)]
+        name: String,
+
+        /// Network interface
+        #[arg(long)]
+        interface: String,
+
+        /// Queue type: codel, hfsc, priq
+        #[arg(long, name = "type", default_value = "codel")]
+        queue_type: String,
+
+        /// Bandwidth (e.g., 100Mb, 1Gb, 500Kb)
+        #[arg(long)]
+        bandwidth: String,
+
+        /// Traffic class: voip, interactive, default, bulk
+        #[arg(long, default_value = "default")]
+        class: String,
+
+        /// Bandwidth percentage of parent (1-100)
+        #[arg(long)]
+        pct: Option<u8>,
+
+        /// Mark as default queue
+        #[arg(long)]
+        default: bool,
+    },
+    /// Remove a queue by ID
+    Remove { id: String },
+    /// List all queues
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RateLimitAction {
+    /// Add a rate limit rule
+    Add {
+        /// Rule name
+        #[arg(long)]
+        name: String,
+
+        /// Protocol: tcp, udp, any
+        #[arg(long, default_value = "tcp")]
+        proto: String,
+
+        /// Max connections per source IP
+        #[arg(long)]
+        max_conn: u32,
+
+        /// Time window in seconds
+        #[arg(long, default_value = "60")]
+        window: u32,
+
+        /// Overload table name
+        #[arg(long)]
+        table: String,
+
+        /// Destination port
+        #[arg(long)]
+        dst_port: Option<String>,
+
+        /// Network interface
+        #[arg(long)]
+        interface: Option<String>,
+
+        /// Don't flush states on overload
+        #[arg(long)]
+        no_flush: bool,
+    },
+    /// Remove a rate limit rule by ID
+    Remove { id: String },
+    /// List all rate limit rules
+    List {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -232,6 +328,59 @@ async fn main() -> anyhow::Result<()> {
             }
             NatAction::List { json } => {
                 commands::nat_list(&cli.db, json).await?;
+            }
+        },
+        Commands::Queue { action } => match action {
+            QueueAction::Add {
+                name,
+                interface,
+                queue_type,
+                bandwidth,
+                class,
+                pct,
+                default,
+            } => {
+                commands::queue_add(
+                    &cli.db, &name, &interface, &queue_type, &bandwidth, &class, pct, default,
+                )
+                .await?;
+            }
+            QueueAction::Remove { id } => {
+                commands::queue_remove(&cli.db, &id).await?;
+            }
+            QueueAction::List { json } => {
+                commands::queue_list(&cli.db, json).await?;
+            }
+        },
+        Commands::Ratelimit { action } => match action {
+            RateLimitAction::Add {
+                name,
+                proto,
+                max_conn,
+                window,
+                table,
+                dst_port,
+                interface,
+                no_flush,
+            } => {
+                commands::ratelimit_add(
+                    &cli.db,
+                    &name,
+                    &proto,
+                    max_conn,
+                    window,
+                    &table,
+                    dst_port.as_deref(),
+                    interface.as_deref(),
+                    !no_flush,
+                )
+                .await?;
+            }
+            RateLimitAction::Remove { id } => {
+                commands::ratelimit_remove(&cli.db, &id).await?;
+            }
+            RateLimitAction::List { json } => {
+                commands::ratelimit_list(&cli.db, json).await?;
             }
         },
         Commands::Status => {
