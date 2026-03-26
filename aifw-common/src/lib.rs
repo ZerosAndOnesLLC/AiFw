@@ -1,4 +1,5 @@
 pub mod error;
+pub mod geoip;
 pub mod nat;
 pub mod ratelimit;
 pub mod rule;
@@ -8,6 +9,10 @@ pub mod types;
 pub mod vpn;
 
 pub use error::{AifwError, Result};
+pub use geoip::{
+    CountryCode, GeoIpAction, GeoIpDbConfig, GeoIpEntry, GeoIpLookupResult, GeoIpRule,
+    GeoIpRuleStatus,
+};
 pub use nat::{NatRedirect, NatRule, NatStatus, NatType};
 pub use ratelimit::{
     Bandwidth, BandwidthUnit, QueueConfig, QueueStatus, QueueType, RateLimitRule,

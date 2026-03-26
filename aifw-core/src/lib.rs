@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod db;
+pub mod geoip;
 pub mod engine;
 pub mod nat;
 pub mod shaping;
@@ -12,5 +13,6 @@ pub use audit::{AuditAction, AuditLog};
 pub use db::Database;
 pub use engine::RuleEngine;
 pub use nat::NatEngine;
+pub use geoip::GeoIpEngine;
 pub use shaping::ShapingEngine;
 pub use vpn::VpnEngine;

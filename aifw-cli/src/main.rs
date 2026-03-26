@@ -42,6 +42,11 @@ enum Commands {
         #[command(subcommand)]
         action: RateLimitAction,
     },
+    /// Manage Geo-IP filtering
+    Geoip {
+        #[command(subcommand)]
+        action: GeoIpCmd,
+    },
     /// Manage VPN tunnels
     Vpn {
         #[command(subcommand)]
@@ -51,6 +56,34 @@ enum Commands {
     Status,
     /// Reload rules from database and apply to pf
     Reload,
+}
+
+#[derive(Subcommand)]
+enum GeoIpCmd {
+    /// Add a country block/allow rule
+    Add {
+        /// Country code (ISO 3166-1 alpha-2, e.g., CN, RU, US)
+        #[arg(long)]
+        country: String,
+        /// Action: block or allow
+        #[arg(long)]
+        action: String,
+        /// Rule label
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Remove a geo-ip rule by ID
+    Remove { id: String },
+    /// List all geo-ip rules
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Lookup an IP address
+    Lookup {
+        /// IP address to look up
+        ip: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -454,6 +487,20 @@ async fn main() -> anyhow::Result<()> {
             }
             RateLimitAction::List { json } => {
                 commands::ratelimit_list(&cli.db, json).await?;
+            }
+        },
+        Commands::Geoip { action } => match action {
+            GeoIpCmd::Add { country, action, label } => {
+                commands::geoip_add(&cli.db, &country, &action, label.as_deref()).await?;
+            }
+            GeoIpCmd::Remove { id } => {
+                commands::geoip_remove(&cli.db, &id).await?;
+            }
+            GeoIpCmd::List { json } => {
+                commands::geoip_list(&cli.db, json).await?;
+            }
+            GeoIpCmd::Lookup { ip } => {
+                commands::geoip_lookup(&cli.db, &ip).await?;
             }
         },
         Commands::Vpn { action } => match action {

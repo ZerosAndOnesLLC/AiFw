@@ -186,12 +186,12 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
 - [x] VPN status monitoring
 
 ### Phase 8 — Geo-IP Filtering
-- [ ] MaxMind GeoLite2 database integration
-- [ ] Country-based allow/block rules
-- [ ] Automatic database updates
-- [ ] pf table population by country
-- [ ] Geo-IP lookup API endpoint
-- [ ] CIDR aggregation for efficient table loading
+- [x] MaxMind GeoLite2 database integration
+- [x] Country-based allow/block rules
+- [x] Automatic database updates
+- [x] pf table population by country
+- [x] Geo-IP lookup API endpoint
+- [x] CIDR aggregation for efficient table loading
 
 ### Phase 9 — Plugin System
 - [ ] aifw-plugins: plugin framework

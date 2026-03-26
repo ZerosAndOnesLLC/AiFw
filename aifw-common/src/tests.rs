@@ -4,6 +4,7 @@ mod tests {
     use crate::ratelimit::*;
     use crate::rule::*;
     use crate::types::*;
+    use crate::geoip::*;
     use crate::vpn::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -591,5 +592,100 @@ mod tests {
         assert!(!pub1.is_empty());
         assert_ne!(priv1, priv2);
         assert_ne!(pub1, pub2);
+    }
+
+    // --- Geo-IP tests ---
+
+    #[test]
+    fn test_country_code_valid() {
+        assert!(CountryCode::new("US").is_ok());
+        assert!(CountryCode::new("cn").is_ok()); // auto-uppercase
+        assert_eq!(CountryCode::new("ru").unwrap().0, "RU");
+    }
+
+    #[test]
+    fn test_country_code_invalid() {
+        assert!(CountryCode::new("").is_err());
+        assert!(CountryCode::new("A").is_err());
+        assert!(CountryCode::new("ABC").is_err());
+        assert!(CountryCode::new("12").is_err());
+    }
+
+    #[test]
+    fn test_geoip_action_parse() {
+        assert_eq!(GeoIpAction::parse("block").unwrap(), GeoIpAction::Block);
+        assert_eq!(GeoIpAction::parse("allow").unwrap(), GeoIpAction::Allow);
+        assert_eq!(GeoIpAction::parse("deny").unwrap(), GeoIpAction::Block);
+        assert_eq!(GeoIpAction::parse("pass").unwrap(), GeoIpAction::Allow);
+        assert!(GeoIpAction::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn test_geoip_rule_pf() {
+        let rule = GeoIpRule::new(CountryCode::new("CN").unwrap(), GeoIpAction::Block);
+        assert_eq!(rule.table_name(), "geoip_cn");
+        assert_eq!(rule.to_pf_table(), "table <geoip_cn> persist");
+        let pf = rule.to_pf_rule();
+        assert!(pf.contains("block drop in quick from <geoip_cn>"));
+    }
+
+    #[test]
+    fn test_geoip_rule_allow() {
+        let mut rule = GeoIpRule::new(CountryCode::new("US").unwrap(), GeoIpAction::Allow);
+        rule.label = Some("us-traffic".to_string());
+        let pf = rule.to_pf_rule();
+        assert!(pf.contains("pass in quick from <geoip_us>"));
+        assert!(pf.contains("us-traffic"));
+    }
+
+    #[test]
+    fn test_cidr_aggregation_removes_subnets() {
+        let entries = vec![
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
+            (IpAddr::V4(Ipv4Addr::new(10, 1, 0, 0)), 16), // subnet of /8
+            (IpAddr::V4(Ipv4Addr::new(10, 2, 0, 0)), 16), // subnet of /8
+        ];
+        let result = aggregate_cidrs(entries);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].1, 8);
+    }
+
+    #[test]
+    fn test_cidr_aggregation_merges_adjacent() {
+        let entries = vec![
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)), 24),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24),
+        ];
+        let result = aggregate_cidrs(entries);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].1, 23); // merged into /23
+    }
+
+    #[test]
+    fn test_cidr_aggregation_no_merge() {
+        let entries = vec![
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 24),
+            (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)), 24),
+        ];
+        let result = aggregate_cidrs(entries);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_geolite2_csv_parse() {
+        let blocks = "network,geoname_id,registered_country_geoname_id\n\
+                       1.0.0.0/24,2077456,2077456\n\
+                       1.0.1.0/24,1814991,1814991\n";
+        let locations = "geoname_id,locale_code,continent_code,continent_name,country_iso_code\n\
+                         2077456,en,OC,Oceania,AU\n\
+                         1814991,en,AS,Asia,CN\n";
+
+        let blocks_parsed = parse_geolite2_blocks_csv(blocks);
+        assert_eq!(blocks_parsed.len(), 2);
+        assert_eq!(blocks_parsed[0].2, 2077456); // AU geoname
+
+        let locs = parse_geolite2_locations_csv(locations);
+        assert_eq!(locs.get(&2077456).unwrap(), "AU");
+        assert_eq!(locs.get(&1814991).unwrap(), "CN");
     }
 }
