@@ -1,0 +1,164 @@
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      localStorage.removeItem("aifw_token");
+      window.location.href = "/login";
+    }
+    throw new Error(`API ${res.status}: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export const api = {
+  // Auth
+  login: (username: string, password: string) =>
+    fetchApi<{ token: string }>("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+
+  // Status
+  status: () => fetchApi<StatusResponse>("/api/v1/status"),
+  metrics: () => fetchApi<MetricsResponse>("/api/v1/metrics"),
+
+  // Rules
+  listRules: () => fetchApi<{ data: Rule[] }>("/api/v1/rules"),
+  createRule: (rule: CreateRuleRequest) =>
+    fetchApi<{ data: Rule }>("/api/v1/rules", { method: "POST", body: JSON.stringify(rule) }),
+  deleteRule: (id: string) =>
+    fetchApi<{ message: string }>(`/api/v1/rules/${id}`, { method: "DELETE" }),
+
+  // NAT
+  listNat: () => fetchApi<{ data: NatRule[] }>("/api/v1/nat"),
+  createNat: (rule: CreateNatRequest) =>
+    fetchApi<{ data: NatRule }>("/api/v1/nat", { method: "POST", body: JSON.stringify(rule) }),
+  deleteNat: (id: string) =>
+    fetchApi<{ message: string }>(`/api/v1/nat/${id}`, { method: "DELETE" }),
+
+  // Connections
+  listConnections: () => fetchApi<{ data: Connection[] }>("/api/v1/connections"),
+
+  // Logs
+  listLogs: () => fetchApi<{ data: AuditEntry[] }>("/api/v1/logs"),
+
+  // Reload
+  reload: () => fetchApi<{ message: string }>("/api/v1/reload", { method: "POST" }),
+};
+
+// Types
+export interface StatusResponse {
+  pf_running: boolean;
+  pf_states: number;
+  pf_rules: number;
+  aifw_rules: number;
+  aifw_active_rules: number;
+  nat_rules: number;
+  packets_in: number;
+  packets_out: number;
+  bytes_in: number;
+  bytes_out: number;
+}
+
+export interface MetricsResponse {
+  pf_running: boolean;
+  pf_states_count: number;
+  pf_rules_count: number;
+  pf_packets_in: number;
+  pf_packets_out: number;
+  pf_bytes_in: number;
+  pf_bytes_out: number;
+  aifw_rules_total: number;
+  aifw_rules_active: number;
+  aifw_nat_rules_total: number;
+}
+
+export interface Rule {
+  id: string;
+  priority: number;
+  action: string;
+  direction: string;
+  protocol: string;
+  interface?: string;
+  rule_match: {
+    src_addr: string;
+    src_port?: { start: number; end: number };
+    dst_addr: string;
+    dst_port?: { start: number; end: number };
+  };
+  log: boolean;
+  quick: boolean;
+  label?: string;
+  state_options: { tracking: string };
+  status: string;
+  created_at: string;
+}
+
+export interface CreateRuleRequest {
+  action: string;
+  direction: string;
+  protocol: string;
+  src_addr?: string;
+  dst_addr?: string;
+  dst_port_start?: number;
+  dst_port_end?: number;
+  priority?: number;
+  label?: string;
+}
+
+export interface NatRule {
+  id: string;
+  nat_type: string;
+  interface: string;
+  protocol: string;
+  src_addr: string;
+  dst_addr: string;
+  redirect: { address: string; port?: { start: number; end: number } };
+  label?: string;
+  status: string;
+  created_at: string;
+}
+
+export interface CreateNatRequest {
+  nat_type: string;
+  interface: string;
+  protocol: string;
+  redirect_addr: string;
+  src_addr?: string;
+  dst_addr?: string;
+  dst_port_start?: number;
+  redirect_port_start?: number;
+  label?: string;
+}
+
+export interface Connection {
+  id: number;
+  protocol: string;
+  src_addr: string;
+  src_port: number;
+  dst_addr: string;
+  dst_port: number;
+  state: string;
+  packets_in: number;
+  packets_out: number;
+  bytes_in: number;
+  bytes_out: number;
+  age_secs: number;
+}
+
+export interface AuditEntry {
+  id: string;
+  timestamp: string;
+  action: string;
+  rule_id?: string;
+  details: string;
+  source: string;
+}

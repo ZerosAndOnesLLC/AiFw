@@ -255,18 +255,18 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
 - [x] Health checks and monitoring
 
 ### Phase 13 — Web UI
-- [ ] aifw-ui: NextJS web interface
-  - [ ] Dashboard with real-time traffic visualization
-  - [ ] Rule management (drag-and-drop ordering)
-  - [ ] Connection table (live updating)
-  - [ ] NAT configuration
-  - [ ] VPN management
-  - [ ] Geo-IP map visualization
-  - [ ] AI threat alerts and history
-  - [ ] Log viewer with search/filter
-  - [ ] User/API key management
-  - [ ] Cluster status (HA)
-  - [ ] System settings
+- [x] aifw-ui: NextJS web interface
+  - [x] Dashboard with real-time traffic visualization
+  - [x] Rule management (drag-and-drop ordering)
+  - [x] Connection table (live updating)
+  - [x] NAT configuration
+  - [x] VPN management
+  - [x] Geo-IP map visualization
+  - [x] AI threat alerts and history
+  - [x] Log viewer with search/filter
+  - [x] User/API key management
+  - [x] Cluster status (HA)
+  - [x] System settings
 
 ---
 
