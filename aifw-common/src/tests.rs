@@ -4,6 +4,7 @@ mod tests {
     use crate::ratelimit::*;
     use crate::rule::*;
     use crate::types::*;
+    use crate::vpn::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -489,5 +490,106 @@ mod tests {
         assert!(rules[1].contains("block in quick from <synflood>"));
         assert!(rules[2].contains("max-src-conn 100"));
         assert!(rules[2].contains("max-src-conn-rate 15/5"));
+    }
+
+    // --- VPN tests ---
+
+    #[test]
+    fn test_wg_tunnel_creation() {
+        let tunnel = WgTunnel::new(
+            "wg0-tunnel".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 24),
+        );
+        assert_eq!(tunnel.name, "wg0-tunnel");
+        assert_eq!(tunnel.listen_port, 51820);
+        assert!(!tunnel.private_key.is_empty());
+        assert!(!tunnel.public_key.is_empty());
+        assert_ne!(tunnel.private_key, tunnel.public_key);
+        assert_eq!(tunnel.status, VpnStatus::Down);
+    }
+
+    #[test]
+    fn test_wg_tunnel_pf_rules() {
+        let tunnel = WgTunnel::new(
+            "wg0".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 24),
+        );
+        let rules = tunnel.to_pf_rules();
+        assert_eq!(rules.len(), 2);
+        assert!(rules[0].contains("proto udp"));
+        assert!(rules[0].contains("port 51820"));
+        assert!(rules[1].contains("on wg0"));
+    }
+
+    #[test]
+    fn test_wg_peer_cmd() {
+        let mut peer = WgPeer::new(
+            uuid::Uuid::new_v4(),
+            "office".to_string(),
+            "aBcDeFgHiJkLmNoPqRsTuVwXyZ123456789+/=AAA=".to_string(),
+        );
+        peer.endpoint = Some("1.2.3.4:51820".to_string());
+        peer.allowed_ips = vec![
+            Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 24),
+        ];
+        peer.persistent_keepalive = Some(25);
+
+        let cmd = peer.to_wg_cmd(&Interface("wg0".to_string()));
+        assert!(cmd.contains("wg set wg0 peer"));
+        assert!(cmd.contains("endpoint 1.2.3.4:51820"));
+        assert!(cmd.contains("allowed-ips 10.0.0.0/24"));
+        assert!(cmd.contains("persistent-keepalive 25"));
+    }
+
+    #[test]
+    fn test_ipsec_sa_pf_rules() {
+        let sa = IpsecSa::new(
+            "office-vpn".to_string(),
+            Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
+            Address::Single(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))),
+            IpsecProtocol::Esp,
+            IpsecMode::Tunnel,
+        );
+        let rules = sa.to_pf_rules();
+        assert_eq!(rules.len(), 5); // 2 esp + 2 ike + 1 enc0
+        assert!(rules[0].contains("proto esp"));
+        assert!(rules[2].contains("port { 500 4500 }"));
+        assert!(rules[4].contains("on enc0"));
+    }
+
+    #[test]
+    fn test_ipsec_transport_mode() {
+        let sa = IpsecSa::new(
+            "host-to-host".to_string(),
+            Address::Single(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))),
+            Address::Single(IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8))),
+            IpsecProtocol::Esp,
+            IpsecMode::Transport,
+        );
+        let rules = sa.to_pf_rules();
+        assert_eq!(rules.len(), 4); // no enc0 rule in transport mode
+    }
+
+    #[test]
+    fn test_ipsec_protocol_parse() {
+        assert_eq!(IpsecProtocol::parse("esp").unwrap(), IpsecProtocol::Esp);
+        assert_eq!(IpsecProtocol::parse("ah").unwrap(), IpsecProtocol::Ah);
+        assert_eq!(IpsecProtocol::parse("esp+ah").unwrap(), IpsecProtocol::EspAh);
+        assert!(IpsecProtocol::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn test_wg_key_generation() {
+        let (priv1, pub1) = generate_wg_keypair();
+        let (priv2, pub2) = generate_wg_keypair();
+        // Keys should be non-empty and different each time
+        assert!(!priv1.is_empty());
+        assert!(!pub1.is_empty());
+        assert_ne!(priv1, priv2);
+        assert_ne!(pub1, pub2);
     }
 }

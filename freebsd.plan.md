@@ -175,15 +175,15 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
   - [x] Interface statistics
 
 ### Phase 7 — VPN Integration
-- [ ] WireGuard integration (FreeBSD native wg)
-  - [ ] Tunnel creation/management
-  - [ ] Peer management
-  - [ ] Key generation
-  - [ ] pf rules for VPN traffic
-- [ ] IPsec integration (FreeBSD native)
-  - [ ] SA/SP management
-  - [ ] IKEv2 support
-- [ ] VPN status monitoring
+- [x] WireGuard integration (FreeBSD native wg)
+  - [x] Tunnel creation/management
+  - [x] Peer management
+  - [x] Key generation
+  - [x] pf rules for VPN traffic
+- [x] IPsec integration (FreeBSD native)
+  - [x] SA/SP management
+  - [x] IKEv2 support
+- [x] VPN status monitoring
 
 ### Phase 8 — Geo-IP Filtering
 - [ ] MaxMind GeoLite2 database integration

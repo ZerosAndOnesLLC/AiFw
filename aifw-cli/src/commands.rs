@@ -1,8 +1,9 @@
 use aifw_common::{
-    Action, Address, Bandwidth, Direction, Interface, NatRedirect, NatRule, NatType, PortRange,
-    Protocol, QueueConfig, QueueType, RateLimitRule, Rule, RuleMatch, TrafficClass,
+    Action, Address, Bandwidth, Direction, Interface, IpsecMode, IpsecProtocol, IpsecSa,
+    NatRedirect, NatRule, NatType, PortRange, Protocol, QueueConfig, QueueType, RateLimitRule,
+    Rule, RuleMatch, TrafficClass, WgPeer, WgTunnel,
 };
-use aifw_core::{Database, NatEngine, RuleEngine, ShapingEngine};
+use aifw_core::{Database, NatEngine, RuleEngine, ShapingEngine, VpnEngine};
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -483,5 +484,184 @@ pub async fn ratelimit_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     }
 
     println!("\n{} rate limit(s) total", rules.len());
+    Ok(())
+}
+
+// --- VPN commands ---
+
+async fn create_vpn_engine(db_path: &Path) -> anyhow::Result<VpnEngine> {
+    let db = Database::new(db_path).await?;
+    let pf = Arc::from(aifw_pf::create_backend());
+    let engine = VpnEngine::new(db.pool().clone(), pf);
+    engine.migrate().await?;
+    Ok(engine)
+}
+
+pub async fn vpn_wg_add(
+    db_path: &Path,
+    name: &str,
+    interface: &str,
+    port: u16,
+    address: &str,
+) -> anyhow::Result<()> {
+    let engine = create_vpn_engine(db_path).await?;
+    let tunnel = WgTunnel::new(
+        name.to_string(),
+        Interface(interface.to_string()),
+        port,
+        Address::parse(address)?,
+    );
+    let tunnel = engine.add_wg_tunnel(tunnel).await?;
+    println!("Added WireGuard tunnel {}", tunnel.id);
+    println!("  Interface:  {}", tunnel.interface);
+    println!("  Port:       {}", tunnel.listen_port);
+    println!("  Address:    {}", tunnel.address);
+    println!("  Public Key: {}", tunnel.public_key);
+    Ok(())
+}
+
+pub async fn vpn_wg_peer_add(
+    db_path: &Path,
+    tunnel_id: &str,
+    name: &str,
+    pubkey: &str,
+    endpoint: Option<&str>,
+    allowed_ips: &str,
+    keepalive: Option<u16>,
+) -> anyhow::Result<()> {
+    let engine = create_vpn_engine(db_path).await?;
+    let tid = Uuid::parse_str(tunnel_id)?;
+
+    let mut peer = WgPeer::new(tid, name.to_string(), pubkey.to_string());
+    peer.endpoint = endpoint.map(String::from);
+    peer.allowed_ips = allowed_ips
+        .split(',')
+        .map(|s| Address::parse(s.trim()))
+        .collect::<aifw_common::Result<Vec<_>>>()?;
+    peer.persistent_keepalive = keepalive;
+
+    let peer = engine.add_wg_peer(peer).await?;
+    println!("Added WireGuard peer {}", peer.id);
+    println!("  Name:     {}", peer.name);
+    println!("  Endpoint: {}", peer.endpoint.as_deref().unwrap_or("(none)"));
+    Ok(())
+}
+
+pub async fn vpn_ipsec_add(
+    db_path: &Path,
+    name: &str,
+    src: &str,
+    dst: &str,
+    proto: &str,
+    mode: &str,
+) -> anyhow::Result<()> {
+    let engine = create_vpn_engine(db_path).await?;
+
+    let ipsec_mode = match mode {
+        "transport" => IpsecMode::Transport,
+        _ => IpsecMode::Tunnel,
+    };
+
+    let sa = IpsecSa::new(
+        name.to_string(),
+        Address::parse(src)?,
+        Address::parse(dst)?,
+        IpsecProtocol::parse(proto)?,
+        ipsec_mode,
+    );
+    let sa = engine.add_ipsec_sa(sa).await?;
+    println!("Added IPsec SA {}", sa.id);
+    println!("  Name:     {}", sa.name);
+    println!("  SPI:      0x{:08x}", sa.spi);
+    println!("  Protocol: {}", sa.protocol);
+    println!("  Mode:     {}", sa.mode);
+    Ok(())
+}
+
+pub async fn vpn_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
+    let engine = create_vpn_engine(db_path).await?;
+    let uuid = Uuid::parse_str(id)?;
+
+    // Try WG tunnel first, then IPsec SA
+    if engine.delete_wg_tunnel(uuid).await.is_ok() {
+        println!("Removed WireGuard tunnel {id}");
+    } else if engine.delete_ipsec_sa(uuid).await.is_ok() {
+        println!("Removed IPsec SA {id}");
+    } else if engine.delete_wg_peer(uuid).await.is_ok() {
+        println!("Removed WireGuard peer {id}");
+    } else {
+        anyhow::bail!("VPN resource {id} not found");
+    }
+    Ok(())
+}
+
+pub async fn vpn_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    let engine = create_vpn_engine(db_path).await?;
+
+    let tunnels = engine.list_wg_tunnels().await?;
+    let sas = engine.list_ipsec_sas().await?;
+
+    if json {
+        let data = serde_json::json!({
+            "wireguard": tunnels,
+            "ipsec": sas,
+        });
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+
+    // WireGuard
+    if tunnels.is_empty() {
+        println!("No WireGuard tunnels configured");
+    } else {
+        println!("WireGuard Tunnels:");
+        println!(
+            "{:<38} {:<12} {:<8} {:<6} {:<20} {:<8}",
+            "ID", "NAME", "IFACE", "PORT", "ADDRESS", "STATUS"
+        );
+        println!("{}", "-".repeat(95));
+        for t in &tunnels {
+            println!(
+                "{:<38} {:<12} {:<8} {:<6} {:<20} {:<8}",
+                t.id, t.name, t.interface, t.listen_port, t.address, t.status,
+            );
+
+            // List peers
+            if let Ok(peers) = engine.list_wg_peers(t.id).await {
+                for p in &peers {
+                    println!(
+                        "  Peer: {} | {} | endpoint: {} | allowed: {}",
+                        p.name,
+                        &p.public_key[..12],
+                        p.endpoint.as_deref().unwrap_or("(none)"),
+                        p.allowed_ips.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(","),
+                    );
+                }
+            }
+        }
+        println!("\n{} tunnel(s)", tunnels.len());
+    }
+
+    println!();
+
+    // IPsec
+    if sas.is_empty() {
+        println!("No IPsec SAs configured");
+    } else {
+        println!("IPsec Security Associations:");
+        println!(
+            "{:<38} {:<12} {:<20} {:<20} {:<8} {:<10} {:<8}",
+            "ID", "NAME", "SOURCE", "DESTINATION", "PROTO", "MODE", "STATUS"
+        );
+        println!("{}", "-".repeat(115));
+        for sa in &sas {
+            println!(
+                "{:<38} {:<12} {:<20} {:<20} {:<8} {:<10} {:<8}",
+                sa.id, sa.name, sa.src_addr, sa.dst_addr, sa.protocol, sa.mode, sa.status,
+            );
+        }
+        println!("\n{} SA(s)", sas.len());
+    }
+
     Ok(())
 }

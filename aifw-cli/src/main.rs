@@ -42,10 +42,83 @@ enum Commands {
         #[command(subcommand)]
         action: RateLimitAction,
     },
+    /// Manage VPN tunnels
+    Vpn {
+        #[command(subcommand)]
+        action: VpnAction,
+    },
     /// Show firewall status
     Status,
     /// Reload rules from database and apply to pf
     Reload,
+}
+
+#[derive(Subcommand)]
+enum VpnAction {
+    /// Add a WireGuard tunnel
+    WgAdd {
+        /// Tunnel name
+        #[arg(long)]
+        name: String,
+        /// WireGuard interface (e.g., wg0)
+        #[arg(long, default_value = "wg0")]
+        interface: String,
+        /// Listen port
+        #[arg(long, default_value = "51820")]
+        port: u16,
+        /// Tunnel address (e.g., 10.0.0.1/24)
+        #[arg(long)]
+        address: String,
+    },
+    /// Add a peer to a WireGuard tunnel
+    WgPeerAdd {
+        /// Tunnel ID
+        #[arg(long)]
+        tunnel: String,
+        /// Peer name
+        #[arg(long)]
+        name: String,
+        /// Peer public key
+        #[arg(long)]
+        pubkey: String,
+        /// Peer endpoint (host:port)
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Allowed IPs (comma-separated)
+        #[arg(long, default_value = "0.0.0.0/0")]
+        allowed_ips: String,
+        /// Persistent keepalive interval
+        #[arg(long)]
+        keepalive: Option<u16>,
+    },
+    /// Add an IPsec SA
+    IpsecAdd {
+        /// SA name
+        #[arg(long)]
+        name: String,
+        /// Source address
+        #[arg(long)]
+        src: String,
+        /// Destination address
+        #[arg(long)]
+        dst: String,
+        /// Protocol: esp, ah, esp+ah
+        #[arg(long, default_value = "esp")]
+        proto: String,
+        /// Mode: tunnel, transport
+        #[arg(long, default_value = "tunnel")]
+        mode: String,
+    },
+    /// Remove a VPN tunnel or SA by ID
+    Remove {
+        /// Resource ID
+        id: String,
+    },
+    /// List all VPN tunnels and SAs
+    List {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -381,6 +454,26 @@ async fn main() -> anyhow::Result<()> {
             }
             RateLimitAction::List { json } => {
                 commands::ratelimit_list(&cli.db, json).await?;
+            }
+        },
+        Commands::Vpn { action } => match action {
+            VpnAction::WgAdd { name, interface, port, address } => {
+                commands::vpn_wg_add(&cli.db, &name, &interface, port, &address).await?;
+            }
+            VpnAction::WgPeerAdd { tunnel, name, pubkey, endpoint, allowed_ips, keepalive } => {
+                commands::vpn_wg_peer_add(
+                    &cli.db, &tunnel, &name, &pubkey, endpoint.as_deref(),
+                    &allowed_ips, keepalive,
+                ).await?;
+            }
+            VpnAction::IpsecAdd { name, src, dst, proto, mode } => {
+                commands::vpn_ipsec_add(&cli.db, &name, &src, &dst, &proto, &mode).await?;
+            }
+            VpnAction::Remove { id } => {
+                commands::vpn_remove(&cli.db, &id).await?;
+            }
+            VpnAction::List { json } => {
+                commands::vpn_list(&cli.db, json).await?;
             }
         },
         Commands::Status => {

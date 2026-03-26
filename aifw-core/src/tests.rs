@@ -599,4 +599,173 @@ mod tests {
         assert!(pf_rules[1].contains("block in quick from <bruteforce>"));
         assert!(pf_rules[2].contains("overload <bruteforce>"));
     }
+
+    // --- VPN engine tests ---
+
+    async fn create_vpn_engine() -> crate::vpn::VpnEngine {
+        let db = Database::new_in_memory().await.unwrap();
+        let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
+        let engine = crate::vpn::VpnEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+        engine
+    }
+
+    #[tokio::test]
+    async fn test_wg_tunnel_crud() {
+        let engine = create_vpn_engine().await;
+
+        let tunnel = WgTunnel::new(
+            "wg0".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)), 24),
+        );
+        let id = tunnel.id;
+        engine.add_wg_tunnel(tunnel).await.unwrap();
+
+        let tunnels = engine.list_wg_tunnels().await.unwrap();
+        assert_eq!(tunnels.len(), 1);
+        assert_eq!(tunnels[0].name, "wg0");
+        assert_eq!(tunnels[0].listen_port, 51820);
+
+        engine.delete_wg_tunnel(id).await.unwrap();
+        assert!(engine.list_wg_tunnels().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_wg_tunnel_db_roundtrip() {
+        let engine = create_vpn_engine().await;
+
+        let mut tunnel = WgTunnel::new(
+            "office".to_string(),
+            Interface("wg1".to_string()),
+            51821,
+            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 16, 0, 1)), 24),
+        );
+        tunnel.dns = Some("1.1.1.1".to_string());
+        tunnel.mtu = Some(1420);
+        let id = tunnel.id;
+        engine.add_wg_tunnel(tunnel).await.unwrap();
+
+        let fetched = engine.get_wg_tunnel(id).await.unwrap();
+        assert_eq!(fetched.name, "office");
+        assert_eq!(fetched.interface.0, "wg1");
+        assert_eq!(fetched.dns, Some("1.1.1.1".to_string()));
+        assert_eq!(fetched.mtu, Some(1420));
+        assert!(!fetched.private_key.is_empty());
+        assert!(!fetched.public_key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_wg_peer_crud() {
+        let engine = create_vpn_engine().await;
+
+        let tunnel = WgTunnel::new(
+            "wg0".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)), 24),
+        );
+        let tid = tunnel.id;
+        engine.add_wg_tunnel(tunnel).await.unwrap();
+
+        let mut peer = WgPeer::new(tid, "laptop".to_string(), "fakepubkey123".to_string());
+        peer.endpoint = Some("1.2.3.4:51820".to_string());
+        peer.allowed_ips = vec![
+            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)), 32),
+        ];
+        peer.persistent_keepalive = Some(25);
+        let pid = peer.id;
+        engine.add_wg_peer(peer).await.unwrap();
+
+        let peers = engine.list_wg_peers(tid).await.unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].name, "laptop");
+        assert_eq!(peers[0].endpoint, Some("1.2.3.4:51820".to_string()));
+        assert_eq!(peers[0].persistent_keepalive, Some(25));
+
+        engine.delete_wg_peer(pid).await.unwrap();
+        assert!(engine.list_wg_peers(tid).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_wg_tunnel_validation() {
+        let engine = create_vpn_engine().await;
+
+        // Empty name
+        let t = WgTunnel::new(
+            String::new(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Any,
+        );
+        assert!(engine.add_wg_tunnel(t).await.is_err());
+
+        // Zero port
+        let mut t = WgTunnel::new(
+            "test".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Any,
+        );
+        t.listen_port = 0;
+        assert!(engine.add_wg_tunnel(t).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ipsec_sa_crud() {
+        let engine = create_vpn_engine().await;
+
+        let sa = IpsecSa::new(
+            "office".to_string(),
+            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 1))),
+            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1))),
+            IpsecProtocol::Esp,
+            IpsecMode::Tunnel,
+        );
+        let id = sa.id;
+        engine.add_ipsec_sa(sa).await.unwrap();
+
+        let sas = engine.list_ipsec_sas().await.unwrap();
+        assert_eq!(sas.len(), 1);
+        assert_eq!(sas[0].name, "office");
+        assert_eq!(sas[0].protocol, IpsecProtocol::Esp);
+        assert_eq!(sas[0].mode, IpsecMode::Tunnel);
+
+        engine.delete_ipsec_sa(id).await.unwrap();
+        assert!(engine.list_ipsec_sas().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_vpn_apply_pf_rules() {
+        let db = Database::new_in_memory().await.unwrap();
+        let mock = Arc::new(aifw_pf::PfMock::new());
+        let pf: Arc<dyn PfBackend> = mock.clone();
+        let engine = crate::vpn::VpnEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+
+        engine.add_wg_tunnel(WgTunnel::new(
+            "wg0".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)), 24),
+        )).await.unwrap();
+
+        engine.add_ipsec_sa(IpsecSa::new(
+            "ipsec0".to_string(),
+            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4))),
+            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(5, 6, 7, 8))),
+            IpsecProtocol::Esp,
+            IpsecMode::Tunnel,
+        )).await.unwrap();
+
+        engine.apply_vpn_rules().await.unwrap();
+
+        let pf_rules = mock.get_rules("aifw-vpn").await.unwrap();
+        // 2 WG rules + 5 IPsec rules (tunnel mode)
+        assert_eq!(pf_rules.len(), 7);
+        assert!(pf_rules.iter().any(|r| r.contains("port 51820")));
+        assert!(pf_rules.iter().any(|r| r.contains("proto esp")));
+        assert!(pf_rules.iter().any(|r| r.contains("on enc0")));
+    }
 }

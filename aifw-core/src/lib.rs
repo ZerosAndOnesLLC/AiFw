@@ -6,9 +6,11 @@ pub mod shaping;
 #[cfg(test)]
 mod tests;
 pub mod validation;
+pub mod vpn;
 
 pub use audit::{AuditAction, AuditLog};
 pub use db::Database;
 pub use engine::RuleEngine;
 pub use nat::NatEngine;
 pub use shaping::ShapingEngine;
+pub use vpn::VpnEngine;
