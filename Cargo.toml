@@ -4,13 +4,14 @@ members = [
     "aifw-pf",
     "aifw-core",
     "aifw-conntrack",
+    "aifw-api",
     "aifw-daemon",
     "aifw-cli",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -20,6 +21,12 @@ aifw-common = { path = "aifw-common" }
 aifw-pf = { path = "aifw-pf" }
 aifw-core = { path = "aifw-core" }
 aifw-conntrack = { path = "aifw-conntrack" }
+aifw-api = { path = "aifw-api" }
+axum = "0.8"
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+jsonwebtoken = "9"
+argon2 = { version = "0.5", features = ["std"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

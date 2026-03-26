@@ -141,20 +141,20 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
 - [x] NAT rule management via CLI and API
 
 ### Phase 4 — REST API
-- [ ] aifw-api: Axum-based API server
-  - [ ] JWT authentication
-  - [ ] User management (argon2 password hashing)
-  - [ ] API key support
-- [ ] Endpoints
-  - [ ] `POST/GET/PUT/DELETE /api/v1/rules`
-  - [ ] `GET /api/v1/status`
-  - [ ] `GET /api/v1/connections`
-  - [ ] `POST /api/v1/reload`
-  - [ ] `GET/POST /api/v1/nat`
-  - [ ] `GET /api/v1/metrics`
-  - [ ] `GET /api/v1/logs`
-- [ ] Rate limiting
-- [ ] CORS configuration
+- [x] aifw-api: Axum-based API server
+  - [x] JWT authentication
+  - [x] User management (argon2 password hashing)
+  - [x] API key support
+- [x] Endpoints
+  - [x] `POST/GET/PUT/DELETE /api/v1/rules`
+  - [x] `GET /api/v1/status`
+  - [x] `GET /api/v1/connections`
+  - [x] `POST /api/v1/reload`
+  - [x] `GET/POST /api/v1/nat`
+  - [x] `GET /api/v1/metrics`
+  - [x] `GET /api/v1/logs`
+- [x] Rate limiting
+- [x] CORS configuration
 - [ ] OpenAPI docs
 
 ### Phase 5 — Rate Limiting & Traffic Shaping
