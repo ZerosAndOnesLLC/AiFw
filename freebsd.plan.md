@@ -232,15 +232,15 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
   - [x] Auto-expiry of temporary blocks
 
 ### Phase 11 — TLS Inspection
-- [ ] TLS handshake analysis (no MITM, metadata only)
-  - [ ] JA3/JA3S fingerprinting
-  - [ ] Certificate validation
-  - [ ] SNI-based filtering
-- [ ] Optional MITM proxy mode (explicit opt-in)
-  - [ ] CA certificate generation
-  - [ ] Dynamic certificate minting
-  - [ ] Transparent proxy via pf RDR
-- [ ] TLS version enforcement (block TLS < 1.2)
+- [x] TLS handshake analysis (no MITM, metadata only)
+  - [x] JA3/JA3S fingerprinting
+  - [x] Certificate validation
+  - [x] SNI-based filtering
+- [x] Optional MITM proxy mode (explicit opt-in)
+  - [x] CA certificate generation
+  - [x] Dynamic certificate minting
+  - [x] Transparent proxy via pf RDR
+- [x] TLS version enforcement (block TLS < 1.2)
 
 ### Phase 12 — High Availability & Clustering
 - [ ] CARP (Common Address Redundancy Protocol)

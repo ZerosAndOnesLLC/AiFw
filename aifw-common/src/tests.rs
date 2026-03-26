@@ -5,7 +5,9 @@ mod tests {
     use crate::rule::*;
     use crate::types::*;
     use crate::geoip::*;
+    use crate::tls::*;
     use crate::vpn::*;
+    use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -687,5 +689,155 @@ mod tests {
         let locs = parse_geolite2_locations_csv(locations);
         assert_eq!(locs.get(&2077456).unwrap(), "AU");
         assert_eq!(locs.get(&1814991).unwrap(), "CN");
+    }
+
+    // --- TLS tests ---
+
+    #[test]
+    fn test_tls_version_parse() {
+        assert_eq!(TlsVersion::parse("tls12").unwrap(), TlsVersion::Tls12);
+        assert_eq!(TlsVersion::parse("TLS13").unwrap(), TlsVersion::Tls13);
+        assert_eq!(TlsVersion::parse("ssl30").unwrap(), TlsVersion::Ssl30);
+        assert!(TlsVersion::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn test_tls_version_deprecated() {
+        assert!(TlsVersion::Ssl30.is_deprecated());
+        assert!(TlsVersion::Tls10.is_deprecated());
+        assert!(TlsVersion::Tls11.is_deprecated());
+        assert!(!TlsVersion::Tls12.is_deprecated());
+        assert!(!TlsVersion::Tls13.is_deprecated());
+    }
+
+    #[test]
+    fn test_tls_version_ordering() {
+        assert!(TlsVersion::Tls13 > TlsVersion::Tls12);
+        assert!(TlsVersion::Tls12 > TlsVersion::Tls11);
+        assert!(TlsVersion::Tls11 > TlsVersion::Tls10);
+    }
+
+    #[test]
+    fn test_tls_version_from_protocol() {
+        assert_eq!(TlsVersion::from_protocol_version(3, 3), Some(TlsVersion::Tls12));
+        assert_eq!(TlsVersion::from_protocol_version(3, 4), Some(TlsVersion::Tls13));
+        assert_eq!(TlsVersion::from_protocol_version(4, 0), None);
+    }
+
+    #[test]
+    fn test_ja3_fingerprint() {
+        let ja3 = Ja3Fingerprint::compute(
+            771, // TLS 1.2
+            &[49195, 49199, 49196, 49200, 52393, 52392],
+            &[0, 23, 65281, 10, 11, 35],
+            &[29, 23, 24],
+            &[0],
+        );
+        assert!(!ja3.hash.is_empty());
+        assert_eq!(ja3.hash.len(), 32); // MD5 hex = 32 chars
+        assert!(ja3.raw.contains("771,"));
+    }
+
+    #[test]
+    fn test_ja3s_fingerprint() {
+        let ja3s = Ja3sFingerprint::compute(771, 49199, &[65281, 0, 11]);
+        assert_eq!(ja3s.hash.len(), 32);
+        assert!(ja3s.raw.starts_with("771,49199,"));
+    }
+
+    #[test]
+    fn test_ja3_deterministic() {
+        let a = Ja3Fingerprint::compute(771, &[49195], &[0], &[29], &[0]);
+        let b = Ja3Fingerprint::compute(771, &[49195], &[0], &[29], &[0]);
+        assert_eq!(a.hash, b.hash);
+    }
+
+    #[test]
+    fn test_sni_rule_exact_match() {
+        let rule = SniRule::new("example.com".to_string(), SniAction::Block);
+        assert!(rule.matches("example.com"));
+        assert!(rule.matches("Example.COM"));
+        assert!(!rule.matches("sub.example.com"));
+        assert!(!rule.matches("notexample.com"));
+    }
+
+    #[test]
+    fn test_sni_rule_wildcard() {
+        let rule = SniRule::new("*.example.com".to_string(), SniAction::Block);
+        assert!(rule.matches("sub.example.com"));
+        assert!(rule.matches("a.b.example.com"));
+        assert!(rule.matches("example.com")); // bare domain matches too
+        assert!(!rule.matches("example.org"));
+    }
+
+    #[test]
+    fn test_tls_policy_version_check() {
+        let policy = TlsPolicy::default(); // min = TLS 1.2
+        assert!(!policy.is_version_allowed(TlsVersion::Ssl30));
+        assert!(!policy.is_version_allowed(TlsVersion::Tls10));
+        assert!(!policy.is_version_allowed(TlsVersion::Tls11));
+        assert!(policy.is_version_allowed(TlsVersion::Tls12));
+        assert!(policy.is_version_allowed(TlsVersion::Tls13));
+    }
+
+    #[test]
+    fn test_tls_policy_cert_validation() {
+        let policy = TlsPolicy::default();
+
+        let valid_cert = CertInfo {
+            subject: "CN=example.com".to_string(),
+            issuer: "CN=Let's Encrypt".to_string(),
+            serial: "abc123".to_string(),
+            not_before: Utc::now() - chrono::Duration::days(30),
+            not_after: Utc::now() + chrono::Duration::days(60),
+            san: vec!["example.com".to_string()],
+            is_self_signed: false,
+            key_bits: 2048,
+        };
+        assert!(policy.validate_cert(&valid_cert).is_empty());
+
+        let expired = CertInfo {
+            not_after: Utc::now() - chrono::Duration::days(1),
+            ..valid_cert.clone()
+        };
+        let violations = policy.validate_cert(&expired);
+        assert!(violations.iter().any(|v| v.contains("expired")));
+
+        let weak = CertInfo {
+            key_bits: 1024,
+            ..valid_cert.clone()
+        };
+        let violations = policy.validate_cert(&weak);
+        assert!(violations.iter().any(|v| v.contains("weak")));
+    }
+
+    #[test]
+    fn test_mitm_proxy_pf_rules() {
+        let config = MitmProxyConfig {
+            enabled: true,
+            listen_port: 8443,
+            interface: Interface("em0".to_string()),
+            intercept_ports: vec![443, 8443],
+            ..Default::default()
+        };
+        let rules = config.to_pf_rdr_rules();
+        assert_eq!(rules.len(), 2);
+        assert!(rules[0].contains("rdr on em0"));
+        assert!(rules[0].contains("port 443"));
+        assert!(rules[0].contains("-> 127.0.0.1 port 8443"));
+    }
+
+    #[test]
+    fn test_mitm_disabled_no_rules() {
+        let config = MitmProxyConfig::default(); // enabled = false
+        assert!(config.to_pf_rdr_rules().is_empty());
+    }
+
+    #[test]
+    fn test_ja3_blocklist_in_policy() {
+        let mut policy = TlsPolicy::default();
+        policy.blocked_ja3.push("abc123def456".to_string());
+        assert!(policy.is_ja3_blocked("abc123def456"));
+        assert!(!policy.is_ja3_blocked("other_hash"));
     }
 }

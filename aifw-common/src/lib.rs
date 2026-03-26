@@ -5,6 +5,7 @@ pub mod ratelimit;
 pub mod rule;
 #[cfg(test)]
 mod tests;
+pub mod tls;
 pub mod types;
 pub mod vpn;
 
@@ -21,6 +22,10 @@ pub use ratelimit::{
 pub use rule::{
     Action, AdaptiveTimeouts, Direction, Protocol, Rule, RuleMatch, RuleStatus, StateOptions,
     StatePolicy, StateTracking,
+};
+pub use tls::{
+    CertInfo, Ja3Fingerprint, Ja3sFingerprint, MitmProxyConfig, SniAction, SniRule,
+    SniRuleStatus, TlsPolicy, TlsVersion,
 };
 pub use types::{Address, Interface, Port, PortRange};
 pub use vpn::{

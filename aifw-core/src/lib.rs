@@ -6,6 +6,7 @@ pub mod nat;
 pub mod shaping;
 #[cfg(test)]
 mod tests;
+pub mod tls;
 pub mod validation;
 pub mod vpn;
 
@@ -15,4 +16,5 @@ pub use engine::RuleEngine;
 pub use nat::NatEngine;
 pub use geoip::GeoIpEngine;
 pub use shaping::ShapingEngine;
+pub use tls::TlsEngine;
 pub use vpn::VpnEngine;
