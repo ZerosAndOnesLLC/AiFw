@@ -1,0 +1,23 @@
+[package]
+name = "aifw-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aifw-tui"
+path = "src/main.rs"
+
+[dependencies]
+aifw-common = { workspace = true }
+aifw-pf = { workspace = true }
+aifw-core = { workspace = true }
+aifw-conntrack = { workspace = true }
+tokio = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+anyhow = "1"

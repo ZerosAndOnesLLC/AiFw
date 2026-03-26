@@ -166,13 +166,13 @@ cargo xtask test-freebsd --quick  # rsync + test only (skip rebuild if unchanged
 - [x] Rule-based rate limit configuration
 
 ### Phase 6 — TUI
-- [ ] aifw-tui: ratatui-based terminal UI
-  - [ ] Dashboard (traffic stats, connection count, top talkers)
-  - [ ] Rule management (add/edit/delete/reorder)
-  - [ ] Live connection table
-  - [ ] Log viewer with filtering
-  - [ ] NAT status
-  - [ ] Interface statistics
+- [x] aifw-tui: ratatui-based terminal UI
+  - [x] Dashboard (traffic stats, connection count, top talkers)
+  - [x] Rule management (add/edit/delete/reorder)
+  - [x] Live connection table
+  - [x] Log viewer with filtering
+  - [x] NAT status
+  - [x] Interface statistics
 
 ### Phase 7 — VPN Integration
 - [ ] WireGuard integration (FreeBSD native wg)
