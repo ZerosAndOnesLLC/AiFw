@@ -1,7 +1,6 @@
 use crate::config::{DefaultPolicy, SetupConfig, WanMode};
 use crate::console;
 use crate::hwdetect::SystemProfile;
-use crate::totp;
 use crate::tuning::{self, TuningItem};
 
 /// Detect network interfaces (FreeBSD: ifconfig -l, Linux: mock)
@@ -113,12 +112,12 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
 
     // ── Step 1: Root Password ─────────────────────────────────
-    console::header("Step 1/12 — Root Password");
+    console::header("Step 1/11 — Root Password");
     console::info("Set the system root password for console and SSH access.");
     set_root_password();
 
     // ── Step 2: Hostname ─────────────────────────────────────
-    console::header("Step 2/12 — Hostname");
+    console::header("Step 2/11 — Hostname");
     config.hostname = console::prompt("Hostname", &config.hostname);
 
     // ── Step 3: System Detection & Tuning ──────────────────
@@ -126,7 +125,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     let tuning_items = tuning::run_tuning_wizard(&profile);
 
     // ── Step 3: Network Interfaces ───────────────────────────
-    console::header("Step 4/12 — Network Interfaces");
+    console::header("Step 4/11 — Network Interfaces");
     let interfaces = detect_interfaces();
 
     if interfaces.is_empty() {
@@ -158,7 +157,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
 
     // ── Step 4: WAN Configuration ────────────────────────────
-    console::header("Step 5/12 — WAN Configuration");
+    console::header("Step 5/11 — WAN Configuration");
     let wan_mode_idx = console::select(
         "WAN IP configuration",
         &["DHCP (automatic)", "Static IP", "PPPoE"],
@@ -191,7 +190,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     // ── Step 5: LAN Configuration ────────────────────────────
     if config.lan_interface.is_some() {
-        console::header("Step 6/12 — LAN Configuration");
+        console::header("Step 6/11 — LAN Configuration");
         loop {
             let ip = console::prompt("LAN IP address", "192.168.1.1/24");
             if console::validate_cidr(&ip) {
@@ -201,12 +200,12 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             console::warn("Invalid IP/prefix format.");
         }
     } else {
-        console::header("Step 6/12 — LAN Configuration");
+        console::header("Step 6/11 — LAN Configuration");
         console::info("No LAN interface configured. Skipping.");
     }
 
     // ── Step 6: Admin Account ────────────────────────────────
-    console::header("Step 7/12 — Admin Account");
+    console::header("Step 7/11 — Admin Account");
     console::info("Create the administrator account.");
     console::info("Password must be 8+ characters with uppercase, lowercase, and number.");
     println!();
@@ -228,61 +227,22 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         }
     }
 
-    // ── Step 7: MFA Setup ────────────────────────────────────
-    console::header("Step 8/12 — Multi-Factor Authentication");
-    console::info("TOTP-based MFA protects against password compromise.");
-    console::info("You'll need an authenticator app (Google Authenticator, Authy, etc.).");
-    println!();
+    // MFA is configured via the web UI after first login
 
-    let totp_secret = totp::generate_secret();
-    let uri = totp::provisioning_uri(&totp_secret, &config.admin_username, "AiFw");
-
-    console::info("Scan this with your authenticator app, or enter the key manually:");
-    println!();
-    console::info(&format!("  Secret Key: {totp_secret}"));
-    println!();
-    console::info(&format!("  URI: {uri}"));
-    println!();
-
-    // Verify TOTP
-    loop {
-        let code = console::prompt_required("Enter the 6-digit code from your app to verify");
-        if totp::verify(&totp_secret, &code) {
-            console::success("TOTP verified successfully!");
-            config.totp_secret = totp_secret.clone();
-            config.totp_enabled = true;
-            break;
-        }
-        console::warn("Invalid code. Make sure your clock is synchronized and try again.");
-    }
-
-    // Recovery codes
-    let recovery_codes = totp::generate_recovery_codes(8);
-    println!();
-    console::info("Recovery codes (save these somewhere safe — shown only once):");
-    println!();
-    for (i, code) in recovery_codes.iter().enumerate() {
-        console::info(&format!("  {}. {code}", i + 1));
-    }
-    println!();
-    config.recovery_codes = recovery_codes;
-
-    console::confirm("I have saved my recovery codes", false);
-
-    // ── Step 8: API / UI Access ──────────────────────────────
-    console::header("Step 9/12 — API & Web UI");
+    // ── Step 7: API / UI Access ──────────────────────────────
+    console::header("Step 8/11 — API & Web UI");
     config.api_listen = console::prompt("API listen address", &config.api_listen);
     let port_str = console::prompt("API port", &config.api_port.to_string());
     config.api_port = port_str.parse().unwrap_or(8080);
     config.ui_enabled = console::confirm("Enable web UI?", true);
 
     // ── Step 9: DNS ──────────────────────────────────────────
-    console::header("Step 10/12 — DNS Servers");
+    console::header("Step 9/11 — DNS Servers");
     let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8");
     config.dns_servers = dns.split(',').map(|s| s.trim().to_string()).collect();
 
     // ── Step 10: Firewall Policy ─────────────────────────────
-    console::header("Step 11/12 — Default Firewall Policy");
+    console::header("Step 10/11 — Default Firewall Policy");
     let policy_idx = console::select(
         "Default firewall policy",
         &[
@@ -299,7 +259,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     };
 
     // ── Summary ──────────────────────────────────────────────
-    console::header("Step 12/12 — Summary");
+    console::header("Step 11/11 — Summary");
     console::info(&format!("Hostname:       {}", config.hostname));
     console::info(&format!("WAN:            {} ({})", config.wan_interface, config.wan_mode));
     if let Some(ref ip) = config.wan_ip {

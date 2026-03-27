@@ -2,6 +2,7 @@ mod apply;
 mod config;
 mod console;
 mod hwdetect;
+#[cfg(test)]
 mod totp;
 mod tuning;
 mod wizard;
