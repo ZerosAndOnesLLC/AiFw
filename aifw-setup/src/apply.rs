@@ -36,6 +36,15 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     console::info("Generating pf ruleset...");
     let pf_rules = generate_pf_conf(config);
     write_file(&format!("{}/pf.conf.aifw", config.config_dir), &pf_rules)?;
+    // Create empty anchor files so pfctl doesn't error on load
+    let anchors_dir = format!("{}/anchors", config.config_dir);
+    std::fs::create_dir_all(&anchors_dir).map_err(|e| format!("failed to create anchors dir: {e}"))?;
+    for anchor in ["aifw", "aifw-nat", "aifw-ratelimit", "aifw-vpn", "aifw-geoip", "aifw-tls", "aifw-ha"] {
+        let path = format!("{anchors_dir}/{anchor}");
+        if !std::path::Path::new(&path).exists() {
+            write_file(&path, "# AiFw managed anchor\n")?;
+        }
+    }
     console::success("pf ruleset generated");
 
     // 5. Write rc.d scripts
@@ -425,8 +434,27 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push("pass in quick inet proto icmp icmp-type echoreq keep state".to_string());
     lines.push(String::new());
 
-    // Allow API access
-    lines.push("# AiFw API access".to_string());
+    // Allow all traffic from local subnet
+    lines.push("# Local subnet — allow all".to_string());
+    if let Some(ref ip) = config.lan_ip {
+        let net = ip.split('/').next().unwrap_or("192.168.1.0");
+        let prefix = ip.split('/').nth(1).unwrap_or("24");
+        lines.push(format!("pass in quick from {net}/{prefix} keep state label \"local-subnet\""));
+    } else {
+        // Derive subnet from WAN if no LAN — use common private ranges
+        lines.push("pass in quick from 10.0.0.0/8 keep state label \"local-rfc1918\"".to_string());
+        lines.push("pass in quick from 172.16.0.0/12 keep state label \"local-rfc1918\"".to_string());
+        lines.push("pass in quick from 192.168.0.0/16 keep state label \"local-rfc1918\"".to_string());
+    }
+    lines.push(String::new());
+
+    // Allow SSH from anywhere (management access)
+    lines.push("# SSH access".to_string());
+    lines.push("pass in quick proto tcp to any port 22 keep state label \"ssh\"".to_string());
+    lines.push(String::new());
+
+    // Allow API/UI access
+    lines.push("# AiFw API/UI access".to_string());
     lines.push(format!("pass in quick proto tcp to any port {} keep state label \"aifw-api\"", config.api_port));
     lines.push(String::new());
 
