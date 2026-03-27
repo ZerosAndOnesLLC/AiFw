@@ -89,25 +89,6 @@ impl OAuthProvider {
     }
 }
 
-/// Linked OAuth identity for a user
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthIdentity {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub provider_id: Uuid,
-    pub provider_user_id: String,
-    pub email: String,
-    pub created_at: String,
-}
-
-/// User info returned from OAuth provider
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthUserInfo {
-    pub provider_user_id: String,
-    pub email: String,
-    pub name: Option<String>,
-}
-
 // ============================================================
 // DB operations
 // ============================================================
@@ -179,47 +160,6 @@ pub async fn delete_provider(pool: &SqlitePool, id: Uuid) -> Result<(), String> 
     Ok(())
 }
 
-pub async fn save_identity(pool: &SqlitePool, identity: &OAuthIdentity) -> Result<(), String> {
-    sqlx::query(
-        r#"INSERT INTO oauth_identities (id, user_id, provider_id, provider_user_id, email, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
-    )
-    .bind(identity.id.to_string())
-    .bind(identity.user_id.to_string())
-    .bind(identity.provider_id.to_string())
-    .bind(&identity.provider_user_id)
-    .bind(&identity.email)
-    .bind(&identity.created_at)
-    .execute(pool)
-    .await
-    .map_err(|e| format!("db error: {e}"))?;
-    Ok(())
-}
-
-pub async fn find_identity_by_provider_user(
-    pool: &SqlitePool,
-    provider_id: Uuid,
-    provider_user_id: &str,
-) -> Result<Option<OAuthIdentity>, String> {
-    let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-        "SELECT id, user_id, provider_id, provider_user_id, email, created_at FROM oauth_identities WHERE provider_id = ?1 AND provider_user_id = ?2"
-    )
-    .bind(provider_id.to_string())
-    .bind(provider_user_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("db error: {e}"))?;
-
-    Ok(row.map(|(id, uid, pid, puid, email, ca)| OAuthIdentity {
-        id: Uuid::parse_str(&id).unwrap_or_default(),
-        user_id: Uuid::parse_str(&uid).unwrap_or_default(),
-        provider_id: Uuid::parse_str(&pid).unwrap_or_default(),
-        provider_user_id: puid,
-        email,
-        created_at: ca,
-    }))
-}
-
 fn url_encode(s: &str) -> String {
     s.replace(' ', "+")
         .replace(':', "%3A")
@@ -252,6 +192,7 @@ pub struct AuthorizeResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct CallbackQuery {
     pub code: String,
     pub state: String,

@@ -9,7 +9,7 @@ use uuid::Uuid;
 use aifw_common::{
     Action, Address, CountryCode, Direction, GeoIpAction, GeoIpRule, GeoIpRuleStatus, Interface,
     IpsecMode, IpsecProtocol, IpsecSa, NatRedirect, NatRule, NatStatus, NatType, PortRange,
-    Protocol, Rule, RuleMatch, RuleStatus, StateTracking, VpnStatus, WgPeer, WgTunnel,
+    Protocol, Rule, RuleMatch, RuleStatus, StateTracking, WgPeer, WgTunnel,
 };
 use crate::AppState;
 use crate::auth;

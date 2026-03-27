@@ -68,6 +68,7 @@ pub fn verify(secret: &str, code: &str) -> bool {
 }
 
 /// Generate the current TOTP code for a secret (for testing)
+#[cfg(test)]
 pub fn generate_current(secret: &str) -> Option<String> {
     let secret_bytes = base32_decode(secret).ok()?;
     let now = SystemTime::now()
@@ -276,11 +277,6 @@ fn url_encode(s: &str) -> String {
 // ============================================================
 // Request/Response types
 // ============================================================
-
-#[derive(Debug, Deserialize)]
-pub struct TotpSetupRequest {
-    // No fields — just triggers setup
-}
 
 #[derive(Debug, Serialize)]
 pub struct TotpSetupResponse {

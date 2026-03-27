@@ -241,16 +241,6 @@ pub async fn revoke_refresh_token(pool: &SqlitePool, token: &str) -> Result<(), 
     Err("refresh token not found".to_string())
 }
 
-/// Revoke all refresh tokens for a user (force logout everywhere)
-pub async fn revoke_all_user_tokens(pool: &SqlitePool, user_id: &str) -> Result<u64, String> {
-    let result = sqlx::query("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?1 AND revoked = 0")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("db error: {e}"))?;
-    Ok(result.rows_affected())
-}
-
 // ============================================================
 // Request/Response types
 // ============================================================

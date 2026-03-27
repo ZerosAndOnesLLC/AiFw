@@ -394,9 +394,10 @@ pub fn kernel_modules_to_load(items: &[TuningItem]) -> Vec<String> {
 }
 
 // ============================================================
-// Scaling helper (exported for tests)
+// Scaling helpers (used in tests)
 // ============================================================
 
+#[cfg(test)]
 pub fn scale_states_hashsize(ram_mb: u64) -> u64 {
     match ram_mb {
         0..=1024 => 32768,
@@ -406,6 +407,7 @@ pub fn scale_states_hashsize(ram_mb: u64) -> u64 {
     }
 }
 
+#[cfg(test)]
 pub fn scale_maxsockbuf(ram_mb: u64) -> u64 {
     match ram_mb {
         0..=2048 => 2097152,
