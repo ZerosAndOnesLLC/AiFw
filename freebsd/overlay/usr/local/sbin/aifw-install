@@ -178,12 +178,18 @@ partition_disk_ufs() {
 clone_system() {
     echo ""
     echo "Cloning live system to $INSTALL_ROOT..."
+    CLONE_ERRORS=0
+    CLONE_LOG="/tmp/aifw-install.log"
+    : > "$CLONE_LOG"
 
-    # Clone each top-level directory, skipping pseudo-filesystems and missing dirs
+    # Use tar pipe to clone — more reliable than cpdup on cd9660
     for dir in bin boot etc lib libexec root sbin usr; do
         if [ -d "/$dir" ]; then
             echo "  Copying /$dir..."
-            cpdup -o "/$dir" "$INSTALL_ROOT/$dir" || echo "  WARNING: cpdup /$dir had errors"
+            if ! tar -cf - -C / "$dir" 2>>"$CLONE_LOG" | tar -xpf - -C "$INSTALL_ROOT" 2>>"$CLONE_LOG"; then
+                echo "  ERROR: failed to copy /$dir"
+                CLONE_ERRORS=$((CLONE_ERRORS + 1))
+            fi
         fi
     done
 
@@ -196,6 +202,7 @@ clone_system() {
         mkdir -p "$INSTALL_ROOT/var/$vdir"
     done
     chmod 1777 "$INSTALL_ROOT/var/tmp"
+    chmod 0555 "$INSTALL_ROOT/var/empty"
 
     # Create other required directories
     mkdir -p "$INSTALL_ROOT/dev"
@@ -215,7 +222,40 @@ clone_system() {
         cp -a /var/db/aifw/* "$INSTALL_ROOT/var/db/aifw/" 2>/dev/null || true
     fi
 
-    echo "  Clone complete."
+    # Verify critical files exist
+    echo ""
+    echo "  Verifying installation..."
+    VERIFY_FAILED=0
+    for check in boot/loader boot/kernel/kernel sbin/init etc/rc bin/sh usr/local/sbin/aifw-setup; do
+        if [ ! -f "$INSTALL_ROOT/$check" ]; then
+            echo "  MISSING: /$check"
+            VERIFY_FAILED=$((VERIFY_FAILED + 1))
+        fi
+    done
+
+    if [ "$VERIFY_FAILED" -gt 0 ]; then
+        echo ""
+        echo "  $VERIFY_FAILED critical file(s) missing!"
+        echo "  Clone log: $CLONE_LOG"
+        cat "$CLONE_LOG"
+        die "Installation failed — critical files missing from target disk"
+    fi
+
+    if [ "$CLONE_ERRORS" -gt 0 ]; then
+        echo ""
+        echo "  WARNING: $CLONE_ERRORS directory(s) had copy errors."
+        echo "  Clone log: $CLONE_LOG"
+        cat "$CLONE_LOG"
+        echo ""
+        echo -n "  Continue anyway? [y/N] "
+        read cont
+        case "$cont" in
+            [yY]*) ;;
+            *) die "Installation aborted by user" ;;
+        esac
+    else
+        echo "  All files verified OK."
+    fi
 }
 
 write_fstab_zfs() {
