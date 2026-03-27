@@ -378,6 +378,43 @@ fix_ttys
 
 sync
 
+# --- Run setup wizard on the installed system ---
+echo ""
+echo "============================================"
+echo "  AiFw — Initial Configuration"
+echo "============================================"
+echo ""
+
+# Mount devfs so the chrooted setup can access devices
+mkdir -p "$INSTALL_ROOT/dev"
+mount -t devfs devfs "$INSTALL_ROOT/dev"
+
+# Copy resolv.conf so setup has DNS
+cp /etc/resolv.conf "$INSTALL_ROOT/etc/resolv.conf" 2>/dev/null || true
+
+# Run setup wizard chrooted into the installed system
+chroot "$INSTALL_ROOT" /usr/local/sbin/aifw-setup
+
+umount "$INSTALL_ROOT/dev" 2>/dev/null || true
+
+# If setup succeeded, enable services in the installed rc.conf
+if [ -f "$INSTALL_ROOT/usr/local/etc/aifw/aifw.conf" ]; then
+    sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_daemon_enable="YES"
+    sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_api_enable="YES"
+    sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_firstboot_enable="NO"
+    echo ""
+    echo "  Setup complete — services will start on boot."
+else
+    echo ""
+    echo "  Setup was skipped — the wizard will run on first login."
+fi
+
+sync
+
+# Get the IP for display
+DISPLAY_IP=$(ifconfig em0 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
+[ -z "$DISPLAY_IP" ] && DISPLAY_IP="<your-ip>"
+
 echo ""
 echo "============================================"
 echo "  Installation complete!"
@@ -387,19 +424,13 @@ echo "  Status:     SUCCESS"
 echo "  Disk:       /dev/$TARGET_DISK"
 echo "  Filesystem: $FS_TYPE"
 echo ""
-
-if [ ! -f "$AIFW_CONF" ]; then
-    echo "  The setup wizard will run on first boot."
-    echo ""
-fi
-
 echo "  After reboot, you can manage AiFw using:"
 echo ""
 echo "    Console Menu  Login at the console to access the management menu"
-echo "    Web UI        https://<your-ip>:8080/"
+echo "    Web UI        https://${DISPLAY_IP}:8080/"
 echo "    CLI           aifw rules list, aifw status, aifw --help"
 echo "    TUI           aifw-tui"
-echo "    API           https://<your-ip>:8080/api/v1/"
+echo "    API           https://${DISPLAY_IP}:8080/api/v1/"
 echo ""
 echo "  +-------------------------------------------------+"
 echo "  |  Please remove the CD/DVD or USB drive before   |"
