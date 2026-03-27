@@ -213,7 +213,15 @@ echo "$VERSION" > "$STAGEDIR/usr/local/share/aifw/version"
 cat > "$STAGEDIR/etc/motd.template" <<MOTD
 
   AiFw ${VERSION} — AI-Powered Firewall for FreeBSD
-  https://github.com/ZerosAndOnesLLC/AiFw
+
+  Commands:
+    aifw-console        Launch the management menu
+    aifw-install        Install AiFw to disk
+    aifw-setup          Run the setup wizard
+    aifw                CLI tool (aifw --help)
+    aifw-tui            Terminal UI
+
+  Web UI:  https://<this-ip>:8080/
 
 MOTD
 

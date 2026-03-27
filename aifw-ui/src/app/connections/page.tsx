@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Card from "@/components/Card";
-import DataTable from "@/components/DataTable";
 import StatusBadge from "@/components/StatusBadge";
 
 interface Connection {
@@ -20,25 +19,8 @@ interface Connection {
   age_secs: number;
 }
 
-function generateDemoConnections(): Connection[] {
-  return [
-    { id: 1, protocol: "tcp", src_addr: "10.0.0.15", src_port: 52481, dst_addr: "93.184.216.34", dst_port: 443, state: "ESTABLISHED", packets_in: 1284, packets_out: 987, bytes_in: 1_843_200, bytes_out: 245_760, age_secs: 342 },
-    { id: 2, protocol: "tcp", src_addr: "10.0.0.22", src_port: 48920, dst_addr: "172.217.14.206", dst_port: 443, state: "ESTABLISHED", packets_in: 3420, packets_out: 2180, bytes_in: 5_242_880, bytes_out: 524_288, age_secs: 1205 },
-    { id: 3, protocol: "udp", src_addr: "10.0.0.5", src_port: 53, dst_addr: "8.8.8.8", dst_port: 53, state: "SINGLE", packets_in: 42, packets_out: 42, bytes_in: 5_376, bytes_out: 2_688, age_secs: 3 },
-    { id: 4, protocol: "tcp", src_addr: "10.0.0.8", src_port: 60112, dst_addr: "151.101.1.140", dst_port: 443, state: "ESTABLISHED", packets_in: 892, packets_out: 654, bytes_in: 1_048_576, bytes_out: 131_072, age_secs: 89 },
-    { id: 5, protocol: "tcp", src_addr: "192.168.1.100", src_port: 22, dst_addr: "10.0.0.5", dst_port: 22, state: "ESTABLISHED", packets_in: 15230, packets_out: 14890, bytes_in: 2_097_152, bytes_out: 1_572_864, age_secs: 7823 },
-    { id: 6, protocol: "udp", src_addr: "10.0.0.15", src_port: 41022, dst_addr: "10.0.0.1", dst_port: 53, state: "SINGLE", packets_in: 1, packets_out: 1, bytes_in: 128, bytes_out: 64, age_secs: 1 },
-    { id: 7, protocol: "tcp", src_addr: "10.0.0.45", src_port: 55340, dst_addr: "52.84.150.40", dst_port: 443, state: "TIME_WAIT", packets_in: 24, packets_out: 18, bytes_in: 3_072, bytes_out: 1_536, age_secs: 45 },
-    { id: 8, protocol: "icmp", src_addr: "10.0.0.3", src_port: 0, dst_addr: "10.0.0.1", dst_port: 0, state: "SINGLE", packets_in: 4, packets_out: 4, bytes_in: 256, bytes_out: 256, age_secs: 2 },
-    { id: 9, protocol: "tcp", src_addr: "10.0.0.22", src_port: 49210, dst_addr: "140.82.114.4", dst_port: 443, state: "ESTABLISHED", packets_in: 560, packets_out: 420, bytes_in: 786_432, bytes_out: 262_144, age_secs: 156 },
-    { id: 10, protocol: "tcp", src_addr: "10.0.0.15", src_port: 53100, dst_addr: "104.16.249.249", dst_port: 80, state: "FIN_WAIT_2", packets_in: 12, packets_out: 10, bytes_in: 8_192, bytes_out: 2_048, age_secs: 28 },
-    { id: 11, protocol: "udp", src_addr: "10.0.0.8", src_port: 51200, dst_addr: "1.1.1.1", dst_port: 53, state: "SINGLE", packets_in: 1, packets_out: 1, bytes_in: 96, bytes_out: 48, age_secs: 0 },
-    { id: 12, protocol: "tcp", src_addr: "10.0.0.45", src_port: 38400, dst_addr: "198.51.100.22", dst_port: 3306, state: "ESTABLISHED", packets_in: 8450, packets_out: 6200, bytes_in: 10_485_760, bytes_out: 1_048_576, age_secs: 4520 },
-    { id: 13, protocol: "tcp", src_addr: "10.0.0.3", src_port: 44892, dst_addr: "10.0.0.5", dst_port: 5432, state: "ESTABLISHED", packets_in: 2340, packets_out: 1890, bytes_in: 3_145_728, bytes_out: 524_288, age_secs: 2890 },
-    { id: 14, protocol: "udp", src_addr: "10.0.0.22", src_port: 60100, dst_addr: "10.0.0.5", dst_port: 123, state: "SINGLE", packets_in: 1, packets_out: 1, bytes_in: 76, bytes_out: 76, age_secs: 14 },
-    { id: 15, protocol: "tcp", src_addr: "10.0.0.15", src_port: 59800, dst_addr: "35.186.224.25", dst_port: 443, state: "SYN_SENT", packets_in: 0, packets_out: 1, bytes_in: 0, bytes_out: 64, age_secs: 0 },
-  ];
-}
+type SortKey = "protocol" | "src_addr" | "dst_addr" | "state" | "age_secs" | "packets" | "bytes";
+type SortDir = "asc" | "desc";
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
@@ -72,30 +54,107 @@ function formatNumber(n: number): string {
   return String(n);
 }
 
-export default function ConnectionsPage() {
-  const [connections, setConnections] = useState<Connection[]>(generateDemoConnections);
-  const [lastRefresh, setLastRefresh] = useState(new Date());
+async function apiFetch<T>(path: string): Promise<T> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+  const res = await fetch(path, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
 
-  const refresh = useCallback(() => {
-    // In production, this would call api.listConnections()
-    // For demo, add slight randomization to simulate live data
-    setConnections((prev) =>
-      prev.map((c) => ({
-        ...c,
-        age_secs: c.age_secs + 5,
-        packets_in: c.packets_in + Math.floor(Math.random() * 10),
-        packets_out: c.packets_out + Math.floor(Math.random() * 8),
-        bytes_in: c.bytes_in + Math.floor(Math.random() * 4096),
-        bytes_out: c.bytes_out + Math.floor(Math.random() * 2048),
-      }))
-    );
-    setLastRefresh(new Date());
+function SortHeader({
+  label,
+  sortKey,
+  currentSort,
+  currentDir,
+  onSort,
+  className,
+}: {
+  label: string;
+  sortKey: SortKey;
+  currentSort: SortKey;
+  currentDir: SortDir;
+  onSort: (key: SortKey) => void;
+  className?: string;
+}) {
+  const active = currentSort === sortKey;
+  return (
+    <th
+      className={`py-3 px-3 text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider cursor-pointer hover:text-[var(--text-secondary)] select-none ${className || "text-left"}`}
+      onClick={() => onSort(sortKey)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {active && (
+          <span className="text-[var(--text-secondary)]">{currentDir === "asc" ? "\u25B2" : "\u25BC"}</span>
+        )}
+      </span>
+    </th>
+  );
+}
+
+export default function ConnectionsPage() {
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [lastRefresh, setLastRefresh] = useState(new Date());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("bytes");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const initialLoad = useRef(true);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const res = await apiFetch<{ data: Connection[] }>("/api/v1/connections");
+      setConnections(res.data || []);
+      setLastRefresh(new Date());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch connections");
+    } finally {
+      if (initialLoad.current) {
+        setLoading(false);
+        initialLoad.current = false;
+      }
+    }
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(refresh, 5000);
+    fetchData();
+    const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [fetchData]);
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+  };
+
+  const sortedConnections = [...connections].sort((a, b) => {
+    const mul = sortDir === "asc" ? 1 : -1;
+    switch (sortKey) {
+      case "protocol":
+        return mul * a.protocol.localeCompare(b.protocol);
+      case "src_addr":
+        return mul * a.src_addr.localeCompare(b.src_addr);
+      case "dst_addr":
+        return mul * a.dst_addr.localeCompare(b.dst_addr);
+      case "state":
+        return mul * a.state.localeCompare(b.state);
+      case "age_secs":
+        return mul * (a.age_secs - b.age_secs);
+      case "packets":
+        return mul * ((a.packets_in + a.packets_out) - (b.packets_in + b.packets_out));
+      case "bytes":
+        return mul * ((a.bytes_in + a.bytes_out) - (b.bytes_in + b.bytes_out));
+      default:
+        return 0;
+    }
+  });
 
   // Protocol breakdown
   const protocolCounts = connections.reduce<Record<string, number>>((acc, c) => {
@@ -108,81 +167,13 @@ export default function ConnectionsPage() {
   const totalPacketsIn = connections.reduce((sum, c) => sum + c.packets_in, 0);
   const totalPacketsOut = connections.reduce((sum, c) => sum + c.packets_out, 0);
 
-  const columns = [
-    {
-      key: "protocol",
-      label: "Proto",
-      className: "w-16",
-      render: (row: Connection) => {
-        const colors: Record<string, string> = {
-          tcp: "text-blue-400",
-          udp: "text-purple-400",
-          icmp: "text-cyan-400",
-        };
-        return (
-          <span className={`font-mono text-xs font-medium uppercase ${colors[row.protocol] || "text-[var(--text-secondary)]"}`}>
-            {row.protocol}
-          </span>
-        );
-      },
-    },
-    {
-      key: "source",
-      label: "Source",
-      render: (row: Connection) => (
-        <span className="font-mono text-xs">
-          {row.src_addr}<span className="text-[var(--text-muted)]">:{row.src_port}</span>
-        </span>
-      ),
-    },
-    {
-      key: "destination",
-      label: "Destination",
-      render: (row: Connection) => (
-        <span className="font-mono text-xs">
-          {row.dst_addr}<span className="text-[var(--text-muted)]">:{row.dst_port}</span>
-        </span>
-      ),
-    },
-    {
-      key: "state",
-      label: "State",
-      className: "w-28",
-      render: (row: Connection) => <StatusBadge status={row.state} size="sm" />,
-    },
-    {
-      key: "age_secs",
-      label: "Age",
-      className: "w-20",
-      render: (row: Connection) => (
-        <span className="text-xs text-[var(--text-secondary)] font-mono">{formatDuration(row.age_secs)}</span>
-      ),
-    },
-    {
-      key: "packets",
-      label: "Pkts In/Out",
-      className: "w-28",
-      render: (row: Connection) => (
-        <span className="text-xs font-mono">
-          <span className="text-green-400">{formatNumber(row.packets_in)}</span>
-          <span className="text-[var(--text-muted)]"> / </span>
-          <span className="text-blue-400">{formatNumber(row.packets_out)}</span>
-        </span>
-      ),
-    },
-    {
-      key: "bytes",
-      label: "Bytes In/Out",
-      className: "w-32",
-      render: (row: Connection) => (
-        <span className="text-xs font-mono">
-          <span className="text-green-400">{formatBytes(row.bytes_in)}</span>
-          <span className="text-[var(--text-muted)]"> / </span>
-          <span className="text-blue-400">{formatBytes(row.bytes_out)}</span>
-        </span>
-      ),
-    },
-  ];
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-[var(--text-muted)]">Loading connections...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -191,7 +182,7 @@ export default function ConnectionsPage() {
         <div>
           <h1 className="text-2xl font-bold">Live Connections</h1>
           <p className="text-sm text-[var(--text-muted)]">
-            {connections.length} active connections &middot; auto-refreshing every 5s
+            {connections.length} active connections &middot; auto-refreshing every 3s
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -208,12 +199,19 @@ export default function ConnectionsPage() {
         </div>
       </div>
 
+      {/* Error Banner */}
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <Card title="Total" value={connections.length} color="blue" subtitle="connections" />
-        <Card title="TCP" value={protocolCounts["tcp"] || 0} color="blue" subtitle={`${Math.round(((protocolCounts["tcp"] || 0) / connections.length) * 100)}%`} />
-        <Card title="UDP" value={protocolCounts["udp"] || 0} color="cyan" subtitle={`${Math.round(((protocolCounts["udp"] || 0) / connections.length) * 100)}%`} />
-        <Card title="ICMP" value={protocolCounts["icmp"] || 0} color="yellow" subtitle={`${Math.round(((protocolCounts["icmp"] || 0) / connections.length) * 100)}%`} />
+        <Card title="TCP" value={protocolCounts["tcp"] || 0} color="blue" subtitle={connections.length ? `${Math.round(((protocolCounts["tcp"] || 0) / connections.length) * 100)}%` : "0%"} />
+        <Card title="UDP" value={protocolCounts["udp"] || 0} color="cyan" subtitle={connections.length ? `${Math.round(((protocolCounts["udp"] || 0) / connections.length) * 100)}%` : "0%"} />
+        <Card title="ICMP" value={protocolCounts["icmp"] || 0} color="yellow" subtitle={connections.length ? `${Math.round(((protocolCounts["icmp"] || 0) / connections.length) * 100)}%` : "0%"} />
         <Card
           title="Traffic In"
           value={formatBytes(totalBytesIn)}
@@ -230,13 +228,73 @@ export default function ConnectionsPage() {
 
       {/* Connections Table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <DataTable<any>
-          columns={columns as any}
-          data={connections as any}
-          keyField="id"
-          emptyMessage="No active connections"
-        />
+        {sortedConnections.length === 0 ? (
+          <div className="text-center py-12 text-[var(--text-muted)]">No active connections</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[var(--border)]">
+                  <SortHeader label="Proto" sortKey="protocol" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} className="w-16 text-left" />
+                  <SortHeader label="Source" sortKey="src_addr" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
+                  <SortHeader label="Destination" sortKey="dst_addr" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
+                  <SortHeader label="State" sortKey="state" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} className="w-28 text-left" />
+                  <SortHeader label="Age" sortKey="age_secs" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} className="w-20 text-left" />
+                  <SortHeader label="Pkts In/Out" sortKey="packets" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} className="w-28 text-left" />
+                  <SortHeader label="Bytes In/Out" sortKey="bytes" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} className="w-32 text-left" />
+                </tr>
+              </thead>
+              <tbody>
+                {sortedConnections.map((conn) => {
+                  const colors: Record<string, string> = {
+                    tcp: "text-blue-400",
+                    udp: "text-purple-400",
+                    icmp: "text-cyan-400",
+                  };
+                  return (
+                    <tr key={conn.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                      <td className="py-2.5 px-3 w-16">
+                        <span className={`font-mono text-xs font-medium uppercase ${colors[conn.protocol] || "text-[var(--text-secondary)]"}`}>
+                          {conn.protocol}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className="font-mono text-xs">
+                          {conn.src_addr}<span className="text-[var(--text-muted)]">:{conn.src_port}</span>
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className="font-mono text-xs">
+                          {conn.dst_addr}<span className="text-[var(--text-muted)]">:{conn.dst_port}</span>
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 w-28">
+                        <StatusBadge status={conn.state} size="sm" />
+                      </td>
+                      <td className="py-2.5 px-3 w-20">
+                        <span className="text-xs text-[var(--text-secondary)] font-mono">{formatDuration(conn.age_secs)}</span>
+                      </td>
+                      <td className="py-2.5 px-3 w-28">
+                        <span className="text-xs font-mono">
+                          <span className="text-green-400">{formatNumber(conn.packets_in)}</span>
+                          <span className="text-[var(--text-muted)]"> / </span>
+                          <span className="text-blue-400">{formatNumber(conn.packets_out)}</span>
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 w-32">
+                        <span className="text-xs font-mono">
+                          <span className="text-green-400">{formatBytes(conn.bytes_in)}</span>
+                          <span className="text-[var(--text-muted)]"> / </span>
+                          <span className="text-blue-400">{formatBytes(conn.bytes_out)}</span>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
