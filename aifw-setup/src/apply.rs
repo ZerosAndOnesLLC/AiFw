@@ -26,6 +26,12 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     init_database(config).await?;
     console::success(&format!("Database initialized at {}", config.db_path));
 
+    // 3b. Fix DB ownership (DB was created as root, aifw user needs write access)
+    #[cfg(target_os = "freebsd")]
+    {
+        let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/var/db/aifw"]).output();
+    }
+
     // 4. Generate pf rules
     console::info("Generating pf ruleset...");
     let pf_rules = generate_pf_conf(config);

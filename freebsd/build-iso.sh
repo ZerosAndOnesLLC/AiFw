@@ -174,12 +174,19 @@ kern.geom.label.gptid.enable="0"
 vfs.root.mountfrom="cd9660:cd0"
 LOADER
 
-# Set root shell to console menu for live environment
-# (Users can still get a shell via menu option 8)
-chroot "$STAGEDIR" /usr/sbin/pw usermod root -s /usr/local/sbin/aifw-console
+# Root shell stays /bin/sh so SSH works normally.
+# Console menu runs via autologin on ttyv0 only (physical console).
 
-# /etc/ttys — auto-login on ttyv0 (the actual virtual terminal, not console)
+# /etc/ttys — auto-login on ttyv0 runs the console menu
 sed -i '' 's|^ttyv0.*|ttyv0 "/usr/libexec/getty autologin" xterm on secure|' "$STAGEDIR/etc/ttys"
+
+# Add aifw-console to /etc/shells so it can be used as a login shell
+echo "/usr/local/sbin/aifw-console" >> "$STAGEDIR/etc/shells"
+
+# Configure sshd for password auth
+sed -i '' 's/^#PermitRootLogin.*/PermitRootLogin yes/' "$STAGEDIR/etc/ssh/sshd_config"
+sed -i '' 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' "$STAGEDIR/etc/ssh/sshd_config"
+sed -i '' 's/^#KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' "$STAGEDIR/etc/ssh/sshd_config"
 
 # Create /etc/login.conf entry for autologin (no password prompt)
 if ! grep -q 'autologin' "$STAGEDIR/etc/gettytab" 2>/dev/null; then
@@ -187,7 +194,7 @@ if ! grep -q 'autologin' "$STAGEDIR/etc/gettytab" 2>/dev/null; then
 
 # Auto-login for AiFw console
 autologin|al|Auto login:\
-    :ht:np:sp#115200:al=root:
+    :ht:np:sp#115200:al=root:lo=/usr/local/sbin/aifw-console:
 GETTY
 fi
 
