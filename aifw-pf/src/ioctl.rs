@@ -8,6 +8,21 @@ use async_trait::async_trait;
 use std::net::IpAddr;
 use tokio::process::Command;
 
+fn parse_addr_port(s: &str) -> (IpAddr, u16) {
+    // Format: "192.168.1.1:12345" or "[::1]:443"
+    if let Some(idx) = s.rfind(':') {
+        let addr_str = &s[..idx];
+        let port_str = &s[idx + 1..];
+        let addr = addr_str.trim_matches(|c| c == '[' || c == ']')
+            .parse::<IpAddr>()
+            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        let port = port_str.parse::<u16>().unwrap_or(0);
+        (addr, port)
+    } else {
+        (IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0)
+    }
+}
+
 pub struct PfIoctl;
 
 impl PfIoctl {
@@ -30,7 +45,7 @@ async fn pfctl(args: &[&str]) -> Result<String, PfError> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // pfctl often writes info to stderr even on success, only error on real failures
         if stderr.contains("ERROR") || stderr.contains("syntax error") {
-            return Err(PfError::RuleLoad(stderr.to_string()));
+            return Err(PfError::Rule(stderr.to_string()));
         }
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -45,11 +60,11 @@ impl PfBackend for PfIoctl {
             .arg(format!("echo '{}' | pfctl {anchor_arg} -f -", rule))
             .output()
             .await
-            .map_err(|e| PfError::RuleLoad(format!("pfctl add_rule failed: {e}")))?;
+            .map_err(|e| PfError::Rule(format!("pfctl add_rule failed: {e}")))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("syntax error") {
-                return Err(PfError::RuleLoad(stderr.to_string()));
+                return Err(PfError::Rule(stderr.to_string()));
             }
         }
         Ok(())
@@ -70,11 +85,11 @@ impl PfBackend for PfIoctl {
             .arg(format!("echo '{}' | pfctl -a {} -f -", ruleset, anchor))
             .output()
             .await
-            .map_err(|e| PfError::RuleLoad(format!("pfctl load_rules failed: {e}")))?;
+            .map_err(|e| PfError::Rule(format!("pfctl load_rules failed: {e}")))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("syntax error") {
-                return Err(PfError::RuleLoad(stderr.to_string()));
+                return Err(PfError::Rule(stderr.to_string()));
             }
         }
         Ok(())
@@ -87,19 +102,34 @@ impl PfBackend for PfIoctl {
 
     async fn get_states(&self) -> Result<Vec<PfState>, PfError> {
         let out = pfctl(&["-ss"]).await?;
+        // Parse pfctl -ss output lines like:
+        // all tcp 192.168.1.1:12345 -> 10.0.0.1:443 ESTABLISHED:ESTABLISHED
         let states: Vec<PfState> = out
             .lines()
             .filter(|l| !l.is_empty() && !l.starts_with("No "))
-            .map(|line| PfState {
-                id: 0,
-                direction: String::new(),
-                protocol: String::new(),
-                src: line.to_string(),
-                dst: String::new(),
-                state: String::new(),
-                age: 0,
-                packets: 0,
-                bytes: 0,
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 5 { return None; }
+                let proto = parts.get(1).unwrap_or(&"").to_string();
+                let src = parts.get(2).unwrap_or(&"");
+                let dst = parts.get(4).unwrap_or(&"");
+                let state_str = parts.get(5).unwrap_or(&"").to_string();
+                let (src_addr, src_port) = parse_addr_port(src);
+                let (dst_addr, dst_port) = parse_addr_port(dst);
+                Some(PfState {
+                    id: 0,
+                    protocol: proto,
+                    src_addr,
+                    src_port,
+                    dst_addr,
+                    dst_port,
+                    state: state_str,
+                    packets_in: 0,
+                    packets_out: 0,
+                    bytes_in: 0,
+                    bytes_out: 0,
+                    age_secs: 0,
+                })
             })
             .collect();
         Ok(states)
@@ -175,7 +205,7 @@ impl PfBackend for PfIoctl {
             .arg(format!("echo '{}' | pfctl -a {} -N -f -", ruleset, anchor))
             .output()
             .await
-            .map_err(|e| PfError::RuleLoad(format!("pfctl load_nat failed: {e}")))?;
+            .map_err(|e| PfError::Rule(format!("pfctl load_nat failed: {e}")))?;
         Ok(())
     }
 
@@ -199,7 +229,7 @@ impl PfBackend for PfIoctl {
             .arg(format!("echo '{}' | pfctl -a {} -f -", ruleset, anchor))
             .output()
             .await
-            .map_err(|e| PfError::RuleLoad(format!("pfctl load_queues failed: {e}")))?;
+            .map_err(|e| PfError::Rule(format!("pfctl load_queues failed: {e}")))?;
         Ok(())
     }
 
