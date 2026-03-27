@@ -37,6 +37,11 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     write_rcd_scripts(config)?;
     console::success("Service scripts installed");
 
+    // 5b. Configure devfs rules for /dev/pf and /dev/bpf* access
+    console::info("Configuring device permissions...");
+    configure_devfs()?;
+    console::success("Device permissions configured");
+
     // 6. Write tuning files
     let enabled_tunings = tuning_items.iter().filter(|t| t.enabled).count();
     if enabled_tunings > 0 {
@@ -131,6 +136,48 @@ fn create_service_user() -> Result<(), String> {
                 return Err(format!("pw useradd failed: {stderr}"));
             }
         }
+    }
+    Ok(())
+}
+
+/// Configure devfs rules so the aifw group can access /dev/pf and /dev/bpf*
+fn configure_devfs() -> Result<(), String> {
+    #[cfg(target_os = "freebsd")]
+    {
+        use std::process::Command;
+
+        // Write devfs ruleset for aifw
+        let rules = r#"# AiFw device access rules
+[aifw_devfs=10]
+add path 'pf' mode 0660 group aifw
+add path 'bpf*' mode 0660 group aifw
+"#;
+        write_file("/etc/devfs.aifw.rules", rules)?;
+
+        // Append include to devfs.rules if not already present
+        let devfs_rules_path = "/etc/devfs.rules";
+        let existing = std::fs::read_to_string(devfs_rules_path).unwrap_or_default();
+        if !existing.contains("aifw_devfs") {
+            let mut content = existing;
+            if !content.ends_with('\n') && !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str("\n# AiFw device access rules\n");
+            content.push_str("[aifw_devfs=10]\n");
+            content.push_str("add path 'pf' mode 0660 group aifw\n");
+            content.push_str("add path 'bpf*' mode 0660 group aifw\n");
+            write_file(devfs_rules_path, &content)?;
+        }
+
+        // Enable the ruleset in rc.conf
+        let _ = Command::new("sysrc")
+            .args(["devfs_system_ruleset=aifw_devfs"])
+            .output();
+
+        // Apply immediately
+        let _ = Command::new("service")
+            .args(["devfs", "restart"])
+            .output();
     }
     Ok(())
 }
@@ -365,7 +412,7 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
 fn write_rcd_scripts(config: &SetupConfig) -> Result<(), String> {
     let daemon_script = format!(r#"#!/bin/sh
 # PROVIDE: aifw_daemon
-# REQUIRE: NETWORKING pf
+# REQUIRE: NETWORKING pf devfs
 # KEYWORD: shutdown
 
 . /etc/rc.subr
@@ -376,10 +423,11 @@ command="/usr/local/sbin/aifw-daemon"
 command_args="--db {db} --log-level info"
 pidfile="/var/run/${{name}}.pid"
 start_cmd="${{name}}_start"
+aifw_daemon_user="aifw"
 
 aifw_daemon_start()
 {{
-    /usr/sbin/daemon -p $pidfile -f $command $command_args
+    /usr/sbin/daemon -u $aifw_daemon_user -p $pidfile -f $command $command_args
 }}
 
 load_rc_config $name
