@@ -63,11 +63,12 @@ jobs:
           usesh: true
           copyback: true
           prepare: |
-            # Install Rust toolchain
-            pkg install -y curl rust cargo
-
             # Install build tools
-            pkg install -y gmake
+            pkg install -y curl gmake
+
+            # Install Rust via rustup
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            . "$HOME/.cargo/env"
 
           run: |
             set -e

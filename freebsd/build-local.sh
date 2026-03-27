@@ -25,7 +25,14 @@ fi
 
 # --- Install dependencies ---
 echo "=== [1/6] Installing dependencies ==="
-pkg install -y curl rust cargo git gmake node24 npm-node24
+pkg install -y curl git gmake node24 npm-node24
+
+# Install Rust via rustup if not present
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "Installing Rust via rustup..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    . "$HOME/.cargo/env"
+fi
 
 # --- Clone or update repo ---
 if [ ! -f "$PROJECT_ROOT/Cargo.toml" ]; then
