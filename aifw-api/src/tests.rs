@@ -28,7 +28,7 @@ mod tests {
     async fn create_user_and_login(server: &TestServer) -> String {
         // Create user
         server
-            .post("/api/v1/auth/users")
+            .post("/api/v1/auth/register")
             .json(&json!({
                 "username": "admin",
                 "password": "testpass123"
@@ -54,7 +54,7 @@ mod tests {
         let (server, _) = test_app().await;
 
         let resp = server
-            .post("/api/v1/auth/users")
+            .post("/api/v1/auth/register")
             .json(&json!({
                 "username": "admin",
                 "password": "testpass123"
@@ -72,7 +72,7 @@ mod tests {
 
         // Create user first
         server
-            .post("/api/v1/auth/users")
+            .post("/api/v1/auth/register")
             .json(&json!({
                 "username": "admin",
                 "password": "testpass123"
@@ -99,7 +99,7 @@ mod tests {
         let (server, _) = test_app().await;
 
         server
-            .post("/api/v1/auth/users")
+            .post("/api/v1/auth/register")
             .json(&json!({
                 "username": "admin",
                 "password": "testpass123"
@@ -375,7 +375,7 @@ mod tests {
         let (server, _) = test_app().await;
 
         server
-            .post("/api/v1/auth/users")
+            .post("/api/v1/auth/register")
             .json(&json!({"username": "rfuser", "password": "pass123"}))
             .await;
 
@@ -407,7 +407,7 @@ mod tests {
         let (server, _) = test_app().await;
 
         server
-            .post("/api/v1/auth/users")
+            .post("/api/v1/auth/register")
             .json(&json!({"username": "reuseuser", "password": "pass123"}))
             .await;
 
@@ -439,7 +439,7 @@ mod tests {
         let (server, _) = test_app().await;
 
         server
-            .post("/api/v1/auth/users")
+            .post("/api/v1/auth/register")
             .json(&json!({"username": "logoutuser", "password": "pass123"}))
             .await;
 
