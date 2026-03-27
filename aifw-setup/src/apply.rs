@@ -52,7 +52,23 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     write_rcd_scripts(config)?;
     console::success("Service scripts installed");
 
-    // 5b. Configure devfs rules for /dev/pf and /dev/bpf* access
+    // 5b. Grant aifw user sudo access to pfctl (no password)
+    #[cfg(target_os = "freebsd")]
+    {
+        let sudoers_line = "aifw ALL=(ALL) NOPASSWD: /sbin/pfctl\n";
+        let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
+        if !std::path::Path::new(sudoers_path).exists() {
+            let _ = std::fs::create_dir_all("/usr/local/etc/sudoers.d");
+            let _ = std::fs::write(sudoers_path, sudoers_line);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(sudoers_path, std::fs::Permissions::from_mode(0o440));
+            }
+        }
+    }
+
+    // 5c. Configure devfs rules for /dev/pf and /dev/bpf* access
     console::info("Configuring device permissions...");
     configure_devfs()?;
     console::success("Device permissions configured");
