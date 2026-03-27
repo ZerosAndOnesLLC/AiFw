@@ -34,6 +34,8 @@ export const api = {
   listRules: () => fetchApi<{ data: Rule[] }>("/api/v1/rules"),
   createRule: (rule: CreateRuleRequest) =>
     fetchApi<{ data: Rule }>("/api/v1/rules", { method: "POST", body: JSON.stringify(rule) }),
+  updateRule: (id: string, rule: UpdateRuleRequest) =>
+    fetchApi<{ data: Rule }>(`/api/v1/rules/${id}`, { method: "PUT", body: JSON.stringify(rule) }),
   deleteRule: (id: string) =>
     fetchApi<{ message: string }>(`/api/v1/rules/${id}`, { method: "DELETE" }),
 
@@ -41,6 +43,8 @@ export const api = {
   listNat: () => fetchApi<{ data: NatRule[] }>("/api/v1/nat"),
   createNat: (rule: CreateNatRequest) =>
     fetchApi<{ data: NatRule }>("/api/v1/nat", { method: "POST", body: JSON.stringify(rule) }),
+  updateNat: (id: string, rule: UpdateNatRequest) =>
+    fetchApi<{ data: NatRule }>(`/api/v1/nat/${id}`, { method: "PUT", body: JSON.stringify(rule) }),
   deleteNat: (id: string) =>
     fetchApi<{ message: string }>(`/api/v1/nat/${id}`, { method: "DELETE" }),
 
@@ -107,11 +111,16 @@ export interface CreateRuleRequest {
   direction: string;
   protocol: string;
   src_addr?: string;
+  src_port_start?: number | null;
   dst_addr?: string;
-  dst_port_start?: number;
-  dst_port_end?: number;
-  priority?: number;
+  dst_port_start?: number | null;
   label?: string;
+  state_tracking?: string;
+  status?: string;
+}
+
+export interface UpdateRuleRequest extends CreateRuleRequest {
+  status: string;
 }
 
 export interface NatRule {
@@ -120,11 +129,14 @@ export interface NatRule {
   interface: string;
   protocol: string;
   src_addr: string;
+  src_port: { start: number; end: number } | null;
   dst_addr: string;
-  redirect: { address: string; port?: { start: number; end: number } };
-  label?: string;
+  dst_port: { start: number; end: number } | null;
+  redirect: { address: string; port: { start: number; end: number } | null };
+  label: string | null;
   status: string;
   created_at: string;
+  updated_at: string;
 }
 
 export interface CreateNatRequest {
@@ -133,10 +145,16 @@ export interface CreateNatRequest {
   protocol: string;
   redirect_addr: string;
   src_addr?: string;
+  src_port_start?: number;
   dst_addr?: string;
   dst_port_start?: number;
   redirect_port_start?: number;
   label?: string;
+  status?: string;
+}
+
+export interface UpdateNatRequest extends CreateNatRequest {
+  status: string;
 }
 
 export interface Connection {
