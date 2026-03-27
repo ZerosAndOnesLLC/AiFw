@@ -1,132 +1,982 @@
 "use client";
 
-import Card from "@/components/Card";
-import StatusBadge from "@/components/StatusBadge";
+import { useState, useEffect, useCallback } from "react";
 
-const wgTunnels = [
-  { id: "1", name: "wg0-office", interface: "wg0", port: 51820, address: "10.0.0.1/24", status: "up", peers: 3, publicKey: "aBcDeFgH..." },
-  { id: "2", name: "wg1-remote", interface: "wg1", port: 51821, address: "10.1.0.1/24", status: "down", peers: 1, publicKey: "xYzAbCdE..." },
-];
+/* ────────────────────────── Types ────────────────────────── */
 
-const ipsecSas = [
-  { id: "3", name: "office-vpn", src: "203.0.113.1", dst: "198.51.100.1", protocol: "esp", mode: "tunnel", status: "up", spi: "0x1a2b3c4d" },
-  { id: "4", name: "partner-link", src: "203.0.113.1", dst: "192.0.2.50", protocol: "esp", mode: "tunnel", status: "down", spi: "0x5e6f7a8b" },
-];
+interface WgTunnel {
+  id: string;
+  name: string;
+  interface_name: string;
+  listen_port: number;
+  address: string;
+  private_key: string;
+  public_key: string;
+  status: string;
+  created_at: string;
+}
 
-const peers = [
-  { name: "laptop-alice", endpoint: "1.2.3.4:51820", allowedIps: "10.0.0.2/32", keepalive: 25, lastHandshake: "2 min ago" },
-  { name: "phone-bob", endpoint: "5.6.7.8:51820", allowedIps: "10.0.0.3/32", keepalive: 25, lastHandshake: "15 min ago" },
-  { name: "server-dc2", endpoint: "9.10.11.12:51820", allowedIps: "10.0.0.0/24", keepalive: 0, lastHandshake: "1 sec ago" },
-];
+interface WgPeer {
+  id: string;
+  tunnel_id: string;
+  public_key: string;
+  endpoint: string | null;
+  allowed_ips: string;
+  keepalive: number | null;
+  created_at: string;
+}
+
+interface IpsecSa {
+  id: string;
+  name: string;
+  local_addr: string;
+  remote_addr: string;
+  protocol: string;
+  mode: string;
+  spi_in: string;
+  spi_out: string;
+  status: string;
+  created_at: string;
+}
+
+/* ────────────────────────── Helpers ────────────────────────── */
+
+function authHeaders(): Record<string, string> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
+  const res = await fetch(url, { ...opts, headers: { ...authHeaders(), ...opts?.headers } });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(body || `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
+/* ────────────────────────── Default form values ────────────────────────── */
+
+const defaultWgForm = {
+  name: "",
+  listen_port: "",
+  address: "",
+  private_key: "",
+};
+
+const defaultPeerForm = {
+  public_key: "",
+  endpoint: "",
+  allowed_ips: "",
+  keepalive: "",
+};
+
+const defaultIpsecForm = {
+  name: "",
+  local_addr: "",
+  remote_addr: "",
+  protocol: "esp",
+  mode: "tunnel",
+};
+
+/* ────────────────────────── Shared styles ────────────────────────── */
+
+const inputCls =
+  "w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors";
+const selectCls =
+  "w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors";
+const labelCls = "block text-xs text-gray-400 mb-1";
+const btnPrimary =
+  "px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors";
+const btnCancel =
+  "px-4 py-1.5 text-sm font-medium rounded-md bg-gray-700 border border-gray-600 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors";
+
+/* ────────────────────────── Status badge ────────────────────────── */
+
+function StatusBadge({ status }: { status: string }) {
+  const isUp = status === "up" || status === "active" || status === "established";
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded border text-[10px] px-2 py-0.5 font-medium uppercase tracking-wider ${
+        isUp
+          ? "bg-green-500/15 text-green-400 border-green-500/30"
+          : "bg-red-500/15 text-red-400 border-red-500/30"
+      }`}
+    >
+      <span className={`inline-block w-1.5 h-1.5 rounded-full ${isUp ? "bg-green-400" : "bg-red-400"}`} />
+      {status}
+    </span>
+  );
+}
+
+/* ────────────────────────── Delete icon ────────────────────────── */
+
+function DeleteButton({ onClick, title }: { onClick: () => void; title?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className="p-1.5 text-gray-500 hover:text-red-400 transition-colors rounded hover:bg-gray-700"
+      title={title || "Delete"}
+    >
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+        />
+      </svg>
+    </button>
+  );
+}
+
+/* ────────────────────────── Edit icon ────────────────────────── */
+
+function EditButton({ onClick, title }: { onClick: () => void; title?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className="p-1.5 text-gray-500 hover:text-blue-400 transition-colors rounded hover:bg-gray-700"
+      title={title || "Edit"}
+    >
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"
+        />
+      </svg>
+    </button>
+  );
+}
+
+/* ────────────────────────── Chevron icon ────────────────────────── */
+
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      className={`w-5 h-5 text-gray-400 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+   Main Page Component
+   ════════════════════════════════════════════════════════════ */
 
 export default function VpnPage() {
+  /* ── WireGuard state ── */
+  const [tunnels, setTunnels] = useState<WgTunnel[]>([]);
+  const [peersByTunnel, setPeersByTunnel] = useState<Record<string, WgPeer[]>>({});
+  const [wgLoading, setWgLoading] = useState(true);
+  const [wgOpen, setWgOpen] = useState(true);
+  const [expandedTunnel, setExpandedTunnel] = useState<string | null>(null);
+  const [showWgForm, setShowWgForm] = useState(false);
+  const [wgForm, setWgForm] = useState(defaultWgForm);
+  const [editingWgId, setEditingWgId] = useState<string | null>(null);
+  const [wgSubmitting, setWgSubmitting] = useState(false);
+
+  /* ── Peer form state ── */
+  const [showPeerForm, setShowPeerForm] = useState<string | null>(null); // tunnel_id or null
+  const [peerForm, setPeerForm] = useState(defaultPeerForm);
+  const [peerSubmitting, setPeerSubmitting] = useState(false);
+
+  /* ── IPsec state ── */
+  const [ipsecSas, setIpsecSas] = useState<IpsecSa[]>([]);
+  const [ipsecLoading, setIpsecLoading] = useState(true);
+  const [ipsecOpen, setIpsecOpen] = useState(true);
+  const [showIpsecForm, setShowIpsecForm] = useState(false);
+  const [ipsecForm, setIpsecForm] = useState(defaultIpsecForm);
+  const [ipsecSubmitting, setIpsecSubmitting] = useState(false);
+
+  /* ── Shared ── */
+  const [error, setError] = useState<string | null>(null);
+
+  /* ────────────────────────── Fetch helpers ────────────────────────── */
+
+  const fetchTunnels = useCallback(async () => {
+    try {
+      const res = await apiFetch<{ data: WgTunnel[] }>("/api/v1/vpn/wg");
+      setTunnels(res.data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load WireGuard tunnels");
+    } finally {
+      setWgLoading(false);
+    }
+  }, []);
+
+  const fetchPeers = useCallback(async (tunnelId: string) => {
+    try {
+      const res = await apiFetch<{ data: WgPeer[] }>(`/api/v1/vpn/wg/${tunnelId}/peers`);
+      setPeersByTunnel((prev) => ({ ...prev, [tunnelId]: res.data }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load peers");
+    }
+  }, []);
+
+  const fetchIpsec = useCallback(async () => {
+    try {
+      const res = await apiFetch<{ data: IpsecSa[] }>("/api/v1/vpn/ipsec");
+      setIpsecSas(res.data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load IPsec SAs");
+    } finally {
+      setIpsecLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTunnels();
+    fetchIpsec();
+  }, [fetchTunnels, fetchIpsec]);
+
+  /* ────────────────────────── WireGuard CRUD ────────────────────────── */
+
+  const handleExpandTunnel = (tunnelId: string) => {
+    if (expandedTunnel === tunnelId) {
+      setExpandedTunnel(null);
+    } else {
+      setExpandedTunnel(tunnelId);
+      if (!peersByTunnel[tunnelId]) {
+        fetchPeers(tunnelId);
+      }
+    }
+  };
+
+  const handleWgSubmit = async () => {
+    if (wgSubmitting) return;
+    if (!wgForm.name.trim() || !wgForm.address.trim() || !wgForm.listen_port) return;
+    setWgSubmitting(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = {
+        name: wgForm.name.trim(),
+        listen_port: parseInt(wgForm.listen_port, 10),
+        address: wgForm.address.trim(),
+      };
+      if (wgForm.private_key.trim()) {
+        body.private_key = wgForm.private_key.trim();
+      }
+
+      if (editingWgId) {
+        await apiFetch(`/api/v1/vpn/wg/${editingWgId}`, {
+          method: "PUT",
+          body: JSON.stringify(body),
+        });
+      } else {
+        await apiFetch("/api/v1/vpn/wg", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+      }
+      setWgForm(defaultWgForm);
+      setEditingWgId(null);
+      setShowWgForm(false);
+      await fetchTunnels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save tunnel");
+    } finally {
+      setWgSubmitting(false);
+    }
+  };
+
+  const handleEditWg = (tunnel: WgTunnel) => {
+    setWgForm({
+      name: tunnel.name,
+      listen_port: String(tunnel.listen_port),
+      address: tunnel.address,
+      private_key: "",
+    });
+    setEditingWgId(tunnel.id);
+    setShowWgForm(true);
+  };
+
+  const handleDeleteWg = async (id: string) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/v1/vpn/wg/${id}`, { method: "DELETE" });
+      setTunnels((prev) => prev.filter((t) => t.id !== id));
+      setPeersByTunnel((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      if (expandedTunnel === id) setExpandedTunnel(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete tunnel");
+    }
+  };
+
+  const handleCancelWg = () => {
+    setWgForm(defaultWgForm);
+    setEditingWgId(null);
+    setShowWgForm(false);
+  };
+
+  /* ────────────────────────── Peer CRUD ────────────────────────── */
+
+  const handlePeerSubmit = async (tunnelId: string) => {
+    if (peerSubmitting) return;
+    if (!peerForm.public_key.trim() || !peerForm.allowed_ips.trim()) return;
+    setPeerSubmitting(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = {
+        public_key: peerForm.public_key.trim(),
+        allowed_ips: peerForm.allowed_ips.trim(),
+        endpoint: peerForm.endpoint.trim() || null,
+        keepalive: peerForm.keepalive ? parseInt(peerForm.keepalive, 10) : null,
+      };
+      await apiFetch(`/api/v1/vpn/wg/${tunnelId}/peers`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setPeerForm(defaultPeerForm);
+      setShowPeerForm(null);
+      await fetchPeers(tunnelId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add peer");
+    } finally {
+      setPeerSubmitting(false);
+    }
+  };
+
+  const handleDeletePeer = async (tunnelId: string, peerId: string) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/v1/vpn/wg/${tunnelId}/peers/${peerId}`, { method: "DELETE" });
+      setPeersByTunnel((prev) => ({
+        ...prev,
+        [tunnelId]: (prev[tunnelId] || []).filter((p) => p.id !== peerId),
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete peer");
+    }
+  };
+
+  /* ────────────────────────── IPsec CRUD ────────────────────────── */
+
+  const handleIpsecSubmit = async () => {
+    if (ipsecSubmitting) return;
+    if (!ipsecForm.name.trim() || !ipsecForm.local_addr.trim() || !ipsecForm.remote_addr.trim()) return;
+    setIpsecSubmitting(true);
+    setError(null);
+    try {
+      await apiFetch("/api/v1/vpn/ipsec", {
+        method: "POST",
+        body: JSON.stringify({
+          name: ipsecForm.name.trim(),
+          local_addr: ipsecForm.local_addr.trim(),
+          remote_addr: ipsecForm.remote_addr.trim(),
+          protocol: ipsecForm.protocol,
+          mode: ipsecForm.mode,
+        }),
+      });
+      setIpsecForm(defaultIpsecForm);
+      setShowIpsecForm(false);
+      await fetchIpsec();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create IPsec SA");
+    } finally {
+      setIpsecSubmitting(false);
+    }
+  };
+
+  const handleDeleteIpsec = async (id: string) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/v1/vpn/ipsec/${id}`, { method: "DELETE" });
+      setIpsecSas((prev) => prev.filter((sa) => sa.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete IPsec SA");
+    }
+  };
+
+  /* ════════════════════════════════════════════════════════════
+     Render
+     ════════════════════════════════════════════════════════════ */
+
   return (
     <div className="space-y-6">
+      {/* Page header */}
       <div>
-        <h1 className="text-2xl font-bold">VPN Management</h1>
-        <p className="text-sm text-[var(--text-muted)]">WireGuard tunnels and IPsec security associations</p>
+        <h1 className="text-2xl font-bold text-white">VPN Management</h1>
+        <p className="text-sm text-gray-500">
+          WireGuard tunnels and IPsec security associations
+        </p>
       </div>
 
+      {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card title="WireGuard Tunnels" value={wgTunnels.length} color="cyan" />
-        <Card title="WG Peers" value={peers.length} color="blue" />
-        <Card title="IPsec SAs" value={ipsecSas.length} color="green" />
-        <Card title="Active VPNs" value={wgTunnels.filter(t => t.status === "up").length + ipsecSas.filter(s => s.status === "up").length} color="green" subtitle="of 4 total" />
+        <SummaryCard label="WG Tunnels" value={tunnels.length} color="cyan" />
+        <SummaryCard
+          label="WG Peers"
+          value={Object.values(peersByTunnel).reduce((n, p) => n + p.length, 0)}
+          color="blue"
+        />
+        <SummaryCard label="IPsec SAs" value={ipsecSas.length} color="green" />
+        <SummaryCard
+          label="Active VPNs"
+          value={
+            tunnels.filter((t) => t.status === "up").length +
+            ipsecSas.filter((s) => s.status === "up" || s.status === "established").length
+          }
+          color="green"
+          subtitle={`of ${tunnels.length + ipsecSas.length} total`}
+        />
       </div>
 
-      {/* WireGuard */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg">
-        <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
-          <h2 className="font-medium">WireGuard Tunnels</h2>
-          <button className="px-3 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-md transition-colors">
-            Add Tunnel
+      {/* Error banner */}
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400 flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
           </button>
         </div>
-        <div className="divide-y divide-[var(--border)]">
-          {wgTunnels.map((t) => (
-            <div key={t.id} className="p-4 hover:bg-[var(--bg-card-hover)] transition-colors">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-3">
-                  <span className="font-medium">{t.name}</span>
-                  <StatusBadge status={t.status} />
-                </div>
-                <span className="text-xs text-[var(--text-muted)]">{t.peers} peer(s)</span>
-              </div>
-              <div className="grid grid-cols-4 gap-4 text-xs text-[var(--text-secondary)]">
-                <div><span className="text-[var(--text-muted)]">Interface:</span> {t.interface}</div>
-                <div><span className="text-[var(--text-muted)]">Port:</span> {t.port}</div>
-                <div><span className="text-[var(--text-muted)]">Address:</span> {t.address}</div>
-                <div><span className="text-[var(--text-muted)]">Key:</span> {t.publicKey}</div>
-              </div>
+      )}
+
+      {/* ═══════════════ WireGuard Section ═══════════════ */}
+      <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+        {/* Section header */}
+        <button
+          onClick={() => setWgOpen((o) => !o)}
+          className="w-full flex items-center justify-between p-4 hover:bg-gray-750 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-white">WireGuard Tunnels</h2>
+            <span className="text-xs text-gray-500">{tunnels.length} tunnel(s)</span>
+          </div>
+          <ChevronIcon open={wgOpen} />
+        </button>
+
+        {wgOpen && (
+          <div className="border-t border-gray-700">
+            {/* Add Tunnel button */}
+            <div className="px-4 py-3 flex justify-end border-b border-gray-700/50">
+              <button
+                onClick={() => {
+                  if (showWgForm && !editingWgId) {
+                    handleCancelWg();
+                  } else {
+                    setWgForm(defaultWgForm);
+                    setEditingWgId(null);
+                    setShowWgForm(true);
+                  }
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                </svg>
+                Add Tunnel
+              </button>
             </div>
-          ))}
-        </div>
+
+            {/* Tunnel form */}
+            {showWgForm && (
+              <div className="px-4 py-4 bg-gray-900/50 border-b border-gray-700">
+                <h3 className="text-sm font-semibold text-white mb-3">
+                  {editingWgId ? "Edit Tunnel" : "New WireGuard Tunnel"}
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div>
+                    <label className={labelCls}>Name</label>
+                    <input
+                      type="text"
+                      value={wgForm.name}
+                      onChange={(e) => setWgForm((f) => ({ ...f, name: e.target.value }))}
+                      placeholder="e.g. wg0-office"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Listen Port</label>
+                    <input
+                      type="number"
+                      value={wgForm.listen_port}
+                      onChange={(e) => setWgForm((f) => ({ ...f, listen_port: e.target.value }))}
+                      placeholder="51820"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Address (CIDR)</label>
+                    <input
+                      type="text"
+                      value={wgForm.address}
+                      onChange={(e) => setWgForm((f) => ({ ...f, address: e.target.value }))}
+                      placeholder="10.0.0.1/24"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Private Key (optional)</label>
+                    <input
+                      type="password"
+                      value={wgForm.private_key}
+                      onChange={(e) => setWgForm((f) => ({ ...f, private_key: e.target.value }))}
+                      placeholder="Auto-generated if empty"
+                      className={inputCls}
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={handleWgSubmit}
+                    disabled={wgSubmitting || !wgForm.name.trim() || !wgForm.address.trim() || !wgForm.listen_port}
+                    className={btnPrimary}
+                  >
+                    {wgSubmitting ? "Saving..." : editingWgId ? "Update Tunnel" : "Create Tunnel"}
+                  </button>
+                  <button onClick={handleCancelWg} className={btnCancel}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Tunnel list */}
+            {wgLoading ? (
+              <div className="text-center py-12 text-gray-500">Loading tunnels...</div>
+            ) : tunnels.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">No WireGuard tunnels configured</div>
+            ) : (
+              <div className="divide-y divide-gray-700/50">
+                {tunnels.map((tunnel) => {
+                  const isExpanded = expandedTunnel === tunnel.id;
+                  const peers = peersByTunnel[tunnel.id] || [];
+
+                  return (
+                    <div key={tunnel.id}>
+                      {/* Tunnel card */}
+                      <div className="p-4 hover:bg-gray-700/20 transition-colors">
+                        <div className="flex items-center justify-between mb-2">
+                          <button
+                            onClick={() => handleExpandTunnel(tunnel.id)}
+                            className="flex items-center gap-3 text-left"
+                          >
+                            <svg
+                              className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${
+                                isExpanded ? "rotate-90" : ""
+                              }`}
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={2}
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                            </svg>
+                            <span className="font-medium text-white">{tunnel.name}</span>
+                            <StatusBadge status={tunnel.status} />
+                          </button>
+                          <div className="flex items-center gap-1">
+                            <EditButton onClick={() => handleEditWg(tunnel)} title="Edit tunnel" />
+                            <DeleteButton onClick={() => handleDeleteWg(tunnel.id)} title="Delete tunnel" />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs ml-7">
+                          <div>
+                            <span className="text-gray-500">Interface:</span>{" "}
+                            <span className="text-gray-300 font-mono">{tunnel.interface_name}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">Port:</span>{" "}
+                            <span className="text-gray-300">{tunnel.listen_port}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">Address:</span>{" "}
+                            <span className="text-gray-300 font-mono">{tunnel.address}</span>
+                          </div>
+                          <div className="md:col-span-2">
+                            <span className="text-gray-500">Public Key:</span>{" "}
+                            <span className="text-gray-300 font-mono truncate">{tunnel.public_key}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Expanded peers panel */}
+                      {isExpanded && (
+                        <div className="bg-gray-900/40 border-t border-gray-700/50 px-4 py-3 ml-4 mr-4 mb-3 rounded-lg">
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-sm font-medium text-gray-300">
+                              Peers ({peers.length})
+                            </h4>
+                            <button
+                              onClick={() => {
+                                if (showPeerForm === tunnel.id) {
+                                  setShowPeerForm(null);
+                                  setPeerForm(defaultPeerForm);
+                                } else {
+                                  setPeerForm(defaultPeerForm);
+                                  setShowPeerForm(tunnel.id);
+                                }
+                              }}
+                              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded bg-green-600 hover:bg-green-700 text-white transition-colors"
+                            >
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                              </svg>
+                              Add Peer
+                            </button>
+                          </div>
+
+                          {/* Add peer form */}
+                          {showPeerForm === tunnel.id && (
+                            <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 mb-3">
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                <div>
+                                  <label className={labelCls}>Public Key</label>
+                                  <input
+                                    type="text"
+                                    value={peerForm.public_key}
+                                    onChange={(e) => setPeerForm((f) => ({ ...f, public_key: e.target.value }))}
+                                    placeholder="Peer public key"
+                                    className={inputCls}
+                                  />
+                                </div>
+                                <div>
+                                  <label className={labelCls}>Endpoint</label>
+                                  <input
+                                    type="text"
+                                    value={peerForm.endpoint}
+                                    onChange={(e) => setPeerForm((f) => ({ ...f, endpoint: e.target.value }))}
+                                    placeholder="1.2.3.4:51820 (optional)"
+                                    className={inputCls}
+                                  />
+                                </div>
+                                <div>
+                                  <label className={labelCls}>Allowed IPs</label>
+                                  <input
+                                    type="text"
+                                    value={peerForm.allowed_ips}
+                                    onChange={(e) => setPeerForm((f) => ({ ...f, allowed_ips: e.target.value }))}
+                                    placeholder="10.0.0.2/32"
+                                    className={inputCls}
+                                  />
+                                </div>
+                                <div>
+                                  <label className={labelCls}>Keepalive (sec)</label>
+                                  <input
+                                    type="number"
+                                    value={peerForm.keepalive}
+                                    onChange={(e) => setPeerForm((f) => ({ ...f, keepalive: e.target.value }))}
+                                    placeholder="25 (optional)"
+                                    className={inputCls}
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex gap-2 mt-3">
+                                <button
+                                  onClick={() => handlePeerSubmit(tunnel.id)}
+                                  disabled={peerSubmitting || !peerForm.public_key.trim() || !peerForm.allowed_ips.trim()}
+                                  className={btnPrimary}
+                                >
+                                  {peerSubmitting ? "Adding..." : "Add Peer"}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setShowPeerForm(null);
+                                    setPeerForm(defaultPeerForm);
+                                  }}
+                                  className={btnCancel}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Peer list */}
+                          {peers.length === 0 ? (
+                            <p className="text-xs text-gray-500 py-2">No peers configured for this tunnel.</p>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="border-b border-gray-700/50">
+                                    <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
+                                      Public Key
+                                    </th>
+                                    <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
+                                      Endpoint
+                                    </th>
+                                    <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
+                                      Allowed IPs
+                                    </th>
+                                    <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
+                                      Keepalive
+                                    </th>
+                                    <th className="w-10" />
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {peers.map((peer) => (
+                                    <tr key={peer.id} className="border-b border-gray-700/30 hover:bg-gray-800/50">
+                                      <td className="py-2 px-2 font-mono text-gray-300 truncate max-w-[200px]">
+                                        {peer.public_key}
+                                      </td>
+                                      <td className="py-2 px-2 font-mono text-gray-400">
+                                        {peer.endpoint || "-"}
+                                      </td>
+                                      <td className="py-2 px-2 font-mono text-gray-300">
+                                        {peer.allowed_ips}
+                                      </td>
+                                      <td className="py-2 px-2 text-gray-400">
+                                        {peer.keepalive != null ? `${peer.keepalive}s` : "off"}
+                                      </td>
+                                      <td className="py-2 px-1">
+                                        <DeleteButton
+                                          onClick={() => handleDeletePeer(tunnel.id, peer.id)}
+                                          title="Delete peer"
+                                        />
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Peers */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg">
-        <div className="p-4 border-b border-[var(--border)]">
-          <h2 className="font-medium">WireGuard Peers (wg0-office)</h2>
-        </div>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-[var(--border)]">
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Name</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Endpoint</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Allowed IPs</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Keepalive</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Last Handshake</th>
-            </tr>
-          </thead>
-          <tbody>
-            {peers.map((p) => (
-              <tr key={p.name} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)]">
-                <td className="py-2.5 px-4 font-medium">{p.name}</td>
-                <td className="py-2.5 px-4 text-[var(--text-secondary)]">{p.endpoint}</td>
-                <td className="py-2.5 px-4 font-mono text-xs text-[var(--text-secondary)]">{p.allowedIps}</td>
-                <td className="py-2.5 px-4 text-[var(--text-secondary)]">{p.keepalive || "off"}s</td>
-                <td className="py-2.5 px-4 text-[var(--text-secondary)]">{p.lastHandshake}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {/* ═══════════════ IPsec Section ═══════════════ */}
+      <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+        {/* Section header */}
+        <button
+          onClick={() => setIpsecOpen((o) => !o)}
+          className="w-full flex items-center justify-between p-4 hover:bg-gray-750 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-white">IPsec Security Associations</h2>
+            <span className="text-xs text-gray-500">{ipsecSas.length} SA(s)</span>
+          </div>
+          <ChevronIcon open={ipsecOpen} />
+        </button>
 
-      {/* IPsec */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg">
-        <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
-          <h2 className="font-medium">IPsec Security Associations</h2>
-          <button className="px-3 py-1.5 text-xs bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-md transition-colors">
-            Add IPsec SA
-          </button>
-        </div>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-[var(--border)]">
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Name</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Source</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Destination</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Protocol</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Mode</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">SPI</th>
-              <th className="text-left py-2.5 px-4 text-xs text-[var(--text-muted)] uppercase">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ipsecSas.map((sa) => (
-              <tr key={sa.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)]">
-                <td className="py-2.5 px-4 font-medium">{sa.name}</td>
-                <td className="py-2.5 px-4 font-mono text-xs text-[var(--text-secondary)]">{sa.src}</td>
-                <td className="py-2.5 px-4 font-mono text-xs text-[var(--text-secondary)]">{sa.dst}</td>
-                <td className="py-2.5 px-4 text-[var(--text-secondary)] uppercase">{sa.protocol}</td>
-                <td className="py-2.5 px-4 text-[var(--text-secondary)]">{sa.mode}</td>
-                <td className="py-2.5 px-4 font-mono text-xs text-[var(--text-secondary)]">{sa.spi}</td>
-                <td className="py-2.5 px-4"><StatusBadge status={sa.status} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {ipsecOpen && (
+          <div className="border-t border-gray-700">
+            {/* Add IPsec SA button */}
+            <div className="px-4 py-3 flex justify-end border-b border-gray-700/50">
+              <button
+                onClick={() => {
+                  if (showIpsecForm) {
+                    setShowIpsecForm(false);
+                    setIpsecForm(defaultIpsecForm);
+                  } else {
+                    setIpsecForm(defaultIpsecForm);
+                    setShowIpsecForm(true);
+                  }
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                </svg>
+                Add IPsec SA
+              </button>
+            </div>
+
+            {/* IPsec form */}
+            {showIpsecForm && (
+              <div className="px-4 py-4 bg-gray-900/50 border-b border-gray-700">
+                <h3 className="text-sm font-semibold text-white mb-3">New IPsec SA</h3>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <div>
+                    <label className={labelCls}>Name</label>
+                    <input
+                      type="text"
+                      value={ipsecForm.name}
+                      onChange={(e) => setIpsecForm((f) => ({ ...f, name: e.target.value }))}
+                      placeholder="e.g. office-vpn"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Local Address</label>
+                    <input
+                      type="text"
+                      value={ipsecForm.local_addr}
+                      onChange={(e) => setIpsecForm((f) => ({ ...f, local_addr: e.target.value }))}
+                      placeholder="203.0.113.1"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Remote Address</label>
+                    <input
+                      type="text"
+                      value={ipsecForm.remote_addr}
+                      onChange={(e) => setIpsecForm((f) => ({ ...f, remote_addr: e.target.value }))}
+                      placeholder="198.51.100.1"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Protocol</label>
+                    <select
+                      value={ipsecForm.protocol}
+                      onChange={(e) => setIpsecForm((f) => ({ ...f, protocol: e.target.value }))}
+                      className={selectCls}
+                    >
+                      <option value="esp">ESP</option>
+                      <option value="ah">AH</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>Mode</label>
+                    <select
+                      value={ipsecForm.mode}
+                      onChange={(e) => setIpsecForm((f) => ({ ...f, mode: e.target.value }))}
+                      className={selectCls}
+                    >
+                      <option value="tunnel">Tunnel</option>
+                      <option value="transport">Transport</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={handleIpsecSubmit}
+                    disabled={
+                      ipsecSubmitting ||
+                      !ipsecForm.name.trim() ||
+                      !ipsecForm.local_addr.trim() ||
+                      !ipsecForm.remote_addr.trim()
+                    }
+                    className={btnPrimary}
+                  >
+                    {ipsecSubmitting ? "Creating..." : "Create SA"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowIpsecForm(false);
+                      setIpsecForm(defaultIpsecForm);
+                    }}
+                    className={btnCancel}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* IPsec table */}
+            {ipsecLoading ? (
+              <div className="text-center py-12 text-gray-500">Loading IPsec SAs...</div>
+            ) : ipsecSas.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">No IPsec security associations configured</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-700">
+                      <th className="text-left py-3 px-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Name
+                      </th>
+                      <th className="text-left py-3 px-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Local
+                      </th>
+                      <th className="text-left py-3 px-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Remote
+                      </th>
+                      <th className="text-left py-3 px-3 text-xs font-medium text-gray-500 uppercase tracking-wider w-20">
+                        Protocol
+                      </th>
+                      <th className="text-left py-3 px-3 text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
+                        Mode
+                      </th>
+                      <th className="text-left py-3 px-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        SPI In
+                      </th>
+                      <th className="text-left py-3 px-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        SPI Out
+                      </th>
+                      <th className="text-left py-3 px-3 text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
+                        Status
+                      </th>
+                      <th className="w-12" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ipsecSas.map((sa) => (
+                      <tr
+                        key={sa.id}
+                        className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors"
+                      >
+                        <td className="py-2.5 px-3 font-medium text-white">{sa.name}</td>
+                        <td className="py-2.5 px-3 font-mono text-xs text-gray-300">{sa.local_addr}</td>
+                        <td className="py-2.5 px-3 font-mono text-xs text-gray-300">{sa.remote_addr}</td>
+                        <td className="py-2.5 px-3 text-gray-400 uppercase text-xs">{sa.protocol}</td>
+                        <td className="py-2.5 px-3 text-gray-400 text-xs">{sa.mode}</td>
+                        <td className="py-2.5 px-3 font-mono text-xs text-gray-400">{sa.spi_in}</td>
+                        <td className="py-2.5 px-3 font-mono text-xs text-gray-400">{sa.spi_out}</td>
+                        <td className="py-2.5 px-3">
+                          <StatusBadge status={sa.status} />
+                        </td>
+                        <td className="py-2.5 px-2">
+                          <DeleteButton onClick={() => handleDeleteIpsec(sa.id)} title="Delete SA" />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+/* ────────────────────────── Summary card ────────────────────────── */
+
+function SummaryCard({
+  label,
+  value,
+  color,
+  subtitle,
+}: {
+  label: string;
+  value: number;
+  color: "cyan" | "blue" | "green";
+  subtitle?: string;
+}) {
+  const borderColors: Record<string, string> = {
+    cyan: "border-cyan-500/30",
+    blue: "border-blue-500/30",
+    green: "border-green-500/30",
+  };
+  const textColors: Record<string, string> = {
+    cyan: "text-cyan-400",
+    blue: "text-blue-400",
+    green: "text-green-400",
+  };
+
+  return (
+    <div className={`bg-gray-800 border ${borderColors[color]} rounded-lg p-4`}>
+      <p className="text-xs text-gray-500 uppercase tracking-wider">{label}</p>
+      <p className={`text-2xl font-bold mt-1 ${textColors[color]}`}>{value}</p>
+      {subtitle && <p className="text-[10px] text-gray-500 mt-0.5">{subtitle}</p>}
     </div>
   );
 }

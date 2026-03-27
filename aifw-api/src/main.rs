@@ -5,7 +5,7 @@ mod routes;
 mod tests;
 
 use aifw_conntrack::ConnectionTracker;
-use aifw_core::{Database, NatEngine, RuleEngine};
+use aifw_core::{Database, GeoIpEngine, NatEngine, RuleEngine, VpnEngine};
 use aifw_pf::PfBackend;
 use axum::{
     Router,
@@ -28,6 +28,8 @@ pub struct AppState {
     pub pf: Arc<dyn PfBackend>,
     pub rule_engine: Arc<RuleEngine>,
     pub nat_engine: Arc<NatEngine>,
+    pub vpn_engine: Arc<VpnEngine>,
+    pub geoip_engine: Arc<GeoIpEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub auth_settings: auth::AuthSettings,
 }
@@ -81,7 +83,17 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/rules/{id}", get(routes::get_rule).put(routes::update_rule).delete(routes::delete_rule))
         .route("/api/v1/nat", get(routes::list_nat_rules).post(routes::create_nat_rule))
         .route("/api/v1/nat/{id}", put(routes::update_nat_rule).delete(routes::delete_nat_rule))
+        .route("/api/v1/rules/reorder", put(routes::reorder_rules))
         .route("/api/v1/dns", get(routes::get_dns).put(routes::update_dns))
+        .route("/api/v1/geoip", get(routes::list_geoip_rules).post(routes::create_geoip_rule))
+        .route("/api/v1/geoip/{id}", put(routes::update_geoip_rule).delete(routes::delete_geoip_rule))
+        .route("/api/v1/geoip/lookup/{ip}", get(routes::geoip_lookup))
+        .route("/api/v1/vpn/wg", get(routes::list_wg_tunnels).post(routes::create_wg_tunnel))
+        .route("/api/v1/vpn/wg/{id}", put(routes::update_wg_tunnel).delete(routes::delete_wg_tunnel))
+        .route("/api/v1/vpn/wg/{id}/peers", get(routes::list_wg_peers).post(routes::create_wg_peer))
+        .route("/api/v1/vpn/wg/{tid}/peers/{pid}", delete(routes::delete_wg_peer))
+        .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas).post(routes::create_ipsec_sa))
+        .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/connections", get(routes::list_connections))
         .route("/api/v1/reload", post(routes::reload))
@@ -151,6 +163,10 @@ async fn create_state_from_db(
     let rule_engine = Arc::new(RuleEngine::new(db, pf.clone()));
     let nat_engine = Arc::new(NatEngine::new(pool.clone(), pf.clone()));
     nat_engine.migrate().await?;
+    let vpn_engine = Arc::new(VpnEngine::new(pool.clone(), pf.clone()));
+    vpn_engine.migrate().await?;
+    let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
+    geoip_engine.migrate().await?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     Ok(AppState {
@@ -158,6 +174,8 @@ async fn create_state_from_db(
         pf,
         rule_engine,
         nat_engine,
+        vpn_engine,
+        geoip_engine,
         conntrack,
         auth_settings,
     })

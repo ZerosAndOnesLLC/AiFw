@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use aifw_common::{
-    Action, Address, Direction, Interface, NatRedirect, NatRule, NatStatus, NatType, PortRange,
-    Protocol, Rule, RuleMatch, RuleStatus, StateTracking,
+    Action, Address, CountryCode, Direction, GeoIpAction, GeoIpRule, GeoIpRuleStatus, Interface,
+    IpsecMode, IpsecProtocol, IpsecSa, NatRedirect, NatRule, NatStatus, NatType, PortRange,
+    Protocol, Rule, RuleMatch, RuleStatus, StateTracking, VpnStatus, WgPeer, WgTunnel,
 };
 use crate::AppState;
 use crate::auth;
@@ -766,6 +767,246 @@ pub async fn get_dns() -> Result<Json<DnsConfigResponse>, StatusCode> {
         })
         .collect();
     Ok(Json(DnsConfigResponse { servers }))
+}
+
+// --- Rule reordering ---
+
+#[derive(Debug, Deserialize)]
+pub struct ReorderRequest {
+    pub rule_ids: Vec<String>,
+}
+
+pub async fn reorder_rules(
+    State(state): State<AppState>,
+    Json(req): Json<ReorderRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    for (i, id_str) in req.rule_ids.iter().enumerate() {
+        let uuid = Uuid::parse_str(id_str).map_err(|_| bad_request())?;
+        let mut rule = state.rule_engine.get_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+        rule.priority = i as i32;
+        rule.updated_at = chrono::Utc::now();
+        state.rule_engine.update_rule(rule).await.map_err(|_| internal())?;
+    }
+    Ok(Json(MessageResponse { message: format!("{} rules reordered", req.rule_ids.len()) }))
+}
+
+// --- GeoIP ---
+
+#[derive(Debug, Deserialize)]
+pub struct CreateGeoIpRuleRequest {
+    pub country_code: String,
+    pub action: String,
+    pub status: Option<String>,
+}
+
+pub async fn list_geoip_rules(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<GeoIpRule>>>, StatusCode> {
+    let rules = state.geoip_engine.list_rules().await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: rules }))
+}
+
+pub async fn create_geoip_rule(
+    State(state): State<AppState>,
+    Json(req): Json<CreateGeoIpRuleRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<GeoIpRule>>), StatusCode> {
+    let country = CountryCode::new(&req.country_code).map_err(|_| bad_request())?;
+    let action = GeoIpAction::parse(&req.action).map_err(|_| bad_request())?;
+    let rule = GeoIpRule::new(country, action);
+    let rule = state.geoip_engine.add_rule(rule).await.map_err(|_| bad_request())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
+}
+
+pub async fn update_geoip_rule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateGeoIpRuleRequest>,
+) -> Result<Json<ApiResponse<GeoIpRule>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let mut rule = state.geoip_engine.get_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    rule.country = CountryCode::new(&req.country_code).map_err(|_| bad_request())?;
+    rule.action = GeoIpAction::parse(&req.action).map_err(|_| bad_request())?;
+    if let Some(ref s) = req.status {
+        rule.status = match s.as_str() {
+            "active" => GeoIpRuleStatus::Active,
+            "disabled" => GeoIpRuleStatus::Disabled,
+            _ => return Err(bad_request()),
+        };
+    }
+    state.geoip_engine.update_rule(&rule).await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: rule }))
+}
+
+pub async fn delete_geoip_rule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    state.geoip_engine.delete_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(MessageResponse { message: format!("Geo-IP rule {id} deleted") }))
+}
+
+pub async fn geoip_lookup(
+    State(state): State<AppState>,
+    Path(ip_str): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let ip: std::net::IpAddr = ip_str.parse().map_err(|_| bad_request())?;
+    let result = state.geoip_engine.lookup(ip).await;
+    Ok(Json(serde_json::to_value(result).unwrap_or_default()))
+}
+
+// --- VPN: WireGuard ---
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWgTunnelRequest {
+    pub name: String,
+    pub listen_port: u16,
+    pub address: String,
+    pub private_key: Option<String>,
+    pub dns: Option<String>,
+    pub mtu: Option<u16>,
+}
+
+pub async fn list_wg_tunnels(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<WgTunnel>>>, StatusCode> {
+    let tunnels = state.vpn_engine.list_wg_tunnels().await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: tunnels }))
+}
+
+pub async fn create_wg_tunnel(
+    State(state): State<AppState>,
+    Json(req): Json<CreateWgTunnelRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<WgTunnel>>), StatusCode> {
+    let address = Address::parse(&req.address).map_err(|_| bad_request())?;
+    let iface_name = format!("wg{}", req.listen_port); // derive interface name from port
+    let mut tunnel = WgTunnel::new(req.name, Interface(iface_name), req.listen_port, address);
+    if let Some(ref pk) = req.private_key {
+        tunnel.private_key = pk.clone();
+    }
+    tunnel.dns = req.dns;
+    tunnel.mtu = req.mtu;
+    let tunnel = state.vpn_engine.add_wg_tunnel(tunnel).await.map_err(|_| bad_request())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: tunnel })))
+}
+
+pub async fn update_wg_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateWgTunnelRequest>,
+) -> Result<Json<ApiResponse<WgTunnel>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let mut tunnel = state.vpn_engine.get_wg_tunnel(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    tunnel.name = req.name;
+    tunnel.listen_port = req.listen_port;
+    tunnel.address = Address::parse(&req.address).map_err(|_| bad_request())?;
+    tunnel.dns = req.dns;
+    tunnel.mtu = req.mtu;
+    tunnel.updated_at = chrono::Utc::now();
+    // Re-insert (delete + add) since we don't have a dedicated update query
+    state.vpn_engine.delete_wg_tunnel(uuid).await.map_err(|_| internal())?;
+    let tunnel = state.vpn_engine.add_wg_tunnel(tunnel).await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: tunnel }))
+}
+
+pub async fn delete_wg_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    state.vpn_engine.delete_wg_tunnel(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(MessageResponse { message: format!("WG tunnel {id} deleted") }))
+}
+
+// --- VPN: WireGuard Peers ---
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWgPeerRequest {
+    pub name: Option<String>,
+    pub public_key: String,
+    pub endpoint: Option<String>,
+    pub allowed_ips: String,
+    pub keepalive: Option<u16>,
+}
+
+pub async fn list_wg_peers(
+    State(state): State<AppState>,
+    Path(tunnel_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<WgPeer>>>, StatusCode> {
+    let uuid = Uuid::parse_str(&tunnel_id).map_err(|_| bad_request())?;
+    let peers = state.vpn_engine.list_wg_peers(uuid).await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: peers }))
+}
+
+pub async fn create_wg_peer(
+    State(state): State<AppState>,
+    Path(tunnel_id): Path<String>,
+    Json(req): Json<CreateWgPeerRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<WgPeer>>), StatusCode> {
+    let tid = Uuid::parse_str(&tunnel_id).map_err(|_| bad_request())?;
+    let allowed_ips: Vec<Address> = req.allowed_ips
+        .split(',')
+        .map(|s| Address::parse(s.trim()))
+        .collect::<aifw_common::Result<Vec<_>>>()
+        .map_err(|_| bad_request())?;
+    let mut peer = WgPeer::new(tid, req.name.unwrap_or_default(), req.public_key);
+    peer.allowed_ips = allowed_ips;
+    peer.endpoint = req.endpoint;
+    peer.persistent_keepalive = req.keepalive;
+    let peer = state.vpn_engine.add_wg_peer(peer).await.map_err(|_| bad_request())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: peer })))
+}
+
+pub async fn delete_wg_peer(
+    State(state): State<AppState>,
+    Path((_tid, pid)): Path<(String, String)>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&pid).map_err(|_| bad_request())?;
+    state.vpn_engine.delete_wg_peer(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(MessageResponse { message: format!("WG peer {pid} deleted") }))
+}
+
+// --- VPN: IPsec ---
+
+#[derive(Debug, Deserialize)]
+pub struct CreateIpsecSaRequest {
+    pub name: String,
+    pub local_addr: String,
+    pub remote_addr: String,
+    pub protocol: String,
+    pub mode: String,
+}
+
+pub async fn list_ipsec_sas(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<IpsecSa>>>, StatusCode> {
+    let sas = state.vpn_engine.list_ipsec_sas().await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: sas }))
+}
+
+pub async fn create_ipsec_sa(
+    State(state): State<AppState>,
+    Json(req): Json<CreateIpsecSaRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<IpsecSa>>), StatusCode> {
+    let src = Address::parse(&req.local_addr).map_err(|_| bad_request())?;
+    let dst = Address::parse(&req.remote_addr).map_err(|_| bad_request())?;
+    let protocol = IpsecProtocol::parse(&req.protocol).map_err(|_| bad_request())?;
+    let mode = match req.mode.as_str() {
+        "transport" => IpsecMode::Transport,
+        _ => IpsecMode::Tunnel,
+    };
+    let sa = IpsecSa::new(req.name, src, dst, protocol, mode);
+    let sa = state.vpn_engine.add_ipsec_sa(sa).await.map_err(|_| bad_request())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: sa })))
+}
+
+pub async fn delete_ipsec_sa(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    state.vpn_engine.delete_ipsec_sa(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(MessageResponse { message: format!("IPsec SA {id} deleted") }))
 }
 
 pub async fn update_dns(

@@ -95,6 +95,37 @@ impl GeoIpEngine {
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
+    pub async fn get_rule(&self, id: Uuid) -> Result<GeoIpRule> {
+        let row = sqlx::query_as::<_, GeoIpRuleRow>("SELECT * FROM geoip_rules WHERE id = ?1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AifwError::NotFound(format!("geo-ip rule {id} not found")))?;
+        row.into_rule()
+    }
+
+    pub async fn update_rule(&self, rule: &GeoIpRule) -> Result<()> {
+        let result = sqlx::query(
+            r#"UPDATE geoip_rules SET country = ?2, action = ?3, label = ?4, status = ?5, updated_at = ?6 WHERE id = ?1"#,
+        )
+        .bind(rule.id.to_string())
+        .bind(&rule.country.0)
+        .bind(rule.action.to_string())
+        .bind(rule.label.as_deref())
+        .bind(match rule.status {
+            GeoIpRuleStatus::Active => "active",
+            GeoIpRuleStatus::Disabled => "disabled",
+        })
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("geo-ip rule {} not found", rule.id)));
+        }
+        tracing::info!(id = %rule.id, "geo-ip rule updated");
+        Ok(())
+    }
+
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM geoip_rules WHERE id = ?1")
             .bind(id.to_string())
