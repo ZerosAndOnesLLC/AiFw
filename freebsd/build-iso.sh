@@ -22,7 +22,8 @@ ISODIR="${WORKDIR}/iso"
 DISTDIR="${WORKDIR}/dist"
 OUTPUTDIR="${WORKDIR}/output"
 
-LABEL="AIFW_${VERSION}"
+# cd9660 labels must be d-characters only (A-Z, 0-9, _)
+LABEL="AIFW_$(echo "$VERSION" | tr '.' '_')"
 
 echo "============================================"
 echo "  AiFw ISO Builder"
@@ -165,7 +166,7 @@ beastie_disable="YES"
 loader_logo="none"
 kern.geom.label.disk_ident.enable="0"
 kern.geom.label.gptid.enable="0"
-vfs.root.mountfrom="cd9660:/dev/iso9660/AIFW"
+vfs.root.mountfrom="cd9660:/dev/iso9660/${LABEL}"
 LOADER
 
 # Set root shell to console menu for live environment
@@ -215,14 +216,15 @@ mkdir -p "$STAGEDIR/boot/efi"
 cp "$EFIIMG" "$STAGEDIR/boot/efi/efiboot.img"
 
 # Build ISO with makefs
+# El Torito: BIOS boot from cdboot, EFI boot from efiboot.img
 makefs -t cd9660 \
     -o rockridge \
     -o label="${LABEL}" \
-    -o bootimage="i386;$STAGEDIR/boot/cdboot" \
+    -o bootimage="i386;/boot/cdboot" \
+    -o no-emul-boot \
+    -o bootimage="efi;/boot/efi/efiboot.img" \
     -o no-emul-boot \
     -o platformid=efi \
-    -o bootimage="efi;${EFIIMG}" \
-    -o no-emul-boot \
     "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso" \
     "$STAGEDIR"
 
