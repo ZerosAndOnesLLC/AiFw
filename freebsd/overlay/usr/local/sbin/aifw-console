@@ -3,7 +3,8 @@
 # Similar to OPNsense/pfSense console menu
 
 AIFW_CONF="/usr/local/etc/aifw/aifw.conf"
-AIFW_VERSION="0.17.0"
+AIFW_VERSION_FILE="/usr/local/share/aifw/version"
+AIFW_VERSION=$(cat "$AIFW_VERSION_FILE" 2>/dev/null || echo "unknown")
 
 show_banner()
 {

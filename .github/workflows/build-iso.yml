@@ -72,6 +72,7 @@ jobs:
 
           run: |
             set -e
+            . "$HOME/.cargo/env"
 
             echo "=== Building AiFw binaries ==="
             cd /home/runner/work/AiFw/AiFw

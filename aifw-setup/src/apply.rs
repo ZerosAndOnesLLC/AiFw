@@ -48,13 +48,13 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         console::info("Writing kernel tuning files...");
 
         let sysctl_conf = tuning::generate_sysctl_conf(tuning_items);
-        if !sysctl_conf.lines().filter(|l| l.contains('=')).count() == 0 {
+        if sysctl_conf.lines().filter(|l| l.contains('=')).count() > 0 {
             write_file("/etc/sysctl.conf.aifw", &sysctl_conf)?;
             console::success("sysctl.conf.aifw written");
         }
 
         let loader_conf = tuning::generate_loader_conf(tuning_items);
-        if !loader_conf.lines().filter(|l| l.contains('=')).count() == 0 {
+        if loader_conf.lines().filter(|l| l.contains('=')).count() > 0 {
             write_file("/boot/loader.conf.aifw", &loader_conf)?;
             console::success("loader.conf.aifw written");
         }
@@ -146,15 +146,7 @@ fn configure_devfs() -> Result<(), String> {
     {
         use std::process::Command;
 
-        // Write devfs ruleset for aifw
-        let rules = r#"# AiFw device access rules
-[aifw_devfs=10]
-add path 'pf' mode 0660 group aifw
-add path 'bpf*' mode 0660 group aifw
-"#;
-        write_file("/etc/devfs.aifw.rules", rules)?;
-
-        // Append include to devfs.rules if not already present
+        // Write rules directly to /etc/devfs.rules (the canonical location)
         let devfs_rules_path = "/etc/devfs.rules";
         let existing = std::fs::read_to_string(devfs_rules_path).unwrap_or_default();
         if !existing.contains("aifw_devfs") {

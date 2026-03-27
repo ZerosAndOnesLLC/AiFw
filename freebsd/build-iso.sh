@@ -85,6 +85,7 @@ rm -rf "$STAGEDIR/rescue"
 echo "[5/9] Installing packages..."
 mkdir -p "$STAGEDIR/dev"
 mount -t devfs devfs "$STAGEDIR/dev"
+trap 'umount "$STAGEDIR/dev" 2>/dev/null || true' EXIT
 
 # Copy resolv.conf for DNS in chroot
 cp /etc/resolv.conf "$STAGEDIR/etc/resolv.conf"
@@ -96,6 +97,7 @@ chroot "$STAGEDIR" /bin/sh -c '
 '
 
 umount "$STAGEDIR/dev"
+trap - EXIT
 
 # Clean pkg cache to save space
 rm -rf "$STAGEDIR/var/db/pkg/repos" "$STAGEDIR/var/cache/pkg"

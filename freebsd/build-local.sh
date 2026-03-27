@@ -57,6 +57,8 @@ cd "$PROJECT_ROOT"
 
 # --- Build Rust binaries ---
 echo "=== [3/6] Building Rust binaries (release) ==="
+# Ensure cargo is in PATH (rustup installs to $HOME/.cargo/bin)
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 cargo build --release
 
 # --- Stage build inputs ---
