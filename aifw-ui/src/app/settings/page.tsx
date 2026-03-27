@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const API = "";
 
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("aifw_token") || "";

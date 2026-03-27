@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import Card from "@/components/Card";
 import StatusBadge from "@/components/StatusBadge";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const API = "";
 
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("aifw_token") || "";
