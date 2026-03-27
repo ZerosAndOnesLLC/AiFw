@@ -1306,6 +1306,52 @@ pub async fn list_interfaces() -> Result<Json<ApiResponse<Vec<InterfaceInfo>>>, 
     Ok(Json(ApiResponse { data: interfaces }))
 }
 
+// --- Per-interface stats ---
+
+#[derive(Debug, Serialize)]
+pub struct InterfaceStatsResponse {
+    pub name: String,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub packets_in: u64,
+    pub packets_out: u64,
+    pub errors_in: u64,
+    pub errors_out: u64,
+}
+
+pub async fn get_interface_stats(
+    Path(name): Path<String>,
+) -> Result<Json<ApiResponse<InterfaceStatsResponse>>, StatusCode> {
+    // Use netstat -I <iface> -b to get byte counters
+    let output = tokio::process::Command::new("netstat")
+        .args(["-I", &name, "-b", "-n"])
+        .output()
+        .await
+        .map_err(|_| internal())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut stats = InterfaceStatsResponse {
+        name: name.clone(),
+        bytes_in: 0, bytes_out: 0, packets_in: 0, packets_out: 0, errors_in: 0, errors_out: 0,
+    };
+
+    // Parse netstat -I output: Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 10 && parts[0] == name {
+            stats.packets_in = parts[4].parse().unwrap_or(0);
+            stats.errors_in = parts[5].parse().unwrap_or(0);
+            stats.bytes_in = parts[6].parse().unwrap_or(0);
+            stats.packets_out = parts[7].parse().unwrap_or(0);
+            stats.errors_out = parts[8].parse().unwrap_or(0);
+            stats.bytes_out = parts[9].parse().unwrap_or(0);
+            break;
+        }
+    }
+
+    Ok(Json(ApiResponse { data: stats }))
+}
+
 pub async fn update_dns(
     Json(req): Json<DnsConfigRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {

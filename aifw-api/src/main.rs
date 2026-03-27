@@ -101,6 +101,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/routes/{id}", put(routes::update_static_route).delete(routes::delete_static_route))
         .route("/api/v1/routes/system", get(routes::get_system_routes))
         .route("/api/v1/interfaces", get(routes::list_interfaces))
+        .route("/api/v1/interfaces/{name}/stats", get(routes::get_interface_stats))
         .route("/api/v1/geoip", get(routes::list_geoip_rules).post(routes::create_geoip_rule))
         .route("/api/v1/geoip/{id}", put(routes::update_geoip_rule).delete(routes::delete_geoip_rule))
         .route("/api/v1/geoip/lookup/{ip}", get(routes::geoip_lookup))
