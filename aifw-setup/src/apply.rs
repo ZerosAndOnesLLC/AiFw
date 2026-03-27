@@ -6,7 +6,12 @@ use crate::tuning::{self, TuningItem};
 pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<(), String> {
     console::header("Applying Configuration");
 
-    // 1. Create directories
+    // 1. Create service user
+    console::info("Creating aifw service user...");
+    create_service_user()?;
+    console::success("Service user ready");
+
+    // 2. Create directories
     console::info("Creating directories...");
     create_dirs(config)?;
     console::success("Directories created");
@@ -91,10 +96,65 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     Ok(())
 }
 
+/// Create the aifw service user and group if they don't exist
+fn create_service_user() -> Result<(), String> {
+    #[cfg(target_os = "freebsd")]
+    {
+        use std::process::Command;
+        // Check if user already exists
+        let status = Command::new("pw").args(["usershow", "aifw"]).output();
+        if let Ok(out) = status {
+            if out.status.success() {
+                return Ok(()); // user exists
+            }
+        }
+        // Create group
+        let _ = Command::new("pw")
+            .args(["groupadd", "aifw", "-g", "470"])
+            .output();
+        // Create user: no login shell, no home, system account
+        let out = Command::new("pw")
+            .args([
+                "useradd", "aifw",
+                "-u", "470",
+                "-g", "aifw",
+                "-d", "/nonexistent",
+                "-s", "/usr/sbin/nologin",
+                "-c", "AiFw Service Account",
+            ])
+            .output()
+            .map_err(|e| format!("failed to create aifw user: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // Ignore "already exists" errors
+            if !stderr.contains("already exists") {
+                return Err(format!("pw useradd failed: {stderr}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn create_dirs(config: &SetupConfig) -> Result<(), String> {
     for dir in [&config.config_dir, "/var/db/aifw", "/var/log/aifw"] {
         std::fs::create_dir_all(dir).map_err(|e| format!("failed to create {dir}: {e}"))?;
     }
+
+    // Set ownership: config dir readable by aifw, db/log owned by aifw
+    #[cfg(target_os = "freebsd")]
+    {
+        use std::process::Command;
+        // Config dir: root owns, aifw group can read
+        let _ = Command::new("chown").args(["root:aifw", &config.config_dir]).output();
+        let _ = Command::new("chmod").args(["750", &config.config_dir]).output();
+        // DB dir: aifw owns (API needs write access)
+        let _ = Command::new("chown").args(["-R", "aifw:aifw", "/var/db/aifw"]).output();
+        let _ = Command::new("chmod").args(["750", "/var/db/aifw"]).output();
+        // Log dir: aifw owns
+        let _ = Command::new("chown").args(["-R", "aifw:aifw", "/var/log/aifw"]).output();
+        let _ = Command::new("chmod").args(["750", "/var/log/aifw"]).output();
+    }
+
     Ok(())
 }
 
@@ -340,10 +400,11 @@ command="/usr/local/sbin/aifw-api"
 command_args="--db {db} --listen {listen}:{port} --ui-dir /usr/local/share/aifw/ui --log-level info"
 pidfile="/var/run/${{name}}.pid"
 start_cmd="${{name}}_start"
+aifw_api_user="aifw"
 
 aifw_api_start()
 {{
-    /usr/sbin/daemon -p $pidfile -f $command $command_args
+    /usr/sbin/daemon -u $aifw_api_user -p $pidfile -f $command $command_args
 }}
 
 load_rc_config $name

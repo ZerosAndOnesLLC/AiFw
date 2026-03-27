@@ -36,6 +36,56 @@ fn detect_interfaces() -> Vec<String> {
     vec!["em0".to_string(), "em1".to_string()]
 }
 
+/// Set the system root password via chpasswd/pw
+fn set_root_password() {
+    loop {
+        let pass1 = console::prompt_password("New root password");
+        if pass1.len() < 8 {
+            console::error("Password must be at least 8 characters.");
+            continue;
+        }
+        let pass2 = console::prompt_password("Confirm root password");
+        if pass1 != pass2 {
+            console::error("Passwords do not match. Try again.");
+            continue;
+        }
+
+        // Use pw on FreeBSD, chpasswd on Linux (dev)
+        #[cfg(target_os = "freebsd")]
+        {
+            use std::process::{Command, Stdio};
+            let mut child = Command::new("pw")
+                .args(["usermod", "root", "-h", "0"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .ok();
+            if let Some(ref mut c) = child {
+                use std::io::Write;
+                if let Some(ref mut stdin) = c.stdin {
+                    let _ = stdin.write_all(pass1.as_bytes());
+                }
+                match c.wait() {
+                    Ok(status) if status.success() => {
+                        console::success("Root password set.");
+                        return;
+                    }
+                    _ => {
+                        console::error("Failed to set root password.");
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "freebsd"))]
+        {
+            console::success("Root password set (simulated — not on FreeBSD).");
+            return;
+        }
+    }
+}
+
 /// Result of the setup wizard
 pub struct WizardResult {
     pub config: SetupConfig,
@@ -62,16 +112,21 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         }
     }
 
+    // ── Step 1: Root Password ─────────────────────────────────
+    console::header("Step 1/12 — Root Password");
+    console::info("Set the system root password for console and SSH access.");
+    set_root_password();
+
     // ── Step 2: Hostname ─────────────────────────────────────
-    console::header("Step 1/11 — Hostname");
+    console::header("Step 2/12 — Hostname");
     config.hostname = console::prompt("Hostname", &config.hostname);
 
-    // ── Step 2: System Detection & Tuning ──────────────────
+    // ── Step 3: System Detection & Tuning ──────────────────
     let profile = SystemProfile::detect();
     let tuning_items = tuning::run_tuning_wizard(&profile);
 
     // ── Step 3: Network Interfaces ───────────────────────────
-    console::header("Step 3/11 — Network Interfaces");
+    console::header("Step 4/12 — Network Interfaces");
     let interfaces = detect_interfaces();
 
     if interfaces.is_empty() {
@@ -103,7 +158,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
 
     // ── Step 4: WAN Configuration ────────────────────────────
-    console::header("Step 4/11 — WAN Configuration");
+    console::header("Step 5/12 — WAN Configuration");
     let wan_mode_idx = console::select(
         "WAN IP configuration",
         &["DHCP (automatic)", "Static IP", "PPPoE"],
@@ -136,7 +191,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     // ── Step 5: LAN Configuration ────────────────────────────
     if config.lan_interface.is_some() {
-        console::header("Step 5/11 — LAN Configuration");
+        console::header("Step 6/12 — LAN Configuration");
         loop {
             let ip = console::prompt("LAN IP address", "192.168.1.1/24");
             if console::validate_cidr(&ip) {
@@ -146,12 +201,12 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             console::warn("Invalid IP/prefix format.");
         }
     } else {
-        console::header("Step 5/11 — LAN Configuration");
+        console::header("Step 6/12 — LAN Configuration");
         console::info("No LAN interface configured. Skipping.");
     }
 
     // ── Step 6: Admin Account ────────────────────────────────
-    console::header("Step 6/11 — Admin Account");
+    console::header("Step 7/12 — Admin Account");
     console::info("Create the administrator account.");
     console::info("Password must be 8+ characters with uppercase, lowercase, and number.");
     println!();
@@ -174,7 +229,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
 
     // ── Step 7: MFA Setup ────────────────────────────────────
-    console::header("Step 7/11 — Multi-Factor Authentication");
+    console::header("Step 8/12 — Multi-Factor Authentication");
     console::info("TOTP-based MFA protects against password compromise.");
     console::info("You'll need an authenticator app (Google Authenticator, Authy, etc.).");
     println!();
@@ -215,19 +270,19 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     console::confirm("I have saved my recovery codes", false);
 
     // ── Step 8: API / UI Access ──────────────────────────────
-    console::header("Step 8/11 — API & Web UI");
+    console::header("Step 9/12 — API & Web UI");
     config.api_listen = console::prompt("API listen address", &config.api_listen);
     let port_str = console::prompt("API port", &config.api_port.to_string());
     config.api_port = port_str.parse().unwrap_or(8080);
     config.ui_enabled = console::confirm("Enable web UI?", true);
 
     // ── Step 9: DNS ──────────────────────────────────────────
-    console::header("Step 9/11 — DNS Servers");
+    console::header("Step 10/12 — DNS Servers");
     let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8");
     config.dns_servers = dns.split(',').map(|s| s.trim().to_string()).collect();
 
     // ── Step 10: Firewall Policy ─────────────────────────────
-    console::header("Step 10/11 — Default Firewall Policy");
+    console::header("Step 11/12 — Default Firewall Policy");
     let policy_idx = console::select(
         "Default firewall policy",
         &[
@@ -244,7 +299,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     };
 
     // ── Summary ──────────────────────────────────────────────
-    console::header("Step 11/11 — Summary");
+    console::header("Step 12/12 — Summary");
     console::info(&format!("Hostname:       {}", config.hostname));
     console::info(&format!("WAN:            {} ({})", config.wan_interface, config.wan_mode));
     if let Some(ref ip) = config.wan_ip {
