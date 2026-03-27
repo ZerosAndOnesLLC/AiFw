@@ -42,6 +42,11 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     configure_devfs()?;
     console::success("Device permissions configured");
 
+    // 5c. Generate self-signed TLS certificate
+    console::info("Generating TLS certificate...");
+    generate_tls_cert()?;
+    console::success("TLS certificate generated");
+
     // 6. Write tuning files
     let enabled_tunings = tuning_items.iter().filter(|t| t.enabled).count();
     if enabled_tunings > 0 {

@@ -11,15 +11,20 @@ export default function LoginPage() {
     e.preventDefault();
     setError("");
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/v1/auth/login`, {
+      const res = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
       if (!res.ok) throw new Error("Invalid credentials");
       const data = await res.json();
-      localStorage.setItem("aifw_token", data.token);
-      window.location.href = "/";
+      const token = data.tokens?.access_token || data.token;
+      if (token) {
+        localStorage.setItem("aifw_token", token);
+        window.location.href = "/";
+      } else if (data.totp_required) {
+        setError("TOTP required — configure MFA in settings first");
+      }
     } catch {
       setError("Invalid username or password");
     }
