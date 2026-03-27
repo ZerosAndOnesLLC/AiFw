@@ -156,10 +156,10 @@ aifw_firstboot_enable="YES"
 RCCONF
 
 # fstab for live CD (read-only root + tmpfs)
-cat > "$STAGEDIR/etc/fstab" <<FSTAB
-/dev/iso9660/${LABEL}  /       cd9660  ro  0  0
-tmpfs                  /tmp    tmpfs   rw,mode=01777  0  0
-tmpfs                  /var    tmpfs   rw  0  0
+cat > "$STAGEDIR/etc/fstab" <<'FSTAB'
+/dev/cd0    /       cd9660  ro          0  0
+tmpfs       /tmp    tmpfs   rw,mode=01777  0  0
+tmpfs       /var    tmpfs   rw          0  0
 FSTAB
 
 # loader.conf
@@ -169,7 +169,7 @@ beastie_disable="YES"
 loader_logo="none"
 kern.geom.label.disk_ident.enable="0"
 kern.geom.label.gptid.enable="0"
-vfs.root.mountfrom="cd9660:/dev/iso9660/${LABEL}"
+vfs.root.mountfrom="cd9660:cd0"
 LOADER
 
 # Set root shell to console menu for live environment
