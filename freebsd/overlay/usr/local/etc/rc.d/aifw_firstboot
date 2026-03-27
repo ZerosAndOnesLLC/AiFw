@@ -13,6 +13,7 @@ stop_cmd=":"
 
 AIFW_CONF="/usr/local/etc/aifw/aifw.conf"
 AIFW_SETUP="/usr/local/sbin/aifw-setup"
+AIFW_PF_CONF="/usr/local/etc/aifw/pf.conf.aifw"
 
 aifw_firstboot_start()
 {
@@ -31,11 +32,26 @@ aifw_firstboot_start()
         # Run the setup wizard on the console
         $AIFW_SETUP </dev/console >/dev/console 2>&1
 
-        # If setup succeeded, enable services
+        # If setup succeeded, enable and start services
         if [ -f "$AIFW_CONF" ]; then
             sysrc aifw_daemon_enable=YES >/dev/null 2>&1
             sysrc aifw_api_enable=YES >/dev/null 2>&1
             sysrc aifw_firstboot_enable=NO >/dev/null 2>&1
+
+            # Load pf rules
+            if [ -f "$AIFW_PF_CONF" ]; then
+                echo "Loading firewall rules..."
+                pfctl -f "$AIFW_PF_CONF" 2>/dev/null
+                pfctl -e 2>/dev/null
+            fi
+
+            # Start services now (don't wait for next reboot)
+            echo "Starting AiFw services..."
+            service aifw_daemon start 2>/dev/null
+            service aifw_api start 2>/dev/null
+
+            echo ""
+            echo "AiFw is running."
         fi
     else
         echo "ERROR: aifw-setup not found at $AIFW_SETUP"
