@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use aifw_common::{
-    Action, Address, Direction, Interface, NatRedirect, NatRule, NatType, PortRange, Protocol, Rule,
-    RuleMatch, RuleStatus, StateTracking,
+    Action, Address, Direction, Interface, NatRedirect, NatRule, NatStatus, NatType, PortRange,
+    Protocol, Rule, RuleMatch, RuleStatus, StateTracking,
 };
 use crate::AppState;
 use crate::auth;
@@ -32,6 +32,7 @@ pub struct CreateRuleRequest {
     pub quick: Option<bool>,
     pub label: Option<String>,
     pub state_tracking: Option<String>,
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +50,17 @@ pub struct CreateNatRuleRequest {
     pub redirect_port_start: Option<u16>,
     pub redirect_port_end: Option<u16>,
     pub label: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DnsConfigRequest {
+    pub servers: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DnsConfigResponse {
+    pub servers: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -498,6 +510,63 @@ pub async fn create_rule(
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
 
+pub async fn update_rule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateRuleRequest>,
+) -> Result<Json<ApiResponse<Rule>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let mut rule = state.rule_engine.get_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+
+    rule.action = match req.action.as_str() {
+        "pass" => Action::Pass,
+        "block" => Action::Block,
+        "block_drop" | "block-drop" => Action::BlockDrop,
+        "block_return" | "block-return" => Action::BlockReturn,
+        _ => return Err(bad_request()),
+    };
+    rule.direction = match req.direction.as_str() {
+        "in" => Direction::In,
+        "out" => Direction::Out,
+        "any" => Direction::Any,
+        _ => return Err(bad_request()),
+    };
+    rule.protocol = Protocol::parse(&req.protocol).map_err(|_| bad_request())?;
+    rule.rule_match.src_addr = req.src_addr.as_deref()
+        .map(Address::parse).transpose().map_err(|_| bad_request())?
+        .unwrap_or(Address::Any);
+    rule.rule_match.src_port = port_range(req.src_port_start, req.src_port_end);
+    rule.rule_match.dst_addr = req.dst_addr.as_deref()
+        .map(Address::parse).transpose().map_err(|_| bad_request())?
+        .unwrap_or(Address::Any);
+    rule.rule_match.dst_port = port_range(req.dst_port_start, req.dst_port_end);
+    if let Some(p) = req.priority { rule.priority = p; }
+    if let Some(l) = req.log { rule.log = l; }
+    if let Some(q) = req.quick { rule.quick = q; }
+    rule.label = req.label;
+    rule.interface = req.interface.map(Interface);
+    if let Some(ref st) = req.state_tracking {
+        rule.state_options.tracking = match st.as_str() {
+            "none" => StateTracking::None,
+            "keep_state" => StateTracking::KeepState,
+            "modulate_state" => StateTracking::ModulateState,
+            "synproxy_state" => StateTracking::SynproxyState,
+            _ => return Err(bad_request()),
+        };
+    }
+    if let Some(ref s) = req.status {
+        rule.status = match s.as_str() {
+            "active" => RuleStatus::Active,
+            "disabled" => RuleStatus::Disabled,
+            _ => return Err(bad_request()),
+        };
+    }
+    rule.updated_at = chrono::Utc::now();
+
+    state.rule_engine.update_rule(rule.clone()).await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: rule }))
+}
+
 pub async fn delete_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -554,6 +623,43 @@ pub async fn create_nat_rule(
 
     let rule = state.nat_engine.add_rule(rule).await.map_err(|_| bad_request())?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
+}
+
+pub async fn update_nat_rule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateNatRuleRequest>,
+) -> Result<Json<ApiResponse<NatRule>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let mut rule = state.nat_engine.get_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+
+    rule.nat_type = NatType::parse(&req.nat_type).map_err(|_| bad_request())?;
+    rule.interface = Interface(req.interface);
+    rule.protocol = Protocol::parse(&req.protocol).map_err(|_| bad_request())?;
+    rule.src_addr = req.src_addr.as_deref()
+        .map(Address::parse).transpose().map_err(|_| bad_request())?
+        .unwrap_or(Address::Any);
+    rule.src_port = port_range(req.src_port_start, req.src_port_end);
+    rule.dst_addr = req.dst_addr.as_deref()
+        .map(Address::parse).transpose().map_err(|_| bad_request())?
+        .unwrap_or(Address::Any);
+    rule.dst_port = port_range(req.dst_port_start, req.dst_port_end);
+    rule.redirect = NatRedirect {
+        address: Address::parse(&req.redirect_addr).map_err(|_| bad_request())?,
+        port: port_range(req.redirect_port_start, req.redirect_port_end),
+    };
+    rule.label = req.label;
+    if let Some(ref s) = req.status {
+        rule.status = match s.as_str() {
+            "active" => NatStatus::Active,
+            "disabled" => NatStatus::Disabled,
+            _ => return Err(bad_request()),
+        };
+    }
+    rule.updated_at = chrono::Utc::now();
+
+    state.nat_engine.update_rule(&rule).await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: rule }))
 }
 
 pub async fn delete_nat_rule(
@@ -640,4 +746,50 @@ pub async fn list_logs(
 ) -> Result<Json<ApiResponse<Vec<aifw_core::audit::AuditEntry>>>, StatusCode> {
     let entries = state.rule_engine.audit().list(100).await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: entries }))
+}
+
+// --- DNS ---
+
+pub async fn get_dns() -> Result<Json<DnsConfigResponse>, StatusCode> {
+    let content = tokio::fs::read_to_string("/etc/resolv.conf")
+        .await
+        .unwrap_or_default();
+    let servers: Vec<String> = content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if let Some(addr) = line.strip_prefix("nameserver") {
+                Some(addr.trim().to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    Ok(Json(DnsConfigResponse { servers }))
+}
+
+pub async fn update_dns(
+    Json(req): Json<DnsConfigRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    // Validate all entries are valid IPs
+    for server in &req.servers {
+        if server.parse::<std::net::IpAddr>().is_err() {
+            return Err(bad_request());
+        }
+    }
+
+    let content: String = req
+        .servers
+        .iter()
+        .map(|s| format!("nameserver {s}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    tokio::fs::write("/etc/resolv.conf", &content)
+        .await
+        .map_err(|_| internal())?;
+
+    Ok(Json(MessageResponse {
+        message: "DNS configuration updated".to_string(),
+    }))
 }

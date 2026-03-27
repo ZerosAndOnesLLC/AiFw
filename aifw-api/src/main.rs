@@ -10,7 +10,7 @@ use aifw_pf::PfBackend;
 use axum::{
     Router,
     middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use clap::Parser;
 use sqlx::sqlite::SqlitePool;
@@ -78,9 +78,10 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
     // Protected routes (require auth)
     let protected_routes = Router::new()
         .route("/api/v1/rules", get(routes::list_rules).post(routes::create_rule))
-        .route("/api/v1/rules/{id}", get(routes::get_rule).delete(routes::delete_rule))
+        .route("/api/v1/rules/{id}", get(routes::get_rule).put(routes::update_rule).delete(routes::delete_rule))
         .route("/api/v1/nat", get(routes::list_nat_rules).post(routes::create_nat_rule))
-        .route("/api/v1/nat/{id}", delete(routes::delete_nat_rule))
+        .route("/api/v1/nat/{id}", put(routes::update_nat_rule).delete(routes::delete_nat_rule))
+        .route("/api/v1/dns", get(routes::get_dns).put(routes::update_dns))
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/connections", get(routes::list_connections))
         .route("/api/v1/reload", post(routes::reload))

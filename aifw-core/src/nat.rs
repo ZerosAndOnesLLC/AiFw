@@ -115,6 +115,56 @@ impl NatEngine {
         rows.into_iter().map(|r| r.into_nat_rule()).collect()
     }
 
+    pub async fn update_rule(&self, rule: &NatRule) -> Result<()> {
+        validate_nat_rule(rule)?;
+        let result = sqlx::query(
+            r#"
+            UPDATE nat_rules SET nat_type = ?2, interface = ?3, protocol = ?4,
+                src_addr = ?5, src_port_start = ?6, src_port_end = ?7,
+                dst_addr = ?8, dst_port_start = ?9, dst_port_end = ?10,
+                redirect_addr = ?11, redirect_port_start = ?12, redirect_port_end = ?13,
+                label = ?14, status = ?15, updated_at = ?16
+            WHERE id = ?1
+            "#,
+        )
+        .bind(rule.id.to_string())
+        .bind(rule.nat_type.to_string())
+        .bind(rule.interface.0.as_str())
+        .bind(rule.protocol.to_string())
+        .bind(rule.src_addr.to_string())
+        .bind(rule.src_port.as_ref().map(|p| p.start as i64))
+        .bind(rule.src_port.as_ref().map(|p| p.end as i64))
+        .bind(rule.dst_addr.to_string())
+        .bind(rule.dst_port.as_ref().map(|p| p.start as i64))
+        .bind(rule.dst_port.as_ref().map(|p| p.end as i64))
+        .bind(rule.redirect.address.to_string())
+        .bind(rule.redirect.port.as_ref().map(|p| p.start as i64))
+        .bind(rule.redirect.port.as_ref().map(|p| p.end as i64))
+        .bind(rule.label.as_deref())
+        .bind(match rule.status {
+            NatStatus::Active => "active",
+            NatStatus::Disabled => "disabled",
+        })
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("NAT rule {} not found", rule.id)));
+        }
+
+        self.audit
+            .log(
+                AuditAction::RuleUpdated,
+                Some(rule.id),
+                &format!("nat: {}", rule.to_pf_rule()),
+                "nat_engine",
+            )
+            .await?;
+        tracing::info!(id = %rule.id, "NAT rule updated");
+        Ok(())
+    }
+
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM nat_rules WHERE id = ?1")
             .bind(id.to_string())
