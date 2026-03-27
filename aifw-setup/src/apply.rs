@@ -179,6 +179,45 @@ fn configure_devfs() -> Result<(), String> {
     Ok(())
 }
 
+/// Generate a self-signed TLS cert for the API server
+fn generate_tls_cert() -> Result<(), String> {
+    let cert_path = "/usr/local/etc/aifw/tls/cert.pem";
+    let key_path = "/usr/local/etc/aifw/tls/key.pem";
+
+    if std::path::Path::new(cert_path).exists() && std::path::Path::new(key_path).exists() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all("/usr/local/etc/aifw/tls")
+        .map_err(|e| format!("failed to create tls dir: {e}"))?;
+
+    // Generate using openssl CLI (available on FreeBSD base)
+    let status = std::process::Command::new("openssl")
+        .args([
+            "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+            "-keyout", key_path, "-out", cert_path,
+            "-days", "3650", "-nodes",
+            "-subj", "/CN=AiFw Firewall/O=AiFw",
+        ])
+        .status()
+        .map_err(|e| format!("openssl failed: {e}"))?;
+
+    if !status.success() {
+        return Err("openssl cert generation failed".to_string());
+    }
+
+    // Set permissions: aifw group can read
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o640));
+        let _ = std::process::Command::new("chown").args(["root:aifw", key_path]).output();
+        let _ = std::process::Command::new("chown").args(["root:aifw", cert_path]).output();
+    }
+
+    Ok(())
+}
+
 fn create_dirs(config: &SetupConfig) -> Result<(), String> {
     for dir in [&config.config_dir, "/var/db/aifw", "/var/log/aifw"] {
         std::fs::create_dir_all(dir).map_err(|e| format!("failed to create {dir}: {e}"))?;
