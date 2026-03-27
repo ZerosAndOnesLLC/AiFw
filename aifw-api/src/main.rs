@@ -57,6 +57,18 @@ struct Args {
     #[arg(long, env = "AIFW_UI_DIR")]
     ui_dir: Option<PathBuf>,
 
+    /// TLS certificate path (auto-generated self-signed if not found)
+    #[arg(long, default_value = "/usr/local/etc/aifw/tls/cert.pem")]
+    tls_cert: PathBuf,
+
+    /// TLS private key path
+    #[arg(long, default_value = "/usr/local/etc/aifw/tls/key.pem")]
+    tls_key: PathBuf,
+
+    /// Disable TLS (serve plain HTTP)
+    #[arg(long)]
+    no_tls: bool,
+
     /// Log level
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -181,6 +193,50 @@ async fn create_state_from_db(
     })
 }
 
+fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> anyhow::Result<()> {
+    if cert_path.exists() && key_path.exists() {
+        info!("Using existing TLS certificate: {}", cert_path.display());
+        return Ok(());
+    }
+
+    info!("Generating self-signed TLS certificate...");
+
+    if let Some(parent) = cert_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut params = rcgen::CertificateParams::new(vec!["aifw.local".to_string()])?;
+    params.subject_alt_names = vec![
+        rcgen::SanType::DnsName("aifw.local".try_into()?),
+        rcgen::SanType::DnsName("localhost".try_into()?),
+        rcgen::SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))),
+    ];
+    params.distinguished_name.push(
+        rcgen::DnType::CommonName,
+        rcgen::DnValue::Utf8String("AiFw Firewall".to_string()),
+    );
+    params.distinguished_name.push(
+        rcgen::DnType::OrganizationName,
+        rcgen::DnValue::Utf8String("AiFw".to_string()),
+    );
+
+    let key_pair = rcgen::KeyPair::generate()?;
+    let cert = params.self_signed(&key_pair)?;
+
+    std::fs::write(cert_path, cert.pem())?;
+    std::fs::write(key_path, key_pair.serialize_pem())?;
+
+    // Restrict key file permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    info!("Self-signed TLS certificate generated: {}", cert_path.display());
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -200,10 +256,23 @@ async fn main() -> anyhow::Result<()> {
     let state = create_app_state(&args.db, auth_settings).await?;
     let app = build_router(state, args.ui_dir.as_deref());
 
-    let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    info!("AiFw API listening on {}", args.listen);
-
-    axum::serve(listener, app).await?;
+    if args.no_tls {
+        let listener = tokio::net::TcpListener::bind(&args.listen).await?;
+        info!("AiFw API listening on http://{}", args.listen);
+        axum::serve(listener, app).await?;
+    } else {
+        ensure_tls_cert(&args.tls_cert, &args.tls_key)?;
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            &args.tls_cert,
+            &args.tls_key,
+        )
+        .await?;
+        let addr: std::net::SocketAddr = args.listen.parse()?;
+        info!("AiFw API listening on https://{}", addr);
+        axum_server::bind_rustls(addr, tls_config)
+            .serve(app.into_make_service())
+            .await?;
+    }
 
     Ok(())
 }

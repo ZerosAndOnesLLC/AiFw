@@ -85,8 +85,8 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     console::header("Setup Complete");
     console::success(&format!("AiFw is configured on {}", config.hostname));
     console::info("");
-    console::info(&format!("  Web UI:   http://{}:{}/", config.api_listen, config.api_port));
-    console::info(&format!("  API:      http://{}:{}/api/v1/", config.api_listen, config.api_port));
+    console::info(&format!("  Web UI:   https://{}:{}/", config.api_listen, config.api_port));
+    console::info(&format!("  API:      https://{}:{}/api/v1/", config.api_listen, config.api_port));
     console::info(&format!("  Admin:    {}", config.admin_username));
     console::info(&format!("  MFA:      {}", if config.totp_enabled { "enabled" } else { "disabled" }));
     console::info("");

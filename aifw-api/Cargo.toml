@@ -28,6 +28,11 @@ jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rcgen = "0.13"
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
 
 [dev-dependencies]
 axum-test = "17"
