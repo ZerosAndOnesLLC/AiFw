@@ -217,12 +217,13 @@ cp "$EFIIMG" "$STAGEDIR/boot/efi/efiboot.img"
 
 # Build ISO with makefs
 # El Torito: BIOS boot from cdboot, EFI boot from efiboot.img
+# bootimage paths are relative to the staging directory root
 makefs -t cd9660 \
     -o rockridge \
     -o label="${LABEL}" \
-    -o bootimage="i386;/boot/cdboot" \
+    -o bootimage="i386;boot/cdboot" \
     -o no-emul-boot \
-    -o bootimage="efi;/boot/efi/efiboot.img" \
+    -o bootimage="efi;boot/efi/efiboot.img" \
     -o no-emul-boot \
     -o platformid=efi \
     "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso" \
