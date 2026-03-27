@@ -343,15 +343,21 @@ echo "============================================"
 echo "  Installation complete!"
 echo "============================================"
 echo ""
+echo "  Status:     SUCCESS"
 echo "  Disk:       /dev/$TARGET_DISK"
 echo "  Filesystem: $FS_TYPE"
 echo ""
 
 if [ ! -f "$AIFW_CONF" ]; then
     echo "  The setup wizard will run on first boot."
+    echo ""
 fi
 
+echo "  +-------------------------------------------------+"
+echo "  |  Please remove the CD/DVD or USB drive before   |"
+echo "  |  rebooting so the system boots from disk.        |"
+echo "  +-------------------------------------------------+"
 echo ""
-if confirm "Reboot now?"; then
-    reboot
-fi
+echo -n "  Press Enter to reboot..."
+read _
+reboot
