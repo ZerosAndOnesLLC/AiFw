@@ -2,12 +2,17 @@
 # AiFw Install-to-Disk — clones live system to a target disk
 # Supports ZFS and UFS with UEFI + legacy BIOS boot
 
-set -e
-
 AIFW_CONF="/usr/local/etc/aifw/aifw.conf"
+INSTALL_ROOT=""
+TARGET_DISK=""
+FS_TYPE=""
+SWAP_DEV=""
 
 die() {
     echo "ERROR: $1" >&2
+    echo ""
+    echo "Press Enter to return..."
+    read _
     exit 1
 }
 
@@ -29,7 +34,6 @@ list_disks() {
         case "$disk" in
             cd*|fd*|md*) continue ;;
         esac
-        size=$(diskinfo -v "$disk" 2>/dev/null | grep 'mediasize in bytes' | awk '{print $NF}')
         human=$(diskinfo -v "$disk" 2>/dev/null | grep 'mediasize in' | grep -v bytes | head -1 | sed 's/.*(//' | sed 's/)//')
         desc=$(camcontrol identify "$disk" 2>/dev/null | grep 'device model' | sed 's/.*: *//' || echo "unknown")
         printf "  %-10s %-20s %s\n" "$disk" "$human" "$desc"
@@ -83,7 +87,7 @@ partition_disk_zfs() {
     dd if=/dev/zero of="/dev/$TARGET_DISK" bs=512 count=2048 >/dev/null 2>&1
 
     # Create GPT
-    gpart create -s gpt "$TARGET_DISK"
+    gpart create -s gpt "$TARGET_DISK" || die "Failed to create GPT"
 
     # EFI System Partition (260 MB)
     gpart add -t efi -s 260M -l efi "$TARGET_DISK"
@@ -102,14 +106,15 @@ partition_disk_zfs() {
 
     # Format EFI partition
     newfs_msdos -F 32 -c 1 "/dev/${TARGET_DISK}p1"
-    mount -t msdos "/dev/${TARGET_DISK}p1" /mnt
-    mkdir -p /mnt/EFI/BOOT
-    cp /boot/loader.efi /mnt/EFI/BOOT/BOOTX64.efi
-    umount /mnt
+    mkdir -p /tmp/efi_mount
+    mount -t msdos "/dev/${TARGET_DISK}p1" /tmp/efi_mount
+    mkdir -p /tmp/efi_mount/EFI/BOOT
+    cp /boot/loader.efi /tmp/efi_mount/EFI/BOOT/BOOTX64.efi
+    umount /tmp/efi_mount
 
     # Create ZFS pool
     zpool create -f -o altroot=/mnt -O compress=lz4 -O atime=off \
-        -O mountpoint=/ zroot "/dev/${TARGET_DISK}p4"
+        -O mountpoint=/ zroot "/dev/${TARGET_DISK}p4" || die "Failed to create ZFS pool"
 
     # Create datasets
     zfs create -o mountpoint=/tmp -o setuid=off zroot/tmp
@@ -137,7 +142,7 @@ partition_disk_ufs() {
     dd if=/dev/zero of="/dev/$TARGET_DISK" bs=512 count=2048 >/dev/null 2>&1
 
     # Create GPT
-    gpart create -s gpt "$TARGET_DISK"
+    gpart create -s gpt "$TARGET_DISK" || die "Failed to create GPT"
 
     # EFI System Partition (260 MB)
     gpart add -t efi -s 260M -l efi "$TARGET_DISK"
@@ -156,14 +161,15 @@ partition_disk_ufs() {
 
     # Format EFI partition
     newfs_msdos -F 32 -c 1 "/dev/${TARGET_DISK}p1"
-    mount -t msdos "/dev/${TARGET_DISK}p1" /mnt
-    mkdir -p /mnt/EFI/BOOT
-    cp /boot/loader.efi /mnt/EFI/BOOT/BOOTX64.efi
-    umount /mnt
+    mkdir -p /tmp/efi_mount
+    mount -t msdos "/dev/${TARGET_DISK}p1" /tmp/efi_mount
+    mkdir -p /tmp/efi_mount/EFI/BOOT
+    cp /boot/loader.efi /tmp/efi_mount/EFI/BOOT/BOOTX64.efi
+    umount /tmp/efi_mount
 
     # Format root
-    newfs -U -j "/dev/${TARGET_DISK}p4"
-    mount "/dev/${TARGET_DISK}p4" /mnt
+    newfs -U -j "/dev/${TARGET_DISK}p4" || die "Failed to format UFS"
+    mount "/dev/${TARGET_DISK}p4" /mnt || die "Failed to mount target"
 
     INSTALL_ROOT="/mnt"
     SWAP_DEV="/dev/${TARGET_DISK}p3"
@@ -173,22 +179,32 @@ clone_system() {
     echo ""
     echo "Cloning live system to $INSTALL_ROOT..."
 
-    # Use cpdup to clone the running system (OPNsense approach)
-    # Exclude pseudo-filesystems and the target mount
-    for dir in bin boot etc lib libexec rescue root sbin usr var; do
-        echo "  Copying /$dir..."
+    # Clone each top-level directory, skipping pseudo-filesystems and missing dirs
+    for dir in bin boot etc lib libexec root sbin usr; do
         if [ -d "/$dir" ]; then
-            cpdup -o "/$dir" "$INSTALL_ROOT/$dir"
+            echo "  Copying /$dir..."
+            cpdup -o "/$dir" "$INSTALL_ROOT/$dir" || echo "  WARNING: cpdup /$dir had errors"
         fi
     done
 
-    # Create required directories
+    # /var is tmpfs on the live CD, so create a proper var structure
+    echo "  Creating /var structure..."
+    mkdir -p "$INSTALL_ROOT/var"
+    for vdir in cache db db/pkg db/aifw empty games heimdal log log/aifw \
+                mail msgs preserve run rwho spool spool/lock spool/output \
+                tmp unbound yp; do
+        mkdir -p "$INSTALL_ROOT/var/$vdir"
+    done
+    chmod 1777 "$INSTALL_ROOT/var/tmp"
+
+    # Create other required directories
     mkdir -p "$INSTALL_ROOT/dev"
     mkdir -p "$INSTALL_ROOT/mnt"
     mkdir -p "$INSTALL_ROOT/proc"
     mkdir -p "$INSTALL_ROOT/tmp"
     chmod 1777 "$INSTALL_ROOT/tmp"
     mkdir -p "$INSTALL_ROOT/home"
+    mkdir -p "$INSTALL_ROOT/usr/local/share/aifw"
 
     # Copy AiFw config if setup was already run
     if [ -f "$AIFW_CONF" ]; then
@@ -198,6 +214,8 @@ clone_system() {
         mkdir -p "$INSTALL_ROOT/var/db/aifw"
         cp -a /var/db/aifw/* "$INSTALL_ROOT/var/db/aifw/" 2>/dev/null || true
     fi
+
+    echo "  Clone complete."
 }
 
 write_fstab_zfs() {
@@ -268,8 +286,16 @@ LOADER
     fi
 }
 
+# Set the installed system's ttys back to normal (no autologin)
+# but keep aifw-console as root's shell
+fix_ttys() {
+    # Restore ttyv0 to standard login prompt for installed system
+    sed -i '' 's|^ttyv0.*|ttyv0 "/usr/libexec/getty Pc" xterm on secure|' "$INSTALL_ROOT/etc/ttys"
+}
+
 cleanup() {
     echo "Cleaning up..."
+    sync
     if [ "$FS_TYPE" = "zfs" ]; then
         zfs unmount -a 2>/dev/null || true
         zpool export zroot 2>/dev/null || true
@@ -308,6 +334,9 @@ fi
 
 write_rc_conf
 write_loader_conf
+fix_ttys
+
+sync
 
 echo ""
 echo "============================================"
