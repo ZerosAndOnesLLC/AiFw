@@ -393,9 +393,17 @@ if [ ! -f "$AIFW_CONF" ]; then
     echo ""
 fi
 
+echo "  After reboot, you can manage AiFw using:"
+echo ""
+echo "    Console Menu  Login at the console to access the management menu"
+echo "    Web UI        https://<your-ip>:8080/"
+echo "    CLI           aifw rules list, aifw status, aifw --help"
+echo "    TUI           aifw-tui"
+echo "    API           https://<your-ip>:8080/api/v1/"
+echo ""
 echo "  +-------------------------------------------------+"
 echo "  |  Please remove the CD/DVD or USB drive before   |"
-echo "  |  rebooting so the system boots from disk.        |"
+echo "  |  rebooting so the system boots from disk.       |"
 echo "  +-------------------------------------------------+"
 echo ""
 echo -n "  Press Enter to reboot..."

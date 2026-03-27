@@ -75,10 +75,8 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     console::header("Setup Complete");
     console::success(&format!("AiFw is configured on {}", config.hostname));
     console::info("");
+    console::info(&format!("  Web UI:   http://{}:{}/", config.api_listen, config.api_port));
     console::info(&format!("  API:      http://{}:{}/api/v1/", config.api_listen, config.api_port));
-    if config.ui_enabled {
-        console::info(&format!("  Web UI:   http://{}:3000/", config.api_listen));
-    }
     console::info(&format!("  Admin:    {}", config.admin_username));
     console::info(&format!("  MFA:      {}", if config.totp_enabled { "enabled" } else { "disabled" }));
     console::info("");
@@ -339,7 +337,7 @@ run_rc_command "$1"
 name="aifw_api"
 rcvar="aifw_api_enable"
 command="/usr/local/sbin/aifw-api"
-command_args="--db {db} --listen {listen}:{port} --log-level info"
+command_args="--db {db} --listen {listen}:{port} --ui-dir /usr/local/share/aifw/ui --log-level info"
 pidfile="/var/run/${{name}}.pid"
 start_cmd="${{name}}_start"
 
