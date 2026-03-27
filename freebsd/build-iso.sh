@@ -183,10 +183,14 @@ sed -i '' 's|^ttyv0.*|ttyv0 "/usr/libexec/getty autologin" xterm on secure|' "$S
 # Add aifw-console to /etc/shells so it can be used as a login shell
 echo "/usr/local/sbin/aifw-console" >> "$STAGEDIR/etc/shells"
 
-# Configure sshd for password auth
-sed -i '' 's/^#PermitRootLogin.*/PermitRootLogin yes/' "$STAGEDIR/etc/ssh/sshd_config"
-sed -i '' 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' "$STAGEDIR/etc/ssh/sshd_config"
-sed -i '' 's/^#KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' "$STAGEDIR/etc/ssh/sshd_config"
+# Configure sshd for password auth (append to end to override any defaults)
+cat >> "$STAGEDIR/etc/ssh/sshd_config" <<'SSHD'
+
+# AiFw: enable root login and password auth
+PermitRootLogin yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+SSHD
 
 # Create /etc/login.conf entry for autologin (no password prompt)
 if ! grep -q 'autologin' "$STAGEDIR/etc/gettytab" 2>/dev/null; then
