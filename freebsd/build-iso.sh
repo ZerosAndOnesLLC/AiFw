@@ -43,7 +43,10 @@ fi
 
 # --- Clean previous build ---
 echo "[1/9] Cleaning previous build..."
-rm -rf "$WORKDIR"
+if [ -d "$WORKDIR" ]; then
+    chflags -R noschg "$WORKDIR"
+    rm -rf "$WORKDIR"
+fi
 mkdir -p "$STAGEDIR" "$ISODIR" "$DISTDIR" "$OUTPUTDIR"
 
 # --- Fetch FreeBSD base + kernel ---
