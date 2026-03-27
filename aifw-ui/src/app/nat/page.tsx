@@ -120,7 +120,7 @@ export default function NatPage() {
     if (form.label.trim()) body.label = form.label.trim();
     body.status = form.status;
 
-    return body as CreateNatRequest | UpdateNatRequest;
+    return body as unknown as CreateNatRequest | UpdateNatRequest;
   };
 
   const handleSubmit = async () => {
