@@ -10,6 +10,8 @@ set -e
 VERSION="${1:?Usage: $0 <version> [arch]}"
 ARCH="${2:-amd64}"
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 FREEBSD_VERSION="15.0"
 FREEBSD_RELEASE="15.0-RELEASE"
 FREEBSD_MIRROR="https://download.freebsd.org/releases/${ARCH}/${FREEBSD_RELEASE}"
@@ -98,7 +100,7 @@ umount "$STAGEDIR/dev"
 echo "[6/9] Installing AiFw..."
 
 # Binaries (should be pre-built and placed in freebsd/release/)
-BINDIR="${WORKDIR}/../release"
+BINDIR="${SCRIPT_DIR}/release"
 for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
     if [ -f "${BINDIR}/${bin}" ]; then
         install -m 755 "${BINDIR}/${bin}" "$STAGEDIR/usr/local/sbin/${bin}"
@@ -108,14 +110,14 @@ for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
 done
 
 # Static UI build
-UI_DIR="${WORKDIR}/../ui-export"
+UI_DIR="${SCRIPT_DIR}/ui-export"
 if [ -d "$UI_DIR" ]; then
     mkdir -p "$STAGEDIR/usr/local/share/aifw/ui"
     cp -a "$UI_DIR/"* "$STAGEDIR/usr/local/share/aifw/ui/"
 fi
 
 # Overlay files (rc.d scripts, console menu, installer)
-OVERLAY_DIR="${WORKDIR}/../overlay"
+OVERLAY_DIR="${SCRIPT_DIR}/overlay"
 if [ -d "$OVERLAY_DIR" ]; then
     cp -a "$OVERLAY_DIR/"* "$STAGEDIR/"
     # Ensure scripts are executable
@@ -127,6 +129,7 @@ fi
 # Create required directories
 mkdir -p "$STAGEDIR/usr/local/etc/aifw"
 mkdir -p "$STAGEDIR/usr/local/etc/aifw/anchors"
+mkdir -p "$STAGEDIR/usr/local/share/aifw"
 mkdir -p "$STAGEDIR/var/db/aifw"
 mkdir -p "$STAGEDIR/var/log/aifw"
 
