@@ -97,6 +97,9 @@ chroot "$STAGEDIR" /bin/sh -c '
 
 umount "$STAGEDIR/dev"
 
+# Clean pkg cache to save space
+rm -rf "$STAGEDIR/var/db/pkg/repos" "$STAGEDIR/var/cache/pkg"
+
 # --- Overlay AiFw binaries and config ---
 echo "[6/9] Installing AiFw..."
 
@@ -236,7 +239,15 @@ ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
 echo "[9/9] Building USB image..."
 
 IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
-IMG_SIZE=$(du -sm "$STAGEDIR" | awk '{print $1 + 256}')
+# Stage size + 512MB headroom for EFI partition, UFS journal, and filesystem overhead
+IMG_SIZE=$(du -sm "$STAGEDIR" | awk '{print $1 + 512}')
+
+# Clean up any stale md devices from previous failed runs
+for stale_md in $(mdconfig -l 2>/dev/null); do
+    umount -f "/dev/${stale_md}p3" 2>/dev/null || true
+    umount -f "/dev/${stale_md}p1" 2>/dev/null || true
+    mdconfig -d -u "$stale_md" 2>/dev/null || true
+done
 
 # Create raw image
 truncate -s "${IMG_SIZE}m" "$IMG"
