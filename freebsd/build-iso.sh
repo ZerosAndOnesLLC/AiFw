@@ -176,8 +176,8 @@ LOADER
 # (Users can still get a shell via menu option 8)
 chroot "$STAGEDIR" /usr/sbin/pw usermod root -s /usr/local/sbin/aifw-console
 
-# /etc/ttys — auto-login on console
-sed -i '' 's|^console.*|console "/usr/libexec/getty autologin" xterm on secure|' "$STAGEDIR/etc/ttys"
+# /etc/ttys — auto-login on ttyv0 (the actual virtual terminal, not console)
+sed -i '' 's|^ttyv0.*|ttyv0 "/usr/libexec/getty autologin" xterm on secure|' "$STAGEDIR/etc/ttys"
 
 # Create /etc/login.conf entry for autologin (no password prompt)
 if ! grep -q 'autologin' "$STAGEDIR/etc/gettytab" 2>/dev/null; then
