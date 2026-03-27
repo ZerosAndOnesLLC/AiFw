@@ -57,6 +57,23 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Manage static routes
+    Routes {
+        #[command(subcommand)]
+        action: RoutesAction,
+    },
+    /// Manage DNS nameservers
+    Dns {
+        #[command(subcommand)]
+        action: DnsAction,
+    },
+    /// Manage users
+    Users {
+        #[command(subcommand)]
+        action: UsersAction,
+    },
+    /// Show network interfaces
+    Interfaces,
     /// Show firewall status
     Status,
     /// Reload rules from database and apply to pf
@@ -274,6 +291,72 @@ enum RateLimitAction {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum RoutesAction {
+    /// Add a static route
+    Add {
+        /// Destination network (CIDR, e.g., 10.0.0.0/8 or "default")
+        #[arg(long)]
+        dest: String,
+        /// Gateway IP
+        #[arg(long)]
+        gateway: String,
+        /// Network interface (optional)
+        #[arg(long)]
+        interface: Option<String>,
+        /// Route metric
+        #[arg(long, default_value = "0")]
+        metric: i32,
+        /// Description
+        #[arg(long)]
+        desc: Option<String>,
+    },
+    /// Remove a static route by ID
+    Remove { id: String },
+    /// List all static routes
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show system routing table (netstat -rn)
+    System,
+}
+
+#[derive(Subcommand)]
+enum DnsAction {
+    /// Show current DNS servers
+    List,
+    /// Set DNS servers (replaces all)
+    Set {
+        /// DNS servers (comma-separated)
+        servers: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum UsersAction {
+    /// List all users
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a new user
+    Add {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        password: String,
+        #[arg(long, default_value = "admin")]
+        role: String,
+    },
+    /// Remove a user by ID
+    Remove { id: String },
+    /// Disable a user
+    Disable { id: String },
+    /// Enable a user
+    Enable { id: String },
 }
 
 #[derive(Subcommand)]
@@ -567,6 +650,48 @@ async fn main() -> anyhow::Result<()> {
             ConfigAction::Rollback { version } => commands::config_rollback(&cli.db, version).await?,
             ConfigAction::Diff { v1, v2 } => commands::config_diff(&cli.db, v1, v2).await?,
         },
+        Commands::Routes { action } => match action {
+            RoutesAction::Add { dest, gateway, interface, metric, desc } => {
+                commands::routes_add(&cli.db, &dest, &gateway, interface.as_deref(), metric, desc.as_deref()).await?;
+            }
+            RoutesAction::Remove { id } => {
+                commands::routes_remove(&cli.db, &id).await?;
+            }
+            RoutesAction::List { json } => {
+                commands::routes_list(&cli.db, json).await?;
+            }
+            RoutesAction::System => {
+                commands::routes_system().await?;
+            }
+        },
+        Commands::Dns { action } => match action {
+            DnsAction::List => {
+                commands::dns_list().await?;
+            }
+            DnsAction::Set { servers } => {
+                commands::dns_set(&servers).await?;
+            }
+        },
+        Commands::Users { action } => match action {
+            UsersAction::List { json } => {
+                commands::users_list(&cli.db, json).await?;
+            }
+            UsersAction::Add { username, password, role } => {
+                commands::users_add(&cli.db, &username, &password, &role).await?;
+            }
+            UsersAction::Remove { id } => {
+                commands::users_remove(&cli.db, &id).await?;
+            }
+            UsersAction::Disable { id } => {
+                commands::users_set_enabled(&cli.db, &id, false).await?;
+            }
+            UsersAction::Enable { id } => {
+                commands::users_set_enabled(&cli.db, &id, true).await?;
+            }
+        },
+        Commands::Interfaces => {
+            commands::interfaces_list().await?;
+        }
         Commands::Status => {
             commands::status(&cli.db).await?;
         }

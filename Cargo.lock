@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ai"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-api"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -60,12 +60,14 @@ dependencies = [
 
 [[package]]
 name = "aifw-cli"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
  "aifw-pf",
  "anyhow",
+ "argon2",
+ "chrono",
  "clap",
  "serde_json",
  "sqlx",
@@ -77,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-common"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "chrono",
  "serde",
@@ -89,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-conntrack"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -103,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-core"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -120,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-daemon"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -137,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-metrics"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -152,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-pf"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -164,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-plugins"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -180,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-setup"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -200,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-tui"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",

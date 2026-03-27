@@ -20,3 +20,5 @@ sqlx = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1"
 uuid = { workspace = true }
+argon2 = { workspace = true }
+chrono = { workspace = true }

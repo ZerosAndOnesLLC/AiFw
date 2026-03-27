@@ -201,6 +201,22 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
         .execute(pool).await;
 
+    // Static routes
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS static_routes (
+            id TEXT PRIMARY KEY,
+            destination TEXT NOT NULL,
+            gateway TEXT NOT NULL,
+            interface TEXT,
+            metric INTEGER DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            description TEXT,
+            created_at TEXT NOT NULL
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
     // User audit log
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS user_audit_log (

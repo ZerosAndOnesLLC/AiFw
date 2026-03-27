@@ -64,6 +64,45 @@ pub struct DnsConfigResponse {
     pub servers: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StaticRoute {
+    pub id: String,
+    pub destination: String,
+    pub gateway: String,
+    pub interface: Option<String>,
+    pub metric: i32,
+    pub enabled: bool,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateRouteRequest {
+    pub destination: String,
+    pub gateway: String,
+    pub interface: Option<String>,
+    pub metric: Option<i32>,
+    pub enabled: Option<bool>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InterfaceInfo {
+    pub name: String,
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+    pub status: String,
+    pub mac: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SystemRoute {
+    pub destination: String,
+    pub gateway: String,
+    pub flags: String,
+    pub interface: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApiResponse<T: Serialize> {
     pub data: T,
@@ -1068,6 +1107,203 @@ pub async fn delete_ipsec_sa(
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     state.vpn_engine.delete_ipsec_sa(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(MessageResponse { message: format!("IPsec SA {id} deleted") }))
+}
+
+// --- Static Routes ---
+
+pub async fn list_static_routes(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<StaticRoute>>>, StatusCode> {
+    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, bool, Option<String>, String)>(
+        "SELECT id, destination, gateway, interface, metric, enabled, description, created_at FROM static_routes ORDER BY metric ASC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| internal())?;
+    let routes: Vec<StaticRoute> = rows.into_iter().map(|(id, dest, gw, iface, metric, enabled, desc, ca)| StaticRoute {
+        id, destination: dest, gateway: gw, interface: iface, metric, enabled, description: desc, created_at: ca,
+    }).collect();
+    Ok(Json(ApiResponse { data: routes }))
+}
+
+pub async fn create_static_route(
+    State(state): State<AppState>,
+    Json(req): Json<CreateRouteRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<StaticRoute>>), StatusCode> {
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let metric = req.metric.unwrap_or(0);
+    let enabled = req.enabled.unwrap_or(true);
+
+    sqlx::query(
+        "INSERT INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(&id).bind(&req.destination).bind(&req.gateway).bind(req.interface.as_deref())
+    .bind(metric).bind(enabled).bind(req.description.as_deref()).bind(&now)
+    .execute(&state.pool)
+    .await
+    .map_err(|_| bad_request())?;
+
+    // Apply to system if enabled
+    if enabled {
+        apply_route_to_system(&req.destination, &req.gateway, req.interface.as_deref()).await;
+    }
+
+    let route = StaticRoute { id, destination: req.destination, gateway: req.gateway, interface: req.interface, metric, enabled, description: req.description, created_at: now };
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: route })))
+}
+
+pub async fn update_static_route(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateRouteRequest>,
+) -> Result<Json<ApiResponse<StaticRoute>>, StatusCode> {
+    // Get old route to remove from system
+    let old = sqlx::query_as::<_, (String, String, Option<String>, bool)>(
+        "SELECT destination, gateway, interface, enabled FROM static_routes WHERE id = ?1",
+    )
+    .bind(&id).fetch_optional(&state.pool).await.map_err(|_| internal())?
+    .ok_or(StatusCode::NOT_FOUND)?;
+
+    if old.3 { // was enabled, remove old route
+        remove_route_from_system(&old.0, &old.1).await;
+    }
+
+    let metric = req.metric.unwrap_or(0);
+    let enabled = req.enabled.unwrap_or(true);
+
+    sqlx::query(
+        "UPDATE static_routes SET destination = ?2, gateway = ?3, interface = ?4, metric = ?5, enabled = ?6, description = ?7 WHERE id = ?1",
+    )
+    .bind(&id).bind(&req.destination).bind(&req.gateway).bind(req.interface.as_deref())
+    .bind(metric).bind(enabled).bind(req.description.as_deref())
+    .execute(&state.pool)
+    .await
+    .map_err(|_| internal())?;
+
+    if enabled {
+        apply_route_to_system(&req.destination, &req.gateway, req.interface.as_deref()).await;
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let route = StaticRoute { id, destination: req.destination, gateway: req.gateway, interface: req.interface, metric, enabled, description: req.description, created_at: now };
+    Ok(Json(ApiResponse { data: route }))
+}
+
+pub async fn delete_static_route(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let row = sqlx::query_as::<_, (String, String, bool)>(
+        "SELECT destination, gateway, enabled FROM static_routes WHERE id = ?1",
+    )
+    .bind(&id).fetch_optional(&state.pool).await.map_err(|_| internal())?
+    .ok_or(StatusCode::NOT_FOUND)?;
+
+    if row.2 {
+        remove_route_from_system(&row.0, &row.1).await;
+    }
+
+    sqlx::query("DELETE FROM static_routes WHERE id = ?1")
+        .bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
+
+    Ok(Json(MessageResponse { message: format!("Route to {} deleted", row.0) }))
+}
+
+async fn apply_route_to_system(destination: &str, gateway: &str, interface: Option<&str>) {
+    let mut cmd = tokio::process::Command::new("route");
+    cmd.args(["add", destination, gateway]);
+    if let Some(iface) = interface {
+        cmd.args(["-interface", iface]);
+    }
+    let _ = cmd.output().await;
+}
+
+async fn remove_route_from_system(destination: &str, gateway: &str) {
+    let _ = tokio::process::Command::new("route")
+        .args(["delete", destination, gateway])
+        .output()
+        .await;
+}
+
+// --- System routing table ---
+
+pub async fn get_system_routes() -> Result<Json<ApiResponse<Vec<SystemRoute>>>, StatusCode> {
+    let output = tokio::process::Command::new("netstat")
+        .args(["-rn", "-f", "inet"])
+        .output()
+        .await
+        .map_err(|_| internal())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let routes: Vec<SystemRoute> = stdout.lines()
+        .skip_while(|l| !l.contains("Destination"))
+        .skip(1)
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                Some(SystemRoute {
+                    destination: parts[0].to_string(),
+                    gateway: parts[1].to_string(),
+                    flags: parts[2].to_string(),
+                    interface: parts.last().unwrap_or(&"").to_string(),
+                })
+            } else { None }
+        })
+        .collect();
+    Ok(Json(ApiResponse { data: routes }))
+}
+
+// --- Network interfaces ---
+
+pub async fn list_interfaces() -> Result<Json<ApiResponse<Vec<InterfaceInfo>>>, StatusCode> {
+    let output = tokio::process::Command::new("ifconfig")
+        .output()
+        .await
+        .map_err(|_| internal())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut interfaces = Vec::new();
+    let mut current: Option<InterfaceInfo> = None;
+
+    for line in stdout.lines() {
+        if !line.starts_with('\t') && !line.starts_with(' ') && line.contains(':') {
+            if let Some(iface) = current.take() {
+                interfaces.push(iface);
+            }
+            let name = line.split(':').next().unwrap_or("").to_string();
+            let status = if line.contains("UP") { "up" } else { "down" };
+            current = Some(InterfaceInfo { name, ipv4: None, ipv6: None, status: status.to_string(), mac: None });
+        }
+        if let Some(ref mut iface) = current {
+            let trimmed = line.trim();
+            if trimmed.starts_with("inet ") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    iface.ipv4 = Some(parts[1].to_string());
+                }
+            }
+            if trimmed.starts_with("inet6 ") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    iface.ipv6 = Some(parts[1].to_string());
+                }
+            }
+            if trimmed.starts_with("ether ") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    iface.mac = Some(parts[1].to_string());
+                }
+            }
+        }
+    }
+    if let Some(iface) = current {
+        interfaces.push(iface);
+    }
+
+    // Filter out pseudo-interfaces
+    interfaces.retain(|i| !i.name.starts_with("lo") && !i.name.starts_with("pflog") && !i.name.starts_with("enc") && !i.name.starts_with("pfsync"));
+
+    Ok(Json(ApiResponse { data: interfaces }))
 }
 
 pub async fn update_dns(

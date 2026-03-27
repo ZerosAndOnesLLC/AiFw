@@ -881,3 +881,243 @@ pub async fn config_diff(db_path: &Path, v1: i64, v2: i64) -> anyhow::Result<()>
     }
     Ok(())
 }
+
+// ============================================================
+// Static routes
+// ============================================================
+
+pub async fn routes_add(db_path: &Path, dest: &str, gateway: &str, interface: Option<&str>, metric: i32, desc: Option<&str>) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+
+    // Ensure table exists
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS static_routes (id TEXT PRIMARY KEY, destination TEXT NOT NULL, gateway TEXT NOT NULL, interface TEXT, metric INTEGER DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, description TEXT, created_at TEXT NOT NULL)",
+    ).execute(pool).await?;
+
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("INSERT INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)")
+        .bind(&id).bind(dest).bind(gateway).bind(interface).bind(metric).bind(desc).bind(&now)
+        .execute(pool).await?;
+
+    // Apply to system
+    let mut cmd = std::process::Command::new("route");
+    cmd.args(["add", dest, gateway]);
+    if let Some(iface) = interface {
+        cmd.args(["-interface", iface]);
+    }
+    let _ = cmd.output();
+
+    println!("Added route: {} via {} (id: {})", dest, gateway, &id[..8]);
+    Ok(())
+}
+
+pub async fn routes_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let row = sqlx::query_as::<_, (String, String, bool)>(
+        "SELECT destination, gateway, enabled FROM static_routes WHERE id = ?1",
+    ).bind(id).fetch_optional(pool).await?;
+
+    if let Some((dest, gw, enabled)) = row {
+        if enabled {
+            let _ = std::process::Command::new("route").args(["delete", &dest, &gw]).output();
+        }
+        sqlx::query("DELETE FROM static_routes WHERE id = ?1").bind(id).execute(pool).await?;
+        println!("Removed route: {} via {}", dest, gw);
+    } else {
+        anyhow::bail!("Route {} not found", id);
+    }
+    Ok(())
+}
+
+pub async fn routes_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS static_routes (id TEXT PRIMARY KEY, destination TEXT NOT NULL, gateway TEXT NOT NULL, interface TEXT, metric INTEGER DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, description TEXT, created_at TEXT NOT NULL)",
+    ).execute(pool).await;
+
+    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, bool, Option<String>)>(
+        "SELECT id, destination, gateway, interface, metric, enabled, description FROM static_routes ORDER BY metric ASC",
+    ).fetch_all(pool).await?;
+
+    if json {
+        let routes: Vec<serde_json::Value> = rows.iter().map(|(id, d, g, i, m, e, desc)| {
+            serde_json::json!({"id": id, "destination": d, "gateway": g, "interface": i, "metric": m, "enabled": e, "description": desc})
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&routes)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        println!("No static routes configured.");
+        return Ok(());
+    }
+
+    println!("{:<36} {:<20} {:<16} {:<8} {:<8} {}", "ID", "Destination", "Gateway", "Iface", "Metric", "Status");
+    println!("{}", "-".repeat(100));
+    for (id, dest, gw, iface, metric, enabled, _desc) in &rows {
+        let status = if *enabled { "active" } else { "disabled" };
+        println!("{:<36} {:<20} {:<16} {:<8} {:<8} {}", id, dest, gw, iface.as_deref().unwrap_or("-"), metric, status);
+    }
+    Ok(())
+}
+
+pub async fn routes_system() -> anyhow::Result<()> {
+    let output = std::process::Command::new("netstat").args(["-rn"]).output()?;
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+// ============================================================
+// DNS
+// ============================================================
+
+pub async fn dns_list() -> anyhow::Result<()> {
+    let content = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
+    let servers: Vec<&str> = content.lines()
+        .filter_map(|l| l.strip_prefix("nameserver").map(|s| s.trim()))
+        .collect();
+
+    if servers.is_empty() {
+        println!("No DNS servers configured.");
+    } else {
+        println!("DNS Servers:");
+        for s in &servers {
+            println!("  {}", s);
+        }
+    }
+    Ok(())
+}
+
+pub async fn dns_set(servers_str: &str) -> anyhow::Result<()> {
+    let servers: Vec<&str> = servers_str.split(',').map(|s| s.trim()).collect();
+    let content: String = servers.iter().map(|s| format!("nameserver {s}")).collect::<Vec<_>>().join("\n");
+    std::fs::write("/etc/resolv.conf", &content)?;
+    println!("DNS servers updated:");
+    for s in &servers {
+        println!("  {}", s);
+    }
+    Ok(())
+}
+
+// ============================================================
+// Users
+// ============================================================
+
+pub async fn users_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let rows = sqlx::query_as::<_, (String, String, String, bool, bool)>(
+        "SELECT id, username, role, totp_enabled, enabled FROM users ORDER BY created_at ASC",
+    ).fetch_all(pool).await.unwrap_or_default();
+
+    if json {
+        let users: Vec<serde_json::Value> = rows.iter().map(|(id, u, r, mfa, e)| {
+            serde_json::json!({"id": id, "username": u, "role": r, "mfa": mfa, "enabled": e})
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&users)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() {
+        println!("No users.");
+        return Ok(());
+    }
+
+    println!("{:<36} {:<16} {:<10} {:<6} {}", "ID", "Username", "Role", "MFA", "Status");
+    println!("{}", "-".repeat(80));
+    for (id, username, role, mfa, enabled) in &rows {
+        let status = if *enabled { "active" } else { "disabled" };
+        let mfa_str = if *mfa { "yes" } else { "no" };
+        println!("{:<36} {:<16} {:<10} {:<6} {}", id, username, role, mfa_str, status);
+    }
+    Ok(())
+}
+
+pub async fn users_add(db_path: &Path, username: &str, password: &str, role: &str) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    use argon2::{Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng};
+    let salt = SaltString::generate(&mut OsRng);
+    let pw_hash = Argon2::default().hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| anyhow::anyhow!("hash error: {e}"))?;
+
+    sqlx::query("INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, role, enabled, created_at) VALUES (?1, ?2, ?3, 0, 'local', ?4, 1, ?5)")
+        .bind(&id).bind(username).bind(&pw_hash).bind(role).bind(&now)
+        .execute(pool).await?;
+
+    println!("Created user: {} (role: {}, id: {})", username, role, &id[..8]);
+    Ok(())
+}
+
+pub async fn users_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let result = sqlx::query("DELETE FROM users WHERE id = ?1").bind(id).execute(pool).await?;
+    if result.rows_affected() == 0 {
+        anyhow::bail!("User {} not found", id);
+    }
+    let _ = sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?1").bind(id).execute(pool).await;
+    let _ = sqlx::query("DELETE FROM recovery_codes WHERE user_id = ?1").bind(id).execute(pool).await;
+    let _ = sqlx::query("DELETE FROM api_keys WHERE user_id = ?1").bind(id).execute(pool).await;
+    println!("Deleted user {}", id);
+    Ok(())
+}
+
+pub async fn users_set_enabled(db_path: &Path, id: &str, enabled: bool) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let result = sqlx::query("UPDATE users SET enabled = ?2 WHERE id = ?1").bind(id).bind(enabled).execute(pool).await?;
+    if result.rows_affected() == 0 {
+        anyhow::bail!("User {} not found", id);
+    }
+    println!("User {} {}", id, if enabled { "enabled" } else { "disabled" });
+    Ok(())
+}
+
+// ============================================================
+// Interfaces
+// ============================================================
+
+pub async fn interfaces_list() -> anyhow::Result<()> {
+    let output = std::process::Command::new("ifconfig").output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    println!("{:<12} {:<18} {:<18} {:<6}", "Interface", "IPv4", "MAC", "Status");
+    println!("{}", "-".repeat(60));
+
+    let mut name = String::new();
+    let mut ipv4 = String::from("-");
+    let mut mac = String::from("-");
+    let mut status = "down";
+
+    for line in stdout.lines() {
+        if !line.starts_with('\t') && !line.starts_with(' ') && line.contains(':') {
+            if !name.is_empty() && !name.starts_with("lo") && !name.starts_with("pflog") {
+                println!("{:<12} {:<18} {:<18} {:<6}", name, ipv4, mac, status);
+            }
+            name = line.split(':').next().unwrap_or("").to_string();
+            ipv4 = "-".to_string();
+            mac = "-".to_string();
+            status = if line.contains("UP") { "up" } else { "down" };
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with("inet ") {
+            ipv4 = trimmed.split_whitespace().nth(1).unwrap_or("-").to_string();
+        }
+        if trimmed.starts_with("ether ") {
+            mac = trimmed.split_whitespace().nth(1).unwrap_or("-").to_string();
+        }
+    }
+    if !name.is_empty() && !name.starts_with("lo") && !name.starts_with("pflog") {
+        println!("{:<12} {:<18} {:<18} {:<6}", name, ipv4, mac, status);
+    }
+    Ok(())
+}
