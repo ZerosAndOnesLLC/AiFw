@@ -128,7 +128,13 @@ pub async fn login(
         .await?
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
+    if !user.enabled {
+        auth::log_user_audit(&state.pool, &user.id.to_string(), Some(&user.id.to_string()), "login_denied_disabled", Some(&req.username)).await;
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
     if !auth::verify_password(&req.password, &user.password_hash) {
+        auth::log_user_audit(&state.pool, &user.id.to_string(), Some(&user.id.to_string()), "login_failed", Some(&req.username)).await;
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -156,6 +162,8 @@ pub async fn login(
     )
     .await
     .map_err(|_| internal())?;
+
+    auth::log_user_audit(&state.pool, &user.id.to_string(), Some(&user.id.to_string()), "login_success", Some(&user.username)).await;
 
     Ok(Json(auth::LoginResponse {
         tokens: Some(tokens),
@@ -424,6 +432,59 @@ fn extract_user_id(headers: &HeaderMap, state: &AppState) -> Result<String, Stat
     } else {
         Err(StatusCode::UNAUTHORIZED)
     }
+}
+
+// --- User management ---
+
+pub async fn list_users(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<auth::User>>>, StatusCode> {
+    let users = auth::list_users(&state.pool).await?;
+    Ok(Json(ApiResponse { data: users }))
+}
+
+pub async fn get_user(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<auth::User>>, StatusCode> {
+    let user = auth::get_user_by_id(&state.pool, &id).await?.ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(ApiResponse { data: user }))
+}
+
+pub async fn update_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<auth::UpdateUserRequest>,
+) -> Result<Json<ApiResponse<auth::User>>, StatusCode> {
+    let actor_id = extract_user_id(&headers, &state)?;
+    let user = auth::update_user(&state.pool, &id, &req).await?;
+    let details = format!("updated user {}", user.username);
+    auth::log_user_audit(&state.pool, &actor_id, Some(&id), "user_updated", Some(&details)).await;
+    Ok(Json(ApiResponse { data: user }))
+}
+
+pub async fn delete_user_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let actor_id = extract_user_id(&headers, &state)?;
+    // Prevent self-deletion
+    if actor_id == id {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let user = auth::get_user_by_id(&state.pool, &id).await?.ok_or(StatusCode::NOT_FOUND)?;
+    auth::delete_user(&state.pool, &id).await?;
+    auth::log_user_audit(&state.pool, &actor_id, Some(&id), "user_deleted", Some(&format!("deleted user {}", user.username))).await;
+    Ok(Json(MessageResponse { message: format!("User {} deleted", user.username) }))
+}
+
+pub async fn list_user_audit(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<auth::UserAuditEntry>>>, StatusCode> {
+    let entries = auth::list_user_audit_log(&state.pool, 200).await?;
+    Ok(Json(ApiResponse { data: entries }))
 }
 
 // --- Rules endpoints ---

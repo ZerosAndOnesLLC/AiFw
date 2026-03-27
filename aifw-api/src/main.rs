@@ -85,9 +85,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/auth/login", post(routes::login))
         .route("/api/v1/auth/totp/login", post(routes::totp_login))
         .route("/api/v1/auth/refresh", post(routes::refresh_token))
-        .route("/api/v1/auth/users", post(routes::create_user))
         .route("/api/v1/auth/oauth/{provider}/authorize", get(routes::oauth_authorize))
-        .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback));
+        .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback))
+        .route("/api/v1/auth/register", post(routes::create_user));
 
     // Protected routes (require auth)
     let protected_routes = Router::new()
@@ -111,6 +111,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/reload", post(routes::reload))
         .route("/api/v1/metrics", get(routes::metrics))
         .route("/api/v1/logs", get(routes::list_logs))
+        .route("/api/v1/auth/users", get(routes::list_users).post(routes::create_user))
+        .route("/api/v1/auth/users/{id}", get(routes::get_user).put(routes::update_user).delete(routes::delete_user_handler))
+        .route("/api/v1/auth/audit", get(routes::list_user_audit))
         .route("/api/v1/auth/api-keys", post(routes::create_api_key))
         .route("/api/v1/auth/logout", post(routes::logout))
         .route("/api/v1/auth/totp/setup", post(routes::totp_setup))
