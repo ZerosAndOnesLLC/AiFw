@@ -59,7 +59,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="p-3 border-t border-[var(--border)] text-[10px] text-[var(--text-muted)]">
-        v1.6.0 &middot; Apache-2.0
+        v1.7.1 &middot; Apache-2.0
       </div>
     </aside>
   );
