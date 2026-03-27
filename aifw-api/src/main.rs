@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -50,12 +51,16 @@ struct Args {
     #[arg(long, default_value = "*")]
     cors_origins: String,
 
+    /// Path to static UI build directory (serves web UI if set)
+    #[arg(long, env = "AIFW_UI_DIR")]
+    ui_dir: Option<PathBuf>,
+
     /// Log level
     #[arg(long, default_value = "info")]
     log_level: String,
 }
 
-pub fn build_router(state: AppState) -> Router {
+pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -91,7 +96,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/oauth/providers/{id}", delete(routes::delete_oauth_provider))
         .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
 
-    Router::new()
+    let mut app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
         .layer(
@@ -99,7 +104,18 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(TraceLayer::new_for_http())
                 .layer(cors),
         )
-        .with_state(state)
+        .with_state(state);
+
+    // Serve static UI if directory is provided
+    if let Some(dir) = ui_dir {
+        if dir.exists() {
+            let index = dir.join("index.html");
+            app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
+            info!("Serving web UI from {}", dir.display());
+        }
+    }
+
+    app
 }
 
 pub async fn create_app_state(
@@ -163,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = create_app_state(&args.db, auth_settings).await?;
-    let app = build_router(state);
+    let app = build_router(state, args.ui_dir.as_deref());
 
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     info!("AiFw API listening on {}", args.listen);

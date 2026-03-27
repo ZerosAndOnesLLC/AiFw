@@ -1,0 +1,177 @@
+name: Build FreeBSD ISO
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  FREEBSD_VERSION: "15.0"
+
+jobs:
+  build-ui:
+    name: Build Web UI (static export)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: aifw-ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: aifw-ui
+        run: npm ci
+
+      - name: Build static export
+        working-directory: aifw-ui
+        run: npm run build
+
+      - name: Upload UI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-export
+          path: aifw-ui/out/
+          retention-days: 1
+
+  build-iso:
+    name: Build FreeBSD ISO (amd64)
+    needs: build-ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download UI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-export
+          path: freebsd/ui-export
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "${{ env.FREEBSD_VERSION }}"
+          usesh: true
+          copyback: true
+          prepare: |
+            # Install Rust toolchain
+            pkg install -y curl rust cargo
+
+            # Install build tools
+            pkg install -y gmake
+
+          run: |
+            set -e
+
+            echo "=== Building AiFw binaries ==="
+            cd /home/runner/work/AiFw/AiFw
+            cargo build --release
+
+            echo "=== Preparing build inputs ==="
+            # Copy release binaries to where build-iso.sh expects them
+            mkdir -p freebsd/release
+            for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
+              cp "target/release/${bin}" "freebsd/release/${bin}"
+            done
+
+            echo "=== Building ISO + IMG ==="
+            cd freebsd
+            sh build-iso.sh "${{ steps.version.outputs.version }}" amd64
+
+            # Move outputs to workspace root for upload
+            mkdir -p /home/runner/work/AiFw/AiFw/output
+            cp /usr/obj/aifw-iso/output/* /home/runner/work/AiFw/AiFw/output/
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aifw-iso-amd64
+          path: output/aifw-*.iso
+          retention-days: 5
+
+      - name: Upload IMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aifw-img-amd64
+          path: output/aifw-*.img
+          retention-days: 5
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: output/*.sha256
+          retention-days: 5
+
+  release:
+    name: Create GitHub Release
+    needs: build-iso
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: aifw-iso-amd64
+          path: release-assets/
+
+      - name: Download IMG
+        uses: actions/download-artifact@v4
+        with:
+          name: aifw-img-amd64
+          path: release-assets/
+
+      - name: Download checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: checksums
+          path: release-assets/
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "AiFw v${{ steps.version.outputs.version }}"
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          generate_release_notes: true
+          files: |
+            release-assets/*
+          body: |
+            ## AiFw v${{ steps.version.outputs.version }}
+
+            AI-Powered Firewall for FreeBSD ${{ env.FREEBSD_VERSION }}
+
+            ### Downloads
+
+            | File | Description |
+            |------|-------------|
+            | `aifw-${{ steps.version.outputs.version }}-amd64.iso` | Bootable ISO (CD/DVD, VM) |
+            | `aifw-${{ steps.version.outputs.version }}-amd64.img` | USB flash drive image |
+
+            ### Quick Start
+
+            1. Boot from the ISO or write the IMG to a USB drive (`dd if=aifw-*.img of=/dev/sdX bs=1M`)
+            2. The setup wizard starts automatically on first boot
+            3. Follow the prompts to configure networking, admin account, and firewall policy
+            4. Use menu option **14** to install to disk (ZFS or UFS)
+
+            ### Verify Downloads
+
+            ```bash
+            sha256sum -c aifw-${{ steps.version.outputs.version }}-amd64.iso.sha256
+            sha256sum -c aifw-${{ steps.version.outputs.version }}-amd64.img.sha256
+            ```

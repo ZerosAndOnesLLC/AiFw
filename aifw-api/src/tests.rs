@@ -20,7 +20,7 @@ mod tests {
             .await
             .unwrap();
 
-        let app = crate::build_router(state);
+        let app = crate::build_router(state, None);
         let server = TestServer::new(app).unwrap();
         (server, auth_settings)
     }

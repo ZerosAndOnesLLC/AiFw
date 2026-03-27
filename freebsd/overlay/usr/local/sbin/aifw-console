@@ -1,0 +1,211 @@
+#!/bin/sh
+# AiFw Console Menu — displayed after login on the appliance
+# Similar to OPNsense/pfSense console menu
+
+AIFW_CONF="/usr/local/etc/aifw/aifw.conf"
+AIFW_VERSION="0.17.0"
+
+show_banner()
+{
+    clear
+    echo ""
+    echo "  ___   _  ___       "
+    echo " / _ \ (_)| __| _ __ "
+    echo "| (_) || || _| \ V  /"
+    echo " \___/ |_||_|   \_/  "
+    echo ""
+    echo "  AI-Powered Firewall for FreeBSD"
+    echo "  Version: ${AIFW_VERSION}"
+    echo ""
+
+    # Show interface IPs
+    for iface in $(ifconfig -l); do
+        case "$iface" in
+            lo*|pflog*|enc*|pfsync*) continue ;;
+        esac
+        addr=$(ifconfig "$iface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
+        if [ -n "$addr" ]; then
+            echo "  ${iface}: ${addr}"
+        fi
+    done
+    echo ""
+}
+
+show_menu()
+{
+    echo "  0) Logout                   7) Ping host"
+    echo "  1) Assign interfaces        8) Shell"
+    echo "  2) Set interface IP         9) pfTop"
+    echo "  3) Reset root password     10) Firewall log"
+    echo "  4) Reset to factory        11) Restart all services"
+    echo "  5) Power off               12) Update from console"
+    echo "  6) Reboot                  13) Run setup wizard"
+    if [ ! -f "$AIFW_CONF" ]; then
+        echo ""
+        echo "  14) Install to disk"
+    fi
+    echo ""
+}
+
+do_assign_interfaces()
+{
+    echo ""
+    echo "Available interfaces:"
+    ifconfig -l | tr ' ' '\n' | grep -v '^lo\|^pflog\|^enc\|^pfsync'
+    echo ""
+    echo -n "Enter WAN interface name: "
+    read wan_if
+    if [ -n "$wan_if" ]; then
+        echo "WAN set to: $wan_if"
+    fi
+    echo ""
+    echo -n "Enter LAN interface name (or blank for none): "
+    read lan_if
+    if [ -n "$lan_if" ]; then
+        echo "LAN set to: $lan_if"
+    fi
+    echo ""
+    echo "Press Enter to continue..."
+    read _
+}
+
+do_set_ip()
+{
+    echo ""
+    echo "Available interfaces:"
+    ifconfig -l | tr ' ' '\n' | grep -v '^lo\|^pflog\|^enc\|^pfsync'
+    echo ""
+    echo -n "Interface: "
+    read iface
+    echo -n "IPv4 address (CIDR, e.g. 192.168.1.1/24): "
+    read addr
+    if [ -n "$iface" ] && [ -n "$addr" ]; then
+        ifconfig "$iface" inet "$addr"
+        echo "Set $iface to $addr"
+    fi
+    echo ""
+    echo "Press Enter to continue..."
+    read _
+}
+
+do_reset_password()
+{
+    echo ""
+    passwd root
+    echo ""
+    echo "Press Enter to continue..."
+    read _
+}
+
+do_factory_reset()
+{
+    echo ""
+    echo -n "Are you sure you want to reset to factory defaults? [y/N] "
+    read confirm
+    case "$confirm" in
+        [yY]*)
+            rm -f "$AIFW_CONF"
+            rm -f /var/db/aifw/aifw.db
+            sysrc aifw_firstboot_enable=YES >/dev/null 2>&1
+            echo "Factory reset complete. Rebooting..."
+            sleep 2
+            reboot
+            ;;
+    esac
+}
+
+do_ping()
+{
+    echo ""
+    echo -n "Enter host to ping: "
+    read host
+    if [ -n "$host" ]; then
+        ping -c 4 "$host"
+    fi
+    echo ""
+    echo "Press Enter to continue..."
+    read _
+}
+
+do_pftop()
+{
+    if command -v pftop >/dev/null 2>&1; then
+        pftop
+    else
+        echo "pftop not installed. Using pfctl -ss instead:"
+        pfctl -ss | head -50
+        echo ""
+        echo "Press Enter to continue..."
+        read _
+    fi
+}
+
+do_fw_log()
+{
+    echo ""
+    echo "Last 50 firewall log entries (Ctrl-C to stop):"
+    tcpdump -n -e -ttt -i pflog0 2>/dev/null | head -50
+    echo ""
+    echo "Press Enter to continue..."
+    read _
+}
+
+do_restart_services()
+{
+    echo ""
+    echo "Restarting AiFw services..."
+    service aifw_daemon restart 2>/dev/null
+    service aifw_api restart 2>/dev/null
+    pfctl -f /usr/local/etc/aifw/pf.conf.aifw 2>/dev/null
+    echo "Done."
+    echo ""
+    echo "Press Enter to continue..."
+    read _
+}
+
+do_update()
+{
+    echo ""
+    echo "Update from console is not yet implemented."
+    echo "Use: pkg update && pkg upgrade aifw"
+    echo ""
+    echo "Press Enter to continue..."
+    read _
+}
+
+do_setup()
+{
+    /usr/local/sbin/aifw-setup
+}
+
+do_install()
+{
+    /usr/local/sbin/aifw-install
+}
+
+# Main loop
+while true; do
+    show_banner
+    show_menu
+    echo -n "Enter an option: "
+    read choice
+
+    case "$choice" in
+        0)  exit 0 ;;
+        1)  do_assign_interfaces ;;
+        2)  do_set_ip ;;
+        3)  do_reset_password ;;
+        4)  do_factory_reset ;;
+        5)  shutdown -p now ;;
+        6)  reboot ;;
+        7)  do_ping ;;
+        8)  /bin/sh ;;
+        9)  do_pftop ;;
+        10) do_fw_log ;;
+        11) do_restart_services ;;
+        12) do_update ;;
+        13) do_setup ;;
+        14) do_install ;;
+        *)  echo "Invalid option." ; sleep 1 ;;
+    esac
+done

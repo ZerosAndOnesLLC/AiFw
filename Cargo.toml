@@ -16,7 +16,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.17.0"
+version = "0.18.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -29,7 +29,7 @@ aifw-conntrack = { path = "aifw-conntrack" }
 aifw-api = { path = "aifw-api" }
 axum = "0.8"
 tower = { version = "0.5", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 jsonwebtoken = "9"
 argon2 = { version = "0.5", features = ["std"] }
 tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,47 @@
+#!/bin/sh
+# PROVIDE: aifw_firstboot
+# REQUIRE: NETWORKING LOGIN
+# BEFORE: aifw_daemon aifw_api
+# KEYWORD: firstboot
+
+. /etc/rc.subr
+
+name="aifw_firstboot"
+rcvar="aifw_firstboot_enable"
+start_cmd="${name}_start"
+stop_cmd=":"
+
+AIFW_CONF="/usr/local/etc/aifw/aifw.conf"
+AIFW_SETUP="/usr/local/sbin/aifw-setup"
+
+aifw_firstboot_start()
+{
+    if [ -f "$AIFW_CONF" ]; then
+        return 0
+    fi
+
+    echo ""
+    echo "============================================"
+    echo "  AiFw — AI-Powered Firewall"
+    echo "  First Boot Setup"
+    echo "============================================"
+    echo ""
+
+    if [ -x "$AIFW_SETUP" ]; then
+        # Run the setup wizard on the console
+        $AIFW_SETUP </dev/console >/dev/console 2>&1
+
+        # If setup succeeded, enable services
+        if [ -f "$AIFW_CONF" ]; then
+            sysrc aifw_daemon_enable=YES >/dev/null 2>&1
+            sysrc aifw_api_enable=YES >/dev/null 2>&1
+            sysrc aifw_firstboot_enable=NO >/dev/null 2>&1
+        fi
+    else
+        echo "ERROR: aifw-setup not found at $AIFW_SETUP"
+    fi
+}
+
+load_rc_config $name
+: ${aifw_firstboot_enable:="YES"}
+run_rc_command "$1"

@@ -1,0 +1,291 @@
+#!/bin/sh
+# AiFw ISO Build Script
+# Runs inside a FreeBSD environment to produce a bootable live CD ISO + USB image
+# Usage: ./build-iso.sh <version> [arch]
+#   version: e.g. 0.17.0
+#   arch:    amd64 (default)
+
+set -e
+
+VERSION="${1:?Usage: $0 <version> [arch]}"
+ARCH="${2:-amd64}"
+
+FREEBSD_VERSION="15.0"
+FREEBSD_RELEASE="15.0-RELEASE"
+FREEBSD_MIRROR="https://download.freebsd.org/releases/${ARCH}/${FREEBSD_RELEASE}"
+
+WORKDIR="/usr/obj/aifw-iso"
+STAGEDIR="${WORKDIR}/stage"
+ISODIR="${WORKDIR}/iso"
+DISTDIR="${WORKDIR}/dist"
+OUTPUTDIR="${WORKDIR}/output"
+
+LABEL="AIFW_${VERSION}"
+
+echo "============================================"
+echo "  AiFw ISO Builder"
+echo "  Version: ${VERSION}"
+echo "  Arch:    ${ARCH}"
+echo "  FreeBSD: ${FREEBSD_RELEASE}"
+echo "============================================"
+echo ""
+
+# --- Sanity checks ---
+if [ "$(uname -s)" != "FreeBSD" ]; then
+    echo "ERROR: This script must run on FreeBSD"
+    exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: Must be run as root"
+    exit 1
+fi
+
+# --- Clean previous build ---
+echo "[1/9] Cleaning previous build..."
+rm -rf "$WORKDIR"
+mkdir -p "$STAGEDIR" "$ISODIR" "$DISTDIR" "$OUTPUTDIR"
+
+# --- Fetch FreeBSD base + kernel ---
+echo "[2/9] Fetching FreeBSD ${FREEBSD_RELEASE} base and kernel..."
+for dist in base.txz kernel.txz; do
+    if [ ! -f "${DISTDIR}/${dist}" ]; then
+        fetch -o "${DISTDIR}/${dist}" "${FREEBSD_MIRROR}/${dist}"
+    fi
+done
+
+# --- Extract base + kernel into staging ---
+echo "[3/9] Extracting base system..."
+tar -xf "${DISTDIR}/base.txz" -C "$STAGEDIR"
+tar -xf "${DISTDIR}/kernel.txz" -C "$STAGEDIR"
+
+# --- Strip unnecessary components ---
+echo "[4/9] Stripping unnecessary components..."
+rm -rf "$STAGEDIR/usr/share/doc"
+rm -rf "$STAGEDIR/usr/share/examples"
+rm -rf "$STAGEDIR/usr/share/games"
+rm -rf "$STAGEDIR/usr/share/man"
+rm -rf "$STAGEDIR/usr/share/info"
+rm -rf "$STAGEDIR/usr/lib/debug"
+rm -rf "$STAGEDIR/usr/tests"
+rm -rf "$STAGEDIR/usr/share/calendar"
+rm -rf "$STAGEDIR/usr/share/dict"
+rm -rf "$STAGEDIR/usr/share/groff_font"
+rm -rf "$STAGEDIR/usr/share/me"
+rm -rf "$STAGEDIR/usr/share/openssl"
+rm -rf "$STAGEDIR/rescue"
+
+# --- Install packages into staging via chroot ---
+echo "[5/9] Installing packages..."
+mkdir -p "$STAGEDIR/dev"
+mount -t devfs devfs "$STAGEDIR/dev"
+
+# Copy resolv.conf for DNS in chroot
+cp /etc/resolv.conf "$STAGEDIR/etc/resolv.conf"
+
+# Bootstrap pkg and install required packages
+chroot "$STAGEDIR" /bin/sh -c '
+    env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
+    pkg install -y wireguard-tools
+'
+
+umount "$STAGEDIR/dev"
+
+# --- Overlay AiFw binaries and config ---
+echo "[6/9] Installing AiFw..."
+
+# Binaries (should be pre-built and placed in freebsd/release/)
+BINDIR="${WORKDIR}/../release"
+for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
+    if [ -f "${BINDIR}/${bin}" ]; then
+        install -m 755 "${BINDIR}/${bin}" "$STAGEDIR/usr/local/sbin/${bin}"
+    else
+        echo "WARNING: ${bin} not found in ${BINDIR}, skipping"
+    fi
+done
+
+# Static UI build
+UI_DIR="${WORKDIR}/../ui-export"
+if [ -d "$UI_DIR" ]; then
+    mkdir -p "$STAGEDIR/usr/local/share/aifw/ui"
+    cp -a "$UI_DIR/"* "$STAGEDIR/usr/local/share/aifw/ui/"
+fi
+
+# Overlay files (rc.d scripts, console menu, installer)
+OVERLAY_DIR="${WORKDIR}/../overlay"
+if [ -d "$OVERLAY_DIR" ]; then
+    cp -a "$OVERLAY_DIR/"* "$STAGEDIR/"
+    # Ensure scripts are executable
+    chmod 755 "$STAGEDIR/usr/local/etc/rc.d/"* 2>/dev/null || true
+    chmod 755 "$STAGEDIR/usr/local/sbin/aifw-console" 2>/dev/null || true
+    chmod 755 "$STAGEDIR/usr/local/sbin/aifw-install" 2>/dev/null || true
+fi
+
+# Create required directories
+mkdir -p "$STAGEDIR/usr/local/etc/aifw"
+mkdir -p "$STAGEDIR/usr/local/etc/aifw/anchors"
+mkdir -p "$STAGEDIR/var/db/aifw"
+mkdir -p "$STAGEDIR/var/log/aifw"
+
+# --- Configure live environment ---
+echo "[7/9] Configuring live environment..."
+
+# rc.conf for live boot
+cat > "$STAGEDIR/etc/rc.conf" <<'RCCONF'
+hostname="aifw"
+ifconfig_DEFAULT="DHCP"
+pf_enable="YES"
+pflog_enable="YES"
+gateway_enable="YES"
+sshd_enable="YES"
+sendmail_enable="NONE"
+sendmail_submit_enable="NO"
+sendmail_outbound_enable="NO"
+sendmail_msp_queue_enable="NO"
+aifw_firstboot_enable="YES"
+RCCONF
+
+# fstab for live CD (read-only root + tmpfs)
+cat > "$STAGEDIR/etc/fstab" <<FSTAB
+/dev/iso9660/${LABEL}  /       cd9660  ro  0  0
+tmpfs                  /tmp    tmpfs   rw,mode=01777  0  0
+tmpfs                  /var    tmpfs   rw  0  0
+FSTAB
+
+# loader.conf
+cat > "$STAGEDIR/boot/loader.conf" <<'LOADER'
+autoboot_delay="3"
+beastie_disable="YES"
+loader_logo="none"
+kern.geom.label.disk_ident.enable="0"
+kern.geom.label.gptid.enable="0"
+vfs.root.mountfrom="cd9660:/dev/iso9660/AIFW"
+LOADER
+
+# Set root shell to console menu for live environment
+# (Users can still get a shell via menu option 8)
+chroot "$STAGEDIR" /usr/sbin/pw usermod root -s /usr/local/sbin/aifw-console
+
+# /etc/ttys — auto-login on console
+sed -i '' 's|^console.*|console "/usr/libexec/getty autologin" xterm on secure|' "$STAGEDIR/etc/ttys"
+
+# Create /etc/login.conf entry for autologin (no password prompt)
+if ! grep -q 'autologin' "$STAGEDIR/etc/gettytab" 2>/dev/null; then
+    cat >> "$STAGEDIR/etc/gettytab" <<'GETTY'
+
+# Auto-login for AiFw console
+autologin|al|Auto login:\
+    :ht:np:sp#115200:al=root:
+GETTY
+fi
+
+# Entropy for live boot
+dd if=/dev/random of="$STAGEDIR/boot/entropy" bs=4096 count=1 2>/dev/null
+dd if=/dev/random of="$STAGEDIR/entropy" bs=4096 count=1 2>/dev/null
+
+# Version file
+echo "$VERSION" > "$STAGEDIR/usr/local/share/aifw/version"
+
+# MOTD
+cat > "$STAGEDIR/etc/motd.template" <<MOTD
+
+  AiFw ${VERSION} — AI-Powered Firewall for FreeBSD
+  https://github.com/ZerosAndOnesLLC/AiFw
+
+MOTD
+
+# --- Build ISO ---
+echo "[8/9] Building ISO image..."
+
+# Create EFI boot image
+EFIIMG="${WORKDIR}/efiboot.img"
+EFI_STAGEDIR="${WORKDIR}/efi-stage"
+mkdir -p "$EFI_STAGEDIR/EFI/BOOT"
+cp "$STAGEDIR/boot/loader.efi" "$EFI_STAGEDIR/EFI/BOOT/BOOTX64.efi"
+makefs -t msdos -s 5m -o fat_type=12 "$EFIIMG" "$EFI_STAGEDIR"
+
+# Copy EFI image into staging for ISO
+mkdir -p "$STAGEDIR/boot/efi"
+cp "$EFIIMG" "$STAGEDIR/boot/efi/efiboot.img"
+
+# Build ISO with makefs
+makefs -t cd9660 \
+    -o rockridge \
+    -o label="${LABEL}" \
+    -o bootimage="i386;$STAGEDIR/boot/cdboot" \
+    -o no-emul-boot \
+    -o platformid=efi \
+    -o bootimage="efi;${EFIIMG}" \
+    -o no-emul-boot \
+    "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso" \
+    "$STAGEDIR"
+
+echo "  ISO: ${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
+ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
+
+# --- Build USB image ---
+echo "[9/9] Building USB image..."
+
+IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
+IMG_SIZE=$(du -sm "$STAGEDIR" | awk '{print $1 + 256}')
+
+# Create raw image
+truncate -s "${IMG_SIZE}m" "$IMG"
+
+# Create GPT
+MD=$(mdconfig -a -t vnode -f "$IMG")
+gpart create -s gpt "$MD"
+gpart add -t efi -s 260m -l efi "$MD"
+gpart add -t freebsd-boot -s 512k -l boot "$MD"
+gpart add -t freebsd-ufs -l aifw "$MD"
+
+# Format EFI
+newfs_msdos -F 32 -c 1 "/dev/${MD}p1"
+mount -t msdos "/dev/${MD}p1" /mnt
+mkdir -p /mnt/EFI/BOOT
+cp "$STAGEDIR/boot/loader.efi" /mnt/EFI/BOOT/BOOTX64.efi
+umount /mnt
+
+# Write bootcode
+gpart bootcode -b "$STAGEDIR/boot/pmbr" -p "$STAGEDIR/boot/gptboot" -i 2 "$MD"
+
+# Format UFS root
+newfs -U -j "/dev/${MD}p3"
+mount "/dev/${MD}p3" /mnt
+
+# Clone staged system into USB image
+# Update fstab for USB boot
+cp -a "$STAGEDIR/"* /mnt/
+cat > /mnt/etc/fstab <<USBFSTAB
+/dev/ufs/aifw  /       ufs     rw  1  1
+tmpfs          /tmp    tmpfs   rw,mode=01777  0  0
+USBFSTAB
+
+# Update loader.conf for USB boot
+sed -i '' '/vfs.root.mountfrom/d' /mnt/boot/loader.conf
+echo 'vfs.root.mountfrom="ufs:/dev/ufs/aifw"' >> /mnt/boot/loader.conf
+
+# Restore writable root shell for installed system
+chroot /mnt /usr/sbin/pw usermod root -s /usr/local/sbin/aifw-console 2>/dev/null || true
+
+umount /mnt
+mdconfig -d -u "$MD"
+
+echo "  IMG: ${IMG}"
+ls -lh "$IMG"
+
+# --- Checksums ---
+echo ""
+echo "Generating checksums..."
+cd "$OUTPUTDIR"
+sha256 "aifw-${VERSION}-${ARCH}.iso" > "aifw-${VERSION}-${ARCH}.iso.sha256"
+sha256 "aifw-${VERSION}-${ARCH}.img" > "aifw-${VERSION}-${ARCH}.img.sha256"
+
+echo ""
+echo "============================================"
+echo "  Build complete!"
+echo "============================================"
+echo ""
+ls -lh "$OUTPUTDIR/"
+echo ""
+cat "$OUTPUTDIR/"*.sha256
