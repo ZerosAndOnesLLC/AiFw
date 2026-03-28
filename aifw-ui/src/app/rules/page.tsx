@@ -34,6 +34,8 @@ export default function RulesPage() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [systemRules, setSystemRules] = useState<string[]>([]);
+  const [showSystem, setShowSystem] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<RuleForm>(defaultForm);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -53,6 +55,12 @@ export default function RulesPage() {
 
   useEffect(() => {
     fetchRules();
+    // Fetch system/default rules
+    const token = localStorage.getItem("aifw_token");
+    fetch("/api/v1/rules/system", { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : { data: [] })
+      .then(d => setSystemRules(d.data || []))
+      .catch(() => {});
   }, [fetchRules]);
 
   const handleSubmit = async () => {
@@ -472,6 +480,41 @@ export default function RulesPage() {
           </div>
         )}
       </div>
+
+      {/* System/Default Rules (read-only) */}
+      {systemRules.length > 0 && (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
+          <button onClick={() => setShowSystem(!showSystem)}
+            className="w-full px-4 py-3 flex items-center justify-between hover:bg-[var(--bg-card-hover)] transition-colors">
+            <h3 className="text-sm font-medium">System Rules (pf.conf) — {systemRules.length} rules</h3>
+            <svg className={`w-4 h-4 text-[var(--text-muted)] transition-transform ${showSystem ? "rotate-180" : ""}`}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {showSystem && (
+            <div className="border-t border-[var(--border)] p-3">
+              <p className="text-xs text-[var(--text-muted)] mb-2">
+                These are the base firewall rules from pf.conf. They are managed by the setup wizard and cannot be edited here.
+              </p>
+              <div className="bg-gray-900 rounded p-3 font-mono text-xs space-y-0.5 overflow-x-auto">
+                {systemRules.map((rule, i) => {
+                  const isBlock = rule.startsWith("block");
+                  const isPass = rule.startsWith("pass");
+                  const isAnchor = rule.startsWith("anchor");
+                  const color = isBlock ? "text-red-400" : isPass ? "text-green-400" : isAnchor ? "text-blue-400" : "text-[var(--text-secondary)]";
+                  return (
+                    <div key={i} className={`${color} whitespace-nowrap`}>
+                      <span className="text-gray-600 mr-2 select-none">{String(i + 1).padStart(2, " ")}.</span>
+                      {rule}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -27,12 +27,21 @@ struct SystemPayload {
     memory_used: u64,
     memory_pct: f64,
     disks: Vec<DiskPayload>,
+    disk_io: DiskIoPayload,
     uptime_secs: u64,
     hostname: String,
     os_version: String,
     dns_servers: Vec<String>,
     default_gateway: String,
     route_count: usize,
+}
+
+#[derive(Serialize, Default)]
+struct DiskIoPayload {
+    reads_per_sec: f64,
+    writes_per_sec: f64,
+    read_kbps: f64,
+    write_kbps: f64,
 }
 
 #[derive(Serialize)]
@@ -316,8 +325,29 @@ async fn collect_system_metrics() -> SystemPayload {
         Some((gw, count))
     }.await.unwrap_or_default();
 
+    // Disk I/O via gstat
+    let disk_io = async {
+        let out = Command::new("gstat").args(["-b", "-p"]).output().await.ok()?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut total = DiskIoPayload::default();
+        for line in stdout.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // gstat -bp: L(q) ops/s r/s kBps ms/r w/s kBps ms/w %busy Name
+            if parts.len() >= 10 {
+                let name = parts[9];
+                // Only count whole disks, not partitions
+                if name.contains('p') || name.starts_with("cd") { continue; }
+                total.reads_per_sec += parts[2].parse::<f64>().unwrap_or(0.0);
+                total.read_kbps += parts[3].parse::<f64>().unwrap_or(0.0);
+                total.writes_per_sec += parts[5].parse::<f64>().unwrap_or(0.0);
+                total.write_kbps += parts[6].parse::<f64>().unwrap_or(0.0);
+            }
+        }
+        Some(total)
+    }.await.unwrap_or_default();
+
     SystemPayload {
         cpu_usage, memory_total: mem_total, memory_used: mem_used, memory_pct: mem_pct,
-        disks, uptime_secs, hostname, os_version, dns_servers, default_gateway, route_count,
+        disks, disk_io, uptime_secs, hostname, os_version, dns_servers, default_gateway, route_count,
     }
 }

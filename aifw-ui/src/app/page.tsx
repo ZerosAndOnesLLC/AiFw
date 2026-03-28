@@ -10,6 +10,7 @@ interface StatusData {
 interface SystemData {
   cpu_usage: number; memory_total: number; memory_used: number; memory_pct: number;
   disks: { mount: string; filesystem: string; total: number; used: number; pct: number }[];
+  disk_io: { reads_per_sec: number; writes_per_sec: number; read_kbps: number; write_kbps: number };
   uptime_secs: number; hostname: string; os_version: string;
   dns_servers: string[]; default_gateway: string; route_count: number;
 }
@@ -19,7 +20,9 @@ interface Connection {
   bytes_in: number; bytes_out: number;
 }
 interface HistoryPoint {
-  time: number; cpu: number; memPct: number; diskPct: number; bpsIn: number; bpsOut: number;
+  time: number; cpu: number; memPct: number;
+  diskReadKbps: number; diskWriteKbps: number;
+  bpsIn: number; bpsOut: number;
 }
 
 function formatBytes(b: number): string {
@@ -200,7 +203,8 @@ export default function Dashboard() {
           time: now,
           cpu: msg.system?.cpu_usage ?? 0,
           memPct: msg.system?.memory_pct ?? 0,
-          diskPct: msg.system?.disks?.[0]?.pct ?? 0,
+          diskReadKbps: msg.system?.disk_io?.read_kbps ?? 0,
+          diskWriteKbps: msg.system?.disk_io?.write_kbps ?? 0,
           bpsIn: bIn, bpsOut: bOut,
         }].slice(-MAX_PTS));
       } catch {}
@@ -251,7 +255,7 @@ export default function Dashboard() {
         {[
           { l:"CPU", v:`${(system?.cpu_usage??0).toFixed(0)}%`, c: (system?.cpu_usage??0) > 80 ? "#ef4444" : "#3b82f6" },
           { l:"Memory", v:`${(system?.memory_pct??0).toFixed(0)}%`, c: (system?.memory_pct??0) > 80 ? "#ef4444" : "#8b5cf6" },
-          { l:"Disk", v:`${(system?.disks?.[0]?.pct??0).toFixed(0)}%`, c: (system?.disks?.[0]?.pct??0) > 80 ? "#ef4444" : "#06b6d4" },
+          { l:"Disk", v:`${(system?.disks?.[0]?.pct??0).toFixed(0)}%`, c: (system?.disks?.[0]?.pct??0) > 90 ? "#ef4444" : "#06b6d4" },
           { l:"In", v:formatBps(rateIn), c:"#22c55e" },
           { l:"Out", v:formatBps(rateOut), c:"#3b82f6" },
           { l:"States", v:formatNumber(status.pf_states), c:"#06b6d4" },
@@ -276,10 +280,10 @@ export default function Dashboard() {
         getValue={(d,k) => k==="mem" ? d.memPct : 0}
         maxValue={100} formatY={v => `${v.toFixed(0)}%`}
       />
-      <StackedChart data={history} title="Disk" height={90} hoverIdx={hoverIdx} onHover={setHoverIdx}
-        lines={[{key:"disk",color:"#06b6d4",label:"Disk"}]}
-        getValue={(d,k) => k==="disk" ? d.diskPct : 0}
-        maxValue={100} formatY={v => `${v.toFixed(0)}%`}
+      <StackedChart data={history} title="Disk I/O" height={90} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        lines={[{key:"read",color:"#22c55e",label:"Read"},{key:"write",color:"#f97316",label:"Write"}]}
+        getValue={(d,k) => k==="read" ? d.diskReadKbps : d.diskWriteKbps}
+        formatY={v => v >= 1024 ? `${(v/1024).toFixed(0)} MB/s` : `${v.toFixed(0)} KB/s`}
       />
       <StackedChart data={history} title="Network" height={110} hoverIdx={hoverIdx} onHover={setHoverIdx}
         lines={[{key:"in",color:"#22c55e",label:"In"},{key:"out",color:"#3b82f6",label:"Out"}]}

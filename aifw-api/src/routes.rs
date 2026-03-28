@@ -526,6 +526,19 @@ pub async fn list_user_audit(
     Ok(Json(ApiResponse { data: entries }))
 }
 
+// --- System PF rules (from pfctl, read-only) ---
+
+pub async fn list_system_rules() -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
+    let output = tokio::process::Command::new("sudo")
+        .args(["pfctl", "-sr"])
+        .output()
+        .await
+        .map_err(|_| internal())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let rules: Vec<String> = stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect();
+    Ok(Json(ApiResponse { data: rules }))
+}
+
 // --- Rules endpoints ---
 
 pub async fn list_rules(
