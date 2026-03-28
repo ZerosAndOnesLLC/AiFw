@@ -474,15 +474,18 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push(format!("pass in quick proto tcp to any port {} keep state label \"aifw-api\"", config.api_port));
     lines.push(String::new());
 
-    // LAN to WAN
-    if config.lan_interface.is_some() {
+    // LAN to WAN (only with dual-NIC + NAT enabled)
+    if config.lan_interface.is_some() && config.nat_enabled {
         lines.push("# LAN to WAN".to_string());
         lines.push("pass in on $lan_if from $lan_net keep state".to_string());
         lines.push(String::new());
 
-        // NAT for LAN
         lines.push("# NAT — LAN masquerade".to_string());
         lines.push("nat on $wan_if from $lan_net to any -> ($wan_if)".to_string());
+        lines.push(String::new());
+    } else if config.lan_interface.is_some() {
+        lines.push("# LAN to WAN (NAT disabled)".to_string());
+        lines.push("pass in on $lan_if from $lan_net keep state".to_string());
         lines.push(String::new());
     }
 

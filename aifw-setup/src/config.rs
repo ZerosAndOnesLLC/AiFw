@@ -30,6 +30,7 @@ pub struct SetupConfig {
 
     // Firewall
     pub default_policy: DefaultPolicy,
+    pub nat_enabled: bool,
 
     // Paths
     pub db_path: String,
@@ -95,6 +96,7 @@ impl Default for SetupConfig {
             ui_enabled: true,
             dns_servers: vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()],
             default_policy: DefaultPolicy::Standard,
+            nat_enabled: false,
             db_path: "/var/db/aifw/aifw.db".to_string(),
             config_dir: "/usr/local/etc/aifw".to_string(),
         }

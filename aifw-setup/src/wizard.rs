@@ -139,20 +139,37 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         }
         println!();
 
-        let iface_refs: Vec<&str> = interfaces.iter().map(|s| s.as_str()).collect();
-        let wan_idx = console::select("Select WAN interface", &iface_refs, 0);
-        config.wan_interface = interfaces[wan_idx].clone();
+        if interfaces.len() == 1 {
+            // Single NIC mode
+            config.wan_interface = interfaces[0].clone();
+            console::success(&format!("Single interface detected: {}", config.wan_interface));
+            println!();
+            console::warn("Single NIC mode — NAT is not available.");
+            console::info("NAT requires a WAN and LAN interface (minimum 2 NICs).");
+            console::info("The firewall will operate in filtering mode only.");
+            println!();
+            config.nat_enabled = false;
+        } else {
+            // Multi-NIC mode
+            let iface_refs: Vec<&str> = interfaces.iter().map(|s| s.as_str()).collect();
+            let wan_idx = console::select("Select WAN interface", &iface_refs, 0);
+            config.wan_interface = interfaces[wan_idx].clone();
 
-        // LAN is optional
-        let remaining: Vec<&str> = interfaces
-            .iter()
-            .filter(|i| **i != config.wan_interface)
-            .map(|s| s.as_str())
-            .collect();
+            let remaining: Vec<&str> = interfaces
+                .iter()
+                .filter(|i| **i != config.wan_interface)
+                .map(|s| s.as_str())
+                .collect();
 
-        if !remaining.is_empty() && console::confirm("Configure a LAN interface?", true) {
-            let lan_idx = console::select("Select LAN interface", &remaining, 0);
-            config.lan_interface = Some(remaining[lan_idx].to_string());
+            if !remaining.is_empty() && console::confirm("Configure a LAN interface?", true) {
+                let lan_idx = console::select("Select LAN interface", &remaining, 0);
+                config.lan_interface = Some(remaining[lan_idx].to_string());
+                config.nat_enabled = true;
+                console::success("NAT will be enabled between WAN and LAN.");
+            } else {
+                console::info("No LAN interface configured — NAT disabled.");
+                config.nat_enabled = false;
+            }
         }
     }
 
@@ -201,7 +218,11 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         }
     } else {
         console::header("Step 6/11 — LAN Configuration");
-        console::info("No LAN interface configured. Skipping.");
+        if config.nat_enabled {
+            console::info("No LAN interface configured. NAT disabled.");
+        } else {
+            console::info("Single NIC mode — skipping LAN configuration.");
+        }
     }
 
     // ── Step 6: Admin Account ────────────────────────────────
@@ -278,6 +299,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     console::info(&format!("MFA:            {}", if config.totp_enabled { "enabled" } else { "disabled" }));
     console::info(&format!("API:            {}:{}", config.api_listen, config.api_port));
     console::info(&format!("Web UI:         {}", if config.ui_enabled { "enabled" } else { "disabled" }));
+    console::info(&format!("NAT:            {}", if config.nat_enabled { "enabled" } else { "disabled (single NIC)" }));
     console::info(&format!("DNS:            {}", config.dns_servers.join(", ")));
     console::info(&format!("Policy:         {}", config.default_policy));
     console::info(&format!("Database:       {}", config.db_path));
