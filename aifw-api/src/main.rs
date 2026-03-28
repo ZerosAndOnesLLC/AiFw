@@ -125,6 +125,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/dhcp/v4/leases", get(dhcp::list_leases))
         .route("/api/v1/dhcp/v4/leases/{ip}", delete(dhcp::release_lease))
         .route("/api/v1/dhcp/v4/apply", post(dhcp::apply_config))
+        .route("/api/v1/dhcp/logs", get(dhcp::dhcp_logs))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/schedules", get(routes::list_schedules).post(routes::create_schedule))

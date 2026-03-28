@@ -53,6 +53,7 @@ const navItems: NavItem[] = [
       { href: "/dhcp/subnets", label: "  Subnets" },
       { href: "/dhcp/reservations", label: "  Reservations" },
       { href: "/dhcp/leases", label: "  Leases" },
+      { href: "/dhcp/logs", label: "  Logs" },
       { href: "/cluster", label: "Cluster / HA" },
     ],
   },

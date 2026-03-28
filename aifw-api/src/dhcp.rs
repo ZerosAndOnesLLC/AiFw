@@ -540,6 +540,32 @@ pub async fn release_lease(
     Ok(Json(MessageResponse { message: format!("Lease {} released", ip) }))
 }
 
+// --- Logs ---
+
+pub async fn dhcp_logs(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
+    let lines_param = params.get("lines").and_then(|v| v.parse::<usize>().ok()).unwrap_or(200);
+    let search = params.get("search").cloned().unwrap_or_default();
+
+    // Read Kea log file
+    let content = tokio::fs::read_to_string("/var/log/kea-dhcp4.log").await
+        .or_else(|_| std::result::Result::<String, std::io::Error>::Ok(String::new()))
+        .unwrap_or_default();
+
+    let mut log_lines: Vec<String> = content.lines()
+        .filter(|l| !l.is_empty())
+        .filter(|l| search.is_empty() || l.to_lowercase().contains(&search.to_lowercase()))
+        .map(String::from)
+        .collect();
+
+    // Return last N lines (newest first)
+    log_lines.reverse();
+    log_lines.truncate(lines_param);
+
+    Ok(Json(ApiResponse { data: log_lines }))
+}
+
 // --- Apply (write config + restart) ---
 
 pub async fn apply_config(
