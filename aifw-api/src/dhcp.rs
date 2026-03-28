@@ -304,11 +304,18 @@ async fn list_reservations_db(pool: &SqlitePool) -> Vec<DhcpReservation> {
 pub async fn dhcp_status(
     State(state): State<AppState>,
 ) -> Result<Json<DhcpStatus>, StatusCode> {
-    let running = Command::new("service").args(["kea", "status"]).output().await
-        .map(|o| o.status.success()).unwrap_or(false);
+    let running = Command::new("sudo").args(["service", "kea", "status"]).output().await
+        .map(|o| {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            // Kea status output: "DHCPv4 server: active" or "inactive"
+            stdout.contains("active") && !stdout.contains("inactive")
+        }).unwrap_or(false);
 
-    let version = Command::new("kea-dhcp4").arg("-v").output().await
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(|_| "not installed".to_string());
+    let version = Command::new("/usr/local/sbin/kea-dhcp4").arg("-v").output().await
+        .map(|o| {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if v.is_empty() { "not installed".to_string() } else { v }
+        }).unwrap_or_else(|_| "not installed".to_string());
 
     let subnets = list_subnets_db(&state.pool).await;
     let reservations = list_reservations_db(&state.pool).await;
@@ -329,17 +336,17 @@ pub async fn dhcp_status(
 // --- Service control ---
 
 pub async fn dhcp_start() -> Result<Json<MessageResponse>, StatusCode> {
-    let _ = Command::new("service").args(["kea", "start"]).output().await;
+    let _ = Command::new("sudo").args(["service", "kea", "start"]).output().await;
     Ok(Json(MessageResponse { message: "DHCP server started".to_string() }))
 }
 
 pub async fn dhcp_stop() -> Result<Json<MessageResponse>, StatusCode> {
-    let _ = Command::new("service").args(["kea", "stop"]).output().await;
+    let _ = Command::new("sudo").args(["service", "kea", "stop"]).output().await;
     Ok(Json(MessageResponse { message: "DHCP server stopped".to_string() }))
 }
 
 pub async fn dhcp_restart() -> Result<Json<MessageResponse>, StatusCode> {
-    let _ = Command::new("service").args(["kea", "restart"]).output().await;
+    let _ = Command::new("sudo").args(["service", "kea", "restart"]).output().await;
     Ok(Json(MessageResponse { message: "DHCP server restarted".to_string() }))
 }
 
@@ -508,13 +515,12 @@ pub async fn apply_config(
     tokio::fs::write(config_path, &kea_json).await.map_err(|_| internal())?;
 
     if config.enabled {
-        // Enable and restart
-        let _ = Command::new("sysrc").arg("kea_enable=YES").output().await;
-        let _ = Command::new("service").args(["kea", "restart"]).output().await;
+        let _ = Command::new("sudo").args(["sysrc", "kea_enable=YES"]).output().await;
+        let _ = Command::new("sudo").args(["service", "kea", "restart"]).output().await;
         Ok(Json(MessageResponse { message: "DHCP config applied and service restarted".to_string() }))
     } else {
-        let _ = Command::new("service").args(["kea", "stop"]).output().await;
-        let _ = Command::new("sysrc").arg("kea_enable=NO").output().await;
+        let _ = Command::new("sudo").args(["service", "kea", "stop"]).output().await;
+        let _ = Command::new("sudo").args(["sysrc", "kea_enable=NO"]).output().await;
         Ok(Json(MessageResponse { message: "DHCP config saved, service stopped".to_string() }))
     }
 }
