@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
+import { useWs } from "@/context/WsContext";
 
 interface StatusData {
   pf_running: boolean; pf_states: number; pf_rules: number;
@@ -23,6 +24,14 @@ interface HistoryPoint {
   time: number; cpu: number; memPct: number;
   diskReadKbps: number; diskWriteKbps: number;
   bpsIn: number; bpsOut: number;
+}
+
+interface InterfaceEntry {
+  name: string;
+  bytes_in: number;
+  bytes_out: number;
+  packets_in: number;
+  packets_out: number;
 }
 
 function formatBytes(b: number): string {
@@ -158,125 +167,133 @@ function StackedChart({ data, getValue, lines, maxValue, formatY, title, height 
 }
 
 export default function Dashboard() {
-  const [status, setStatus] = useState<StatusData|null>(null);
-  const [system, setSystem] = useState<SystemData|null>(null);
-  const [connections, setConnections] = useState<Connection[]>([]);
-  const [wsConnected, setWsConnected] = useState(false);
-  const [error, setError] = useState<string|null>(null);
+  const ws = useWs();
+
+  const status = ws.status as StatusData | null;
+  const system = ws.system as SystemData | null;
+  const connections = (ws.connections || []) as unknown as Connection[];
+  const ifaces = (ws.interfaces || []) as unknown as InterfaceEntry[];
+
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [rateIn, setRateIn] = useState(0);
   const [rateOut, setRateOut] = useState(0);
-  const [hoverIdx, setHoverIdx] = useState<number|null>(null);
-  const [interfaces, setInterfaces] = useState<{name:string}[]>([]);
-  const [selectedNic, setSelectedNic] = useState(() => typeof window !== "undefined" ? localStorage.getItem("aifw_dashboard_nic") || "" : "");
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const [selectedNic, setSelectedNic] = useState(() =>
+    typeof window !== "undefined" ? localStorage.getItem("aifw_dashboard_nic") || "" : ""
+  );
+
   const selectedNicRef = useRef(selectedNic);
-  const prevIfaceData = useRef<Record<string, {bytes_in:number;bytes_out:number}>>({});
-  const prev = useRef<StatusData|null>(null);
+  const prevIfaceData = useRef<Record<string, { bytes_in: number; bytes_out: number }>>({});
   const prevT = useRef(0);
+  const historyProcessed = useRef(false);
+  const lastHistoryLen = useRef(0);
 
-  const pickNic = (name: string) => { setSelectedNic(name); selectedNicRef.current = name; localStorage.setItem("aifw_dashboard_nic", name); };
-  const wsRef = useRef<WebSocket|null>(null);
-  const reconRef = useRef<ReturnType<typeof setTimeout>|null>(null);
+  const pickNic = (name: string) => {
+    setSelectedNic(name);
+    selectedNicRef.current = name;
+    localStorage.setItem("aifw_dashboard_nic", name);
+  };
 
-  const connectWs = useCallback(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-    if (!token) return;
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws`);
-    wsRef.current = ws;
-    ws.onopen = () => { setWsConnected(true); setError(null); };
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
+  // Process history from context on mount / when history changes
+  useEffect(() => {
+    if (!ws.historyLoaded || ws.history.length === 0) return;
+    // Only reprocess full history once, or when NIC changes
+    if (historyProcessed.current && ws.history.length === lastHistoryLen.current) return;
 
-        // Handle historical batch on connect
-        if (msg.type === "history" && Array.isArray(msg.data)) {
-          const points: HistoryPoint[] = [];
-          const prevByIf: Record<string, {bytes_in:number;bytes_out:number}> = {};
-          let prevTs = 0;
-          let nic = selectedNicRef.current;
-          let lastIfaces: {name:string}[] = [];
+    const rawHistory = ws.history as Record<string, unknown>[];
+    const points: HistoryPoint[] = [];
+    const prevByIf: Record<string, { bytes_in: number; bytes_out: number }> = {};
+    let prevTs = 0;
+    let nic = selectedNicRef.current;
 
-          for (const entry of msg.data) {
-            if (entry.type !== "status_update") continue;
-            const ts = Date.now() - (msg.data.length - points.length) * 1000;
-            const ifaces = entry.interfaces || [];
-            if (ifaces.length > 0) lastIfaces = ifaces;
-            if (!nic && ifaces.length > 0) nic = ifaces[0].name;
+    for (let idx = 0; idx < rawHistory.length; idx++) {
+      const entry = rawHistory[idx];
+      if ((entry as { type?: string }).type !== "status_update") continue;
+      const ts = Date.now() - (rawHistory.length - idx) * 1000;
+      const entryIfaces = ((entry as { interfaces?: InterfaceEntry[] }).interfaces || []) as InterfaceEntry[];
+      if (!nic && entryIfaces.length > 0) nic = entryIfaces[0].name;
 
-            const curIf = ifaces.find((i: {name:string}) => i.name === nic);
-            const prevIf = prevByIf[nic || ""];
-            let bi = 0, bo = 0;
-            if (curIf && prevIf && prevTs) {
-              const dt = (ts - prevTs) / 1000;
-              if (dt > 0 && dt < 5) {
-                bi = Math.max(0, (curIf.bytes_in - prevIf.bytes_in) / dt * 8);
-                bo = Math.max(0, (curIf.bytes_out - prevIf.bytes_out) / dt * 8);
-              }
-            }
-            if (curIf && nic) prevByIf[nic] = { bytes_in: curIf.bytes_in, bytes_out: curIf.bytes_out };
-            prevTs = ts;
-            points.push({
-              time: ts, cpu: entry.system?.cpu_usage ?? 0, memPct: entry.system?.memory_pct ?? 0,
-              diskReadKbps: entry.system?.disk_io?.read_kbps ?? 0,
-              diskWriteKbps: entry.system?.disk_io?.write_kbps ?? 0,
-              bpsIn: bi, bpsOut: bo,
-            });
-          }
-          if (lastIfaces.length > 0) setInterfaces(lastIfaces);
-          if (!selectedNicRef.current && nic) pickNic(nic);
-          Object.assign(prevIfaceData.current, prevByIf);
-          if (points.length > 0) {
-            setHistory(points.slice(-MAX_PTS));
-            const last = msg.data[msg.data.length - 1];
-            if (last?.status) { setStatus(last.status); prev.current = last.status; }
-            if (last?.system) setSystem(last.system);
-            if (last?.connections) setConnections(last.connections);
-            prevT.current = Date.now();
-          }
-          return;
+      const curIf = entryIfaces.find(i => i.name === nic);
+      const prevIf = prevByIf[nic || ""];
+      let bi = 0, bo = 0;
+      if (curIf && prevIf && prevTs) {
+        const dt = (ts - prevTs) / 1000;
+        if (dt > 0 && dt < 5) {
+          bi = Math.max(0, (curIf.bytes_in - prevIf.bytes_in) / dt * 8);
+          bo = Math.max(0, (curIf.bytes_out - prevIf.bytes_out) / dt * 8);
         }
+      }
+      if (curIf && nic) prevByIf[nic] = { bytes_in: curIf.bytes_in, bytes_out: curIf.bytes_out };
+      prevTs = ts;
 
-        if (msg.type !== "status_update") return;
-        const now = Date.now();
-        setStatus(msg.status);
-        setSystem(msg.system);
-        setConnections(msg.connections || []);
-        const ifaces = msg.interfaces || [];
-        if (ifaces.length > 0) setInterfaces(ifaces);
-        if (!selectedNicRef.current && ifaces.length > 0) pickNic(ifaces[0].name);
+      const entrySys = (entry as { system?: SystemData }).system;
+      points.push({
+        time: ts,
+        cpu: entrySys?.cpu_usage ?? 0,
+        memPct: entrySys?.memory_pct ?? 0,
+        diskReadKbps: entrySys?.disk_io?.read_kbps ?? 0,
+        diskWriteKbps: entrySys?.disk_io?.write_kbps ?? 0,
+        bpsIn: bi,
+        bpsOut: bo,
+      });
+    }
 
-        // Calculate per-interface rate
-        const nic = selectedNicRef.current || (ifaces[0]?.name ?? "");
-        const curIface = ifaces.find((i: {name:string;bytes_in:number;bytes_out:number}) => i.name === nic);
-        const prevIfData = prevIfaceData.current[nic];
-        let bIn = 0, bOut = 0;
-        if (curIface && prevIfData && prevT.current) {
-          const dt = (now - prevT.current) / 1000;
-          if (dt > 0 && dt < 5) {
-            bIn = Math.max(0, (curIface.bytes_in - prevIfData.bytes_in) / dt * 8);
-            bOut = Math.max(0, (curIface.bytes_out - prevIfData.bytes_out) / dt * 8);
-            setRateIn(bIn); setRateOut(bOut);
-          }
-        }
-        if (curIface) prevIfaceData.current[nic] = { bytes_in: curIface.bytes_in, bytes_out: curIface.bytes_out };
-        prev.current = msg.status; prevT.current = now;
+    if (!selectedNicRef.current && nic) pickNic(nic);
+    Object.assign(prevIfaceData.current, prevByIf);
+    prevT.current = Date.now();
+    lastHistoryLen.current = ws.history.length;
+    historyProcessed.current = true;
+    setHistory(points.slice(-MAX_PTS));
+  }, [ws.historyLoaded, ws.history, ws.history.length]);
 
-        setHistory(h => [...h, {
-          time: now,
-          cpu: msg.system?.cpu_usage ?? 0,
-          memPct: msg.system?.memory_pct ?? 0,
-          diskReadKbps: msg.system?.disk_io?.read_kbps ?? 0,
-          diskWriteKbps: msg.system?.disk_io?.write_kbps ?? 0,
-          bpsIn: bIn, bpsOut: bOut,
-        }].slice(-MAX_PTS));
-      } catch {}
-    };
-    ws.onclose = () => { setWsConnected(false); reconRef.current = setTimeout(connectWs, 3000); };
-    ws.onerror = () => { setError("WebSocket failed"); ws.close(); };
-  }, []);
+  // Reset history processing when NIC changes so it recomputes rates
+  useEffect(() => {
+    if (historyProcessed.current) {
+      historyProcessed.current = false;
+      lastHistoryLen.current = 0;
+    }
+  }, [selectedNic]);
 
-  useEffect(() => { connectWs(); return () => { wsRef.current?.close(); if (reconRef.current) clearTimeout(reconRef.current); }; }, [connectWs]);
+  // Process live updates from ws.status/ws.interfaces changes
+  useEffect(() => {
+    if (!status || !historyProcessed.current) return;
+
+    const now = Date.now();
+    const nic = selectedNicRef.current || (ifaces[0]?.name ?? "");
+    const curIface = ifaces.find(i => i.name === nic);
+    const prevIfData = prevIfaceData.current[nic];
+
+    let bIn = 0, bOut = 0;
+    if (curIface && prevIfData && prevT.current) {
+      const dt = (now - prevT.current) / 1000;
+      if (dt > 0 && dt < 5) {
+        bIn = Math.max(0, (curIface.bytes_in - prevIfData.bytes_in) / dt * 8);
+        bOut = Math.max(0, (curIface.bytes_out - prevIfData.bytes_out) / dt * 8);
+        setRateIn(bIn);
+        setRateOut(bOut);
+      }
+    }
+    if (curIface) prevIfaceData.current[nic] = { bytes_in: curIface.bytes_in, bytes_out: curIface.bytes_out };
+    prevT.current = now;
+
+    if (!selectedNicRef.current && ifaces.length > 0) pickNic(ifaces[0].name);
+
+    setHistory(h => [...h, {
+      time: now,
+      cpu: system?.cpu_usage ?? 0,
+      memPct: system?.memory_pct ?? 0,
+      diskReadKbps: system?.disk_io?.read_kbps ?? 0,
+      diskWriteKbps: system?.disk_io?.write_kbps ?? 0,
+      bpsIn: bIn,
+      bpsOut: bOut,
+    }].slice(-MAX_PTS));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws.status]);
+
+  const interfaceList = useMemo(() =>
+    ifaces.map(i => ({ name: i.name })),
+    [ifaces]
+  );
 
   const topTalkers = connections.reduce<{ip:string;bytes:number;conns:number}[]>((a,c) => {
     const e=a.find(t=>t.ip===c.src_addr),tot=c.bytes_in+c.bytes_out;
@@ -303,13 +320,13 @@ export default function Dashboard() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${wsConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`}/>
-            <span className="text-xs text-[var(--text-muted)]">{wsConnected ? "Live" : "..."}</span>
+            <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`}/>
+            <span className="text-xs text-[var(--text-muted)]">{ws.connected ? "Live" : "..."}</span>
           </div>
-          {interfaces.length > 0 && (
+          {interfaceList.length > 0 && (
             <select value={selectedNic} onChange={(e) => pickNic(e.target.value)}
               className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500">
-              {interfaces.map((i) => <option key={i.name} value={i.name}>{i.name}</option>)}
+              {interfaceList.map((i) => <option key={i.name} value={i.name}>{i.name}</option>)}
             </select>
           )}
           <div className={`px-2 py-1 rounded text-xs font-medium ${status.pf_running ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
@@ -317,7 +334,6 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
-      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400">{error}</div>}
 
       {/* Summary Stats Row */}
       <div className="grid grid-cols-4 md:grid-cols-8 gap-2">

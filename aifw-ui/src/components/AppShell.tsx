@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import AuthGuard from "./AuthGuard";
 import Sidebar from "./Sidebar";
+import { WsProvider } from "@/context/WsContext";
 
 const PUBLIC_PATHS = ["/login", "/login/"];
 
@@ -15,12 +16,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {isPublic ? (
         children
       ) : (
-        <div className="flex min-h-screen">
-          <Sidebar />
-          <main className="flex-1 ml-56 p-6 overflow-auto">
-            {children}
-          </main>
-        </div>
+        <WsProvider>
+          <div className="flex min-h-screen">
+            <Sidebar />
+            <main className="flex-1 ml-56 p-6 overflow-auto">
+              {children}
+            </main>
+          </div>
+        </WsProvider>
       )}
     </AuthGuard>
   );
