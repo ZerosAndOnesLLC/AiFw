@@ -5,11 +5,49 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+pub enum IpVersion {
+    Inet,
+    Inet6,
+    Both,
+}
+
+impl Default for IpVersion {
+    fn default() -> Self { IpVersion::Both }
+}
+
+impl std::fmt::Display for IpVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IpVersion::Inet => write!(f, "inet"),
+            IpVersion::Inet6 => write!(f, "inet6"),
+            IpVersion::Both => write!(f, "both"),
+        }
+    }
+}
+
+impl IpVersion {
+    pub fn parse(s: &str) -> crate::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "inet" | "ipv4" | "4" => Ok(IpVersion::Inet),
+            "inet6" | "ipv6" | "6" => Ok(IpVersion::Inet6),
+            "both" | "any" | "*" | "" => Ok(IpVersion::Both),
+            _ => Err(crate::AifwError::Validation(format!("unknown ip version: {s}"))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Tcp,
     Udp,
     Icmp,
     Icmp6,
+    #[serde(rename = "tcp/udp")]
+    TcpUdp,
+    Esp,
+    Ah,
+    Gre,
     Any,
 }
 
@@ -20,6 +58,10 @@ impl std::fmt::Display for Protocol {
             Protocol::Udp => write!(f, "udp"),
             Protocol::Icmp => write!(f, "icmp"),
             Protocol::Icmp6 => write!(f, "icmp6"),
+            Protocol::TcpUdp => write!(f, "tcp/udp"),
+            Protocol::Esp => write!(f, "esp"),
+            Protocol::Ah => write!(f, "ah"),
+            Protocol::Gre => write!(f, "gre"),
             Protocol::Any => write!(f, "any"),
         }
     }
@@ -32,6 +74,10 @@ impl Protocol {
             "udp" => Ok(Protocol::Udp),
             "icmp" => Ok(Protocol::Icmp),
             "icmp6" => Ok(Protocol::Icmp6),
+            "tcp/udp" | "tcpudp" | "tcp+udp" => Ok(Protocol::TcpUdp),
+            "esp" => Ok(Protocol::Esp),
+            "ah" => Ok(Protocol::Ah),
+            "gre" => Ok(Protocol::Gre),
             "any" | "*" => Ok(Protocol::Any),
             _ => Err(crate::AifwError::Validation(format!(
                 "unknown protocol: {s}"
@@ -174,12 +220,22 @@ pub struct Rule {
     pub priority: i32,
     pub action: Action,
     pub direction: Direction,
+    #[serde(default)]
+    pub ip_version: IpVersion,
     pub interface: Option<Interface>,
     pub protocol: Protocol,
     pub rule_match: RuleMatch,
+    #[serde(default)]
+    pub src_invert: bool,
+    #[serde(default)]
+    pub dst_invert: bool,
     pub log: bool,
     pub quick: bool,
     pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub gateway: Option<String>,
     pub state_options: StateOptions,
     pub status: RuleStatus,
     pub created_at: DateTime<Utc>,
@@ -199,12 +255,17 @@ impl Rule {
             priority: 100,
             action,
             direction,
+            ip_version: IpVersion::default(),
             interface: None,
             protocol,
             rule_match,
+            src_invert: false,
+            dst_invert: false,
             log: false,
             quick: true,
             label: None,
+            description: None,
+            gateway: None,
             state_options: StateOptions::default(),
             status: RuleStatus::Active,
             created_at: now,

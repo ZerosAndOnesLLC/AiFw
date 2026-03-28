@@ -25,8 +25,8 @@ pub use ratelimit::{
     RateLimitStatus, SynFloodConfig, TrafficClass,
 };
 pub use rule::{
-    Action, AdaptiveTimeouts, Direction, Protocol, Rule, RuleMatch, RuleStatus, StateOptions,
-    StatePolicy, StateTracking,
+    Action, AdaptiveTimeouts, Direction, IpVersion, Protocol, Rule, RuleMatch, RuleStatus,
+    StateOptions, StatePolicy, StateTracking,
 };
 pub use tls::{
     CertInfo, Ja3Fingerprint, Ja3sFingerprint, MitmProxyConfig, SniAction, SniRule,
