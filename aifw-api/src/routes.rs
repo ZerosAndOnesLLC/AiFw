@@ -526,6 +526,118 @@ pub async fn list_user_audit(
     Ok(Json(ApiResponse { data: entries }))
 }
 
+// --- Config backup/restore ---
+
+pub async fn export_config(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Build a complete config snapshot: rules, NAT, routes, DNS, auth settings, geoip
+    let rules = state.rule_engine.list_rules().await.map_err(|_| internal())?;
+    let nat_rules = state.nat_engine.list_rules().await.map_err(|_| internal())?;
+    let geoip_rules = state.geoip_engine.list_rules().await.map_err(|_| internal())?;
+    let wg_tunnels = state.vpn_engine.list_wg_tunnels().await.map_err(|_| internal())?;
+    let ipsec_sas = state.vpn_engine.list_ipsec_sas().await.map_err(|_| internal())?;
+
+    let dns = tokio::fs::read_to_string("/etc/resolv.conf").await.unwrap_or_default();
+    let dns_servers: Vec<String> = dns.lines()
+        .filter_map(|l| l.strip_prefix("nameserver").map(|s| s.trim().to_string())).collect();
+
+    let routes = sqlx::query_as::<_, (String, String, String, Option<String>, i32, bool, Option<String>, String)>(
+        "SELECT id, destination, gateway, interface, metric, enabled, description, created_at FROM static_routes ORDER BY metric ASC",
+    ).fetch_all(&state.pool).await.unwrap_or_default();
+
+    let static_routes: Vec<serde_json::Value> = routes.iter().map(|(id, d, g, i, m, e, desc, ca)| {
+        serde_json::json!({"id": id, "destination": d, "gateway": g, "interface": i, "metric": m, "enabled": e, "description": desc, "created_at": ca})
+    }).collect();
+
+    let auth_settings = state.auth_settings.clone();
+
+    let backup = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "rules": rules,
+        "nat_rules": nat_rules,
+        "geoip_rules": geoip_rules,
+        "vpn": {
+            "wireguard_tunnels": wg_tunnels,
+            "ipsec_sas": ipsec_sas,
+        },
+        "dns_servers": dns_servers,
+        "static_routes": static_routes,
+        "auth_settings": {
+            "access_token_expiry_mins": auth_settings.access_token_expiry_mins,
+            "refresh_token_expiry_days": auth_settings.refresh_token_expiry_days,
+            "require_totp": auth_settings.require_totp,
+        },
+    });
+
+    Ok(Json(backup))
+}
+
+pub async fn import_config(
+    State(state): State<AppState>,
+    Json(config): Json<serde_json::Value>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let mut imported = Vec::new();
+
+    // Import DNS
+    if let Some(servers) = config.get("dns_servers").and_then(|v| v.as_array()) {
+        let dns: Vec<String> = servers.iter().filter_map(|s| s.as_str().map(String::from)).collect();
+        if !dns.is_empty() {
+            let content: String = dns.iter().map(|s| format!("nameserver {s}")).collect::<Vec<_>>().join("\n");
+            let _ = tokio::fs::write("/etc/resolv.conf", &content).await;
+            imported.push(format!("{} DNS servers", dns.len()));
+        }
+    }
+
+    // Import auth settings
+    if let Some(auth) = config.get("auth_settings") {
+        if let Some(mins) = auth.get("access_token_expiry_mins").and_then(|v| v.as_i64()) {
+            let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('access_token_expiry_mins', ?1)")
+                .bind(mins.to_string()).execute(&state.pool).await;
+        }
+        if let Some(days) = auth.get("refresh_token_expiry_days").and_then(|v| v.as_i64()) {
+            let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('refresh_token_expiry_days', ?1)")
+                .bind(days.to_string()).execute(&state.pool).await;
+        }
+        if let Some(totp) = auth.get("require_totp").and_then(|v| v.as_bool()) {
+            let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('require_totp', ?1)")
+                .bind(if totp { "true" } else { "false" }).execute(&state.pool).await;
+        }
+        imported.push("auth settings".to_string());
+    }
+
+    // Import static routes
+    if let Some(routes) = config.get("static_routes").and_then(|v| v.as_array()) {
+        let mut count = 0;
+        for route in routes {
+            let dest = route.get("destination").and_then(|v| v.as_str()).unwrap_or("");
+            let gw = route.get("gateway").and_then(|v| v.as_str()).unwrap_or("");
+            if dest.is_empty() || gw.is_empty() { continue; }
+            let iface = route.get("interface").and_then(|v| v.as_str());
+            let metric = route.get("metric").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let enabled = route.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            let desc = route.get("description").and_then(|v| v.as_str());
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+                .bind(&id).bind(dest).bind(gw).bind(iface).bind(metric).bind(enabled).bind(desc).bind(&now)
+                .execute(&state.pool).await;
+            count += 1;
+        }
+        if count > 0 { imported.push(format!("{count} static routes")); }
+    }
+
+    let msg = if imported.is_empty() {
+        "No configuration imported".to_string()
+    } else {
+        format!("Imported: {}", imported.join(", "))
+    };
+
+    Ok(Json(MessageResponse { message: msg }))
+}
+
 // --- System PF rules (from pfctl, read-only) ---
 
 pub async fn list_system_rules() -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {

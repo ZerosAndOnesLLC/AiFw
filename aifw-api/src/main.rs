@@ -103,6 +103,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
 
     // Protected routes (require auth)
     let protected_routes = Router::new()
+        .route("/api/v1/config/export", get(routes::export_config))
+        .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/rules/system", get(routes::list_system_rules))
         .route("/api/v1/rules", get(routes::list_rules).post(routes::create_rule))
         .route("/api/v1/rules/{id}", get(routes::get_rule).put(routes::update_rule).delete(routes::delete_rule))
