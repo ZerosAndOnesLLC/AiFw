@@ -23,6 +23,12 @@ fn parse_addr_port(s: &str) -> (IpAddr, u16) {
     }
 }
 
+fn extract_counter(line: &str, key: &str) -> Option<u64> {
+    let idx = line.find(key)?;
+    let after = &line[idx + key.len()..];
+    after.split_whitespace().next()?.parse().ok()
+}
+
 pub struct PfIoctl;
 
 impl PfIoctl {
@@ -145,7 +151,6 @@ impl PfBackend for PfIoctl {
             if line.starts_with("Status:") {
                 stats.running = line.contains("Enabled");
             }
-            // Parse "current entries" for state count
             if line.contains("current entries") {
                 if let Some(n) = line.split_whitespace().next() {
                     stats.states_count = n.parse().unwrap_or(0);
@@ -153,9 +158,42 @@ impl PfBackend for PfIoctl {
             }
         }
 
-        // Get rule count from anchor
+        // Get rule count
         let rules_out = pfctl(&["-sr"]).await.unwrap_or_default();
         stats.rules_count = rules_out.lines().filter(|l| !l.is_empty()).count() as u64;
+
+        // Get packet/byte counters from pfctl -vvsI (interface stats)
+        // Sum all non-loopback interfaces
+        let iface_out = pfctl(&["-vvsI"]).await.unwrap_or_default();
+        let mut current_iface = String::new();
+        for line in iface_out.lines() {
+            let trimmed = line.trim();
+            // Interface header line (not indented)
+            if !line.starts_with('\t') && !line.starts_with(' ') && !trimmed.is_empty() {
+                current_iface = trimmed.trim_end_matches(" (skip)").to_string();
+            }
+            // Skip loopback, pflog, and "all" aggregate
+            if current_iface == "all" || current_iface.starts_with("lo") || current_iface.starts_with("pflog") {
+                continue;
+            }
+            // Parse: In4/Pass:    [ Packets: 390261             Bytes: 430240864          ]
+            if trimmed.starts_with("In4/Pass:") || trimmed.starts_with("In6/Pass:") {
+                if let Some(pkts) = extract_counter(trimmed, "Packets:") {
+                    stats.packets_in += pkts;
+                }
+                if let Some(bytes) = extract_counter(trimmed, "Bytes:") {
+                    stats.bytes_in += bytes;
+                }
+            }
+            if trimmed.starts_with("Out4/Pass:") || trimmed.starts_with("Out6/Pass:") {
+                if let Some(pkts) = extract_counter(trimmed, "Packets:") {
+                    stats.packets_out += pkts;
+                }
+                if let Some(bytes) = extract_counter(trimmed, "Bytes:") {
+                    stats.bytes_out += bytes;
+                }
+            }
+        }
 
         Ok(stats)
     }
