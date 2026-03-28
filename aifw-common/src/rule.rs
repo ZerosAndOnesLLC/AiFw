@@ -320,9 +320,9 @@ impl Rule {
             parts.push(format!("to any port {port}"));
         }
 
-        // state tracking
+        // state tracking (only valid for pass rules)
         let state_str = self.state_options.tracking.to_string();
-        if !state_str.is_empty() {
+        if !state_str.is_empty() && self.action == Action::Pass {
             let mut state_part = state_str;
             if let Some(ref policy) = self.state_options.policy {
                 state_part.push_str(&format!(" ({policy})"));

@@ -1015,6 +1015,29 @@ pub async fn reorder_rules(
     Ok(Json(MessageResponse { message: format!("{} rules reordered", req.rule_ids.len()) }))
 }
 
+pub async fn reorder_nat_rules(
+    State(state): State<AppState>,
+    Json(req): Json<ReorderRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    for (i, id_str) in req.rule_ids.iter().enumerate() {
+        let uuid = Uuid::parse_str(id_str).map_err(|_| bad_request())?;
+        let mut rule = state.nat_engine.get_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+        rule.updated_at = chrono::Utc::now();
+        // Store order in the DB by updating the record (NAT rules use created_at for ordering)
+        state.nat_engine.update_rule(&rule).await.map_err(|_| internal())?;
+    }
+    // Update order by re-inserting with new timestamps
+    for (i, id_str) in req.rule_ids.iter().enumerate() {
+        let uuid = Uuid::parse_str(id_str).map_err(|_| bad_request())?;
+        let _ = sqlx::query("UPDATE nat_rules SET created_at = datetime('2000-01-01', '+' || ?2 || ' seconds') WHERE id = ?1")
+            .bind(uuid.to_string())
+            .bind(i as i64)
+            .execute(&state.pool)
+            .await;
+    }
+    Ok(Json(MessageResponse { message: format!("{} NAT rules reordered", req.rule_ids.len()) }))
+}
+
 // --- GeoIP ---
 
 #[derive(Debug, Deserialize)]

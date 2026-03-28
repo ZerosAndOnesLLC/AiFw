@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { api, Rule, InterfaceInfo } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
@@ -99,6 +99,28 @@ export default function RulesPage() {
   const [form, setForm] = useState<RuleForm>(defaultForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const dragItem = useRef<number | null>(null);
+  const dragOverItem = useRef<number | null>(null);
+
+  const handleDragStart = (idx: number) => { dragItem.current = idx; };
+  const handleDragOver = (e: React.DragEvent, idx: number) => { e.preventDefault(); dragOverItem.current = idx; };
+  const handleDrop = async () => {
+    if (dragItem.current === null || dragOverItem.current === null || dragItem.current === dragOverItem.current) return;
+    const reordered = [...rules];
+    const [moved] = reordered.splice(dragItem.current, 1);
+    reordered.splice(dragOverItem.current, 0, moved);
+    setRules(reordered);
+    dragItem.current = null;
+    dragOverItem.current = null;
+    try {
+      const token = localStorage.getItem("aifw_token");
+      await fetch("/api/v1/rules/reorder", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ rule_ids: reordered.map(r => r.id) }),
+      });
+    } catch { setError("Failed to save rule order"); }
+  };
 
   /* ── Fetch helpers ─────────────────────────────────────────────── */
 
@@ -402,10 +424,14 @@ export default function RulesPage() {
                 </tr>
               </thead>
               <tbody>
-                {rules.map((rule) => (
+                {rules.map((rule, idx) => (
                   <tr
                     key={rule.id}
-                    className={`border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors ${
+                    draggable
+                    onDragStart={() => handleDragStart(idx)}
+                    onDragOver={(e) => handleDragOver(e, idx)}
+                    onDrop={handleDrop}
+                    className={`border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors cursor-grab active:cursor-grabbing ${
                       rule.status === "disabled" ? "opacity-50" : ""
                     }`}
                   >

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api, NatRule, InterfaceInfo, CreateNatRequest, UpdateNatRequest } from "@/lib/api";
 
 const defaultForm = {
@@ -43,6 +43,16 @@ export default function OutboundNatPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const dragItem = useRef<number|null>(null);
+  const dragOverItem = useRef<number|null>(null);
+  const handleDragStart = (i: number) => { dragItem.current = i; };
+  const handleDragOver = (e: React.DragEvent, i: number) => { e.preventDefault(); dragOverItem.current = i; };
+  const handleDrop = async () => {
+    if (dragItem.current===null||dragOverItem.current===null||dragItem.current===dragOverItem.current) return;
+    const r = [...rules]; const [m] = r.splice(dragItem.current,1); r.splice(dragOverItem.current,0,m);
+    setRules(r); dragItem.current=null; dragOverItem.current=null;
+    try { const t=localStorage.getItem("aifw_token"); await fetch("/api/v1/nat/reorder",{method:"PUT",headers:{Authorization:`Bearer ${t}`,"Content-Type":"application/json"},body:JSON.stringify({rule_ids:r.map(x=>x.id)})}); } catch { setError("Failed to save order"); }
+  };
 
   const fetchRules = useCallback(async () => {
     try {
@@ -452,10 +462,11 @@ export default function OutboundNatPage() {
                     </td>
                   </tr>
                 ) : (
-                  rules.map((rule) => (
+                  rules.map((rule, idx) => (
                     <tr
                       key={rule.id}
-                      className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors"
+                      draggable onDragStart={()=>handleDragStart(idx)} onDragOver={(e)=>handleDragOver(e,idx)} onDrop={handleDrop}
+                      className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors cursor-grab active:cursor-grabbing"
                     >
                       <td className="py-2.5 px-3">
                         <span className="font-mono text-xs text-gray-400">{rule.interface}</span>
