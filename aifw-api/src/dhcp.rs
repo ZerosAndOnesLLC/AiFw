@@ -311,10 +311,10 @@ pub async fn dhcp_status(
             stdout.contains("active") && !stdout.contains("inactive")
         }).unwrap_or(false);
 
-    let version = Command::new("/usr/local/sbin/kea-dhcp4").arg("-v").output().await
+    let version = Command::new("pkg").args(["query", "%v", "kea"]).output().await
         .map(|o| {
             let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if v.is_empty() { "not installed".to_string() } else { v }
+            if v.is_empty() || !o.status.success() { "not installed".to_string() } else { format!("Kea {}", v) }
         }).unwrap_or_else(|_| "not installed".to_string());
 
     let subnets = list_subnets_db(&state.pool).await;
