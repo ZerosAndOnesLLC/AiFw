@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ai"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-api"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-cli"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-common"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "chrono",
  "serde",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-conntrack"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-core"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-daemon"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-metrics"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-pf"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-plugins"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-setup"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-tui"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",

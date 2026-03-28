@@ -250,18 +250,34 @@ async fn build_update(state: &AppState) -> Result<String, String> {
 async fn collect_system_metrics() -> SystemPayload {
     use tokio::process::Command;
 
-    // CPU usage via sysctl kern.cp_time
-    let cpu_usage = async {
-        let out = Command::new("sysctl").args(["-n", "kern.cp_time"]).output().await.ok()?;
-        let s = String::from_utf8_lossy(&out.stdout);
-        let vals: Vec<u64> = s.split_whitespace().filter_map(|v| v.parse().ok()).collect();
-        // vals: user, nice, system, interrupt, idle
-        if vals.len() >= 5 {
-            let total: u64 = vals.iter().sum();
-            let idle = vals[4];
-            if total > 0 { Some(((total - idle) as f64 / total as f64) * 100.0) } else { Some(0.0) }
-        } else { None }
-    }.await.unwrap_or(0.0);
+    // CPU usage via kern.cp_time delta
+    let cpu_usage = {
+        use std::sync::Mutex;
+        static PREV_CP: Mutex<Option<[u64; 5]>> = Mutex::new(None);
+
+        let out = Command::new("sysctl").args(["-n", "kern.cp_time"]).output().await.ok();
+        let cur: Option<[u64; 5]> = out.and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout);
+            let v: Vec<u64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            if v.len() >= 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None }
+        });
+
+        let usage = if let Some(cur) = cur {
+            let mut prev_lock = PREV_CP.lock().unwrap();
+            let pct = if let Some(prev) = *prev_lock {
+                let d: Vec<u64> = (0..5).map(|i| cur[i].saturating_sub(prev[i])).collect();
+                let total: u64 = d.iter().sum();
+                if total > 0 { ((total - d[4]) as f64 / total as f64) * 100.0 } else { 0.0 }
+            } else {
+                0.0
+            };
+            *prev_lock = Some(cur);
+            pct
+        } else {
+            0.0
+        };
+        usage
+    };
 
     // Memory via sysctl
     let (mem_total, mem_used, mem_pct) = async {
