@@ -34,6 +34,7 @@ pub struct CreateRuleRequest {
     pub label: Option<String>,
     pub state_tracking: Option<String>,
     pub status: Option<String>,
+    pub schedule_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -636,6 +637,80 @@ pub async fn import_config(
     };
 
     Ok(Json(MessageResponse { message: msg }))
+}
+
+// --- Schedules ---
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Schedule {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub time_ranges: String,   // e.g. "08:00-17:00" or "08:00-12:00,13:00-17:00"
+    pub days_of_week: String,  // e.g. "mon,tue,wed,thu,fri"
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateScheduleRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub time_ranges: String,
+    pub days_of_week: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+pub async fn list_schedules(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<Schedule>>>, StatusCode> {
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, String, bool, String)>(
+        "SELECT id, name, description, time_ranges, days_of_week, enabled, created_at FROM schedules ORDER BY name ASC",
+    ).fetch_all(&state.pool).await.map_err(|_| internal())?;
+    let schedules: Vec<Schedule> = rows.into_iter().map(|(id,name,desc,tr,dow,en,ca)| Schedule {
+        id, name, description: desc, time_ranges: tr, days_of_week: dow, enabled: en, created_at: ca,
+    }).collect();
+    Ok(Json(ApiResponse { data: schedules }))
+}
+
+pub async fn create_schedule(
+    State(state): State<AppState>,
+    Json(req): Json<CreateScheduleRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<Schedule>>), StatusCode> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let dow = req.days_of_week.unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
+    let enabled = req.enabled.unwrap_or(true);
+    sqlx::query("INSERT INTO schedules (id, name, description, time_ranges, days_of_week, enabled, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)")
+        .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&req.time_ranges).bind(&dow).bind(enabled).bind(&now)
+        .execute(&state.pool).await.map_err(|_| bad_request())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: Schedule { id, name: req.name, description: req.description, time_ranges: req.time_ranges, days_of_week: dow, enabled, created_at: now } })))
+}
+
+pub async fn update_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateScheduleRequest>,
+) -> Result<Json<ApiResponse<Schedule>>, StatusCode> {
+    let dow = req.days_of_week.unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
+    let enabled = req.enabled.unwrap_or(true);
+    let result = sqlx::query("UPDATE schedules SET name=?2, description=?3, time_ranges=?4, days_of_week=?5, enabled=?6 WHERE id=?1")
+        .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&req.time_ranges).bind(&dow).bind(enabled)
+        .execute(&state.pool).await.map_err(|_| internal())?;
+    if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    let now = chrono::Utc::now().to_rfc3339();
+    Ok(Json(ApiResponse { data: Schedule { id, name: req.name, description: req.description, time_ranges: req.time_ranges, days_of_week: dow, enabled, created_at: now } }))
+}
+
+pub async fn delete_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let result = sqlx::query("DELETE FROM schedules WHERE id=?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
+    if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    // Unlink from rules
+    let _ = sqlx::query("UPDATE rules SET schedule_id = NULL WHERE schedule_id = ?1").bind(&id).execute(&state.pool).await;
+    Ok(Json(MessageResponse { message: format!("Schedule {id} deleted") }))
 }
 
 // --- System PF rules (from pfctl, read-only) ---

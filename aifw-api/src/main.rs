@@ -114,6 +114,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/ca/certs/{id}/revoke", post(ca::revoke_cert))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
+        .route("/api/v1/schedules", get(routes::list_schedules).post(routes::create_schedule))
+        .route("/api/v1/schedules/{id}", put(routes::update_schedule).delete(routes::delete_schedule))
         .route("/api/v1/rules/system", get(routes::list_system_rules))
         .route("/api/v1/rules", get(routes::list_rules).post(routes::create_rule))
         .route("/api/v1/rules/{id}", get(routes::get_rule).put(routes::update_rule).delete(routes::delete_rule))

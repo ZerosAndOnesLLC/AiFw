@@ -61,6 +61,15 @@ export const api = {
   // Logs
   listLogs: () => fetchApi<{ data: AuditEntry[] }>("/api/v1/logs"),
 
+  // Schedules
+  listSchedules: () => fetchApi<{ data: Schedule[] }>("/api/v1/schedules"),
+  createSchedule: (schedule: CreateScheduleRequest) =>
+    fetchApi<{ data: Schedule }>("/api/v1/schedules", { method: "POST", body: JSON.stringify(schedule) }),
+  updateSchedule: (id: string, schedule: CreateScheduleRequest) =>
+    fetchApi<{ data: Schedule }>(`/api/v1/schedules/${id}`, { method: "PUT", body: JSON.stringify(schedule) }),
+  deleteSchedule: (id: string) =>
+    fetchApi<{ message: string }>(`/api/v1/schedules/${id}`, { method: "DELETE" }),
+
   // Reload
   reload: () => fetchApi<{ message: string }>("/api/v1/reload", { method: "POST" }),
 };
@@ -113,6 +122,7 @@ export interface Rule {
   label?: string;
   description?: string;
   gateway?: string;
+  schedule_id?: string;
   state_options: { tracking: string };
   status: string;
   created_at: string;
@@ -143,6 +153,7 @@ export interface CreateRuleRequest {
   label?: string;
   description?: string;
   gateway?: string | null;
+  schedule_id?: string | null;
   state_tracking?: string;
   status?: string;
 }
@@ -207,4 +218,23 @@ export interface AuditEntry {
   rule_id?: string;
   details: string;
   source: string;
+}
+
+export interface Schedule {
+  id: string;
+  name: string;
+  description?: string;
+  time_ranges: string[];
+  days_of_week?: string[];
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateScheduleRequest {
+  name: string;
+  description?: string;
+  time_ranges: string[];
+  days_of_week?: string[];
+  enabled?: boolean;
 }

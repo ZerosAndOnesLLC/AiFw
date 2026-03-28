@@ -2,10 +2,26 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 
-const navItems = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: string;
+  children?: { href: string; label: string }[];
+}
+
+const navItems: NavItem[] = [
   { href: "/", label: "Dashboard", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" },
-  { href: "/rules", label: "Rules", icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" },
+  {
+    href: "/rules",
+    label: "Firewall",
+    icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+    children: [
+      { href: "/rules", label: "Rules" },
+      { href: "/rules/schedules", label: "Schedules" },
+    ],
+  },
   { href: "/nat/port-forward", label: "Port Forward", icon: "M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" },
   { href: "/nat/outbound", label: "Outbound NAT", icon: "M17 8l4 4m0 0l-4 4m4-4H3" },
   { href: "/connections", label: "Connections", icon: "M13 10V3L4 14h7v7l9-11h-7z" },
@@ -24,6 +40,20 @@ const navItems = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
+    Firewall: true,
+  });
+
+  const toggleSection = (label: string) => {
+    setExpandedSections((prev) => ({ ...prev, [label]: !prev[label] }));
+  };
+
+  const isChildActive = (item: NavItem): boolean => {
+    if (!item.children) return false;
+    return item.children.some(
+      (child) => pathname === child.href || pathname === child.href + "/"
+    );
+  };
 
   return (
     <aside className="w-56 h-screen bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col fixed left-0 top-0 z-10">
@@ -41,13 +71,71 @@ export default function Sidebar() {
 
       <nav className="flex-1 py-2 overflow-y-auto">
         {navItems.map((item) => {
-          const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+          const hasChildren = item.children && item.children.length > 0;
+          const isExpanded = expandedSections[item.label] ?? false;
+          const parentActive = hasChildren
+            ? isChildActive(item)
+            : pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+
+          if (hasChildren) {
+            return (
+              <div key={item.label}>
+                {/* Parent toggle button */}
+                <button
+                  onClick={() => toggleSection(item.label)}
+                  className={`flex items-center gap-3 px-4 py-2 mx-2 my-0.5 rounded-md text-sm transition-colors w-[calc(100%-16px)] ${
+                    parentActive
+                      ? "bg-[var(--accent)]/20 text-[var(--text-primary)]"
+                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-card)] hover:text-[var(--text-primary)]"
+                  }`}
+                >
+                  <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+                  </svg>
+                  <span className="flex-1 text-left">{item.label}</span>
+                  <svg
+                    className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+                {/* Children */}
+                {isExpanded && (
+                  <div className="ml-4">
+                    {item.children!.map((child) => {
+                      const childActive =
+                        pathname === child.href || pathname === child.href + "/";
+                      return (
+                        <Link
+                          key={child.href}
+                          href={child.href}
+                          className={`flex items-center gap-2 pl-7 pr-4 py-1.5 mx-2 my-0.5 rounded-md text-sm transition-colors ${
+                            childActive
+                              ? "bg-[var(--accent)] text-white"
+                              : "text-[var(--text-secondary)] hover:bg-[var(--bg-card)] hover:text-[var(--text-primary)]"
+                          }`}
+                        >
+                          <span className="w-1 h-1 rounded-full bg-current opacity-50 flex-shrink-0" />
+                          {child.label}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           return (
             <Link
               key={item.href}
               href={item.href}
               className={`flex items-center gap-3 px-4 py-2 mx-2 my-0.5 rounded-md text-sm transition-colors ${
-                active
+                parentActive
                   ? "bg-[var(--accent)] text-white"
                   : "text-[var(--text-secondary)] hover:bg-[var(--bg-card)] hover:text-[var(--text-primary)]"
               }`}

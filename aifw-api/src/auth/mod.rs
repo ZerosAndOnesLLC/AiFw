@@ -217,6 +217,25 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Schedules
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS schedules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            time_ranges TEXT NOT NULL,
+            days_of_week TEXT NOT NULL DEFAULT 'mon,tue,wed,thu,fri,sat,sun',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Add schedule_id column to rules if not exists
+    let _ = sqlx::query("ALTER TABLE rules ADD COLUMN schedule_id TEXT")
+        .execute(pool).await;
+
     // User audit log
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS user_audit_log (
