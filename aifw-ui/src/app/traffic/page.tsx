@@ -1,21 +1,13 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 
-interface InterfaceInfo {
-  name: string;
-  ipv4: string | null;
-  status: string;
-}
-
-interface InterfaceStats {
+interface InterfaceData {
   name: string;
   bytes_in: number;
   bytes_out: number;
   packets_in: number;
   packets_out: number;
-  errors_in: number;
-  errors_out: number;
 }
 
 interface Connection {
@@ -24,18 +16,14 @@ interface Connection {
   dst_addr: string;
   dst_port: number;
   protocol: string;
-  packets_in: number;
-  packets_out: number;
   bytes_in: number;
   bytes_out: number;
 }
 
-interface TrafficPoint {
-  time: string;
-  bytes_in: number;
-  bytes_out: number;
-  packets_in: number;
-  packets_out: number;
+interface RatePoint {
+  time: number;
+  bpsIn: number;
+  bpsOut: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -46,11 +34,11 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-function formatRate(bytesPerSec: number): string {
-  if (bytesPerSec >= 1e9) return `${(bytesPerSec / 1e9).toFixed(1)} Gbps`;
-  if (bytesPerSec >= 1e6) return `${(bytesPerSec / 1e6).toFixed(1)} Mbps`;
-  if (bytesPerSec >= 1e3) return `${(bytesPerSec / 1e3).toFixed(1)} Kbps`;
-  return `${bytesPerSec.toFixed(0)} bps`;
+function formatBps(bps: number): string {
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(2)} Gbps`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`;
+  if (bps >= 1e3) return `${(bps / 1e3).toFixed(1)} Kbps`;
+  return `${bps.toFixed(0)} bps`;
 }
 
 function formatNumber(n: number): string {
@@ -59,286 +47,251 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-  const res = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+function formatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-// Simple bar chart component
-function MiniBar({ value, max, color }: { value: number; max: number; color: string }) {
-  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
+function TrafficChart({ data, height = 200 }: { data: RatePoint[]; height?: number }) {
+  if (data.length < 3) {
+    return (
+      <div className="flex items-center justify-center text-[var(--text-muted)] text-sm" style={{ height }}>
+        <div className="text-center">
+          <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+          Collecting data...
+        </div>
+      </div>
+    );
+  }
+  const w = 900, h = height;
+  const pad = { top: 10, right: 10, bottom: 25, left: 65 };
+  const cW = w - pad.left - pad.right, cH = h - pad.top - pad.bottom;
+  const maxVal = Math.max(...data.map((d) => Math.max(d.bpsIn, d.bpsOut)), 1000);
+  const sY = (v: number) => pad.top + cH - (v / maxVal) * cH;
+  const sX = (i: number) => pad.left + (i / (data.length - 1)) * cW;
+
+  const smooth = (pts: { x: number; y: number }[]) => {
+    if (pts.length < 2) return "";
+    let d = `M ${pts[0].x},${pts[0].y}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+      d += ` C ${p1.x + (p2.x - p0.x) / 6},${p1.y + (p2.y - p0.y) / 6} ${p2.x - (p3.x - p1.x) / 6},${p2.y - (p3.y - p1.y) / 6} ${p2.x},${p2.y}`;
+    }
+    return d;
+  };
+
+  const inPts = data.map((d, i) => ({ x: sX(i), y: sY(d.bpsIn) }));
+  const outPts = data.map((d, i) => ({ x: sX(i), y: sY(d.bpsOut) }));
+  const inLine = smooth(inPts), outLine = smooth(outPts);
+  const bl = pad.top + cH;
+  const inArea = `${inLine} L ${inPts[inPts.length - 1].x},${bl} L ${inPts[0].x},${bl} Z`;
+  const outArea = `${outLine} L ${outPts[outPts.length - 1].x},${bl} L ${outPts[0].x},${bl} Z`;
+
+  const yTicks = 5;
+  const yLabels = Array.from({ length: yTicks + 1 }, (_, i) => ({ y: sY((maxVal / yTicks) * i), label: formatBps((maxVal / yTicks) * i) }));
+  const xStep = Math.max(1, Math.floor(data.length / 8));
+
   return (
-    <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-      <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
-    </div>
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id="tgIn" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#22c55e" stopOpacity="0.4" /><stop offset="100%" stopColor="#22c55e" stopOpacity="0.02" /></linearGradient>
+        <linearGradient id="tgOut" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3b82f6" stopOpacity="0.35" /><stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" /></linearGradient>
+      </defs>
+      {yLabels.map((t, i) => (<g key={i}><line x1={pad.left} y1={t.y} x2={w - pad.right} y2={t.y} stroke="#1e293b" /><text x={pad.left - 5} y={t.y + 3} textAnchor="end" fill="#64748b" fontSize="10" fontFamily="monospace">{t.label}</text></g>))}
+      {data.filter((_, i) => i % xStep === 0).map((d, i) => (<text key={i} x={sX(data.indexOf(d))} y={h - 5} textAnchor="middle" fill="#64748b" fontSize="10" fontFamily="monospace">{formatTime(d.time)}</text>))}
+      <path d={inArea} fill="url(#tgIn)" /><path d={outArea} fill="url(#tgOut)" />
+      <path d={inLine} fill="none" stroke="#22c55e" strokeWidth="2" /><path d={outLine} fill="none" stroke="#3b82f6" strokeWidth="2" />
+      <circle cx={inPts[inPts.length - 1].x} cy={inPts[inPts.length - 1].y} r="3" fill="#22c55e" />
+      <circle cx={outPts[outPts.length - 1].x} cy={outPts[outPts.length - 1].y} r="3" fill="#3b82f6" />
+    </svg>
   );
 }
 
 export default function TrafficPage() {
-  const [interfaces, setInterfaces] = useState<InterfaceInfo[]>([]);
-  const [selectedNic, setSelectedNic] = useState<string>("");
-  const [stats, setStats] = useState<InterfaceStats | null>(null);
+  const [interfaces, setInterfaces] = useState<InterfaceData[]>([]);
+  const [selectedNic, setSelectedNic] = useState("");
   const [connections, setConnections] = useState<Connection[]>([]);
-  const [history, setHistory] = useState<TrafficPoint[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const prevStats = useRef<InterfaceStats | null>(null);
-  const [rateIn, setRateIn] = useState(0);
-  const [rateOut, setRateOut] = useState(0);
+  const [rateHistory, setRateHistory] = useState<RatePoint[]>([]);
+  const [currentRateIn, setCurrentRateIn] = useState(0);
+  const [currentRateOut, setCurrentRateOut] = useState(0);
+  const [wsConnected, setWsConnected] = useState(false);
+  const prevIface = useRef<Record<string, InterfaceData>>({});
+  const prevTime = useRef(0);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Fetch interfaces on mount
-  useEffect(() => {
-    apiFetch<{ data: InterfaceInfo[] }>("/api/v1/interfaces")
-      .then((res) => {
-        const ifaces = res.data.filter((i) => i.status === "up");
+  const connectWs = useCallback(() => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+    if (!token) return;
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws`);
+    wsRef.current = ws;
+
+    ws.onopen = () => setWsConnected(true);
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type !== "status_update") return;
+
+        const now = Date.now();
+        const ifaces: InterfaceData[] = msg.interfaces || [];
         setInterfaces(ifaces);
-        if (ifaces.length > 0 && !selectedNic) {
+        setConnections(msg.connections || []);
+
+        if (!selectedNic && ifaces.length > 0) {
           setSelectedNic(ifaces[0].name);
         }
-      })
-      .catch(() => {});
-  }, [selectedNic]);
 
-  // Fetch per-interface stats
-  const fetchData = useCallback(async () => {
-    if (!selectedNic) return;
-    try {
-      const [statsRes, connsRes] = await Promise.all([
-        apiFetch<{ data: InterfaceStats }>(`/api/v1/interfaces/${selectedNic}/stats`),
-        apiFetch<{ data: Connection[] }>("/api/v1/connections"),
-      ]);
+        // Calculate per-interface rate
+        const nic = selectedNic || (ifaces[0]?.name ?? "");
+        const current = ifaces.find((i: InterfaceData) => i.name === nic);
+        const prev = prevIface.current[nic];
 
-      const newStats = statsRes.data;
-      setStats(newStats);
-      setConnections(connsRes.data || []);
-
-      // Calculate rate from delta
-      if (prevStats.current) {
-        const deltaIn = Math.max(0, newStats.bytes_in - prevStats.current.bytes_in);
-        const deltaOut = Math.max(0, newStats.bytes_out - prevStats.current.bytes_out);
-        setRateIn(deltaIn / 5 * 8); // bits per second (5s interval)
-        setRateOut(deltaOut / 5 * 8);
-      }
-      prevStats.current = newStats;
-
-      // Add to history
-      setHistory((prev) => {
-        const point: TrafficPoint = {
-          time: new Date().toLocaleTimeString(),
-          bytes_in: newStats.bytes_in,
-          bytes_out: newStats.bytes_out,
-          packets_in: newStats.packets_in,
-          packets_out: newStats.packets_out,
-        };
-        const updated = [...prev, point].slice(-60); // keep last 5 minutes
-        return updated;
-      });
-
-      setError(null);
-    } catch (err) {
-      // Fallback to global metrics if per-interface not available
-      try {
-        const metricsRes = await apiFetch<{ pf_bytes_in: number; pf_bytes_out: number; pf_packets_in: number; pf_packets_out: number }>("/api/v1/metrics");
-        const fallback: InterfaceStats = {
-          name: selectedNic,
-          bytes_in: metricsRes.pf_bytes_in || 0,
-          bytes_out: metricsRes.pf_bytes_out || 0,
-          packets_in: metricsRes.pf_packets_in || 0,
-          packets_out: metricsRes.pf_packets_out || 0,
-          errors_in: 0,
-          errors_out: 0,
-        };
-        setStats(fallback);
-        if (prevStats.current) {
-          const deltaIn = Math.max(0, fallback.bytes_in - prevStats.current.bytes_in);
-          const deltaOut = Math.max(0, fallback.bytes_out - prevStats.current.bytes_out);
-          setRateIn(deltaIn / 5 * 8);
-          setRateOut(deltaOut / 5 * 8);
+        if (current && prev && prevTime.current) {
+          const dt = (now - prevTime.current) / 1000;
+          if (dt > 0 && dt < 5) {
+            const bpsIn = Math.max(0, (current.bytes_in - prev.bytes_in) / dt * 8);
+            const bpsOut = Math.max(0, (current.bytes_out - prev.bytes_out) / dt * 8);
+            setCurrentRateIn(bpsIn);
+            setCurrentRateOut(bpsOut);
+            setRateHistory((h) => [...h, { time: now, bpsIn, bpsOut }].slice(-300));
+          }
         }
-        prevStats.current = fallback;
-        setError(null);
-      } catch (e2) {
-        setError(e2 instanceof Error ? e2.message : "Failed to fetch data");
-      }
-    } finally {
-      setLoading(false);
-    }
+
+        if (current) prevIface.current[nic] = current;
+        prevTime.current = now;
+      } catch { /* ignore */ }
+    };
+    ws.onclose = () => { setWsConnected(false); reconnectTimer.current = setTimeout(connectWs, 3000); };
+    ws.onerror = () => ws.close();
   }, [selectedNic]);
 
   useEffect(() => {
-    setLoading(true);
-    prevStats.current = null;
-    setHistory([]);
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    connectWs();
+    return () => { wsRef.current?.close(); if (reconnectTimer.current) clearTimeout(reconnectTimer.current); };
+  }, [connectWs]);
 
-  // Compute top talkers
+  // Reset history when NIC changes
+  useEffect(() => {
+    setRateHistory([]);
+    prevIface.current = {};
+    prevTime.current = 0;
+  }, [selectedNic]);
+
+  const currentIface = interfaces.find((i) => i.name === selectedNic);
+
+  // Top talkers
   const topTalkers = connections
-    .reduce<{ ip: string; bytes: number; connections: number }[]>((acc, conn) => {
-      const existing = acc.find((t) => t.ip === conn.src_addr);
-      const total = conn.bytes_in + conn.bytes_out;
-      if (existing) { existing.bytes += total; existing.connections += 1; }
-      else { acc.push({ ip: conn.src_addr, bytes: total, connections: 1 }); }
+    .reduce<{ ip: string; bytes: number; conns: number }[]>((acc, c) => {
+      const existing = acc.find((t) => t.ip === c.src_addr);
+      const total = c.bytes_in + c.bytes_out;
+      if (existing) { existing.bytes += total; existing.conns++; }
+      else acc.push({ ip: c.src_addr, bytes: total, conns: 1 });
       return acc;
-    }, [])
-    .sort((a, b) => b.bytes - a.bytes)
-    .slice(0, 10);
+    }, []).sort((a, b) => b.bytes - a.bytes).slice(0, 10);
+  const maxTB = topTalkers[0]?.bytes || 1;
 
-  // Compute top ports
+  // Top ports
   const topPorts = connections
-    .reduce<{ port: number; connections: number }[]>((acc, conn) => {
-      const existing = acc.find((p) => p.port === conn.dst_port);
-      if (existing) { existing.connections += 1; }
-      else { acc.push({ port: conn.dst_port, connections: 1 }); }
+    .reduce<{ port: number; conns: number }[]>((acc, c) => {
+      const existing = acc.find((p) => p.port === c.dst_port);
+      if (existing) existing.conns++;
+      else acc.push({ port: c.dst_port, conns: 1 });
       return acc;
-    }, [])
-    .sort((a, b) => b.connections - a.connections)
-    .slice(0, 10);
-
-  const maxTalkerBytes = topTalkers.length > 0 ? topTalkers[0].bytes : 1;
-  const maxPortConns = topPorts.length > 0 ? topPorts[0].connections : 1;
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+    }, []).sort((a, b) => b.conns - a.conns).slice(0, 10);
+  const maxPC = topPorts[0]?.conns || 1;
 
   return (
-    <div className="space-y-6">
-      {/* Header with NIC selector */}
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Traffic Analytics</h1>
-          <p className="text-sm text-[var(--text-muted)]">
-            Per-interface traffic monitoring &middot; auto-refreshing every 5s
-          </p>
+          <p className="text-sm text-[var(--text-muted)]">Per-interface bandwidth monitoring</p>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-sm text-[var(--text-muted)]">Interface:</label>
-          <select
-            value={selectedNic}
-            onChange={(e) => setSelectedNic(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-          >
-            {interfaces.map((iface) => (
-              <option key={iface.name} value={iface.name}>
-                {iface.name} {iface.ipv4 ? `(${iface.ipv4})` : ""}
-              </option>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <div className={`w-2 h-2 rounded-full ${wsConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
+            <span className="text-xs text-[var(--text-muted)]">{wsConnected ? "Live" : "Reconnecting..."}</span>
+          </div>
+          <select value={selectedNic} onChange={(e) => setSelectedNic(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500">
+            {interfaces.map((i) => (
+              <option key={i.name} value={i.name}>{i.name}</option>
             ))}
           </select>
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400">{error}</div>
-      )}
-
-      {/* Rate & Stats Cards */}
+      {/* Rate Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">Rate In</div>
-          <div className="text-lg font-bold text-green-400">{formatRate(rateIn)}</div>
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <div className="text-[10px] text-[var(--text-muted)] uppercase">Rate In</div>
+          <div className="text-xl font-bold text-green-400">{formatBps(currentRateIn)}</div>
         </div>
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">Rate Out</div>
-          <div className="text-lg font-bold text-blue-400">{formatRate(rateOut)}</div>
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <div className="text-[10px] text-[var(--text-muted)] uppercase">Rate Out</div>
+          <div className="text-xl font-bold text-blue-400">{formatBps(currentRateOut)}</div>
         </div>
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">Total In</div>
-          <div className="text-lg font-bold text-cyan-400">{formatBytes(stats?.bytes_in ?? 0)}</div>
-          <div className="text-xs text-[var(--text-muted)]">{formatNumber(stats?.packets_in ?? 0)} pkts</div>
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <div className="text-[10px] text-[var(--text-muted)] uppercase">Total In ({selectedNic})</div>
+          <div className="text-lg font-bold text-cyan-400">{formatBytes(currentIface?.bytes_in ?? 0)}</div>
+          <div className="text-[10px] text-[var(--text-muted)]">{formatNumber(currentIface?.packets_in ?? 0)} pkts</div>
         </div>
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">Total Out</div>
-          <div className="text-lg font-bold text-orange-400">{formatBytes(stats?.bytes_out ?? 0)}</div>
-          <div className="text-xs text-[var(--text-muted)]">{formatNumber(stats?.packets_out ?? 0)} pkts</div>
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <div className="text-[10px] text-[var(--text-muted)] uppercase">Total Out ({selectedNic})</div>
+          <div className="text-lg font-bold text-orange-400">{formatBytes(currentIface?.bytes_out ?? 0)}</div>
+          <div className="text-[10px] text-[var(--text-muted)]">{formatNumber(currentIface?.packets_out ?? 0)} pkts</div>
         </div>
       </div>
 
-      {/* Traffic History (text-based sparkline) */}
-      {history.length > 1 && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">Traffic Rate History ({selectedNic})</h3>
-          <div className="flex items-end gap-px h-24">
-            {history.slice(1).map((point, i) => {
-              const prev = history[i];
-              const deltaIn = Math.max(0, point.bytes_in - prev.bytes_in);
-              const deltaOut = Math.max(0, point.bytes_out - prev.bytes_out);
-              const maxDelta = Math.max(...history.slice(1).map((p, j) => {
-                const pr = history[j];
-                return Math.max(0, p.bytes_in - pr.bytes_in) + Math.max(0, p.bytes_out - pr.bytes_out);
-              }), 1);
-              const totalDelta = deltaIn + deltaOut;
-              const height = Math.max(2, (totalDelta / maxDelta) * 100);
-              const inPct = totalDelta > 0 ? (deltaIn / totalDelta) * 100 : 50;
-              return (
-                <div key={i} className="flex-1 flex flex-col justify-end" title={`${point.time}\nIn: ${formatBytes(deltaIn)}/5s\nOut: ${formatBytes(deltaOut)}/5s`}>
-                  <div className="w-full rounded-t-sm overflow-hidden" style={{ height: `${height}%` }}>
-                    <div className="bg-green-500" style={{ height: `${inPct}%` }} />
-                    <div className="bg-blue-500" style={{ height: `${100 - inPct}%` }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="flex justify-between mt-1 text-xs text-[var(--text-muted)]">
-            <span>{history[1]?.time}</span>
-            <span className="flex gap-4">
-              <span className="flex items-center gap-1"><span className="w-2 h-2 bg-green-500 rounded-full" />In</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-2 bg-blue-500 rounded-full" />Out</span>
-            </span>
-            <span>{history[history.length - 1]?.time}</span>
+      {/* Traffic Graph */}
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium">Throughput — {selectedNic}</h3>
+          <div className="flex items-center gap-4 text-xs">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] bg-green-500 rounded-full inline-block" /> Inbound</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] bg-blue-500 rounded-full inline-block" /> Outbound</span>
           </div>
         </div>
-      )}
+        <TrafficChart data={rateHistory} height={200} />
+      </div>
 
-      {/* Tables Row */}
+      {/* Tables */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Top Talkers */}
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-[var(--border)]">
-            <h3 className="text-sm font-medium">Top Talkers</h3>
-          </div>
+          <div className="px-4 py-3 border-b border-[var(--border)]"><h3 className="text-sm font-medium">Top Talkers</h3></div>
           {topTalkers.length === 0 ? (
-            <div className="text-center py-8 text-[var(--text-muted)] text-sm">No connection data</div>
+            <div className="text-center py-8 text-[var(--text-muted)] text-sm">No data</div>
           ) : (
             <div className="divide-y divide-[var(--border)]">
-              {topTalkers.map((talker, i) => (
-                <div key={talker.ip} className="px-4 py-2 hover:bg-[var(--bg-card-hover)] transition-colors">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-mono text-xs">{i + 1}. {talker.ip}</span>
-                    <span className="text-xs text-[var(--text-secondary)]">{formatBytes(talker.bytes)} / {talker.connections} conn</span>
+              {topTalkers.map((t, i) => (
+                <div key={t.ip} className="px-4 py-2 hover:bg-[var(--bg-card-hover)]">
+                  <div className="flex justify-between mb-1">
+                    <span className="font-mono text-xs">{i + 1}. {t.ip}</span>
+                    <span className="text-xs text-[var(--text-secondary)]">{formatBytes(t.bytes)} · {t.conns} conn</span>
                   </div>
-                  <MiniBar value={talker.bytes} max={maxTalkerBytes} color="bg-cyan-500" />
+                  <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-cyan-500 transition-all" style={{ width: `${(t.bytes / maxTB) * 100}%` }} />
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
-
-        {/* Top Ports */}
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-[var(--border)]">
-            <h3 className="text-sm font-medium">Top Destination Ports</h3>
-          </div>
+          <div className="px-4 py-3 border-b border-[var(--border)]"><h3 className="text-sm font-medium">Top Ports</h3></div>
           {topPorts.length === 0 ? (
-            <div className="text-center py-8 text-[var(--text-muted)] text-sm">No connection data</div>
+            <div className="text-center py-8 text-[var(--text-muted)] text-sm">No data</div>
           ) : (
             <div className="divide-y divide-[var(--border)]">
-              {topPorts.map((entry, i) => (
-                <div key={entry.port} className="px-4 py-2 hover:bg-[var(--bg-card-hover)] transition-colors">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-mono text-xs text-cyan-400">{i + 1}. Port {entry.port}</span>
-                    <span className="text-xs text-[var(--text-secondary)]">{entry.connections} connections</span>
+              {topPorts.map((p, i) => (
+                <div key={p.port} className="px-4 py-2 hover:bg-[var(--bg-card-hover)]">
+                  <div className="flex justify-between mb-1">
+                    <span className="font-mono text-xs text-cyan-400">{i + 1}. Port {p.port}</span>
+                    <span className="text-xs text-[var(--text-secondary)]">{p.conns} connections</span>
                   </div>
-                  <MiniBar value={entry.connections} max={maxPortConns} color="bg-blue-500" />
+                  <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${(p.conns / maxPC) * 100}%` }} />
+                  </div>
                 </div>
               ))}
             </div>

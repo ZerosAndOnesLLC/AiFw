@@ -16,6 +16,7 @@ struct WsStatusUpdate {
     msg_type: &'static str,
     status: StatusPayload,
     connections: Vec<ConnectionPayload>,
+    interfaces: Vec<InterfacePayload>,
 }
 
 #[derive(Serialize)]
@@ -42,6 +43,15 @@ struct ConnectionPayload {
     state: String,
     bytes_in: u64,
     bytes_out: u64,
+}
+
+#[derive(Serialize)]
+struct InterfacePayload {
+    name: String,
+    bytes_in: u64,
+    bytes_out: u64,
+    packets_in: u64,
+    packets_out: u64,
 }
 
 pub async fn ws_handler(
@@ -110,6 +120,42 @@ async fn build_update(state: &AppState) -> Result<String, String> {
         bytes_out: c.bytes_out,
     }).collect();
 
+    // Get per-interface byte counters via netstat -I
+    let mut interfaces = Vec::new();
+    let ifconfig_out = tokio::process::Command::new("ifconfig")
+        .arg("-l")
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    for iface_name in ifconfig_out.split_whitespace() {
+        if iface_name.starts_with("lo") || iface_name.starts_with("pflog") || iface_name.starts_with("enc") || iface_name.starts_with("pfsync") {
+            continue;
+        }
+        if let Ok(output) = tokio::process::Command::new("netstat")
+            .args(["-I", iface_name, "-b", "-n"])
+            .output()
+            .await
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 10 && parts[0] == iface_name {
+                    interfaces.push(InterfacePayload {
+                        name: iface_name.to_string(),
+                        packets_in: parts[4].parse().unwrap_or(0),
+                        bytes_in: parts[6].parse().unwrap_or(0),
+                        packets_out: parts[7].parse().unwrap_or(0),
+                        bytes_out: parts[9].parse().unwrap_or(0),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
     let update = WsStatusUpdate {
         msg_type: "status_update",
         status: StatusPayload {
@@ -125,6 +171,7 @@ async fn build_update(state: &AppState) -> Result<String, String> {
             bytes_out: stats.bytes_out,
         },
         connections,
+        interfaces,
     };
 
     serde_json::to_string(&update).map_err(|e| e.to_string())
