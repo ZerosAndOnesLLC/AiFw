@@ -89,7 +89,7 @@ impl PfBackend for PfIoctl {
         let ruleset = rules.join("\n");
         let output = Command::new("sh")
             .arg("-c")
-            .arg(format!("echo '{}' | sudo pfctl-a {} -f -", ruleset, anchor))
+            .arg(format!("echo '{}' | sudo pfctl -a {} -f -", ruleset, anchor))
             .output()
             .await
             .map_err(|e| PfError::Rule(format!("pfctl load_rules failed: {e}")))?;
@@ -245,7 +245,7 @@ impl PfBackend for PfIoctl {
         let ruleset = rules.join("\n");
         let _ = Command::new("sh")
             .arg("-c")
-            .arg(format!("echo '{}' | sudo pfctl-a {} -N -f -", ruleset, anchor))
+            .arg(format!("echo '{}' | sudo pfctl -a {} -N -f -", ruleset, anchor))
             .output()
             .await
             .map_err(|e| PfError::Rule(format!("pfctl load_nat failed: {e}")))?;
@@ -269,7 +269,7 @@ impl PfBackend for PfIoctl {
         let ruleset = queues.join("\n");
         let _ = Command::new("sh")
             .arg("-c")
-            .arg(format!("echo '{}' | sudo pfctl-a {} -f -", ruleset, anchor))
+            .arg(format!("echo '{}' | sudo pfctl -a {} -f -", ruleset, anchor))
             .output()
             .await
             .map_err(|e| PfError::Rule(format!("pfctl load_queues failed: {e}")))?;
