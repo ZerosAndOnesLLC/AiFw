@@ -18,15 +18,16 @@ interface StatusData {
 }
 
 interface MetricsData {
-  pf_states: number;
-  pf_rules: number;
+  pf_running: boolean;
+  pf_states_count: number;
+  pf_rules_count: number;
+  pf_packets_in: number;
+  pf_packets_out: number;
+  pf_bytes_in: number;
+  pf_bytes_out: number;
   aifw_rules_total: number;
   aifw_rules_active: number;
   aifw_nat_rules_total: number;
-  packets_in: number;
-  packets_out: number;
-  bytes_in: number;
-  bytes_out: number;
 }
 
 interface Connection {
@@ -144,11 +145,11 @@ export default function Dashboard() {
       setError(null);
 
       // Append to history (max 60 points)
-      setPacketsInHistory((prev) => [...prev, { value: metricsRes.packets_in }].slice(-60));
-      setPacketsOutHistory((prev) => [...prev, { value: metricsRes.packets_out }].slice(-60));
-      setBytesInHistory((prev) => [...prev, { value: metricsRes.bytes_in }].slice(-60));
-      setBytesOutHistory((prev) => [...prev, { value: metricsRes.bytes_out }].slice(-60));
-      setStatesHistory((prev) => [...prev, { value: metricsRes.pf_states }].slice(-60));
+      setPacketsInHistory((prev) => [...prev, { value: metricsRes.pf_packets_in }].slice(-60));
+      setPacketsOutHistory((prev) => [...prev, { value: metricsRes.pf_packets_out }].slice(-60));
+      setBytesInHistory((prev) => [...prev, { value: metricsRes.pf_bytes_in }].slice(-60));
+      setBytesOutHistory((prev) => [...prev, { value: metricsRes.pf_bytes_out }].slice(-60));
+      setStatesHistory((prev) => [...prev, { value: metricsRes.pf_states_count }].slice(-60));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch data");
     } finally {
@@ -238,18 +239,18 @@ export default function Dashboard() {
         />
         <Card
           title="pf States"
-          value={formatNumber(metrics?.pf_states ?? status?.pf_states ?? 0)}
+          value={formatNumber(metrics?.pf_states_count ?? status?.pf_states ?? 0)}
           color="yellow"
           subtitle="active connections"
         />
         <Card
           title="Packets In"
-          value={formatNumber(status?.packets_in ?? metrics?.packets_in ?? 0)}
+          value={formatNumber(status?.packets_in ?? metrics?.pf_packets_in ?? 0)}
           color="cyan"
         />
         <Card
           title="Packets Out"
-          value={formatNumber(status?.packets_out ?? metrics?.packets_out ?? 0)}
+          value={formatNumber(status?.packets_out ?? metrics?.pf_packets_out ?? 0)}
           color="blue"
         />
       </div>
@@ -258,12 +259,12 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 md:grid-cols-2 gap-3">
         <Card
           title="Bytes In"
-          value={formatBytes(status?.bytes_in ?? metrics?.bytes_in ?? 0)}
+          value={formatBytes(status?.bytes_in ?? metrics?.pf_bytes_in ?? 0)}
           color="green"
         />
         <Card
           title="Bytes Out"
-          value={formatBytes(status?.bytes_out ?? metrics?.bytes_out ?? 0)}
+          value={formatBytes(status?.bytes_out ?? metrics?.pf_bytes_out ?? 0)}
           color="red"
         />
       </div>
@@ -305,7 +306,7 @@ export default function Dashboard() {
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-medium">pf States Over Time</h3>
             <span className="text-xs text-[var(--text-muted)]">
-              current: {formatNumber(metrics?.pf_states ?? 0)}
+              current: {formatNumber(metrics?.pf_states_count ?? 0)}
             </span>
           </div>
           <Sparkline data={statesHistory} color="#a78bfa" height={60} />
