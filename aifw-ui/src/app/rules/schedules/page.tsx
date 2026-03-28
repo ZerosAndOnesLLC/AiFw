@@ -60,8 +60,14 @@ export default function SchedulesPage() {
   const fetchSchedules = useCallback(async () => {
     try {
       setError(null);
-      const res = await apiFetch<{ data: Schedule[] }>("/api/v1/schedules");
-      setSchedules(res.data || []);
+      const res = await apiFetch<{ data: Record<string, unknown>[] }>("/api/v1/schedules");
+      // Normalize: API returns time_ranges/days_of_week as comma-separated strings
+      const normalized: Schedule[] = (res.data || []).map((s) => ({
+        ...s,
+        time_ranges: Array.isArray(s.time_ranges) ? s.time_ranges as string[] : String(s.time_ranges || "").split(",").filter(Boolean),
+        days_of_week: Array.isArray(s.days_of_week) ? s.days_of_week as string[] : String(s.days_of_week || "").split(",").filter(Boolean),
+      } as Schedule));
+      setSchedules(normalized);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch schedules");
     } finally {
