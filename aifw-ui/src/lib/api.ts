@@ -39,6 +39,12 @@ export const api = {
   deleteRule: (id: string) =>
     fetchApi<{ message: string }>(`/api/v1/rules/${id}`, { method: "DELETE" }),
 
+  // Interfaces
+  listInterfaces: () => fetchApi<{ data: InterfaceInfo[] }>("/api/v1/interfaces"),
+
+  // System rules
+  listSystemRules: () => fetchApi<{ data: string[] }>("/api/v1/rules/system"),
+
   // NAT
   listNat: () => fetchApi<{ data: NatRule[] }>("/api/v1/nat"),
   createNat: (rule: CreateNatRequest) =>
@@ -91,30 +97,51 @@ export interface Rule {
   action: string;
   direction: string;
   protocol: string;
+  ip_version?: string;
   interface?: string;
   rule_match: {
     src_addr: string;
     src_port?: { start: number; end: number };
+    src_invert?: boolean;
     dst_addr: string;
     dst_port?: { start: number; end: number };
+    dst_invert?: boolean;
   };
   log: boolean;
   quick: boolean;
   label?: string;
+  description?: string;
+  gateway?: string;
   state_options: { tracking: string };
   status: string;
   created_at: string;
+}
+
+export interface InterfaceInfo {
+  name: string;
+  description?: string;
+  status?: string;
+  ipv4?: string;
+  ipv6?: string;
 }
 
 export interface CreateRuleRequest {
   action: string;
   direction: string;
   protocol: string;
+  ip_version?: string;
+  interface?: string;
   src_addr?: string;
   src_port_start?: number | null;
+  src_invert?: boolean;
   dst_addr?: string;
   dst_port_start?: number | null;
+  dst_invert?: boolean;
+  log?: boolean;
+  quick?: boolean;
   label?: string;
+  description?: string;
+  gateway?: string | null;
   state_tracking?: string;
   status?: string;
 }
