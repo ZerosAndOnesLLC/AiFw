@@ -1367,6 +1367,62 @@ pub async fn get_interface_stats(
     Ok(Json(ApiResponse { data: stats }))
 }
 
+// --- Valkey settings ---
+
+pub async fn get_valkey_settings(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let enabled = sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'valkey_enabled'")
+        .fetch_optional(&state.pool).await.ok().flatten()
+        .map(|r| r.0 == "true").unwrap_or(true);
+    let url = sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'valkey_url'")
+        .fetch_optional(&state.pool).await.ok().flatten()
+        .map(|r| r.0).unwrap_or_else(|| "redis://127.0.0.1:6379".to_string());
+    let retention = sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'valkey_retention_minutes'")
+        .fetch_optional(&state.pool).await.ok().flatten()
+        .and_then(|r| r.0.parse::<i64>().ok()).unwrap_or(30);
+    let status = if state.redis.is_some() { "connected" } else if !enabled { "disabled" } else { "disconnected" };
+
+    Ok(Json(serde_json::json!({
+        "enabled": enabled,
+        "url": url,
+        "retention_minutes": retention,
+        "status": status,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateValkeyRequest {
+    pub enabled: Option<bool>,
+    pub url: Option<String>,
+    pub retention_minutes: Option<i64>,
+}
+
+pub async fn update_valkey_settings(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateValkeyRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if let Some(enabled) = req.enabled {
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('valkey_enabled', ?1)")
+            .bind(if enabled { "true" } else { "false" })
+            .execute(&state.pool).await;
+    }
+    if let Some(ref url) = req.url {
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('valkey_url', ?1)")
+            .bind(url).execute(&state.pool).await;
+    }
+    if let Some(retention) = req.retention_minutes {
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('valkey_retention_minutes', ?1)")
+            .bind(retention.to_string()).execute(&state.pool).await;
+    }
+
+    let status = if state.redis.is_some() { "connected" } else { "disconnected" };
+    Ok(Json(serde_json::json!({
+        "message": "Valkey settings saved. Restart API to apply connection changes.",
+        "status": status,
+    })))
+}
+
 pub async fn update_dns(
     Json(req): Json<DnsConfigRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {

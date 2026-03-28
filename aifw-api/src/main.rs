@@ -110,6 +110,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/nat/{id}", put(routes::update_nat_rule).delete(routes::delete_nat_rule))
         .route("/api/v1/rules/reorder", put(routes::reorder_rules))
         .route("/api/v1/dns", get(routes::get_dns).put(routes::update_dns))
+        .route("/api/v1/settings/valkey", get(routes::get_valkey_settings).put(routes::update_valkey_settings))
         .route("/api/v1/routes", get(routes::list_static_routes).post(routes::create_static_route))
         .route("/api/v1/routes/{id}", put(routes::update_static_route).delete(routes::delete_static_route))
         .route("/api/v1/routes/system", get(routes::get_system_routes))

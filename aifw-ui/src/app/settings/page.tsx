@@ -74,6 +74,15 @@ export default function SettingsPage() {
   const [authSaving, setAuthSaving] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
 
+  // --- Valkey/Metrics Persistence ---
+  const [valkeyEnabled, setValkeyEnabled] = useState(true);
+  const [valkeyUrl, setValkeyUrl] = useState("redis://127.0.0.1:6379");
+  const [metricsRetention, setMetricsRetention] = useState(30);
+  const [valkeyFeedback, setValkeyFeedback] = useState<SectionFeedback | null>(null);
+  const [valkeySaving, setValkeySaving] = useState(false);
+  const [valkeyLoading, setValkeyLoading] = useState(true);
+  const [valkeyStatus, setValkeyStatus] = useState<string>("unknown");
+
   // Auto-clear feedback after 4 seconds
   const setFeedbackWithTimeout = useCallback(
     (setter: (v: SectionFeedback | null) => void, fb: SectionFeedback) => {
@@ -118,6 +127,23 @@ export default function SettingsPage() {
         setAuthFeedback({ type: "error", message: `Failed to load auth settings: ${msg}` });
       } finally {
         setAuthLoading(false);
+      }
+    })();
+
+    // Fetch Valkey settings
+    (async () => {
+      try {
+        const res = await fetch(`${API}/api/v1/settings/valkey`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.enabled !== undefined) setValkeyEnabled(data.enabled);
+        if (data.url) setValkeyUrl(data.url);
+        if (data.retention_minutes) setMetricsRetention(data.retention_minutes);
+        if (data.status) setValkeyStatus(data.status);
+      } catch {
+        // endpoint may not exist yet
+      } finally {
+        setValkeyLoading(false);
       }
     })();
   }, []);
@@ -232,6 +258,31 @@ export default function SettingsPage() {
       setFeedbackWithTimeout(setAuthFeedback, { type: "error", message: `Save failed: ${msg}` });
     } finally {
       setAuthSaving(false);
+    }
+  };
+
+  const saveValkey = async () => {
+    setValkeySaving(true);
+    setValkeyFeedback(null);
+    try {
+      const res = await fetch(`${API}/api/v1/settings/valkey`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          enabled: valkeyEnabled,
+          url: valkeyUrl,
+          retention_minutes: metricsRetention,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.status) setValkeyStatus(data.status);
+      setFeedbackWithTimeout(setValkeyFeedback, { type: "success", message: "Valkey settings saved." });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setFeedbackWithTimeout(setValkeyFeedback, { type: "error", message: `Save failed: ${msg}` });
+    } finally {
+      setValkeySaving(false);
     }
   };
 
@@ -589,6 +640,80 @@ export default function SettingsPage() {
           <div className="flex justify-end">
             <button onClick={saveAuth} disabled={authSaving || authLoading} className={saveBtnCls}>
               {authSaving ? "Saving..." : "Save Auth"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* Valkey / Metrics Persistence */}
+      <section className={sectionCls}>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-medium">Metrics Persistence (Valkey)</h2>
+          <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+            valkeyStatus === "connected" ? "bg-green-500/20 text-green-400" :
+            valkeyStatus === "disabled" ? "bg-gray-500/20 text-gray-400" :
+            "bg-red-500/20 text-red-400"
+          }`}>
+            {valkeyStatus}
+          </span>
+        </div>
+        <FeedbackBanner feedback={valkeyFeedback} />
+        <div className="space-y-4 mt-2">
+          {valkeyLoading ? (
+            <p className="text-sm text-[var(--text-muted)]">Loading...</p>
+          ) : (
+            <>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={valkeyEnabled}
+                    onChange={(e) => setValkeyEnabled(e.target.checked)}
+                    className="rounded border-[var(--border)]"
+                  />
+                  Enable Valkey persistence
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls}>Valkey URL</label>
+                  <input
+                    type="text"
+                    value={valkeyUrl}
+                    onChange={(e) => setValkeyUrl(e.target.value)}
+                    className={inputCls}
+                    disabled={!valkeyEnabled}
+                    placeholder="redis://127.0.0.1:6379"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Retention (minutes)</label>
+                  <input
+                    type="number"
+                    value={metricsRetention}
+                    onChange={(e) => setMetricsRetention(Number(e.target.value))}
+                    className={inputCls}
+                    disabled={!valkeyEnabled}
+                    min={5}
+                    max={1440}
+                  />
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                    How many minutes of metrics to keep. Default: 30. Max: 1440 (24h).
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-xs text-[var(--text-muted)]">
+                When enabled, metrics are persisted to Valkey so dashboard graphs survive API restarts.
+                Without Valkey, graphs reset when the API restarts but still work via in-memory buffer.
+              </p>
+            </>
+          )}
+
+          <div className="flex justify-end">
+            <button onClick={saveValkey} disabled={valkeySaving || valkeyLoading} className={saveBtnCls}>
+              {valkeySaving ? "Saving..." : "Save Valkey"}
             </button>
           </div>
         </div>
