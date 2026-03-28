@@ -140,15 +140,17 @@ async fn build_update(state: &AppState) -> Result<String, String> {
             .await
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
+            // Format: Name Mtu Network Address Ipkts Ierrs Idrop Ibytes Opkts Oerrs Obytes Coll
+            // Index:  0    1   2       3       4     5     6     7      8     9     10     11
             for line in stdout.lines().skip(1) {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 10 && parts[0] == iface_name {
+                if parts.len() >= 11 && parts[0] == iface_name {
                     interfaces.push(InterfacePayload {
                         name: iface_name.to_string(),
                         packets_in: parts[4].parse().unwrap_or(0),
-                        bytes_in: parts[6].parse().unwrap_or(0),
-                        packets_out: parts[7].parse().unwrap_or(0),
-                        bytes_out: parts[9].parse().unwrap_or(0),
+                        bytes_in: parts[7].parse().unwrap_or(0),
+                        packets_out: parts[8].parse().unwrap_or(0),
+                        bytes_out: parts[10].parse().unwrap_or(0),
                     });
                     break;
                 }

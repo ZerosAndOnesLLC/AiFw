@@ -1338,13 +1338,15 @@ pub async fn get_interface_stats(
     // Parse netstat -I output: Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
     for line in stdout.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 10 && parts[0] == name {
+        // Format: Name Mtu Network Address Ipkts Ierrs Idrop Ibytes Opkts Oerrs Obytes Coll
+        // Index:  0    1   2       3       4     5     6     7      8     9     10     11
+        if parts.len() >= 11 && parts[0] == name {
             stats.packets_in = parts[4].parse().unwrap_or(0);
             stats.errors_in = parts[5].parse().unwrap_or(0);
-            stats.bytes_in = parts[6].parse().unwrap_or(0);
-            stats.packets_out = parts[7].parse().unwrap_or(0);
-            stats.errors_out = parts[8].parse().unwrap_or(0);
-            stats.bytes_out = parts[9].parse().unwrap_or(0);
+            stats.bytes_in = parts[7].parse().unwrap_or(0);
+            stats.packets_out = parts[8].parse().unwrap_or(0);
+            stats.errors_out = parts[9].parse().unwrap_or(0);
+            stats.bytes_out = parts[10].parse().unwrap_or(0);
             break;
         }
     }
