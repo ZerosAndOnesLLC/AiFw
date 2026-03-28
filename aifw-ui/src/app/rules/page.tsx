@@ -192,8 +192,10 @@ export default function RulesPage() {
     setError(null);
 
     try {
-      const srcAddr = form.src_type === "any" ? "any" : (form.src_addr ? `${form.src_addr}${form.src_mask}` : "any");
-      const dstAddr = form.dst_type === "any" ? "any" : (form.dst_addr ? `${form.dst_addr}${form.dst_mask}` : "any");
+      const srcAddr = form.src_type === "any" || !form.src_addr || form.src_addr.toLowerCase() === "any"
+        ? "any" : `${form.src_addr}${form.src_mask}`;
+      const dstAddr = form.dst_type === "any" || !form.dst_addr || form.dst_addr.toLowerCase() === "any"
+        ? "any" : `${form.dst_addr}${form.dst_mask}`;
       const showPorts = protocolShowsPorts(form.protocol);
 
       const body = {
@@ -239,8 +241,8 @@ export default function RulesPage() {
   /* ── Edit existing rule ────────────────────────────────────────── */
 
   const handleEdit = (rule: Rule) => {
-    const srcIsAny = !rule.rule_match.src_addr || rule.rule_match.src_addr === "any";
-    const dstIsAny = !rule.rule_match.dst_addr || rule.rule_match.dst_addr === "any";
+    const srcIsAny = !rule.rule_match.src_addr || rule.rule_match.src_addr.toLowerCase() === "any";
+    const dstIsAny = !rule.rule_match.dst_addr || rule.rule_match.dst_addr.toLowerCase() === "any";
     const srcParts = splitCidr(rule.rule_match.src_addr);
     const dstParts = splitCidr(rule.rule_match.dst_addr);
 
