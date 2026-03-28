@@ -24,7 +24,7 @@ impl fmt::Display for Address {
 impl Address {
     pub fn parse(s: &str) -> crate::Result<Self> {
         let s = s.trim();
-        if s == "any" {
+        if s.eq_ignore_ascii_case("any") {
             return Ok(Address::Any);
         }
         if s.starts_with('<') && s.ends_with('>') {
