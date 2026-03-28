@@ -20,6 +20,9 @@ interface DhcpGlobalConfig {
   max_lease_time: number;
   dns_servers: string[];
   domain_name: string;
+  domain_search: string[];
+  ntp_servers: string[];
+  wins_servers: string[];
   next_server: string;
   boot_filename: string;
 }
@@ -48,6 +51,9 @@ const defaultConfig: DhcpGlobalConfig = {
   max_lease_time: 172800,
   dns_servers: [],
   domain_name: "",
+  domain_search: [],
+  ntp_servers: [],
+  wins_servers: [],
   next_server: "",
   boot_filename: "",
 };
@@ -127,8 +133,13 @@ export default function DhcpOverviewPage() {
         method: "POST",
         headers: authHeaders(),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showFeedback("success", `DHCP server ${action}ed successfully`);
+      const data = await res.json().catch(() => ({ message: "" }));
+      const msg = data.message || `DHCP ${action} completed`;
+      if (msg.toLowerCase().includes("fail") || msg.toLowerCase().includes("error")) {
+        showFeedback("error", msg);
+      } else {
+        showFeedback("success", msg);
+      }
       await fetchStatus();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : `Failed to ${action} DHCP`);
@@ -423,6 +434,44 @@ export default function DhcpOverviewPage() {
                 placeholder="e.g. home.lan"
                 className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
               />
+            </div>
+          </div>
+
+          {/* Additional DHCP Options */}
+          <div>
+            <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">Additional Options</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">Search Domains (comma-separated)</label>
+                <input
+                  type="text"
+                  value={(config.domain_search || []).join(", ")}
+                  onChange={(e) => setConfig((p) => ({ ...p, domain_search: e.target.value.split(",").map(s => s.trim()).filter(Boolean) }))}
+                  placeholder="corp.local, internal.lan"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">DNS search domains for Windows/Linux clients</p>
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">NTP Servers (comma-separated)</label>
+                <input
+                  type="text"
+                  value={(config.ntp_servers || []).join(", ")}
+                  onChange={(e) => setConfig((p) => ({ ...p, ntp_servers: e.target.value.split(",").map(s => s.trim()).filter(Boolean) }))}
+                  placeholder="pool.ntp.org, time.google.com"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">WINS / NetBIOS Servers</label>
+                <input
+                  type="text"
+                  value={(config.wins_servers || []).join(", ")}
+                  onChange={(e) => setConfig((p) => ({ ...p, wins_servers: e.target.value.split(",").map(s => s.trim()).filter(Boolean) }))}
+                  placeholder="192.168.1.10"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
             </div>
           </div>
 
