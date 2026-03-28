@@ -1029,9 +1029,20 @@ pub async fn list_connections(
 pub async fn reload(
     State(state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    state.rule_engine.apply_rules().await.map_err(|_| internal())?;
-    state.nat_engine.apply_rules().await.map_err(|_| internal())?;
-    Ok(Json(MessageResponse { message: "Rules reloaded".to_string() }))
+    let mut errors = Vec::new();
+    if let Err(e) = state.rule_engine.apply_rules().await {
+        tracing::error!("Failed to apply filter rules: {e}");
+        errors.push(format!("filter: {e}"));
+    }
+    if let Err(e) = state.nat_engine.apply_rules().await {
+        tracing::error!("Failed to apply NAT rules: {e}");
+        errors.push(format!("nat: {e}"));
+    }
+    if errors.is_empty() {
+        Ok(Json(MessageResponse { message: "Rules reloaded".to_string() }))
+    } else {
+        Ok(Json(MessageResponse { message: format!("Partial reload: {}", errors.join("; ")) }))
+    }
 }
 
 // --- Metrics ---
