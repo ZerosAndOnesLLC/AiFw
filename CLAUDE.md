@@ -1,6 +1,6 @@
 # AiFw — AI-Powered Firewall for FreeBSD
 
-Open-source (Apache-2.0) firewall built in Rust on FreeBSD's `pf`. All features are free.
+Open-source (MIT) firewall built in Rust on FreeBSD's `pf`. All features are free.
 
 ## Project Structure
 
