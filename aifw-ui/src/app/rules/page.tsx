@@ -99,6 +99,7 @@ export default function RulesPage() {
   const [form, setForm] = useState<RuleForm>(defaultForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingChanges, setPendingChanges] = useState(false);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
 
@@ -119,6 +120,7 @@ export default function RulesPage() {
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ rule_ids: reordered.map(r => r.id) }),
       });
+      setPendingChanges(true);
     } catch { setError("Failed to save rule order"); }
   };
 
@@ -191,6 +193,7 @@ export default function RulesPage() {
       setEditingId(null);
       setShowForm(false);
       await fetchRules();
+      setPendingChanges(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save rule");
     } finally {
@@ -237,6 +240,7 @@ export default function RulesPage() {
     try {
       await api.deleteRule(id);
       await fetchRules();
+      setPendingChanges(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete rule");
     }
@@ -268,6 +272,7 @@ export default function RulesPage() {
         status: newStatus,
       });
       await fetchRules();
+      setPendingChanges(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to toggle rule status");
     }
@@ -335,18 +340,20 @@ export default function RulesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={async () => {
-              try { await api.applyChanges(); setError(null); }
-              catch { setError("Failed to apply changes"); }
-            }}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-            Apply Changes
-          </button>
+          {pendingChanges && (
+            <button
+              onClick={async () => {
+                try { await api.applyChanges(); setPendingChanges(false); setError(null); }
+                catch { setError("Failed to apply changes"); }
+              }}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors animate-pulse"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              Apply Changes
+            </button>
+          )}
           {!showForm && (
             <button
               onClick={() => {

@@ -42,6 +42,7 @@ export default function OutboundNatPage() {
   const [form, setForm] = useState<FormState>(defaultForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingChanges, setPendingChanges] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const dragItem = useRef<number|null>(null);
   const dragOverItem = useRef<number|null>(null);
@@ -56,7 +57,7 @@ export default function OutboundNatPage() {
 
   const fetchRules = useCallback(async () => {
     try {
-      setError(null);
+      setPendingChanges(false); setError(null);
       const res = await api.listNat();
       setRules(res.data.filter((r) => r.nat_type === "snat" || r.nat_type === "masquerade"));
     } catch (err) {
@@ -118,7 +119,7 @@ export default function OutboundNatPage() {
   const handleSubmit = async () => {
     if (!form.translation_addr.trim()) return;
     setSubmitting(true);
-    setError(null);
+    setPendingChanges(false); setError(null);
     try {
       const isInterfaceAddr = form.translation_addr.toLowerCase() === "interface address";
       const natType = isInterfaceAddr ? "masquerade" : "snat";
@@ -145,6 +146,7 @@ export default function OutboundNatPage() {
         await api.createNat(body as unknown as CreateNatRequest);
       }
       await fetchRules();
+      setPendingChanges(true);
       resetForm();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save rule");
@@ -154,7 +156,7 @@ export default function OutboundNatPage() {
   };
 
   const handleDelete = async (rule: NatRule) => {
-    setError(null);
+    setPendingChanges(false); setError(null);
     try {
       await api.deleteNat(rule.id);
       setRules((prev) => prev.filter((r) => r.id !== rule.id));
@@ -166,7 +168,7 @@ export default function OutboundNatPage() {
   const handleToggleStatus = async (rule: NatRule) => {
     const newStatus = rule.status === "active" ? "disabled" : "active";
     setTogglingId(rule.id);
-    setError(null);
+    setPendingChanges(false); setError(null);
     try {
       await api.updateNat(rule.id, {
         nat_type: rule.nat_type,
@@ -218,21 +220,23 @@ export default function OutboundNatPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={async () => {
-              try {
-                const token = localStorage.getItem("aifw_token");
-                await fetch("/api/v1/reload", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
-                setError(null);
-              } catch { setError("Failed to apply changes"); }
-            }}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-            Apply Changes
-          </button>
+          {pendingChanges && (
+            <button
+              onClick={async () => {
+                try {
+                  const token = localStorage.getItem("aifw_token");
+                  await fetch("/api/v1/reload", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+                  setPendingChanges(false); setError(null);
+                } catch { setError("Failed to apply changes"); }
+              }}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors animate-pulse"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              Apply Changes
+            </button>
+          )}
           {!showForm && (
             <button
               onClick={() => {
