@@ -139,6 +139,52 @@ export default function TrafficPage() {
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+
+        // Handle historical batch on connect
+        if (msg.type === "history" && Array.isArray(msg.data)) {
+          const points: RatePoint[] = [];
+          const prevByIface: Record<string, InterfaceData> = {};
+          let prevTs = 0;
+          let lastIfaces: InterfaceData[] = [];
+          let lastConns: Connection[] = [];
+
+          for (const entry of msg.data) {
+            if (entry.type !== "status_update") continue;
+            const ts = Date.now() - (msg.data.length - points.length) * 1000;
+            const ifaces: InterfaceData[] = entry.interfaces || [];
+            if (ifaces.length > 0) lastIfaces = ifaces;
+            if (entry.connections) lastConns = entry.connections;
+
+            const nic = selectedNic || (ifaces[0]?.name ?? "");
+            const cur = ifaces.find((i: InterfaceData) => i.name === nic);
+            const prev = prevByIface[nic];
+
+            if (cur && prev && prevTs) {
+              const dt = (ts - prevTs) / 1000;
+              if (dt > 0 && dt < 5) {
+                points.push({
+                  time: ts,
+                  bpsIn: Math.max(0, (cur.bytes_in - prev.bytes_in) / dt * 8),
+                  bpsOut: Math.max(0, (cur.bytes_out - prev.bytes_out) / dt * 8),
+                });
+              }
+            }
+            if (cur) prevByIface[nic] = cur;
+            prevTs = ts;
+          }
+
+          if (points.length > 0) setRateHistory(points.slice(-MAX_POINTS));
+          if (lastIfaces.length > 0) {
+            setInterfaces(lastIfaces);
+            if (!selectedNic) setSelectedNic(lastIfaces[0].name);
+          }
+          setConnections(lastConns);
+          // Set prev refs so live updates continue smoothly
+          Object.assign(prevIface.current, prevByIface);
+          prevTime.current = Date.now();
+          return;
+        }
+
         if (msg.type !== "status_update") return;
 
         const now = Date.now();
