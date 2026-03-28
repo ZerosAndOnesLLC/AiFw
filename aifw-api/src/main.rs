@@ -1,5 +1,6 @@
 mod auth;
 mod routes;
+mod ws;
 
 #[cfg(test)]
 mod tests;
@@ -87,7 +88,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/auth/refresh", post(routes::refresh_token))
         .route("/api/v1/auth/oauth/{provider}/authorize", get(routes::oauth_authorize))
         .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback))
-        .route("/api/v1/auth/register", post(routes::create_user));
+        .route("/api/v1/auth/register", post(routes::create_user))
+        .route("/api/v1/ws", get(ws::ws_handler));
 
     // Protected routes (require auth)
     let protected_routes = Router::new()

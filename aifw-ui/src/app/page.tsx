@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
-import Card from "@/components/Card";
-import StatusBadge from "@/components/StatusBadge";
+import { useEffect, useState, useRef, useCallback } from "react";
 
 interface StatusData {
   pf_running: boolean;
@@ -17,35 +15,25 @@ interface StatusData {
   bytes_out: number;
 }
 
-interface MetricsData {
-  pf_running: boolean;
-  pf_states_count: number;
-  pf_rules_count: number;
-  pf_packets_in: number;
-  pf_packets_out: number;
-  pf_bytes_in: number;
-  pf_bytes_out: number;
-  aifw_rules_total: number;
-  aifw_rules_active: number;
-  aifw_nat_rules_total: number;
-}
-
 interface Connection {
-  id: number;
   protocol: string;
   src_addr: string;
   src_port: number;
   dst_addr: string;
   dst_port: number;
   state: string;
-  packets_in: number;
-  packets_out: number;
   bytes_in: number;
   bytes_out: number;
-  age_secs: number;
+}
+
+interface WsMessage {
+  type: string;
+  status: StatusData;
+  connections: Connection[];
 }
 
 function formatBytes(bytes: number): string {
+  if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(2)} TB`;
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
   if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(1)} KB`;
@@ -58,138 +46,161 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-function Sparkline({ data, color, height = 40 }: { data: { value: number }[]; color: string; height?: number }) {
+function formatRate(bitsPerSec: number): string {
+  if (bitsPerSec >= 1e9) return `${(bitsPerSec / 1e9).toFixed(1)} Gbps`;
+  if (bitsPerSec >= 1e6) return `${(bitsPerSec / 1e6).toFixed(1)} Mbps`;
+  if (bitsPerSec >= 1e3) return `${(bitsPerSec / 1e3).toFixed(1)} Kbps`;
+  return `${bitsPerSec.toFixed(0)} bps`;
+}
+
+function Sparkline({ data, color, height = 40 }: { data: number[]; color: string; height?: number }) {
   if (data.length < 2) return null;
-  const values = data.map((d) => d.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values) || 1;
+  const min = Math.min(...data);
+  const max = Math.max(...data) || 1;
   const range = max - min || 1;
   const w = 200;
-
-  const points = values
-    .map((v, i) => `${(i / (values.length - 1)) * w},${height - ((v - min) / range) * (height - 4) - 2}`)
+  const points = data
+    .map((v, i) => `${(i / (data.length - 1)) * w},${height - ((v - min) / range) * (height - 4) - 2}`)
     .join(" ");
-
   const areaPoints = `0,${height} ${points} ${w},${height}`;
 
   return (
     <svg viewBox={`0 0 ${w} ${height}`} className="w-full" preserveAspectRatio="none">
       <defs>
-        <linearGradient id={`grad-${color.replace("#", "")}`} x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={`sg-${color.replace(/[^a-z0-9]/gi, "")}`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.3" />
           <stop offset="100%" stopColor={color} stopOpacity="0.02" />
         </linearGradient>
       </defs>
-      <polygon points={areaPoints} fill={`url(#grad-${color.replace("#", "")})`} />
+      <polygon points={areaPoints} fill={`url(#sg-${color.replace(/[^a-z0-9]/gi, "")})`} />
       <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function MiniBarChart({ data, color }: { data: { label: string; value: number }[]; color: string }) {
-  const max = Math.max(...data.map((d) => d.value)) || 1;
+function StatCard({ title, value, subtitle, color, sparkData }: {
+  title: string; value: string | number; subtitle?: string; color: string; sparkData?: number[];
+}) {
   return (
-    <div className="space-y-1.5">
-      {data.map((d) => (
-        <div key={d.label} className="flex items-center gap-2 text-xs">
-          <span className="w-24 text-[var(--text-muted)] truncate font-mono">{d.label}</span>
-          <div className="flex-1 bg-[var(--bg-primary)] rounded-full h-2 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{ width: `${(d.value / max) * 100}%`, backgroundColor: color }}
-            />
-          </div>
-          <span className="w-16 text-right text-[var(--text-secondary)]">{formatBytes(d.value)}</span>
+    <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4 relative overflow-hidden">
+      <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">{title}</div>
+      <div className="text-xl font-bold" style={{ color }}>{value}</div>
+      {subtitle && <div className="text-xs text-[var(--text-muted)] mt-0.5">{subtitle}</div>}
+      {sparkData && sparkData.length > 2 && (
+        <div className="mt-2 h-8">
+          <Sparkline data={sparkData} color={color} height={32} />
         </div>
-      ))}
+      )}
     </div>
   );
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-  const res = await fetch(path, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
 export default function Dashboard() {
-  const [time, setTime] = useState(new Date());
   const [status, setStatus] = useState<StatusData | null>(null);
-  const [metrics, setMetrics] = useState<MetricsData | null>(null);
   const [connections, setConnections] = useState<Connection[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [wsConnected, setWsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // History for sparklines (store last 60 snapshots)
-  const [packetsInHistory, setPacketsInHistory] = useState<{ value: number }[]>([]);
-  const [packetsOutHistory, setPacketsOutHistory] = useState<{ value: number }[]>([]);
-  const [bytesInHistory, setBytesInHistory] = useState<{ value: number }[]>([]);
-  const [bytesOutHistory, setBytesOutHistory] = useState<{ value: number }[]>([]);
-  const [statesHistory, setStatesHistory] = useState<{ value: number }[]>([]);
-  const initialLoad = useRef(true);
+  // History for sparklines
+  const [packetsInHist, setPacketsInHist] = useState<number[]>([]);
+  const [packetsOutHist, setPacketsOutHist] = useState<number[]>([]);
+  const [bytesInHist, setBytesInHist] = useState<number[]>([]);
+  const [bytesOutHist, setBytesOutHist] = useState<number[]>([]);
+  const [statesHist, setStatesHist] = useState<number[]>([]);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [statusRes, metricsRes, connsRes] = await Promise.all([
-        apiFetch<StatusData>("/api/v1/status"),
-        apiFetch<MetricsData>("/api/v1/metrics"),
-        apiFetch<{ data: Connection[] }>("/api/v1/connections"),
-      ]);
+  // Rate calculation
+  const prevStatus = useRef<StatusData | null>(null);
+  const [rateIn, setRateIn] = useState(0);
+  const [rateOut, setRateOut] = useState(0);
 
-      setStatus(statusRes);
-      setMetrics(metricsRes);
-      setConnections(connsRes.data || []);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const connectWs = useCallback(() => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+    if (!token) return;
+
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${window.location.host}/api/v1/ws`;
+
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setWsConnected(true);
       setError(null);
+    };
 
-      // Append to history (max 60 points)
-      setPacketsInHistory((prev) => [...prev, { value: metricsRes.pf_packets_in }].slice(-60));
-      setPacketsOutHistory((prev) => [...prev, { value: metricsRes.pf_packets_out }].slice(-60));
-      setBytesInHistory((prev) => [...prev, { value: metricsRes.pf_bytes_in }].slice(-60));
-      setBytesOutHistory((prev) => [...prev, { value: metricsRes.pf_bytes_out }].slice(-60));
-      setStatesHistory((prev) => [...prev, { value: metricsRes.pf_states_count }].slice(-60));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch data");
-    } finally {
-      if (initialLoad.current) {
-        setLoading(false);
-        initialLoad.current = false;
+    ws.onmessage = (event) => {
+      try {
+        const msg: WsMessage = JSON.parse(event.data);
+        if (msg.type === "status_update") {
+          setStatus(msg.status);
+          setConnections(msg.connections || []);
+
+          // Calculate rates (2s interval)
+          if (prevStatus.current) {
+            const deltaIn = Math.max(0, msg.status.bytes_in - prevStatus.current.bytes_in);
+            const deltaOut = Math.max(0, msg.status.bytes_out - prevStatus.current.bytes_out);
+            setRateIn(deltaIn / 2 * 8);
+            setRateOut(deltaOut / 2 * 8);
+          }
+          prevStatus.current = msg.status;
+
+          // Append to history
+          setPacketsInHist((p) => [...p, msg.status.packets_in].slice(-60));
+          setPacketsOutHist((p) => [...p, msg.status.packets_out].slice(-60));
+          setBytesInHist((p) => [...p, msg.status.bytes_in].slice(-60));
+          setBytesOutHist((p) => [...p, msg.status.bytes_out].slice(-60));
+          setStatesHist((p) => [...p, msg.status.pf_states].slice(-60));
+        }
+      } catch {
+        // ignore parse errors
       }
-    }
+    };
+
+    ws.onclose = () => {
+      setWsConnected(false);
+      wsRef.current = null;
+      // Reconnect after 3 seconds
+      reconnectTimer.current = setTimeout(connectWs, 3000);
+    };
+
+    ws.onerror = () => {
+      setError("WebSocket connection failed");
+      ws.close();
+    };
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    connectWs();
+    return () => {
+      if (wsRef.current) wsRef.current.close();
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+    };
+  }, [connectWs]);
 
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // Compute top talkers from connections
+  // Top talkers from connections
   const topTalkers = connections
-    .reduce<{ label: string; value: number }[]>((acc, conn) => {
-      const existing = acc.find((t) => t.label === conn.src_addr);
-      const total = conn.bytes_in + conn.bytes_out;
-      if (existing) {
-        existing.value += total;
-      } else {
-        acc.push({ label: conn.src_addr, value: total });
-      }
+    .reduce<{ ip: string; bytes: number; conns: number }[]>((acc, c) => {
+      const existing = acc.find((t) => t.ip === c.src_addr);
+      const total = c.bytes_in + c.bytes_out;
+      if (existing) { existing.bytes += total; existing.conns++; }
+      else { acc.push({ ip: c.src_addr, bytes: total, conns: 1 }); }
       return acc;
     }, [])
-    .sort((a, b) => b.value - a.value)
+    .sort((a, b) => b.bytes - a.bytes)
     .slice(0, 5);
 
-  if (loading) {
+  const maxTalkerBytes = topTalkers[0]?.bytes || 1;
+
+  if (!status) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-[var(--text-muted)]">Loading dashboard...</div>
+        <div className="text-center">
+          <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-sm text-[var(--text-muted)]">Connecting to firewall...</p>
+        </div>
       </div>
     );
   }
@@ -200,126 +211,112 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>
-          <p className="text-sm text-[var(--text-muted)]">
-            {time.toLocaleDateString()} {time.toLocaleTimeString()} &middot; System Overview
-          </p>
+          <p className="text-sm text-[var(--text-muted)]">Real-time firewall monitoring</p>
         </div>
         <div className="flex items-center gap-3">
-          <StatusBadge status={status?.pf_running ? "running" : "down"} size="md" />
-          <span className="text-sm text-[var(--text-secondary)]">
-            pf {status?.pf_running ? "active" : "inactive"}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <div className={`w-2 h-2 rounded-full ${wsConnected ? "bg-green-500" : "bg-red-500"}`} />
+            <span className="text-xs text-[var(--text-muted)]">{wsConnected ? "Live" : "Reconnecting..."}</span>
+          </div>
+          <div className={`px-2 py-1 rounded text-xs font-medium ${
+            status.pf_running ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+          }`}>
+            pf {status.pf_running ? "Active" : "Inactive"}
+          </div>
         </div>
       </div>
 
-      {/* Error Banner */}
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400">
-          {error}
-        </div>
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400">{error}</div>
       )}
 
-      {/* Key Metrics Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <Card
-          title="Rules"
-          value={metrics?.aifw_rules_total ?? status?.aifw_rules ?? 0}
-          color="blue"
-          subtitle={`${metrics?.aifw_rules_active ?? status?.aifw_active_rules ?? 0} active`}
-        />
-        <Card
-          title="Active Rules"
-          value={metrics?.aifw_rules_active ?? status?.aifw_active_rules ?? 0}
-          color="green"
-        />
-        <Card
-          title="NAT Rules"
-          value={metrics?.aifw_nat_rules_total ?? status?.nat_rules ?? 0}
-          color="cyan"
-        />
-        <Card
-          title="pf States"
-          value={formatNumber(metrics?.pf_states_count ?? status?.pf_states ?? 0)}
-          color="yellow"
-          subtitle="active connections"
-        />
-        <Card
-          title="Packets In"
-          value={formatNumber(status?.packets_in ?? metrics?.pf_packets_in ?? 0)}
-          color="cyan"
-        />
-        <Card
-          title="Packets Out"
-          value={formatNumber(status?.packets_out ?? metrics?.pf_packets_out ?? 0)}
-          color="blue"
-        />
+      {/* Rate Cards */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">Throughput In</div>
+          <div className="text-2xl font-bold text-green-400">{formatRate(rateIn)}</div>
+        </div>
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">Throughput Out</div>
+          <div className="text-2xl font-bold text-blue-400">{formatRate(rateOut)}</div>
+        </div>
       </div>
 
-      {/* Bytes Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-2 gap-3">
-        <Card
-          title="Bytes In"
-          value={formatBytes(status?.bytes_in ?? metrics?.pf_bytes_in ?? 0)}
-          color="green"
-        />
-        <Card
-          title="Bytes Out"
-          value={formatBytes(status?.bytes_out ?? metrics?.pf_bytes_out ?? 0)}
-          color="red"
-        />
+      {/* Stat Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard title="Rules" value={status.aifw_rules} subtitle={`${status.aifw_active_rules} active`} color="#3b82f6" />
+        <StatCard title="NAT Rules" value={status.nat_rules} color="#8b5cf6" />
+        <StatCard title="PF States" value={formatNumber(status.pf_states)} color="#06b6d4" sparkData={statesHist} />
+        <StatCard title="PF Rules" value={status.pf_rules} color="#f59e0b" />
       </div>
 
-      {/* Sparkline Charts Row */}
-      {packetsInHistory.length >= 2 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Packets In/Out */}
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-medium">Packets In</h3>
-              <span className="text-xs text-[var(--text-muted)]">Last {packetsInHistory.length} samples</span>
-            </div>
-            <Sparkline data={packetsInHistory} color="#22d3ee" height={60} />
-            <div className="mt-2">
-              <h3 className="text-sm font-medium mb-2">Packets Out</h3>
-              <Sparkline data={packetsOutHistory} color="#3b82f6" height={40} />
-            </div>
-          </div>
+      {/* Traffic Cards with Sparklines */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard title="Packets In" value={formatNumber(status.packets_in)} color="#22c55e" sparkData={packetsInHist} />
+        <StatCard title="Packets Out" value={formatNumber(status.packets_out)} color="#3b82f6" sparkData={packetsOutHist} />
+        <StatCard title="Bytes In" value={formatBytes(status.bytes_in)} color="#06b6d4" sparkData={bytesInHist} />
+        <StatCard title="Bytes Out" value={formatBytes(status.bytes_out)} color="#f97316" sparkData={bytesOutHist} />
+      </div>
 
-          {/* Bytes In/Out */}
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-medium">Bytes In</h3>
-              <span className="text-xs text-[var(--text-muted)]">Last {bytesInHistory.length} samples</span>
-            </div>
-            <Sparkline data={bytesInHistory} color="#22c55e" height={60} />
-            <div className="mt-2">
-              <h3 className="text-sm font-medium mb-2">Bytes Out</h3>
-              <Sparkline data={bytesOutHistory} color="#ef4444" height={40} />
-            </div>
+      {/* Bottom Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Top Talkers */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-[var(--border)]">
+            <h3 className="text-sm font-medium">Top Talkers</h3>
           </div>
+          {topTalkers.length === 0 ? (
+            <div className="text-center py-8 text-[var(--text-muted)] text-sm">No active connections</div>
+          ) : (
+            <div className="divide-y divide-[var(--border)]">
+              {topTalkers.map((t) => (
+                <div key={t.ip} className="px-4 py-2.5 hover:bg-[var(--bg-card-hover)] transition-colors">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-mono text-xs">{t.ip}</span>
+                    <span className="text-xs text-[var(--text-secondary)]">{formatBytes(t.bytes)} / {t.conns} conn</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-cyan-500" style={{ width: `${(t.bytes / maxTalkerBytes) * 100}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      )}
 
-      {/* Connection States Sparkline */}
-      {statesHistory.length >= 2 && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium">pf States Over Time</h3>
-            <span className="text-xs text-[var(--text-muted)]">
-              current: {formatNumber(metrics?.pf_states_count ?? 0)}
-            </span>
+        {/* Active Connections Summary */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-[var(--border)]">
+            <h3 className="text-sm font-medium">Active Connections ({connections.length})</h3>
           </div>
-          <Sparkline data={statesHistory} color="#a78bfa" height={60} />
+          {connections.length === 0 ? (
+            <div className="text-center py-8 text-[var(--text-muted)] text-sm">No active connections</div>
+          ) : (
+            <div className="overflow-y-auto max-h-64">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-[var(--border)]">
+                    <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase tracking-wider font-medium">Proto</th>
+                    <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase tracking-wider font-medium">Source</th>
+                    <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase tracking-wider font-medium">Destination</th>
+                    <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase tracking-wider font-medium">State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {connections.slice(0, 20).map((c, i) => (
+                    <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)]">
+                      <td className="py-1.5 px-3 uppercase text-cyan-400">{c.protocol}</td>
+                      <td className="py-1.5 px-3 font-mono">{c.src_addr}:{c.src_port}</td>
+                      <td className="py-1.5 px-3 font-mono">{c.dst_addr}:{c.dst_port}</td>
+                      <td className="py-1.5 px-3 text-[var(--text-secondary)]">{c.state.split(":")[0]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-      )}
-
-      {/* Top Talkers */}
-      {topTalkers.length > 0 && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">Top Talkers (by bytes)</h3>
-          <MiniBarChart data={topTalkers} color="#22d3ee" />
-        </div>
-      )}
+      </div>
     </div>
   );
 }
