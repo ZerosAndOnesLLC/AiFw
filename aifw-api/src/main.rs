@@ -15,13 +15,17 @@ use axum::{
 };
 use clap::Parser;
 use sqlx::sqlite::SqlitePool;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::info;
+
+pub const METRICS_HISTORY_SIZE: usize = 1800; // 30 min at 1/sec
 
 #[derive(Clone)]
 pub struct AppState {
@@ -33,6 +37,8 @@ pub struct AppState {
     pub geoip_engine: Arc<GeoIpEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub auth_settings: auth::AuthSettings,
+    pub metrics_history: Arc<RwLock<VecDeque<String>>>,
+    pub redis: Option<redis::aio::ConnectionManager>,
 }
 
 #[derive(Parser)]
@@ -69,6 +75,10 @@ struct Args {
     /// Disable TLS (serve plain HTTP)
     #[arg(long)]
     no_tls: bool,
+
+    /// Valkey/Redis URL for metrics persistence (optional)
+    #[arg(long, env = "AIFW_VALKEY_URL", default_value = "redis://127.0.0.1:6379")]
+    valkey_url: String,
 
     /// Log level
     #[arg(long, default_value = "info")]
@@ -201,6 +211,8 @@ async fn create_state_from_db(
         geoip_engine,
         conntrack,
         auth_settings,
+        metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(METRICS_HISTORY_SIZE))),
+        redis: None,
     })
 }
 
@@ -264,7 +276,42 @@ async fn main() -> anyhow::Result<()> {
         auth_settings.jwt_secret = secret;
     }
 
-    let state = create_app_state(&args.db, auth_settings).await?;
+    let mut state = create_app_state(&args.db, auth_settings).await?;
+
+    // Connect to Valkey/Redis for metrics persistence (optional)
+    match redis::Client::open(args.valkey_url.as_str()) {
+        Ok(client) => {
+            match redis::aio::ConnectionManager::new(client).await {
+                Ok(mut conn) => {
+                    info!("Connected to Valkey for metrics persistence");
+                    // Load historical metrics from Valkey
+                    let history: Vec<String> = redis::cmd("LRANGE")
+                        .arg("aifw:metrics:history")
+                        .arg(0i64)
+                        .arg(METRICS_HISTORY_SIZE as i64 - 1)
+                        .query_async(&mut conn)
+                        .await
+                        .unwrap_or_default();
+                    if !history.is_empty() {
+                        let mut buf = state.metrics_history.write().await;
+                        // LRANGE returns newest first, reverse for chronological order
+                        for entry in history.into_iter().rev() {
+                            buf.push_back(entry);
+                        }
+                        info!("Loaded {} historical metrics from Valkey", buf.len());
+                    }
+                    state.redis = Some(conn);
+                }
+                Err(e) => {
+                    info!("Valkey not available ({}), using in-memory metrics only", e);
+                }
+            }
+        }
+        Err(e) => {
+            info!("Valkey not configured ({}), using in-memory metrics only", e);
+        }
+    }
+
     let app = build_router(state, args.ui_dir.as_deref());
 
     if args.no_tls {

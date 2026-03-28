@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::time::Duration;
 use tokio::time::interval;
 
-use crate::AppState;
+use crate::{AppState, METRICS_HISTORY_SIZE};
 use aifw_common::RuleStatus;
 
 #[derive(Serialize)]
@@ -98,7 +98,20 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Spawn a task to push updates every 2 seconds
+    // Send historical data first
+    {
+        let history = state.metrics_history.read().await;
+        if !history.is_empty() {
+            // Send a batch history message
+            let batch = format!(
+                "{{\"type\":\"history\",\"data\":[{}]}}",
+                history.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")
+            );
+            let _ = sender.send(Message::Text(batch.into())).await;
+        }
+    }
+
+    // Spawn a task to push updates every second
     let push_state = state.clone();
     let mut push_task = tokio::spawn(async move {
         let mut tick = interval(Duration::from_secs(1));
@@ -106,13 +119,30 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             tick.tick().await;
             match build_update(&push_state).await {
                 Ok(msg) => {
+                    // Store in server-side ring buffer
+                    {
+                        let mut buf = push_state.metrics_history.write().await;
+                        if buf.len() >= METRICS_HISTORY_SIZE {
+                            buf.pop_front();
+                        }
+                        buf.push_back(msg.clone());
+                    }
+
+                    // Persist to Valkey if available
+                    if let Some(ref redis) = push_state.redis {
+                        let mut conn = redis.clone();
+                        let _: Result<(), _> = redis::pipe()
+                            .cmd("LPUSH").arg("aifw:metrics:history").arg(&msg)
+                            .cmd("LTRIM").arg("aifw:metrics:history").arg(0i64).arg(METRICS_HISTORY_SIZE as i64 - 1)
+                            .query_async(&mut conn)
+                            .await;
+                    }
+
                     if sender.send(Message::Text(msg.into())).await.is_err() {
-                        break; // client disconnected
+                        break;
                     }
                 }
-                Err(_) => {
-                    // Skip this tick on error
-                }
+                Err(_) => {}
             }
         }
     });

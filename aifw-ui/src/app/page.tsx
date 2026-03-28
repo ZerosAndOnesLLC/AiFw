@@ -182,6 +182,42 @@ export default function Dashboard() {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
+
+        // Handle historical batch on connect
+        if (msg.type === "history" && Array.isArray(msg.data)) {
+          const points: HistoryPoint[] = [];
+          let prevS: StatusData | null = null;
+          let prevTs = 0;
+          for (const entry of msg.data) {
+            if (entry.type !== "status_update") continue;
+            const ts = Date.now() - (msg.data.length - points.length) * 1000;
+            let bi = 0, bo = 0;
+            if (prevS && prevTs) {
+              const dt = (ts - prevTs) / 1000;
+              if (dt > 0 && dt < 5) {
+                bi = Math.max(0, (entry.status.bytes_in - prevS.bytes_in) / dt * 8);
+                bo = Math.max(0, (entry.status.bytes_out - prevS.bytes_out) / dt * 8);
+              }
+            }
+            prevS = entry.status; prevTs = ts;
+            points.push({
+              time: ts, cpu: entry.system?.cpu_usage ?? 0, memPct: entry.system?.memory_pct ?? 0,
+              diskReadKbps: entry.system?.disk_io?.read_kbps ?? 0,
+              diskWriteKbps: entry.system?.disk_io?.write_kbps ?? 0,
+              bpsIn: bi, bpsOut: bo,
+            });
+          }
+          if (points.length > 0) {
+            setHistory(points.slice(-MAX_PTS));
+            const last = msg.data[msg.data.length - 1];
+            if (last?.status) { setStatus(last.status); prev.current = last.status; }
+            if (last?.system) setSystem(last.system);
+            if (last?.connections) setConnections(last.connections);
+            prevT.current = Date.now();
+          }
+          return;
+        }
+
         if (msg.type !== "status_update") return;
         const now = Date.now();
         setStatus(msg.status);
