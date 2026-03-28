@@ -13,12 +13,7 @@ function authHeaders(): HeadersInit {
 }
 
 async function authFetch(url: string, options?: RequestInit): Promise<Response> {
-  const res = await fetch(url, { ...options, headers: { ...authHeaders(), ...options?.headers } });
-  if (res.status === 401) {
-    localStorage.removeItem("aifw_token");
-    window.location.href = "/login";
-  }
-  return res;
+  return fetch(url, { ...options, headers: { ...authHeaders(), ...options?.headers } });
 }
 
 interface SectionFeedback {

@@ -285,7 +285,8 @@ async fn main() -> anyhow::Result<()> {
     // Preserve the JWT secret from CLI arg if provided, otherwise use DB/generated
     if let Some(secret) = args.jwt_secret {
         state.auth_settings.jwt_secret = secret;
-    } else {
+    } else if loaded.jwt_secret != state.auth_settings.jwt_secret {
+        // DB has a persisted secret — use it
         state.auth_settings.jwt_secret = loaded.jwt_secret;
     }
     state.auth_settings.access_token_expiry_mins = loaded.access_token_expiry_mins;
@@ -293,6 +294,10 @@ async fn main() -> anyhow::Result<()> {
     state.auth_settings.require_totp = loaded.require_totp;
     state.auth_settings.require_totp_for_oauth = loaded.require_totp_for_oauth;
     state.auth_settings.auto_create_oauth_users = loaded.auto_create_oauth_users;
+
+    // Persist the JWT secret to DB if not already saved (so it survives restarts)
+    let _ = auth::AuthSettings::save_setting(&state.pool, "jwt_secret", &state.auth_settings.jwt_secret).await;
+
     info!("Auth settings: token expiry={}min, refresh={}days", state.auth_settings.access_token_expiry_mins, state.auth_settings.refresh_token_expiry_days);
 
     // Connect to Valkey/Redis for metrics persistence (optional, with timeout)
