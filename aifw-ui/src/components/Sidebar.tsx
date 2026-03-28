@@ -50,6 +50,10 @@ const navItems: NavItem[] = [
     children: [
       { href: "/ca", label: "Certificates" },
       { href: "/cluster", label: "Cluster / HA" },
+      { href: "/dhcp", label: "DHCP Overview" },
+      { href: "/dhcp/subnets", label: "DHCP Subnets" },
+      { href: "/dhcp/reservations", label: "DHCP Reservations" },
+      { href: "/dhcp/leases", label: "DHCP Leases" },
     ],
   },
 

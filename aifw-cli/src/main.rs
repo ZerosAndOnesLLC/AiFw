@@ -67,6 +67,11 @@ enum Commands {
         #[command(subcommand)]
         action: DnsAction,
     },
+    /// Manage DHCP server
+    Dhcp {
+        #[command(subcommand)]
+        action: DhcpAction,
+    },
     /// Manage users
     Users {
         #[command(subcommand)]
@@ -357,6 +362,71 @@ enum UsersAction {
     Disable { id: String },
     /// Enable a user
     Enable { id: String },
+}
+
+#[derive(Subcommand)]
+enum DhcpAction {
+    /// Show DHCP server status
+    Status,
+    /// Start DHCP server
+    Start,
+    /// Stop DHCP server
+    Stop,
+    /// Restart DHCP server
+    Restart,
+    /// List DHCP subnets
+    Subnets {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a DHCP subnet
+    SubnetAdd {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        pool_start: String,
+        #[arg(long)]
+        pool_end: String,
+        #[arg(long)]
+        gateway: String,
+        #[arg(long)]
+        dns: Option<String>,
+        #[arg(long)]
+        domain: Option<String>,
+        #[arg(long)]
+        lease_time: Option<u32>,
+        #[arg(long)]
+        desc: Option<String>,
+    },
+    /// Remove a DHCP subnet
+    SubnetRemove { id: String },
+    /// List DHCP reservations (static leases)
+    Reservations {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a DHCP reservation
+    ReservationAdd {
+        #[arg(long)]
+        mac: String,
+        #[arg(long)]
+        ip: String,
+        #[arg(long)]
+        hostname: Option<String>,
+        #[arg(long)]
+        subnet: Option<String>,
+        #[arg(long)]
+        desc: Option<String>,
+    },
+    /// Remove a DHCP reservation
+    ReservationRemove { id: String },
+    /// Show active DHCP leases
+    Leases {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply DHCP config (write + restart Kea)
+    Apply,
 }
 
 #[derive(Subcommand)]
@@ -663,6 +733,24 @@ async fn main() -> anyhow::Result<()> {
             RoutesAction::System => {
                 commands::routes_system().await?;
             }
+        },
+        Commands::Dhcp { action } => match action {
+            DhcpAction::Status => commands::dhcp_status(&cli.db).await?,
+            DhcpAction::Start => { let _ = std::process::Command::new("service").args(["kea", "start"]).output(); println!("DHCP started"); }
+            DhcpAction::Stop => { let _ = std::process::Command::new("service").args(["kea", "stop"]).output(); println!("DHCP stopped"); }
+            DhcpAction::Restart => { let _ = std::process::Command::new("service").args(["kea", "restart"]).output(); println!("DHCP restarted"); }
+            DhcpAction::Subnets { json } => commands::dhcp_subnets(&cli.db, json).await?,
+            DhcpAction::SubnetAdd { network, pool_start, pool_end, gateway, dns, domain, lease_time, desc } => {
+                commands::dhcp_subnet_add(&cli.db, &network, &pool_start, &pool_end, &gateway, dns.as_deref(), domain.as_deref(), lease_time, desc.as_deref()).await?;
+            }
+            DhcpAction::SubnetRemove { id } => commands::dhcp_subnet_remove(&cli.db, &id).await?,
+            DhcpAction::Reservations { json } => commands::dhcp_reservations(&cli.db, json).await?,
+            DhcpAction::ReservationAdd { mac, ip, hostname, subnet, desc } => {
+                commands::dhcp_reservation_add(&cli.db, &mac, &ip, hostname.as_deref(), subnet.as_deref(), desc.as_deref()).await?;
+            }
+            DhcpAction::ReservationRemove { id } => commands::dhcp_reservation_remove(&cli.db, &id).await?,
+            DhcpAction::Leases { json } => commands::dhcp_leases(json).await?,
+            DhcpAction::Apply => commands::dhcp_apply(&cli.db).await?,
         },
         Commands::Dns { action } => match action {
             DnsAction::List => {

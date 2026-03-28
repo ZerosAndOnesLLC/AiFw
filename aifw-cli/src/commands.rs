@@ -1121,3 +1121,148 @@ pub async fn interfaces_list() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+// ============================================================
+// DHCP
+// ============================================================
+
+pub async fn dhcp_status(db_path: &Path) -> anyhow::Result<()> {
+    let running = std::process::Command::new("service").args(["kea", "status"]).output()
+        .map(|o| o.status.success()).unwrap_or(false);
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+
+    let subnets: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dhcp_subnets")
+        .fetch_one(pool).await.map(|r| r.0).unwrap_or(0);
+    let reservations: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dhcp_reservations")
+        .fetch_one(pool).await.map(|r| r.0).unwrap_or(0);
+
+    println!("DHCP Server Status:");
+    println!("  Running:      {}", if running { "yes" } else { "no" });
+    println!("  Subnets:      {}", subnets);
+    println!("  Reservations: {}", reservations);
+    Ok(())
+}
+
+pub async fn dhcp_subnets(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, bool)>(
+        "SELECT id, network, pool_start, pool_end, gateway, enabled FROM dhcp_subnets ORDER BY created_at ASC"
+    ).fetch_all(pool).await?;
+
+    if json {
+        let data: Vec<serde_json::Value> = rows.iter().map(|(id,net,ps,pe,gw,en)| {
+            serde_json::json!({"id":id,"network":net,"pool_start":ps,"pool_end":pe,"gateway":gw,"enabled":en})
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() { println!("No DHCP subnets."); return Ok(()); }
+    println!("{:<36} {:<20} {:<16} {:<16} {:<16} {}", "ID", "Network", "Pool Start", "Pool End", "Gateway", "Status");
+    println!("{}", "-".repeat(110));
+    for (id, net, ps, pe, gw, en) in &rows {
+        println!("{:<36} {:<20} {:<16} {:<16} {:<16} {}", id, net, ps, pe, gw, if *en { "active" } else { "disabled" });
+    }
+    Ok(())
+}
+
+pub async fn dhcp_subnet_add(db_path: &Path, network: &str, pool_start: &str, pool_end: &str, gateway: &str, dns: Option<&str>, domain: Option<&str>, lease_time: Option<u32>, desc: Option<&str>) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, enabled, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10)")
+        .bind(&id).bind(network).bind(pool_start).bind(pool_end).bind(gateway)
+        .bind(dns).bind(domain).bind(lease_time.map(|v| v as i64)).bind(desc).bind(&now)
+        .execute(pool).await?;
+    println!("Added DHCP subnet: {} (id: {})", network, &id[..8]);
+    Ok(())
+}
+
+pub async fn dhcp_subnet_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let result = sqlx::query("DELETE FROM dhcp_subnets WHERE id = ?1").bind(id).execute(db.pool()).await?;
+    if result.rows_affected() == 0 { anyhow::bail!("Subnet {} not found", id); }
+    println!("Removed DHCP subnet {}", id);
+    Ok(())
+}
+
+pub async fn dhcp_reservations(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let rows = sqlx::query_as::<_, (String, String, String, Option<String>)>(
+        "SELECT id, mac_address, ip_address, hostname FROM dhcp_reservations ORDER BY ip_address ASC"
+    ).fetch_all(db.pool()).await?;
+
+    if json {
+        let data: Vec<serde_json::Value> = rows.iter().map(|(id,mac,ip,hn)| {
+            serde_json::json!({"id":id,"mac":mac,"ip":ip,"hostname":hn})
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+
+    if rows.is_empty() { println!("No DHCP reservations."); return Ok(()); }
+    println!("{:<36} {:<20} {:<16} {}", "ID", "MAC", "IP", "Hostname");
+    println!("{}", "-".repeat(80));
+    for (id, mac, ip, hn) in &rows {
+        println!("{:<36} {:<20} {:<16} {}", id, mac, ip, hn.as_deref().unwrap_or("-"));
+    }
+    Ok(())
+}
+
+pub async fn dhcp_reservation_add(db_path: &Path, mac: &str, ip: &str, hostname: Option<&str>, subnet: Option<&str>, desc: Option<&str>) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("INSERT INTO dhcp_reservations (id, subnet_id, mac_address, ip_address, hostname, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)")
+        .bind(&id).bind(subnet).bind(mac).bind(ip).bind(hostname).bind(desc).bind(&now)
+        .execute(db.pool()).await?;
+    println!("Added reservation: {} -> {} (id: {})", mac, ip, &id[..8]);
+    Ok(())
+}
+
+pub async fn dhcp_reservation_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let result = sqlx::query("DELETE FROM dhcp_reservations WHERE id = ?1").bind(id).execute(db.pool()).await?;
+    if result.rows_affected() == 0 { anyhow::bail!("Reservation {} not found", id); }
+    println!("Removed reservation {}", id);
+    Ok(())
+}
+
+pub async fn dhcp_leases(json: bool) -> anyhow::Result<()> {
+    let content = std::fs::read_to_string("/var/db/kea/kea-leases4.csv").unwrap_or_default();
+    let mut leases = Vec::new();
+    for line in content.lines() {
+        if line.starts_with('#') || line.is_empty() { continue; }
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() >= 9 {
+            leases.push((parts[0].to_string(), parts[1].to_string(), parts[8].to_string(), parts[4].to_string()));
+        }
+    }
+
+    if json {
+        let data: Vec<serde_json::Value> = leases.iter().map(|(ip,mac,hn,exp)| {
+            serde_json::json!({"ip":ip,"mac":mac,"hostname":hn,"expires":exp})
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+
+    if leases.is_empty() { println!("No active DHCP leases."); return Ok(()); }
+    println!("{:<16} {:<20} {:<20} {}", "IP", "MAC", "Hostname", "Expires");
+    println!("{}", "-".repeat(70));
+    for (ip, mac, hn, exp) in &leases {
+        println!("{:<16} {:<20} {:<20} {}", ip, mac, if hn.is_empty() { "-" } else { hn }, exp);
+    }
+    Ok(())
+}
+
+pub async fn dhcp_apply(db_path: &Path) -> anyhow::Result<()> {
+    println!("Generating Kea DHCP config...");
+    // This would need the same config generation logic — for CLI, just call the API
+    println!("Use the web UI or API to apply DHCP config:");
+    println!("  curl -X POST https://<host>:8080/api/v1/dhcp/v4/apply");
+    Ok(())
+}

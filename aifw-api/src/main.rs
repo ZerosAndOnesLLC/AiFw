@@ -1,5 +1,6 @@
 mod auth;
 mod ca;
+mod dhcp;
 mod routes;
 mod ws;
 
@@ -112,6 +113,18 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/ca/certs/{id}/cert.pem", get(ca::download_cert))
         .route("/api/v1/ca/certs/{id}/key.pem", get(ca::download_cert_key))
         .route("/api/v1/ca/certs/{id}/revoke", post(ca::revoke_cert))
+        .route("/api/v1/dhcp/status", get(dhcp::dhcp_status))
+        .route("/api/v1/dhcp/start", post(dhcp::dhcp_start))
+        .route("/api/v1/dhcp/stop", post(dhcp::dhcp_stop))
+        .route("/api/v1/dhcp/restart", post(dhcp::dhcp_restart))
+        .route("/api/v1/dhcp/v4/config", get(dhcp::get_config).put(dhcp::update_config))
+        .route("/api/v1/dhcp/v4/subnets", get(dhcp::list_subnets).post(dhcp::create_subnet))
+        .route("/api/v1/dhcp/v4/subnets/{id}", put(dhcp::update_subnet).delete(dhcp::delete_subnet))
+        .route("/api/v1/dhcp/v4/reservations", get(dhcp::list_reservations).post(dhcp::create_reservation))
+        .route("/api/v1/dhcp/v4/reservations/{id}", put(dhcp::update_reservation).delete(dhcp::delete_reservation))
+        .route("/api/v1/dhcp/v4/leases", get(dhcp::list_leases))
+        .route("/api/v1/dhcp/v4/leases/{ip}", delete(dhcp::release_lease))
+        .route("/api/v1/dhcp/v4/apply", post(dhcp::apply_config))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/schedules", get(routes::list_schedules).post(routes::create_schedule))
@@ -216,6 +229,7 @@ async fn create_state_from_db(
     let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
     geoip_engine.migrate().await?;
     ca::migrate(&pool).await?;
+    dhcp::migrate(&pool).await?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     Ok(AppState {
