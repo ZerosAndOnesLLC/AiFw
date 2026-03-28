@@ -653,11 +653,27 @@ pub struct Schedule {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StringOrVec {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl StringOrVec {
+    fn into_string(self) -> String {
+        match self {
+            StringOrVec::Single(s) => s,
+            StringOrVec::Multiple(v) => v.join(","),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CreateScheduleRequest {
     pub name: String,
     pub description: Option<String>,
-    pub time_ranges: String,
-    pub days_of_week: Option<String>,
+    pub time_ranges: StringOrVec,
+    pub days_of_week: Option<StringOrVec>,
     pub enabled: Option<bool>,
 }
 
@@ -679,12 +695,13 @@ pub async fn create_schedule(
 ) -> Result<(StatusCode, Json<ApiResponse<Schedule>>), StatusCode> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let dow = req.days_of_week.unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
+    let time_ranges = req.time_ranges.into_string();
+    let dow = req.days_of_week.map(|d| d.into_string()).unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
     let enabled = req.enabled.unwrap_or(true);
     sqlx::query("INSERT INTO schedules (id, name, description, time_ranges, days_of_week, enabled, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)")
-        .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&req.time_ranges).bind(&dow).bind(enabled).bind(&now)
+        .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&time_ranges).bind(&dow).bind(enabled).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: Schedule { id, name: req.name, description: req.description, time_ranges: req.time_ranges, days_of_week: dow, enabled, created_at: now } })))
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: Schedule { id, name: req.name, description: req.description, time_ranges, days_of_week: dow, enabled, created_at: now } })))
 }
 
 pub async fn update_schedule(
@@ -692,14 +709,15 @@ pub async fn update_schedule(
     Path(id): Path<String>,
     Json(req): Json<CreateScheduleRequest>,
 ) -> Result<Json<ApiResponse<Schedule>>, StatusCode> {
-    let dow = req.days_of_week.unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
+    let time_ranges = req.time_ranges.into_string();
+    let dow = req.days_of_week.map(|d| d.into_string()).unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
     let enabled = req.enabled.unwrap_or(true);
     let result = sqlx::query("UPDATE schedules SET name=?2, description=?3, time_ranges=?4, days_of_week=?5, enabled=?6 WHERE id=?1")
-        .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&req.time_ranges).bind(&dow).bind(enabled)
+        .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&time_ranges).bind(&dow).bind(enabled)
         .execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
     let now = chrono::Utc::now().to_rfc3339();
-    Ok(Json(ApiResponse { data: Schedule { id, name: req.name, description: req.description, time_ranges: req.time_ranges, days_of_week: dow, enabled, created_at: now } }))
+    Ok(Json(ApiResponse { data: Schedule { id, name: req.name, description: req.description, time_ranges, days_of_week: dow, enabled, created_at: now } }))
 }
 
 pub async fn delete_schedule(
