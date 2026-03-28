@@ -167,8 +167,14 @@ export default function Dashboard() {
   const [rateIn, setRateIn] = useState(0);
   const [rateOut, setRateOut] = useState(0);
   const [hoverIdx, setHoverIdx] = useState<number|null>(null);
+  const [interfaces, setInterfaces] = useState<{name:string}[]>([]);
+  const [selectedNic, setSelectedNic] = useState(() => typeof window !== "undefined" ? localStorage.getItem("aifw_dashboard_nic") || "" : "");
+  const selectedNicRef = useRef(selectedNic);
+  const prevIfaceData = useRef<Record<string, {bytes_in:number;bytes_out:number}>>({});
   const prev = useRef<StatusData|null>(null);
   const prevT = useRef(0);
+
+  const pickNic = (name: string) => { setSelectedNic(name); selectedNicRef.current = name; localStorage.setItem("aifw_dashboard_nic", name); };
   const wsRef = useRef<WebSocket|null>(null);
   const reconRef = useRef<ReturnType<typeof setTimeout>|null>(null);
 
@@ -186,20 +192,30 @@ export default function Dashboard() {
         // Handle historical batch on connect
         if (msg.type === "history" && Array.isArray(msg.data)) {
           const points: HistoryPoint[] = [];
-          let prevS: StatusData | null = null;
+          const prevByIf: Record<string, {bytes_in:number;bytes_out:number}> = {};
           let prevTs = 0;
+          let nic = selectedNicRef.current;
+          let lastIfaces: {name:string}[] = [];
+
           for (const entry of msg.data) {
             if (entry.type !== "status_update") continue;
             const ts = Date.now() - (msg.data.length - points.length) * 1000;
+            const ifaces = entry.interfaces || [];
+            if (ifaces.length > 0) lastIfaces = ifaces;
+            if (!nic && ifaces.length > 0) nic = ifaces[0].name;
+
+            const curIf = ifaces.find((i: {name:string}) => i.name === nic);
+            const prevIf = prevByIf[nic || ""];
             let bi = 0, bo = 0;
-            if (prevS && prevTs) {
+            if (curIf && prevIf && prevTs) {
               const dt = (ts - prevTs) / 1000;
               if (dt > 0 && dt < 5) {
-                bi = Math.max(0, (entry.status.bytes_in - prevS.bytes_in) / dt * 8);
-                bo = Math.max(0, (entry.status.bytes_out - prevS.bytes_out) / dt * 8);
+                bi = Math.max(0, (curIf.bytes_in - prevIf.bytes_in) / dt * 8);
+                bo = Math.max(0, (curIf.bytes_out - prevIf.bytes_out) / dt * 8);
               }
             }
-            prevS = entry.status; prevTs = ts;
+            if (curIf && nic) prevByIf[nic] = { bytes_in: curIf.bytes_in, bytes_out: curIf.bytes_out };
+            prevTs = ts;
             points.push({
               time: ts, cpu: entry.system?.cpu_usage ?? 0, memPct: entry.system?.memory_pct ?? 0,
               diskReadKbps: entry.system?.disk_io?.read_kbps ?? 0,
@@ -207,6 +223,9 @@ export default function Dashboard() {
               bpsIn: bi, bpsOut: bo,
             });
           }
+          if (lastIfaces.length > 0) setInterfaces(lastIfaces);
+          if (!selectedNicRef.current && nic) pickNic(nic);
+          Object.assign(prevIfaceData.current, prevByIf);
           if (points.length > 0) {
             setHistory(points.slice(-MAX_PTS));
             const last = msg.data[msg.data.length - 1];
@@ -223,16 +242,24 @@ export default function Dashboard() {
         setStatus(msg.status);
         setSystem(msg.system);
         setConnections(msg.connections || []);
+        const ifaces = msg.interfaces || [];
+        if (ifaces.length > 0) setInterfaces(ifaces);
+        if (!selectedNicRef.current && ifaces.length > 0) pickNic(ifaces[0].name);
 
+        // Calculate per-interface rate
+        const nic = selectedNicRef.current || (ifaces[0]?.name ?? "");
+        const curIface = ifaces.find((i: {name:string;bytes_in:number;bytes_out:number}) => i.name === nic);
+        const prevIfData = prevIfaceData.current[nic];
         let bIn = 0, bOut = 0;
-        if (prev.current && prevT.current) {
+        if (curIface && prevIfData && prevT.current) {
           const dt = (now - prevT.current) / 1000;
           if (dt > 0 && dt < 5) {
-            bIn = Math.max(0, (msg.status.bytes_in - prev.current.bytes_in) / dt * 8);
-            bOut = Math.max(0, (msg.status.bytes_out - prev.current.bytes_out) / dt * 8);
+            bIn = Math.max(0, (curIface.bytes_in - prevIfData.bytes_in) / dt * 8);
+            bOut = Math.max(0, (curIface.bytes_out - prevIfData.bytes_out) / dt * 8);
             setRateIn(bIn); setRateOut(bOut);
           }
         }
+        if (curIface) prevIfaceData.current[nic] = { bytes_in: curIface.bytes_in, bytes_out: curIface.bytes_out };
         prev.current = msg.status; prevT.current = now;
 
         setHistory(h => [...h, {
@@ -279,6 +306,12 @@ export default function Dashboard() {
             <div className={`w-2 h-2 rounded-full ${wsConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`}/>
             <span className="text-xs text-[var(--text-muted)]">{wsConnected ? "Live" : "..."}</span>
           </div>
+          {interfaces.length > 0 && (
+            <select value={selectedNic} onChange={(e) => pickNic(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500">
+              {interfaces.map((i) => <option key={i.name} value={i.name}>{i.name}</option>)}
+            </select>
+          )}
           <div className={`px-2 py-1 rounded text-xs font-medium ${status.pf_running ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
             pf {status.pf_running ? "Active" : "Inactive"}
           </div>

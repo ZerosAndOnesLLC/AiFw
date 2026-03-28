@@ -118,6 +118,7 @@ function TrafficChart({ data, height = 200 }: { data: RatePoint[]; height?: numb
 export default function TrafficPage() {
   const [interfaces, setInterfaces] = useState<InterfaceData[]>([]);
   const [selectedNic, setSelectedNic] = useState("");
+  const selectedNicRef = useRef("");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [rateHistory, setRateHistory] = useState<RatePoint[]>([]);
   const [currentRateIn, setCurrentRateIn] = useState(0);
@@ -127,6 +128,8 @@ export default function TrafficPage() {
   const prevTime = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const selectNic = (name: string) => { setSelectedNic(name); selectedNicRef.current = name; };
 
   const connectWs = useCallback(() => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
@@ -148,6 +151,8 @@ export default function TrafficPage() {
           let lastIfaces: InterfaceData[] = [];
           let lastConns: Connection[] = [];
 
+          // Auto-detect NIC from first entry if not set
+          let nic = selectedNicRef.current;
           for (const entry of msg.data) {
             if (entry.type !== "status_update") continue;
             const ts = Date.now() - (msg.data.length - points.length) * 1000;
@@ -155,7 +160,7 @@ export default function TrafficPage() {
             if (ifaces.length > 0) lastIfaces = ifaces;
             if (entry.connections) lastConns = entry.connections;
 
-            const nic = selectedNic || (ifaces[0]?.name ?? "");
+            if (!nic && ifaces.length > 0) { nic = ifaces[0].name; }
             const cur = ifaces.find((i: InterfaceData) => i.name === nic);
             const prev = prevByIface[nic];
 
@@ -176,7 +181,7 @@ export default function TrafficPage() {
           if (points.length > 0) setRateHistory(points.slice(-MAX_POINTS));
           if (lastIfaces.length > 0) {
             setInterfaces(lastIfaces);
-            if (!selectedNic) setSelectedNic(lastIfaces[0].name);
+            if (!selectedNicRef.current && nic) selectNic(nic);
           }
           setConnections(lastConns);
           // Set prev refs so live updates continue smoothly
@@ -192,12 +197,12 @@ export default function TrafficPage() {
         setInterfaces(ifaces);
         setConnections(msg.connections || []);
 
-        if (!selectedNic && ifaces.length > 0) {
-          setSelectedNic(ifaces[0].name);
+        if (!selectedNicRef.current && ifaces.length > 0) {
+          selectNic(ifaces[0].name);
         }
 
         // Calculate per-interface rate
-        const nic = selectedNic || (ifaces[0]?.name ?? "");
+        const nic = selectedNicRef.current || (ifaces[0]?.name ?? "");
         const current = ifaces.find((i: InterfaceData) => i.name === nic);
         const prev = prevIface.current[nic];
 
@@ -278,7 +283,7 @@ export default function TrafficPage() {
             <div className={`w-2 h-2 rounded-full ${wsConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
             <span className="text-xs text-[var(--text-muted)]">{wsConnected ? "Live" : "Reconnecting..."}</span>
           </div>
-          <select value={selectedNic} onChange={(e) => setSelectedNic(e.target.value)}
+          <select value={selectedNic} onChange={(e) => selectNic(e.target.value)}
             className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500">
             {interfaces.map((i) => (
               <option key={i.name} value={i.name}>{i.name}</option>
