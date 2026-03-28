@@ -278,13 +278,16 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = create_app_state(&args.db, auth_settings).await?;
 
-    // Connect to Valkey/Redis for metrics persistence (optional)
+    // Connect to Valkey/Redis for metrics persistence (optional, with timeout)
     match redis::Client::open(args.valkey_url.as_str()) {
         Ok(client) => {
-            match redis::aio::ConnectionManager::new(client).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                redis::aio::ConnectionManager::new(client),
+            ).await {
+            Ok(inner) => match inner {
                 Ok(mut conn) => {
                     info!("Connected to Valkey for metrics persistence");
-                    // Load historical metrics from Valkey
                     let history: Vec<String> = redis::cmd("LRANGE")
                         .arg("aifw:metrics:history")
                         .arg(0i64)
@@ -294,7 +297,6 @@ async fn main() -> anyhow::Result<()> {
                         .unwrap_or_default();
                     if !history.is_empty() {
                         let mut buf = state.metrics_history.write().await;
-                        // LRANGE returns newest first, reverse for chronological order
                         for entry in history.into_iter().rev() {
                             buf.push_back(entry);
                         }
@@ -305,6 +307,10 @@ async fn main() -> anyhow::Result<()> {
                 Err(e) => {
                     info!("Valkey not available ({}), using in-memory metrics only", e);
                 }
+            },
+            Err(_) => {
+                info!("Valkey connection timed out, using in-memory metrics only");
+            }
             }
         }
         Err(e) => {
