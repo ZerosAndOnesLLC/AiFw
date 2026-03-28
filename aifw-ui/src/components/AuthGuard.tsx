@@ -34,9 +34,12 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 
     // Validate token isn't expired (decode JWT payload)
     try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
+      // Handle URL-safe base64 and missing padding
+      let b64 = token.split(".")[1];
+      b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
+      while (b64.length % 4) b64 += "=";
+      const payload = JSON.parse(atob(b64));
       if (payload.exp && payload.exp * 1000 < Date.now()) {
-        // Token expired — try refresh or redirect to login
         localStorage.removeItem("aifw_token");
         router.replace("/login");
         setChecked(true);
@@ -44,11 +47,8 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
         return;
       }
     } catch {
-      localStorage.removeItem("aifw_token");
-      router.replace("/login");
-      setChecked(true);
-      setAuthed(false);
-      return;
+      // If decode fails, don't log out — just trust the token exists
+      // The API will return 401 if it's actually invalid
     }
 
     setChecked(true);
