@@ -272,12 +272,28 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Create state first to get the DB pool, then load settings from DB
     let mut auth_settings = auth::AuthSettings::default();
-    if let Some(secret) = args.jwt_secret {
-        auth_settings.jwt_secret = secret;
+    if let Some(ref secret) = args.jwt_secret {
+        auth_settings.jwt_secret = secret.clone();
     }
 
     let mut state = create_app_state(&args.db, auth_settings).await?;
+
+    // Load auth settings from DB (overrides defaults with saved values)
+    let loaded = auth::AuthSettings::load(&state.pool).await;
+    // Preserve the JWT secret from CLI arg if provided, otherwise use DB/generated
+    if let Some(secret) = args.jwt_secret {
+        state.auth_settings.jwt_secret = secret;
+    } else {
+        state.auth_settings.jwt_secret = loaded.jwt_secret;
+    }
+    state.auth_settings.access_token_expiry_mins = loaded.access_token_expiry_mins;
+    state.auth_settings.refresh_token_expiry_days = loaded.refresh_token_expiry_days;
+    state.auth_settings.require_totp = loaded.require_totp;
+    state.auth_settings.require_totp_for_oauth = loaded.require_totp_for_oauth;
+    state.auth_settings.auto_create_oauth_users = loaded.auto_create_oauth_users;
+    info!("Auth settings: token expiry={}min, refresh={}days", state.auth_settings.access_token_expiry_mins, state.auth_settings.refresh_token_expiry_days);
 
     // Connect to Valkey/Redis for metrics persistence (optional, with timeout)
     match redis::Client::open(args.valkey_url.as_str()) {

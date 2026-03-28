@@ -12,6 +12,15 @@ function authHeaders(): HeadersInit {
   };
 }
 
+async function authFetch(url: string, options?: RequestInit): Promise<Response> {
+  const res = await fetch(url, { ...options, headers: { ...authHeaders(), ...options?.headers } });
+  if (res.status === 401) {
+    localStorage.removeItem("aifw_token");
+    window.location.href = "/login";
+  }
+  return res;
+}
+
 interface SectionFeedback {
   type: "success" | "error";
   message: string;
@@ -96,7 +105,7 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/api/v1/dns`, {
+        const res = await authFetch(`${API}/api/v1/dns`, {
           headers: authHeaders(),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -115,7 +124,7 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/api/v1/auth/settings`, {
+        const res = await authFetch(`${API}/api/v1/auth/settings`, {
           headers: authHeaders(),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -133,7 +142,7 @@ export default function SettingsPage() {
     // Fetch Valkey settings
     (async () => {
       try {
-        const res = await fetch(`${API}/api/v1/settings/valkey`, { headers: authHeaders() });
+        const res = await authFetch(`${API}/api/v1/settings/valkey`, { headers: authHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (data.enabled !== undefined) setValkeyEnabled(data.enabled);
@@ -154,7 +163,7 @@ export default function SettingsPage() {
     setMetricsSaving(true);
     setMetricsFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/settings/metrics`, {
+      const res = await authFetch(`${API}/api/v1/settings/metrics`, {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -178,7 +187,7 @@ export default function SettingsPage() {
     setApiSaving(true);
     setApiFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/settings/api`, {
+      const res = await authFetch(`${API}/api/v1/settings/api`, {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -201,7 +210,7 @@ export default function SettingsPage() {
     setTlsSaving(true);
     setTlsFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/settings/tls`, {
+      const res = await authFetch(`${API}/api/v1/settings/tls`, {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -224,7 +233,7 @@ export default function SettingsPage() {
     setDnsSaving(true);
     setDnsFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/dns`, {
+      const res = await authFetch(`${API}/api/v1/dns`, {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({ servers: dnsServers }),
@@ -243,7 +252,7 @@ export default function SettingsPage() {
     setAuthSaving(true);
     setAuthFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/auth/settings`, {
+      const res = await authFetch(`${API}/api/v1/auth/settings`, {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -265,7 +274,7 @@ export default function SettingsPage() {
     setValkeySaving(true);
     setValkeyFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/settings/valkey`, {
+      const res = await authFetch(`${API}/api/v1/settings/valkey`, {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
