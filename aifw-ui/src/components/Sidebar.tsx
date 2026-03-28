@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 interface NavChild { href: string; label: string; }
 interface NavItem {
@@ -10,6 +10,7 @@ interface NavItem {
   label: string;
   icon: string;
   children?: NavChild[];
+  dynamicChildren?: boolean; // marker for dynamic NIC children under Rules
 }
 
 const navItems: NavItem[] = [
@@ -20,12 +21,14 @@ const navItems: NavItem[] = [
     label: "Firewall",
     icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
     children: [
-      { href: "/rules", label: "Rules" },
+      { href: "/rules", label: "All Rules" },
+      // NIC-specific rules injected dynamically below
       { href: "/rules/schedules", label: "Schedules" },
       { href: "/nat/port-forward", label: "Port Forward" },
       { href: "/nat/outbound", label: "Outbound NAT" },
       { href: "/geoip", label: "Geo-IP" },
     ],
+    dynamicChildren: true,
   },
 
   // Network group
@@ -81,14 +84,50 @@ export default function Sidebar() {
     Monitoring: false,
     System: false,
   });
+  const [interfaces, setInterfaces] = useState<string[]>([]);
+
+  useEffect(() => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+    if (!token) return;
+    fetch("/api/v1/interfaces", { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.ok ? r.json() : { data: [] })
+      .then((d) => {
+        const names = (d.data || [])
+          .map((i: { name: string }) => i.name)
+          .filter((n: string) => !n.startsWith("lo") && !n.startsWith("pflog"));
+        setInterfaces(names);
+      })
+      .catch(() => {});
+  }, []);
 
   const toggle = (label: string) => setExpanded((p) => ({ ...p, [label]: !p[label] }));
 
   const isActive = (href: string) =>
     pathname === href || pathname === href + "/" || (href !== "/" && pathname.startsWith(href + "/"));
 
+  // Build children with dynamic NIC entries injected
+  const getChildren = (item: NavItem): NavChild[] => {
+    if (!item.children) return [];
+    if (!item.dynamicChildren) return item.children;
+
+    // Inject NIC-specific rule links after "All Rules"
+    const result: NavChild[] = [];
+    for (const child of item.children) {
+      result.push(child);
+      if (child.href === "/rules" && interfaces.length > 0) {
+        for (const nic of interfaces) {
+          result.push({ href: `/rules?interface=${nic}`, label: nic });
+        }
+      }
+    }
+    return result;
+  };
+
   const hasActiveChild = (children?: NavChild[]) =>
-    children?.some((c) => isActive(c.href)) ?? false;
+    children?.some((c) => {
+      const href = c.href.split("?")[0]; // strip query params for matching
+      return isActive(href);
+    }) ?? false;
 
   return (
     <aside className="w-56 h-screen bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col fixed left-0 top-0 z-10">
@@ -126,7 +165,8 @@ export default function Sidebar() {
 
           // Tree group
           const isOpen = expanded[item.label] ?? false;
-          const childActive = hasActiveChild(item.children);
+          const children = getChildren(item);
+          const childActive = hasActiveChild(children);
 
           return (
             <div key={item.label}>
@@ -143,16 +183,24 @@ export default function Sidebar() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                 </svg>
               </button>
-              {isOpen && item.children && (
+              {isOpen && children.length > 0 && (
                 <div className="ml-2">
-                  {item.children.map((child) => {
-                    const active = isActive(child.href);
+                  {children.map((child) => {
+                    const isNicLink = child.href.includes("?interface=");
+                    const nicName = isNicLink ? child.href.split("?interface=")[1] : null;
+                    const active = isNicLink
+                      ? pathname === "/rules" && typeof window !== "undefined" && window.location.search === `?interface=${nicName}`
+                      : isActive(child.href);
                     return (
                       <Link key={child.href} href={child.href}
-                        className={`flex items-center gap-2 pl-8 pr-4 py-1.5 mx-2 my-px rounded-md text-sm transition-colors ${
+                        className={`flex items-center gap-2 ${isNicLink ? "pl-11" : "pl-8"} pr-4 py-1.5 mx-2 my-px rounded-md ${isNicLink ? "text-xs" : "text-sm"} transition-colors ${
                           active ? "bg-[var(--accent)] text-white" : "text-[var(--text-secondary)] hover:bg-[var(--bg-card)] hover:text-[var(--text-primary)]"
                         }`}>
-                        <span className={`w-1 h-1 rounded-full flex-shrink-0 ${active ? "bg-white" : "bg-current opacity-40"}`} />
+                        {isNicLink ? (
+                          <span className={`text-[10px] ${active ? "text-white" : "text-cyan-400"}`}>⬡</span>
+                        ) : (
+                          <span className={`w-1 h-1 rounded-full flex-shrink-0 ${active ? "bg-white" : "bg-current opacity-40"}`} />
+                        )}
                         {child.label}
                       </Link>
                     );

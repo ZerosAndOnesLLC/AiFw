@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { api, Rule, InterfaceInfo, Schedule } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 
@@ -111,6 +112,8 @@ function splitCidr(addr: string): { ip: string; mask: string } {
 /* ─── Component ──────────────────────────────────────────────────── */
 
 export default function RulesPage() {
+  const searchParams = useSearchParams();
+  const urlInterface = searchParams.get("interface");
   const [rules, setRules] = useState<Rule[]>([]);
   const [interfaces, setInterfaces] = useState<InterfaceInfo[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -123,9 +126,12 @@ export default function RulesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [pendingChanges, setPendingChanges] = useState(false);
-  const [interfaceFilter, setInterfaceFilter] = useState<string>("all");
+  const [interfaceFilter, setInterfaceFilter] = useState<string>(urlInterface || "all");
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
+
+  // Sync filter with URL param
+  useEffect(() => { setInterfaceFilter(urlInterface || "all"); }, [urlInterface]);
 
   const handleDragStart = (idx: number) => { dragItem.current = idx; };
   const handleDragOver = (e: React.DragEvent, idx: number) => { e.preventDefault(); dragOverItem.current = idx; };
