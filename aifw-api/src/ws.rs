@@ -57,7 +57,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Spawn a task to push updates every 2 seconds
     let push_state = state.clone();
     let mut push_task = tokio::spawn(async move {
-        let mut tick = interval(Duration::from_secs(2));
+        let mut tick = interval(Duration::from_secs(1));
         loop {
             tick.tick().await;
             match build_update(&push_state).await {

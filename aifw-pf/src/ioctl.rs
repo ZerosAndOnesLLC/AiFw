@@ -152,8 +152,12 @@ impl PfBackend for PfIoctl {
                 stats.running = line.contains("Enabled");
             }
             if line.contains("current entries") {
-                if let Some(n) = line.split_whitespace().next() {
-                    stats.states_count = n.parse().unwrap_or(0);
+                // "  current entries                       18"
+                for token in line.split_whitespace() {
+                    if let Ok(n) = token.parse::<u64>() {
+                        stats.states_count = n;
+                        break;
+                    }
                 }
             }
         }
