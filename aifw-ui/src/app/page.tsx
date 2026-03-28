@@ -56,15 +56,15 @@ function Gauge({ pct, label, color, size = 80 }: { pct: number; label: string; c
   const gaugeColor = pct > 90 ? "#ef4444" : pct > 70 ? "#f59e0b" : color;
   return (
     <div className="flex flex-col items-center">
+      <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">{label}</div>
       <svg width={size} height={size} className="-rotate-90">
         <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#1e293b" strokeWidth="6" />
         <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={gaugeColor} strokeWidth="6"
           strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round" className="transition-all duration-500" />
       </svg>
-      <div className="text-center -mt-[52px] mb-3">
+      <div className="text-center -mt-[52px]">
         <div className="text-lg font-bold" style={{ color: gaugeColor }}>{pct.toFixed(0)}%</div>
       </div>
-      <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mt-1">{label}</div>
     </div>
   );
 }

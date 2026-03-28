@@ -21,8 +21,8 @@ impl Default for AuthSettings {
     fn default() -> Self {
         Self {
             jwt_secret: uuid::Uuid::new_v4().to_string(),
-            access_token_expiry_mins: 15,
-            refresh_token_expiry_days: 7,
+            access_token_expiry_mins: 480,
+            refresh_token_expiry_days: 30,
             require_totp: false,
             require_totp_for_oauth: false,
             auto_create_oauth_users: true,

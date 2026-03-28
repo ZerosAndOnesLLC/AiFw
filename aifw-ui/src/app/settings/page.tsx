@@ -64,7 +64,7 @@ export default function SettingsPage() {
   const [dnsLoading, setDnsLoading] = useState(true);
 
   // --- Auth Settings ---
-  const [sessionTimeout, setSessionTimeout] = useState(3600);
+  const [sessionTimeout, setSessionTimeout] = useState(480);
   const [maxLoginAttempts, setMaxLoginAttempts] = useState(5);
   const [lockoutDuration, setLockoutDuration] = useState(300);
   const [requireMfa, setRequireMfa] = useState(false);
@@ -111,12 +111,8 @@ export default function SettingsPage() {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (data.session_timeout !== undefined) setSessionTimeout(data.session_timeout);
-        if (data.max_login_attempts !== undefined) setMaxLoginAttempts(data.max_login_attempts);
-        if (data.lockout_duration !== undefined) setLockoutDuration(data.lockout_duration);
-        if (data.require_mfa !== undefined) setRequireMfa(data.require_mfa);
-        if (data.allow_registration !== undefined) setAllowRegistration(data.allow_registration);
-        if (data.password_min_length !== undefined) setPasswordMinLength(data.password_min_length);
+        if (data.access_token_expiry_mins !== undefined) setSessionTimeout(data.access_token_expiry_mins);
+        if (data.require_totp !== undefined) setRequireMfa(data.require_totp);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Unknown error";
         setAuthFeedback({ type: "error", message: `Failed to load auth settings: ${msg}` });
@@ -225,12 +221,8 @@ export default function SettingsPage() {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
-          session_timeout: sessionTimeout,
-          max_login_attempts: maxLoginAttempts,
-          lockout_duration: lockoutDuration,
-          require_mfa: requireMfa,
-          allow_registration: allowRegistration,
-          password_min_length: passwordMinLength,
+          access_token_expiry_mins: sessionTimeout,
+          require_totp: requireMfa,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -519,15 +511,16 @@ export default function SettingsPage() {
             <>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className={labelCls}>Session Timeout (sec)</label>
+                  <label className={labelCls}>Session Timeout (minutes)</label>
                   <input
                     type="number"
                     value={sessionTimeout}
                     onChange={(e) => setSessionTimeout(Number(e.target.value))}
                     className={inputCls}
+                    min={5}
                   />
                   <p className="text-xs text-[var(--text-muted)] mt-1">
-                    How long a session stays active. Default: 3600 (1 hour).
+                    How long before you need to login again. Default: 480 (8 hours).
                   </p>
                 </div>
                 <div>
