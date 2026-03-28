@@ -32,6 +32,14 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- Ensure dependencies ---
+for pkg in kea sudo; do
+    if ! pkg info -q "$pkg" 2>/dev/null; then
+        echo "Installing $pkg..."
+        pkg install -y "$pkg"
+    fi
+done
+
 # --- Pull latest ---
 echo "[1/5] Pulling latest..."
 git pull

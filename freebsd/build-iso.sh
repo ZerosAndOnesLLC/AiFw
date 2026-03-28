@@ -93,7 +93,7 @@ cp /etc/resolv.conf "$STAGEDIR/etc/resolv.conf"
 # Bootstrap pkg and install required packages
 chroot "$STAGEDIR" /bin/sh -c '
     env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
-    pkg install -y wireguard-tools
+    pkg install -y wireguard-tools kea sudo
 '
 
 umount "$STAGEDIR/dev"
