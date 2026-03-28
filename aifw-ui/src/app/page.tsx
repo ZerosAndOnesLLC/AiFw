@@ -66,7 +66,8 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-// Smooth area chart with gradient fill
+const MAX_CHART_POINTS = 300;
+
 function TrafficChart({ data, height = 160 }: { data: RatePoint[]; height?: number }) {
   if (data.length < 3) {
     return (
@@ -76,101 +77,49 @@ function TrafficChart({ data, height = 160 }: { data: RatePoint[]; height?: numb
     );
   }
 
-  const w = 900;
-  const h = height;
-  const pad = { top: 10, right: 10, bottom: 25, left: 60 };
-  const chartW = w - pad.left - pad.right;
-  const chartH = h - pad.top - pad.bottom;
-
+  const w = 900, h = height;
+  const pad = { top: 10, right: 10, bottom: 5, left: 60 };
+  const cW = w - pad.left - pad.right, cH = h - pad.top - pad.bottom;
+  const pixPerPoint = cW / MAX_CHART_POINTS;
   const maxVal = Math.max(...data.map((d) => Math.max(d.bpsIn, d.bpsOut)), 1000);
-  const scaleY = (v: number) => pad.top + chartH - (v / maxVal) * chartH;
-  const scaleX = (i: number) => pad.left + (i / (data.length - 1)) * chartW;
+  const sY = (v: number) => pad.top + cH - (v / maxVal) * cH;
+  const startX = pad.left + cW - data.length * pixPerPoint;
 
-  // Generate smooth path using cardinal spline
-  const smoothPath = (points: { x: number; y: number }[]): string => {
-    if (points.length < 2) return "";
-    let d = `M ${points[0].x},${points[0].y}`;
-    for (let i = 0; i < points.length - 1; i++) {
-      const p0 = points[Math.max(0, i - 1)];
-      const p1 = points[i];
-      const p2 = points[i + 1];
-      const p3 = points[Math.min(points.length - 1, i + 2)];
-      const cp1x = p1.x + (p2.x - p0.x) / 6;
-      const cp1y = p1.y + (p2.y - p0.y) / 6;
-      const cp2x = p2.x - (p3.x - p1.x) / 6;
-      const cp2y = p2.y - (p3.y - p1.y) / 6;
-      d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`;
+  const smooth = (pts: { x: number; y: number }[]) => {
+    if (pts.length < 2) return "";
+    let d = `M ${pts[0].x},${pts[0].y}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+      d += ` C ${p1.x + (p2.x - p0.x) / 6},${p1.y + (p2.y - p0.y) / 6} ${p2.x - (p3.x - p1.x) / 6},${p2.y - (p3.y - p1.y) / 6} ${p2.x},${p2.y}`;
     }
     return d;
   };
 
-  const inPoints = data.map((d, i) => ({ x: scaleX(i), y: scaleY(d.bpsIn) }));
-  const outPoints = data.map((d, i) => ({ x: scaleX(i), y: scaleY(d.bpsOut) }));
+  const inPts = data.map((d, i) => ({ x: startX + i * pixPerPoint, y: sY(d.bpsIn) }));
+  const outPts = data.map((d, i) => ({ x: startX + i * pixPerPoint, y: sY(d.bpsOut) }));
+  const inLine = smooth(inPts), outLine = smooth(outPts);
+  const bl = pad.top + cH;
+  const inArea = `${inLine} L ${inPts[inPts.length - 1].x},${bl} L ${inPts[0].x},${bl} Z`;
+  const outArea = `${outLine} L ${outPts[outPts.length - 1].x},${bl} L ${outPts[0].x},${bl} Z`;
 
-  const inLine = smoothPath(inPoints);
-  const outLine = smoothPath(outPoints);
-
-  // Area paths (close to bottom)
-  const baseline = pad.top + chartH;
-  const inArea = `${inLine} L ${inPoints[inPoints.length - 1].x},${baseline} L ${inPoints[0].x},${baseline} Z`;
-  const outArea = `${outLine} L ${outPoints[outPoints.length - 1].x},${baseline} L ${outPoints[0].x},${baseline} Z`;
-
-  // Y-axis labels
-  const yTicks = 5;
-  const yLabels = Array.from({ length: yTicks + 1 }, (_, i) => {
-    const val = (maxVal / yTicks) * i;
-    return { y: scaleY(val), label: formatBps(val) };
-  });
-
-  // X-axis labels (show every ~30s)
-  const xStep = Math.max(1, Math.floor(data.length / 6));
-  const xLabels = data.filter((_, i) => i % xStep === 0 || i === data.length - 1)
-    .map((d, idx) => ({
-      x: scaleX(data.indexOf(d) >= 0 ? data.indexOf(d) : idx * xStep),
-      label: formatTime(d.time),
-    }));
+  const yTicks = 4;
+  const yLabels = Array.from({ length: yTicks + 1 }, (_, i) => ({ y: sY((maxVal / yTicks) * i), label: formatBps((maxVal / yTicks) * i) }));
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet">
       <defs>
-        <linearGradient id="gradIn" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#22c55e" stopOpacity="0.4" />
-          <stop offset="100%" stopColor="#22c55e" stopOpacity="0.02" />
-        </linearGradient>
-        <linearGradient id="gradOut" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
-        </linearGradient>
+        <linearGradient id="gradIn" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#22c55e" stopOpacity="0.4" /><stop offset="100%" stopColor="#22c55e" stopOpacity="0.02" /></linearGradient>
+        <linearGradient id="gradOut" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3b82f6" stopOpacity="0.35" /><stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" /></linearGradient>
+        <clipPath id="dashClip"><rect x={pad.left} y={pad.top} width={cW} height={cH} /></clipPath>
       </defs>
+      {yLabels.map((t, i) => (<g key={i}><line x1={pad.left} y1={t.y} x2={w - pad.right} y2={t.y} stroke="#1e293b" /><text x={pad.left - 5} y={t.y + 3} textAnchor="end" fill="#64748b" fontSize="10" fontFamily="monospace">{t.label}</text></g>))}
+      <g clipPath="url(#dashClip)">
+        <path d={inArea} fill="url(#gradIn)" /><path d={outArea} fill="url(#gradOut)" />
+        <path d={inLine} fill="none" stroke="#22c55e" strokeWidth="2" /><path d={outLine} fill="none" stroke="#3b82f6" strokeWidth="2" />
 
-      {/* Grid lines */}
-      {yLabels.map((t, i) => (
-        <g key={i}>
-          <line x1={pad.left} y1={t.y} x2={w - pad.right} y2={t.y} stroke="#1e293b" strokeWidth="1" />
-          <text x={pad.left - 5} y={t.y + 3} textAnchor="end" fill="#64748b" fontSize="10" fontFamily="monospace">{t.label}</text>
-        </g>
-      ))}
-
-      {/* X-axis labels */}
-      {xLabels.map((t, i) => (
-        <text key={i} x={t.x} y={h - 5} textAnchor="middle" fill="#64748b" fontSize="10" fontFamily="monospace">{t.label}</text>
-      ))}
-
-      {/* Area fills */}
-      <path d={inArea} fill="url(#gradIn)" />
-      <path d={outArea} fill="url(#gradOut)" />
-
-      {/* Lines */}
-      <path d={inLine} fill="none" stroke="#22c55e" strokeWidth="2" strokeLinejoin="round" />
-      <path d={outLine} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinejoin="round" />
-
-      {/* Current value dots */}
-      {inPoints.length > 0 && (
-        <circle cx={inPoints[inPoints.length - 1].x} cy={inPoints[inPoints.length - 1].y} r="3" fill="#22c55e" />
-      )}
-      {outPoints.length > 0 && (
-        <circle cx={outPoints[outPoints.length - 1].x} cy={outPoints[outPoints.length - 1].y} r="3" fill="#3b82f6" />
-      )}
+        <circle cx={inPts[inPts.length - 1].x} cy={inPts[inPts.length - 1].y} r="3" fill="#22c55e" />
+        <circle cx={outPts[outPts.length - 1].x} cy={outPts[outPts.length - 1].y} r="3" fill="#3b82f6" />
+      </g>
     </svg>
   );
 }

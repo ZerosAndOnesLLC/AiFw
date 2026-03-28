@@ -51,6 +51,8 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+const MAX_POINTS = 300; // 5 minutes at 1s
+
 function TrafficChart({ data, height = 200 }: { data: RatePoint[]; height?: number }) {
   if (data.length < 3) {
     return (
@@ -62,12 +64,18 @@ function TrafficChart({ data, height = 200 }: { data: RatePoint[]; height?: numb
       </div>
     );
   }
+
+  // Fixed-width window: each point is always the same pixel width.
+  // New data enters from the right, old data falls off the left.
   const w = 900, h = height;
-  const pad = { top: 10, right: 10, bottom: 25, left: 65 };
+  const pad = { top: 10, right: 10, bottom: 5, left: 60 };
   const cW = w - pad.left - pad.right, cH = h - pad.top - pad.bottom;
+  const pixPerPoint = cW / MAX_POINTS;
   const maxVal = Math.max(...data.map((d) => Math.max(d.bpsIn, d.bpsOut)), 1000);
   const sY = (v: number) => pad.top + cH - (v / maxVal) * cH;
-  const sX = (i: number) => pad.left + (i / (data.length - 1)) * cW;
+
+  // Points are placed from the right edge, each one pixPerPoint apart
+  const startX = pad.left + cW - data.length * pixPerPoint;
 
   const smooth = (pts: { x: number; y: number }[]) => {
     if (pts.length < 2) return "";
@@ -79,29 +87,30 @@ function TrafficChart({ data, height = 200 }: { data: RatePoint[]; height?: numb
     return d;
   };
 
-  const inPts = data.map((d, i) => ({ x: sX(i), y: sY(d.bpsIn) }));
-  const outPts = data.map((d, i) => ({ x: sX(i), y: sY(d.bpsOut) }));
+  const inPts = data.map((d, i) => ({ x: startX + i * pixPerPoint, y: sY(d.bpsIn) }));
+  const outPts = data.map((d, i) => ({ x: startX + i * pixPerPoint, y: sY(d.bpsOut) }));
   const inLine = smooth(inPts), outLine = smooth(outPts);
   const bl = pad.top + cH;
   const inArea = `${inLine} L ${inPts[inPts.length - 1].x},${bl} L ${inPts[0].x},${bl} Z`;
   const outArea = `${outLine} L ${outPts[outPts.length - 1].x},${bl} L ${outPts[0].x},${bl} Z`;
 
-  const yTicks = 5;
+  const yTicks = 4;
   const yLabels = Array.from({ length: yTicks + 1 }, (_, i) => ({ y: sY((maxVal / yTicks) * i), label: formatBps((maxVal / yTicks) * i) }));
-  const xStep = Math.max(1, Math.floor(data.length / 8));
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet">
       <defs>
         <linearGradient id="tgIn" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#22c55e" stopOpacity="0.4" /><stop offset="100%" stopColor="#22c55e" stopOpacity="0.02" /></linearGradient>
         <linearGradient id="tgOut" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3b82f6" stopOpacity="0.35" /><stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" /></linearGradient>
+        <clipPath id="chartClip"><rect x={pad.left} y={pad.top} width={cW} height={cH} /></clipPath>
       </defs>
       {yLabels.map((t, i) => (<g key={i}><line x1={pad.left} y1={t.y} x2={w - pad.right} y2={t.y} stroke="#1e293b" /><text x={pad.left - 5} y={t.y + 3} textAnchor="end" fill="#64748b" fontSize="10" fontFamily="monospace">{t.label}</text></g>))}
-      {data.filter((_, i) => i % xStep === 0).map((d, i) => (<text key={i} x={sX(data.indexOf(d))} y={h - 5} textAnchor="middle" fill="#64748b" fontSize="10" fontFamily="monospace">{formatTime(d.time)}</text>))}
-      <path d={inArea} fill="url(#tgIn)" /><path d={outArea} fill="url(#tgOut)" />
-      <path d={inLine} fill="none" stroke="#22c55e" strokeWidth="2" /><path d={outLine} fill="none" stroke="#3b82f6" strokeWidth="2" />
-      <circle cx={inPts[inPts.length - 1].x} cy={inPts[inPts.length - 1].y} r="3" fill="#22c55e" />
-      <circle cx={outPts[outPts.length - 1].x} cy={outPts[outPts.length - 1].y} r="3" fill="#3b82f6" />
+      <g clipPath="url(#chartClip)">
+        <path d={inArea} fill="url(#tgIn)" /><path d={outArea} fill="url(#tgOut)" />
+        <path d={inLine} fill="none" stroke="#22c55e" strokeWidth="2" /><path d={outLine} fill="none" stroke="#3b82f6" strokeWidth="2" />
+        <circle cx={inPts[inPts.length - 1].x} cy={inPts[inPts.length - 1].y} r="3" fill="#22c55e" />
+        <circle cx={outPts[outPts.length - 1].x} cy={outPts[outPts.length - 1].y} r="3" fill="#3b82f6" />
+      </g>
     </svg>
   );
 }
