@@ -207,24 +207,41 @@ export default function OutboundNatPage() {
             {rules.filter((r) => r.status === "active").length} active
           </p>
         </div>
-        {!showForm && (
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => {
-              setForm({
-                ...defaultForm,
-                interface: interfaces.length > 0 ? interfaces[0].name : "",
-              });
-              setEditingId(null);
-              setShowForm(true);
+            onClick={async () => {
+              try {
+                const token = localStorage.getItem("aifw_token");
+                await fetch("/api/v1/reload", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+                setError(null);
+              } catch { setError("Failed to apply changes"); }
             }}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
-            Add Rule
+            Apply Changes
           </button>
-        )}
+          {!showForm && (
+            <button
+              onClick={() => {
+                setForm({
+                  ...defaultForm,
+                  interface: interfaces.length > 0 ? interfaces[0].name : "",
+                });
+                setEditingId(null);
+                setShowForm(true);
+              }}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              Add Rule
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Error banner */}

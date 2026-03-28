@@ -26,9 +26,10 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
 
-  // Status
+  // Status & Apply
   status: () => fetchApi<StatusResponse>("/api/v1/status"),
   metrics: () => fetchApi<MetricsResponse>("/api/v1/metrics"),
+  applyChanges: () => fetchApi<{ message: string }>("/api/v1/reload", { method: "POST" }),
 
   // Rules
   listRules: () => fetchApi<{ data: Rule[] }>("/api/v1/rules"),
