@@ -1,4 +1,5 @@
 mod auth;
+mod ca;
 mod routes;
 mod ws;
 
@@ -103,6 +104,14 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
 
     // Protected routes (require auth)
     let protected_routes = Router::new()
+        .route("/api/v1/ca", get(ca::get_ca_info).post(ca::generate_ca))
+        .route("/api/v1/ca/cert.pem", get(ca::get_ca_cert_pem))
+        .route("/api/v1/ca/crl", get(ca::get_crl))
+        .route("/api/v1/ca/certs", get(ca::list_certs).post(ca::issue_cert))
+        .route("/api/v1/ca/certs/{id}", get(ca::get_cert).delete(ca::delete_cert))
+        .route("/api/v1/ca/certs/{id}/cert.pem", get(ca::download_cert))
+        .route("/api/v1/ca/certs/{id}/key.pem", get(ca::download_cert_key))
+        .route("/api/v1/ca/certs/{id}/revoke", post(ca::revoke_cert))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/rules/system", get(routes::list_system_rules))
@@ -203,6 +212,7 @@ async fn create_state_from_db(
     vpn_engine.migrate().await?;
     let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
     geoip_engine.migrate().await?;
+    ca::migrate(&pool).await?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     Ok(AppState {
