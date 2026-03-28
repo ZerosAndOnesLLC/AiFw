@@ -49,11 +49,11 @@ const navItems: NavItem[] = [
     icon: "M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2",
     children: [
       { href: "/ca", label: "Certificates" },
+      { href: "/dhcp", label: "DHCP Server" },
+      { href: "/dhcp/subnets", label: "  Subnets" },
+      { href: "/dhcp/reservations", label: "  Reservations" },
+      { href: "/dhcp/leases", label: "  Leases" },
       { href: "/cluster", label: "Cluster / HA" },
-      { href: "/dhcp", label: "DHCP Overview" },
-      { href: "/dhcp/subnets", label: "DHCP Subnets" },
-      { href: "/dhcp/reservations", label: "DHCP Reservations" },
-      { href: "/dhcp/leases", label: "DHCP Leases" },
     ],
   },
 
@@ -195,9 +195,11 @@ export default function Sidebar() {
                     const active = isNicLink
                       ? pathname === "/rules" && typeof window !== "undefined" && window.location.search === `?interface=${nicName}`
                       : isActive(child.href);
+                    const isSubItem = child.label.startsWith("  ");
+                    const displayLabel = child.label.trimStart();
                     return (
                       <Link key={child.href} href={child.href}
-                        className={`flex items-center gap-2 ${isNicLink ? "pl-11" : "pl-8"} pr-4 py-1.5 mx-2 my-px rounded-md ${isNicLink ? "text-xs" : "text-sm"} transition-colors ${
+                        className={`flex items-center gap-2 ${isNicLink ? "pl-11" : isSubItem ? "pl-12" : "pl-8"} pr-4 py-1.5 mx-2 my-px rounded-md ${isNicLink || isSubItem ? "text-xs" : "text-sm"} transition-colors ${
                           active ? "bg-[var(--accent)] text-white" : "text-[var(--text-secondary)] hover:bg-[var(--bg-card)] hover:text-[var(--text-primary)]"
                         }`}>
                         {isNicLink ? (
@@ -205,7 +207,7 @@ export default function Sidebar() {
                         ) : (
                           <span className={`w-1 h-1 rounded-full flex-shrink-0 ${active ? "bg-white" : "bg-current opacity-40"}`} />
                         )}
-                        {child.label}
+                        {displayLabel}
                       </Link>
                     );
                   })}

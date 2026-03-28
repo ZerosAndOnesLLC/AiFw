@@ -20,6 +20,9 @@ pub struct DhcpGlobalConfig {
     pub max_lease_time: u32,
     pub dns_servers: Vec<String>,
     pub domain_name: String,
+    pub domain_search: Vec<String>,  // search domains for Windows/Linux
+    pub ntp_servers: Vec<String>,
+    pub wins_servers: Vec<String>,
     pub next_server: Option<String>,
     pub boot_filename: Option<String>,
 }
@@ -34,6 +37,9 @@ impl Default for DhcpGlobalConfig {
             max_lease_time: 86400,
             dns_servers: vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()],
             domain_name: "local".to_string(),
+            domain_search: vec![],
+            ntp_servers: vec![],
+            wins_servers: vec![],
             next_server: None,
             boot_filename: None,
         }
@@ -177,6 +183,9 @@ async fn load_global_config(pool: &SqlitePool) -> DhcpGlobalConfig {
             "max_lease_time" => config.max_lease_time = value.parse().unwrap_or(86400),
             "dns_servers" => config.dns_servers = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             "domain_name" => config.domain_name = value,
+            "domain_search" => config.domain_search = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "ntp_servers" => config.ntp_servers = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "wins_servers" => config.wins_servers = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             "next_server" => config.next_server = if value.is_empty() { None } else { Some(value) },
             "boot_filename" => config.boot_filename = if value.is_empty() { None } else { Some(value) },
             _ => {}
@@ -253,7 +262,7 @@ async fn generate_kea_config(pool: &SqlitePool) -> String {
     "max-valid-lifetime": {},
     "option-data": [
       {{ "name": "domain-name-servers", "data": "{}" }},
-      {{ "name": "domain-name", "data": "{}" }}
+      {{ "name": "domain-name", "data": "{}" }}{}{}{}
     ],
     "subnet4": [
 {}
@@ -271,6 +280,18 @@ async fn generate_kea_config(pool: &SqlitePool) -> String {
         config.max_lease_time,
         dns_json.join(",").replace('"', ""),
         config.domain_name,
+        // Domain search list
+        if config.domain_search.is_empty() { String::new() } else {
+            format!(",\n      {{ \"name\": \"domain-search\", \"data\": \"{}\" }}", config.domain_search.join(","))
+        },
+        // NTP servers
+        if config.ntp_servers.is_empty() { String::new() } else {
+            format!(",\n      {{ \"code\": 42, \"data\": \"{}\", \"space\": \"dhcp4\" }}", config.ntp_servers.join(","))
+        },
+        // WINS/NetBIOS name servers
+        if config.wins_servers.is_empty() { String::new() } else {
+            format!(",\n      {{ \"code\": 44, \"data\": \"{}\", \"space\": \"dhcp4\" }}", config.wins_servers.join(","))
+        },
         subnet_entries.join(",\n"),
     )
 }
@@ -335,19 +356,34 @@ pub async fn dhcp_status(
 
 // --- Service control ---
 
+async fn run_kea_service(action: &str) -> Json<MessageResponse> {
+    let output = Command::new("sudo").args(["service", "kea", action])
+        .output().await;
+    match output {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            let msg = if o.status.success() {
+                format!("DHCP server {}: {}", action, stdout.trim())
+            } else {
+                format!("DHCP {} failed: {} {}", action, stdout.trim(), stderr.trim())
+            };
+            Json(MessageResponse { message: msg })
+        }
+        Err(e) => Json(MessageResponse { message: format!("Failed to {} DHCP: {}", action, e) }),
+    }
+}
+
 pub async fn dhcp_start() -> Result<Json<MessageResponse>, StatusCode> {
-    let _ = Command::new("sudo").args(["service", "kea", "start"]).output().await;
-    Ok(Json(MessageResponse { message: "DHCP server started".to_string() }))
+    Ok(run_kea_service("start").await)
 }
 
 pub async fn dhcp_stop() -> Result<Json<MessageResponse>, StatusCode> {
-    let _ = Command::new("sudo").args(["service", "kea", "stop"]).output().await;
-    Ok(Json(MessageResponse { message: "DHCP server stopped".to_string() }))
+    Ok(run_kea_service("stop").await)
 }
 
 pub async fn dhcp_restart() -> Result<Json<MessageResponse>, StatusCode> {
-    let _ = Command::new("sudo").args(["service", "kea", "restart"]).output().await;
-    Ok(Json(MessageResponse { message: "DHCP server restarted".to_string() }))
+    Ok(run_kea_service("restart").await)
 }
 
 // --- Global config ---
@@ -369,6 +405,9 @@ pub async fn update_config(
     save_config_key(&state.pool, "max_lease_time", &config.max_lease_time.to_string()).await;
     save_config_key(&state.pool, "dns_servers", &config.dns_servers.join(",")).await;
     save_config_key(&state.pool, "domain_name", &config.domain_name).await;
+    save_config_key(&state.pool, "domain_search", &config.domain_search.join(",")).await;
+    save_config_key(&state.pool, "ntp_servers", &config.ntp_servers.join(",")).await;
+    save_config_key(&state.pool, "wins_servers", &config.wins_servers.join(",")).await;
     save_config_key(&state.pool, "next_server", config.next_server.as_deref().unwrap_or("")).await;
     save_config_key(&state.pool, "boot_filename", config.boot_filename.as_deref().unwrap_or("")).await;
     Ok(Json(MessageResponse { message: "DHCP config updated".to_string() }))
@@ -512,7 +551,13 @@ pub async fn apply_config(
     // Write config
     let config_path = "/usr/local/etc/kea/kea-dhcp4.conf";
     let _ = tokio::fs::create_dir_all("/usr/local/etc/kea").await;
+    let _ = tokio::fs::create_dir_all("/var/db/kea").await;
+    let _ = tokio::fs::create_dir_all("/etc/kea").await;
     tokio::fs::write(config_path, &kea_json).await.map_err(|_| internal())?;
+
+    // Ensure keactrl only runs dhcp4 (not ctrl-agent which needs a password file)
+    let keactrl_conf = "dhcp4=yes\ndhcp6=no\ndhcp_ddns=no\nctrl_agent=no\nkea_verbose=no\n";
+    let _ = tokio::fs::write("/usr/local/etc/kea/keactrl.conf", keactrl_conf).await;
 
     if config.enabled {
         let _ = Command::new("sudo").args(["sysrc", "kea_enable=YES"]).output().await;
