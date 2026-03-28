@@ -190,14 +190,25 @@ export default function TrafficPage() {
     }, []).sort((a, b) => b.bytes - a.bytes).slice(0, 10);
   const maxTB = topTalkers[0]?.bytes || 1;
 
-  // Top ports
+  // Top ports — group by port+protocol
+  const portNames: Record<number, string> = {
+    20: "ftp-data", 21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns",
+    67: "dhcp", 68: "dhcp", 80: "http", 110: "pop3", 123: "ntp", 143: "imap",
+    161: "snmp", 443: "https", 445: "smb", 465: "smtps", 514: "syslog",
+    587: "submission", 636: "ldaps", 853: "dot", 993: "imaps", 995: "pop3s",
+    1194: "openvpn", 1433: "mssql", 1723: "pptp", 3306: "mysql", 3389: "rdp",
+    5060: "sip", 5432: "postgres", 5900: "vnc", 6379: "redis", 8080: "http-alt",
+    8443: "https-alt", 8888: "http-alt", 9200: "elasticsearch", 27017: "mongodb",
+    51820: "wireguard",
+  };
   const topPorts = connections
-    .reduce<{ port: number; conns: number }[]>((acc, c) => {
-      const existing = acc.find((p) => p.port === c.dst_port);
+    .reduce<{ port: number; proto: string; conns: number }[]>((acc, c) => {
+      const key = `${c.dst_port}-${c.protocol}`;
+      const existing = acc.find((p) => `${p.port}-${p.proto}` === key);
       if (existing) existing.conns++;
-      else acc.push({ port: c.dst_port, conns: 1 });
+      else acc.push({ port: c.dst_port, proto: c.protocol, conns: 1 });
       return acc;
-    }, []).sort((a, b) => b.conns - a.conns).slice(0, 10);
+    }, []).sort((a, b) => b.conns - a.conns).slice(0, 15);
   const maxPC = topPorts[0]?.conns || 1;
 
   return (
@@ -283,17 +294,20 @@ export default function TrafficPage() {
             <div className="text-center py-8 text-[var(--text-muted)] text-sm">No data</div>
           ) : (
             <div className="divide-y divide-[var(--border)]">
-              {topPorts.map((p, i) => (
-                <div key={p.port} className="px-4 py-2 hover:bg-[var(--bg-card-hover)]">
-                  <div className="flex justify-between mb-1">
-                    <span className="font-mono text-xs text-cyan-400">{i + 1}. Port {p.port}</span>
-                    <span className="text-xs text-[var(--text-secondary)]">{p.conns} connections</span>
-                  </div>
-                  <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              {topPorts.map((p) => {
+                const svcName = portNames[p.port];
+                const protoColor = p.proto === "tcp" ? "text-blue-400" : p.proto === "udp" ? "text-purple-400" : "text-gray-400";
+                return (
+                <div key={`${p.port}-${p.proto}`} className="px-3 py-1.5 hover:bg-[var(--bg-card-hover)] flex items-center gap-2">
+                  <span className={`uppercase text-[10px] font-bold w-7 ${protoColor}`}>{p.proto}</span>
+                  <span className="font-mono text-xs text-cyan-400 w-12 text-right">{p.port}</span>
+                  {svcName && <span className="text-[10px] text-[var(--text-muted)] w-16 truncate">{svcName}</span>}
+                  <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
                     <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${(p.conns / maxPC) * 100}%` }} />
                   </div>
-                </div>
-              ))}
+                  <span className="text-[10px] text-[var(--text-secondary)] w-8 text-right">{p.conns}</span>
+                </div>);
+              })}
             </div>
           )}
         </div>
