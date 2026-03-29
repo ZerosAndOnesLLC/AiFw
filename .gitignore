@@ -28,3 +28,6 @@ node_modules/
 # FreeBSD build artifacts
 freebsd/release/
 freebsd/ui-export/
+
+# Project instructions
+CLAUDE.md
