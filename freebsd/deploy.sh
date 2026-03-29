@@ -7,6 +7,7 @@ set -e
 
 REPO_DIR="/root/AiFw"
 BINS="aifw aifw-api aifw-daemon aifw-setup aifw-tui"
+TRAFFICCOP_DIR="/root/trafficcop"
 BIN_DIR="/usr/local/sbin"
 UI_DIR="/usr/local/share/aifw/ui"
 
@@ -55,6 +56,21 @@ echo ""
 # --- Build Rust ---
 echo "[2/5] Building Rust (release)..."
 cargo build --release 2>&1 | tail -3
+
+# Build TrafficCop if source available
+if [ -d "$TRAFFICCOP_DIR" ]; then
+    echo "  Building TrafficCop..."
+    cd "$TRAFFICCOP_DIR"
+    git pull 2>/dev/null || true
+    cargo build --release 2>&1 | tail -3
+    cd "$REPO_DIR"
+elif [ ! -f "$BIN_DIR/trafficcop" ]; then
+    echo "  Cloning TrafficCop..."
+    git clone https://github.com/ZerosAndOnesLLC/TrafficCop.git "$TRAFFICCOP_DIR"
+    cd "$TRAFFICCOP_DIR"
+    cargo build --release 2>&1 | tail -3
+    cd "$REPO_DIR"
+fi
 echo ""
 
 # --- Build UI ---
@@ -76,6 +92,11 @@ for bin in $BINS; do
     cp "target/release/$bin" "$BIN_DIR/$bin"
     chmod 755 "$BIN_DIR/$bin"
 done
+# Copy TrafficCop binary
+if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
+    cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$BIN_DIR/trafficcop"
+    chmod 755 "$BIN_DIR/trafficcop"
+fi
 echo "  Binaries installed to $BIN_DIR"
 
 # Copy UI
@@ -85,14 +106,25 @@ echo "  UI deployed to $UI_DIR"
 # Ensure permissions
 chown -R aifw:aifw /var/db/aifw 2>/dev/null || true
 chown -R aifw:aifw /var/log/aifw 2>/dev/null || true
+mkdir -p /var/log/trafficcop
+chown -R aifw:aifw /var/log/trafficcop 2>/dev/null || true
+mkdir -p /usr/local/etc/trafficcop
+chown -R aifw:aifw /usr/local/etc/trafficcop 2>/dev/null || true
+
+# Install TrafficCop default config if not present
+if [ ! -f /usr/local/etc/trafficcop/config.yaml ]; then
+    cp "$REPO_DIR/freebsd/overlay/usr/local/etc/trafficcop/config.yaml" /usr/local/etc/trafficcop/config.yaml
+    chown aifw:aifw /usr/local/etc/trafficcop/config.yaml
+fi
+
+# Install TrafficCop rc.d script
+cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/trafficcop" /usr/local/etc/rc.d/trafficcop
+chmod 755 /usr/local/etc/rc.d/trafficcop
 
 # Ensure sudoers for pfctl
-if [ ! -f /usr/local/etc/sudoers.d/aifw ]; then
-    mkdir -p /usr/local/etc/sudoers.d
-    echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl' > /usr/local/etc/sudoers.d/aifw
-    chmod 440 /usr/local/etc/sudoers.d/aifw
-    echo "  Sudoers configured"
-fi
+mkdir -p /usr/local/etc/sudoers.d
+echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /usr/sbin/service, /usr/sbin/sysrc, /usr/sbin/pkg, /usr/sbin/freebsd-update, /sbin/shutdown, /usr/bin/tee' > /usr/local/etc/sudoers.d/aifw
+chmod 440 /usr/local/etc/sudoers.d/aifw
 
 echo ""
 
