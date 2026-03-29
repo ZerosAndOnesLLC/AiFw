@@ -534,21 +534,12 @@ pub async fn apply_resolver(
     let config = load_config(&state.pool).await;
     let conf = generate_unbound_conf(&state.pool).await;
 
-    let conf_path = "/var/unbound/unbound.conf";
-    // Write config via sudo tee (aifw user may not own /var/unbound)
-    let mut child = Command::new("sudo")
-        .args(["tee", conf_path])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| internal())?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(conf.as_bytes()).await;
-    }
-    let _ = child.wait().await;
-    // Ensure unbound owns its directory
-    let _ = Command::new("sudo").args(["chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
+    // Write config via shell pipe to sudo tee
+    let tmp_path = "/tmp/aifw_unbound.conf";
+    tokio::fs::write(tmp_path, &conf).await.map_err(|_| internal())?;
+    let _ = Command::new("sh").args(["-c", "cat /tmp/aifw_unbound.conf | sudo /usr/bin/tee /var/unbound/unbound.conf > /dev/null"]).output().await;
+    let _ = tokio::fs::remove_file(tmp_path).await;
+    let _ = Command::new("sudo").args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
 
     if config.enabled {
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=YES"]).output().await;

@@ -234,12 +234,21 @@ export default function DnsResolverPage() {
   const applyConfig = async () => {
     setApplying(true);
     try {
+      // Save config first, then apply
+      const saveRes = await fetch("/api/v1/dns/resolver/config", {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify(config),
+      });
+      if (!saveRes.ok) throw new Error(`Save failed: HTTP ${saveRes.status}`);
+
       const res = await fetch("/api/v1/dns/resolver/apply", {
         method: "POST",
         headers: authHeaders(),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showFeedback("success", "Configuration applied and service restarted");
+      if (!res.ok) throw new Error(`Apply failed: HTTP ${res.status}`);
+      const data = await res.json().catch(() => ({ message: "" }));
+      showFeedback("success", data.message || "Configuration applied and service restarted");
       await fetchStatus();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to apply config");
@@ -248,13 +257,28 @@ export default function DnsResolverPage() {
     }
   };
 
+  const isAllInterfaces = config.listen_interfaces.length === 0 ||
+    (config.listen_interfaces.length === 1 && config.listen_interfaces[0] === "0.0.0.0");
+
   const toggleInterface = (name: string) => {
-    setConfig((prev) => ({
-      ...prev,
-      listen_interfaces: prev.listen_interfaces.includes(name)
-        ? prev.listen_interfaces.filter((i) => i !== name)
-        : [...prev.listen_interfaces, name],
-    }));
+    if (name === "__all__") {
+      // Toggle "All" — set to 0.0.0.0 (listen on everything) or clear
+      setConfig((prev) => ({
+        ...prev,
+        listen_interfaces: isAllInterfaces ? [] : ["0.0.0.0"],
+      }));
+      return;
+    }
+    // When selecting a specific interface, remove the "all" wildcard
+    setConfig((prev) => {
+      const filtered = prev.listen_interfaces.filter((i) => i !== "0.0.0.0");
+      return {
+        ...prev,
+        listen_interfaces: filtered.includes(name)
+          ? filtered.filter((i) => i !== name)
+          : [...filtered, name],
+      };
+    });
   };
 
   /* -- List helpers ------------------------------------------------- */
@@ -369,8 +393,12 @@ export default function DnsResolverPage() {
         <div className="flex gap-3">
           <button
             onClick={() => serviceAction("start")}
-            disabled={!!actionLoading}
-            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
+            disabled={!!actionLoading || !!status?.running}
+            className={`px-4 py-2 text-white text-sm rounded-md flex items-center gap-2 ${
+              status?.running
+                ? "bg-green-600/30 text-green-400/50 cursor-not-allowed"
+                : "bg-green-600 hover:bg-green-700 disabled:opacity-50"
+            }`}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -380,8 +408,12 @@ export default function DnsResolverPage() {
           </button>
           <button
             onClick={() => serviceAction("stop")}
-            disabled={!!actionLoading}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
+            disabled={!!actionLoading || !status?.running}
+            className={`px-4 py-2 text-white text-sm rounded-md flex items-center gap-2 ${
+              !status?.running
+                ? "bg-red-600/30 text-red-400/50 cursor-not-allowed"
+                : "bg-red-600 hover:bg-red-700 disabled:opacity-50"
+            }`}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -391,8 +423,12 @@ export default function DnsResolverPage() {
           </button>
           <button
             onClick={() => serviceAction("restart")}
-            disabled={!!actionLoading}
-            className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
+            disabled={!!actionLoading || !status?.running}
+            className={`px-4 py-2 text-white text-sm rounded-md flex items-center gap-2 ${
+              !status?.running
+                ? "bg-yellow-600/30 text-yellow-400/50 cursor-not-allowed"
+                : "bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50"
+            }`}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -458,28 +494,40 @@ export default function DnsResolverPage() {
                 <label className="block text-xs text-[var(--text-muted)] mb-1.5">
                   Listen Interfaces
                 </label>
-                {interfaces.length === 0 ? (
-                  <p className="text-xs text-[var(--text-muted)]">No interfaces available</p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {interfaces.map((iface) => {
-                      const selected = config.listen_interfaces.includes(iface);
-                      return (
-                        <button
-                          key={iface}
-                          onClick={() => toggleInterface(iface)}
-                          className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${
-                            selected
-                              ? "bg-blue-600/20 border-blue-500/40 text-blue-400"
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => toggleInterface("__all__")}
+                    className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${
+                      isAllInterfaces
+                        ? "bg-blue-600/20 border-blue-500/40 text-blue-400"
+                        : "bg-gray-900 border-gray-700 text-[var(--text-secondary)] hover:border-gray-500"
+                    }`}
+                  >
+                    All
+                  </button>
+                  {interfaces.map((iface) => {
+                    const selected = !isAllInterfaces && config.listen_interfaces.includes(iface);
+                    return (
+                      <button
+                        key={iface}
+                        onClick={() => toggleInterface(iface)}
+                        className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${
+                          selected
+                            ? "bg-blue-600/20 border-blue-500/40 text-blue-400"
+                            : isAllInterfaces
+                              ? "bg-gray-900 border-gray-700 text-[var(--text-muted)] opacity-50 cursor-not-allowed"
                               : "bg-gray-900 border-gray-700 text-[var(--text-secondary)] hover:border-gray-500"
-                          }`}
-                        >
-                          {iface}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                        }`}
+                        disabled={isAllInterfaces}
+                      >
+                        {iface}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-[var(--text-muted)] mt-1">
+                  {isAllInterfaces ? "Listening on all interfaces (0.0.0.0)" : `Listening on ${config.listen_interfaces.length} selected interface(s)`}
+                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
