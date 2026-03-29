@@ -38,6 +38,10 @@ pub struct ResolverConfig {
     pub hide_version: bool,
     pub rebind_protection: bool,
     pub private_addresses: Vec<String>,
+    // Forwarding
+    pub forwarding_enabled: bool,
+    pub forwarding_servers: Vec<String>,   // plain upstream DNS IPs (e.g. "8.8.8.8", "1.1.1.1")
+    pub use_system_nameservers: bool,      // also forward to /etc/resolv.conf nameservers
     // DoT
     pub dot_enabled: bool,
     pub dot_upstream: Vec<String>,  // "1.1.1.1@853#cloudflare-dns.com"
@@ -81,6 +85,9 @@ impl Default for ResolverConfig {
                 "10.0.0.0/8".into(), "172.16.0.0/12".into(), "192.168.0.0/16".into(),
                 "169.254.0.0/16".into(), "fd00::/8".into(), "fe80::/10".into(),
             ],
+            forwarding_enabled: false,
+            forwarding_servers: vec![],
+            use_system_nameservers: false,
             dot_enabled: false,
             dot_upstream: vec![
                 "1.1.1.1@853#cloudflare-dns.com".into(),
@@ -373,6 +380,32 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
             zone.push_str(&format!("    forward-addr: {}\n", upstream));
         }
         forward_zones.push(zone);
+    } else if c.forwarding_enabled {
+        // Plain DNS forwarding
+        let mut addrs: Vec<String> = c.forwarding_servers.iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
+        if c.use_system_nameservers {
+            if let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf") {
+                for line in resolv.lines() {
+                    let line = line.trim();
+                    if let Some(ns) = line.strip_prefix("nameserver") {
+                        let ns = ns.trim();
+                        if ns != "127.0.0.1" && ns != "::1" && !addrs.contains(&ns.to_string()) {
+                            addrs.push(ns.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if !addrs.is_empty() {
+            let mut zone = String::from("forward-zone:\n    name: \".\"\n    forward-first: yes\n");
+            for addr in &addrs {
+                zone.push_str(&format!("    forward-addr: {}\n", addr));
+            }
+            forward_zones.push(zone);
+        }
     }
 
     for (domain, server) in &domains {

@@ -53,6 +53,7 @@ const navItems: NavItem[] = [
       { href: "/ca", label: "Certificates" },
       { href: "/dns", label: "DNS Resolver" },
       { href: "/dns/hosts", label: "  Host Overrides" },
+      { href: "/dns/forwarding", label: "  Query Forwarding" },
       { href: "/dns/domains", label: "  Domain Overrides" },
       { href: "/dns/acls", label: "  Access Lists" },
       { href: "/dns/logs", label: "  Query Log" },
@@ -254,7 +255,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
           </svg>
           Logout
         </button>
-        <div className="text-[10px] text-[var(--text-muted)] px-2 pt-1">v5.0.2 &middot; MIT</div>
+        <div className="text-[10px] text-[var(--text-muted)] px-2 pt-1">v5.1.0 &middot; MIT</div>
       </div>
     </aside>
   );
