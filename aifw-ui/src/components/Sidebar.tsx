@@ -71,7 +71,7 @@ const navItems: NavItem[] = [
       { href: "/reverse-proxy/tcp", label: "  TCP" },
       { href: "/reverse-proxy/udp", label: "  UDP" },
       { href: "/reverse-proxy/tls", label: "  TLS / Certificates" },
-      { href: "/reverse-proxy/logs", label: "  Access Log" },
+      { href: "/reverse-proxy/logs", label: "  Logs" },
     ],
   },
 

@@ -305,6 +305,7 @@ pub struct CertResolverReq {
 pub struct LogParams {
     pub lines: Option<usize>,
     pub search: Option<String>,
+    pub log_type: Option<String>, // "access" (default) or "server"
 }
 
 // ============================================================
@@ -1240,20 +1241,18 @@ pub async fn rp_logs(
 ) -> Result<Json<Vec<String>>, StatusCode> {
     let lines_param = params.lines.unwrap_or(200);
     let search = params.search.clone().unwrap_or_default();
+    let log_type = params.log_type.clone().unwrap_or_else(|| "access".to_string());
 
-    let log_paths = [
-        "/var/log/trafficcop/access.log",
-        "/var/log/trafficcop/trafficcop.log",
-        "/usr/local/var/log/trafficcop/access.log",
-    ];
+    let log_path = if log_type == "server" {
+        "/var/log/trafficcop/trafficcop.log"
+    } else {
+        "/var/log/trafficcop/access.log"
+    };
 
     let mut content = String::new();
-    for path in &log_paths {
-        if let Ok(output) = Command::new("sudo").args(["/bin/cat", path]).output().await {
-            if output.status.success() {
-                content = String::from_utf8_lossy(&output.stdout).to_string();
-                break;
-            }
+    if let Ok(output) = Command::new("sudo").args(["/bin/cat", log_path]).output().await {
+        if output.status.success() {
+            content = String::from_utf8_lossy(&output.stdout).to_string();
         }
     }
 

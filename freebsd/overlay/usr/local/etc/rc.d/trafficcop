@@ -36,7 +36,7 @@ trafficcop_start()
     fi
 
     echo "Starting ${name}."
-    /usr/sbin/daemon -p ${pidfile} -u aifw ${command} ${command_args}
+    /usr/sbin/daemon -p ${pidfile} -o /var/log/trafficcop/trafficcop.log -u aifw ${command} ${command_args}
 }
 
 trafficcop_stop()
