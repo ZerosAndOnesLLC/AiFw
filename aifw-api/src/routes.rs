@@ -828,6 +828,7 @@ pub async fn create_rule(
     rule.schedule_id = req.schedule_id;
 
     let rule = state.rule_engine.add_rule(rule).await.map_err(|_| bad_request())?;
+    state.pending.write().await.firewall = true;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
 
@@ -886,6 +887,7 @@ pub async fn update_rule(
     rule.updated_at = chrono::Utc::now();
 
     state.rule_engine.update_rule(rule.clone()).await.map_err(|_| internal())?;
+    state.pending.write().await.firewall = true;
     Ok(Json(ApiResponse { data: rule }))
 }
 
@@ -895,6 +897,7 @@ pub async fn delete_rule(
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     state.rule_engine.delete_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    state.pending.write().await.firewall = true;
     Ok(Json(MessageResponse { message: format!("Rule {id} deleted") }))
 }
 
@@ -944,6 +947,7 @@ pub async fn create_nat_rule(
     rule.label = req.label;
 
     let rule = state.nat_engine.add_rule(rule).await.map_err(|_| bad_request())?;
+    state.pending.write().await.nat = true;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
 
@@ -981,6 +985,7 @@ pub async fn update_nat_rule(
     rule.updated_at = chrono::Utc::now();
 
     state.nat_engine.update_rule(&rule).await.map_err(|_| internal())?;
+    state.pending.write().await.nat = true;
     Ok(Json(ApiResponse { data: rule }))
 }
 
@@ -990,6 +995,7 @@ pub async fn delete_nat_rule(
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     state.nat_engine.delete_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    state.pending.write().await.nat = true;
     Ok(Json(MessageResponse { message: format!("NAT rule {id} deleted") }))
 }
 
@@ -1027,7 +1033,14 @@ pub async fn list_connections(
     Ok(Json(ApiResponse { data: connections }))
 }
 
-// --- Reload ---
+// --- Pending / Reload ---
+
+pub async fn get_pending(
+    State(state): State<AppState>,
+) -> Result<Json<crate::PendingChanges>, StatusCode> {
+    let pending = state.pending.read().await.clone();
+    Ok(Json(pending))
+}
 
 pub async fn reload(
     State(state): State<AppState>,
@@ -1041,8 +1054,14 @@ pub async fn reload(
         tracing::error!("Failed to apply NAT rules: {e}");
         errors.push(format!("nat: {e}"));
     }
+    // Clear pending flags for firewall and NAT
+    {
+        let mut p = state.pending.write().await;
+        p.firewall = false;
+        p.nat = false;
+    }
     if errors.is_empty() {
-        Ok(Json(MessageResponse { message: "Rules reloaded".to_string() }))
+        Ok(Json(MessageResponse { message: "Changes applied successfully".to_string() }))
     } else {
         Ok(Json(MessageResponse { message: format!("Partial reload: {}", errors.join("; ")) }))
     }
@@ -1119,6 +1138,7 @@ pub async fn reorder_rules(
         rule.updated_at = chrono::Utc::now();
         state.rule_engine.update_rule(rule).await.map_err(|_| internal())?;
     }
+    state.pending.write().await.firewall = true;
     Ok(Json(MessageResponse { message: format!("{} rules reordered", req.rule_ids.len()) }))
 }
 
@@ -1135,6 +1155,7 @@ pub async fn reorder_nat_rules(
             .execute(&state.pool)
             .await;
     }
+    state.pending.write().await.nat = true;
     Ok(Json(MessageResponse { message: format!("{} NAT rules reordered", req.rule_ids.len()) }))
 }
 

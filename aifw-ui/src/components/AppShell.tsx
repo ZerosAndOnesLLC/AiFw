@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect, useRef, useCallback } from "react";
 import AuthGuard from "./AuthGuard";
 import Sidebar from "./Sidebar";
+import PendingBanner from "./PendingBanner";
 import { WsProvider } from "@/context/WsContext";
 
 const PUBLIC_PATHS = ["/login", "/login/"];
@@ -123,6 +124,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   <span className="font-semibold text-sm">AiFw</span>
                 </div>
               </div>
+              <PendingBanner />
               <div className="p-4 lg:p-6 overflow-auto">
                 {children}
               </div>

@@ -525,6 +525,7 @@ pub async fn update_config_handler(
     save_key(pool, "blocklist_action", &c.blocklist_action).await;
     save_key(pool, "blocklist_redirect_ip", c.blocklist_redirect_ip.as_deref().unwrap_or("")).await;
     save_key(pool, "custom_options", &c.custom_options).await;
+    state.pending.write().await.dns = true;
     Ok(Json(MessageResponse { message: "DNS resolver config saved".to_string() }))
 }
 
@@ -548,6 +549,7 @@ pub async fn apply_resolver(
             Ok(o) => {
                 let msg = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
                 if o.status.success() {
+                    state.pending.write().await.dns = false;
                     Ok(Json(MessageResponse { message: "DNS resolver config applied and restarted".to_string() }))
                 } else {
                     Ok(Json(MessageResponse { message: format!("DNS restart issue: {}", msg.trim()) }))
@@ -558,6 +560,7 @@ pub async fn apply_resolver(
     } else {
         let _ = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "stop"]).output().await;
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=NO"]).output().await;
+        state.pending.write().await.dns = false;
         Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
     }
 }

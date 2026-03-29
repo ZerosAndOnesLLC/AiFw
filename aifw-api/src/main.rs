@@ -45,6 +45,14 @@ pub struct AppState {
     pub auth_settings: auth::AuthSettings,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
     pub redis: Option<redis::aio::ConnectionManager>,
+    pub pending: Arc<RwLock<PendingChanges>>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PendingChanges {
+    pub firewall: bool,
+    pub nat: bool,
+    pub dns: bool,
 }
 
 #[derive(Parser)]
@@ -187,6 +195,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/vpn/wg/{tid}/peers/{pid}", delete(routes::delete_wg_peer))
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas).post(routes::create_ipsec_sa))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
+        .route("/api/v1/pending", get(routes::get_pending))
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/connections", get(routes::list_connections))
         .route("/api/v1/reload", post(routes::reload))
@@ -282,6 +291,7 @@ async fn create_state_from_db(
         auth_settings,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(METRICS_HISTORY_SIZE))),
         redis: None,
+        pending: Arc::new(RwLock::new(PendingChanges::default())),
     })
 }
 

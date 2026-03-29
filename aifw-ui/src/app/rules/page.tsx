@@ -395,20 +395,6 @@ export default function RulesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {pendingChanges && (
-            <button
-              onClick={async () => {
-                try { await api.applyChanges(); setPendingChanges(false); setError(null); }
-                catch { setError("Failed to apply changes"); }
-              }}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors animate-pulse"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-              Apply Changes
-            </button>
-          )}
           <button
             onClick={() => {
               setForm(defaultForm);
