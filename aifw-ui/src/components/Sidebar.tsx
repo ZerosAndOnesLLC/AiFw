@@ -51,6 +51,11 @@ const navItems: NavItem[] = [
     icon: "M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2",
     children: [
       { href: "/ca", label: "Certificates" },
+      { href: "/dns", label: "DNS Resolver" },
+      { href: "/dns/hosts", label: "  Host Overrides" },
+      { href: "/dns/domains", label: "  Domain Overrides" },
+      { href: "/dns/acls", label: "  Access Lists" },
+      { href: "/dns/logs", label: "  Query Log" },
       { href: "/dhcp", label: "DHCP Server" },
       { href: "/dhcp/subnets", label: "  Subnets" },
       { href: "/dhcp/reservations", label: "  Reservations" },
@@ -83,7 +88,7 @@ const navItems: NavItem[] = [
   },
 ];
 
-export default function Sidebar({ onClose }: { onClose?: () => void }) {
+export default function Sidebar({ onClose, width }: { onClose?: () => void; width?: number }) {
   const pathname = usePathname();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     Firewall: true,
@@ -138,7 +143,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
     }) ?? false;
 
   return (
-    <aside className="w-56 h-screen bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col">
+    <aside className="h-screen bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col" style={{ width: width || 224 }}>
       <div className="p-4 border-b border-[var(--border)] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-[var(--accent)] flex items-center justify-center font-bold text-white text-sm">

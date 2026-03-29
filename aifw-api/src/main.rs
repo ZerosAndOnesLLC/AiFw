@@ -1,6 +1,7 @@
 mod auth;
 mod ca;
 mod dhcp;
+mod dns_resolver;
 mod iface;
 mod routes;
 mod updates;
@@ -128,6 +129,19 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/dhcp/v4/leases/{ip}", delete(dhcp::release_lease))
         .route("/api/v1/dhcp/v4/apply", post(dhcp::apply_config))
         .route("/api/v1/dhcp/logs", get(dhcp::dhcp_logs))
+        .route("/api/v1/dns/resolver/status", get(dns_resolver::resolver_status))
+        .route("/api/v1/dns/resolver/config", get(dns_resolver::get_config_handler).put(dns_resolver::update_config_handler))
+        .route("/api/v1/dns/resolver/apply", post(dns_resolver::apply_resolver))
+        .route("/api/v1/dns/resolver/start", post(dns_resolver::resolver_start))
+        .route("/api/v1/dns/resolver/stop", post(dns_resolver::resolver_stop))
+        .route("/api/v1/dns/resolver/restart", post(dns_resolver::resolver_restart))
+        .route("/api/v1/dns/resolver/hosts", get(dns_resolver::list_hosts).post(dns_resolver::create_host))
+        .route("/api/v1/dns/resolver/hosts/{id}", put(dns_resolver::update_host).delete(dns_resolver::delete_host))
+        .route("/api/v1/dns/resolver/domains", get(dns_resolver::list_domains).post(dns_resolver::create_domain))
+        .route("/api/v1/dns/resolver/domains/{id}", put(dns_resolver::update_domain).delete(dns_resolver::delete_domain))
+        .route("/api/v1/dns/resolver/acls", get(dns_resolver::list_acls).post(dns_resolver::create_acl))
+        .route("/api/v1/dns/resolver/acls/{id}", delete(dns_resolver::delete_acl))
+        .route("/api/v1/dns/resolver/logs", get(dns_resolver::resolver_logs))
         .route("/api/v1/updates/status", get(updates::update_status))
         .route("/api/v1/updates/check", post(updates::check_updates))
         .route("/api/v1/updates/install", post(updates::install_updates))
@@ -245,6 +259,7 @@ async fn create_state_from_db(
     dhcp::migrate(&pool).await?;
     updates::migrate(&pool).await?;
     iface::migrate(&pool).await?;
+    dns_resolver::migrate(&pool).await?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     Ok(AppState {
