@@ -38,8 +38,28 @@ for f in "$ISO" "$IMG" "$ISO_SHA" "$IMG_SHA"; do
     [ -f "$f" ] || die "Missing: $f — run build-local.sh first"
 done
 
+# --- Compress large files for GitHub (2GB limit) ---
+ISO_UPLOAD="$ISO"
+IMG_UPLOAD="$IMG"
+ISO_SHA_UPLOAD="$ISO_SHA"
+IMG_SHA_UPLOAD="$IMG_SHA"
+
+# Compress IMG with xz if over 1.5GB (GitHub limit is 2GB)
+IMG_SIZE_MB=$(du -m "$IMG" | awk '{print $1}')
+if [ "$IMG_SIZE_MB" -gt 1500 ]; then
+    XZ_IMG="${IMG}.xz"
+    if [ ! -f "$XZ_IMG" ] || [ "$IMG" -nt "$XZ_IMG" ]; then
+        echo "Compressing IMG (${IMG_SIZE_MB}MB) with xz..."
+        xz -k -9 -T0 "$IMG"
+    fi
+    IMG_UPLOAD="$XZ_IMG"
+    # Generate checksum for compressed file
+    IMG_SHA_UPLOAD="${XZ_IMG}.sha256"
+    sha256 "$XZ_IMG" > "$IMG_SHA_UPLOAD"
+fi
+
 echo "Artifacts:"
-ls -lh "$ISO" "$IMG"
+ls -lh "$ISO_UPLOAD" "$IMG_UPLOAD"
 echo ""
 
 # --- Create git tag if it doesn't exist ---
@@ -56,6 +76,18 @@ fi
 echo ""
 echo "Creating GitHub release ${TAG}..."
 
+IMG_BASENAME="$(basename "$IMG_UPLOAD")"
+ISO_BASENAME="$(basename "$ISO_UPLOAD")"
+DECOMPRESS_NOTE=""
+if echo "$IMG_BASENAME" | grep -q '\.xz$'; then
+    DECOMPRESS_NOTE="
+> **Note:** The USB image is compressed with xz. Decompress before writing:
+> \`\`\`bash
+> xz -d ${IMG_BASENAME}
+> dd if=aifw-${VERSION}-amd64.img of=/dev/sdX bs=1M status=progress
+> \`\`\`"
+fi
+
 BODY="## AiFw v${VERSION}
 
 AI-Powered Firewall for FreeBSD 15.0
@@ -64,12 +96,12 @@ AI-Powered Firewall for FreeBSD 15.0
 
 | File | Size | Description |
 |------|------|-------------|
-| \`aifw-${VERSION}-amd64.iso\` | $(du -h "$ISO" | awk '{print $1}') | Bootable ISO (CD/DVD, VM) |
-| \`aifw-${VERSION}-amd64.img\` | $(du -h "$IMG" | awk '{print $1}') | USB flash drive image |
-
+| \`${ISO_BASENAME}\` | $(du -h "$ISO_UPLOAD" | awk '{print $1}') | Bootable ISO (CD/DVD, VM) |
+| \`${IMG_BASENAME}\` | $(du -h "$IMG_UPLOAD" | awk '{print $1}') | USB flash drive image |
+${DECOMPRESS_NOTE}
 ### Quick Start
 
-1. Boot from the ISO or write the IMG to a USB drive (\`dd if=aifw-*.img of=/dev/sdX bs=1M\`)
+1. Boot from the ISO or write the IMG to a USB drive
 2. The setup wizard starts automatically on first boot
 3. Follow the prompts to configure networking, admin account, and firewall policy
 4. Use menu option **14** to install to disk (ZFS or UFS)
@@ -77,25 +109,18 @@ AI-Powered Firewall for FreeBSD 15.0
 
 ### Verify Downloads
 
-\`\`\`bash
-sha256sum -c aifw-${VERSION}-amd64.iso.sha256
-sha256sum -c aifw-${VERSION}-amd64.img.sha256
 \`\`\`
-
-### Checksums
-
-\`\`\`
-$(cat "$ISO_SHA")
-$(cat "$IMG_SHA")
+$(cat "$ISO_SHA_UPLOAD")
+$(cat "$IMG_SHA_UPLOAD")
 \`\`\`"
 
 # Create release (or update if exists)
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "Release ${TAG} exists, uploading assets..."
-    gh release upload "$TAG" "$ISO" "$IMG" "$ISO_SHA" "$IMG_SHA" --clobber
+    gh release upload "$TAG" "$ISO_UPLOAD" "$IMG_UPLOAD" "$ISO_SHA_UPLOAD" "$IMG_SHA_UPLOAD" --clobber
 else
     gh release create "$TAG" \
-        "$ISO" "$IMG" "$ISO_SHA" "$IMG_SHA" \
+        "$ISO_UPLOAD" "$IMG_UPLOAD" "$ISO_SHA_UPLOAD" "$IMG_SHA_UPLOAD" \
         --title "AiFw v${VERSION}" \
         --notes "$BODY"
 fi
