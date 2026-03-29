@@ -269,7 +269,7 @@ export default function ReverseProxyPage() {
           <div className="flex flex-wrap gap-2 sm:flex-col sm:items-end">
             <button
               onClick={() => serviceAction("start")}
-              disabled={!!actionLoading}
+              disabled={!!actionLoading || !!status?.running}
               className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -280,7 +280,7 @@ export default function ReverseProxyPage() {
             </button>
             <button
               onClick={() => serviceAction("stop")}
-              disabled={!!actionLoading}
+              disabled={!!actionLoading || !status?.running}
               className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -291,7 +291,7 @@ export default function ReverseProxyPage() {
             </button>
             <button
               onClick={() => serviceAction("restart")}
-              disabled={!!actionLoading}
+              disabled={!!actionLoading || !status?.running}
               className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
