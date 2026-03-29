@@ -71,12 +71,32 @@ done
 rm -rf "$SCRIPT_DIR/ui-export"
 cp -a "$PROJECT_ROOT/aifw-ui/out" "$SCRIPT_DIR/ui-export"
 
+# --- Build update tarball ---
+echo "=== [5/8] Building update tarball ==="
+TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
+rm -rf "$TARBALL_DIR"
+mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui"
+for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
+    cp "$PROJECT_ROOT/target/release/${bin}" "$TARBALL_DIR/bin/"
+done
+cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
+echo "$VERSION" > "$TARBALL_DIR/version"
+OUTPUTDIR="/usr/obj/aifw-iso/output"
+mkdir -p "$OUTPUTDIR"
+tar -C /tmp -cJf "${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"
+cd "$OUTPUTDIR"
+sha256 "aifw-update-${VERSION}-amd64.tar.xz" > "aifw-update-${VERSION}-amd64.tar.xz.sha256"
+rm -rf "$TARBALL_DIR"
+echo "  Update tarball: ${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz"
+ls -lh "${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz"
+cd "$PROJECT_ROOT"
+
 # --- Build ISO + IMG ---
-echo "=== [5/6] Building ISO + IMG ==="
+echo "=== [6/8] Building ISO + IMG ==="
 sh "$SCRIPT_DIR/build-iso.sh" "$VERSION" amd64
 
 # --- Cleanup intermediate files ---
-echo "=== [6/7] Cleaning up intermediate files ==="
+echo "=== [7/8] Cleaning up intermediate files ==="
 rm -rf "$SCRIPT_DIR/release"
 rm -rf "$SCRIPT_DIR/ui-export"
 # Remove staging dirs but keep output with the final artifacts
@@ -90,7 +110,7 @@ echo "  Removed staged binaries, UI export, and build intermediates"
 
 # --- Done ---
 echo ""
-echo "=== [7/7] Complete ==="
+echo "=== [8/8] Complete ==="
 echo ""
 ls -lh /usr/obj/aifw-iso/output/
 echo ""

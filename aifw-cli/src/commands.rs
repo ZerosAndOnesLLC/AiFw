@@ -1266,3 +1266,149 @@ pub async fn dhcp_apply(_db_path: &Path) -> anyhow::Result<()> {
     println!("  curl -X POST https://<host>:8080/api/v1/dhcp/v4/apply");
     Ok(())
 }
+
+// ============================================================
+// Update commands
+// ============================================================
+
+pub async fn update_check() -> anyhow::Result<()> {
+    use aifw_core::updater;
+
+    println!("Checking for AiFw updates...");
+    let info = updater::check_for_update().await?;
+
+    println!("  Current version: v{}", info.current_version);
+    println!("  Latest version:  v{}", info.latest_version);
+    if info.update_available {
+        println!("  Update available!");
+        if info.tarball_url.is_some() {
+            println!("  Run 'aifw update install' to update.");
+        } else {
+            println!("  No update tarball found in the release.");
+        }
+    } else {
+        println!("  Already running the latest version.");
+    }
+    if info.has_backup {
+        println!(
+            "  Backup: v{} (run 'aifw update rollback' to restore)",
+            info.backup_version.as_deref().unwrap_or("unknown")
+        );
+    }
+    Ok(())
+}
+
+pub async fn update_install() -> anyhow::Result<()> {
+    use aifw_core::updater;
+
+    println!("Checking for AiFw updates...");
+    let info = updater::check_for_update().await?;
+
+    if !info.update_available {
+        println!("Already running the latest version (v{}).", info.current_version);
+        return Ok(());
+    }
+
+    println!(
+        "Updating AiFw from v{} to v{}...",
+        info.current_version, info.latest_version
+    );
+    let msg = updater::download_and_install(&info).await?;
+    println!("{}", msg);
+
+    println!("Restarting services...");
+    updater::restart_services_sync().await;
+    println!("Done.");
+    Ok(())
+}
+
+pub async fn update_rollback() -> anyhow::Result<()> {
+    use aifw_core::updater;
+
+    let msg = updater::rollback().await?;
+    println!("{}", msg);
+
+    println!("Restarting services...");
+    updater::restart_services_sync().await;
+    println!("Done.");
+    Ok(())
+}
+
+pub async fn update_os_check() -> anyhow::Result<()> {
+    println!("Checking for OS and package updates...");
+
+    let pkg = tokio::process::Command::new("sudo")
+        .args(["/usr/sbin/pkg", "update"])
+        .output()
+        .await?;
+    if pkg.status.success() {
+        println!("  Package catalog updated.");
+    } else {
+        println!(
+            "  Package update failed: {}",
+            String::from_utf8_lossy(&pkg.stderr).trim()
+        );
+    }
+
+    let os = tokio::process::Command::new("sudo")
+        .args(["/usr/sbin/freebsd-update", "fetch", "--not-running-from-cron"])
+        .output()
+        .await?;
+    if os.status.success() {
+        println!("  OS update check complete.");
+    } else {
+        println!(
+            "  OS update check: {}",
+            String::from_utf8_lossy(&os.stderr).lines().next().unwrap_or("")
+        );
+    }
+
+    // Show pending
+    let pending = tokio::process::Command::new("sudo")
+        .args(["/usr/sbin/pkg", "upgrade", "-n"])
+        .output()
+        .await?;
+    let stdout = String::from_utf8_lossy(&pending.stdout);
+    let count = stdout
+        .lines()
+        .filter(|l| l.trim().starts_with("Upgrading") || l.trim().starts_with("Installing"))
+        .count();
+    if count > 0 {
+        println!("  {} package(s) pending.", count);
+    } else {
+        println!("  Packages are up to date.");
+    }
+
+    Ok(())
+}
+
+pub async fn update_os_install() -> anyhow::Result<()> {
+    println!("Installing OS and package updates...");
+
+    let pkg = tokio::process::Command::new("sudo")
+        .args(["/usr/sbin/pkg", "upgrade", "-y"])
+        .output()
+        .await?;
+    let stdout = String::from_utf8_lossy(&pkg.stdout);
+    let count = stdout
+        .lines()
+        .filter(|l| l.contains("Upgrading") || l.contains("Installing"))
+        .count();
+    println!("  {} package(s) updated.", count);
+
+    let os = tokio::process::Command::new("sudo")
+        .args(["/usr/sbin/freebsd-update", "install"])
+        .output()
+        .await?;
+    if os.status.success() {
+        println!("  OS updates installed.");
+    } else {
+        println!("  No OS updates to install.");
+    }
+
+    if std::path::Path::new("/var/run/reboot-required").exists() {
+        println!("  Reboot required to complete updates.");
+    }
+
+    Ok(())
+}

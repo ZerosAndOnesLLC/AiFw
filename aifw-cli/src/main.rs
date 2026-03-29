@@ -77,12 +77,31 @@ enum Commands {
         #[command(subcommand)]
         action: UsersAction,
     },
+    /// Manage AiFw and OS updates
+    Update {
+        #[command(subcommand)]
+        action: UpdateAction,
+    },
     /// Show network interfaces
     Interfaces,
     /// Show firewall status
     Status,
     /// Reload rules from database and apply to pf
     Reload,
+}
+
+#[derive(Subcommand)]
+enum UpdateAction {
+    /// Check for AiFw firmware update from GitHub
+    Check,
+    /// Download and install AiFw firmware update
+    Install,
+    /// Rollback to previous AiFw firmware version
+    Rollback,
+    /// Check for OS and package updates
+    OsCheck,
+    /// Install OS and package updates
+    OsInstall,
 }
 
 #[derive(Subcommand)]
@@ -776,6 +795,13 @@ async fn main() -> anyhow::Result<()> {
             UsersAction::Enable { id } => {
                 commands::users_set_enabled(&cli.db, &id, true).await?;
             }
+        },
+        Commands::Update { action } => match action {
+            UpdateAction::Check => commands::update_check().await?,
+            UpdateAction::Install => commands::update_install().await?,
+            UpdateAction::Rollback => commands::update_rollback().await?,
+            UpdateAction::OsCheck => commands::update_os_check().await?,
+            UpdateAction::OsInstall => commands::update_os_install().await?,
         },
         Commands::Interfaces => {
             commands::interfaces_list().await?;

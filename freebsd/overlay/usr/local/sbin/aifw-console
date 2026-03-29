@@ -167,8 +167,37 @@ do_restart_services()
 do_update()
 {
     echo ""
-    echo "Update from console is not yet implemented."
-    echo "Use: pkg update && pkg upgrade aifw"
+    echo "=== AiFw Update ==="
+    echo ""
+
+    # Check for AiFw firmware update
+    echo "Checking for AiFw firmware updates..."
+    /usr/local/sbin/aifw update check
+    echo ""
+    echo -n "Install AiFw firmware update if available? [y/N] "
+    read confirm
+    case "$confirm" in
+        [yY]*)
+            /usr/local/sbin/aifw update install
+            ;;
+    esac
+
+    echo ""
+    echo "=== OS & Package Updates ==="
+    echo ""
+
+    # Check and install OS/package updates
+    echo "Checking for OS and package updates..."
+    /usr/local/sbin/aifw update os-check
+    echo ""
+    echo -n "Install OS and package updates? [y/N] "
+    read confirm
+    case "$confirm" in
+        [yY]*)
+            /usr/local/sbin/aifw update os-install
+            ;;
+    esac
+
     echo ""
     echo "Press Enter to continue..."
     read _

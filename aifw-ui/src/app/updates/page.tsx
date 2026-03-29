@@ -25,6 +25,7 @@ interface MaintenanceWindow {
   auto_install: boolean;
   auto_reboot: boolean;
   auto_check: boolean;
+  auto_update_aifw?: boolean;
 }
 
 interface UpdateHistoryEntry {
@@ -33,6 +34,18 @@ interface UpdateHistoryEntry {
   details: string;
   status: string;
   created_at: string;
+}
+
+interface AifwUpdateInfo {
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  release_notes: string;
+  published_at: string;
+  tarball_url: string | null;
+  checksum_url: string | null;
+  has_backup: boolean;
+  backup_version: string | null;
 }
 
 interface Feedback {
@@ -61,6 +74,12 @@ export default function UpdatesPage() {
   const [pkgsExpanded, setPkgsExpanded] = useState(false);
   const [rebootConfirm, setRebootConfirm] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // AiFw firmware update state
+  const [aifwInfo, setAifwInfo] = useState<AifwUpdateInfo | null>(null);
+  const [aifwChecking, setAifwChecking] = useState(false);
+  const [aifwInstalling, setAifwInstalling] = useState(false);
+  const [aifwRollingBack, setAifwRollingBack] = useState(false);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -93,6 +112,17 @@ export default function UpdatesPage() {
     }
   }, []);
 
+  const fetchAifwStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/updates/aifw/status", { headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: AifwUpdateInfo = await res.json();
+      setAifwInfo(data);
+    } catch {
+      // silent
+    }
+  }, []);
+
   const fetchHistory = useCallback(async () => {
     try {
       const res = await fetch("/api/v1/updates/history", { headers: authHeaders() });
@@ -105,8 +135,8 @@ export default function UpdatesPage() {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetchStatus(), fetchSchedule(), fetchHistory()]).finally(() => setLoading(false));
-  }, [fetchStatus, fetchSchedule, fetchHistory]);
+    Promise.all([fetchStatus(), fetchSchedule(), fetchHistory(), fetchAifwStatus()]).finally(() => setLoading(false));
+  }, [fetchStatus, fetchSchedule, fetchHistory, fetchAifwStatus]);
 
   // Poll status while checking or installing
   useEffect(() => {
@@ -179,6 +209,55 @@ export default function UpdatesPage() {
     }
   };
 
+  const handleAifwCheck = async () => {
+    setAifwChecking(true);
+    try {
+      const res = await fetch("/api/v1/updates/aifw/check", { method: "POST", headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: AifwUpdateInfo = await res.json();
+      setAifwInfo(data);
+      showFeedback("success", data.update_available
+        ? `AiFw v${data.latest_version} is available`
+        : `AiFw v${data.current_version} is the latest`);
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to check for AiFw updates");
+    } finally {
+      setAifwChecking(false);
+    }
+  };
+
+  const handleAifwInstall = async () => {
+    setAifwInstalling(true);
+    try {
+      const res = await fetch("/api/v1/updates/aifw/install", { method: "POST", headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      showFeedback("success", data.message || "AiFw updated");
+      fetchAifwStatus();
+      fetchHistory();
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to install AiFw update");
+    } finally {
+      setAifwInstalling(false);
+    }
+  };
+
+  const handleAifwRollback = async () => {
+    setAifwRollingBack(true);
+    try {
+      const res = await fetch("/api/v1/updates/aifw/rollback", { method: "POST", headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      showFeedback("success", data.message || "AiFw rolled back");
+      fetchAifwStatus();
+      fetchHistory();
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to rollback AiFw");
+    } finally {
+      setAifwRollingBack(false);
+    }
+  };
+
   const statusBadgeColor = (s: string) => {
     switch (s.toLowerCase()) {
       case "success":
@@ -207,7 +286,7 @@ export default function UpdatesPage() {
     <div className="space-y-6 max-w-4xl">
       <div>
         <h1 className="text-2xl font-bold">System Updates</h1>
-        <p className="text-sm text-[var(--text-muted)]">Manage operating system and package updates</p>
+        <p className="text-sm text-[var(--text-muted)]">Manage AiFw firmware, operating system, and package updates</p>
       </div>
 
       {feedback && (
@@ -222,7 +301,79 @@ export default function UpdatesPage() {
         </div>
       )}
 
-      {/* Status Card */}
+      {/* AiFw Firmware Card */}
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+          <div className="space-y-2">
+            <div>
+              <span className="text-xs text-[var(--text-muted)] uppercase tracking-wider">AiFw Firmware</span>
+              <p className="text-xl font-semibold text-[var(--text-primary)]">
+                v{aifwInfo?.current_version || "unknown"}
+              </p>
+            </div>
+            {aifwInfo?.latest_version && (
+              <div className="text-xs text-[var(--text-muted)]">
+                Latest: v{aifwInfo.latest_version}
+                {aifwInfo.published_at && ` (${new Date(aifwInfo.published_at).toLocaleDateString()})`}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2 pt-1">
+              {aifwInfo?.update_available ? (
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-500/15 text-yellow-400 border border-yellow-500/30">
+                  v{aifwInfo.latest_version} available
+                </span>
+              ) : aifwInfo?.latest_version ? (
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/15 text-green-400 border border-green-500/30">
+                  Up to date
+                </span>
+              ) : null}
+              {aifwInfo?.has_backup && (
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/15 text-gray-400 border border-gray-500/30">
+                  Backup: v{aifwInfo.backup_version}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 sm:flex-col sm:items-end">
+            <button
+              onClick={handleAifwCheck}
+              disabled={aifwChecking}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
+            >
+              {aifwChecking && (
+                <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              )}
+              {aifwChecking ? "Checking..." : "Check for Update"}
+            </button>
+
+            {aifwInfo?.update_available && aifwInfo?.tarball_url && (
+              <button
+                onClick={handleAifwInstall}
+                disabled={aifwInstalling}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
+              >
+                {aifwInstalling && (
+                  <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                )}
+                {aifwInstalling ? "Installing..." : `Update to v${aifwInfo.latest_version}`}
+              </button>
+            )}
+
+            {aifwInfo?.has_backup && (
+              <button
+                onClick={handleAifwRollback}
+                disabled={aifwRollingBack}
+                className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
+              >
+                {aifwRollingBack ? "Rolling back..." : `Rollback to v${aifwInfo.backup_version}`}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* OS Status Card */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6">
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
           <div className="space-y-2">
@@ -437,6 +588,19 @@ export default function UpdatesPage() {
                   <div>
                     <span className="text-sm text-[var(--text-secondary)]">Auto install updates</span>
                     <p className="text-xs text-[var(--text-muted)]">Automatically install all pending updates after checking</p>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={schedule.auto_update_aifw ?? false}
+                    onChange={(e) => setSchedule({ ...schedule, auto_update_aifw: e.target.checked })}
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
+                  />
+                  <div>
+                    <span className="text-sm text-[var(--text-secondary)]">Auto update AiFw firmware</span>
+                    <p className="text-xs text-[var(--text-muted)]">Automatically check and install AiFw firmware updates from GitHub</p>
                   </div>
                 </label>
 

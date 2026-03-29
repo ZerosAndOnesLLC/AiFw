@@ -61,8 +61,19 @@ if [ "$IMG_SIZE_MB" -gt 1500 ]; then
     sha256 "$XZ_IMG" > "$IMG_SHA_UPLOAD"
 fi
 
+# --- Locate update tarball ---
+UPDATE_TARBALL="${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz"
+UPDATE_SHA="${UPDATE_TARBALL}.sha256"
+if [ ! -f "$UPDATE_TARBALL" ]; then
+    echo "WARNING: Update tarball not found: $UPDATE_TARBALL"
+    echo "  (AiFw self-update won't be available for this release)"
+    UPDATE_TARBALL=""
+    UPDATE_SHA=""
+fi
+
 echo "Artifacts:"
 ls -lh "$ISO_UPLOAD" "$IMG_UPLOAD"
+[ -n "$UPDATE_TARBALL" ] && ls -lh "$UPDATE_TARBALL"
 echo ""
 
 # --- Create git tag if it doesn't exist ---
@@ -117,13 +128,19 @@ $(cat "$ISO_SHA_UPLOAD")
 $(cat "$IMG_SHA_UPLOAD")
 \`\`\`"
 
+# Build asset list
+ASSETS="$ISO_UPLOAD $IMG_UPLOAD $ISO_SHA_UPLOAD $IMG_SHA_UPLOAD"
+if [ -n "$UPDATE_TARBALL" ]; then
+    ASSETS="$ASSETS $UPDATE_TARBALL $UPDATE_SHA"
+fi
+
 # Create release (or update if exists)
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "Release ${TAG} exists, uploading assets..."
-    gh release upload "$TAG" "$ISO_UPLOAD" "$IMG_UPLOAD" "$ISO_SHA_UPLOAD" "$IMG_SHA_UPLOAD" --clobber
+    gh release upload "$TAG" $ASSETS --clobber
 else
     gh release create "$TAG" \
-        "$ISO_UPLOAD" "$IMG_UPLOAD" "$ISO_SHA_UPLOAD" "$IMG_SHA_UPLOAD" \
+        $ASSETS \
         --title "AiFw v${VERSION}" \
         --notes "$BODY"
 fi

@@ -10,6 +10,7 @@ pub mod shaping;
 #[cfg(test)]
 mod tests;
 pub mod tls;
+pub mod updater;
 pub mod validation;
 pub mod vpn;
 

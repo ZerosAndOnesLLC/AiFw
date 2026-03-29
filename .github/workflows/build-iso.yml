@@ -85,6 +85,22 @@ jobs:
               cp "target/release/${bin}" "freebsd/release/${bin}"
             done
 
+            echo "=== Building update tarball ==="
+            VERSION="${{ steps.version.outputs.version }}"
+            TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
+            mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui"
+            for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
+              cp "target/release/${bin}" "$TARBALL_DIR/bin/"
+            done
+            cp -a freebsd/ui-export/* "$TARBALL_DIR/ui/"
+            echo "$VERSION" > "$TARBALL_DIR/version"
+            mkdir -p /usr/obj/aifw-iso/output
+            tar -C /tmp -cJf "/usr/obj/aifw-iso/output/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"
+            cd /usr/obj/aifw-iso/output
+            sha256 "aifw-update-${VERSION}-amd64.tar.xz" > "aifw-update-${VERSION}-amd64.tar.xz.sha256"
+            rm -rf "$TARBALL_DIR"
+            cd /home/runner/work/AiFw/AiFw
+
             echo "=== Building ISO + IMG ==="
             cd freebsd
             sh build-iso.sh "${{ steps.version.outputs.version }}" amd64

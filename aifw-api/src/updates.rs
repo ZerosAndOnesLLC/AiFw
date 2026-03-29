@@ -1,3 +1,4 @@
+use aifw_core::updater::{self, AifwUpdateInfo};
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,8 @@ pub struct MaintenanceWindow {
     pub auto_install: bool,
     pub auto_reboot: bool,
     pub auto_check: bool,
+    #[serde(default)]
+    pub auto_update_aifw: bool,
 }
 
 impl Default for MaintenanceWindow {
@@ -37,6 +40,7 @@ impl Default for MaintenanceWindow {
             auto_install: false,
             auto_reboot: false,
             auto_check: true,
+            auto_update_aifw: false,
         }
     }
 }
@@ -102,6 +106,7 @@ async fn load_schedule(pool: &SqlitePool) -> MaintenanceWindow {
             "mw_auto_install" => mw.auto_install = v == "true",
             "mw_auto_reboot" => mw.auto_reboot = v == "true",
             "mw_auto_check" => mw.auto_check = v == "true",
+            "mw_auto_update_aifw" => mw.auto_update_aifw = v == "true",
             _ => {}
         }
     }
@@ -261,6 +266,7 @@ pub async fn update_schedule(
     save_config(&state.pool, "mw_auto_install", if mw.auto_install { "true" } else { "false" }).await;
     save_config(&state.pool, "mw_auto_reboot", if mw.auto_reboot { "true" } else { "false" }).await;
     save_config(&state.pool, "mw_auto_check", if mw.auto_check { "true" } else { "false" }).await;
+    save_config(&state.pool, "mw_auto_update_aifw", if mw.auto_update_aifw { "true" } else { "false" }).await;
 
     // Write cron job if enabled
     if mw.enabled {
@@ -271,9 +277,12 @@ pub async fn update_schedule(
             "mon" => "1", "tue" => "2", "wed" => "3", "thu" => "4",
             "fri" => "5", "sat" => "6", "sun" | _ => "0",
         };
-        let mut cron_cmd = String::from("/usr/local/sbin/aifw updates check");
+        let mut cron_cmd = String::from("/usr/local/sbin/aifw update os-check");
         if mw.auto_install {
-            cron_cmd.push_str(" && /usr/local/sbin/aifw updates install");
+            cron_cmd.push_str(" && /usr/local/sbin/aifw update os-install");
+        }
+        if mw.auto_update_aifw {
+            cron_cmd.push_str("; /usr/local/sbin/aifw update check && /usr/local/sbin/aifw update install");
         }
         if mw.auto_reboot {
             cron_cmd.push_str(" && /sbin/shutdown -r +1m 'AiFw maintenance reboot'");
@@ -298,4 +307,122 @@ pub async fn update_history(
         id, action: a, details: d, status: s, created_at: c
     }).collect();
     Ok(Json(ApiResponse { data: entries }))
+}
+
+// ============================================================
+// AiFw Self-Update
+// ============================================================
+
+pub async fn aifw_update_status(
+    State(state): State<AppState>,
+) -> Result<Json<AifwUpdateInfo>, StatusCode> {
+    // Return cached info if we have it, otherwise just show current version
+    let cached = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM update_config WHERE key = 'aifw_cached_info'"
+    ).fetch_optional(&state.pool).await.ok().flatten();
+
+    if let Some((json,)) = cached {
+        if let Ok(mut info) = serde_json::from_str::<AifwUpdateInfo>(&json) {
+            // Refresh current version and backup info
+            info.current_version = updater::get_current_version().await;
+            return Ok(Json(info));
+        }
+    }
+
+    Ok(Json(AifwUpdateInfo {
+        current_version: updater::get_current_version().await,
+        latest_version: String::new(),
+        update_available: false,
+        release_notes: String::new(),
+        published_at: String::new(),
+        tarball_url: None,
+        checksum_url: None,
+        has_backup: std::path::Path::new("/usr/local/share/aifw/backup/version").exists(),
+        backup_version: tokio::fs::read_to_string("/usr/local/share/aifw/backup/version")
+            .await.ok().map(|v| v.trim().to_string()),
+    }))
+}
+
+pub async fn aifw_check_update(
+    State(state): State<AppState>,
+) -> Result<Json<AifwUpdateInfo>, StatusCode> {
+    let info = updater::check_for_update().await.map_err(|e| {
+        tracing::error!("AiFw update check failed: {}", e);
+        internal()
+    })?;
+
+    // Cache the result
+    if let Ok(json) = serde_json::to_string(&info) {
+        save_config(&state.pool, "aifw_cached_info", &json).await;
+    }
+    save_config(&state.pool, "aifw_last_check", &Utc::now().to_rfc3339()).await;
+
+    let status = if info.update_available {
+        format!("v{} available (current: v{})", info.latest_version, info.current_version)
+    } else {
+        format!("v{} is the latest", info.current_version)
+    };
+    log_update(&state.pool, "aifw_check", &status, "completed").await;
+
+    Ok(Json(info))
+}
+
+pub async fn aifw_install_update(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    // Get cached update info
+    let cached = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM update_config WHERE key = 'aifw_cached_info'"
+    ).fetch_optional(&state.pool).await.ok().flatten();
+
+    let info = if let Some((json,)) = cached {
+        serde_json::from_str::<AifwUpdateInfo>(&json).map_err(|_| internal())?
+    } else {
+        // No cached info, check now
+        updater::check_for_update().await.map_err(|e| {
+            tracing::error!("AiFw update check failed: {}", e);
+            internal()
+        })?
+    };
+
+    if !info.update_available {
+        return Ok(Json(MessageResponse { message: "Already running the latest version".to_string() }));
+    }
+
+    let msg = updater::download_and_install(&info).await.map_err(|e| {
+        tracing::error!("AiFw update install failed: {}", e);
+        let pool = state.pool.clone();
+        let err = e.to_string();
+        tokio::spawn(async move {
+            log_update(&pool, "aifw_install", &err, "failed").await;
+        });
+        internal()
+    })?;
+
+    log_update(&state.pool, "aifw_install", &msg, "completed").await;
+
+    // Clear cached info
+    save_config(&state.pool, "aifw_cached_info", "").await;
+
+    // Schedule service restart (background, so the response is sent first)
+    updater::restart_services().await;
+
+    Ok(Json(MessageResponse { message: format!("{}. Services restarting...", msg) }))
+}
+
+pub async fn aifw_rollback(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let msg = updater::rollback().await.map_err(|e| {
+        tracing::error!("AiFw rollback failed: {}", e);
+        internal()
+    })?;
+
+    log_update(&state.pool, "aifw_rollback", &msg, "completed").await;
+    save_config(&state.pool, "aifw_cached_info", "").await;
+
+    // Schedule service restart
+    updater::restart_services().await;
+
+    Ok(Json(MessageResponse { message: format!("{}. Services restarting...", msg) }))
 }
