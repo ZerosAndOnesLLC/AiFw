@@ -77,6 +77,11 @@ enum Commands {
         #[command(subcommand)]
         action: UsersAction,
     },
+    /// Manage the reverse proxy (TrafficCop)
+    ReverseProxy {
+        #[command(subcommand)]
+        action: ReverseProxyAction,
+    },
     /// Manage AiFw and OS updates
     Update {
         #[command(subcommand)]
@@ -102,6 +107,44 @@ enum UpdateAction {
     OsCheck,
     /// Install OS and package updates
     OsInstall,
+}
+
+#[derive(Subcommand)]
+enum ReverseProxyAction {
+    /// Show reverse proxy status
+    Status,
+    /// Start the reverse proxy
+    Start,
+    /// Stop the reverse proxy
+    Stop,
+    /// Restart the reverse proxy
+    Restart,
+    /// Validate the generated config
+    Validate,
+    /// Generate config, write YAML, and reload
+    Apply,
+    /// List HTTP routers
+    Routers {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List HTTP services
+    Services {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List HTTP middlewares
+    Middlewares {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List entrypoints
+    Entrypoints {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the generated YAML config
+    ShowConfig,
 }
 
 #[derive(Subcommand)]
@@ -795,6 +838,19 @@ async fn main() -> anyhow::Result<()> {
             UsersAction::Enable { id } => {
                 commands::users_set_enabled(&cli.db, &id, true).await?;
             }
+        },
+        Commands::ReverseProxy { action } => match action {
+            ReverseProxyAction::Status => commands::rp_status(&cli.db).await?,
+            ReverseProxyAction::Start => commands::rp_start().await?,
+            ReverseProxyAction::Stop => commands::rp_stop().await?,
+            ReverseProxyAction::Restart => commands::rp_restart().await?,
+            ReverseProxyAction::Validate => commands::rp_validate(&cli.db).await?,
+            ReverseProxyAction::Apply => commands::rp_apply(&cli.db).await?,
+            ReverseProxyAction::Routers { json } => commands::rp_routers(&cli.db, json).await?,
+            ReverseProxyAction::Services { json } => commands::rp_services(&cli.db, json).await?,
+            ReverseProxyAction::Middlewares { json } => commands::rp_middlewares(&cli.db, json).await?,
+            ReverseProxyAction::Entrypoints { json } => commands::rp_entrypoints(&cli.db, json).await?,
+            ReverseProxyAction::ShowConfig => commands::rp_show_config(&cli.db).await?,
         },
         Commands::Update { action } => match action {
             UpdateAction::Check => commands::update_check().await?,

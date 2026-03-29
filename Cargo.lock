@@ -74,6 +74,7 @@ dependencies = [
  "chrono",
  "clap",
  "serde_json",
+ "serde_yml",
  "sqlx",
  "tokio",
  "tracing",
