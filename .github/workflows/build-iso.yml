@@ -78,12 +78,20 @@ jobs:
             cd /home/runner/work/AiFw/AiFw
             cargo build --release
 
+            echo "=== Building TrafficCop ==="
+            cd /home/runner/work/AiFw/AiFw
+            git clone https://github.com/ZerosAndOnesLLC/TrafficCop.git /tmp/trafficcop
+            cd /tmp/trafficcop
+            cargo build --release
+            cd /home/runner/work/AiFw/AiFw
+
             echo "=== Preparing build inputs ==="
             # Copy release binaries to where build-iso.sh expects them
             mkdir -p freebsd/release
             for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
               cp "target/release/${bin}" "freebsd/release/${bin}"
             done
+            cp /tmp/trafficcop/target/release/trafficcop freebsd/release/trafficcop
 
             echo "=== Building update tarball ==="
             VERSION="${{ steps.version.outputs.version }}"
@@ -92,6 +100,7 @@ jobs:
             for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
               cp "target/release/${bin}" "$TARBALL_DIR/bin/"
             done
+            cp /tmp/trafficcop/target/release/trafficcop "$TARBALL_DIR/bin/"
             cp -a freebsd/ui-export/* "$TARBALL_DIR/ui/"
             echo "$VERSION" > "$TARBALL_DIR/version"
             mkdir -p /usr/obj/aifw-iso/output

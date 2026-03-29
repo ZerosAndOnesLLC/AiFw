@@ -10,7 +10,7 @@ const VERSION_FILE: &str = "/usr/local/share/aifw/version";
 const BACKUP_DIR: &str = "/usr/local/share/aifw/backup";
 const BIN_DIR: &str = "/usr/local/sbin";
 const UI_DIR: &str = "/usr/local/share/aifw/ui";
-const BINARIES: &[&str] = &["aifw", "aifw-daemon", "aifw-api", "aifw-tui", "aifw-setup"];
+const BINARIES: &[&str] = &["aifw", "aifw-daemon", "aifw-api", "aifw-tui", "aifw-setup", "trafficcop"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdaterError {

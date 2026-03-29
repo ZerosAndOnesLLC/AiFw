@@ -61,12 +61,27 @@ echo "=== [3/6] Building Rust binaries (release) ==="
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 cargo build --release
 
+# Build TrafficCop (reverse proxy)
+TRAFFICCOP_DIR="$PROJECT_ROOT/../trafficcop"
+if [ -d "$TRAFFICCOP_DIR" ]; then
+    echo "Building TrafficCop..."
+    cd "$TRAFFICCOP_DIR"
+    cargo build --release
+    cd "$PROJECT_ROOT"
+else
+    echo "WARNING: TrafficCop source not found at $TRAFFICCOP_DIR, skipping"
+fi
+
 # --- Stage build inputs ---
 echo "=== [4/6] Staging build inputs ==="
 mkdir -p "$SCRIPT_DIR/release"
 for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
     cp "$PROJECT_ROOT/target/release/${bin}" "$SCRIPT_DIR/release/${bin}"
 done
+# Stage TrafficCop binary if built
+if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
+    cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$SCRIPT_DIR/release/trafficcop"
+fi
 
 rm -rf "$SCRIPT_DIR/ui-export"
 cp -a "$PROJECT_ROOT/aifw-ui/out" "$SCRIPT_DIR/ui-export"
@@ -79,6 +94,10 @@ mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui"
 for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
     cp "$PROJECT_ROOT/target/release/${bin}" "$TARBALL_DIR/bin/"
 done
+# Include TrafficCop in update tarball
+if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
+    cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$TARBALL_DIR/bin/"
+fi
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
 echo "$VERSION" > "$TARBALL_DIR/version"
 OUTPUTDIR="/usr/obj/aifw-iso/output"

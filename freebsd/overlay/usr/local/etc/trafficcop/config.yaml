@@ -1,0 +1,21 @@
+# TrafficCop — Reverse Proxy & Load Balancer
+# Managed by AiFw. Edit via the web UI or API.
+# Service disabled by default. Enable with: sysrc trafficcop_enable=YES
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+api:
+  dashboard: true
+  insecure: true
+
+log:
+  level: info
+  filePath: /var/log/trafficcop/trafficcop.log
+
+accessLog:
+  filePath: /var/log/trafficcop/access.log
+  format: json

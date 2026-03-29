@@ -1,0 +1,67 @@
+#!/bin/sh
+
+# PROVIDE: trafficcop
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="trafficcop"
+rcvar="trafficcop_enable"
+
+command="/usr/local/sbin/trafficcop"
+command_args="-c /usr/local/etc/trafficcop/config.yaml"
+pidfile="/var/run/${name}.pid"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+status_cmd="${name}_status"
+
+trafficcop_start()
+{
+    if trafficcop_status >/dev/null 2>&1; then
+        echo "${name} is already running."
+        return 0
+    fi
+
+    mkdir -p /var/log/trafficcop
+    chown aifw:aifw /var/log/trafficcop
+
+    # Validate config before starting
+    if [ -f /usr/local/etc/trafficcop/config.yaml ]; then
+        if ! ${command} -c /usr/local/etc/trafficcop/config.yaml --validate >/dev/null 2>&1; then
+            echo "ERROR: ${name} config validation failed"
+            return 1
+        fi
+    fi
+
+    echo "Starting ${name}."
+    /usr/sbin/daemon -p ${pidfile} -u aifw ${command} ${command_args}
+}
+
+trafficcop_stop()
+{
+    if [ -f "${pidfile}" ]; then
+        pid=$(cat "${pidfile}")
+        echo "Stopping ${name} (pid ${pid})."
+        kill "${pid}" 2>/dev/null
+        rm -f "${pidfile}"
+    else
+        echo "${name} is not running."
+    fi
+}
+
+trafficcop_status()
+{
+    if [ -f "${pidfile}" ] && kill -0 "$(cat "${pidfile}")" 2>/dev/null; then
+        echo "${name} is running (pid $(cat "${pidfile}"))."
+        return 0
+    else
+        echo "${name} is not running."
+        return 1
+    fi
+}
+
+load_rc_config $name
+: ${trafficcop_enable:="NO"}
+run_rc_command "$1"

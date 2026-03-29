@@ -149,7 +149,7 @@ echo "[6/9] Installing AiFw..."
 
 # Binaries (should be pre-built and placed in freebsd/release/)
 BINDIR="${SCRIPT_DIR}/release"
-for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
+for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup trafficcop; do
     if [ -f "${BINDIR}/${bin}" ]; then
         install -s -m 755 "${BINDIR}/${bin}" "$STAGEDIR/usr/local/sbin/${bin}"
     else
@@ -180,6 +180,7 @@ mkdir -p "$STAGEDIR/usr/local/etc/aifw/anchors"
 mkdir -p "$STAGEDIR/usr/local/share/aifw"
 mkdir -p "$STAGEDIR/var/db/aifw"
 mkdir -p "$STAGEDIR/var/log/aifw"
+mkdir -p "$STAGEDIR/var/log/trafficcop"
 
 # --- Configure live environment ---
 echo "[7/9] Configuring live environment..."
@@ -197,6 +198,7 @@ sendmail_submit_enable="NO"
 sendmail_outbound_enable="NO"
 sendmail_msp_queue_enable="NO"
 aifw_firstboot_enable="YES"
+trafficcop_enable="NO"
 RCCONF
 
 # fstab for live CD (read-only root + tmpfs)
