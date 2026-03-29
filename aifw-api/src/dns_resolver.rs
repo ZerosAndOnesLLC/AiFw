@@ -249,6 +249,9 @@ async fn load_config(pool: &SqlitePool) -> ResolverConfig {
             "hide_version" => c.hide_version = v == "true",
             "rebind_protection" => c.rebind_protection = v == "true",
             "private_addresses" => c.private_addresses = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "forwarding_enabled" => c.forwarding_enabled = v == "true",
+            "forwarding_servers" => c.forwarding_servers = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "use_system_nameservers" => c.use_system_nameservers = v == "true",
             "dot_enabled" => c.dot_enabled = v == "true",
             "dot_upstream" => c.dot_upstream = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             "blocklists_enabled" => c.blocklists_enabled = v == "true",
@@ -278,6 +281,11 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
         .map(|i| format!("    interface: {}", i)).collect::<Vec<_>>().join("\n");
 
     let mut server_lines = vec![
+        format!("    username: unbound"),
+        format!("    directory: /var/unbound"),
+        format!("    chroot: /var/unbound"),
+        format!("    pidfile: /var/run/local_unbound.pid"),
+        format!("    auto-trust-anchor-file: /var/unbound/root.key"),
         format!("    port: {}", c.port),
         format!("    do-daemonize: no"),
         interfaces,
@@ -506,6 +514,9 @@ pub async fn update_config_handler(
     save_key(pool, "hide_version", bool_str(c.hide_version)).await;
     save_key(pool, "rebind_protection", bool_str(c.rebind_protection)).await;
     save_key(pool, "private_addresses", &c.private_addresses.join(",")).await;
+    save_key(pool, "forwarding_enabled", bool_str(c.forwarding_enabled)).await;
+    save_key(pool, "forwarding_servers", &c.forwarding_servers.join(",")).await;
+    save_key(pool, "use_system_nameservers", bool_str(c.use_system_nameservers)).await;
     save_key(pool, "dot_enabled", bool_str(c.dot_enabled)).await;
     save_key(pool, "dot_upstream", &c.dot_upstream.join(",")).await;
     save_key(pool, "blocklists_enabled", bool_str(c.blocklists_enabled)).await;
@@ -523,9 +534,21 @@ pub async fn apply_resolver(
     let config = load_config(&state.pool).await;
     let conf = generate_unbound_conf(&state.pool).await;
 
-    let conf_path = "/usr/local/etc/unbound/unbound.conf";
-    let _ = tokio::fs::create_dir_all("/usr/local/etc/unbound").await;
-    tokio::fs::write(conf_path, &conf).await.map_err(|_| internal())?;
+    let conf_path = "/var/unbound/unbound.conf";
+    // Write config via sudo tee (aifw user may not own /var/unbound)
+    let mut child = Command::new("sudo")
+        .args(["tee", conf_path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| internal())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(conf.as_bytes()).await;
+    }
+    let _ = child.wait().await;
+    // Ensure unbound owns its directory
+    let _ = Command::new("sudo").args(["chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
 
     if config.enabled {
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=YES"]).output().await;

@@ -64,20 +64,26 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/pkg *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/freebsd-update *\n\
 aifw ALL=(ALL) NOPASSWD: /sbin/shutdown *\n\
 aifw ALL=(ALL) NOPASSWD: /bin/cat *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/local/sbin/kea-admin *\n";
+aifw ALL=(ALL) NOPASSWD: /usr/local/sbin/kea-admin *\n\
+aifw ALL=(ALL) NOPASSWD: /usr/bin/tee *\n\
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *\n";
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
-        if !std::path::Path::new(sudoers_path).exists() {
-            let _ = std::fs::create_dir_all("/usr/local/etc/sudoers.d");
-            let _ = std::fs::write(sudoers_path, sudoers_line);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(sudoers_path, std::fs::Permissions::from_mode(0o440));
-            }
+        let _ = std::fs::create_dir_all("/usr/local/etc/sudoers.d");
+        let _ = std::fs::write(sudoers_path, sudoers_line);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(sudoers_path, std::fs::Permissions::from_mode(0o440));
         }
     }
 
-    // 5c. Configure devfs rules for /dev/pf and /dev/bpf* access
+    // 5c. Setup unbound directory
+    console::info("Configuring Unbound DNS resolver...");
+    let _ = std::fs::create_dir_all("/var/unbound");
+    let _ = std::process::Command::new("chown").args(["-R", "unbound:unbound", "/var/unbound"]).status();
+    console::success("Unbound configured");
+
+    // 5d. Configure devfs rules for /dev/pf and /dev/bpf* access
     console::info("Configuring device permissions...");
     configure_devfs()?;
     console::success("Device permissions configured");

@@ -33,12 +33,17 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # --- Ensure dependencies ---
-for pkg in kea sudo; do
+for pkg in kea sudo unbound; do
     if ! pkg info -q "$pkg" 2>/dev/null; then
         echo "Installing $pkg..."
         pkg install -y "$pkg"
     fi
 done
+
+# Ensure unbound directory has correct ownership
+if [ -d /var/unbound ]; then
+    chown -R unbound:unbound /var/unbound
+fi
 
 # --- Pull latest ---
 echo "[1/5] Pulling latest..."
