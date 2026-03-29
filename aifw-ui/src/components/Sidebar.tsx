@@ -83,7 +83,7 @@ const navItems: NavItem[] = [
   },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ onClose }: { onClose?: () => void }) {
   const pathname = usePathname();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     Firewall: true,
@@ -138,8 +138,8 @@ export default function Sidebar() {
     }) ?? false;
 
   return (
-    <aside className="w-56 h-screen bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col fixed left-0 top-0 z-10">
-      <div className="p-4 border-b border-[var(--border)]">
+    <aside className="w-56 h-screen bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col">
+      <div className="p-4 border-b border-[var(--border)] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-[var(--accent)] flex items-center justify-center font-bold text-white text-sm">
             AI
@@ -149,6 +149,13 @@ export default function Sidebar() {
             <p className="text-[10px] text-[var(--text-muted)]">AI Firewall</p>
           </div>
         </div>
+        {onClose && (
+          <button onClick={onClose} className="lg:hidden text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <nav className="flex-1 py-2 overflow-y-auto">
