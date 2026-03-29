@@ -49,10 +49,11 @@ IMG_SHA_UPLOAD="$IMG_SHA"
 IMG_SIZE_BYTES=$(stat -f%z "$IMG" 2>/dev/null || stat -c%s "$IMG" 2>/dev/null || echo 0)
 IMG_SIZE_MB=$((IMG_SIZE_BYTES / 1048576))
 if [ "$IMG_SIZE_MB" -gt 1500 ]; then
-    XZ_IMG="${IMG}.xz"
+    # Compress to /tmp to avoid permission issues (output dir is root-owned)
+    XZ_IMG="/tmp/aifw-${VERSION}-amd64.img.xz"
     if [ ! -f "$XZ_IMG" ] || [ "$IMG" -nt "$XZ_IMG" ]; then
         echo "Compressing IMG (${IMG_SIZE_MB}MB) with xz..."
-        xz -k -9 -T0 "$IMG"
+        xz -k -9 -T0 --stdout "$IMG" > "$XZ_IMG"
     fi
     IMG_UPLOAD="$XZ_IMG"
     # Generate checksum for compressed file
@@ -125,6 +126,12 @@ else
         "$ISO_UPLOAD" "$IMG_UPLOAD" "$ISO_SHA_UPLOAD" "$IMG_SHA_UPLOAD" \
         --title "AiFw v${VERSION}" \
         --notes "$BODY"
+fi
+
+# --- Cleanup temp files ---
+if [ -n "$XZ_IMG" ]; then
+    rm -f "$XZ_IMG" "$IMG_SHA_UPLOAD"
+    echo "Cleaned up temp files in /tmp"
 fi
 
 echo ""
