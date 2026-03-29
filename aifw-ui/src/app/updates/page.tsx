@@ -121,9 +121,10 @@ export default function UpdatesPage() {
       const res = await fetch("/api/v1/updates/check", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      showFeedback("success", data.message || "Update check started");
-      // Poll until done
-      setTimeout(() => fetchStatus(), 2000);
+      showFeedback("success", data.message || "Update check complete");
+      setChecking(false);
+      fetchStatus();
+      fetchHistory();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to check for updates");
       setChecking(false);
@@ -136,11 +137,10 @@ export default function UpdatesPage() {
       const res = await fetch("/api/v1/updates/install", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      showFeedback("success", data.message || "Update installation started");
-      setTimeout(() => {
-        fetchStatus();
-        fetchHistory();
-      }, 3000);
+      showFeedback("success", data.message || "Updates installed");
+      setInstalling(false);
+      fetchStatus();
+      fetchHistory();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to install updates");
       setInstalling(false);
