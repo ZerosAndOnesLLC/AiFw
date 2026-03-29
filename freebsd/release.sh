@@ -44,8 +44,10 @@ IMG_UPLOAD="$IMG"
 ISO_SHA_UPLOAD="$ISO_SHA"
 IMG_SHA_UPLOAD="$IMG_SHA"
 
-# Compress IMG with xz if over 1.5GB (GitHub limit is 2GB)
-IMG_SIZE_MB=$(du -m "$IMG" | awk '{print $1}')
+# Compress IMG with xz if apparent size over 1.5GB (GitHub limit is 2GB)
+# Use stat for apparent size since sparse files report smaller with du
+IMG_SIZE_BYTES=$(stat -f%z "$IMG" 2>/dev/null || stat -c%s "$IMG" 2>/dev/null || echo 0)
+IMG_SIZE_MB=$((IMG_SIZE_BYTES / 1048576))
 if [ "$IMG_SIZE_MB" -gt 1500 ]; then
     XZ_IMG="${IMG}.xz"
     if [ ! -f "$XZ_IMG" ] || [ "$IMG" -nt "$XZ_IMG" ]; then
