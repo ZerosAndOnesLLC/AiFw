@@ -111,34 +111,9 @@ find "$STAGEDIR/usr/bin" "$STAGEDIR/usr/sbin" "$STAGEDIR/usr/local/sbin" \
 find "$STAGEDIR/usr/lib" "$STAGEDIR/usr/local/lib" "$STAGEDIR/lib" \
      -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
 
-# Trim unused kernel modules (keep only what a firewall needs)
-KEEP_MODULES="pf pflog pfsync if_bridge if_vlan if_wg if_gif if_gre \
-              carp zfs opensolaris crypto aesni cryptodev \
-              nullfs tmpfs fusefs acpi ahci nvme scbus da cd \
-              ufs ffs ext2fs msdosfs cd9660 nfscl nfsd \
-              ipfw dummynet accf_http accf_data accf_dns \
-              tcp_bbr cc_cubic cc_htcp cc_chd \
-              coretemp amdtemp hwpmc \
-              virtio virtio_pci virtio_blk virtio_scsi vtnet \
-              vmx hyperv if_ixl if_igb if_em e1000 ixgbe ix \
-              mlx4 mlx5 mlx5en \
-              if_re if_bge if_bnxt if_cxgbe"
+# Strip debug info from kernel modules (keep all modules for hardware compatibility)
 if [ -d "$STAGEDIR/boot/kernel" ]; then
-    MODDIR="$STAGEDIR/boot/kernel"
-    for mod in "$MODDIR"/*.ko; do
-        modname="$(basename "$mod" .ko)"
-        keep=0
-        for km in $KEEP_MODULES; do
-            if [ "$modname" = "$km" ]; then keep=1; break; fi
-        done
-        # Always keep kernel itself
-        [ "$modname" = "kernel" ] && keep=1
-        if [ "$keep" -eq 0 ]; then
-            rm -f "$mod"
-        fi
-    done
-    # Strip remaining modules
-    find "$MODDIR" -name '*.ko' -exec strip --strip-debug {} \; 2>/dev/null || true
+    find "$STAGEDIR/boot/kernel" -name '*.ko' -exec strip --strip-debug {} \; 2>/dev/null || true
 fi
 
 echo "  Stripped size: $(du -sh "$STAGEDIR" | awk '{print $1}')"
