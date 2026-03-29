@@ -83,6 +83,7 @@ echo ""
 
 # --- Stop services ---
 echo "[4/5] Deploying..."
+service trafficcop stop 2>/dev/null || true
 service aifw_api stop 2>/dev/null || true
 service aifw_daemon stop 2>/dev/null || true
 sleep 1
@@ -132,6 +133,10 @@ echo ""
 echo "[5/5] Restarting services..."
 service aifw_daemon start 2>/dev/null || echo "  WARNING: aifw_daemon not configured"
 service aifw_api start 2>/dev/null || echo "  WARNING: aifw_api not configured"
+# Start TrafficCop if enabled
+if [ "$(sysrc -n trafficcop_enable 2>/dev/null)" = "YES" ]; then
+    service trafficcop start 2>/dev/null || true
+fi
 sleep 2
 
 # --- Verify ---
