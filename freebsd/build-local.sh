@@ -75,9 +75,22 @@ cp -a "$PROJECT_ROOT/aifw-ui/out" "$SCRIPT_DIR/ui-export"
 echo "=== [5/6] Building ISO + IMG ==="
 sh "$SCRIPT_DIR/build-iso.sh" "$VERSION" amd64
 
+# --- Cleanup intermediate files ---
+echo "=== [6/7] Cleaning up intermediate files ==="
+rm -rf "$SCRIPT_DIR/release"
+rm -rf "$SCRIPT_DIR/ui-export"
+# Remove staging dirs but keep output with the final artifacts
+for d in stage dist iso efi-stage; do
+    if [ -d "/usr/obj/aifw-iso/$d" ]; then
+        chflags -R noschg "/usr/obj/aifw-iso/$d" 2>/dev/null || true
+        rm -rf "/usr/obj/aifw-iso/$d"
+    fi
+done
+echo "  Removed staged binaries, UI export, and build intermediates"
+
 # --- Done ---
 echo ""
-echo "=== [6/6] Complete ==="
+echo "=== [7/7] Complete ==="
 echo ""
 ls -lh /usr/obj/aifw-iso/output/
 echo ""
