@@ -1,6 +1,7 @@
 mod auth;
 mod ca;
 mod dhcp;
+mod iface;
 mod routes;
 mod updates;
 mod ws;
@@ -150,6 +151,10 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/routes/{id}", put(routes::update_static_route).delete(routes::delete_static_route))
         .route("/api/v1/routes/system", get(routes::get_system_routes))
         .route("/api/v1/interfaces", get(routes::list_interfaces))
+        .route("/api/v1/interfaces/detailed", get(iface::list_interfaces_detailed))
+        .route("/api/v1/interfaces/config/{name}", put(iface::configure_interface))
+        .route("/api/v1/vlans", get(iface::list_vlans).post(iface::create_vlan))
+        .route("/api/v1/vlans/{id}", put(iface::update_vlan).delete(iface::delete_vlan))
         .route("/api/v1/interfaces/{name}/stats", get(routes::get_interface_stats))
         .route("/api/v1/geoip", get(routes::list_geoip_rules).post(routes::create_geoip_rule))
         .route("/api/v1/geoip/{id}", put(routes::update_geoip_rule).delete(routes::delete_geoip_rule))
@@ -239,6 +244,7 @@ async fn create_state_from_db(
     ca::migrate(&pool).await?;
     dhcp::migrate(&pool).await?;
     updates::migrate(&pool).await?;
+    iface::migrate(&pool).await?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     Ok(AppState {

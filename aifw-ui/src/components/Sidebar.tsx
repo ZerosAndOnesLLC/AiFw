@@ -38,6 +38,8 @@ const navItems: NavItem[] = [
     children: [
       { href: "/connections", label: "Connections" },
       { href: "/traffic", label: "Traffic" },
+      { href: "/interfaces", label: "Interfaces" },
+      { href: "/vlans", label: "VLANs" },
       { href: "/routes", label: "Routes" },
       { href: "/vpn", label: "VPN" },
     ],
