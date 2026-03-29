@@ -517,15 +517,22 @@ pub async fn apply_resolver(
 
 // Service control
 pub async fn resolver_start() -> Result<Json<MessageResponse>, StatusCode> {
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=YES"]).output().await;
     let o = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "start"]).output().await;
-    let msg = o.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(|e| e.to_string());
+    let msg = o.map(|o| {
+        let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+        if stdout.is_empty() && !stderr.is_empty() { stderr } else if stdout.is_empty() { "DNS resolver started".to_string() } else { stdout }
+    }).unwrap_or_else(|e| e.to_string());
     Ok(Json(MessageResponse { message: msg }))
 }
 pub async fn resolver_stop() -> Result<Json<MessageResponse>, StatusCode> {
     let _ = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "stop"]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=NO"]).output().await;
     Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
 }
 pub async fn resolver_restart() -> Result<Json<MessageResponse>, StatusCode> {
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=YES"]).output().await;
     let _ = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "restart"]).output().await;
     Ok(Json(MessageResponse { message: "DNS resolver restarted".to_string() }))
 }
