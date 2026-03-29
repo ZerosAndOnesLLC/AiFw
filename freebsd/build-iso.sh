@@ -67,19 +67,81 @@ tar -xf "${DISTDIR}/kernel.txz" -C "$STAGEDIR"
 
 # --- Strip unnecessary components ---
 echo "[4/9] Stripping unnecessary components..."
+
+# Documentation, examples, tests
 rm -rf "$STAGEDIR/usr/share/doc"
 rm -rf "$STAGEDIR/usr/share/examples"
 rm -rf "$STAGEDIR/usr/share/games"
 rm -rf "$STAGEDIR/usr/share/man"
 rm -rf "$STAGEDIR/usr/share/info"
-rm -rf "$STAGEDIR/usr/lib/debug"
-rm -rf "$STAGEDIR/usr/tests"
 rm -rf "$STAGEDIR/usr/share/calendar"
 rm -rf "$STAGEDIR/usr/share/dict"
 rm -rf "$STAGEDIR/usr/share/groff_font"
 rm -rf "$STAGEDIR/usr/share/me"
 rm -rf "$STAGEDIR/usr/share/openssl"
+rm -rf "$STAGEDIR/usr/share/i18n"
+rm -rf "$STAGEDIR/usr/share/nls"
+rm -rf "$STAGEDIR/usr/share/syscons/fonts"
+rm -rf "$STAGEDIR/usr/share/syscons/keymaps"
+rm -rf "$STAGEDIR/usr/share/syscons/scrnmaps"
+rm -rf "$STAGEDIR/usr/share/vt/keymaps"
+rm -rf "$STAGEDIR/usr/share/bsdconfig"
+rm -rf "$STAGEDIR/usr/share/sendmail"
+rm -rf "$STAGEDIR/usr/share/dtrace"
+rm -rf "$STAGEDIR/usr/tests"
+rm -rf "$STAGEDIR/usr/lib/debug"
+rm -rf "$STAGEDIR/usr/lib/clang"
 rm -rf "$STAGEDIR/rescue"
+
+# Profiling libraries
+rm -rf "$STAGEDIR/usr/lib"/*.a 2>/dev/null || true
+
+# Unnecessary binaries — compilers, debuggers, profilers
+rm -f "$STAGEDIR/usr/bin/clang"* "$STAGEDIR/usr/bin/llvm"* "$STAGEDIR/usr/bin/lldb"*
+rm -f "$STAGEDIR/usr/bin/cc" "$STAGEDIR/usr/bin/c++" "$STAGEDIR/usr/bin/cpp"
+rm -f "$STAGEDIR/usr/bin/gdb"* "$STAGEDIR/usr/bin/objdump"
+rm -f "$STAGEDIR/usr/bin/addr2line" "$STAGEDIR/usr/bin/readelf"
+rm -f "$STAGEDIR/usr/bin/lld" "$STAGEDIR/usr/bin/ld.lld"
+rm -rf "$STAGEDIR/usr/include"
+
+# Strip debug symbols from all binaries and libraries
+find "$STAGEDIR/usr/bin" "$STAGEDIR/usr/sbin" "$STAGEDIR/usr/local/sbin" \
+     "$STAGEDIR/bin" "$STAGEDIR/sbin" \
+     -type f -perm +0111 -exec strip -s {} \; 2>/dev/null || true
+find "$STAGEDIR/usr/lib" "$STAGEDIR/usr/local/lib" "$STAGEDIR/lib" \
+     -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+
+# Trim unused kernel modules (keep only what a firewall needs)
+KEEP_MODULES="pf pflog pfsync if_bridge if_vlan if_wg if_gif if_gre \
+              carp zfs opensolaris crypto aesni cryptodev \
+              nullfs tmpfs fusefs acpi ahci nvme scbus da cd \
+              ufs ffs ext2fs msdosfs cd9660 nfscl nfsd \
+              ipfw dummynet accf_http accf_data accf_dns \
+              tcp_bbr cc_cubic cc_htcp cc_chd \
+              coretemp amdtemp hwpmc \
+              virtio virtio_pci virtio_blk virtio_scsi vtnet \
+              vmx hyperv if_ixl if_igb if_em e1000 ixgbe ix \
+              mlx4 mlx5 mlx5en \
+              if_re if_bge if_bnxt if_cxgbe"
+if [ -d "$STAGEDIR/boot/kernel" ]; then
+    MODDIR="$STAGEDIR/boot/kernel"
+    for mod in "$MODDIR"/*.ko; do
+        modname="$(basename "$mod" .ko)"
+        keep=0
+        for km in $KEEP_MODULES; do
+            if [ "$modname" = "$km" ]; then keep=1; break; fi
+        done
+        # Always keep kernel itself
+        [ "$modname" = "kernel" ] && keep=1
+        if [ "$keep" -eq 0 ]; then
+            rm -f "$mod"
+        fi
+    done
+    # Strip remaining modules
+    find "$MODDIR" -name '*.ko' -exec strip --strip-debug {} \; 2>/dev/null || true
+fi
+
+echo "  Stripped size: $(du -sh "$STAGEDIR" | awk '{print $1}')"
 
 # --- Install packages into staging via chroot ---
 echo "[5/9] Installing packages..."
@@ -99,8 +161,13 @@ chroot "$STAGEDIR" /bin/sh -c '
 umount "$STAGEDIR/dev"
 trap - EXIT
 
-# Clean pkg cache to save space
-rm -rf "$STAGEDIR/var/db/pkg/repos" "$STAGEDIR/var/cache/pkg"
+# Clean pkg cache and install artifacts to save space
+rm -rf "$STAGEDIR/var/db/pkg/repos"
+rm -rf "$STAGEDIR/var/cache/pkg"
+rm -rf "$STAGEDIR/tmp/"*
+# Strip package binaries too
+find "$STAGEDIR/usr/local/bin" "$STAGEDIR/usr/local/sbin" "$STAGEDIR/usr/local/lib" \
+     -type f \( -perm +0111 -o -name '*.so*' \) -exec strip -s {} \; 2>/dev/null || true
 
 # --- Overlay AiFw binaries and config ---
 echo "[6/9] Installing AiFw..."
@@ -109,7 +176,7 @@ echo "[6/9] Installing AiFw..."
 BINDIR="${SCRIPT_DIR}/release"
 for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
     if [ -f "${BINDIR}/${bin}" ]; then
-        install -m 755 "${BINDIR}/${bin}" "$STAGEDIR/usr/local/sbin/${bin}"
+        install -s -m 755 "${BINDIR}/${bin}" "$STAGEDIR/usr/local/sbin/${bin}"
     else
         echo "WARNING: ${bin} not found in ${BINDIR}, skipping"
     fi
@@ -260,8 +327,8 @@ ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
 echo "[9/9] Building USB image..."
 
 IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
-# Stage size + 512MB headroom for EFI partition, UFS journal, and filesystem overhead
-IMG_SIZE=$(du -sm "$STAGEDIR" | awk '{print $1 + 512}')
+# Stage size + 300MB headroom for EFI partition, UFS journal, and filesystem overhead
+IMG_SIZE=$(du -sm "$STAGEDIR" | awk '{print $1 + 300}')
 
 # Clean up any stale md devices from previous failed runs
 for stale_md in $(mdconfig -l 2>/dev/null); do

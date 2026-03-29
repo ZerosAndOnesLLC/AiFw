@@ -255,7 +255,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
           </svg>
           Logout
         </button>
-        <div className="text-[10px] text-[var(--text-muted)] px-2 pt-1">v5.3.0 &middot; MIT</div>
+        <div className="text-[10px] text-[var(--text-muted)] px-2 pt-1">v5.3.1 &middot; MIT</div>
       </div>
     </aside>
   );
