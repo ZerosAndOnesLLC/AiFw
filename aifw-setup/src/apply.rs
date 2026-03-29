@@ -55,7 +55,7 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // 5b. Grant aifw user sudo access to pfctl (no password)
     #[cfg(target_os = "freebsd")]
     {
-        let sudoers_line = "aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /usr/sbin/service, /usr/sbin/sysrc\n";
+        let sudoers_line = "aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /usr/sbin/service, /usr/sbin/sysrc, /usr/sbin/pkg, /usr/sbin/freebsd-update, /sbin/shutdown, /bin/cat\n";
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
         if !std::path::Path::new(sudoers_path).exists() {
             let _ = std::fs::create_dir_all("/usr/local/etc/sudoers.d");

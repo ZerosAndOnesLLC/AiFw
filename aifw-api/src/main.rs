@@ -2,6 +2,7 @@ mod auth;
 mod ca;
 mod dhcp;
 mod routes;
+mod updates;
 mod ws;
 
 #[cfg(test)]
@@ -126,6 +127,12 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/dhcp/v4/leases/{ip}", delete(dhcp::release_lease))
         .route("/api/v1/dhcp/v4/apply", post(dhcp::apply_config))
         .route("/api/v1/dhcp/logs", get(dhcp::dhcp_logs))
+        .route("/api/v1/updates/status", get(updates::update_status))
+        .route("/api/v1/updates/check", post(updates::check_updates))
+        .route("/api/v1/updates/install", post(updates::install_updates))
+        .route("/api/v1/updates/reboot", post(updates::reboot_system))
+        .route("/api/v1/updates/schedule", get(updates::get_schedule).put(updates::update_schedule))
+        .route("/api/v1/updates/history", get(updates::update_history))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/schedules", get(routes::list_schedules).post(routes::create_schedule))
@@ -231,6 +238,7 @@ async fn create_state_from_db(
     geoip_engine.migrate().await?;
     ca::migrate(&pool).await?;
     dhcp::migrate(&pool).await?;
+    updates::migrate(&pool).await?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     Ok(AppState {
