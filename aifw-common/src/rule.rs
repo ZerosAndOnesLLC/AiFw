@@ -238,6 +238,8 @@ pub struct Rule {
     pub gateway: Option<String>,
     pub state_options: StateOptions,
     pub status: RuleStatus,
+    #[serde(default)]
+    pub schedule_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -268,6 +270,7 @@ impl Rule {
             gateway: None,
             state_options: StateOptions::default(),
             status: RuleStatus::Active,
+            schedule_id: None,
             created_at: now,
             updated_at: now,
         }

@@ -104,9 +104,9 @@ impl Database {
             INSERT INTO rules (id, priority, action, direction, interface, protocol,
                 src_addr, src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end,
                 log, quick, label, state_tracking, state_policy, adaptive_start, adaptive_end,
-                timeout_tcp, timeout_udp, timeout_icmp, status, created_at, updated_at)
+                timeout_tcp, timeout_udp, timeout_icmp, status, created_at, updated_at, schedule_id)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
             "#,
         )
         .bind(rule.id.to_string())
@@ -140,6 +140,7 @@ impl Database {
         })
         .bind(rule.created_at.to_rfc3339())
         .bind(rule.updated_at.to_rfc3339())
+        .bind(rule.schedule_id.as_deref())
         .execute(&self.pool)
         .await?;
 
@@ -187,7 +188,7 @@ impl Database {
                 state_tracking = ?16, state_policy = ?17,
                 adaptive_start = ?18, adaptive_end = ?19,
                 timeout_tcp = ?20, timeout_udp = ?21, timeout_icmp = ?22,
-                status = ?23, updated_at = ?24
+                status = ?23, updated_at = ?24, schedule_id = ?25
             WHERE id = ?1
             "#,
         )
@@ -221,6 +222,7 @@ impl Database {
             RuleStatus::Disabled => "disabled",
         })
         .bind(Utc::now().to_rfc3339())
+        .bind(rule.schedule_id.as_deref())
         .execute(&self.pool)
         .await?;
 
@@ -373,6 +375,7 @@ impl RuleRow {
                 "active" => RuleStatus::Active,
                 _ => RuleStatus::Disabled,
             },
+            schedule_id: self.schedule_id,
             created_at: DateTime::parse_from_rfc3339(&self.created_at)
                 .map_err(|e| AifwError::Database(format!("invalid date: {e}")))?
                 .with_timezone(&Utc),

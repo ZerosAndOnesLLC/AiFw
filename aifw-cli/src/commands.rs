@@ -1259,7 +1259,7 @@ pub async fn dhcp_leases(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn dhcp_apply(db_path: &Path) -> anyhow::Result<()> {
+pub async fn dhcp_apply(_db_path: &Path) -> anyhow::Result<()> {
     println!("Generating Kea DHCP config...");
     // This would need the same config generation logic — for CLI, just call the API
     println!("Use the web UI or API to apply DHCP config:");

@@ -654,7 +654,7 @@ pub struct Schedule {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum StringOrVec {
+pub(crate) enum StringOrVec {
     Single(String),
     Multiple(Vec<String>),
 }
@@ -825,6 +825,8 @@ pub async fn create_rule(
         };
     }
 
+    rule.schedule_id = req.schedule_id;
+
     let rule = state.rule_engine.add_rule(rule).await.map_err(|_| bad_request())?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
@@ -880,6 +882,7 @@ pub async fn update_rule(
             _ => return Err(bad_request()),
         };
     }
+    rule.schedule_id = req.schedule_id;
     rule.updated_at = chrono::Utc::now();
 
     state.rule_engine.update_rule(rule.clone()).await.map_err(|_| internal())?;
@@ -1123,14 +1126,7 @@ pub async fn reorder_nat_rules(
     State(state): State<AppState>,
     Json(req): Json<ReorderRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    for (i, id_str) in req.rule_ids.iter().enumerate() {
-        let uuid = Uuid::parse_str(id_str).map_err(|_| bad_request())?;
-        let mut rule = state.nat_engine.get_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
-        rule.updated_at = chrono::Utc::now();
-        // Store order in the DB by updating the record (NAT rules use created_at for ordering)
-        state.nat_engine.update_rule(&rule).await.map_err(|_| internal())?;
-    }
-    // Update order by re-inserting with new timestamps
+    // Update order by setting created_at timestamps in sequence
     for (i, id_str) in req.rule_ids.iter().enumerate() {
         let uuid = Uuid::parse_str(id_str).map_err(|_| bad_request())?;
         let _ = sqlx::query("UPDATE nat_rules SET created_at = datetime('2000-01-01', '+' || ?2 || ' seconds') WHERE id = ?1")
