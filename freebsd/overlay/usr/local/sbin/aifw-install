@@ -197,6 +197,7 @@ clone_system() {
     echo "  Creating /var structure..."
     mkdir -p "$INSTALL_ROOT/var"
     for vdir in cache db db/pkg db/aifw empty games heimdal log log/aifw \
+                log/trafficcop \
                 mail msgs preserve run rwho spool spool/lock spool/output \
                 tmp unbound yp; do
         mkdir -p "$INSTALL_ROOT/var/$vdir"
@@ -220,6 +221,13 @@ clone_system() {
         cp -a /usr/local/etc/aifw/* "$INSTALL_ROOT/usr/local/etc/aifw/" 2>/dev/null || true
         mkdir -p "$INSTALL_ROOT/var/db/aifw"
         cp -a /var/db/aifw/* "$INSTALL_ROOT/var/db/aifw/" 2>/dev/null || true
+    fi
+
+    # Copy TrafficCop config
+    if [ -d /usr/local/etc/trafficcop ]; then
+        echo "  Copying TrafficCop configuration..."
+        mkdir -p "$INSTALL_ROOT/usr/local/etc/trafficcop"
+        cp -a /usr/local/etc/trafficcop/* "$INSTALL_ROOT/usr/local/etc/trafficcop/" 2>/dev/null || true
     fi
 
     # Verify critical files exist
@@ -299,6 +307,9 @@ write_rc_conf() {
     else
         sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_firstboot_enable="YES"
     fi
+
+    # TrafficCop disabled by default (user enables via UI)
+    sysrc -f "$INSTALL_ROOT/etc/rc.conf" trafficcop_enable="NO"
 
     # ZFS-specific
     if [ "$FS_TYPE" = "zfs" ]; then
