@@ -269,7 +269,7 @@ async fn generate_kea_config(pool: &SqlitePool) -> String {
     ],
     "loggers": [{{
       "name": "kea-dhcp4",
-      "output_options": [{{ "output": "/var/log/kea-dhcp4.log" }}],
+      "output_options": [{{ "output": "/var/log/kea/kea-dhcp4.log" }}],
       "severity": "INFO"
     }}]
   }}
@@ -548,10 +548,18 @@ pub async fn dhcp_logs(
     let lines_param = params.get("lines").and_then(|v| v.parse::<usize>().ok()).unwrap_or(200);
     let search = params.get("search").cloned().unwrap_or_default();
 
-    // Read Kea log file
-    let content = tokio::fs::read_to_string("/var/log/kea-dhcp4.log").await
-        .or_else(|_| std::result::Result::<String, std::io::Error>::Ok(String::new()))
-        .unwrap_or_default();
+    // Read Kea log file (try multiple locations)
+    let log_paths = ["/var/log/kea/kea-dhcp4.log", "/var/log/kea-dhcp4.log", "/usr/local/var/log/kea/kea-dhcp4.log"];
+    let mut content = String::new();
+    for path in &log_paths {
+        // Use sudo cat since log may be owned by root
+        if let Ok(output) = Command::new("sudo").args(["cat", path]).output().await {
+            if output.status.success() {
+                content = String::from_utf8_lossy(&output.stdout).to_string();
+                break;
+            }
+        }
+    }
 
     let mut log_lines: Vec<String> = content.lines()
         .filter(|l| !l.is_empty())
