@@ -4,6 +4,7 @@ mod ca;
 mod dhcp;
 mod dns_resolver;
 mod iface;
+mod reverse_proxy;
 mod routes;
 mod updates;
 mod ws;
@@ -161,6 +162,37 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/updates/aifw/check", post(updates::aifw_check_update))
         .route("/api/v1/updates/aifw/install", post(updates::aifw_install_update))
         .route("/api/v1/updates/aifw/rollback", post(updates::aifw_rollback))
+        // Reverse Proxy (TrafficCop)
+        .route("/api/v1/reverse-proxy/status", get(reverse_proxy::rp_status))
+        .route("/api/v1/reverse-proxy/start", post(reverse_proxy::rp_start))
+        .route("/api/v1/reverse-proxy/stop", post(reverse_proxy::rp_stop))
+        .route("/api/v1/reverse-proxy/restart", post(reverse_proxy::rp_restart))
+        .route("/api/v1/reverse-proxy/config", get(reverse_proxy::get_config).put(reverse_proxy::update_config))
+        .route("/api/v1/reverse-proxy/apply", post(reverse_proxy::apply_config))
+        .route("/api/v1/reverse-proxy/validate", post(reverse_proxy::validate_config))
+        .route("/api/v1/reverse-proxy/logs", get(reverse_proxy::rp_logs))
+        .route("/api/v1/reverse-proxy/entrypoints", get(reverse_proxy::list_entrypoints).post(reverse_proxy::create_entrypoint))
+        .route("/api/v1/reverse-proxy/entrypoints/{id}", put(reverse_proxy::update_entrypoint).delete(reverse_proxy::delete_entrypoint))
+        .route("/api/v1/reverse-proxy/http/routers", get(reverse_proxy::list_http_routers).post(reverse_proxy::create_http_router))
+        .route("/api/v1/reverse-proxy/http/routers/{id}", put(reverse_proxy::update_http_router).delete(reverse_proxy::delete_http_router))
+        .route("/api/v1/reverse-proxy/http/services", get(reverse_proxy::list_http_services).post(reverse_proxy::create_http_service))
+        .route("/api/v1/reverse-proxy/http/services/{id}", put(reverse_proxy::update_http_service).delete(reverse_proxy::delete_http_service))
+        .route("/api/v1/reverse-proxy/http/middlewares", get(reverse_proxy::list_http_middlewares).post(reverse_proxy::create_http_middleware))
+        .route("/api/v1/reverse-proxy/http/middlewares/{id}", put(reverse_proxy::update_http_middleware).delete(reverse_proxy::delete_http_middleware))
+        .route("/api/v1/reverse-proxy/tcp/routers", get(reverse_proxy::list_tcp_routers).post(reverse_proxy::create_tcp_router))
+        .route("/api/v1/reverse-proxy/tcp/routers/{id}", put(reverse_proxy::update_tcp_router).delete(reverse_proxy::delete_tcp_router))
+        .route("/api/v1/reverse-proxy/tcp/services", get(reverse_proxy::list_tcp_services).post(reverse_proxy::create_tcp_service))
+        .route("/api/v1/reverse-proxy/tcp/services/{id}", put(reverse_proxy::update_tcp_service).delete(reverse_proxy::delete_tcp_service))
+        .route("/api/v1/reverse-proxy/udp/routers", get(reverse_proxy::list_udp_routers).post(reverse_proxy::create_udp_router))
+        .route("/api/v1/reverse-proxy/udp/routers/{id}", put(reverse_proxy::update_udp_router).delete(reverse_proxy::delete_udp_router))
+        .route("/api/v1/reverse-proxy/udp/services", get(reverse_proxy::list_udp_services).post(reverse_proxy::create_udp_service))
+        .route("/api/v1/reverse-proxy/udp/services/{id}", put(reverse_proxy::update_udp_service).delete(reverse_proxy::delete_udp_service))
+        .route("/api/v1/reverse-proxy/tls/certs", get(reverse_proxy::list_tls_certs).post(reverse_proxy::create_tls_cert))
+        .route("/api/v1/reverse-proxy/tls/certs/{id}", put(reverse_proxy::update_tls_cert).delete(reverse_proxy::delete_tls_cert))
+        .route("/api/v1/reverse-proxy/tls/options", get(reverse_proxy::list_tls_options).post(reverse_proxy::create_tls_option))
+        .route("/api/v1/reverse-proxy/tls/options/{id}", put(reverse_proxy::update_tls_option).delete(reverse_proxy::delete_tls_option))
+        .route("/api/v1/reverse-proxy/cert-resolvers", get(reverse_proxy::list_cert_resolvers).post(reverse_proxy::create_cert_resolver))
+        .route("/api/v1/reverse-proxy/cert-resolvers/{id}", put(reverse_proxy::update_cert_resolver).delete(reverse_proxy::delete_cert_resolver))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/config/history", get(backup::config_history))
@@ -281,6 +313,7 @@ async fn create_state_from_db(
     updates::migrate(&pool).await?;
     iface::migrate(&pool).await?;
     dns_resolver::migrate(&pool).await?;
+    reverse_proxy::migrate(&pool).await?;
     aifw_core::config_manager::ConfigManager::new(pool.clone()).migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
