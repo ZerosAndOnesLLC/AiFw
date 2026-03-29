@@ -1508,7 +1508,9 @@ pub async fn get_system_routes() -> Result<Json<ApiResponse<Vec<SystemRoute>>>, 
 
 // --- Network interfaces ---
 
-pub async fn list_interfaces() -> Result<Json<ApiResponse<Vec<InterfaceInfo>>>, StatusCode> {
+pub async fn list_interfaces(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<InterfaceInfo>>>, StatusCode> {
     let output = tokio::process::Command::new("ifconfig")
         .output()
         .await
@@ -1554,6 +1556,23 @@ pub async fn list_interfaces() -> Result<Json<ApiResponse<Vec<InterfaceInfo>>>, 
 
     // Filter out pseudo-interfaces
     interfaces.retain(|i| !i.name.starts_with("lo") && !i.name.starts_with("pflog") && !i.name.starts_with("enc") && !i.name.starts_with("pfsync"));
+
+    // Add VLANs from DB that aren't already in the system interface list
+    if let Ok(vlans) = sqlx::query_as::<_, (i64, String, bool)>(
+        "SELECT vlan_id, parent, enabled FROM vlans WHERE enabled = 1"
+    ).fetch_all(&state.pool).await {
+        for (vid, _parent, _enabled) in vlans {
+            let vlan_name = format!("vlan{}", vid);
+            if !interfaces.iter().any(|i| i.name == vlan_name) {
+                interfaces.push(InterfaceInfo {
+                    name: vlan_name,
+                    ipv4: None, ipv6: None,
+                    status: "down".to_string(),
+                    mac: None,
+                });
+            }
+        }
+    }
 
     Ok(Json(ApiResponse { data: interfaces }))
 }
