@@ -325,7 +325,7 @@ async fn list_reservations_db(pool: &SqlitePool) -> Vec<DhcpReservation> {
 pub async fn dhcp_status(
     State(state): State<AppState>,
 ) -> Result<Json<DhcpStatus>, StatusCode> {
-    let running = Command::new("sudo").args(["service", "kea", "status"]).output().await
+    let running = Command::new("sudo").args(["/usr/sbin/service", "kea", "status"]).output().await
         .map(|o| {
             let stdout = String::from_utf8_lossy(&o.stdout);
             // Kea status output: "DHCPv4 server: active" or "inactive"
@@ -357,7 +357,7 @@ pub async fn dhcp_status(
 // --- Service control ---
 
 async fn run_kea_service(action: &str) -> Json<MessageResponse> {
-    let output = Command::new("sudo").args(["service", "kea", action])
+    let output = Command::new("sudo").args(["/usr/sbin/service", "kea", action])
         .output().await;
     match output {
         Ok(o) => {
@@ -536,7 +536,7 @@ pub async fn release_lease(
     Path(ip): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     // Remove from Kea lease file (simplified — in production use Kea CA API)
-    let _ = Command::new("sudo").args(["kea-admin", "lease-del", "4", &ip]).output().await;
+    let _ = Command::new("sudo").args(["/usr/local/sbin/kea-admin", "lease-del", "4", &ip]).output().await;
     Ok(Json(MessageResponse { message: format!("Lease {} released", ip) }))
 }
 
@@ -553,7 +553,7 @@ pub async fn dhcp_logs(
     let mut content = String::new();
     for path in &log_paths {
         // Use sudo cat since log may be owned by root
-        if let Ok(output) = Command::new("sudo").args(["cat", path]).output().await {
+        if let Ok(output) = Command::new("sudo").args(["/bin/cat", path]).output().await {
             if output.status.success() {
                 content = String::from_utf8_lossy(&output.stdout).to_string();
                 break;
@@ -594,12 +594,12 @@ pub async fn apply_config(
     let _ = tokio::fs::write("/usr/local/etc/kea/keactrl.conf", keactrl_conf).await;
 
     if config.enabled {
-        let _ = Command::new("sudo").args(["sysrc", "kea_enable=YES"]).output().await;
-        let _ = Command::new("sudo").args(["service", "kea", "restart"]).output().await;
+        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "kea_enable=YES"]).output().await;
+        let _ = Command::new("sudo").args(["/usr/sbin/service", "kea", "restart"]).output().await;
         Ok(Json(MessageResponse { message: "DHCP config applied and service restarted".to_string() }))
     } else {
-        let _ = Command::new("sudo").args(["service", "kea", "stop"]).output().await;
-        let _ = Command::new("sudo").args(["sysrc", "kea_enable=NO"]).output().await;
+        let _ = Command::new("sudo").args(["/usr/sbin/service", "kea", "stop"]).output().await;
+        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "kea_enable=NO"]).output().await;
         Ok(Json(MessageResponse { message: "DHCP config saved, service stopped".to_string() }))
     }
 }
