@@ -1,4 +1,5 @@
 mod auth;
+mod backup;
 mod ca;
 mod dhcp;
 mod dns_resolver;
@@ -150,6 +151,13 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/updates/history", get(updates::update_history))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
+        .route("/api/v1/config/history", get(backup::config_history))
+        .route("/api/v1/config/version", get(backup::get_version))
+        .route("/api/v1/config/diff", get(backup::diff_versions))
+        .route("/api/v1/config/save", post(backup::save_version))
+        .route("/api/v1/config/restore", post(backup::restore_version))
+        .route("/api/v1/config/check", get(backup::check_config))
+        .route("/api/v1/config/import-opnsense", post(backup::import_opnsense))
         .route("/api/v1/schedules", get(routes::list_schedules).post(routes::create_schedule))
         .route("/api/v1/schedules/{id}", put(routes::update_schedule).delete(routes::delete_schedule))
         .route("/api/v1/rules/system", get(routes::list_system_rules))
@@ -260,6 +268,7 @@ async fn create_state_from_db(
     updates::migrate(&pool).await?;
     iface::migrate(&pool).await?;
     dns_resolver::migrate(&pool).await?;
+    aifw_core::config_manager::ConfigManager::new(pool.clone()).migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     Ok(AppState {
