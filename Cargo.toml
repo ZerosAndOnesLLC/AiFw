@@ -30,7 +30,7 @@ aifw-api = { path = "aifw-api" }
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
-jsonwebtoken = "10.3.0"
+jsonwebtoken = "9"
 argon2 = { version = "0.5", features = ["std"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -43,5 +43,5 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
-ratatui = "0.30.0"
-crossterm = "0.29.0"
+ratatui = "0.29"
+crossterm = "0.28"
