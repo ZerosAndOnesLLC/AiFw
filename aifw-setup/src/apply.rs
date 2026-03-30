@@ -58,12 +58,17 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         let sudoers_line = "\
 aifw ALL=(ALL) NOPASSWD: /sbin/pfctl *\n\
 aifw ALL=(ALL) NOPASSWD: /sbin/pfctl\n\
+aifw ALL=(ALL) NOPASSWD: /sbin/ifconfig *\n\
+aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *\n\
+aifw ALL=(ALL) NOPASSWD: /sbin/route *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/service *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/sysrc *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/pkg *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/freebsd-update *\n\
 aifw ALL=(ALL) NOPASSWD: /sbin/shutdown *\n\
 aifw ALL=(ALL) NOPASSWD: /bin/cat *\n\
+aifw ALL=(ALL) NOPASSWD: /bin/pkill *\n\
+aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/bin/tee *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *\n";
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";

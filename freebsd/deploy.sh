@@ -156,9 +156,9 @@ chmod 755 /usr/local/etc/rc.d/trafficcop
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/rdhcpd" /usr/local/etc/rc.d/rdhcpd
 chmod 755 /usr/local/etc/rc.d/rdhcpd
 
-# Ensure sudoers for pfctl
+# Ensure sudoers for aifw user
 mkdir -p /usr/local/etc/sudoers.d
-echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /usr/sbin/service, /usr/sbin/sysrc, /usr/sbin/pkg, /usr/sbin/freebsd-update, /sbin/shutdown, /usr/bin/tee' > /usr/local/etc/sudoers.d/aifw
+echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /sbin/ifconfig, /sbin/dhclient, /sbin/route, /usr/sbin/service, /usr/sbin/sysrc, /usr/sbin/pkg, /usr/sbin/freebsd-update, /sbin/shutdown, /bin/cat, /bin/pkill, /usr/bin/pkill, /usr/bin/tee, /usr/sbin/chown' > /usr/local/etc/sudoers.d/aifw
 chmod 440 /usr/local/etc/sudoers.d/aifw
 
 echo ""
