@@ -1138,6 +1138,24 @@ pub async fn apply_config(
     if config.enabled {
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
+
+        // Ensure pf allows DHCP traffic (UDP ports 67/68)
+        let _ = Command::new("sudo").args([
+            "/sbin/pfctl", "-a", "aifw", "-f", "-",
+        ]).output().await; // clear first
+        let pf_rule = "pass in quick proto udp from any to any port { 67, 68 } keep state\n";
+        let mut pf_cmd = Command::new("sudo");
+        pf_cmd.args(["/sbin/pfctl", "-a", "aifw", "-mf", "-"]);
+        pf_cmd.stdin(std::process::Stdio::piped());
+        if let Ok(mut child) = pf_cmd.spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(pf_rule.as_bytes()).await;
+                drop(stdin);
+            }
+            let _ = child.wait().await;
+        }
+
         Ok(Json(MessageResponse { message: "DHCP config applied and rDHCP restarted".to_string() }))
     } else {
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "stop"]).output().await;
