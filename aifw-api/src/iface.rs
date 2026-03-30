@@ -30,12 +30,15 @@ pub struct InterfaceDetail {
     pub packets_out: u64,
     pub errors_in: u64,
     pub errors_out: u64,
+    pub gateway: Option<String>,
+    pub ipv4_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigureInterfaceRequest {
     pub ipv4_mode: Option<String>,     // "dhcp" | "static" | "none"
     pub ipv4_address: Option<String>,  // e.g. "192.168.1.1/24"
+    pub gateway: Option<String>,       // e.g. "192.168.1.254"
     pub ipv6_address: Option<String>,
     pub mtu: Option<u32>,
     pub enabled: Option<bool>,
@@ -103,10 +106,42 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 // Helpers
 // ============================================================
 
+/// Get the current default gateway from the routing table
+async fn get_default_gateway() -> Option<String> {
+    let output = Command::new("route").args(["-n", "get", "default"]).output().await.ok()?;
+    if !output.status.success() { return None; }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("gateway:") {
+            return Some(trimmed.strip_prefix("gateway:")?.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Get the persisted IPv4 mode for an interface from rc.conf
+async fn get_rc_ipv4_mode(name: &str) -> Option<String> {
+    let output = Command::new("sysrc").args(["-n", &format!("ifconfig_{}", name)]).output().await.ok()?;
+    if !output.status.success() { return None; }
+    let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if val.eq_ignore_ascii_case("dhcp") {
+        Some("dhcp".to_string())
+    } else if val.starts_with("inet ") {
+        Some("static".to_string())
+    } else if val.is_empty() {
+        None
+    } else {
+        Some("static".to_string())
+    }
+}
+
 async fn parse_ifconfig() -> Vec<InterfaceDetail> {
     let output = Command::new("ifconfig").arg("-a").output().await
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
+
+    let gateway = get_default_gateway().await;
 
     let mut interfaces = Vec::new();
     let mut current: Option<InterfaceDetail> = None;
@@ -128,6 +163,7 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
                 status: status.to_string(), mtu: mtu_val, media: None, description: None,
                 is_vlan, vlan_id: None, vlan_parent: None,
                 bytes_in: 0, bytes_out: 0, packets_in: 0, packets_out: 0, errors_in: 0, errors_out: 0,
+                gateway: None, ipv4_mode: None,
             });
         }
         if let Some(ref mut iface) = current {
@@ -153,7 +189,6 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
                 iface.description = Some(trimmed.strip_prefix("description: ").unwrap_or("").to_string());
             }
             if trimmed.starts_with("vlan: ") {
-                // "vlan: 100 vlanpcp: 0 parent interface: em0"
                 let vid = trimmed.split("vlan: ").nth(1).and_then(|s| s.split_whitespace().next())
                     .and_then(|s| s.parse().ok());
                 iface.vlan_id = vid;
@@ -167,7 +202,6 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
 
     // Get traffic stats via netstat
     let stats_out = Command::new("netstat").args(["-I", "", "-b", "-n", "--libxo", "json"]).output().await;
-    // Fallback: parse netstat for each interface
     for iface in &mut interfaces {
         if let Ok(output) = Command::new("netstat").args(["-I", &iface.name, "-b", "-n"]).output().await {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -186,9 +220,19 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
         }
     }
 
+    // Enrich with persisted mode and gateway
+    for iface in &mut interfaces {
+        iface.ipv4_mode = get_rc_ipv4_mode(&iface.name).await;
+        // Attach default gateway to whichever interface currently has it
+        // (the interface whose subnet contains the gateway)
+        if iface.ipv4.is_some() {
+            iface.gateway = gateway.clone();
+        }
+    }
+
     // Filter out pseudo interfaces
     interfaces.retain(|i| !i.name.starts_with("pflog") && !i.name.starts_with("pfsync") && !i.name.starts_with("enc"));
-    let _ = stats_out; // suppress warning
+    let _ = stats_out;
     interfaces
 }
 
@@ -205,66 +249,107 @@ pub async fn configure_interface(
     Path(name): Path<String>,
     Json(req): Json<ConfigureInterfaceRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let mut cmds = Vec::new();
+    let mut msgs = Vec::new();
 
+    // Handle enable/disable
     if let Some(enabled) = req.enabled {
         if enabled {
-            cmds.push(format!("sudo /sbin/ifconfig {} up", name));
+            let _ = run_cmd(&format!("sudo /sbin/ifconfig {} up", name)).await;
         } else {
-            cmds.push(format!("sudo /sbin/ifconfig {} down", name));
+            let _ = run_cmd(&format!("sudo /sbin/ifconfig {} down", name)).await;
         }
     }
 
+    // Handle MTU
     if let Some(mtu) = req.mtu {
-        cmds.push(format!("sudo /sbin/ifconfig {} mtu {}", name, mtu));
+        let _ = run_cmd(&format!("sudo /sbin/ifconfig {} mtu {}", name, mtu)).await;
     }
 
+    // Handle IPv4 mode change
     if let Some(ref mode) = req.ipv4_mode {
         match mode.as_str() {
             "dhcp" => {
-                cmds.push(format!("sudo /sbin/ifconfig {} delete 2>/dev/null; sudo /sbin/dhclient {}", name, name));
+                // Kill any existing dhclient, remove static address, then start dhclient
+                let _ = run_cmd(&format!("sudo pkill -f 'dhclient.*{}'", name)).await;
+                let _ = run_cmd(&format!("sudo /sbin/ifconfig {} delete 2>/dev/null || true", name)).await;
+                let _ = run_cmd(&format!("sudo /sbin/dhclient {}", name)).await;
                 // Persist
                 let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}=DHCP", name)]).output().await;
+                // Remove static defaultrouter if we're switching to DHCP (DHCP will set it)
+                msgs.push("Set to DHCP".to_string());
             }
             "static" => {
+                // Kill dhclient first so it doesn't overwrite our static IP
+                let _ = run_cmd(&format!("sudo pkill -f 'dhclient.*{}'", name)).await;
+                // Brief pause for dhclient to fully exit
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // Remove old addresses
+                let _ = run_cmd(&format!("sudo /sbin/ifconfig {} delete 2>/dev/null || true", name)).await;
+
                 if let Some(ref addr) = req.ipv4_address {
-                    cmds.push(format!("sudo /sbin/ifconfig {} inet {}", name, addr));
+                    // Apply the static IP immediately
+                    let _ = run_cmd(&format!("sudo /sbin/ifconfig {} inet {}", name, addr)).await;
+                    let _ = run_cmd(&format!("sudo /sbin/ifconfig {} up", name)).await;
+
+                    // Persist in rc.conf
                     let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}=inet {}", name, addr)]).output().await;
+                    msgs.push(format!("Set static IP {}", addr));
+                }
+
+                // Handle gateway
+                if let Some(ref gw) = req.gateway {
+                    if !gw.is_empty() {
+                        // Remove old default route, add new one
+                        let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+                        let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
+                        // Persist
+                        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
+                        msgs.push(format!("Gateway set to {}", gw));
+                    }
                 }
             }
             "none" => {
-                cmds.push(format!("sudo /sbin/ifconfig {} delete 2>/dev/null || true", name));
+                let _ = run_cmd(&format!("sudo pkill -f 'dhclient.*{}'", name)).await;
+                let _ = run_cmd(&format!("sudo /sbin/ifconfig {} delete 2>/dev/null || true", name)).await;
                 let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", name)]).output().await;
+                msgs.push("Removed IP configuration".to_string());
             }
             _ => {}
+        }
+    } else if let Some(ref gw) = req.gateway {
+        // Gateway update without mode change
+        if !gw.is_empty() {
+            let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+            let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
+            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
+            msgs.push(format!("Gateway set to {}", gw));
         }
     }
 
     if let Some(ref ipv6) = req.ipv6_address {
         if !ipv6.is_empty() {
-            cmds.push(format!("sudo /sbin/ifconfig {} inet6 {}", name, ipv6));
+            let _ = run_cmd(&format!("sudo /sbin/ifconfig {} inet6 {}", name, ipv6)).await;
         }
     }
 
     if let Some(ref desc) = req.description {
-        cmds.push(format!("sudo /sbin/ifconfig {} description \"{}\"", name, desc));
+        let _ = run_cmd(&format!("sudo /sbin/ifconfig {} description \"{}\"", name, desc)).await;
     }
 
-    let mut errors = Vec::new();
-    for cmd in &cmds {
-        let output = Command::new("sh").arg("-c").arg(cmd).output().await;
-        if let Ok(o) = output {
-            if !o.status.success() {
-                errors.push(format!("{}: {}", cmd, String::from_utf8_lossy(&o.stderr).trim()));
-            }
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(Json(MessageResponse { message: format!("Interface {} configured", name) }))
+    let summary = if msgs.is_empty() {
+        format!("Interface {} configured", name)
     } else {
-        Ok(Json(MessageResponse { message: format!("Partial: {}", errors.join("; ")) }))
-    }
+        format!("Interface {} configured: {}", name, msgs.join(", "))
+    };
+
+    Ok(Json(MessageResponse { message: summary }))
+}
+
+/// Run a shell command and return success/failure
+async fn run_cmd(cmd: &str) -> bool {
+    Command::new("sh").arg("-c").arg(cmd).output().await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 // --- VLANs ---
@@ -341,7 +426,6 @@ pub async fn delete_vlan(
         .ok_or(StatusCode::NOT_FOUND)?;
     let vlan_name = format!("vlan{}", row.0);
 
-    // Destroy the interface
     let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "destroy"]).output().await;
     let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", vlan_name)]).output().await;
 
@@ -367,7 +451,6 @@ pub async fn update_vlan(
 
     let vlan_name = format!("vlan{}", req.vlan_id);
 
-    // Reconfigure
     if enabled {
         let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "mtu", &mtu.to_string()]).output().await;
         if mode == "static" {

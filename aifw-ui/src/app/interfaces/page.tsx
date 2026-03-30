@@ -21,11 +21,14 @@ interface InterfaceDetail {
   packets_out: number;
   errors_in: number;
   errors_out: number;
+  gateway: string | null;
+  ipv4_mode: string | null;
 }
 
 interface InterfaceForm {
   ipv4_mode: string;
   ipv4_address: string;
+  gateway: string;
   ipv6_address: string;
   mtu: string;
   enabled: boolean;
@@ -35,6 +38,7 @@ interface InterfaceForm {
 const emptyForm: InterfaceForm = {
   ipv4_mode: "dhcp",
   ipv4_address: "",
+  gateway: "",
   ipv6_address: "",
   mtu: "1500",
   enabled: true,
@@ -60,10 +64,16 @@ export default function InterfacesPage() {
   const [interfaces, setInterfaces] = useState<InterfaceDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [form, setForm] = useState<InterfaceForm>({ ...emptyForm });
   const [saving, setSaving] = useState(false);
   const initialLoad = useRef(true);
+
+  const showFeedback = (type: "success" | "error", msg: string) => {
+    setFeedback({ type, msg });
+    setTimeout(() => setFeedback(null), 8000);
+  };
 
   const fetchInterfaces = useCallback(async () => {
     try {
@@ -96,8 +106,9 @@ export default function InterfacesPage() {
   function openEdit(iface: InterfaceDetail) {
     setEditingName(iface.name);
     setForm({
-      ipv4_mode: iface.ipv4 ? "static" : "dhcp",
+      ipv4_mode: iface.ipv4_mode || (iface.ipv4 ? "static" : "dhcp"),
       ipv4_address: iface.ipv4 || "",
+      gateway: iface.gateway || "",
       ipv6_address: iface.ipv6 || "",
       mtu: String(iface.mtu),
       enabled: iface.status === "up",
@@ -122,8 +133,9 @@ export default function InterfacesPage() {
       description: form.description || undefined,
       ipv4_mode: form.ipv4_mode,
     };
-    if (form.ipv4_mode === "static" && form.ipv4_address) {
-      body.ipv4_address = form.ipv4_address;
+    if (form.ipv4_mode === "static") {
+      if (form.ipv4_address) body.ipv4_address = form.ipv4_address;
+      if (form.gateway) body.gateway = form.gateway;
     }
     if (form.ipv6_address) {
       body.ipv6_address = form.ipv6_address;
@@ -138,14 +150,16 @@ export default function InterfacesPage() {
           body: JSON.stringify(body),
         }
       );
+      const data = await res.json().catch(() => ({ message: "" }));
       if (!res.ok) {
-        const errBody = await res.json().catch(() => null);
-        throw new Error(errBody?.message || "Failed to update interface");
+        throw new Error(data?.message || "Failed to update interface");
       }
+      showFeedback("success", data.message || `Interface ${editingName} configured`);
       closeEdit();
-      await fetchInterfaces();
+      // Wait briefly for changes to take effect before refreshing
+      setTimeout(() => fetchInterfaces(), 1500);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Save failed");
+      showFeedback("error", e instanceof Error ? e.message : "Save failed");
     } finally {
       setSaving(false);
     }
@@ -180,6 +194,15 @@ export default function InterfacesPage() {
         </div>
       </div>
 
+      {/* Feedback */}
+      {feedback && (
+        <div className={`px-4 py-3 rounded-lg text-sm border ${
+          feedback.type === "success"
+            ? "bg-green-500/10 border-green-500/30 text-green-400"
+            : "bg-red-500/10 border-red-500/30 text-red-400"
+        }`}>{feedback.msg}</div>
+      )}
+
       {/* Error */}
       {error && (
         <div className="bg-red-900/50 border border-red-700 text-red-200 px-4 py-3 rounded-lg">
@@ -195,20 +218,19 @@ export default function InterfacesPage() {
               <tr>
                 <th className="px-6 py-3">Name</th>
                 <th className="px-6 py-3">Status</th>
+                <th className="px-6 py-3">Mode</th>
                 <th className="px-6 py-3">IPv4</th>
-                <th className="px-6 py-3">IPv6</th>
+                <th className="px-6 py-3">Gateway</th>
                 <th className="px-6 py-3">MAC</th>
                 <th className="px-6 py-3">MTU</th>
-                <th className="px-6 py-3">Media</th>
                 <th className="px-6 py-3">Traffic</th>
-                <th className="px-6 py-3">Type</th>
                 <th className="px-6 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700">
               {interfaces.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan={9} className="px-6 py-8 text-center text-gray-500">
                     No interfaces detected
                   </td>
                 </tr>
@@ -238,36 +260,33 @@ export default function InterfacesPage() {
                         {iface.status === "up" ? "UP" : "DOWN"}
                       </span>
                     </td>
+                    <td className="px-6 py-3">
+                      <span className={`text-xs px-2 py-0.5 rounded-full border ${
+                        iface.ipv4_mode === "dhcp"
+                          ? "bg-blue-500/20 text-blue-400 border-blue-500/30"
+                          : iface.ipv4_mode === "static"
+                            ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
+                            : "bg-gray-500/20 text-gray-400 border-gray-500/30"
+                      }`}>
+                        {iface.ipv4_mode || "--"}
+                      </span>
+                    </td>
                     <td className="px-6 py-3 font-mono text-gray-300 text-xs">
                       {iface.ipv4 || "--"}
                     </td>
-                    <td className="px-6 py-3 font-mono text-gray-300 text-xs max-w-[180px] truncate">
-                      {iface.ipv6 || "--"}
+                    <td className="px-6 py-3 font-mono text-gray-300 text-xs">
+                      {iface.gateway || "--"}
                     </td>
                     <td className="px-6 py-3 font-mono text-gray-400 text-xs">
                       {iface.mac || "--"}
                     </td>
                     <td className="px-6 py-3 text-gray-300">{iface.mtu}</td>
-                    <td className="px-6 py-3 text-gray-400 text-xs">
-                      {iface.media || "--"}
-                    </td>
                     <td className="px-6 py-3">
                       <div className="text-xs font-mono">
                         <span className="text-green-400">{formatBytes(iface.bytes_in)}</span>
                         <span className="text-gray-500"> / </span>
                         <span className="text-blue-400">{formatBytes(iface.bytes_out)}</span>
                       </div>
-                    </td>
-                    <td className="px-6 py-3">
-                      <span
-                        className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                          iface.is_vlan
-                            ? "bg-purple-900/40 text-purple-400"
-                            : "bg-cyan-900/40 text-cyan-400"
-                        }`}
-                      >
-                        {iface.is_vlan ? "VLAN" : "Physical"}
-                      </span>
                     </td>
                     <td className="px-6 py-3 text-right">
                       <button
@@ -324,19 +343,34 @@ export default function InterfacesPage() {
 
               {/* IPv4 Address (static only) */}
               {form.ipv4_mode === "static" && (
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">
-                    IPv4 Address (with /prefix)
-                  </label>
-                  <input
-                    value={form.ipv4_address}
-                    onChange={(e) =>
-                      setForm({ ...form, ipv4_address: e.target.value })
-                    }
-                    placeholder="192.168.1.1/24"
-                    className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
-                </div>
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      IPv4 Address (with /prefix)
+                    </label>
+                    <input
+                      value={form.ipv4_address}
+                      onChange={(e) =>
+                        setForm({ ...form, ipv4_address: e.target.value })
+                      }
+                      placeholder="192.168.1.1/24"
+                      className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Default Gateway
+                    </label>
+                    <input
+                      value={form.gateway}
+                      onChange={(e) =>
+                        setForm({ ...form, gateway: e.target.value })
+                      }
+                      placeholder="192.168.1.254"
+                      className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </>
               )}
 
               {/* IPv6 Address */}
@@ -409,7 +443,7 @@ export default function InterfacesPage() {
                   disabled={saving}
                   className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-md transition-colors"
                 >
-                  {saving ? "Saving..." : "Save"}
+                  {saving ? "Applying..." : "Apply"}
                 </button>
                 <button
                   type="button"
@@ -419,6 +453,9 @@ export default function InterfacesPage() {
                   Cancel
                 </button>
               </div>
+              <p className="text-[10px] text-gray-500 text-center">
+                Changes apply immediately and persist across reboots
+              </p>
             </form>
           </div>
         </div>
