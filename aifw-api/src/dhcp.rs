@@ -1140,21 +1140,11 @@ pub async fn apply_config(
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
 
         // Ensure pf allows DHCP traffic (UDP ports 67/68)
-        let _ = Command::new("sudo").args([
-            "/sbin/pfctl", "-a", "aifw", "-f", "-",
-        ]).output().await; // clear first
         let pf_rule = "pass in quick proto udp from any to any port { 67, 68 } keep state\n";
-        let mut pf_cmd = Command::new("sudo");
-        pf_cmd.args(["/sbin/pfctl", "-a", "aifw", "-mf", "-"]);
-        pf_cmd.stdin(std::process::Stdio::piped());
-        if let Ok(mut child) = pf_cmd.spawn() {
-            if let Some(mut stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(pf_rule.as_bytes()).await;
-                drop(stdin);
-            }
-            let _ = child.wait().await;
-        }
+        let pf_tmp = "/tmp/aifw-dhcp-pf.conf";
+        let _ = tokio::fs::write(pf_tmp, pf_rule).await;
+        let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-mf", pf_tmp]).output().await;
+        let _ = tokio::fs::remove_file(pf_tmp).await;
 
         Ok(Json(MessageResponse { message: "DHCP config applied and rDHCP restarted".to_string() }))
     } else {
