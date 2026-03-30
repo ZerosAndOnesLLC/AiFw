@@ -1139,17 +1139,32 @@ pub async fn apply_config(
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
 
-        // Ensure pf allows DHCP traffic (UDP ports 67/68)
-        let pf_rule = "pass in quick proto udp from any to any port { 67, 68 } keep state\n";
+        // Add pf rules to allow DHCP traffic on configured interfaces
         let pf_tmp = "/tmp/aifw-dhcp-pf.conf";
-        let _ = tokio::fs::write(pf_tmp, pf_rule).await;
-        let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-mf", pf_tmp]).output().await;
+        let mut pf_rules = String::new();
+        if config.interfaces.is_empty() {
+            // No interfaces specified — allow DHCP on all
+            pf_rules.push_str("pass in quick proto udp from any to any port { 67, 68 } keep state\n");
+        } else {
+            for iface in &config.interfaces {
+                pf_rules.push_str(&format!(
+                    "pass in quick on {} proto udp from any to any port {{ 67, 68 }} keep state\n",
+                    iface
+                ));
+            }
+        }
+        // Flush the anchor first, then load new rules
+        let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-Fa"]).output().await;
+        let _ = tokio::fs::write(pf_tmp, &pf_rules).await;
+        let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-f", pf_tmp]).output().await;
         let _ = tokio::fs::remove_file(pf_tmp).await;
 
         Ok(Json(MessageResponse { message: "DHCP config applied and rDHCP restarted".to_string() }))
     } else {
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "stop"]).output().await;
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=NO"]).output().await;
+        // Remove DHCP pf rules when disabled
+        let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-Fa"]).output().await;
         Ok(Json(MessageResponse { message: "DHCP config saved, rDHCP stopped".to_string() }))
     }
 }
