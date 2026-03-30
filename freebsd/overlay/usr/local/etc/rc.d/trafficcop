@@ -45,7 +45,10 @@ trafficcop_stop()
         pid=$(cat "${pidfile}")
         echo "Stopping ${name} (pid ${pid})."
         kill "${pid}" 2>/dev/null
+        # Also kill the daemon wrapper that holds the binary reference
+        pkill -f "daemon.*trafficcop" 2>/dev/null
         rm -f "${pidfile}"
+        sleep 1
     else
         echo "${name} is not running."
     fi

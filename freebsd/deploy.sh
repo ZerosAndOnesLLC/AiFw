@@ -84,8 +84,10 @@ echo ""
 # --- Stop services ---
 echo "[4/5] Deploying..."
 service trafficcop stop 2>/dev/null || true
+pkill -9 -f "daemon.*trafficcop" 2>/dev/null || true
 service aifw_api stop 2>/dev/null || true
 service aifw_daemon stop 2>/dev/null || true
+pkill -9 -f "aifw-api.*8081" 2>/dev/null || true
 sleep 1
 
 # Copy binaries
