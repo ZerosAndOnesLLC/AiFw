@@ -32,6 +32,7 @@ pub struct DhcpGlobalConfig {
     pub log_level: String,
     pub log_format: String,
     pub api_port: u16,
+    pub workers: u32,
 }
 
 impl Default for DhcpGlobalConfig {
@@ -52,6 +53,7 @@ impl Default for DhcpGlobalConfig {
             log_level: "info".to_string(),
             log_format: "text".to_string(),
             api_port: 9967,
+            workers: 1,
         }
     }
 }
@@ -382,6 +384,7 @@ async fn load_global_config(pool: &SqlitePool) -> DhcpGlobalConfig {
             "log_level" => config.log_level = value,
             "log_format" => config.log_format = value,
             "api_port" => config.api_port = value.parse().unwrap_or(9967),
+            "workers" => config.workers = value.parse().unwrap_or(1),
             _ => {}
         }
     }
@@ -493,6 +496,7 @@ async fn generate_rdhcp_config(pool: &SqlitePool) -> String {
     toml.push_str(&format!("log_level = \"{}\"\n", config.log_level));
     toml.push_str(&format!("log_format = \"{}\"\n", config.log_format));
     toml.push_str(&format!("lease_db = \"{}\"\n", RDHCP_LEASE_DB));
+    toml.push_str(&format!("workers = {}\n", config.workers));
     toml.push('\n');
 
     // [api]
@@ -828,6 +832,7 @@ pub async fn update_config(
     save_config_key(&state.pool, "log_level", &config.log_level).await;
     save_config_key(&state.pool, "log_format", &config.log_format).await;
     save_config_key(&state.pool, "api_port", &config.api_port.to_string()).await;
+    save_config_key(&state.pool, "workers", &config.workers.to_string()).await;
     Ok(Json(MessageResponse { message: "DHCP config updated".to_string() }))
 }
 

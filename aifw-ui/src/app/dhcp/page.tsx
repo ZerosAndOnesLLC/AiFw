@@ -45,6 +45,7 @@ interface DhcpGlobalConfig {
   log_level: string;
   log_format: string;
   api_port: number;
+  workers: number;
 }
 
 interface NetInterface {
@@ -79,6 +80,7 @@ const defaultConfig: DhcpGlobalConfig = {
   log_level: "info",
   log_format: "text",
   api_port: 9967,
+  workers: 1,
 };
 
 /* -- Page ------------------------------------------------------------ */
@@ -495,7 +497,7 @@ export default function DhcpOverviewPage() {
           {/* Logging & API */}
           <div>
             <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">Logging & API</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
               <div>
                 <label className="block text-xs text-[var(--text-muted)] mb-1">Log Level</label>
                 <select
@@ -522,14 +524,26 @@ export default function DhcpOverviewPage() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-[var(--text-muted)] mb-1">Management API Port</label>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">Workers</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={config.workers}
+                  onChange={(e) => setConfig((p) => ({ ...p, workers: Number(e.target.value) }))}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">Receive workers per protocol</p>
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">API Port</label>
                 <input
                   type="number"
                   value={config.api_port}
                   onChange={(e) => setConfig((p) => ({ ...p, api_port: Number(e.target.value) }))}
                   className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
                 />
-                <p className="text-[10px] text-[var(--text-muted)] mt-1">rDHCP internal management API (leases, metrics, HA)</p>
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">Internal management API</p>
               </div>
             </div>
           </div>
