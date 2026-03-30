@@ -573,6 +573,87 @@ load_rc_config $name
 run_rc_command "$1"
 "#, db = config.db_path, listen = config.api_listen, port = config.api_port);
 
+    let rdhcpd_script = r#"#!/bin/sh
+# PROVIDE: rdhcpd
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="rdhcpd"
+rcvar="rdhcpd_enable"
+
+command="/usr/local/sbin/rdhcpd"
+command_args="/usr/local/etc/rdhcpd/config.toml"
+pidfile="/var/run/${name}.pid"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+status_cmd="${name}_status"
+reload_cmd="${name}_reload"
+extra_commands="reload"
+
+rdhcpd_start()
+{
+    if rdhcpd_status >/dev/null 2>&1; then
+        echo "${name} is already running."
+        return 0
+    fi
+
+    mkdir -p /var/db/rdhcpd/leases /var/log/rdhcpd /usr/local/etc/rdhcpd
+    chown -R aifw:aifw /var/db/rdhcpd /var/log/rdhcpd /usr/local/etc/rdhcpd
+
+    if [ ! -f /usr/local/etc/rdhcpd/config.toml ]; then
+        echo "ERROR: ${name} config not found at /usr/local/etc/rdhcpd/config.toml"
+        return 1
+    fi
+
+    echo "Starting ${name}."
+    /usr/sbin/daemon -p ${pidfile} -o /var/log/rdhcpd/rdhcpd.log -u aifw ${command} ${command_args}
+}
+
+rdhcpd_stop()
+{
+    if [ -f "${pidfile}" ]; then
+        pid=$(cat "${pidfile}")
+        echo "Stopping ${name} (pid ${pid})."
+        kill "${pid}" 2>/dev/null
+        pkill -f "daemon.*rdhcpd" 2>/dev/null
+        rm -f "${pidfile}"
+        sleep 1
+    else
+        echo "${name} is not running."
+    fi
+}
+
+rdhcpd_status()
+{
+    if [ -f "${pidfile}" ] && kill -0 "$(cat "${pidfile}")" 2>/dev/null; then
+        echo "${name} is running (pid $(cat "${pidfile}"))."
+        return 0
+    else
+        echo "${name} is not running."
+        return 1
+    fi
+}
+
+rdhcpd_reload()
+{
+    if [ -f "${pidfile}" ]; then
+        pid=$(cat "${pidfile}")
+        echo "Reloading ${name} (pid ${pid})."
+        kill -HUP "${pid}" 2>/dev/null
+    else
+        echo "${name} is not running."
+        return 1
+    fi
+}
+
+load_rc_config $name
+: ${rdhcpd_enable:="NO"}
+run_rc_command "$1"
+"#;
+
     // Write scripts (on non-FreeBSD just write to config dir)
     let rcd_dir = if std::path::Path::new("/usr/local/etc/rc.d").exists() {
         "/usr/local/etc/rc.d"
@@ -582,6 +663,7 @@ run_rc_command "$1"
 
     write_file(&format!("{rcd_dir}/aifw_daemon"), &daemon_script)?;
     write_file(&format!("{rcd_dir}/aifw_api"), &api_script)?;
+    write_file(&format!("{rcd_dir}/rdhcpd"), rdhcpd_script)?;
 
     // Make executable
     #[cfg(unix)]
@@ -589,7 +671,8 @@ run_rc_command "$1"
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o755);
         let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_daemon"), perms.clone());
-        let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_api"), perms);
+        let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_api"), perms.clone());
+        let _ = std::fs::set_permissions(format!("{rcd_dir}/rdhcpd"), perms);
     }
 
     Ok(())

@@ -8,6 +8,7 @@ set -e
 REPO_DIR="/root/AiFw"
 BINS="aifw aifw-api aifw-daemon aifw-setup aifw-tui"
 TRAFFICCOP_DIR="/root/trafficcop"
+RDHCP_DIR="/root/rDHCP"
 BIN_DIR="/usr/local/sbin"
 UI_DIR="/usr/local/share/aifw/ui"
 
@@ -72,6 +73,21 @@ elif [ ! -f "$BIN_DIR/trafficcop" ]; then
     cargo build --release 2>&1 | tail -3
     cd "$REPO_DIR"
 fi
+
+# Build rDHCP if source available
+if [ -d "$RDHCP_DIR" ]; then
+    echo "  Building rDHCP..."
+    cd "$RDHCP_DIR"
+    git pull 2>/dev/null || true
+    cargo build --release 2>&1 | tail -3
+    cd "$REPO_DIR"
+elif [ ! -f "$BIN_DIR/rdhcpd" ]; then
+    echo "  Cloning rDHCP..."
+    git clone https://github.com/ZerosAndOnesLLC/rDHCP.git "$RDHCP_DIR"
+    cd "$RDHCP_DIR"
+    cargo build --release 2>&1 | tail -3
+    cd "$REPO_DIR"
+fi
 echo ""
 
 # --- Build UI ---
@@ -101,6 +117,11 @@ done
 if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
     cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$BIN_DIR/trafficcop"
     chmod 755 "$BIN_DIR/trafficcop"
+fi
+# Copy rDHCP binary
+if [ -f "$RDHCP_DIR/target/release/rdhcpd" ]; then
+    cp "$RDHCP_DIR/target/release/rdhcpd" "$BIN_DIR/rdhcpd"
+    chmod 755 "$BIN_DIR/rdhcpd"
 fi
 echo "  Binaries installed to $BIN_DIR"
 

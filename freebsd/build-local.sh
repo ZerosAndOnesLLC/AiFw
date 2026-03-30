@@ -72,6 +72,17 @@ else
     echo "WARNING: TrafficCop source not found at $TRAFFICCOP_DIR, skipping"
 fi
 
+# Build rDHCP (DHCP server)
+RDHCP_DIR="$PROJECT_ROOT/../rDHCP"
+if [ -d "$RDHCP_DIR" ]; then
+    echo "Building rDHCP..."
+    cd "$RDHCP_DIR"
+    cargo build --release
+    cd "$PROJECT_ROOT"
+else
+    echo "WARNING: rDHCP source not found at $RDHCP_DIR, skipping"
+fi
+
 # --- Stage build inputs ---
 echo "=== [4/6] Staging build inputs ==="
 mkdir -p "$SCRIPT_DIR/release"
@@ -81,6 +92,10 @@ done
 # Stage TrafficCop binary if built
 if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
     cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$SCRIPT_DIR/release/trafficcop"
+fi
+# Stage rDHCP binary if built
+if [ -f "$RDHCP_DIR/target/release/rdhcpd" ]; then
+    cp "$RDHCP_DIR/target/release/rdhcpd" "$SCRIPT_DIR/release/rdhcpd"
 fi
 
 rm -rf "$SCRIPT_DIR/ui-export"
@@ -97,6 +112,10 @@ done
 # Include TrafficCop in update tarball
 if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
     cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$TARBALL_DIR/bin/"
+fi
+# Include rDHCP in update tarball
+if [ -f "$RDHCP_DIR/target/release/rdhcpd" ]; then
+    cp "$RDHCP_DIR/target/release/rdhcpd" "$TARBALL_DIR/bin/"
 fi
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
 echo "$VERSION" > "$TARBALL_DIR/version"

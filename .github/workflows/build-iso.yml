@@ -85,6 +85,12 @@ jobs:
             cargo build --release
             cd /home/runner/work/AiFw/AiFw
 
+            echo "=== Building rDHCP ==="
+            git clone https://github.com/ZerosAndOnesLLC/rDHCP.git /tmp/rDHCP
+            cd /tmp/rDHCP
+            cargo build --release
+            cd /home/runner/work/AiFw/AiFw
+
             echo "=== Preparing build inputs ==="
             # Copy release binaries to where build-iso.sh expects them
             mkdir -p freebsd/release
@@ -92,6 +98,7 @@ jobs:
               cp "target/release/${bin}" "freebsd/release/${bin}"
             done
             cp /tmp/trafficcop/target/release/trafficcop freebsd/release/trafficcop
+            cp /tmp/rDHCP/target/release/rdhcpd freebsd/release/rdhcpd
 
             echo "=== Building update tarball ==="
             VERSION="${{ steps.version.outputs.version }}"
@@ -101,6 +108,7 @@ jobs:
               cp "target/release/${bin}" "$TARBALL_DIR/bin/"
             done
             cp /tmp/trafficcop/target/release/trafficcop "$TARBALL_DIR/bin/"
+            cp /tmp/rDHCP/target/release/rdhcpd "$TARBALL_DIR/bin/"
             cp -a freebsd/ui-export/* "$TARBALL_DIR/ui/"
             echo "$VERSION" > "$TARBALL_DIR/version"
             mkdir -p /usr/obj/aifw-iso/output
