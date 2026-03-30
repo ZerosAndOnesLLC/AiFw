@@ -283,13 +283,12 @@ pub async fn configure_interface(
                 let _ = run_cmd(&format!("sudo pkill -f 'dhclient.*{}'", name)).await;
                 // Brief pause for dhclient to fully exit
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                // Remove old addresses
-                let _ = run_cmd(&format!("sudo /sbin/ifconfig {} delete 2>/dev/null || true", name)).await;
 
                 if let Some(ref addr) = req.ipv4_address {
-                    // Apply the static IP immediately
-                    let _ = run_cmd(&format!("sudo /sbin/ifconfig {} inet {}", name, addr)).await;
-                    let _ = run_cmd(&format!("sudo /sbin/ifconfig {} up", name)).await;
+                    // Remove any existing addresses, then set the new static IP
+                    // Use -alias to remove old IPs cleanly, then add new one
+                    let _ = Command::new("sudo").args(["/sbin/ifconfig", &name, "inet", addr]).output().await;
+                    let _ = Command::new("sudo").args(["/sbin/ifconfig", &name, "up"]).output().await;
 
                     // Persist in rc.conf
                     let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}=inet {}", name, addr)]).output().await;
