@@ -4,12 +4,29 @@ import { useState, useEffect, useCallback } from "react";
 
 /* -- Types ---------------------------------------------------------- */
 
+interface PoolStats {
+  subnet: string;
+  total: number;
+  allocated: number;
+  available: number;
+  utilization: number;
+}
+
+interface HaStatus {
+  mode: string;
+  role: string;
+  peer_state?: string;
+  healthy: boolean;
+}
+
 interface DhcpStatus {
   running: boolean;
   version: string;
   total_subnets: number;
   total_reservations: number;
   active_leases: number;
+  ha?: HaStatus;
+  pool_stats: PoolStats[];
 }
 
 interface DhcpGlobalConfig {
@@ -25,6 +42,9 @@ interface DhcpGlobalConfig {
   wins_servers: string[];
   next_server: string;
   boot_filename: string;
+  log_level: string;
+  log_format: string;
+  api_port: number;
 }
 
 interface NetInterface {
@@ -56,6 +76,9 @@ const defaultConfig: DhcpGlobalConfig = {
   wins_servers: [],
   next_server: "",
   boot_filename: "",
+  log_level: "info",
+  log_format: "text",
+  api_port: 9967,
 };
 
 /* -- Page ------------------------------------------------------------ */
@@ -181,7 +204,7 @@ export default function DhcpOverviewPage() {
         headers: authHeaders(),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showFeedback("success", "Configuration applied and service restarted");
+      showFeedback("success", "Configuration applied and rDHCP restarted");
       await fetchStatus();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to apply config");
@@ -214,7 +237,7 @@ export default function DhcpOverviewPage() {
       <div>
         <h1 className="text-2xl font-bold">DHCP Server</h1>
         <p className="text-sm text-[var(--text-muted)]">
-          Manage the DHCPv4 server, global settings, and service lifecycle
+          Powered by rDHCP — high-performance dual-stack DHCP with HA support
         </p>
       </div>
 
@@ -246,7 +269,7 @@ export default function DhcpOverviewPage() {
           </span>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm mb-5">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm mb-5">
           <div>
             <span className="block text-xs text-[var(--text-muted)] mb-0.5">Version</span>
             <span className="text-[var(--text-primary)] font-mono text-xs">
@@ -271,7 +294,39 @@ export default function DhcpOverviewPage() {
               {status?.active_leases ?? 0}
             </span>
           </div>
+          <div>
+            <span className="block text-xs text-[var(--text-muted)] mb-0.5">HA Mode</span>
+            <span className="text-[var(--text-primary)] font-semibold capitalize">
+              {status?.ha?.mode || "standalone"}
+              {status?.ha?.healthy === false && (
+                <span className="ml-1 text-red-400 text-xs">(unhealthy)</span>
+              )}
+            </span>
+          </div>
         </div>
+
+        {/* Pool utilization bars */}
+        {status?.pool_stats && status.pool_stats.length > 0 && (
+          <div className="mb-5 space-y-2">
+            <span className="text-xs text-[var(--text-muted)] font-medium">Pool Utilization</span>
+            {status.pool_stats.map((ps) => (
+              <div key={ps.subnet} className="flex items-center gap-3">
+                <span className="text-xs text-[var(--text-secondary)] font-mono w-40 truncate">{ps.subnet}</span>
+                <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      ps.utilization > 90 ? "bg-red-500" : ps.utilization > 70 ? "bg-yellow-500" : "bg-blue-500"
+                    }`}
+                    style={{ width: `${Math.min(ps.utilization, 100)}%` }}
+                  />
+                </div>
+                <span className="text-xs text-[var(--text-muted)] w-20 text-right">
+                  {ps.allocated}/{ps.total} ({ps.utilization.toFixed(1)}%)
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="flex gap-3">
           <button
@@ -434,6 +489,48 @@ export default function DhcpOverviewPage() {
                 placeholder="e.g. home.lan"
                 className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
               />
+            </div>
+          </div>
+
+          {/* Logging & API */}
+          <div>
+            <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">Logging & API</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">Log Level</label>
+                <select
+                  value={config.log_level}
+                  onChange={(e) => setConfig((p) => ({ ...p, log_level: e.target.value }))}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="error">Error</option>
+                  <option value="warn">Warning</option>
+                  <option value="info">Info</option>
+                  <option value="debug">Debug</option>
+                  <option value="trace">Trace</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">Log Format</label>
+                <select
+                  value={config.log_format}
+                  onChange={(e) => setConfig((p) => ({ ...p, log_format: e.target.value }))}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="text">Text</option>
+                  <option value="json">JSON</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">Management API Port</label>
+                <input
+                  type="number"
+                  value={config.api_port}
+                  onChange={(e) => setConfig((p) => ({ ...p, api_port: Number(e.target.value) }))}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">rDHCP internal management API (leases, metrics, HA)</p>
+              </div>
             </div>
           </div>
 

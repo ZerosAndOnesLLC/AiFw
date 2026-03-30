@@ -10,6 +10,7 @@ interface DhcpReservation {
   mac_address: string;
   ip_address: string;
   hostname?: string;
+  client_id?: string;
   description?: string;
   created_at: string;
 }
@@ -23,6 +24,7 @@ interface ReservationForm {
   mac_address: string;
   ip_address: string;
   hostname: string;
+  client_id: string;
   subnet_id: string;
   description: string;
 }
@@ -31,6 +33,7 @@ const defaultForm: ReservationForm = {
   mac_address: "",
   ip_address: "",
   hostname: "",
+  client_id: "",
   subnet_id: "",
   description: "",
 };
@@ -132,6 +135,7 @@ export default function DhcpReservationsPage() {
       mac_address: r.mac_address,
       ip_address: r.ip_address,
       hostname: r.hostname || "",
+      client_id: r.client_id || "",
       subnet_id: r.subnet_id || "",
       description: r.description || "",
     });
@@ -156,6 +160,7 @@ export default function DhcpReservationsPage() {
         ip_address: form.ip_address.trim(),
       };
       if (form.hostname.trim()) payload.hostname = form.hostname.trim();
+      if (form.client_id.trim()) payload.client_id = form.client_id.trim();
       if (form.subnet_id) payload.subnet_id = form.subnet_id;
       if (form.description.trim()) payload.description = form.description.trim();
 
@@ -351,6 +356,17 @@ export default function DhcpReservationsPage() {
                   value={form.hostname}
                   onChange={(e) => setForm((p) => ({ ...p, hostname: e.target.value }))}
                   placeholder="Optional hostname"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">Client ID (DHCP Option 61)</label>
+                <input
+                  type="text"
+                  value={form.client_id}
+                  onChange={(e) => setForm((p) => ({ ...p, client_id: e.target.value }))}
+                  placeholder="Optional — alternative to MAC for identification"
                   className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
               </div>

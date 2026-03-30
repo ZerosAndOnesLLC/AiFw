@@ -1127,7 +1127,7 @@ pub async fn interfaces_list() -> anyhow::Result<()> {
 // ============================================================
 
 pub async fn dhcp_status(db_path: &Path) -> anyhow::Result<()> {
-    let running = std::process::Command::new("service").args(["kea", "status"]).output()
+    let running = std::process::Command::new("service").args(["rdhcpd", "status"]).output()
         .map(|o| o.status.success()).unwrap_or(false);
     let db = Database::new(db_path).await?;
     let pool = db.pool();
@@ -1232,36 +1232,45 @@ pub async fn dhcp_reservation_remove(db_path: &Path, id: &str) -> anyhow::Result
 }
 
 pub async fn dhcp_leases(json: bool) -> anyhow::Result<()> {
-    let content = std::fs::read_to_string("/var/db/kea/kea-leases4.csv").unwrap_or_default();
-    let mut leases = Vec::new();
-    for line in content.lines() {
-        if line.starts_with('#') || line.is_empty() { continue; }
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() >= 9 {
-            leases.push((parts[0].to_string(), parts[1].to_string(), parts[8].to_string(), parts[4].to_string()));
-        }
-    }
+    // Query rDHCP management API for active leases
+    let output = std::process::Command::new("curl")
+        .args(["-sf", "--max-time", "3", "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000"])
+        .output();
+
+    let body = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => { println!("No active DHCP leases (rDHCP may not be running)."); return Ok(()); }
+    };
 
     if json {
-        let data: Vec<serde_json::Value> = leases.iter().map(|(ip,mac,hn,exp)| {
-            serde_json::json!({"ip":ip,"mac":mac,"hostname":hn,"expires":exp})
-        }).collect();
-        println!("{}", serde_json::to_string_pretty(&data)?);
+        // Pretty-print the raw JSON from rDHCP
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
+            println!("{}", serde_json::to_string_pretty(&parsed)?);
+        } else {
+            println!("{}", body);
+        }
         return Ok(());
     }
 
+    let leases: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap_or_default();
     if leases.is_empty() { println!("No active DHCP leases."); return Ok(()); }
-    println!("{:<16} {:<20} {:<20} {}", "IP", "MAC", "Hostname", "Expires");
-    println!("{}", "-".repeat(70));
-    for (ip, mac, hn, exp) in &leases {
-        println!("{:<16} {:<20} {:<20} {}", ip, mac, if hn.is_empty() { "-" } else { hn }, exp);
+
+    println!("{:<16} {:<20} {:<20} {:<20} {}", "IP", "MAC", "Hostname", "Subnet", "State");
+    println!("{}", "-".repeat(90));
+    for lease in &leases {
+        let ip = lease["ip"].as_str().unwrap_or("-");
+        let mac = lease["mac"].as_str().unwrap_or("-");
+        let hn = lease["hostname"].as_str().unwrap_or("-");
+        let subnet = lease["subnet"].as_str().unwrap_or("-");
+        let state = lease["state"].as_str().unwrap_or("-");
+        println!("{:<16} {:<20} {:<20} {:<20} {}", ip, mac, hn, subnet, state);
     }
     Ok(())
 }
 
 pub async fn dhcp_apply(_db_path: &Path) -> anyhow::Result<()> {
-    println!("Generating Kea DHCP config...");
-    // This would need the same config generation logic — for CLI, just call the API
+    println!("Generating rDHCP config...");
+    // Config generation is in the API — for CLI, just call the API
     println!("Use the web UI or API to apply DHCP config:");
     println!("  curl -X POST https://<host>:8080/api/v1/dhcp/v4/apply");
     Ok(())

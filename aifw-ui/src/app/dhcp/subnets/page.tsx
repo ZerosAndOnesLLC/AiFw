@@ -13,6 +13,9 @@ interface DhcpSubnet {
   dns_servers?: string[];
   domain_name?: string;
   lease_time?: number;
+  preferred_time?: number;
+  subnet_type: string;
+  delegated_length?: number;
   enabled: boolean;
   description?: string;
   created_at: string;
@@ -26,6 +29,9 @@ interface SubnetForm {
   dns_servers: string;
   domain_name: string;
   lease_time: string;
+  preferred_time: string;
+  subnet_type: string;
+  delegated_length: string;
   description: string;
   enabled: boolean;
 }
@@ -38,6 +44,9 @@ const defaultForm: SubnetForm = {
   dns_servers: "",
   domain_name: "",
   lease_time: "",
+  preferred_time: "",
+  subnet_type: "address",
+  delegated_length: "",
   description: "",
   enabled: true,
 };
@@ -123,6 +132,9 @@ export default function DhcpSubnetsPage() {
       dns_servers: (subnet.dns_servers || []).join(", "),
       domain_name: subnet.domain_name || "",
       lease_time: subnet.lease_time ? String(subnet.lease_time) : "",
+      preferred_time: subnet.preferred_time ? String(subnet.preferred_time) : "",
+      subnet_type: subnet.subnet_type || "address",
+      delegated_length: subnet.delegated_length ? String(subnet.delegated_length) : "",
       description: subnet.description || "",
       enabled: subnet.enabled,
     });
@@ -147,6 +159,7 @@ export default function DhcpSubnetsPage() {
         pool_start: form.pool_start.trim(),
         pool_end: form.pool_end.trim(),
         gateway: form.gateway.trim(),
+        subnet_type: form.subnet_type,
         enabled: form.enabled,
       };
       if (form.dns_servers.trim()) {
@@ -157,6 +170,8 @@ export default function DhcpSubnetsPage() {
       }
       if (form.domain_name.trim()) payload.domain_name = form.domain_name.trim();
       if (form.lease_time.trim()) payload.lease_time = Number(form.lease_time);
+      if (form.preferred_time.trim()) payload.preferred_time = Number(form.preferred_time);
+      if (form.delegated_length.trim()) payload.delegated_length = Number(form.delegated_length);
       if (form.description.trim()) payload.description = form.description.trim();
 
       const url = editingId
@@ -212,7 +227,7 @@ export default function DhcpSubnetsPage() {
         <div>
           <h1 className="text-2xl font-bold">DHCP Subnets</h1>
           <p className="text-sm text-[var(--text-muted)]">
-            Manage DHCPv4 subnets and address pools
+            Manage DHCPv4/v6 subnets and address pools
           </p>
         </div>
         <button
@@ -251,6 +266,7 @@ export default function DhcpSubnetsPage() {
               <thead>
                 <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--text-muted)] uppercase">
                   <th className="px-6 py-3">Network</th>
+                  <th className="px-6 py-3">Type</th>
                   <th className="px-6 py-3">Pool Range</th>
                   <th className="px-6 py-3">Gateway</th>
                   <th className="px-6 py-3">Lease Time</th>
@@ -268,8 +284,21 @@ export default function DhcpSubnetsPage() {
                     <td className="px-6 py-3 text-[var(--text-primary)] font-mono text-xs font-medium">
                       {subnet.network}
                     </td>
+                    <td className="px-6 py-3">
+                      <span className={`text-xs px-2 py-0.5 rounded-full border ${
+                        subnet.subnet_type === "prefix-delegation"
+                          ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
+                          : subnet.network.includes(":")
+                            ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
+                            : "bg-blue-500/20 text-blue-400 border-blue-500/30"
+                      }`}>
+                        {subnet.subnet_type === "prefix-delegation" ? "PD" : subnet.network.includes(":") ? "v6" : "v4"}
+                      </span>
+                    </td>
                     <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs">
-                      {subnet.pool_start} - {subnet.pool_end}
+                      {subnet.subnet_type === "prefix-delegation"
+                        ? `/${subnet.delegated_length || "?"}`
+                        : `${subnet.pool_start} - ${subnet.pool_end}`}
                     </td>
                     <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs">
                       {subnet.gateway}
@@ -404,17 +433,57 @@ export default function DhcpSubnetsPage() {
                 </div>
               </div>
 
+              {/* Subnet type */}
               <div>
-                <label className="block text-xs text-[var(--text-muted)] mb-1">
-                  Lease Time (override, seconds)
-                </label>
-                <input
-                  type="number"
-                  value={form.lease_time}
-                  onChange={(e) => setForm((p) => ({ ...p, lease_time: e.target.value }))}
-                  placeholder="Leave blank for default"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                />
+                <label className="block text-xs text-[var(--text-muted)] mb-1">Subnet Type</label>
+                <select
+                  value={form.subnet_type}
+                  onChange={(e) => setForm((p) => ({ ...p, subnet_type: e.target.value }))}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="address">Address Allocation</option>
+                  <option value="prefix-delegation">Prefix Delegation (DHCPv6)</option>
+                </select>
+              </div>
+
+              {form.subnet_type === "prefix-delegation" && (
+                <div>
+                  <label className="block text-xs text-[var(--text-muted)] mb-1">Delegated Prefix Length</label>
+                  <input
+                    type="number"
+                    value={form.delegated_length}
+                    onChange={(e) => setForm((p) => ({ ...p, delegated_length: e.target.value }))}
+                    placeholder="e.g. 56"
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-[var(--text-muted)] mb-1">
+                    Lease Time (override, seconds)
+                  </label>
+                  <input
+                    type="number"
+                    value={form.lease_time}
+                    onChange={(e) => setForm((p) => ({ ...p, lease_time: e.target.value }))}
+                    placeholder="Leave blank for default"
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-[var(--text-muted)] mb-1">
+                    Preferred Time (DHCPv6, seconds)
+                  </label>
+                  <input
+                    type="number"
+                    value={form.preferred_time}
+                    onChange={(e) => setForm((p) => ({ ...p, preferred_time: e.target.value }))}
+                    placeholder="Optional"
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
               </div>
 
               <div>

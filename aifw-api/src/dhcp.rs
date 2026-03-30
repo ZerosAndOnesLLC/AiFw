@@ -7,8 +7,12 @@ use tokio::process::Command;
 
 use crate::AppState;
 
+const RDHCP_CONFIG_PATH: &str = "/usr/local/etc/rdhcpd/config.toml";
+const RDHCP_LEASE_DB: &str = "/var/db/rdhcpd/leases";
+const RDHCP_LOG_PATH: &str = "/var/log/rdhcpd/rdhcpd.log";
+
 // ============================================================
-// Types
+// Types — Global Config
 // ============================================================
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -20,11 +24,14 @@ pub struct DhcpGlobalConfig {
     pub max_lease_time: u32,
     pub dns_servers: Vec<String>,
     pub domain_name: String,
-    pub domain_search: Vec<String>,  // search domains for Windows/Linux
+    pub domain_search: Vec<String>,
     pub ntp_servers: Vec<String>,
     pub wins_servers: Vec<String>,
     pub next_server: Option<String>,
     pub boot_filename: Option<String>,
+    pub log_level: String,
+    pub log_format: String,
+    pub api_port: u16,
 }
 
 impl Default for DhcpGlobalConfig {
@@ -42,20 +49,30 @@ impl Default for DhcpGlobalConfig {
             wins_servers: vec![],
             next_server: None,
             boot_filename: None,
+            log_level: "info".to_string(),
+            log_format: "text".to_string(),
+            api_port: 9967,
         }
     }
 }
 
+// ============================================================
+// Types — Subnets (v4 + v6)
+// ============================================================
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DhcpSubnet {
     pub id: String,
-    pub network: String,    // e.g. "192.168.1.0/24"
-    pub pool_start: String, // e.g. "192.168.1.100"
-    pub pool_end: String,   // e.g. "192.168.1.200"
+    pub network: String,
+    pub pool_start: String,
+    pub pool_end: String,
     pub gateway: String,
-    pub dns_servers: Option<String>,  // comma-separated override
+    pub dns_servers: Option<String>,
     pub domain_name: Option<String>,
     pub lease_time: Option<u32>,
+    pub preferred_time: Option<u32>,
+    pub subnet_type: String, // "address" or "prefix-delegation"
+    pub delegated_length: Option<u8>,
     pub enabled: bool,
     pub description: Option<String>,
     pub created_at: String,
@@ -70,9 +87,16 @@ pub struct CreateSubnetRequest {
     pub dns_servers: Option<String>,
     pub domain_name: Option<String>,
     pub lease_time: Option<u32>,
+    pub preferred_time: Option<u32>,
+    pub subnet_type: Option<String>,
+    pub delegated_length: Option<u8>,
     pub enabled: Option<bool>,
     pub description: Option<String>,
 }
+
+// ============================================================
+// Types — Reservations
+// ============================================================
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DhcpReservation {
@@ -81,6 +105,7 @@ pub struct DhcpReservation {
     pub mac_address: String,
     pub ip_address: String,
     pub hostname: Option<String>,
+    pub client_id: Option<String>,
     pub description: Option<String>,
     pub created_at: String,
 }
@@ -91,19 +116,142 @@ pub struct CreateReservationRequest {
     pub mac_address: String,
     pub ip_address: String,
     pub hostname: Option<String>,
+    pub client_id: Option<String>,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+// ============================================================
+// Types — DDNS
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DdnsConfig {
+    pub enabled: bool,
+    pub forward_zone: String,
+    pub reverse_zone_v4: String,
+    pub reverse_zone_v6: String,
+    pub dns_server: String,
+    pub tsig_key: String,
+    pub tsig_algorithm: String,
+    pub tsig_secret: String,
+    pub ttl: u32,
+}
+
+impl Default for DdnsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            forward_zone: String::new(),
+            reverse_zone_v4: String::new(),
+            reverse_zone_v6: String::new(),
+            dns_server: String::new(),
+            tsig_key: String::new(),
+            tsig_algorithm: "hmac-sha256".to_string(),
+            tsig_secret: String::new(),
+            ttl: 300,
+        }
+    }
+}
+
+// ============================================================
+// Types — HA
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HaConfig {
+    pub mode: String, // "standalone", "active-active", "raft"
+    // active-active fields
+    pub peer: Option<String>,
+    pub listen: Option<String>,
+    pub scope_split: Option<f64>,
+    pub mclt: Option<u32>,
+    pub partner_down_delay: Option<u32>,
+    // raft fields
+    pub node_id: Option<u64>,
+    pub peers: Option<Vec<String>>,
+    // shared TLS
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub tls_ca: Option<String>,
+}
+
+impl Default for HaConfig {
+    fn default() -> Self {
+        Self {
+            mode: "standalone".to_string(),
+            peer: None,
+            listen: None,
+            scope_split: None,
+            mclt: None,
+            partner_down_delay: None,
+            node_id: None,
+            peers: None,
+            tls_cert: None,
+            tls_key: None,
+            tls_ca: None,
+        }
+    }
+}
+
+// ============================================================
+// Types — Leases (from rDHCP API)
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DhcpLease {
     pub ip_address: String,
     pub mac_address: String,
     pub hostname: Option<String>,
+    pub client_id: Option<String>,
     pub state: String,
+    pub lease_time: u32,
     pub starts: Option<String>,
     pub expires: Option<String>,
-    pub subnet_id: Option<u32>,
+    pub subnet: Option<String>,
 }
+
+// rDHCP API lease response format
+#[derive(Debug, Deserialize)]
+struct RdhcpLeaseResponse {
+    ip: String,
+    mac: Option<String>,
+    client_id: Option<String>,
+    hostname: Option<String>,
+    lease_time: u32,
+    state: String,
+    start_time: u64,
+    expire_time: u64,
+    subnet: String,
+}
+
+// ============================================================
+// Types — Pool Stats (from rDHCP API)
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PoolStats {
+    pub subnet: String,
+    pub total: u64,
+    pub allocated: u64,
+    pub available: u64,
+    pub utilization: f64,
+}
+
+// ============================================================
+// Types — HA Status (from rDHCP API)
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HaStatus {
+    pub mode: String,
+    pub role: String,
+    pub peer_state: Option<String>,
+    pub healthy: bool,
+}
+
+// ============================================================
+// Types — Status
+// ============================================================
 
 #[derive(Debug, Serialize)]
 pub struct DhcpStatus {
@@ -113,7 +261,13 @@ pub struct DhcpStatus {
     pub total_subnets: usize,
     pub total_reservations: usize,
     pub active_leases: usize,
+    pub ha: Option<HaStatus>,
+    pub pool_stats: Vec<PoolStats>,
 }
+
+// ============================================================
+// Types — Responses
+// ============================================================
 
 #[derive(Debug, Serialize)]
 pub struct ApiResponse<T: Serialize> { pub data: T }
@@ -145,11 +299,25 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             dns_servers TEXT,
             domain_name TEXT,
             lease_time INTEGER,
+            preferred_time INTEGER,
+            subnet_type TEXT NOT NULL DEFAULT 'address',
+            delegated_length INTEGER,
             enabled INTEGER NOT NULL DEFAULT 1,
             description TEXT,
             created_at TEXT NOT NULL
         )
     "#).execute(pool).await?;
+
+    // Add new columns if they don't exist (migration from old schema)
+    for col in ["preferred_time INTEGER", "subnet_type TEXT DEFAULT 'address'", "delegated_length INTEGER"] {
+        let col_name = col.split_whitespace().next().unwrap_or("");
+        let check = sqlx::query_scalar::<_, i32>(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('dhcp_subnets') WHERE name='{}'", col_name)
+        ).fetch_one(pool).await.unwrap_or(0);
+        if check == 0 {
+            let _ = sqlx::query(&format!("ALTER TABLE dhcp_subnets ADD COLUMN {}", col)).execute(pool).await;
+        }
+    }
 
     sqlx::query(r#"
         CREATE TABLE IF NOT EXISTS dhcp_reservations (
@@ -158,8 +326,31 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             mac_address TEXT NOT NULL,
             ip_address TEXT NOT NULL UNIQUE,
             hostname TEXT,
+            client_id TEXT,
             description TEXT,
             created_at TEXT NOT NULL
+        )
+    "#).execute(pool).await?;
+
+    // Add client_id column if missing
+    let check = sqlx::query_scalar::<_, i32>(
+        "SELECT COUNT(*) FROM pragma_table_info('dhcp_reservations') WHERE name='client_id'"
+    ).fetch_one(pool).await.unwrap_or(0);
+    if check == 0 {
+        let _ = sqlx::query("ALTER TABLE dhcp_reservations ADD COLUMN client_id TEXT").execute(pool).await;
+    }
+
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS dhcp_ddns_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    "#).execute(pool).await?;
+
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS dhcp_ha_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         )
     "#).execute(pool).await?;
 
@@ -188,6 +379,9 @@ async fn load_global_config(pool: &SqlitePool) -> DhcpGlobalConfig {
             "wins_servers" => config.wins_servers = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             "next_server" => config.next_server = if value.is_empty() { None } else { Some(value) },
             "boot_filename" => config.boot_filename = if value.is_empty() { None } else { Some(value) },
+            "log_level" => config.log_level = value,
+            "log_format" => config.log_format = value,
+            "api_port" => config.api_port = value.parse().unwrap_or(9967),
             _ => {}
         }
     }
@@ -199,121 +393,293 @@ async fn save_config_key(pool: &SqlitePool, key: &str, value: &str) {
         .bind(key).bind(value).execute(pool).await;
 }
 
-/// Generate Kea DHCPv4 JSON config
-async fn generate_kea_config(pool: &SqlitePool) -> String {
-    let config = load_global_config(pool).await;
-    let subnets = list_subnets_db(pool).await;
-    let reservations = list_reservations_db(pool).await;
-
-    let interfaces_json: Vec<String> = config.interfaces.iter().map(|i| format!("\"{}\"", i)).collect();
-    let dns_json: Vec<String> = config.dns_servers.iter().map(|d| format!("\"{}\"", d)).collect();
-
-    let mut subnet_entries = Vec::new();
-    for subnet in &subnets {
-        if !subnet.enabled { continue; }
-
-        let sub_dns = subnet.dns_servers.as_ref()
-            .map(|d| d.split(',').map(|s| format!("\"{}\"", s.trim())).collect::<Vec<_>>().join(", "))
-            .unwrap_or_else(|| dns_json.join(", "));
-
-        let sub_domain = subnet.domain_name.as_deref().unwrap_or(&config.domain_name);
-        let sub_lease = subnet.lease_time.unwrap_or(config.default_lease_time);
-
-        // Host reservations for this subnet
-        let subnet_network = &subnet.network;
-        let sub_reservations: Vec<String> = reservations.iter()
-            .filter(|r| r.subnet_id.as_deref() == Some(&subnet.id))
-            .map(|r| {
-                let hostname = r.hostname.as_deref().map(|h| format!(", \"hostname\": \"{}\"", h)).unwrap_or_default();
-                format!("        {{ \"hw-address\": \"{}\", \"ip-address\": \"{}\"{} }}", r.mac_address, r.ip_address, hostname)
-            })
-            .collect();
-
-        let reservations_block = if sub_reservations.is_empty() {
-            String::new()
-        } else {
-            format!(",\n      \"reservations\": [\n{}\n      ]", sub_reservations.join(",\n"))
-        };
-
-        subnet_entries.push(format!(r#"    {{
-      "subnet": "{}",
-      "pools": [{{ "pool": "{} - {}" }}],
-      "option-data": [
-        {{ "name": "routers", "data": "{}" }},
-        {{ "name": "domain-name-servers", "data": "{}" }},
-        {{ "name": "domain-name", "data": "{}" }}
-      ],
-      "valid-lifetime": {}{}
-    }}"#,
-            subnet_network, subnet.pool_start, subnet.pool_end,
-            subnet.gateway,
-            sub_dns.replace('"', "").replace(", ", ","),
-            sub_domain, sub_lease, reservations_block
-        ));
+async fn load_ddns_config(pool: &SqlitePool) -> DdnsConfig {
+    let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM dhcp_ddns_config")
+        .fetch_all(pool).await.unwrap_or_default();
+    let mut config = DdnsConfig::default();
+    for (key, value) in rows {
+        match key.as_str() {
+            "enabled" => config.enabled = value == "true",
+            "forward_zone" => config.forward_zone = value,
+            "reverse_zone_v4" => config.reverse_zone_v4 = value,
+            "reverse_zone_v6" => config.reverse_zone_v6 = value,
+            "dns_server" => config.dns_server = value,
+            "tsig_key" => config.tsig_key = value,
+            "tsig_algorithm" => config.tsig_algorithm = value,
+            "tsig_secret" => config.tsig_secret = value,
+            "ttl" => config.ttl = value.parse().unwrap_or(300),
+            _ => {}
+        }
     }
+    config
+}
 
-    format!(r#"{{
-  "Dhcp4": {{
-    "interfaces-config": {{
-      "interfaces": [{}]
-    }},
-    "authoritative": {},
-    "valid-lifetime": {},
-    "max-valid-lifetime": {},
-    "option-data": [
-      {{ "name": "domain-name-servers", "data": "{}" }},
-      {{ "name": "domain-name", "data": "{}" }}{}{}{}
-    ],
-    "subnet4": [
-{}
-    ],
-    "loggers": [{{
-      "name": "kea-dhcp4",
-      "output_options": [{{ "output": "/var/log/kea/kea-dhcp4.log" }}],
-      "severity": "INFO"
-    }}]
-  }}
-}}"#,
-        interfaces_json.join(", "),
-        config.authoritative,
-        config.default_lease_time,
-        config.max_lease_time,
-        dns_json.join(",").replace('"', ""),
-        config.domain_name,
-        // Domain search list
-        if config.domain_search.is_empty() { String::new() } else {
-            format!(",\n      {{ \"name\": \"domain-search\", \"data\": \"{}\" }}", config.domain_search.join(","))
-        },
-        // NTP servers
-        if config.ntp_servers.is_empty() { String::new() } else {
-            format!(",\n      {{ \"code\": 42, \"data\": \"{}\", \"space\": \"dhcp4\" }}", config.ntp_servers.join(","))
-        },
-        // WINS/NetBIOS name servers
-        if config.wins_servers.is_empty() { String::new() } else {
-            format!(",\n      {{ \"code\": 44, \"data\": \"{}\", \"space\": \"dhcp4\" }}", config.wins_servers.join(","))
-        },
-        subnet_entries.join(",\n"),
-    )
+async fn save_ddns_key(pool: &SqlitePool, key: &str, value: &str) {
+    let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
+        .bind(key).bind(value).execute(pool).await;
+}
+
+async fn load_ha_config(pool: &SqlitePool) -> HaConfig {
+    let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM dhcp_ha_config")
+        .fetch_all(pool).await.unwrap_or_default();
+    let mut config = HaConfig::default();
+    for (key, value) in rows {
+        match key.as_str() {
+            "mode" => config.mode = value,
+            "peer" => config.peer = if value.is_empty() { None } else { Some(value) },
+            "listen" => config.listen = if value.is_empty() { None } else { Some(value) },
+            "scope_split" => config.scope_split = value.parse().ok(),
+            "mclt" => config.mclt = value.parse().ok(),
+            "partner_down_delay" => config.partner_down_delay = value.parse().ok(),
+            "node_id" => config.node_id = value.parse().ok(),
+            "peers" => config.peers = if value.is_empty() { None } else { Some(value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()) },
+            "tls_cert" => config.tls_cert = if value.is_empty() { None } else { Some(value) },
+            "tls_key" => config.tls_key = if value.is_empty() { None } else { Some(value) },
+            "tls_ca" => config.tls_ca = if value.is_empty() { None } else { Some(value) },
+            _ => {}
+        }
+    }
+    config
+}
+
+async fn save_ha_key(pool: &SqlitePool, key: &str, value: &str) {
+    let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
+        .bind(key).bind(value).execute(pool).await;
 }
 
 async fn list_subnets_db(pool: &SqlitePool) -> Vec<DhcpSubnet> {
-    sqlx::query_as::<_, (String,String,String,String,String,Option<String>,Option<String>,Option<i64>,bool,Option<String>,String)>(
-        "SELECT id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, enabled, description, created_at FROM dhcp_subnets ORDER BY created_at ASC"
+    sqlx::query_as::<_, (String,String,String,String,String,Option<String>,Option<String>,Option<i64>,Option<i64>,Option<String>,Option<i64>,bool,Option<String>,String)>(
+        "SELECT id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, preferred_time, subnet_type, delegated_length, enabled, description, created_at FROM dhcp_subnets ORDER BY created_at ASC"
     ).fetch_all(pool).await.unwrap_or_default()
-    .into_iter().map(|(id,net,ps,pe,gw,dns,dn,lt,en,desc,ca)| DhcpSubnet {
+    .into_iter().map(|(id,net,ps,pe,gw,dns,dn,lt,pt,st,dl,en,desc,ca)| DhcpSubnet {
         id, network: net, pool_start: ps, pool_end: pe, gateway: gw,
         dns_servers: dns, domain_name: dn, lease_time: lt.map(|v| v as u32),
+        preferred_time: pt.map(|v| v as u32),
+        subnet_type: st.unwrap_or_else(|| "address".to_string()),
+        delegated_length: dl.map(|v| v as u8),
         enabled: en, description: desc, created_at: ca,
     }).collect()
 }
 
 async fn list_reservations_db(pool: &SqlitePool) -> Vec<DhcpReservation> {
-    sqlx::query_as::<_, (String,Option<String>,String,String,Option<String>,Option<String>,String)>(
-        "SELECT id, subnet_id, mac_address, ip_address, hostname, description, created_at FROM dhcp_reservations ORDER BY ip_address ASC"
+    sqlx::query_as::<_, (String,Option<String>,String,String,Option<String>,Option<String>,Option<String>,String)>(
+        "SELECT id, subnet_id, mac_address, ip_address, hostname, client_id, description, created_at FROM dhcp_reservations ORDER BY ip_address ASC"
     ).fetch_all(pool).await.unwrap_or_default()
-    .into_iter().map(|(id,sid,mac,ip,hn,desc,ca)| DhcpReservation {
-        id, subnet_id: sid, mac_address: mac, ip_address: ip, hostname: hn, description: desc, created_at: ca,
+    .into_iter().map(|(id,sid,mac,ip,hn,cid,desc,ca)| DhcpReservation {
+        id, subnet_id: sid, mac_address: mac, ip_address: ip, hostname: hn, client_id: cid, description: desc, created_at: ca,
     }).collect()
+}
+
+// ============================================================
+// rDHCP TOML Config Generation
+// ============================================================
+
+/// Generate rDHCP TOML configuration from AiFw DB state
+async fn generate_rdhcp_config(pool: &SqlitePool) -> String {
+    let config = load_global_config(pool).await;
+    let ddns = load_ddns_config(pool).await;
+    let ha = load_ha_config(pool).await;
+    let subnets = list_subnets_db(pool).await;
+    let reservations = list_reservations_db(pool).await;
+
+    let mut toml = String::with_capacity(4096);
+
+    // Header
+    toml.push_str("# rDHCP configuration — generated by AiFw\n");
+    toml.push_str("# Do not edit manually; changes will be overwritten on next apply.\n\n");
+
+    // [global]
+    toml.push_str("[global]\n");
+    toml.push_str(&format!("log_level = \"{}\"\n", config.log_level));
+    toml.push_str(&format!("log_format = \"{}\"\n", config.log_format));
+    toml.push_str(&format!("lease_db = \"{}\"\n", RDHCP_LEASE_DB));
+    toml.push('\n');
+
+    // [api]
+    toml.push_str("[api]\n");
+    toml.push_str(&format!("listen = \"127.0.0.1:{}\"\n", config.api_port));
+    toml.push('\n');
+
+    // [ha]
+    match ha.mode.as_str() {
+        "active-active" => {
+            toml.push_str("[ha]\n");
+            toml.push_str("mode = \"active-active\"\n");
+            if let Some(ref peer) = ha.peer {
+                toml.push_str(&format!("peer = \"{}\"\n", peer));
+            }
+            if let Some(ref listen) = ha.listen {
+                toml.push_str(&format!("listen = \"{}\"\n", listen));
+            }
+            if let Some(split) = ha.scope_split {
+                toml.push_str(&format!("scope_split = {}\n", split));
+            }
+            if let Some(mclt) = ha.mclt {
+                toml.push_str(&format!("mclt = {}\n", mclt));
+            }
+            if let Some(delay) = ha.partner_down_delay {
+                toml.push_str(&format!("partner_down_delay = {}\n", delay));
+            }
+            if let Some(ref cert) = ha.tls_cert { toml.push_str(&format!("tls_cert = \"{}\"\n", cert)); }
+            if let Some(ref key) = ha.tls_key { toml.push_str(&format!("tls_key = \"{}\"\n", key)); }
+            if let Some(ref ca) = ha.tls_ca { toml.push_str(&format!("tls_ca = \"{}\"\n", ca)); }
+        }
+        "raft" => {
+            toml.push_str("[ha]\n");
+            toml.push_str("mode = \"raft\"\n");
+            if let Some(id) = ha.node_id {
+                toml.push_str(&format!("node_id = {}\n", id));
+            }
+            if let Some(ref peers) = ha.peers {
+                let peers_str: Vec<String> = peers.iter().map(|p| format!("\"{}\"", p)).collect();
+                toml.push_str(&format!("peers = [{}]\n", peers_str.join(", ")));
+            }
+            if let Some(ref cert) = ha.tls_cert { toml.push_str(&format!("tls_cert = \"{}\"\n", cert)); }
+            if let Some(ref key) = ha.tls_key { toml.push_str(&format!("tls_key = \"{}\"\n", key)); }
+            if let Some(ref ca) = ha.tls_ca { toml.push_str(&format!("tls_ca = \"{}\"\n", ca)); }
+        }
+        _ => {
+            toml.push_str("[ha]\n");
+            toml.push_str("mode = \"standalone\"\n");
+        }
+    }
+    toml.push('\n');
+
+    // [[subnet]] entries
+    for subnet in &subnets {
+        if !subnet.enabled { continue; }
+
+        toml.push_str("[[subnet]]\n");
+        toml.push_str(&format!("network = \"{}\"\n", subnet.network));
+
+        // Pool start/end (optional for PD subnets)
+        if subnet.subnet_type != "prefix-delegation" {
+            toml.push_str(&format!("pool_start = \"{}\"\n", subnet.pool_start));
+            toml.push_str(&format!("pool_end = \"{}\"\n", subnet.pool_end));
+        }
+
+        let lease_time = subnet.lease_time.unwrap_or(config.default_lease_time);
+        toml.push_str(&format!("lease_time = {}\n", lease_time));
+
+        if let Some(pt) = subnet.preferred_time {
+            toml.push_str(&format!("preferred_time = {}\n", pt));
+        }
+
+        if subnet.subnet_type == "prefix-delegation" {
+            toml.push_str("type = \"prefix-delegation\"\n");
+            if let Some(dl) = subnet.delegated_length {
+                toml.push_str(&format!("delegated_length = {}\n", dl));
+            }
+        }
+
+        // Gateway (router)
+        if !subnet.gateway.is_empty() {
+            toml.push_str(&format!("router = \"{}\"\n", subnet.gateway));
+        }
+
+        // DNS servers — per-subnet override or global
+        let dns_list: Vec<String> = subnet.dns_servers.as_ref()
+            .map(|d| d.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_else(|| config.dns_servers.clone());
+        if !dns_list.is_empty() {
+            let dns_str: Vec<String> = dns_list.iter().map(|d| format!("\"{}\"", d)).collect();
+            toml.push_str(&format!("dns = [{}]\n", dns_str.join(", ")));
+        }
+
+        // Domain
+        let domain = subnet.domain_name.as_deref().unwrap_or(&config.domain_name);
+        if !domain.is_empty() {
+            toml.push_str(&format!("domain = \"{}\"\n", domain));
+        }
+
+        // Reservations for this subnet
+        let sub_reservations: Vec<&DhcpReservation> = reservations.iter()
+            .filter(|r| r.subnet_id.as_deref() == Some(&subnet.id))
+            .collect();
+
+        for res in sub_reservations {
+            toml.push('\n');
+            toml.push_str("[[subnet.reservation]]\n");
+            if !res.mac_address.is_empty() {
+                toml.push_str(&format!("mac = \"{}\"\n", res.mac_address));
+            }
+            if let Some(ref cid) = res.client_id {
+                if !cid.is_empty() {
+                    toml.push_str(&format!("client_id = \"{}\"\n", cid));
+                }
+            }
+            toml.push_str(&format!("ip = \"{}\"\n", res.ip_address));
+            if let Some(ref hn) = res.hostname {
+                if !hn.is_empty() {
+                    toml.push_str(&format!("hostname = \"{}\"\n", hn));
+                }
+            }
+        }
+
+        toml.push('\n');
+    }
+
+    // [ddns]
+    toml.push_str("[ddns]\n");
+    toml.push_str(&format!("enabled = {}\n", ddns.enabled));
+    if ddns.enabled {
+        if !ddns.forward_zone.is_empty() {
+            toml.push_str(&format!("forward_zone = \"{}\"\n", ddns.forward_zone));
+        }
+        if !ddns.reverse_zone_v4.is_empty() {
+            toml.push_str(&format!("reverse_zone_v4 = \"{}\"\n", ddns.reverse_zone_v4));
+        }
+        if !ddns.reverse_zone_v6.is_empty() {
+            toml.push_str(&format!("reverse_zone_v6 = \"{}\"\n", ddns.reverse_zone_v6));
+        }
+        if !ddns.dns_server.is_empty() {
+            toml.push_str(&format!("dns_server = \"{}\"\n", ddns.dns_server));
+        }
+        if !ddns.tsig_key.is_empty() {
+            toml.push_str(&format!("tsig_key = \"{}\"\n", ddns.tsig_key));
+        }
+        if !ddns.tsig_algorithm.is_empty() {
+            toml.push_str(&format!("tsig_algorithm = \"{}\"\n", ddns.tsig_algorithm));
+        }
+        if !ddns.tsig_secret.is_empty() {
+            toml.push_str(&format!("tsig_secret = \"{}\"\n", ddns.tsig_secret));
+        }
+        toml.push_str(&format!("ttl = {}\n", ddns.ttl));
+    }
+
+    toml
+}
+
+// ============================================================
+// rDHCP API client helpers
+// ============================================================
+
+async fn rdhcp_api_get(path: &str, api_port: u16) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{}{}", api_port, path);
+    let output = Command::new("curl")
+        .args(["-sf", "--max-time", "3", &url])
+        .output()
+        .await
+        .map_err(|e| format!("curl failed: {}", e))?;
+
+    if !output.status.success() {
+        return Err("rDHCP API unreachable".to_string());
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("invalid UTF-8: {}", e))
+}
+
+async fn rdhcp_api_delete(path: &str, api_port: u16) -> Result<(), String> {
+    let url = format!("http://127.0.0.1:{}{}", api_port, path);
+    let output = Command::new("curl")
+        .args(["-sf", "--max-time", "3", "-X", "DELETE", &url])
+        .output()
+        .await
+        .map_err(|e| format!("curl failed: {}", e))?;
+
+    if !output.status.success() {
+        return Err("rDHCP API delete failed".to_string());
+    }
+    Ok(())
 }
 
 // ============================================================
@@ -325,39 +691,57 @@ async fn list_reservations_db(pool: &SqlitePool) -> Vec<DhcpReservation> {
 pub async fn dhcp_status(
     State(state): State<AppState>,
 ) -> Result<Json<DhcpStatus>, StatusCode> {
-    let running = Command::new("sudo").args(["/usr/sbin/service", "kea", "status"]).output().await
-        .map(|o| {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            // Kea status output: "DHCPv4 server: active" or "inactive"
-            stdout.contains("active") && !stdout.contains("inactive")
-        }).unwrap_or(false);
+    let config = load_global_config(&state.pool).await;
 
-    let version = Command::new("pkg").args(["query", "%v", "kea"]).output().await
-        .map(|o| {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if v.is_empty() || !o.status.success() { "not installed".to_string() } else { format!("Kea {}", v) }
-        }).unwrap_or_else(|_| "not installed".to_string());
+    let running = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "status"]).output().await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let version = if running {
+        Command::new("/usr/local/sbin/rdhcpd").args(["--version"]).output().await
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "rDHCP".to_string())
+    } else {
+        "rDHCP (stopped)".to_string()
+    };
 
     let subnets = list_subnets_db(&state.pool).await;
     let reservations = list_reservations_db(&state.pool).await;
 
-    // Count leases from Kea lease file
-    let lease_count = tokio::fs::read_to_string("/var/db/kea/kea-leases4.csv").await
-        .map(|c| c.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).count())
-        .unwrap_or(0);
+    // Query rDHCP API for live data
+    let mut active_leases = 0usize;
+    let mut ha_status = None;
+    let mut pool_stats = Vec::new();
+
+    if running {
+        // Lease stats
+        if let Ok(body) = rdhcp_api_get("/api/v1/leases/stats", config.api_port).await {
+            if let Ok(stats) = serde_json::from_str::<Vec<PoolStats>>(&body) {
+                active_leases = stats.iter().map(|s| s.allocated as usize).sum();
+                pool_stats = stats;
+            }
+        }
+
+        // HA status
+        if let Ok(body) = rdhcp_api_get("/api/v1/ha/status", config.api_port).await {
+            ha_status = serde_json::from_str(&body).ok();
+        }
+    }
 
     Ok(Json(DhcpStatus {
         running, version, uptime: None,
         total_subnets: subnets.len(),
         total_reservations: reservations.len(),
-        active_leases: lease_count,
+        active_leases,
+        ha: ha_status,
+        pool_stats,
     }))
 }
 
 // --- Service control ---
 
-async fn run_kea_service(action: &str) -> Json<MessageResponse> {
-    let output = Command::new("sudo").args(["/usr/sbin/service", "kea", action])
+async fn run_rdhcp_service(action: &str) -> Json<MessageResponse> {
+    let output = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", action])
         .output().await;
     match output {
         Ok(o) => {
@@ -375,15 +759,15 @@ async fn run_kea_service(action: &str) -> Json<MessageResponse> {
 }
 
 pub async fn dhcp_start() -> Result<Json<MessageResponse>, StatusCode> {
-    Ok(run_kea_service("start").await)
+    Ok(run_rdhcp_service("start").await)
 }
 
 pub async fn dhcp_stop() -> Result<Json<MessageResponse>, StatusCode> {
-    Ok(run_kea_service("stop").await)
+    Ok(run_rdhcp_service("stop").await)
 }
 
 pub async fn dhcp_restart() -> Result<Json<MessageResponse>, StatusCode> {
-    Ok(run_kea_service("restart").await)
+    Ok(run_rdhcp_service("restart").await)
 }
 
 // --- Global config ---
@@ -410,7 +794,90 @@ pub async fn update_config(
     save_config_key(&state.pool, "wins_servers", &config.wins_servers.join(",")).await;
     save_config_key(&state.pool, "next_server", config.next_server.as_deref().unwrap_or("")).await;
     save_config_key(&state.pool, "boot_filename", config.boot_filename.as_deref().unwrap_or("")).await;
+    save_config_key(&state.pool, "log_level", &config.log_level).await;
+    save_config_key(&state.pool, "log_format", &config.log_format).await;
+    save_config_key(&state.pool, "api_port", &config.api_port.to_string()).await;
     Ok(Json(MessageResponse { message: "DHCP config updated".to_string() }))
+}
+
+// --- DDNS config ---
+
+pub async fn get_ddns_config(
+    State(state): State<AppState>,
+) -> Result<Json<DdnsConfig>, StatusCode> {
+    Ok(Json(load_ddns_config(&state.pool).await))
+}
+
+pub async fn update_ddns_config(
+    State(state): State<AppState>,
+    Json(config): Json<DdnsConfig>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    save_ddns_key(&state.pool, "enabled", if config.enabled { "true" } else { "false" }).await;
+    save_ddns_key(&state.pool, "forward_zone", &config.forward_zone).await;
+    save_ddns_key(&state.pool, "reverse_zone_v4", &config.reverse_zone_v4).await;
+    save_ddns_key(&state.pool, "reverse_zone_v6", &config.reverse_zone_v6).await;
+    save_ddns_key(&state.pool, "dns_server", &config.dns_server).await;
+    save_ddns_key(&state.pool, "tsig_key", &config.tsig_key).await;
+    save_ddns_key(&state.pool, "tsig_algorithm", &config.tsig_algorithm).await;
+    save_ddns_key(&state.pool, "tsig_secret", &config.tsig_secret).await;
+    save_ddns_key(&state.pool, "ttl", &config.ttl.to_string()).await;
+    Ok(Json(MessageResponse { message: "DDNS config updated".to_string() }))
+}
+
+// --- HA config ---
+
+pub async fn get_ha_config(
+    State(state): State<AppState>,
+) -> Result<Json<HaConfig>, StatusCode> {
+    Ok(Json(load_ha_config(&state.pool).await))
+}
+
+pub async fn update_ha_config(
+    State(state): State<AppState>,
+    Json(config): Json<HaConfig>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    save_ha_key(&state.pool, "mode", &config.mode).await;
+    save_ha_key(&state.pool, "peer", config.peer.as_deref().unwrap_or("")).await;
+    save_ha_key(&state.pool, "listen", config.listen.as_deref().unwrap_or("")).await;
+    save_ha_key(&state.pool, "scope_split", &config.scope_split.map(|v| v.to_string()).unwrap_or_default()).await;
+    save_ha_key(&state.pool, "mclt", &config.mclt.map(|v| v.to_string()).unwrap_or_default()).await;
+    save_ha_key(&state.pool, "partner_down_delay", &config.partner_down_delay.map(|v| v.to_string()).unwrap_or_default()).await;
+    save_ha_key(&state.pool, "node_id", &config.node_id.map(|v| v.to_string()).unwrap_or_default()).await;
+    save_ha_key(&state.pool, "peers", &config.peers.as_ref().map(|v| v.join(",")).unwrap_or_default()).await;
+    save_ha_key(&state.pool, "tls_cert", config.tls_cert.as_deref().unwrap_or("")).await;
+    save_ha_key(&state.pool, "tls_key", config.tls_key.as_deref().unwrap_or("")).await;
+    save_ha_key(&state.pool, "tls_ca", config.tls_ca.as_deref().unwrap_or("")).await;
+    Ok(Json(MessageResponse { message: "HA config updated".to_string() }))
+}
+
+// --- HA live status (from rDHCP API) ---
+
+pub async fn get_ha_status(
+    State(state): State<AppState>,
+) -> Result<Json<HaStatus>, StatusCode> {
+    let config = load_global_config(&state.pool).await;
+    let body = rdhcp_api_get("/api/v1/ha/status", config.api_port).await.map_err(|_| internal())?;
+    serde_json::from_str(&body).map(Json).map_err(|_| internal())
+}
+
+// --- Pool stats (from rDHCP API) ---
+
+pub async fn get_pool_stats(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<PoolStats>>>, StatusCode> {
+    let config = load_global_config(&state.pool).await;
+    let body = rdhcp_api_get("/api/v1/leases/stats", config.api_port).await.map_err(|_| internal())?;
+    let stats: Vec<PoolStats> = serde_json::from_str(&body).map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: stats }))
+}
+
+// --- Metrics (proxy rDHCP Prometheus metrics) ---
+
+pub async fn get_metrics(
+    State(state): State<AppState>,
+) -> Result<String, StatusCode> {
+    let config = load_global_config(&state.pool).await;
+    rdhcp_api_get("/metrics", config.api_port).await.map_err(|_| internal())
 }
 
 // --- Subnets ---
@@ -428,12 +895,20 @@ pub async fn create_subnet(
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let enabled = req.enabled.unwrap_or(true);
-    sqlx::query("INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, enabled, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)")
+    let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
+    sqlx::query("INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, preferred_time, subnet_type, delegated_length, enabled, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)")
         .bind(&id).bind(&req.network).bind(&req.pool_start).bind(&req.pool_end).bind(&req.gateway)
         .bind(req.dns_servers.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
+        .bind(req.preferred_time.map(|v| v as i64)).bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
         .bind(enabled).bind(req.description.as_deref()).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
-    let subnet = DhcpSubnet { id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end, gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name, lease_time: req.lease_time, enabled, description: req.description, created_at: now };
+    let subnet = DhcpSubnet {
+        id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end,
+        gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name,
+        lease_time: req.lease_time, preferred_time: req.preferred_time,
+        subnet_type: subnet_type.to_string(), delegated_length: req.delegated_length,
+        enabled, description: req.description, created_at: now,
+    };
     Ok((StatusCode::CREATED, Json(ApiResponse { data: subnet })))
 }
 
@@ -443,14 +918,22 @@ pub async fn update_subnet(
     Json(req): Json<CreateSubnetRequest>,
 ) -> Result<Json<ApiResponse<DhcpSubnet>>, StatusCode> {
     let enabled = req.enabled.unwrap_or(true);
-    let result = sqlx::query("UPDATE dhcp_subnets SET network=?2, pool_start=?3, pool_end=?4, gateway=?5, dns_servers=?6, domain_name=?7, lease_time=?8, enabled=?9, description=?10 WHERE id=?1")
+    let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
+    let result = sqlx::query("UPDATE dhcp_subnets SET network=?2, pool_start=?3, pool_end=?4, gateway=?5, dns_servers=?6, domain_name=?7, lease_time=?8, preferred_time=?9, subnet_type=?10, delegated_length=?11, enabled=?12, description=?13 WHERE id=?1")
         .bind(&id).bind(&req.network).bind(&req.pool_start).bind(&req.pool_end).bind(&req.gateway)
         .bind(req.dns_servers.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
+        .bind(req.preferred_time.map(|v| v as i64)).bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
         .bind(enabled).bind(req.description.as_deref())
         .execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
     let now = Utc::now().to_rfc3339();
-    Ok(Json(ApiResponse { data: DhcpSubnet { id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end, gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name, lease_time: req.lease_time, enabled, description: req.description, created_at: now } }))
+    Ok(Json(ApiResponse { data: DhcpSubnet {
+        id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end,
+        gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name,
+        lease_time: req.lease_time, preferred_time: req.preferred_time,
+        subnet_type: subnet_type.to_string(), delegated_length: req.delegated_length,
+        enabled, description: req.description, created_at: now,
+    }}))
 }
 
 pub async fn delete_subnet(
@@ -476,11 +959,11 @@ pub async fn create_reservation(
 ) -> Result<(StatusCode, Json<ApiResponse<DhcpReservation>>), StatusCode> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    sqlx::query("INSERT INTO dhcp_reservations (id, subnet_id, mac_address, ip_address, hostname, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)")
+    sqlx::query("INSERT INTO dhcp_reservations (id, subnet_id, mac_address, ip_address, hostname, client_id, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")
         .bind(&id).bind(req.subnet_id.as_deref()).bind(&req.mac_address).bind(&req.ip_address)
-        .bind(req.hostname.as_deref()).bind(req.description.as_deref()).bind(&now)
+        .bind(req.hostname.as_deref()).bind(req.client_id.as_deref()).bind(req.description.as_deref()).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: DhcpReservation { id, subnet_id: req.subnet_id, mac_address: req.mac_address, ip_address: req.ip_address, hostname: req.hostname, description: req.description, created_at: now } })))
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: DhcpReservation { id, subnet_id: req.subnet_id, mac_address: req.mac_address, ip_address: req.ip_address, hostname: req.hostname, client_id: req.client_id, description: req.description, created_at: now } })))
 }
 
 pub async fn update_reservation(
@@ -488,13 +971,13 @@ pub async fn update_reservation(
     Path(id): Path<String>,
     Json(req): Json<CreateReservationRequest>,
 ) -> Result<Json<ApiResponse<DhcpReservation>>, StatusCode> {
-    let result = sqlx::query("UPDATE dhcp_reservations SET subnet_id=?2, mac_address=?3, ip_address=?4, hostname=?5, description=?6 WHERE id=?1")
+    let result = sqlx::query("UPDATE dhcp_reservations SET subnet_id=?2, mac_address=?3, ip_address=?4, hostname=?5, client_id=?6, description=?7 WHERE id=?1")
         .bind(&id).bind(req.subnet_id.as_deref()).bind(&req.mac_address).bind(&req.ip_address)
-        .bind(req.hostname.as_deref()).bind(req.description.as_deref())
+        .bind(req.hostname.as_deref()).bind(req.client_id.as_deref()).bind(req.description.as_deref())
         .execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
     let now = Utc::now().to_rfc3339();
-    Ok(Json(ApiResponse { data: DhcpReservation { id, subnet_id: req.subnet_id, mac_address: req.mac_address, ip_address: req.ip_address, hostname: req.hostname, description: req.description, created_at: now } }))
+    Ok(Json(ApiResponse { data: DhcpReservation { id, subnet_id: req.subnet_id, mac_address: req.mac_address, ip_address: req.ip_address, hostname: req.hostname, client_id: req.client_id, description: req.description, created_at: now } }))
 }
 
 pub async fn delete_reservation(
@@ -506,38 +989,45 @@ pub async fn delete_reservation(
     Ok(Json(MessageResponse { message: format!("Reservation {} deleted", id) }))
 }
 
-// --- Leases ---
+// --- Leases (from rDHCP API) ---
 
-pub async fn list_leases() -> Result<Json<ApiResponse<Vec<DhcpLease>>>, StatusCode> {
-    let content = tokio::fs::read_to_string("/var/db/kea/kea-leases4.csv").await.unwrap_or_default();
-    let mut leases = Vec::new();
-    for line in content.lines() {
-        if line.starts_with('#') || line.is_empty() { continue; }
-        let parts: Vec<&str> = line.split(',').collect();
-        // Kea CSV: address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context
-        if parts.len() >= 9 {
-            leases.push(DhcpLease {
-                ip_address: parts[0].to_string(),
-                mac_address: parts[1].to_string(),
-                hostname: if parts[8].is_empty() { None } else { Some(parts[8].to_string()) },
-                state: match parts.get(9).unwrap_or(&"0") { &"0" => "active", &"1" => "declined", &"2" => "expired", _ => "unknown" }.to_string(),
-                starts: None,
-                expires: Some(parts[4].to_string()),
-                subnet_id: parts[5].parse().ok(),
-            });
+pub async fn list_leases(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<DhcpLease>>>, StatusCode> {
+    let config = load_global_config(&state.pool).await;
+
+    let body = rdhcp_api_get("/api/v1/leases?state=bound&limit=10000", config.api_port).await
+        .unwrap_or_else(|_| "[]".to_string());
+
+    let rdhcp_leases: Vec<RdhcpLeaseResponse> = serde_json::from_str(&body).unwrap_or_default();
+
+    let leases: Vec<DhcpLease> = rdhcp_leases.into_iter().map(|l| {
+        DhcpLease {
+            ip_address: l.ip,
+            mac_address: l.mac.unwrap_or_default(),
+            hostname: l.hostname,
+            client_id: l.client_id,
+            state: l.state,
+            lease_time: l.lease_time,
+            starts: Some(format_unix_ts(l.start_time)),
+            expires: Some(format_unix_ts(l.expire_time)),
+            subnet: Some(l.subnet),
         }
-    }
-    // Filter to only active/unexpired
-    leases.retain(|l| l.state == "active");
+    }).collect();
+
     Ok(Json(ApiResponse { data: leases }))
 }
 
 pub async fn release_lease(
+    State(state): State<AppState>,
     Path(ip): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    // Remove from Kea lease file (simplified — in production use Kea CA API)
-    let _ = Command::new("sudo").args(["/usr/local/sbin/kea-admin", "lease-del", "4", &ip]).output().await;
-    Ok(Json(MessageResponse { message: format!("Lease {} released", ip) }))
+    let config = load_global_config(&state.pool).await;
+    let path = format!("/api/v1/leases/{}", ip);
+    match rdhcp_api_delete(&path, config.api_port).await {
+        Ok(()) => Ok(Json(MessageResponse { message: format!("Lease {} released", ip) })),
+        Err(e) => Ok(Json(MessageResponse { message: format!("Failed to release {}: {}", ip, e) })),
+    }
 }
 
 // --- Logs ---
@@ -548,15 +1038,29 @@ pub async fn dhcp_logs(
     let lines_param = params.get("lines").and_then(|v| v.parse::<usize>().ok()).unwrap_or(200);
     let search = params.get("search").cloned().unwrap_or_default();
 
-    // Read Kea log file (try multiple locations)
-    let log_paths = ["/var/log/kea/kea-dhcp4.log", "/var/log/kea-dhcp4.log", "/usr/local/var/log/kea/kea-dhcp4.log"];
+    // Read rDHCP log file
+    let log_paths = [RDHCP_LOG_PATH, "/var/log/rdhcpd.log"];
     let mut content = String::new();
     for path in &log_paths {
-        // Use sudo cat since log may be owned by root
+        // Try direct read first (aifw user may have read access)
+        if let Ok(c) = tokio::fs::read_to_string(path).await {
+            content = c;
+            break;
+        }
+        // Fallback to sudo
         if let Ok(output) = Command::new("sudo").args(["/bin/cat", path]).output().await {
             if output.status.success() {
                 content = String::from_utf8_lossy(&output.stdout).to_string();
                 break;
+            }
+        }
+    }
+
+    // Also try journalctl if no log file found
+    if content.is_empty() {
+        if let Ok(output) = Command::new("sudo").args(["journalctl", "-u", "rdhcpd", "--no-pager", "-n", &lines_param.to_string()]).output().await {
+            if output.status.success() {
+                content = String::from_utf8_lossy(&output.stdout).to_string();
             }
         }
     }
@@ -580,26 +1084,38 @@ pub async fn apply_config(
     State(state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let config = load_global_config(&state.pool).await;
-    let kea_json = generate_kea_config(&state.pool).await;
+    let toml_config = generate_rdhcp_config(&state.pool).await;
 
-    // Write config
-    let config_path = "/usr/local/etc/kea/kea-dhcp4.conf";
-    let _ = tokio::fs::create_dir_all("/usr/local/etc/kea").await;
-    let _ = tokio::fs::create_dir_all("/var/db/kea").await;
-    let _ = tokio::fs::create_dir_all("/etc/kea").await;
-    tokio::fs::write(config_path, &kea_json).await.map_err(|_| internal())?;
+    // Create directories
+    let _ = tokio::fs::create_dir_all("/usr/local/etc/rdhcpd").await;
+    let _ = tokio::fs::create_dir_all(RDHCP_LEASE_DB).await;
+    let _ = tokio::fs::create_dir_all("/var/log/rdhcpd").await;
 
-    // Ensure keactrl only runs dhcp4 (not ctrl-agent which needs a password file)
-    let keactrl_conf = "dhcp4=yes\ndhcp6=no\ndhcp_ddns=no\nctrl_agent=no\nkea_verbose=no\n";
-    let _ = tokio::fs::write("/usr/local/etc/kea/keactrl.conf", keactrl_conf).await;
+    // Write TOML config
+    tokio::fs::write(RDHCP_CONFIG_PATH, &toml_config).await.map_err(|_| internal())?;
+
+    // Fix ownership
+    let _ = Command::new("sudo").args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]).output().await;
+    let _ = Command::new("sudo").args(["chown", "-R", "aifw:aifw", RDHCP_LEASE_DB]).output().await;
+    let _ = Command::new("sudo").args(["chown", "-R", "aifw:aifw", "/var/log/rdhcpd"]).output().await;
 
     if config.enabled {
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "kea_enable=YES"]).output().await;
-        let _ = Command::new("sudo").args(["/usr/sbin/service", "kea", "restart"]).output().await;
-        Ok(Json(MessageResponse { message: "DHCP config applied and service restarted".to_string() }))
+        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
+        let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
+        Ok(Json(MessageResponse { message: "DHCP config applied and rDHCP restarted".to_string() }))
     } else {
-        let _ = Command::new("sudo").args(["/usr/sbin/service", "kea", "stop"]).output().await;
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "kea_enable=NO"]).output().await;
-        Ok(Json(MessageResponse { message: "DHCP config saved, service stopped".to_string() }))
+        let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "stop"]).output().await;
+        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=NO"]).output().await;
+        Ok(Json(MessageResponse { message: "DHCP config saved, rDHCP stopped".to_string() }))
     }
+}
+
+// ============================================================
+// Utility
+// ============================================================
+
+fn format_unix_ts(ts: u64) -> String {
+    chrono::DateTime::from_timestamp(ts as i64, 0)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| ts.to_string())
 }

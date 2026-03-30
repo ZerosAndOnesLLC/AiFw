@@ -34,7 +34,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # --- Ensure dependencies ---
-for pkg in kea sudo unbound; do
+for pkg in sudo unbound; do
     if ! pkg info -q "$pkg" 2>/dev/null; then
         echo "Installing $pkg..."
         pkg install -y "$pkg"
@@ -85,6 +85,7 @@ echo ""
 echo "[4/5] Deploying..."
 service trafficcop stop 2>/dev/null || true
 pkill -9 -f "daemon.*trafficcop" 2>/dev/null || true
+service rdhcpd stop 2>/dev/null || true
 service aifw_api stop 2>/dev/null || true
 service aifw_daemon stop 2>/dev/null || true
 pkill -9 -f "aifw-api.*8081" 2>/dev/null || true
@@ -113,6 +114,8 @@ mkdir -p /var/log/trafficcop
 chown -R aifw:aifw /var/log/trafficcop 2>/dev/null || true
 mkdir -p /usr/local/etc/trafficcop
 chown -R aifw:aifw /usr/local/etc/trafficcop 2>/dev/null || true
+mkdir -p /var/db/rdhcpd/leases /var/log/rdhcpd /usr/local/etc/rdhcpd
+chown -R aifw:aifw /var/db/rdhcpd /var/log/rdhcpd /usr/local/etc/rdhcpd 2>/dev/null || true
 
 # Install TrafficCop default config if not present
 if [ ! -f /usr/local/etc/trafficcop/config.yaml ]; then
@@ -123,6 +126,10 @@ fi
 # Install TrafficCop rc.d script
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/trafficcop" /usr/local/etc/rc.d/trafficcop
 chmod 755 /usr/local/etc/rc.d/trafficcop
+
+# Install rDHCP rc.d script
+cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/rdhcpd" /usr/local/etc/rc.d/rdhcpd
+chmod 755 /usr/local/etc/rc.d/rdhcpd
 
 # Ensure sudoers for pfctl
 mkdir -p /usr/local/etc/sudoers.d
@@ -138,6 +145,10 @@ service aifw_api start 2>/dev/null || echo "  WARNING: aifw_api not configured"
 # Start TrafficCop if enabled
 if [ "$(sysrc -n trafficcop_enable 2>/dev/null)" = "YES" ]; then
     service trafficcop start 2>/dev/null || true
+fi
+# Start rDHCP if enabled
+if [ "$(sysrc -n rdhcpd_enable 2>/dev/null)" = "YES" ]; then
+    service rdhcpd start 2>/dev/null || true
 fi
 sleep 2
 

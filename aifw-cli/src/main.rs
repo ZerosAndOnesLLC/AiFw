@@ -487,7 +487,7 @@ enum DhcpAction {
         #[arg(long)]
         json: bool,
     },
-    /// Apply DHCP config (write + restart Kea)
+    /// Apply DHCP config (write + restart rDHCP)
     Apply,
 }
 
@@ -798,9 +798,9 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Dhcp { action } => match action {
             DhcpAction::Status => commands::dhcp_status(&cli.db).await?,
-            DhcpAction::Start => { let _ = std::process::Command::new("service").args(["kea", "start"]).output(); println!("DHCP started"); }
-            DhcpAction::Stop => { let _ = std::process::Command::new("service").args(["kea", "stop"]).output(); println!("DHCP stopped"); }
-            DhcpAction::Restart => { let _ = std::process::Command::new("service").args(["kea", "restart"]).output(); println!("DHCP restarted"); }
+            DhcpAction::Start => { let _ = std::process::Command::new("service").args(["rdhcpd", "start"]).output(); println!("DHCP started"); }
+            DhcpAction::Stop => { let _ = std::process::Command::new("service").args(["rdhcpd", "stop"]).output(); println!("DHCP stopped"); }
+            DhcpAction::Restart => { let _ = std::process::Command::new("service").args(["rdhcpd", "restart"]).output(); println!("DHCP restarted"); }
             DhcpAction::Subnets { json } => commands::dhcp_subnets(&cli.db, json).await?,
             DhcpAction::SubnetAdd { network, pool_start, pool_end, gateway, dns, domain, lease_time, desc } => {
                 commands::dhcp_subnet_add(&cli.db, &network, &pool_start, &pool_end, &gateway, dns.as_deref(), domain.as_deref(), lease_time, desc.as_deref()).await?;

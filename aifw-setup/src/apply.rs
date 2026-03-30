@@ -64,7 +64,6 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/pkg *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/freebsd-update *\n\
 aifw ALL=(ALL) NOPASSWD: /sbin/shutdown *\n\
 aifw ALL=(ALL) NOPASSWD: /bin/cat *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/local/sbin/kea-admin *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/bin/tee *\n\
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *\n";
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
@@ -82,6 +81,16 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *\n";
     let _ = std::fs::create_dir_all("/var/unbound");
     let _ = std::process::Command::new("chown").args(["-R", "unbound:unbound", "/var/unbound"]).status();
     console::success("Unbound configured");
+
+    // 5c2. Setup rDHCP directories
+    console::info("Configuring rDHCP DHCP server...");
+    for dir in ["/var/db/rdhcpd/leases", "/var/log/rdhcpd", "/usr/local/etc/rdhcpd"] {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/var/db/rdhcpd"]).status();
+    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/var/log/rdhcpd"]).status();
+    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]).status();
+    console::success("rDHCP configured");
 
     // 5d. Configure devfs rules for /dev/pf and /dev/bpf* access
     console::info("Configuring device permissions...");

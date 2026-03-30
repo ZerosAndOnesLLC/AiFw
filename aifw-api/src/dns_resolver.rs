@@ -360,17 +360,24 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
         }
     }
 
-    // DHCP lease registration
+    // DHCP lease registration (query rDHCP API for active leases)
     if c.register_dhcp {
-        let leases = tokio::fs::read_to_string("/var/db/kea/kea-leases4.csv").await.unwrap_or_default();
-        for line in leases.lines() {
-            if line.starts_with('#') || line.is_empty() { continue; }
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() >= 9 && !parts[8].is_empty() {
-                let ip = parts[0];
-                let hostname = parts[8];
-                local_data_lines.push(format!("    local-data: \"{} IN A {}\"", hostname, ip));
-                local_data_lines.push(format!("    local-data-ptr: \"{} {}\"", ip, hostname));
+        if let Ok(output) = tokio::process::Command::new("curl")
+            .args(["-sf", "--max-time", "3", "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000"])
+            .output().await
+        {
+            if output.status.success() {
+                let body = String::from_utf8_lossy(&output.stdout);
+                if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
+                    for lease in &leases {
+                        let ip = lease["ip"].as_str().unwrap_or("");
+                        let hostname = lease["hostname"].as_str().unwrap_or("");
+                        if !ip.is_empty() && !hostname.is_empty() {
+                            local_data_lines.push(format!("    local-data: \"{} IN A {}\"", hostname, ip));
+                            local_data_lines.push(format!("    local-data-ptr: \"{} {}\"", ip, hostname));
+                        }
+                    }
+                }
             }
         }
     }

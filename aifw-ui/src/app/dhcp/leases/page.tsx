@@ -8,10 +8,12 @@ interface DhcpLease {
   ip_address: string;
   mac_address: string;
   hostname?: string;
+  client_id?: string;
   state: string;
+  lease_time: number;
   starts?: string;
   expires?: string;
-  subnet_id?: string;
+  subnet?: string;
 }
 
 /* -- Helpers --------------------------------------------------------- */
@@ -40,11 +42,13 @@ function fmtDateTime(iso?: string): string {
 function StateBadge({ state }: { state: string }) {
   const map: Record<string, string> = {
     active: "bg-green-500/20 text-green-400 border-green-500/30",
+    bound: "bg-green-500/20 text-green-400 border-green-500/30",
+    offered: "bg-blue-500/20 text-blue-400 border-blue-500/30",
     free: "bg-gray-500/20 text-gray-400 border-gray-500/30",
     expired: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
     released: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+    declined: "bg-red-500/20 text-red-400 border-red-500/30",
     abandoned: "bg-red-500/20 text-red-400 border-red-500/30",
-    backup: "bg-purple-500/20 text-purple-400 border-purple-500/30",
   };
   const cls = map[state] || "bg-gray-500/20 text-gray-400 border-gray-500/30";
   return (
@@ -213,6 +217,7 @@ export default function DhcpLeasesPage() {
                   <th className="px-6 py-3">MAC Address</th>
                   <th className="px-6 py-3">Hostname</th>
                   <th className="px-6 py-3">State</th>
+                  <th className="px-6 py-3">Subnet</th>
                   <th className="px-6 py-3">Starts</th>
                   <th className="px-6 py-3">Expires</th>
                   <th className="px-6 py-3 text-right">Actions</th>
@@ -235,6 +240,9 @@ export default function DhcpLeasesPage() {
                     </td>
                     <td className="px-6 py-3">
                       <StateBadge state={lease.state} />
+                    </td>
+                    <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs">
+                      {lease.subnet || "-"}
                     </td>
                     <td className="px-6 py-3 text-[var(--text-secondary)] text-xs">
                       {fmtDateTime(lease.starts)}

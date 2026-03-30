@@ -59,7 +59,7 @@ export default function DhcpLogsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">DHCP Logs</h1>
-          <p className="text-sm text-[var(--text-muted)]">Kea DHCP server activity log</p>
+          <p className="text-sm text-[var(--text-muted)]">rDHCP server activity log</p>
         </div>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-xs text-[var(--text-muted)] cursor-pointer">
@@ -110,7 +110,7 @@ export default function DhcpLogsPage() {
       <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
         <div className="px-4 py-2 border-b border-gray-700 flex items-center justify-between">
           <span className="text-xs text-[var(--text-muted)]">
-            {logs.length} log entries · /var/log/kea-dhcp4.log
+            {logs.length} log entries · /var/log/rdhcpd/rdhcpd.log
           </span>
           {autoRefresh && (
             <span className="flex items-center gap-1 text-xs text-green-400">
