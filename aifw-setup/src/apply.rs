@@ -609,7 +609,7 @@ rdhcpd_start()
     fi
 
     echo "Starting ${name}."
-    /usr/sbin/daemon -p ${pidfile} -o /var/log/rdhcpd/rdhcpd.log ${command} ${command_args}
+    /usr/sbin/daemon -f -p ${pidfile} -o /var/log/rdhcpd/rdhcpd.log ${command} ${command_args}
 }
 
 rdhcpd_stop()
