@@ -106,18 +106,25 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 // Helpers
 // ============================================================
 
-/// Get the current default gateway from the routing table
-async fn get_default_gateway() -> Option<String> {
-    let output = Command::new("route").args(["-n", "get", "default"]).output().await.ok()?;
-    if !output.status.success() { return None; }
+/// Get the current default gateway and its interface from the routing table
+async fn get_default_gateway() -> (Option<String>, Option<String>) {
+    let output = match Command::new("route").args(["-n", "get", "default"]).output().await {
+        Ok(o) if o.status.success() => o,
+        _ => return (None, None),
+    };
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut gw = None;
+    let mut iface = None;
     for line in stdout.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("gateway:") {
-            return Some(trimmed.strip_prefix("gateway:")?.trim().to_string());
+            gw = trimmed.strip_prefix("gateway:").map(|s| s.trim().to_string());
+        }
+        if trimmed.starts_with("interface:") {
+            iface = trimmed.strip_prefix("interface:").map(|s| s.trim().to_string());
         }
     }
-    None
+    (gw, iface)
 }
 
 /// Get the persisted IPv4 mode for an interface from rc.conf
@@ -141,7 +148,7 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
-    let gateway = get_default_gateway().await;
+    let (gateway, gateway_iface) = get_default_gateway().await;
 
     let mut interfaces = Vec::new();
     let mut current: Option<InterfaceDetail> = None;
@@ -223,9 +230,8 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
     // Enrich with persisted mode and gateway
     for iface in &mut interfaces {
         iface.ipv4_mode = get_rc_ipv4_mode(&iface.name).await;
-        // Attach default gateway to whichever interface currently has it
-        // (the interface whose subnet contains the gateway)
-        if iface.ipv4.is_some() {
+        // Only show gateway on the interface that actually routes default traffic
+        if gateway_iface.as_deref() == Some(&iface.name) {
             iface.gateway = gateway.clone();
         }
     }
@@ -301,9 +307,13 @@ pub async fn configure_interface(
                         // Remove old default route, add new one
                         let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
                         let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
-                        // Persist
                         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
                         msgs.push(format!("Gateway set to {}", gw));
+                    } else {
+                        // Blank gateway = remove default route
+                        let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+                        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
+                        msgs.push("Default gateway removed".to_string());
                     }
                 }
             }
@@ -322,6 +332,10 @@ pub async fn configure_interface(
             let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
             let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
             msgs.push(format!("Gateway set to {}", gw));
+        } else {
+            let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
+            msgs.push("Default gateway removed".to_string());
         }
     }
 

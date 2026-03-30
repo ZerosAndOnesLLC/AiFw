@@ -135,7 +135,7 @@ export default function InterfacesPage() {
     };
     if (form.ipv4_mode === "static") {
       if (form.ipv4_address) body.ipv4_address = form.ipv4_address;
-      if (form.gateway) body.gateway = form.gateway;
+      body.gateway = form.gateway || "";
     }
     if (form.ipv6_address) {
       body.ipv6_address = form.ipv6_address;
