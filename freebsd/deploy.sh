@@ -48,6 +48,7 @@ fi
 
 # --- Pull latest ---
 echo "[1/5] Pulling latest..."
+git checkout -- Cargo.lock 2>/dev/null || true
 git pull
 VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 echo "  Version: $VERSION"
