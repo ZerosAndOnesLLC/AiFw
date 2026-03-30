@@ -291,8 +291,13 @@ pub async fn configure_interface(
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                 if let Some(ref addr) = req.ipv4_address {
-                    // Remove any existing addresses, then set the new static IP
-                    // Use -alias to remove old IPs cleanly, then add new one
+                    // Remove ALL existing IPv4 addresses from the interface first
+                    // FreeBSD ifconfig won't replace — it adds aliases. Must delete first.
+                    let current = get_iface_ipv4s(&name).await;
+                    for old_ip in &current {
+                        let _ = Command::new("sudo").args(["/sbin/ifconfig", &name, "inet", old_ip, "-alias"]).output().await;
+                    }
+                    // Set the new static IP
                     let _ = Command::new("sudo").args(["/sbin/ifconfig", &name, "inet", addr]).output().await;
                     let _ = Command::new("sudo").args(["/sbin/ifconfig", &name, "up"]).output().await;
 
@@ -356,6 +361,25 @@ pub async fn configure_interface(
     };
 
     Ok(Json(MessageResponse { message: summary }))
+}
+
+/// Get all current IPv4 addresses on an interface
+async fn get_iface_ipv4s(name: &str) -> Vec<String> {
+    let output = Command::new("/sbin/ifconfig").arg(name).output().await;
+    let stdout = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => return vec![],
+    };
+    stdout.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("inet ") {
+                trimmed.split_whitespace().nth(1).map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Run a shell command and return success/failure
