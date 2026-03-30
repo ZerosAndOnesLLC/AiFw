@@ -770,7 +770,11 @@ async fn run_rdhcp_service(action: &str) -> Json<MessageResponse> {
     }
 }
 
-pub async fn dhcp_start() -> Result<Json<MessageResponse>, StatusCode> {
+pub async fn dhcp_start(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    // Generate config if it doesn't exist
+    ensure_config(&state.pool).await;
     Ok(run_rdhcp_service("start").await)
 }
 
@@ -778,8 +782,23 @@ pub async fn dhcp_stop() -> Result<Json<MessageResponse>, StatusCode> {
     Ok(run_rdhcp_service("stop").await)
 }
 
-pub async fn dhcp_restart() -> Result<Json<MessageResponse>, StatusCode> {
+pub async fn dhcp_restart(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    ensure_config(&state.pool).await;
     Ok(run_rdhcp_service("restart").await)
+}
+
+/// Write rDHCP config if it doesn't already exist on disk
+async fn ensure_config(pool: &SqlitePool) {
+    let config_exists = tokio::fs::metadata(RDHCP_CONFIG_PATH).await.is_ok();
+    if !config_exists {
+        let toml_config = generate_rdhcp_config(pool).await;
+        let _ = tokio::fs::create_dir_all("/usr/local/etc/rdhcpd").await;
+        let _ = tokio::fs::create_dir_all(RDHCP_LEASE_DB).await;
+        let _ = tokio::fs::create_dir_all("/var/log/rdhcpd").await;
+        let _ = tokio::fs::write(RDHCP_CONFIG_PATH, &toml_config).await;
+    }
 }
 
 // --- Global config ---
