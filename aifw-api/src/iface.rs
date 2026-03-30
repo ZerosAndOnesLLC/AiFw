@@ -255,6 +255,39 @@ pub async fn configure_interface(
     Path(name): Path<String>,
     Json(req): Json<ConfigureInterfaceRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
+    // Validate inputs before applying anything
+    if let Some(ref mode) = req.ipv4_mode {
+        if !["dhcp", "static", "none"].contains(&mode.as_str()) {
+            return Ok(Json(MessageResponse { message: "Invalid IPv4 mode. Must be dhcp, static, or none.".to_string() }));
+        }
+        if mode == "static" {
+            if let Some(ref addr) = req.ipv4_address {
+                if let Err(e) = validate_cidr(addr) {
+                    return Ok(Json(MessageResponse { message: e }));
+                }
+            } else {
+                return Ok(Json(MessageResponse { message: "Static mode requires an IPv4 address (e.g. 192.168.1.1/24).".to_string() }));
+            }
+        }
+    }
+    if let Some(ref gw) = req.gateway {
+        if !gw.is_empty() {
+            if let Err(e) = validate_ip(gw) {
+                return Ok(Json(MessageResponse { message: format!("Invalid gateway: {}", e) }));
+            }
+        }
+    }
+    if let Some(ref ipv6) = req.ipv6_address {
+        if !ipv6.is_empty() && !ipv6.contains(':') {
+            return Ok(Json(MessageResponse { message: "Invalid IPv6 address.".to_string() }));
+        }
+    }
+    if let Some(mtu) = req.mtu {
+        if mtu < 68 || mtu > 9000 {
+            return Ok(Json(MessageResponse { message: "MTU must be between 68 and 9000.".to_string() }));
+        }
+    }
+
     let mut msgs = Vec::new();
 
     // Handle enable/disable
@@ -361,6 +394,42 @@ pub async fn configure_interface(
     };
 
     Ok(Json(MessageResponse { message: summary }))
+}
+
+/// Validate an IPv4 address in CIDR notation (e.g. "192.168.1.1/24")
+fn validate_cidr(addr: &str) -> Result<(), String> {
+    let parts: Vec<&str> = addr.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        return Err("Address must include a prefix length (e.g. 192.168.1.1/24).".to_string());
+    }
+    let ip_str = parts[0];
+    let prefix_str = parts[1];
+
+    // Validate IP part
+    validate_ip(ip_str)?;
+
+    // Validate prefix
+    let prefix: u8 = prefix_str.parse().map_err(|_| "Invalid prefix length.".to_string())?;
+    if prefix > 32 {
+        return Err("Prefix length must be between 0 and 32.".to_string());
+    }
+
+    Ok(())
+}
+
+/// Validate a plain IPv4 address (no prefix)
+fn validate_ip(ip: &str) -> Result<(), String> {
+    let octets: Vec<&str> = ip.split('.').collect();
+    if octets.len() != 4 {
+        return Err("Must be a valid IPv4 address (e.g. 192.168.1.1).".to_string());
+    }
+    for (i, octet) in octets.iter().enumerate() {
+        let val: u16 = octet.parse().map_err(|_| format!("Invalid octet '{}' in address.", octet))?;
+        if val > 255 {
+            return Err(format!("Octet {} ({}) is out of range (0-255).", i + 1, val));
+        }
+    }
+    Ok(())
 }
 
 /// Get all current IPv4 addresses on an interface

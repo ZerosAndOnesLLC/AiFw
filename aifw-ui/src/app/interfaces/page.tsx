@@ -45,6 +45,43 @@ const emptyForm: InterfaceForm = {
   description: "",
 };
 
+function isValidIp(ip: string): boolean {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((p) => {
+    const n = Number(p);
+    return p !== "" && !isNaN(n) && n >= 0 && n <= 255 && String(n) === p;
+  });
+}
+
+function validateCidr(addr: string): string | null {
+  if (!addr.trim()) return "IP address is required.";
+  const parts = addr.split("/");
+  if (parts.length !== 2) return "Must include prefix length (e.g. 192.168.1.1/24).";
+  if (!isValidIp(parts[0])) return "Invalid IPv4 address.";
+  const prefix = Number(parts[1]);
+  if (isNaN(prefix) || prefix < 0 || prefix > 32 || String(prefix) !== parts[1])
+    return "Prefix must be 0-32.";
+  return null;
+}
+
+function validateGateway(gw: string): string | null {
+  if (!gw.trim()) return null; // blank is ok
+  if (!isValidIp(gw)) return "Invalid gateway IP address.";
+  return null;
+}
+
+function hexMaskToCidr(hex: string | null): number | null {
+  if (!hex) return null;
+  const clean = hex.replace("0x", "");
+  const num = parseInt(clean, 16);
+  if (isNaN(num)) return null;
+  let bits = 0;
+  let n = num;
+  while (n) { bits += n & 1; n >>>= 1; }
+  return bits;
+}
+
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("aifw_token");
   return {
@@ -107,7 +144,9 @@ export default function InterfacesPage() {
     setEditingName(iface.name);
     setForm({
       ipv4_mode: iface.ipv4_mode || (iface.ipv4 ? "static" : "dhcp"),
-      ipv4_address: iface.ipv4 || "",
+      ipv4_address: iface.ipv4
+        ? `${iface.ipv4}/${hexMaskToCidr(iface.ipv4_netmask) ?? "24"}`
+        : "",
       gateway: iface.gateway || "",
       ipv6_address: iface.ipv6 || "",
       mtu: String(iface.mtu),
@@ -121,20 +160,27 @@ export default function InterfacesPage() {
     setForm({ ...emptyForm });
   }
 
+  // Live validation errors
+  const ipError = form.ipv4_mode === "static" ? validateCidr(form.ipv4_address) : null;
+  const gwError = form.ipv4_mode === "static" ? validateGateway(form.gateway) : null;
+  const mtuNum = parseInt(form.mtu, 10);
+  const mtuError = isNaN(mtuNum) || mtuNum < 68 || mtuNum > 9000 ? "MTU must be 68-9000." : null;
+  const hasErrors = !!(ipError || gwError || mtuError);
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    if (!editingName) return;
+    if (!editingName || hasErrors) return;
     setSaving(true);
     setError(null);
 
     const body: Record<string, unknown> = {
-      mtu: parseInt(form.mtu, 10),
+      mtu: mtuNum,
       enabled: form.enabled,
       description: form.description || undefined,
       ipv4_mode: form.ipv4_mode,
     };
     if (form.ipv4_mode === "static") {
-      if (form.ipv4_address) body.ipv4_address = form.ipv4_address;
+      body.ipv4_address = form.ipv4_address;
       body.gateway = form.gateway || "";
     }
     if (form.ipv6_address) {
@@ -272,7 +318,9 @@ export default function InterfacesPage() {
                       </span>
                     </td>
                     <td className="px-6 py-3 font-mono text-gray-300 text-xs">
-                      {iface.ipv4 || "--"}
+                      {iface.ipv4
+                        ? `${iface.ipv4}/${hexMaskToCidr(iface.ipv4_netmask) ?? "?"}`
+                        : "--"}
                     </td>
                     <td className="px-6 py-3 font-mono text-gray-300 text-xs">
                       {iface.gateway || "--"}
@@ -341,12 +389,12 @@ export default function InterfacesPage() {
                 </select>
               </div>
 
-              {/* IPv4 Address (static only) */}
+              {/* IPv4 Address + Gateway (static only) */}
               {form.ipv4_mode === "static" && (
                 <>
                   <div>
                     <label className="block text-xs text-gray-400 mb-1">
-                      IPv4 Address (with /prefix)
+                      IPv4 Address
                     </label>
                     <input
                       value={form.ipv4_address}
@@ -354,12 +402,21 @@ export default function InterfacesPage() {
                         setForm({ ...form, ipv4_address: e.target.value })
                       }
                       placeholder="192.168.1.1/24"
-                      className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                      className={`w-full bg-gray-900 border rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none ${
+                        ipError && form.ipv4_address ? "border-red-500 focus:border-red-500" : "border-gray-600 focus:border-blue-500"
+                      }`}
                     />
+                    {ipError && form.ipv4_address && (
+                      <p className="text-xs text-red-400 mt-1">{ipError}</p>
+                    )}
+                    {!ipError && form.ipv4_address && (
+                      <p className="text-xs text-green-400/60 mt-1">Valid</p>
+                    )}
                   </div>
                   <div>
                     <label className="block text-xs text-gray-400 mb-1">
                       Default Gateway
+                      <span className="text-gray-600 ml-1">(optional)</span>
                     </label>
                     <input
                       value={form.gateway}
@@ -367,8 +424,13 @@ export default function InterfacesPage() {
                         setForm({ ...form, gateway: e.target.value })
                       }
                       placeholder="192.168.1.254"
-                      className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                      className={`w-full bg-gray-900 border rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none ${
+                        gwError ? "border-red-500 focus:border-red-500" : "border-gray-600 focus:border-blue-500"
+                      }`}
                     />
+                    {gwError && (
+                      <p className="text-xs text-red-400 mt-1">{gwError}</p>
+                    )}
                   </div>
                 </>
               )}
@@ -397,8 +459,11 @@ export default function InterfacesPage() {
                   max={9000}
                   value={form.mtu}
                   onChange={(e) => setForm({ ...form, mtu: e.target.value })}
-                  className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  className={`w-full bg-gray-900 border rounded-md px-3 py-2 text-sm text-white focus:outline-none ${
+                    mtuError ? "border-red-500 focus:border-red-500" : "border-gray-600 focus:border-blue-500"
+                  }`}
                 />
+                {mtuError && <p className="text-xs text-red-400 mt-1">{mtuError}</p>}
               </div>
 
               {/* Enable/Disable */}
@@ -440,7 +505,7 @@ export default function InterfacesPage() {
               <div className="flex gap-3 pt-2">
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || hasErrors}
                   className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-md transition-colors"
                 >
                   {saving ? "Applying..." : "Apply"}
