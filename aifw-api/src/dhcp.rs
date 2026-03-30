@@ -698,9 +698,17 @@ pub async fn dhcp_status(
         .unwrap_or(false);
 
     let version = if running {
-        Command::new("/usr/local/sbin/rdhcpd").args(["--version"]).output().await
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|_| "rDHCP".to_string())
+        // Check rDHCP health endpoint for version info
+        match rdhcp_api_get("/health", config.api_port).await {
+            Ok(body) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    format!("rDHCP ({})", v["ha_mode"].as_str().unwrap_or("standalone"))
+                } else {
+                    "rDHCP".to_string()
+                }
+            }
+            Err(_) => "rDHCP (API unreachable)".to_string(),
+        }
     } else {
         "rDHCP (stopped)".to_string()
     };
