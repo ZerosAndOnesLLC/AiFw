@@ -749,6 +749,10 @@ pub async fn dhcp_status(
 // --- Service control ---
 
 async fn run_rdhcp_service(action: &str) -> Json<MessageResponse> {
+    // Ensure rdhcpd is enabled in rc.conf before start/restart
+    if action == "start" || action == "restart" {
+        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
+    }
     let output = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", action])
         .output().await;
     match output {
