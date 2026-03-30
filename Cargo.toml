@@ -30,7 +30,7 @@ aifw-api = { path = "aifw-api" }
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
-jsonwebtoken = "10"
+jsonwebtoken = "9"
 argon2 = { version = "0.5", features = ["std"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
