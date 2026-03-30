@@ -205,6 +205,11 @@ clone_system() {
     chmod 1777 "$INSTALL_ROOT/var/tmp"
     chmod 0555 "$INSTALL_ROOT/var/empty"
 
+    # Set ownership for service directories
+    chown -R 470:470 "$INSTALL_ROOT/var/db/aifw" 2>/dev/null || true
+    chown -R 470:470 "$INSTALL_ROOT/var/log/aifw" 2>/dev/null || true
+    chown -R 470:470 "$INSTALL_ROOT/var/log/trafficcop" 2>/dev/null || true
+
     # Create other required directories
     mkdir -p "$INSTALL_ROOT/dev"
     mkdir -p "$INSTALL_ROOT/mnt"
@@ -228,6 +233,7 @@ clone_system() {
         echo "  Copying TrafficCop configuration..."
         mkdir -p "$INSTALL_ROOT/usr/local/etc/trafficcop"
         cp -a /usr/local/etc/trafficcop/* "$INSTALL_ROOT/usr/local/etc/trafficcop/" 2>/dev/null || true
+        chown -R 470:470 "$INSTALL_ROOT/usr/local/etc/trafficcop" 2>/dev/null || true
     fi
 
     # Verify critical files exist
