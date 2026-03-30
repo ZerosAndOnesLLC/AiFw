@@ -1249,12 +1249,7 @@ pub async fn rp_logs(
         "/var/log/trafficcop/access.log"
     };
 
-    let mut content = String::new();
-    if let Ok(output) = Command::new("sudo").args(["/bin/cat", log_path]).output().await {
-        if output.status.success() {
-            content = String::from_utf8_lossy(&output.stdout).to_string();
-        }
-    }
+    let content = tokio::fs::read_to_string(log_path).await.unwrap_or_default();
 
     let mut log_lines: Vec<String> = content
         .lines()
