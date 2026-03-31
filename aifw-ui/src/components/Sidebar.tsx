@@ -98,6 +98,7 @@ const navItems: NavItem[] = [
       { href: "/users", label: "Users" },
       { href: "/backup", label: "Backup & Restore" },
       { href: "/settings", label: "Settings" },
+      { href: "/reboot", label: "Reboot" },
     ],
   },
 ];

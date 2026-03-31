@@ -1746,6 +1746,44 @@ pub async fn update_valkey_settings(
     })))
 }
 
+// --- TLS Policy Settings ---
+
+pub async fn get_tls_settings(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let pool = &state.pool;
+    let min_ver = sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'tls_min_version'")
+        .fetch_optional(pool).await.ok().flatten().map(|r| r.0).unwrap_or_else(|| "tls12".to_string());
+    let block_expired = sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'tls_block_expired'")
+        .fetch_optional(pool).await.ok().flatten().map(|r| r.0 == "true").unwrap_or(true);
+    let block_weak = sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'tls_block_weak_keys'")
+        .fetch_optional(pool).await.ok().flatten().map(|r| r.0 == "true").unwrap_or(true);
+    Ok(Json(serde_json::json!({
+        "min_version": min_ver,
+        "block_expired": block_expired,
+        "block_weak_keys": block_weak,
+    })))
+}
+
+pub async fn update_tls_settings(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    if let Some(v) = req.get("min_version").and_then(|v| v.as_str()) {
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('tls_min_version', ?1)")
+            .bind(v).execute(&state.pool).await;
+    }
+    if let Some(v) = req.get("block_expired").and_then(|v| v.as_bool()) {
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('tls_block_expired', ?1)")
+            .bind(if v { "true" } else { "false" }).execute(&state.pool).await;
+    }
+    if let Some(v) = req.get("block_weak_keys").and_then(|v| v.as_bool()) {
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('tls_block_weak_keys', ?1)")
+            .bind(if v { "true" } else { "false" }).execute(&state.pool).await;
+    }
+    Ok(Json(MessageResponse { message: "TLS policy saved".to_string() }))
+}
+
 pub async fn update_dns(
     Json(req): Json<DnsConfigRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {

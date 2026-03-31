@@ -231,6 +231,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/rules/reorder", put(routes::reorder_rules))
         .route("/api/v1/nat/reorder", put(routes::reorder_nat_rules))
         .route("/api/v1/dns", get(routes::get_dns).put(routes::update_dns))
+        .route("/api/v1/settings/tls", get(routes::get_tls_settings).put(routes::update_tls_settings))
         .route("/api/v1/settings/valkey", get(routes::get_valkey_settings).put(routes::update_valkey_settings))
         .route("/api/v1/routes", get(routes::list_static_routes).post(routes::create_static_route))
         .route("/api/v1/routes/{id}", put(routes::update_static_route).delete(routes::delete_static_route))
