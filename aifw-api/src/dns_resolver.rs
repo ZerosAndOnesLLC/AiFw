@@ -564,7 +564,7 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
     // Write a zone file per domain
     for (domain, records) in &domain_records {
         let mut zone = format!(
-            "$TTL 300\n$ORIGIN {}.\n@ IN SOA ns1.{domain}. admin.{domain}. ({serial} 3600 900 604800 300)\n  IN NS  ns1.{domain}.\n",
+            "$TTL 300\n$ORIGIN {}.\n@ IN SOA ns1.{domain}. admin.{domain}. {serial} 3600 900 604800 300\n  IN NS  ns1.{domain}.\n",
             domain, domain = domain, serial = serial
         );
         for record in records {
@@ -585,7 +585,7 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
                 let body = String::from_utf8_lossy(&output.stdout);
                 if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
                     let mut zone = format!(
-                        "$TTL 60\n$ORIGIN {}.\n@ IN SOA ns1.{d}. admin.{d}. ({s} 3600 900 604800 60)\n  IN NS  ns1.{d}.\n",
+                        "$TTL 60\n$ORIGIN {}.\n@ IN SOA ns1.{d}. admin.{d}. {s} 3600 900 604800 60\n  IN NS  ns1.{d}.\n",
                         dhcp_domain, d = dhcp_domain, s = serial
                     );
                     for lease in &leases {
@@ -621,7 +621,7 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
         }
         for (zone_name, records) in &reverse_zones {
             let mut zone = format!(
-                "$TTL 300\n$ORIGIN {}.\n@ IN SOA ns1.aifw.local. admin.aifw.local. ({} 3600 900 604800 300)\n  IN NS  ns1.aifw.local.\n",
+                "$TTL 300\n$ORIGIN {}.\n@ IN SOA ns1.aifw.local. admin.aifw.local. {} 3600 900 604800 300\n  IN NS  ns1.aifw.local.\n",
                 zone_name, serial
             );
             for record in records {
@@ -652,7 +652,7 @@ async fn generate_rdns_rpz(pool: &SqlitePool) -> Option<String> {
 
     let serial = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     let mut zone = format!(
-        "$TTL 300\n@ IN SOA localhost. admin.localhost. ({} 3600 900 604800 300)\n  IN NS  localhost.\n",
+        "$TTL 300\n@ IN SOA localhost. admin.localhost. {} 3600 900 604800 300\n  IN NS  localhost.\n",
         serial
     );
 
