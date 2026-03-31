@@ -7,6 +7,19 @@ use uuid::Uuid;
 
 use crate::AppState;
 
+/// Run a command with a 15-second timeout to prevent API hangs.
+async fn run_cmd_timeout(cmd: &str) -> std::io::Result<std::process::Output> {
+    Command::new("sh")
+        .args(["-c", &format!("timeout 15 {}", cmd)])
+        .output()
+        .await
+}
+
+/// Run a service command with timeout.
+async fn service_cmd(service: &str, action: &str) {
+    let _ = run_cmd_timeout(&format!("sudo /usr/sbin/service {} {}", service, action)).await;
+}
+
 // ============================================================
 // Types
 // ============================================================
@@ -838,9 +851,9 @@ pub async fn apply_resolver(
 }
 
 async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json<MessageResponse>, StatusCode> {
-    // Stop rDNS if running
-    let _ = Command::new("sudo").args(["/usr/sbin/service", "rdns", "stop"]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdns_enable=NO"]).output().await;
+    // Stop rDNS if running (with timeout to prevent hang)
+    service_cmd("rdns", "stop").await;
+    let _ = run_cmd_timeout("sudo /usr/sbin/sysrc rdns_enable=NO").await;
 
     let conf = generate_unbound_conf(&state.pool).await;
     let tmp_path = "/tmp/aifw_unbound.conf";
@@ -850,8 +863,8 @@ async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json
     let _ = Command::new("sudo").args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
 
     if config.enabled {
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=YES"]).output().await;
-        let output = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "restart"]).output().await;
+        let _ = run_cmd_timeout("sudo /usr/sbin/sysrc local_unbound_enable=YES").await;
+        let output = run_cmd_timeout("sudo /usr/sbin/service local_unbound restart").await;
         match output {
             Ok(o) => {
                 let msg = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
@@ -859,23 +872,24 @@ async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json
                     state.set_pending(|p| p.dns = false).await;
                     Ok(Json(MessageResponse { message: "Unbound config applied and restarted".to_string() }))
                 } else {
+                    state.set_pending(|p| p.dns = false).await;
                     Ok(Json(MessageResponse { message: format!("Unbound restart issue: {}", msg.trim()) }))
                 }
             }
             Err(e) => Ok(Json(MessageResponse { message: format!("Failed: {}", e) })),
         }
     } else {
-        let _ = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "stop"]).output().await;
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=NO"]).output().await;
+        service_cmd("local_unbound", "stop").await;
+        let _ = run_cmd_timeout("sudo /usr/sbin/sysrc local_unbound_enable=NO").await;
         state.set_pending(|p| p.dns = false).await;
         Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
     }
 }
 
 async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<MessageResponse>, StatusCode> {
-    // Stop Unbound if running
-    let _ = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "stop"]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=NO"]).output().await;
+    // Stop Unbound if running (with timeout)
+    service_cmd("local_unbound", "stop").await;
+    let _ = run_cmd_timeout("sudo /usr/sbin/sysrc local_unbound_enable=NO").await;
 
     // Create directories
     let _ = Command::new("sudo").args(["mkdir", "-p", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz", "/var/run/rdns", "/var/log/rdns"]).output().await;
@@ -907,8 +921,8 @@ async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<Me
     }
 
     if config.enabled {
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdns_enable=YES"]).output().await;
-        let output = Command::new("sudo").args(["/usr/sbin/service", "rdns", "restart"]).output().await;
+        let _ = run_cmd_timeout("sudo /usr/sbin/sysrc rdns_enable=YES").await;
+        let output = run_cmd_timeout("sudo /usr/sbin/service rdns restart").await;
         match output {
             Ok(o) => {
                 let msg = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
@@ -922,8 +936,8 @@ async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<Me
             Err(e) => Ok(Json(MessageResponse { message: format!("Failed: {}", e) })),
         }
     } else {
-        let _ = Command::new("sudo").args(["/usr/sbin/service", "rdns", "stop"]).output().await;
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdns_enable=NO"]).output().await;
+        service_cmd("rdns", "stop").await;
+        let _ = run_cmd_timeout("sudo /usr/sbin/sysrc rdns_enable=NO").await;
         state.set_pending(|p| p.dns = false).await;
         Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
     }
@@ -937,17 +951,17 @@ pub async fn resolver_start(State(state): State<AppState>) -> Result<Json<Messag
     } else {
         ("local_unbound", "local_unbound_enable=YES", "rdns", "rdns_enable=NO")
     };
-    let _ = Command::new("sudo").args(["/usr/sbin/service", other_svc, "stop"]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", other_key]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", enable_key]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/service", svc, "start"]).output().await;
+    service_cmd(other_svc, "stop").await;
+    let _ = run_cmd_timeout(&format!("sudo /usr/sbin/sysrc {}", other_key)).await;
+    let _ = run_cmd_timeout(&format!("sudo /usr/sbin/sysrc {}", enable_key)).await;
+    service_cmd(svc, "start").await;
     Ok(Json(MessageResponse { message: format!("{} started", if config.backend == "rdns" { "rDNS" } else { "Unbound" }) }))
 }
 pub async fn resolver_stop(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
     let config = load_config(&state.pool).await;
     let (svc, disable_key) = if config.backend == "rdns" { ("rdns", "rdns_enable=NO") } else { ("local_unbound", "local_unbound_enable=NO") };
-    let _ = Command::new("sudo").args(["/usr/sbin/service", svc, "stop"]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", disable_key]).output().await;
+    service_cmd(svc, "stop").await;
+    let _ = run_cmd_timeout(&format!("sudo /usr/sbin/sysrc {}", disable_key)).await;
     Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
 }
 pub async fn resolver_restart(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
@@ -957,10 +971,10 @@ pub async fn resolver_restart(State(state): State<AppState>) -> Result<Json<Mess
     } else {
         ("local_unbound", "local_unbound_enable=YES", "rdns", "rdns_enable=NO")
     };
-    let _ = Command::new("sudo").args(["/usr/sbin/service", other_svc, "stop"]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", other_key]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", enable_key]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/service", svc, "restart"]).output().await;
+    service_cmd(other_svc, "stop").await;
+    let _ = run_cmd_timeout(&format!("sudo /usr/sbin/sysrc {}", other_key)).await;
+    let _ = run_cmd_timeout(&format!("sudo /usr/sbin/sysrc {}", enable_key)).await;
+    service_cmd(svc, "restart").await;
     Ok(Json(MessageResponse { message: format!("{} restarted", if config.backend == "rdns" { "rDNS" } else { "Unbound" }) }))
 }
 
