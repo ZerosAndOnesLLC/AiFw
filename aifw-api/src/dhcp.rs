@@ -72,6 +72,9 @@ pub struct DhcpSubnet {
     pub dns_servers: Option<String>,
     pub domain_name: Option<String>,
     pub lease_time: Option<u32>,
+    pub max_lease_time: Option<u32>,
+    pub renewal_time: Option<u32>,
+    pub rebinding_time: Option<u32>,
     pub preferred_time: Option<u32>,
     pub subnet_type: String, // "address" or "prefix-delegation"
     pub delegated_length: Option<u8>,
@@ -89,6 +92,9 @@ pub struct CreateSubnetRequest {
     pub dns_servers: Option<String>,
     pub domain_name: Option<String>,
     pub lease_time: Option<u32>,
+    pub max_lease_time: Option<u32>,
+    pub renewal_time: Option<u32>,
+    pub rebinding_time: Option<u32>,
     pub preferred_time: Option<u32>,
     pub subnet_type: Option<String>,
     pub delegated_length: Option<u8>,
@@ -311,7 +317,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     "#).execute(pool).await?;
 
     // Add new columns if they don't exist (migration from old schema)
-    for col in ["preferred_time INTEGER", "subnet_type TEXT DEFAULT 'address'", "delegated_length INTEGER"] {
+    for col in ["preferred_time INTEGER", "subnet_type TEXT DEFAULT 'address'", "delegated_length INTEGER", "max_lease_time INTEGER", "renewal_time INTEGER", "rebinding_time INTEGER"] {
         let col_name = col.split_whitespace().next().unwrap_or("");
         let check = sqlx::query_scalar::<_, i32>(
             &format!("SELECT COUNT(*) FROM pragma_table_info('dhcp_subnets') WHERE name='{}'", col_name)
@@ -451,16 +457,29 @@ async fn save_ha_key(pool: &SqlitePool, key: &str, value: &str) {
 }
 
 async fn list_subnets_db(pool: &SqlitePool) -> Vec<DhcpSubnet> {
-    sqlx::query_as::<_, (String,String,String,String,String,Option<String>,Option<String>,Option<i64>,Option<i64>,Option<String>,Option<i64>,bool,Option<String>,String)>(
-        "SELECT id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, preferred_time, subnet_type, delegated_length, enabled, description, created_at FROM dhcp_subnets ORDER BY created_at ASC"
-    ).fetch_all(pool).await.unwrap_or_default()
-    .into_iter().map(|(id,net,ps,pe,gw,dns,dn,lt,pt,st,dl,en,desc,ca)| DhcpSubnet {
-        id, network: net, pool_start: ps, pool_end: pe, gateway: gw,
-        dns_servers: dns, domain_name: dn, lease_time: lt.map(|v| v as u32),
-        preferred_time: pt.map(|v| v as u32),
-        subnet_type: st.unwrap_or_else(|| "address".to_string()),
-        delegated_length: dl.map(|v| v as u8),
-        enabled: en, description: desc, created_at: ca,
+    let rows = sqlx::query(
+        "SELECT id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, subnet_type, delegated_length, enabled, description, created_at FROM dhcp_subnets ORDER BY created_at ASC"
+    ).fetch_all(pool).await.unwrap_or_default();
+
+    use sqlx::Row;
+    rows.into_iter().map(|r| DhcpSubnet {
+        id: r.get("id"),
+        network: r.get("network"),
+        pool_start: r.get("pool_start"),
+        pool_end: r.get("pool_end"),
+        gateway: r.get("gateway"),
+        dns_servers: r.get("dns_servers"),
+        domain_name: r.get("domain_name"),
+        lease_time: r.get::<Option<i64>, _>("lease_time").map(|v| v as u32),
+        max_lease_time: r.get::<Option<i64>, _>("max_lease_time").map(|v| v as u32),
+        renewal_time: r.get::<Option<i64>, _>("renewal_time").map(|v| v as u32),
+        rebinding_time: r.get::<Option<i64>, _>("rebinding_time").map(|v| v as u32),
+        preferred_time: r.get::<Option<i64>, _>("preferred_time").map(|v| v as u32),
+        subnet_type: r.get::<Option<String>, _>("subnet_type").unwrap_or_else(|| "address".to_string()),
+        delegated_length: r.get::<Option<i64>, _>("delegated_length").map(|v| v as u8),
+        enabled: r.get("enabled"),
+        description: r.get("description"),
+        created_at: r.get("created_at"),
     }).collect()
 }
 
@@ -564,6 +583,16 @@ async fn generate_rdhcp_config(pool: &SqlitePool) -> String {
 
         let lease_time = subnet.lease_time.unwrap_or(config.default_lease_time);
         toml.push_str(&format!("lease_time = {}\n", lease_time));
+
+        if let Some(mlt) = subnet.max_lease_time {
+            toml.push_str(&format!("max_lease_time = {}\n", mlt));
+        }
+        if let Some(rt) = subnet.renewal_time {
+            toml.push_str(&format!("renewal_time = {}\n", rt));
+        }
+        if let Some(rbt) = subnet.rebinding_time {
+            toml.push_str(&format!("rebinding_time = {}\n", rbt));
+        }
 
         if let Some(pt) = subnet.preferred_time {
             toml.push_str(&format!("preferred_time = {}\n", pt));
@@ -932,16 +961,20 @@ pub async fn create_subnet(
     let now = Utc::now().to_rfc3339();
     let enabled = req.enabled.unwrap_or(true);
     let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
-    sqlx::query("INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, preferred_time, subnet_type, delegated_length, enabled, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)")
+    sqlx::query("INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, subnet_type, delegated_length, enabled, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)")
         .bind(&id).bind(&req.network).bind(&req.pool_start).bind(&req.pool_end).bind(&req.gateway)
         .bind(req.dns_servers.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
-        .bind(req.preferred_time.map(|v| v as i64)).bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
+        .bind(req.max_lease_time.map(|v| v as i64)).bind(req.renewal_time.map(|v| v as i64))
+        .bind(req.rebinding_time.map(|v| v as i64)).bind(req.preferred_time.map(|v| v as i64))
+        .bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
         .bind(enabled).bind(req.description.as_deref()).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
     let subnet = DhcpSubnet {
         id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end,
         gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name,
-        lease_time: req.lease_time, preferred_time: req.preferred_time,
+        lease_time: req.lease_time, max_lease_time: req.max_lease_time,
+        renewal_time: req.renewal_time, rebinding_time: req.rebinding_time,
+        preferred_time: req.preferred_time,
         subnet_type: subnet_type.to_string(), delegated_length: req.delegated_length,
         enabled, description: req.description, created_at: now,
     };
@@ -955,10 +988,12 @@ pub async fn update_subnet(
 ) -> Result<Json<ApiResponse<DhcpSubnet>>, StatusCode> {
     let enabled = req.enabled.unwrap_or(true);
     let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
-    let result = sqlx::query("UPDATE dhcp_subnets SET network=?2, pool_start=?3, pool_end=?4, gateway=?5, dns_servers=?6, domain_name=?7, lease_time=?8, preferred_time=?9, subnet_type=?10, delegated_length=?11, enabled=?12, description=?13 WHERE id=?1")
+    let result = sqlx::query("UPDATE dhcp_subnets SET network=?2, pool_start=?3, pool_end=?4, gateway=?5, dns_servers=?6, domain_name=?7, lease_time=?8, max_lease_time=?9, renewal_time=?10, rebinding_time=?11, preferred_time=?12, subnet_type=?13, delegated_length=?14, enabled=?15, description=?16 WHERE id=?1")
         .bind(&id).bind(&req.network).bind(&req.pool_start).bind(&req.pool_end).bind(&req.gateway)
         .bind(req.dns_servers.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
-        .bind(req.preferred_time.map(|v| v as i64)).bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
+        .bind(req.max_lease_time.map(|v| v as i64)).bind(req.renewal_time.map(|v| v as i64))
+        .bind(req.rebinding_time.map(|v| v as i64)).bind(req.preferred_time.map(|v| v as i64))
+        .bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
         .bind(enabled).bind(req.description.as_deref())
         .execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
@@ -966,7 +1001,9 @@ pub async fn update_subnet(
     Ok(Json(ApiResponse { data: DhcpSubnet {
         id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end,
         gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name,
-        lease_time: req.lease_time, preferred_time: req.preferred_time,
+        lease_time: req.lease_time, max_lease_time: req.max_lease_time,
+        renewal_time: req.renewal_time, rebinding_time: req.rebinding_time,
+        preferred_time: req.preferred_time,
         subnet_type: subnet_type.to_string(), delegated_length: req.delegated_length,
         enabled, description: req.description, created_at: now,
     }}))

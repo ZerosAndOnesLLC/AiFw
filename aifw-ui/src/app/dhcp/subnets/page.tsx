@@ -13,6 +13,9 @@ interface DhcpSubnet {
   dns_servers?: string[];
   domain_name?: string;
   lease_time?: number;
+  max_lease_time?: number;
+  renewal_time?: number;
+  rebinding_time?: number;
   preferred_time?: number;
   subnet_type: string;
   delegated_length?: number;
@@ -29,6 +32,9 @@ interface SubnetForm {
   dns_servers: string;
   domain_name: string;
   lease_time: string;
+  max_lease_time: string;
+  renewal_time: string;
+  rebinding_time: string;
   preferred_time: string;
   subnet_type: string;
   delegated_length: string;
@@ -44,12 +50,22 @@ const defaultForm: SubnetForm = {
   dns_servers: "",
   domain_name: "",
   lease_time: "",
+  max_lease_time: "",
+  renewal_time: "",
+  rebinding_time: "",
   preferred_time: "",
   subnet_type: "address",
   delegated_length: "",
   description: "",
   enabled: true,
 };
+
+function fmtSeconds(s: number): string {
+  if (s >= 86400 && s % 86400 === 0) return `${s / 86400}d`;
+  if (s >= 3600 && s % 3600 === 0) return `${s / 3600}h`;
+  if (s >= 60 && s % 60 === 0) return `${s / 60}m`;
+  return `${s}s`;
+}
 
 /* -- Helpers --------------------------------------------------------- */
 
@@ -132,6 +148,9 @@ export default function DhcpSubnetsPage() {
       dns_servers: (subnet.dns_servers || []).join(", "),
       domain_name: subnet.domain_name || "",
       lease_time: subnet.lease_time ? String(subnet.lease_time) : "",
+      max_lease_time: subnet.max_lease_time ? String(subnet.max_lease_time) : "",
+      renewal_time: subnet.renewal_time ? String(subnet.renewal_time) : "",
+      rebinding_time: subnet.rebinding_time ? String(subnet.rebinding_time) : "",
       preferred_time: subnet.preferred_time ? String(subnet.preferred_time) : "",
       subnet_type: subnet.subnet_type || "address",
       delegated_length: subnet.delegated_length ? String(subnet.delegated_length) : "",
@@ -170,6 +189,9 @@ export default function DhcpSubnetsPage() {
       }
       if (form.domain_name.trim()) payload.domain_name = form.domain_name.trim();
       if (form.lease_time.trim()) payload.lease_time = Number(form.lease_time);
+      if (form.max_lease_time.trim()) payload.max_lease_time = Number(form.max_lease_time);
+      if (form.renewal_time.trim()) payload.renewal_time = Number(form.renewal_time);
+      if (form.rebinding_time.trim()) payload.rebinding_time = Number(form.rebinding_time);
       if (form.preferred_time.trim()) payload.preferred_time = Number(form.preferred_time);
       if (form.delegated_length.trim()) payload.delegated_length = Number(form.delegated_length);
       if (form.description.trim()) payload.description = form.description.trim();
@@ -304,7 +326,8 @@ export default function DhcpSubnetsPage() {
                       {subnet.gateway}
                     </td>
                     <td className="px-6 py-3 text-[var(--text-secondary)]">
-                      {subnet.lease_time ? `${subnet.lease_time}s` : "Default"}
+                      {subnet.lease_time ? fmtSeconds(subnet.lease_time) : "Default"}
+                      {subnet.renewal_time && <span className="text-[10px] text-gray-500 ml-1">(T1:{fmtSeconds(subnet.renewal_time)})</span>}
                     </td>
                     <td className="px-6 py-3">
                       <span
@@ -459,31 +482,66 @@ export default function DhcpSubnetsPage() {
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs text-[var(--text-muted)] mb-1">
-                    Lease Time (override, seconds)
-                  </label>
-                  <input
-                    type="number"
-                    value={form.lease_time}
-                    onChange={(e) => setForm((p) => ({ ...p, lease_time: e.target.value }))}
-                    placeholder="Leave blank for default"
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
+              {/* Lease Timing */}
+              <div className="space-y-3">
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Lease Timing</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-[var(--text-muted)] mb-1">
+                      Lease Time (seconds)
+                    </label>
+                    <input type="number" value={form.lease_time}
+                      onChange={(e) => setForm((p) => ({ ...p, lease_time: e.target.value }))}
+                      placeholder="Blank = use global default"
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                    <p className="text-[10px] text-gray-500 mt-0.5">e.g. 3600 = 1h, 86400 = 1d</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[var(--text-muted)] mb-1">
+                      Max Lease Time (seconds)
+                    </label>
+                    <input type="number" value={form.max_lease_time}
+                      onChange={(e) => setForm((p) => ({ ...p, max_lease_time: e.target.value }))}
+                      placeholder="No cap"
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                    <p className="text-[10px] text-gray-500 mt-0.5">Maximum lease a client can request</p>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs text-[var(--text-muted)] mb-1">
-                    Preferred Time (DHCPv6, seconds)
-                  </label>
-                  <input
-                    type="number"
-                    value={form.preferred_time}
-                    onChange={(e) => setForm((p) => ({ ...p, preferred_time: e.target.value }))}
-                    placeholder="Optional"
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-[var(--text-muted)] mb-1">
+                      Renewal Time / T1 (seconds)
+                    </label>
+                    <input type="number" value={form.renewal_time}
+                      onChange={(e) => setForm((p) => ({ ...p, renewal_time: e.target.value }))}
+                      placeholder="Default: 50% of lease"
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                    <p className="text-[10px] text-gray-500 mt-0.5">When client starts unicast renewal</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[var(--text-muted)] mb-1">
+                      Rebinding Time / T2 (seconds)
+                    </label>
+                    <input type="number" value={form.rebinding_time}
+                      onChange={(e) => setForm((p) => ({ ...p, rebinding_time: e.target.value }))}
+                      placeholder="Default: 87.5% of lease"
+                      className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                    <p className="text-[10px] text-gray-500 mt-0.5">When client broadcasts for any server</p>
+                  </div>
                 </div>
+                {form.subnet_type !== "address" && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-[var(--text-muted)] mb-1">
+                        Preferred Time (DHCPv6, seconds)
+                      </label>
+                      <input type="number" value={form.preferred_time}
+                        onChange={(e) => setForm((p) => ({ ...p, preferred_time: e.target.value }))}
+                        placeholder="Optional"
+                        className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>
