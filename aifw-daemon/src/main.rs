@@ -1,4 +1,4 @@
-use aifw_core::{Database, RuleEngine};
+use aifw_core::{AliasEngine, Database, NatEngine, RuleEngine};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,8 +44,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let db = Database::new(&args.db).await?;
+    let pool = db.pool().clone();
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
     let engine = RuleEngine::new(db, pf.clone()).with_anchor(args.anchor.clone());
+    let nat_engine = NatEngine::new(pool.clone(), pf.clone());
+    let alias_engine = AliasEngine::new(pool.clone(), pf.clone());
 
     // Check pf status
     match pf.is_running().await {
@@ -54,13 +57,25 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => error!("failed to check pf status: {e}"),
     }
 
-    // Load and apply rules
+    // Sync aliases to pf tables (must happen before rules that reference them)
+    match alias_engine.sync_all().await {
+        Ok(()) => info!("aliases synced to pf tables"),
+        Err(e) => error!("failed to sync aliases: {e}"),
+    }
+
+    // Load and apply filter rules
     match engine.apply_rules().await {
         Ok(()) => {
             let rules = engine.list_rules().await?;
-            info!(count = rules.len(), anchor = %args.anchor, "rules loaded and applied");
+            info!(count = rules.len(), anchor = %args.anchor, "filter rules applied");
         }
-        Err(e) => error!("failed to apply rules: {e}"),
+        Err(e) => error!("failed to apply filter rules: {e}"),
+    }
+
+    // Load and apply NAT rules
+    match nat_engine.apply_rules().await {
+        Ok(()) => info!("NAT rules applied"),
+        Err(e) => error!("failed to apply NAT rules: {e}"),
     }
 
     if let Some(ref iface) = args.interface {
@@ -74,10 +89,9 @@ async fn main() -> anyhow::Result<()> {
 
     info!("shutting down");
 
-    // Flush rules on shutdown
-    if let Err(e) = engine.flush_rules().await {
-        error!("failed to flush rules on shutdown: {e}");
-    }
+    // Note: we do NOT flush rules on shutdown — pf rules persist in the kernel
+    // and should remain active while the daemon restarts or the API takes over.
+    // Rules are only flushed when explicitly requested via the API.
 
     info!("AiFw daemon stopped");
     Ok(())
