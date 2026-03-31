@@ -266,14 +266,14 @@ export default function DnsResolverPage() {
 
   const toggleInterface = (name: string) => {
     if (name === "__all__") {
-      // Toggle "All" — set to 0.0.0.0 (listen on everything) or clear
+      // Toggle "All" — set to 0.0.0.0 (listen on everything)
       setConfig((prev) => ({
         ...prev,
-        listen_interfaces: isAllInterfaces ? [] : ["0.0.0.0"],
+        listen_interfaces: ["0.0.0.0"],
       }));
       return;
     }
-    // When selecting a specific interface, remove the "all" wildcard
+    // Clicking a specific interface: remove "all" wildcard, toggle this one
     setConfig((prev) => {
       const filtered = prev.listen_interfaces.filter((i) => i !== "0.0.0.0");
       return {
@@ -542,11 +542,8 @@ export default function DnsResolverPage() {
                         className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${
                           selected
                             ? "bg-blue-600/20 border-blue-500/40 text-blue-400"
-                            : isAllInterfaces
-                              ? "bg-gray-900 border-gray-700 text-[var(--text-muted)] opacity-50 cursor-not-allowed"
-                              : "bg-gray-900 border-gray-700 text-[var(--text-secondary)] hover:border-gray-500"
+                            : "bg-gray-900 border-gray-700 text-[var(--text-secondary)] hover:border-gray-500"
                         }`}
-                        disabled={isAllInterfaces}
                       >
                         {iface}
                       </button>

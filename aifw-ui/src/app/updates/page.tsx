@@ -322,11 +322,11 @@ export default function UpdatesPage() {
                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-500/15 text-yellow-400 border border-yellow-500/30">
                   v{aifwInfo.latest_version} available
                 </span>
-              ) : aifwInfo?.latest_version ? (
+              ) : (
                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/15 text-green-400 border border-green-500/30">
                   Up to date
                 </span>
-              ) : null}
+              )}
               {aifwInfo?.has_backup && (
                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/15 text-gray-400 border border-gray-500/30">
                   Backup: v{aifwInfo.backup_version}
