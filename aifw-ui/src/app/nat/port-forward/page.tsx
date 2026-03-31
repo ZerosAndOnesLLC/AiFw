@@ -46,7 +46,9 @@ export default function PortForwardPage() {
   const [submitting, setSubmitting] = useState(false);
   const [pendingChanges, setPendingChanges] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
-  const moveRule = async (idx: number, direction: "up" | "down") => {
+  const moveRule = async (ruleId: string, direction: "up" | "down") => {
+    const idx = rules.findIndex(r => r.id === ruleId);
+    if (idx < 0) return;
     const targetIdx = direction === "up" ? idx - 1 : idx + 1;
     if (targetIdx < 0 || targetIdx >= rules.length) return;
     const reordered = [...rules];
@@ -422,10 +424,10 @@ export default function PortForwardPage() {
                     <tr key={rule.id} className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors">
                       <td className="py-1 px-1 w-8">
                         <div className="flex flex-col items-center gap-0">
-                          <button onClick={() => moveRule(idx, "up")} disabled={idx === 0}
+                          <button onClick={() => moveRule(rule.id, "up")} disabled={idx === 0}
                             className="text-gray-600 hover:text-white disabled:opacity-20 p-0.5"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg></button>
                           <span className="text-[9px] text-gray-600">{idx + 1}</span>
-                          <button onClick={() => moveRule(idx, "down")} disabled={idx === rules.length - 1}
+                          <button onClick={() => moveRule(rule.id, "down")} disabled={idx === rules.length - 1}
                             className="text-gray-600 hover:text-white disabled:opacity-20 p-0.5"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg></button>
                         </div>
                       </td>
