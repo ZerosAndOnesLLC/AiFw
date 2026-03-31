@@ -464,7 +464,8 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
     let mut toml = String::from("# AiFw rDNS Configuration — Auto-generated\n\n");
 
     // [server]
-    toml.push_str(&format!("[server]\nmode = \"{}\"\nuser = \"rdns\"\ngroup = \"rdns\"\npidfile = \"/var/run/rdns/rdns.pid\"\n\n", mode));
+    // PID file managed by daemon(8) wrapper — rDNS internal pidfile disabled
+    toml.push_str(&format!("[server]\nmode = \"{}\"\nuser = \"rdns\"\ngroup = \"rdns\"\npidfile = \"/dev/null\"\n\n", mode));
 
     // [listeners]
     toml.push_str(&format!("[listeners]\nudp = [{}]\ntcp = [{}]\n\n", listen_udp.join(", "), listen_tcp.join(", ")));

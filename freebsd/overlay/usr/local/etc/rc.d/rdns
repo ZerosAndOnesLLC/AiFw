@@ -20,7 +20,7 @@ load_rc_config $name
 
 pidfile="${rdns_pidfile}"
 command="/usr/sbin/daemon"
-command_args="-f -S -T rdns /usr/local/sbin/rdns -c ${rdns_config}"
+command_args="-f -p ${rdns_pidfile} -S -T rdns /usr/local/sbin/rdns -c ${rdns_config}"
 
 start_precmd="rdns_precmd"
 stop_postcmd="rdns_poststop"
