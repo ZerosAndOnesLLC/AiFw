@@ -1,13 +1,52 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::net::IpAddr;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Address {
     Any,
     Single(IpAddr),
     Network(IpAddr, u8),
     Table(String),
+}
+
+/// Serialize Address as a flat string: "any", "10.0.0.0/8", "192.168.1.1", "<table>"
+impl Serialize for Address {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+/// Deserialize Address from a flat string or from the legacy enum format.
+impl<'de> Deserialize<'de> for Address {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        match v {
+            serde_json::Value::String(s) => {
+                Address::parse(&s).map_err(serde::de::Error::custom)
+            }
+            // Legacy: {"Network":["10.0.0.0",8]} / {"Single":"1.2.3.4"} / "Any"
+            serde_json::Value::Object(ref map) => {
+                if let Some(arr) = map.get("Network").and_then(|v| v.as_array()) {
+                    if arr.len() == 2 {
+                        let ip: IpAddr = arr[0].as_str().unwrap_or("0.0.0.0").parse()
+                            .map_err(serde::de::Error::custom)?;
+                        let prefix = arr[1].as_u64().unwrap_or(32) as u8;
+                        return Ok(Address::Network(ip, prefix));
+                    }
+                }
+                if let Some(s) = map.get("Single").and_then(|v| v.as_str()) {
+                    let ip: IpAddr = s.parse().map_err(serde::de::Error::custom)?;
+                    return Ok(Address::Single(ip));
+                }
+                if let Some(s) = map.get("Table").and_then(|v| v.as_str()) {
+                    return Ok(Address::Table(s.to_string()));
+                }
+                Ok(Address::Any)
+            }
+            _ => Ok(Address::Any),
+        }
+    }
 }
 
 impl fmt::Display for Address {
