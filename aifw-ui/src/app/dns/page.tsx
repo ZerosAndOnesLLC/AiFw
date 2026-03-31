@@ -69,12 +69,14 @@ function authHeadersPlain(): HeadersInit {
 }
 
 const defaultConfig: ResolverConfig = {
+  backend: "rdns",
   enabled: false,
   listen_interfaces: [],
   port: 53,
   dnssec: true,
   dns64: false,
   register_dhcp: false,
+  dhcp_domain: "local",
   local_zone_type: "transparent",
   outgoing_interface: "",
   num_threads: 2,
