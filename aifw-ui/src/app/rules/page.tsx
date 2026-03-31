@@ -468,6 +468,7 @@ export default function RulesPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-700 bg-gray-800/80">
+                  <th className="w-6"></th>
                   <th className="text-left py-3 px-3 text-xs font-medium text-gray-400 uppercase tracking-wider w-16">On</th>
                   <th className="text-left py-3 px-3 text-xs font-medium text-gray-400 uppercase tracking-wider w-16">#</th>
                   <th className="text-left py-3 px-3 text-xs font-medium text-gray-400 uppercase tracking-wider w-24">Action</th>
@@ -486,14 +487,23 @@ export default function RulesPage() {
                 {filteredRules.map((rule, idx) => (
                   <tr
                     key={rule.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, idx)}
                     onDragOver={(e) => handleDragOver(e, idx)}
-                    onDragEnd={handleDragEnd}
-                    className={`border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors cursor-grab active:cursor-grabbing ${
+                    className={`border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors ${
                       rule.status === "disabled" ? "opacity-50" : ""
                     }`}
                   >
+                    {/* Drag handle */}
+                    <td className="py-2.5 px-1 w-6">
+                      <div
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, idx)}
+                        onDragEnd={handleDragEnd}
+                        className="cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 px-1"
+                        title="Drag to reorder"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>
+                      </div>
+                    </td>
                     {/* Enable toggle */}
                     <td className="py-2.5 px-3">
                       <button
