@@ -7,12 +7,12 @@ use uuid::Uuid;
 
 use crate::AppState;
 
-/// Run a command with a 15-second timeout to prevent API hangs.
+/// Run a shell command with a 15-second timeout to prevent API hangs.
 async fn run_cmd_timeout(cmd: &str) -> std::io::Result<std::process::Output> {
-    Command::new("sh")
-        .args(["-c", &format!("timeout 15 {}", cmd)])
-        .output()
-        .await
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        Command::new("sh").args(["-c", cmd]).output()
+    ).await.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "command timed out")))
 }
 
 /// Run a service command with timeout.
