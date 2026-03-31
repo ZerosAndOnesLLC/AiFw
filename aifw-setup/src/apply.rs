@@ -97,6 +97,26 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *\n";
     let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]).status();
     console::success("rDHCP configured");
 
+    // 5c3. Setup rDNS directories and user
+    console::info("Configuring rDNS DNS server...");
+    for dir in ["/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz", "/var/run/rdns", "/var/log/rdns"] {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Create rdns user if not exists
+    let _ = std::process::Command::new("pw")
+        .args(["user", "show", "rdns"])
+        .status()
+        .and_then(|s| {
+            if !s.success() {
+                std::process::Command::new("pw")
+                    .args(["useradd", "rdns", "-d", "/nonexistent", "-s", "/usr/sbin/nologin", "-c", "rDNS DNS Server"])
+                    .status()
+            } else {
+                Ok(s)
+            }
+        });
+    console::success("rDNS configured");
+
     // 5d. Configure devfs rules for /dev/pf and /dev/bpf* access
     console::info("Configuring device permissions...");
     configure_devfs()?;
