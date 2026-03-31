@@ -150,6 +150,20 @@ export default function SettingsPage() {
         setValkeyLoading(false);
       }
     })();
+
+    // Fetch TLS policy settings
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/settings/tls`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.min_version) setMinTlsVersion(data.min_version);
+        if (data.block_expired !== undefined) setBlockExpired(data.block_expired);
+        if (data.block_weak_keys !== undefined) setBlockWeakKeys(data.block_weak_keys);
+      } catch {
+        // endpoint may not exist yet
+      }
+    })();
   }, []);
 
   // --- Save handlers ---
