@@ -39,6 +39,7 @@ const navItems: NavItem[] = [
       { href: "/rules/schedules", label: "Schedules" },
       { href: "/nat/port-forward", label: "Port Forward" },
       { href: "/nat/outbound", label: "Outbound NAT" },
+      { href: "/nat/flows", label: "NAT Flows" },
       { href: "/geoip", label: "Geo-IP" },
     ],
     dynamicChildren: true,

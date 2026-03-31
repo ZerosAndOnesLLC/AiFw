@@ -115,37 +115,75 @@ impl PfBackend for PfIoctl {
     }
 
     async fn get_states(&self) -> Result<Vec<PfState>, PfError> {
-        let out = pfctl(&["-ss"]).await?;
-        // Parse pfctl -ss output lines like:
+        let out = pfctl(&["-ss", "-vv"]).await?;
+        // Parse pfctl -ss -vv output (multi-line per state):
         // all tcp 192.168.1.1:12345 -> 10.0.0.1:443 ESTABLISHED:ESTABLISHED
-        let states: Vec<PfState> = out
-            .lines()
-            .filter(|l| !l.is_empty() && !l.starts_with("No "))
-            .filter_map(|line| {
+        //    age 00:20:53, expires in 05:00:00, 950:2935 pkts, 65306:3890325 bytes, ...
+        let mut states: Vec<PfState> = Vec::new();
+        let mut current: Option<PfState> = None;
+
+        for line in out.lines() {
+            if line.is_empty() || line.starts_with("No ") { continue; }
+
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                // New state line — save previous if any
+                if let Some(s) = current.take() { states.push(s); }
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() < 5 { return None; }
+                if parts.len() < 5 { continue; }
                 let proto = parts.get(1).unwrap_or(&"").to_string();
                 let src = parts.get(2).unwrap_or(&"");
                 let dst = parts.get(4).unwrap_or(&"");
                 let state_str = parts.get(5).unwrap_or(&"").to_string();
                 let (src_addr, src_port) = parse_addr_port(src);
                 let (dst_addr, dst_port) = parse_addr_port(dst);
-                Some(PfState {
-                    id: 0,
-                    protocol: proto,
-                    src_addr,
-                    src_port,
-                    dst_addr,
-                    dst_port,
+                current = Some(PfState {
+                    id: 0, protocol: proto,
+                    src_addr, src_port, dst_addr, dst_port,
                     state: state_str,
-                    packets_in: 0,
-                    packets_out: 0,
-                    bytes_in: 0,
-                    bytes_out: 0,
-                    age_secs: 0,
-                })
-            })
-            .collect();
+                    packets_in: 0, packets_out: 0,
+                    bytes_in: 0, bytes_out: 0, age_secs: 0,
+                });
+            } else if let Some(ref mut s) = current {
+                // Detail line — extract bytes, packets, age
+                let trimmed = line.trim();
+                // Parse "NNN:NNN pkts, NNN:NNN bytes"
+                if let Some(pkts_pos) = trimmed.find(" pkts,") {
+                    // Walk back to find the pkts pair
+                    let before_pkts = &trimmed[..pkts_pos];
+                    if let Some(pair) = before_pkts.rsplit(", ").next().or(before_pkts.rsplit(' ').next()) {
+                        let pair = pair.trim().trim_start_matches(", ");
+                        if let Some((a, b)) = pair.split_once(':') {
+                            s.packets_in = a.trim().parse().unwrap_or(0);
+                            s.packets_out = b.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                if let Some(bytes_pos) = trimmed.find(" bytes") {
+                    let before_bytes = &trimmed[..bytes_pos];
+                    if let Some(pair) = before_bytes.rsplit(", ").next() {
+                        if let Some((a, b)) = pair.split_once(':') {
+                            s.bytes_in = a.trim().parse().unwrap_or(0);
+                            s.bytes_out = b.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                // Parse age
+                if let Some(age_pos) = trimmed.find("age ") {
+                    let age_str = &trimmed[age_pos + 4..];
+                    if let Some(comma) = age_str.find(',') {
+                        let duration = &age_str[..comma];
+                        let parts: Vec<&str> = duration.split(':').collect();
+                        if parts.len() == 3 {
+                            let h: u64 = parts[0].parse().unwrap_or(0);
+                            let m: u64 = parts[1].parse().unwrap_or(0);
+                            let sec: u64 = parts[2].parse().unwrap_or(0);
+                            s.age_secs = h * 3600 + m * 60 + sec;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(s) = current { states.push(s); }
         Ok(states)
     }
 
