@@ -83,6 +83,17 @@ else
     echo "WARNING: rDHCP source not found at $RDHCP_DIR, skipping"
 fi
 
+# Build rDNS (DNS server)
+RDNS_DIR="$PROJECT_ROOT/../rDNS"
+if [ -d "$RDNS_DIR" ]; then
+    echo "Building rDNS..."
+    cd "$RDNS_DIR"
+    cargo build --release
+    cd "$PROJECT_ROOT"
+else
+    echo "WARNING: rDNS source not found at $RDNS_DIR, skipping"
+fi
+
 # --- Stage build inputs ---
 echo "=== [4/6] Staging build inputs ==="
 mkdir -p "$SCRIPT_DIR/release"
@@ -96,6 +107,13 @@ fi
 # Stage rDHCP binary if built
 if [ -f "$RDHCP_DIR/target/release/rdhcpd" ]; then
     cp "$RDHCP_DIR/target/release/rdhcpd" "$SCRIPT_DIR/release/rdhcpd"
+fi
+# Stage rDNS binaries if built
+if [ -f "$RDNS_DIR/target/release/rdns" ]; then
+    cp "$RDNS_DIR/target/release/rdns" "$SCRIPT_DIR/release/rdns"
+fi
+if [ -f "$RDNS_DIR/target/release/rdns-control" ]; then
+    cp "$RDNS_DIR/target/release/rdns-control" "$SCRIPT_DIR/release/rdns-control"
 fi
 
 rm -rf "$SCRIPT_DIR/ui-export"
@@ -116,6 +134,13 @@ fi
 # Include rDHCP in update tarball
 if [ -f "$RDHCP_DIR/target/release/rdhcpd" ]; then
     cp "$RDHCP_DIR/target/release/rdhcpd" "$TARBALL_DIR/bin/"
+fi
+# Include rDNS in update tarball
+if [ -f "$RDNS_DIR/target/release/rdns" ]; then
+    cp "$RDNS_DIR/target/release/rdns" "$TARBALL_DIR/bin/"
+fi
+if [ -f "$RDNS_DIR/target/release/rdns-control" ]; then
+    cp "$RDNS_DIR/target/release/rdns-control" "$TARBALL_DIR/bin/"
 fi
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
 echo "$VERSION" > "$TARBALL_DIR/version"

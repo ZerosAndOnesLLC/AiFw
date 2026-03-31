@@ -16,18 +16,24 @@ load_rc_config $name
 
 : ${rdns_enable:="NO"}
 : ${rdns_config:="/usr/local/etc/rdns/rdns.toml"}
-: ${rdns_user:="root"}
 : ${rdns_pidfile:="/var/run/rdns/rdns.pid"}
 
 pidfile="${rdns_pidfile}"
 command="/usr/sbin/daemon"
-command_args="-f -p ${rdns_pidfile} -S -T rdns /usr/local/sbin/rdns -c ${rdns_config}"
+command_args="-f -S -T rdns /usr/local/sbin/rdns -c ${rdns_config}"
 
 start_precmd="rdns_precmd"
+stop_postcmd="rdns_poststop"
 
 rdns_precmd()
 {
     /bin/mkdir -p /var/run/rdns /usr/local/etc/rdns/zones /usr/local/etc/rdns/rpz
+    /bin/rm -f ${rdns_pidfile}
+}
+
+rdns_poststop()
+{
+    /bin/rm -f ${rdns_pidfile}
 }
 
 run_rc_command "$1"

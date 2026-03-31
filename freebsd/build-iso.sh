@@ -149,7 +149,7 @@ echo "[6/9] Installing AiFw..."
 
 # Binaries (should be pre-built and placed in freebsd/release/)
 BINDIR="${SCRIPT_DIR}/release"
-for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup trafficcop rdhcpd; do
+for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup trafficcop rdhcpd rdns rdns-control; do
     if [ -f "${BINDIR}/${bin}" ]; then
         install -s -m 755 "${BINDIR}/${bin}" "$STAGEDIR/usr/local/sbin/${bin}"
     else
@@ -184,6 +184,10 @@ mkdir -p "$STAGEDIR/var/log/trafficcop"
 mkdir -p "$STAGEDIR/var/db/rdhcpd/leases"
 mkdir -p "$STAGEDIR/var/log/rdhcpd"
 mkdir -p "$STAGEDIR/usr/local/etc/rdhcpd"
+mkdir -p "$STAGEDIR/usr/local/etc/rdns/zones"
+mkdir -p "$STAGEDIR/usr/local/etc/rdns/rpz"
+mkdir -p "$STAGEDIR/var/run/rdns"
+mkdir -p "$STAGEDIR/var/log/rdns"
 
 # --- Configure live environment ---
 echo "[7/9] Configuring live environment..."
@@ -203,6 +207,7 @@ sendmail_msp_queue_enable="NO"
 aifw_firstboot_enable="YES"
 trafficcop_enable="NO"
 rdhcpd_enable="NO"
+rdns_enable="NO"
 RCCONF
 
 # fstab for live CD (read-only root + tmpfs)
