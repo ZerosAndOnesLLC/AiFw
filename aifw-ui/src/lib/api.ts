@@ -134,6 +134,7 @@ export interface InterfaceInfo {
   status?: string;
   ipv4?: string;
   ipv6?: string;
+  role?: string;
 }
 
 export interface CreateRuleRequest {
@@ -185,9 +186,12 @@ export interface CreateNatRequest {
   redirect_addr: string;
   src_addr?: string;
   src_port_start?: number;
+  src_port_end?: number;
   dst_addr?: string;
   dst_port_start?: number;
+  dst_port_end?: number;
   redirect_port_start?: number;
+  redirect_port_end?: number;
   label?: string;
   status?: string;
 }

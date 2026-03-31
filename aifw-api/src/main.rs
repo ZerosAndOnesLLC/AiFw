@@ -235,6 +235,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/routes/system", get(routes::get_system_routes))
         .route("/api/v1/interfaces", get(routes::list_interfaces))
         .route("/api/v1/interfaces/detailed", get(iface::list_interfaces_detailed))
+        .route("/api/v1/interfaces/roles", get(iface::list_interface_roles))
+        .route("/api/v1/interfaces/{name}/role", put(iface::set_interface_role).delete(iface::delete_interface_role))
         .route("/api/v1/interfaces/config/{name}", put(iface::configure_interface))
         .route("/api/v1/vlans", get(iface::list_vlans).post(iface::create_vlan))
         .route("/api/v1/vlans/{id}", put(iface::update_vlan).delete(iface::delete_vlan))

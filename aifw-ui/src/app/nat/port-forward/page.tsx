@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api, NatRule, InterfaceInfo, CreateNatRequest, UpdateNatRequest } from "@/lib/api";
+import { parsePortField } from "@/lib/ports";
 
 const defaultForm = {
   interface: "",
@@ -132,9 +133,12 @@ export default function PortForwardPage() {
       };
 
       if (showPortFields(form.protocol)) {
-        if (form.src_port) body.src_port_start = parseInt(form.src_port, 10);
-        if (form.dst_port) body.dst_port_start = parseInt(form.dst_port, 10);
-        if (form.redirect_port) body.redirect_port_start = parseInt(form.redirect_port, 10);
+        const sp = parsePortField(form.src_port);
+        if (sp.start !== undefined) { body.src_port_start = sp.start; if (sp.end !== undefined) body.src_port_end = sp.end; }
+        const dp = parsePortField(form.dst_port);
+        if (dp.start !== undefined) { body.dst_port_start = dp.start; if (dp.end !== undefined) body.dst_port_end = dp.end; }
+        const rp = parsePortField(form.redirect_port);
+        if (rp.start !== undefined) { body.redirect_port_start = rp.start; if (rp.end !== undefined) body.redirect_port_end = rp.end; }
       }
       if (form.label.trim()) body.label = form.label.trim();
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api, NatRule, InterfaceInfo, CreateNatRequest, UpdateNatRequest } from "@/lib/api";
+import { parsePortField } from "@/lib/ports";
 
 type AddrMode = "any" | "network";
 type TransMode = "interface" | "address";
@@ -155,8 +156,10 @@ export default function OutboundNatPage() {
       };
 
       if (showPortFields(form.protocol)) {
-        if (form.src_port) body.src_port_start = parseInt(form.src_port, 10);
-        if (form.dst_port) body.dst_port_start = parseInt(form.dst_port, 10);
+        const sp = parsePortField(form.src_port);
+        if (sp.start !== undefined) { body.src_port_start = sp.start; if (sp.end !== undefined) body.src_port_end = sp.end; }
+        const dp = parsePortField(form.dst_port);
+        if (dp.start !== undefined) { body.dst_port_start = dp.start; if (dp.end !== undefined) body.dst_port_end = dp.end; }
       }
       if (form.label.trim()) body.label = form.label.trim();
 

@@ -32,6 +32,7 @@ pub struct InterfaceDetail {
     pub errors_out: u64,
     pub gateway: Option<String>,
     pub ipv4_mode: Option<String>,
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +100,41 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             UNIQUE(vlan_id, parent)
         )
     "#).execute(pool).await?;
+
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS interface_roles (
+            interface_name TEXT PRIMARY KEY,
+            role TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    "#).execute(pool).await?;
+
+    // Seed WAN role from pf.conf if table is empty
+    let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM interface_roles")
+        .fetch_one(pool).await.unwrap_or(0);
+    if count == 0 {
+        // Try to read wan_if from pf.conf
+        if let Ok(pf_conf) = tokio::fs::read_to_string("/usr/local/etc/aifw/pf.conf.aifw").await {
+            for line in pf_conf.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("wan_if = \"") {
+                    if let Some(iface) = rest.strip_suffix('"') {
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let _ = sqlx::query("INSERT OR IGNORE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'WAN', ?2)")
+                            .bind(iface).bind(&now).execute(pool).await;
+                    }
+                }
+                if let Some(rest) = line.strip_prefix("lan_if = \"") {
+                    if let Some(iface) = rest.strip_suffix('"') {
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let _ = sqlx::query("INSERT OR IGNORE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'LAN', ?2)")
+                            .bind(iface).bind(&now).execute(pool).await;
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -170,7 +206,7 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
                 status: status.to_string(), mtu: mtu_val, media: None, description: None,
                 is_vlan, vlan_id: None, vlan_parent: None,
                 bytes_in: 0, bytes_out: 0, packets_in: 0, packets_out: 0, errors_in: 0, errors_out: 0,
-                gateway: None, ipv4_mode: None,
+                gateway: None, ipv4_mode: None, role: None,
             });
         }
         if let Some(ref mut iface) = current {
@@ -242,13 +278,62 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
     interfaces
 }
 
+/// Load interface roles from DB — returns HashMap<name, role>.
+async fn load_interface_roles(pool: &SqlitePool) -> std::collections::HashMap<String, String> {
+    sqlx::query_as::<_, (String, String)>("SELECT interface_name, role FROM interface_roles")
+        .fetch_all(pool).await.unwrap_or_default()
+        .into_iter().collect()
+}
+
 // ============================================================
 // Handlers
 // ============================================================
 
-pub async fn list_interfaces_detailed() -> Result<Json<ApiResponse<Vec<InterfaceDetail>>>, StatusCode> {
-    let interfaces = parse_ifconfig().await;
+pub async fn list_interfaces_detailed(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<InterfaceDetail>>>, StatusCode> {
+    let mut interfaces = parse_ifconfig().await;
+    let roles = load_interface_roles(&state.pool).await;
+    for iface in &mut interfaces {
+        iface.role = roles.get(&iface.name).cloned();
+    }
     Ok(Json(ApiResponse { data: interfaces }))
+}
+
+// Interface role management
+
+#[derive(Debug, Deserialize)]
+pub struct SetRoleRequest {
+    pub role: String,
+}
+
+pub async fn list_interface_roles(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<(String, String)>>>, StatusCode> {
+    let roles: Vec<(String, String)> = sqlx::query_as("SELECT interface_name, role FROM interface_roles")
+        .fetch_all(&state.pool).await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: roles }))
+}
+
+pub async fn set_interface_role(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<SetRoleRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("INSERT OR REPLACE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, ?2, ?3)")
+        .bind(&name).bind(&req.role).bind(&now)
+        .execute(&state.pool).await.map_err(|_| internal())?;
+    Ok(Json(MessageResponse { message: format!("{} set as {}", name, req.role) }))
+}
+
+pub async fn delete_interface_role(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    sqlx::query("DELETE FROM interface_roles WHERE interface_name=?1")
+        .bind(&name).execute(&state.pool).await.map_err(|_| internal())?;
+    Ok(Json(MessageResponse { message: format!("Role removed from {}", name) }))
 }
 
 pub async fn configure_interface(

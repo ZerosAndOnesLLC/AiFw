@@ -96,6 +96,7 @@ pub struct InterfaceInfo {
     pub ipv6: Option<String>,
     pub status: String,
     pub mac: Option<String>,
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1570,7 +1571,7 @@ pub async fn list_interfaces(
             }
             let name = line.split(':').next().unwrap_or("").to_string();
             let status = if line.contains("UP") { "up" } else { "down" };
-            current = Some(InterfaceInfo { name, ipv4: None, ipv6: None, status: status.to_string(), mac: None });
+            current = Some(InterfaceInfo { name, ipv4: None, ipv6: None, status: status.to_string(), mac: None, role: None });
         }
         if let Some(ref mut iface) = current {
             let trimmed = line.trim();
@@ -1612,10 +1613,18 @@ pub async fn list_interfaces(
                     name: vlan_name,
                     ipv4: None, ipv6: None,
                     status: "down".to_string(),
-                    mac: None,
+                    mac: None, role: None,
                 });
             }
         }
+    }
+
+    // Enrich with roles from DB
+    let roles = sqlx::query_as::<_, (String, String)>("SELECT interface_name, role FROM interface_roles")
+        .fetch_all(&state.pool).await.unwrap_or_default();
+    let role_map: std::collections::HashMap<String, String> = roles.into_iter().collect();
+    for iface in &mut interfaces {
+        iface.role = role_map.get(&iface.name).cloned();
     }
 
     Ok(Json(ApiResponse { data: interfaces }))
