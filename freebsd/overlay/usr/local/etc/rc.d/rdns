@@ -19,8 +19,9 @@ load_rc_config $name
 : ${rdns_pidfile:="/var/run/rdns/rdns.pid"}
 
 pidfile="${rdns_pidfile}"
+procname="/usr/local/sbin/rdns"
 command="/usr/sbin/daemon"
-command_args="-f -p ${rdns_pidfile} -S -T rdns /usr/local/sbin/rdns -c ${rdns_config}"
+command_args="-f -p ${rdns_pidfile} -S -T rdns ${procname} -c ${rdns_config}"
 
 start_precmd="rdns_precmd"
 stop_postcmd="rdns_poststop"
