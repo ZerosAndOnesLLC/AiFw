@@ -433,8 +433,13 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push("scrub in all".to_string());
     lines.push(String::new());
 
-    // AiFw anchors
-    lines.push("# AiFw managed anchors".to_string());
+    // AiFw managed anchors — NAT anchors must come before filter anchors
+    lines.push("# AiFw NAT anchors".to_string());
+    lines.push("nat-anchor \"aifw\"".to_string());
+    lines.push("nat-anchor \"aifw-nat\"".to_string());
+    lines.push("nat-anchor \"aifw-vpn\"".to_string());
+    lines.push(String::new());
+    lines.push("# AiFw filter anchors".to_string());
     lines.push("anchor \"aifw\"".to_string());
     lines.push("anchor \"aifw-nat\"".to_string());
     lines.push("anchor \"aifw-ratelimit\"".to_string());
