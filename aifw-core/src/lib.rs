@@ -1,3 +1,4 @@
+pub mod alias;
 pub mod audit;
 pub mod config;
 pub mod config_manager;
@@ -14,6 +15,7 @@ pub mod updater;
 pub mod validation;
 pub mod vpn;
 
+pub use alias::AliasEngine;
 pub use audit::{AuditAction, AuditLog};
 pub use config::FirewallConfig;
 pub use config_manager::ConfigManager;

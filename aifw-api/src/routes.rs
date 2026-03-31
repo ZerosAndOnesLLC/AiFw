@@ -1075,6 +1075,11 @@ pub async fn reload(
     State(state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let mut errors = Vec::new();
+    // Sync alias pf tables before loading rules that reference them
+    if let Err(e) = state.alias_engine.sync_all().await {
+        tracing::error!("Failed to sync aliases: {e}");
+        errors.push(format!("aliases: {e}"));
+    }
     if let Err(e) = state.rule_engine.apply_rules().await {
         tracing::error!("Failed to apply filter rules: {e}");
         errors.push(format!("filter: {e}"));

@@ -1,3 +1,4 @@
+pub mod alias;
 pub mod error;
 pub mod geoip;
 pub mod ha;
@@ -10,6 +11,7 @@ pub mod tls;
 pub mod types;
 pub mod vpn;
 
+pub use alias::{Alias, AliasType};
 pub use error::{AifwError, Result};
 pub use ha::{
     CarpStatus, CarpVip, ClusterNode, ClusterRole, ConfigSnapshot, HealthCheck, HealthCheckType,

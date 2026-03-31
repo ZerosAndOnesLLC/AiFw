@@ -1,3 +1,4 @@
+mod aliases;
 mod auth;
 mod backup;
 mod ca;
@@ -13,7 +14,7 @@ mod ws;
 mod tests;
 
 use aifw_conntrack::ConnectionTracker;
-use aifw_core::{Database, GeoIpEngine, NatEngine, RuleEngine, VpnEngine};
+use aifw_core::{AliasEngine, Database, GeoIpEngine, NatEngine, RuleEngine, VpnEngine};
 use aifw_pf::PfBackend;
 use axum::{
     Router,
@@ -42,6 +43,7 @@ pub struct AppState {
     pub nat_engine: Arc<NatEngine>,
     pub vpn_engine: Arc<VpnEngine>,
     pub geoip_engine: Arc<GeoIpEngine>,
+    pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub auth_settings: auth::AuthSettings,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
@@ -241,6 +243,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/vlans", get(iface::list_vlans).post(iface::create_vlan))
         .route("/api/v1/vlans/{id}", put(iface::update_vlan).delete(iface::delete_vlan))
         .route("/api/v1/interfaces/{name}/stats", get(routes::get_interface_stats))
+        .route("/api/v1/aliases", get(aliases::list_aliases).post(aliases::create_alias))
+        .route("/api/v1/aliases/{id}", get(aliases::get_alias).put(aliases::update_alias).delete(aliases::delete_alias))
         .route("/api/v1/geoip", get(routes::list_geoip_rules).post(routes::create_geoip_rule))
         .route("/api/v1/geoip/{id}", put(routes::update_geoip_rule).delete(routes::delete_geoip_rule))
         .route("/api/v1/geoip/lookup/{ip}", get(routes::geoip_lookup))
@@ -334,6 +338,8 @@ async fn create_state_from_db(
     dns_resolver::migrate(&pool).await?;
     reverse_proxy::migrate(&pool).await?;
     aifw_core::config_manager::ConfigManager::new(pool.clone()).migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let alias_engine = Arc::new(AliasEngine::new(pool.clone(), pf.clone()));
+    alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     Ok(AppState {
@@ -343,6 +349,7 @@ async fn create_state_from_db(
         nat_engine,
         vpn_engine,
         geoip_engine,
+        alias_engine,
         conntrack,
         auth_settings,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(METRICS_HISTORY_SIZE))),
