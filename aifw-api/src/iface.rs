@@ -339,19 +339,33 @@ pub async fn configure_interface(
                     msgs.push(format!("Set static IP {}", addr));
                 }
 
-                // Handle gateway
+                // Handle gateway — only modify the default route if this interface
+                // currently owns it (or no default route exists).  Configuring a
+                // LAN interface must never clobber the WAN's default gateway.
                 if let Some(ref gw) = req.gateway {
                     if !gw.is_empty() {
-                        // Remove old default route, add new one
-                        let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
-                        let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
-                        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
-                        msgs.push(format!("Gateway set to {}", gw));
-                    } else {
-                        // Blank gateway = remove default route
-                        let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
-                        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
-                        msgs.push("Default gateway removed".to_string());
+                        let (_, cur_gw_iface) = get_default_gateway().await;
+                        let owns_default = cur_gw_iface.as_deref() == Some(&name)
+                            || cur_gw_iface.is_none();
+                        if owns_default {
+                            let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+                            let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
+                            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
+                            msgs.push(format!("Gateway set to {}", gw));
+                        } else {
+                            msgs.push(format!("Gateway {} noted (default route stays on {})",
+                                gw, cur_gw_iface.as_deref().unwrap_or("unknown")));
+                        }
+                    }
+                    // Blank gateway on a non-default-route interface is a no-op.
+                    // Only remove the default route if this interface currently owns it.
+                    else {
+                        let (_, cur_gw_iface) = get_default_gateway().await;
+                        if cur_gw_iface.as_deref() == Some(&name) {
+                            let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+                            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
+                            msgs.push("Default gateway removed".to_string());
+                        }
                     }
                 }
             }
@@ -364,13 +378,22 @@ pub async fn configure_interface(
             _ => {}
         }
     } else if let Some(ref gw) = req.gateway {
-        // Gateway update without mode change
+        // Gateway update without mode change — same guard: only touch
+        // the default route if this interface currently owns it.
+        let (_, cur_gw_iface) = get_default_gateway().await;
         if !gw.is_empty() {
-            let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
-            let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
-            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
-            msgs.push(format!("Gateway set to {}", gw));
-        } else {
+            let owns_default = cur_gw_iface.as_deref() == Some(&name)
+                || cur_gw_iface.is_none();
+            if owns_default {
+                let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+                let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
+                let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
+                msgs.push(format!("Gateway set to {}", gw));
+            } else {
+                msgs.push(format!("Gateway {} noted (default route stays on {})",
+                    gw, cur_gw_iface.as_deref().unwrap_or("unknown")));
+            }
+        } else if cur_gw_iface.as_deref() == Some(&name) {
             let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
             let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
             msgs.push("Default gateway removed".to_string());
