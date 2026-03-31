@@ -58,7 +58,7 @@ impl std::fmt::Display for Protocol {
             Protocol::Udp => write!(f, "udp"),
             Protocol::Icmp => write!(f, "icmp"),
             Protocol::Icmp6 => write!(f, "icmp6"),
-            Protocol::TcpUdp => write!(f, "tcp/udp"),
+            Protocol::TcpUdp => write!(f, "{{ tcp udp }}"),
             Protocol::Esp => write!(f, "esp"),
             Protocol::Ah => write!(f, "ah"),
             Protocol::Gre => write!(f, "gre"),
