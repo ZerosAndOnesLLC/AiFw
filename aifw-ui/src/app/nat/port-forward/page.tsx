@@ -264,173 +264,121 @@ export default function PortForwardPage() {
 
       {/* Inline Form */}
       {showForm && (
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-5">
-          <h3 className="text-sm font-semibold text-white mb-4">
+        <div className="bg-gray-800 border border-gray-700 rounded-lg p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-white">
             {editingId ? "Edit Port Forward Rule" : "New Port Forward Rule"}
           </h3>
 
+          {/* Flow diagram */}
+          <div className="flex items-center gap-2 px-3 py-2 bg-gray-900/60 rounded-md text-xs text-gray-400 border border-gray-700/50">
+            <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-400 font-medium">Source</span>
+            <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+            <span className="px-2 py-0.5 rounded bg-orange-500/15 text-orange-400 font-medium">
+              {form.interface || "Interface"}{form.dst_port ? `:${form.dst_port}` : ""}
+            </span>
+            <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+            <span className="px-2 py-0.5 rounded bg-green-500/15 text-green-400 font-medium">
+              {form.redirect_addr || "Internal Host"}{form.redirect_port ? `:${form.redirect_port}` : ""}
+            </span>
+            <span className="ml-auto text-[10px] text-gray-500 italic">Destination is rewritten to redirect target</span>
+          </div>
+
           {/* Row 1: Interface, Protocol, Enable */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+          <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
             <div>
               <label className={labelCls}>Interface</label>
-              <select
-                value={form.interface}
-                onChange={(e) => updateField("interface", e.target.value)}
-                className={selectCls}
-              >
-                {interfaces.length === 0 && (
-                  <option value="">Loading...</option>
-                )}
+              <select value={form.interface} onChange={(e) => updateField("interface", e.target.value)} className={selectCls}>
+                {interfaces.length === 0 && <option value="">Loading...</option>}
                 {interfaces.map((iface) => (
                   <option key={iface.name} value={iface.name}>
-                    {iface.name}
-                    {iface.description ? ` (${iface.description})` : ""}
+                    {iface.name}{iface.description ? ` (${iface.description})` : ""}
                   </option>
                 ))}
               </select>
             </div>
             <div>
               <label className={labelCls}>Protocol</label>
-              <select
-                value={form.protocol}
-                onChange={(e) => updateField("protocol", e.target.value)}
-                className={selectCls}
-              >
+              <select value={form.protocol} onChange={(e) => updateField("protocol", e.target.value)} className={selectCls}>
                 <option value="tcp">TCP</option>
                 <option value="udp">UDP</option>
-                <option value="tcp/udp">TCP/UDP</option>
+                <option value="tcp/udp">TCP + UDP</option>
                 <option value="any">Any</option>
               </select>
             </div>
-            <div className="flex items-end pb-1">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={form.enabled}
-                  onChange={(e) => updateField("enabled", e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                />
+            <div className="flex items-end pb-0.5">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={form.enabled} onChange={(e) => updateField("enabled", e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0" />
                 <span className="text-sm text-gray-300">Enabled</span>
               </label>
             </div>
           </div>
 
           {/* Row 2: Source */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-            <div>
-              <label className={labelCls}>Source Address</label>
-              <input
-                type="text"
-                value={form.src_addr}
-                onChange={(e) => updateField("src_addr", e.target.value)}
-                placeholder="any or CIDR"
-                className={inputCls}
-              />
-            </div>
-            {showPortFields(form.protocol) && (
-              <div>
-                <label className={labelCls}>Source Port (optional)</label>
-                <input
-                  type="text"
-                  value={form.src_port}
-                  onChange={(e) => updateField("src_port", e.target.value)}
-                  placeholder="e.g. 1024"
-                  className={inputCls}
-                />
-              </div>
-            )}
-            <div className="flex items-end pb-1">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={form.src_invert}
-                  onChange={(e) => updateField("src_invert", e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                />
-                <span className="text-sm text-gray-300">Invert source</span>
+          <div>
+            <label className={labelCls}>Source (who can access this forward)</label>
+            <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
+              <input type="text" value={form.src_addr} onChange={(e) => updateField("src_addr", e.target.value)}
+                placeholder="any (leave blank for any source)" className={inputCls} />
+              {showPortFields(form.protocol) && (
+                <div className="w-28">
+                  <input type="text" value={form.src_port} onChange={(e) => updateField("src_port", e.target.value)}
+                    placeholder="Src port" className={inputCls} />
+                </div>
+              )}
+              <label className="flex items-center gap-1.5 cursor-pointer select-none pb-0.5">
+                <input type="checkbox" checked={form.src_invert} onChange={(e) => updateField("src_invert", e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0" />
+                <span className="text-xs text-gray-400">Invert</span>
               </label>
             </div>
           </div>
 
           {/* Row 3: Destination (what to match on WAN) */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-            <div>
-              <label className={labelCls}>Destination Address</label>
-              <input
-                type="text"
-                value={form.dst_addr}
-                onChange={(e) => updateField("dst_addr", e.target.value)}
-                placeholder="any or CIDR (WAN address)"
-                className={inputCls}
-              />
+          <div>
+            <label className={labelCls}>Destination (incoming match on interface)</label>
+            <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+              <input type="text" value={form.dst_addr} onChange={(e) => updateField("dst_addr", e.target.value)}
+                placeholder="any or WAN IP (e.g. 203.0.113.1)" className={inputCls} />
+              {showPortFields(form.protocol) && (
+                <div className="w-36">
+                  <input type="text" value={form.dst_port} onChange={(e) => updateField("dst_port", e.target.value)}
+                    placeholder="Port or range" className={inputCls} />
+                </div>
+              )}
             </div>
-            {showPortFields(form.protocol) && (
-              <div>
-                <label className={labelCls}>Destination Port / Range</label>
-                <input
-                  type="text"
-                  value={form.dst_port}
-                  onChange={(e) => updateField("dst_port", e.target.value)}
-                  placeholder="e.g. 80 or 8080-8090"
-                  className={inputCls}
-                />
-              </div>
-            )}
           </div>
 
           {/* Row 4: Redirect target */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-            <div>
-              <label className={labelCls}>Redirect Target IP</label>
-              <input
-                type="text"
-                value={form.redirect_addr}
-                onChange={(e) => updateField("redirect_addr", e.target.value)}
-                placeholder="e.g. 10.0.0.5"
-                className={inputCls}
-              />
+          <div>
+            <label className={labelCls}>Redirect To (internal target)</label>
+            <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+              <input type="text" value={form.redirect_addr} onChange={(e) => updateField("redirect_addr", e.target.value)}
+                placeholder="Internal IP (e.g. 192.168.1.100)" className={inputCls} />
+              {showPortFields(form.protocol) && (
+                <div className="w-36">
+                  <input type="text" value={form.redirect_port} onChange={(e) => updateField("redirect_port", e.target.value)}
+                    placeholder="Port (opt.)" className={inputCls} />
+                </div>
+              )}
             </div>
-            {showPortFields(form.protocol) && (
-              <div>
-                <label className={labelCls}>Redirect Port</label>
-                <input
-                  type="text"
-                  value={form.redirect_port}
-                  onChange={(e) => updateField("redirect_port", e.target.value)}
-                  placeholder="e.g. 8080"
-                  className={inputCls}
-                />
-              </div>
-            )}
           </div>
 
           {/* Row 5: Label */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            <div className="md:col-span-2">
-              <label className={labelCls}>Description / Label</label>
-              <input
-                type="text"
-                value={form.label}
-                onChange={(e) => updateField("label", e.target.value)}
-                placeholder="Rule description"
-                className={inputCls}
-              />
-            </div>
+          <div className="max-w-md">
+            <label className={labelCls}>Description</label>
+            <input type="text" value={form.label} onChange={(e) => updateField("label", e.target.value)}
+              placeholder="e.g. Web server HTTP" className={inputCls} />
           </div>
 
           {/* Buttons */}
-          <div className="flex gap-2">
-            <button
-              onClick={handleSubmit}
-              disabled={submitting || !form.redirect_addr.trim()}
-              className="px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
-            >
+          <div className="flex gap-2 pt-1">
+            <button onClick={handleSubmit} disabled={submitting || !form.redirect_addr.trim()}
+              className="px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors">
               {submitting ? "Saving..." : editingId ? "Update Rule" : "Add Rule"}
             </button>
-            <button
-              onClick={resetForm}
-              className="px-4 py-1.5 text-sm font-medium rounded-md bg-gray-700 border border-gray-600 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors"
-            >
+            <button onClick={resetForm}
+              className="px-4 py-1.5 text-sm font-medium rounded-md bg-gray-700 border border-gray-600 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors">
               Cancel
             </button>
           </div>

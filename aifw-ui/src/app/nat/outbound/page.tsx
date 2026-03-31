@@ -282,8 +282,22 @@ export default function OutboundNatPage() {
             {editingId ? "Edit Outbound NAT Rule" : "New Outbound NAT Rule"}
           </h3>
 
+          {/* Flow diagram */}
+          <div className="flex items-center gap-2 px-3 py-2 bg-gray-900/60 rounded-md text-xs text-gray-400 border border-gray-700/50">
+            <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-400 font-medium">Source</span>
+            <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+            <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-300 font-medium">{form.interface || "Interface"}</span>
+            <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+            <span className="px-2 py-0.5 rounded bg-green-500/15 text-green-400 font-medium">
+              {form.trans_mode === "interface" ? "Interface IP" : form.translation_addr || "NAT IP"}
+            </span>
+            <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
+            <span className="px-2 py-0.5 rounded bg-orange-500/15 text-orange-400 font-medium">Destination</span>
+            <span className="ml-auto text-[10px] text-gray-500 italic">Source address is rewritten to translation address</span>
+          </div>
+
           {/* Row 1: Interface, Protocol, Enabled */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
             <div>
               <label className={labelCls}>Interface</label>
               <select value={form.interface} onChange={(e) => updateField("interface", e.target.value)} className={selectCls}>
@@ -307,12 +321,8 @@ export default function OutboundNatPage() {
             </div>
             <div className="flex items-end pb-0.5">
               <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={form.enabled}
-                  onChange={(e) => updateField("enabled", e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                />
+                <input type="checkbox" checked={form.enabled} onChange={(e) => updateField("enabled", e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0" />
                 <span className="text-sm text-gray-300">Enabled</span>
               </label>
             </div>
@@ -321,105 +331,76 @@ export default function OutboundNatPage() {
           {/* Row 2: Source */}
           <div>
             <label className={labelCls}>Source</label>
-            <div className="flex gap-2 items-start">
-              <select
-                value={form.src_mode}
-                onChange={(e) => updateField("src_mode", e.target.value as AddrMode)}
-                className={`${selectCls} w-36 flex-shrink-0`}
-              >
+            <div className="grid grid-cols-[auto_1fr_auto] gap-2 items-end">
+              <select value={form.src_mode} onChange={(e) => updateField("src_mode", e.target.value as AddrMode)}
+                className={`${selectCls} !w-40`}>
                 <option value="any">Any</option>
                 <option value="network">Network / Host</option>
               </select>
-              {form.src_mode === "network" && (
-                <div className="flex-1">
-                  <input
-                    type="text"
-                    value={form.src_addr}
-                    onChange={(e) => updateField("src_addr", e.target.value)}
-                    placeholder="192.168.1.0/24 or 10.0.0.5"
-                    className={inputCls}
-                  />
-                  <p className={hintCls}>CIDR network (e.g. 10.0.0.0/8) or single host IP</p>
-                </div>
-              )}
-              {form.src_mode === "network" && showPortFields(form.protocol) && (
-                <div className="w-28 flex-shrink-0">
-                  <input
-                    type="text"
-                    value={form.src_port}
-                    onChange={(e) => updateField("src_port", e.target.value)}
-                    placeholder="Port"
-                    className={inputCls}
-                  />
-                  <p className={hintCls}>Optional</p>
-                </div>
-              )}
+              <div>
+                {form.src_mode === "network" ? (
+                  <input type="text" value={form.src_addr} onChange={(e) => updateField("src_addr", e.target.value)}
+                    placeholder="192.168.1.0/24 or 10.0.0.5" className={inputCls} />
+                ) : (
+                  <div className={`${inputCls} !text-gray-500 !cursor-default`}>All addresses</div>
+                )}
+              </div>
+              <div className="w-28">
+                {form.src_mode === "network" && showPortFields(form.protocol) ? (
+                  <input type="text" value={form.src_port} onChange={(e) => updateField("src_port", e.target.value)}
+                    placeholder="Port" className={inputCls} />
+                ) : showPortFields(form.protocol) ? (
+                  <div className={`${inputCls} !text-gray-500 !cursor-default`}>Any port</div>
+                ) : null}
+              </div>
             </div>
           </div>
 
           {/* Row 3: Destination */}
           <div>
             <label className={labelCls}>Destination</label>
-            <div className="flex gap-2 items-start">
-              <select
-                value={form.dst_mode}
-                onChange={(e) => updateField("dst_mode", e.target.value as AddrMode)}
-                className={`${selectCls} w-36 flex-shrink-0`}
-              >
+            <div className="grid grid-cols-[auto_1fr_auto] gap-2 items-end">
+              <select value={form.dst_mode} onChange={(e) => updateField("dst_mode", e.target.value as AddrMode)}
+                className={`${selectCls} !w-40`}>
                 <option value="any">Any</option>
                 <option value="network">Network / Host</option>
               </select>
-              {form.dst_mode === "network" && (
-                <div className="flex-1">
-                  <input
-                    type="text"
-                    value={form.dst_addr}
-                    onChange={(e) => updateField("dst_addr", e.target.value)}
-                    placeholder="0.0.0.0/0 or 203.0.113.0/24"
-                    className={inputCls}
-                  />
-                  <p className={hintCls}>CIDR network or single host IP. Use 0.0.0.0/0 for all destinations.</p>
-                </div>
-              )}
-              {form.dst_mode === "network" && showPortFields(form.protocol) && (
-                <div className="w-28 flex-shrink-0">
-                  <input
-                    type="text"
-                    value={form.dst_port}
-                    onChange={(e) => updateField("dst_port", e.target.value)}
-                    placeholder="Port"
-                    className={inputCls}
-                  />
-                  <p className={hintCls}>Optional</p>
-                </div>
-              )}
+              <div>
+                {form.dst_mode === "network" ? (
+                  <input type="text" value={form.dst_addr} onChange={(e) => updateField("dst_addr", e.target.value)}
+                    placeholder="0.0.0.0/0 or 203.0.113.0/24" className={inputCls} />
+                ) : (
+                  <div className={`${inputCls} !text-gray-500 !cursor-default`}>All addresses</div>
+                )}
+              </div>
+              <div className="w-28">
+                {form.dst_mode === "network" && showPortFields(form.protocol) ? (
+                  <input type="text" value={form.dst_port} onChange={(e) => updateField("dst_port", e.target.value)}
+                    placeholder="Port" className={inputCls} />
+                ) : showPortFields(form.protocol) ? (
+                  <div className={`${inputCls} !text-gray-500 !cursor-default`}>Any port</div>
+                ) : null}
+              </div>
             </div>
           </div>
 
           {/* Row 4: Translation */}
           <div>
             <label className={labelCls}>Translation</label>
-            <div className="flex gap-2 items-start">
-              <select
-                value={form.trans_mode}
-                onChange={(e) => updateField("trans_mode", e.target.value as TransMode)}
-                className={`${selectCls} w-52 flex-shrink-0`}
-              >
+            <div className="grid grid-cols-[auto_1fr] gap-2 items-end">
+              <select value={form.trans_mode} onChange={(e) => updateField("trans_mode", e.target.value as TransMode)}
+                className={`${selectCls} !w-52`}>
                 <option value="interface">Interface Address (masquerade)</option>
                 <option value="address">Specific IP Address</option>
               </select>
-              {form.trans_mode === "address" && (
-                <div className="flex-1">
-                  <input
-                    type="text"
-                    value={form.translation_addr}
-                    onChange={(e) => updateField("translation_addr", e.target.value)}
-                    placeholder="203.0.113.1"
-                    className={inputCls}
-                  />
-                  <p className={hintCls}>Public IP to NAT outbound traffic to</p>
-                </div>
-              )}
+              <div>
+                {form.trans_mode === "address" ? (
+                  <input type="text" value={form.translation_addr} onChange={(e) => updateField("translation_addr", e.target.value)}
+                    placeholder="203.0.113.1" className={inputCls} />
+                ) : (
+                  <div className={`${inputCls} !text-gray-500 !cursor-default`}>Uses the outgoing interface IP</div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -427,22 +408,13 @@ export default function OutboundNatPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="md:col-span-2">
               <label className={labelCls}>Description</label>
-              <input
-                type="text"
-                value={form.label}
-                onChange={(e) => updateField("label", e.target.value)}
-                placeholder="e.g. Default LAN outbound"
-                className={inputCls}
-              />
+              <input type="text" value={form.label} onChange={(e) => updateField("label", e.target.value)}
+                placeholder="e.g. Default LAN outbound" className={inputCls} />
             </div>
             <div className="flex items-end pb-0.5">
               <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={form.static_port}
-                  onChange={(e) => updateField("static_port", e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                />
+                <input type="checkbox" checked={form.static_port} onChange={(e) => updateField("static_port", e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0" />
                 <span className="text-sm text-gray-300">Static port</span>
               </label>
             </div>
@@ -450,17 +422,12 @@ export default function OutboundNatPage() {
 
           {/* Buttons */}
           <div className="flex gap-2 pt-1">
-            <button
-              onClick={handleSubmit}
-              disabled={!canSubmit}
-              className="px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
-            >
+            <button onClick={handleSubmit} disabled={!canSubmit}
+              className="px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors">
               {submitting ? "Saving..." : editingId ? "Update Rule" : "Add Rule"}
             </button>
-            <button
-              onClick={resetForm}
-              className="px-4 py-1.5 text-sm font-medium rounded-md bg-gray-700 border border-gray-600 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors"
-            >
+            <button onClick={resetForm}
+              className="px-4 py-1.5 text-sm font-medium rounded-md bg-gray-700 border border-gray-600 text-gray-300 hover:text-white hover:bg-gray-600 transition-colors">
               Cancel
             </button>
           </div>
