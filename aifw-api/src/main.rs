@@ -258,6 +258,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/pending", get(routes::get_pending))
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/connections", get(routes::list_connections))
+        .route("/api/v1/blocked", get(routes::list_blocked_traffic))
         .route("/api/v1/reload", post(routes::reload))
         .route("/api/v1/metrics", get(routes::metrics))
         .route("/api/v1/logs", get(routes::list_logs))

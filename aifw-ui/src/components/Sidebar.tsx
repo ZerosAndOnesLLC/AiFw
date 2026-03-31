@@ -25,6 +25,7 @@ const navItems: NavItem[] = [
       { href: "/traffic", label: "Traffic" },
       { href: "/nat/flows", label: "NAT Flows" },
       { href: "/connections", label: "Connections" },
+      { href: "/blocked", label: "Blocked Traffic" },
       { href: "/threats", label: "Threats" },
       { href: "/logs", label: "Logs" },
     ],

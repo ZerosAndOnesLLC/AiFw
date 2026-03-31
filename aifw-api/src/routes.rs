@@ -1107,6 +1107,111 @@ pub async fn reload(
     }
 }
 
+// --- Blocked Traffic (pflog) ---
+
+#[derive(Debug, Serialize)]
+pub struct BlockedEntry {
+    pub timestamp: String,
+    pub action: String,
+    pub direction: String,
+    pub interface: String,
+    pub protocol: String,
+    pub src_addr: String,
+    pub src_port: u16,
+    pub dst_addr: String,
+    pub dst_port: u16,
+    pub reason: String,
+}
+
+pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>>>, StatusCode> {
+    // Read recent blocked traffic from pflog via tcpdump
+    // Try live pflog capture with short timeout
+    let _live_output = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        tokio::process::Command::new("sudo")
+            .args(["/usr/sbin/tcpdump", "-n", "-e", "-tt", "-i", "pflog0", "-c", "100"])
+            .output()
+    ).await;
+
+    let mut entries = Vec::new();
+
+    // Also parse /var/log/messages for pf block entries
+    if let Ok(output) = tokio::process::Command::new("sudo")
+        .args(["/bin/cat", "/var/log/messages"])
+        .output().await
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines().rev().take(500) {
+                // FreeBSD pf log format in messages:
+                // "Mar 31 12:00:00 aifw kernel: pf: ... block in on em0: 1.2.3.4.12345 > 5.6.7.8.80: ..."
+                if !line.contains("block") { continue; }
+                if !line.contains(" pf:") && !line.contains("filterlog") { continue; }
+
+                let mut entry = BlockedEntry {
+                    timestamp: line.chars().take(15).collect(),
+                    action: "block".to_string(),
+                    direction: "in".to_string(),
+                    interface: String::new(),
+                    protocol: String::new(),
+                    src_addr: String::new(),
+                    src_port: 0,
+                    dst_addr: String::new(),
+                    dst_port: 0,
+                    reason: "policy".to_string(),
+                };
+
+                // Try to parse "block in on em0"
+                if let Some(pos) = line.find("block") {
+                    let rest = &line[pos..];
+                    let parts: Vec<&str> = rest.split_whitespace().collect();
+                    if parts.len() >= 4 {
+                        entry.direction = parts.get(1).unwrap_or(&"in").to_string();
+                        if parts.get(2) == Some(&"on") {
+                            entry.interface = parts.get(3).map(|s| s.trim_end_matches(':')).unwrap_or("").to_string();
+                        }
+                    }
+
+                    // Parse addresses from the log
+                    for part in &parts {
+                        if part.contains('>') || part.contains("proto") { continue; }
+                        // Look for IP.port patterns
+                        let s = part.trim_end_matches(':');
+                        if let Some(dot_pos) = s.rfind('.') {
+                            let maybe_port = &s[dot_pos + 1..];
+                            let maybe_ip = &s[..dot_pos];
+                            if let Ok(port) = maybe_port.parse::<u16>() {
+                                if maybe_ip.contains('.') {
+                                    if entry.src_addr.is_empty() {
+                                        entry.src_addr = maybe_ip.to_string();
+                                        entry.src_port = port;
+                                    } else if entry.dst_addr.is_empty() {
+                                        entry.dst_addr = maybe_ip.to_string();
+                                        entry.dst_port = port;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Protocol
+                    if rest.contains("TCP") || rest.contains("tcp") { entry.protocol = "tcp".to_string(); }
+                    else if rest.contains("UDP") || rest.contains("udp") { entry.protocol = "udp".to_string(); }
+                    else if rest.contains("ICMP") || rest.contains("icmp") { entry.protocol = "icmp".to_string(); }
+                }
+
+                if !entry.src_addr.is_empty() {
+                    entries.push(entry);
+                }
+                if entries.len() >= 200 { break; }
+            }
+        }
+    }
+
+    let _ = _live_output;
+    Ok(Json(ApiResponse { data: entries }))
+}
+
 // --- Metrics ---
 
 pub async fn metrics(
