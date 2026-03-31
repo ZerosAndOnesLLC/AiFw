@@ -125,7 +125,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/auth/oauth/{provider}/authorize", get(routes::oauth_authorize))
         .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback))
         .route("/api/v1/auth/register", post(routes::create_user))
-        .route("/api/v1/ws", get(ws::ws_handler));
+        .route("/api/v1/ws", get(ws::ws_handler))
+        .route("/api/v1/pending/stream", get(routes::pending_stream));
 
     // Protected routes (require auth)
     let protected_routes = Router::new()
@@ -248,7 +249,6 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas).post(routes::create_ipsec_sa))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
         .route("/api/v1/pending", get(routes::get_pending))
-        .route("/api/v1/pending/stream", get(routes::pending_stream))
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/connections", get(routes::list_connections))
         .route("/api/v1/reload", post(routes::reload))
