@@ -225,9 +225,8 @@ impl NatRule {
         parts.push(to);
     }
 
-    fn push_label(&self, parts: &mut Vec<String>) {
-        if let Some(ref label) = self.label {
-            parts.push(format!("label \"{label}\""));
-        }
+    fn push_label(&self, _parts: &mut Vec<String>) {
+        // pf NAT rules do not support the label keyword — labels are filter-only.
+        // The label is stored in the DB for UI display purposes only.
     }
 }
