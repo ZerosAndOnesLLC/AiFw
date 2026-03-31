@@ -161,8 +161,19 @@ cd "$PROJECT_ROOT"
 echo "=== [6/8] Building ISO + IMG ==="
 sh "$SCRIPT_DIR/build-iso.sh" "$VERSION" amd64
 
+# --- Compress ISO + IMG ---
+echo "=== [7/9] Compressing ISO + IMG ==="
+OUTPUTDIR="/usr/obj/aifw-iso/output"
+for f in "${OUTPUTDIR}"/aifw-*.iso "${OUTPUTDIR}"/aifw-*.img; do
+    if [ -f "$f" ] && [ ! -f "${f}.xz" ]; then
+        echo "  Compressing $(basename $f)..."
+        xz -T0 -9 "$f"
+        sha256 "${f}.xz" > "${f}.xz.sha256"
+    fi
+done
+
 # --- Cleanup intermediate files ---
-echo "=== [7/8] Cleaning up intermediate files ==="
+echo "=== [8/9] Cleaning up intermediate files ==="
 rm -rf "$SCRIPT_DIR/release"
 rm -rf "$SCRIPT_DIR/ui-export"
 # Remove staging dirs but keep output with the final artifacts
@@ -176,7 +187,7 @@ echo "  Removed staged binaries, UI export, and build intermediates"
 
 # --- Done ---
 echo ""
-echo "=== [8/8] Complete ==="
+echo "=== [9/9] Complete ==="
 echo ""
 ls -lh /usr/obj/aifw-iso/output/
 echo ""

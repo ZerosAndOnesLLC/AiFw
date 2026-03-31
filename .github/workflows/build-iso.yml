@@ -132,6 +132,16 @@ jobs:
             cd freebsd
             sh build-iso.sh "${{ steps.version.outputs.version }}" amd64
 
+            echo "=== Compressing ISO + IMG ==="
+            cd /usr/obj/aifw-iso/output
+            for f in aifw-*.iso aifw-*.img; do
+              if [ -f "$f" ] && [ ! -f "${f}.xz" ]; then
+                xz -T0 -9 "$f"
+                sha256 "${f}.xz" > "${f}.xz.sha256"
+              fi
+            done
+            cd /home/runner/work/AiFw/AiFw
+
             # Move outputs to workspace root for upload
             mkdir -p /home/runner/work/AiFw/AiFw/output
             cp /usr/obj/aifw-iso/output/* /home/runner/work/AiFw/AiFw/output/
@@ -140,14 +150,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: aifw-iso-amd64
-          path: output/aifw-*.iso
+          path: output/aifw-*.iso.xz
           retention-days: 5
 
       - name: Upload IMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: aifw-img-amd64
-          path: output/aifw-*.img
+          path: output/aifw-*.img.xz
           retention-days: 5
 
       - name: Upload checksums
@@ -204,8 +214,8 @@ jobs:
 
             | File | Description |
             |------|-------------|
-            | `aifw-${{ steps.version.outputs.version }}-amd64.iso` | Bootable ISO (CD/DVD, VM) |
-            | `aifw-${{ steps.version.outputs.version }}-amd64.img` | USB flash drive image |
+            | `aifw-${{ steps.version.outputs.version }}-amd64.iso.xz` | Bootable ISO (CD/DVD, VM) — xz compressed |
+            | `aifw-${{ steps.version.outputs.version }}-amd64.img.xz` | USB flash drive image — xz compressed |
 
             ### Quick Start
 
