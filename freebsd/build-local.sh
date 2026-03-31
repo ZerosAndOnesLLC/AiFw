@@ -63,36 +63,39 @@ cargo build --release
 
 # Build TrafficCop (reverse proxy)
 TRAFFICCOP_DIR="$PROJECT_ROOT/../trafficcop"
-if [ -d "$TRAFFICCOP_DIR" ]; then
-    echo "Building TrafficCop..."
-    cd "$TRAFFICCOP_DIR"
-    cargo build --release
-    cd "$PROJECT_ROOT"
-else
-    echo "WARNING: TrafficCop source not found at $TRAFFICCOP_DIR, skipping"
+if [ ! -d "$TRAFFICCOP_DIR" ]; then
+    echo "Cloning TrafficCop..."
+    git clone https://github.com/ZerosAndOnesLLC/TrafficCop.git "$TRAFFICCOP_DIR"
 fi
+echo "Building TrafficCop..."
+cd "$TRAFFICCOP_DIR"
+git pull 2>/dev/null || true
+cargo build --release
+cd "$PROJECT_ROOT"
 
 # Build rDHCP (DHCP server)
 RDHCP_DIR="$PROJECT_ROOT/../rDHCP"
-if [ -d "$RDHCP_DIR" ]; then
-    echo "Building rDHCP..."
-    cd "$RDHCP_DIR"
-    cargo build --release
-    cd "$PROJECT_ROOT"
-else
-    echo "WARNING: rDHCP source not found at $RDHCP_DIR, skipping"
+if [ ! -d "$RDHCP_DIR" ]; then
+    echo "Cloning rDHCP..."
+    git clone https://github.com/ZerosAndOnesLLC/rDHCP.git "$RDHCP_DIR"
 fi
+echo "Building rDHCP..."
+cd "$RDHCP_DIR"
+git pull 2>/dev/null || true
+cargo build --release
+cd "$PROJECT_ROOT"
 
 # Build rDNS (DNS server)
 RDNS_DIR="$PROJECT_ROOT/../rDNS"
-if [ -d "$RDNS_DIR" ]; then
-    echo "Building rDNS..."
-    cd "$RDNS_DIR"
-    cargo build --release
-    cd "$PROJECT_ROOT"
-else
-    echo "WARNING: rDNS source not found at $RDNS_DIR, skipping"
+if [ ! -d "$RDNS_DIR" ]; then
+    echo "Cloning rDNS..."
+    git clone https://github.com/ZerosAndOnesLLC/rDNS.git "$RDNS_DIR"
 fi
+echo "Building rDNS..."
+cd "$RDNS_DIR"
+git pull 2>/dev/null || true
+cargo build --release
+cd "$PROJECT_ROOT"
 
 # --- Stage build inputs ---
 echo "=== [4/6] Staging build inputs ==="
