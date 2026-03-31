@@ -566,6 +566,60 @@ async fn run_cmd(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+// --- VLAN Apply (called by reload) ---
+
+/// Sync VLANs from DB to OS. Creates missing VLANs, removes stale ones.
+pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
+    let rows = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, bool)>(
+        "SELECT vlan_id, parent, ipv4_mode, ipv4_address, mtu, enabled FROM vlans"
+    ).fetch_all(pool).await.map_err(|e| e.to_string())?;
+
+    for (vid, parent, mode, ip_addr, mtu, enabled) in &rows {
+        let vlan_name = format!("vlan{}", vid);
+
+        if *enabled {
+            // Create if not exists
+            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "create"]).output().await;
+            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "vlan", &vid.to_string(), "vlandev", parent]).output().await;
+            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "mtu", &mtu.to_string()]).output().await;
+
+            if mode == "static" {
+                if let Some(addr) = ip_addr {
+                    let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "inet", addr]).output().await;
+                }
+            } else if mode == "dhcp" {
+                let _ = Command::new("sudo").args(["/sbin/dhclient", &vlan_name]).output().await;
+            }
+            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "up"]).output().await;
+
+            // Persist in rc.conf
+            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("vlans_{}={}", parent, vid)]).output().await;
+            let rc_val = match mode.as_str() {
+                "dhcp" => "DHCP".to_string(),
+                "static" => format!("inet {}", ip_addr.as_deref().unwrap_or("")),
+                _ => "up".to_string(),
+            };
+            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}={}", vlan_name, rc_val)]).output().await;
+        } else {
+            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "down"]).output().await;
+        }
+    }
+
+    // Destroy OS VLANs that are no longer in DB
+    let output = Command::new("/sbin/ifconfig").arg("-l").output().await.map_err(|e| e.to_string())?;
+    let iface_list = String::from_utf8_lossy(&output.stdout);
+    let db_vlan_names: Vec<String> = rows.iter().map(|(vid, ..)| format!("vlan{}", vid)).collect();
+    for iface in iface_list.split_whitespace() {
+        if iface.starts_with("vlan") && !db_vlan_names.contains(&iface.to_string()) {
+            let _ = Command::new("sudo").args(["/sbin/ifconfig", iface, "destroy"]).output().await;
+            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", iface)]).output().await;
+        }
+    }
+
+    tracing::info!(count = rows.len(), "VLANs applied");
+    Ok(())
+}
+
 // --- VLANs ---
 
 pub async fn list_vlans(
@@ -592,7 +646,6 @@ pub async fn create_vlan(
     let mode = req.ipv4_mode.unwrap_or_else(|| "none".to_string());
     let mtu = req.mtu.unwrap_or(1500);
     let enabled = req.enabled.unwrap_or(true);
-    let vlan_name = format!("vlan{}", req.vlan_id);
 
     sqlx::query("INSERT INTO vlans (id, vlan_id, parent, ipv4_mode, ipv4_address, ipv6_address, mtu, enabled, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
         .bind(&id).bind(req.vlan_id as i64).bind(&req.parent).bind(&mode)
@@ -600,30 +653,8 @@ pub async fn create_vlan(
         .bind(mtu as i64).bind(enabled).bind(req.description.as_deref()).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
 
-    // Create the VLAN interface
-    if enabled {
-        let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "create"]).output().await;
-        let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "vlan", &req.vlan_id.to_string(), "vlandev", &req.parent]).output().await;
-        let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "mtu", &mtu.to_string()]).output().await;
-
-        if mode == "static" {
-            if let Some(ref addr) = req.ipv4_address {
-                let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "inet", addr]).output().await;
-            }
-        } else if mode == "dhcp" {
-            let _ = Command::new("sudo").args(["/sbin/dhclient", &vlan_name]).output().await;
-        }
-        let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "up"]).output().await;
-
-        // Persist in rc.conf
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("vlans_{}={}", req.parent, req.vlan_id)]).output().await;
-        let rc_val = match mode.as_str() {
-            "dhcp" => "DHCP".to_string(),
-            "static" => format!("inet {}", req.ipv4_address.as_deref().unwrap_or("")),
-            _ => "up".to_string(),
-        };
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}={}", vlan_name, rc_val)]).output().await;
-    }
+    // DB only — OS changes applied via /api/v1/reload
+    state.set_pending(|p| p.firewall = true).await;
 
     let vlan = VlanConfig { id, vlan_id: req.vlan_id, parent: req.parent, ipv4_mode: mode,
         ipv4_address: req.ipv4_address, ipv6_address: req.ipv6_address, mtu, enabled,
@@ -640,11 +671,12 @@ pub async fn delete_vlan(
         .ok_or(StatusCode::NOT_FOUND)?;
     let vlan_name = format!("vlan{}", row.0);
 
-    let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "destroy"]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", vlan_name)]).output().await;
-
     sqlx::query("DELETE FROM vlans WHERE id = ?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
-    Ok(Json(MessageResponse { message: format!("VLAN {} deleted", vlan_name) }))
+
+    // DB only — OS cleanup applied via /api/v1/reload
+    state.set_pending(|p| p.firewall = true).await;
+
+    Ok(Json(MessageResponse { message: format!("VLAN {} marked for deletion — click Apply to remove", vlan_name) }))
 }
 
 pub async fn update_vlan(
@@ -663,19 +695,8 @@ pub async fn update_vlan(
         .execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
 
-    let vlan_name = format!("vlan{}", req.vlan_id);
-
-    if enabled {
-        let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "mtu", &mtu.to_string()]).output().await;
-        if mode == "static" {
-            if let Some(ref addr) = req.ipv4_address {
-                let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "inet", addr]).output().await;
-            }
-        }
-        let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "up"]).output().await;
-    } else {
-        let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "down"]).output().await;
-    }
+    // DB only — OS changes applied via /api/v1/reload
+    state.set_pending(|p| p.firewall = true).await;
 
     let now = Utc::now().to_rfc3339();
     Ok(Json(ApiResponse { data: VlanConfig { id, vlan_id: req.vlan_id, parent: req.parent, ipv4_mode: mode,

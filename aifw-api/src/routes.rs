@@ -1075,6 +1075,13 @@ pub async fn reload(
     State(state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let mut errors = Vec::new();
+
+    // Apply VLANs from DB to OS
+    if let Err(e) = crate::iface::apply_vlans(&state.pool).await {
+        tracing::error!("Failed to apply VLANs: {e}");
+        errors.push(format!("vlans: {e}"));
+    }
+
     // Sync alias pf tables before loading rules that reference them
     if let Err(e) = state.alias_engine.sync_all().await {
         tracing::error!("Failed to sync aliases: {e}");
