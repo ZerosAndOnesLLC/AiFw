@@ -133,24 +133,28 @@ export default function RulesPage() {
   // Sync filter with URL param
   useEffect(() => { setInterfaceFilter(urlInterface || "all"); }, [urlInterface]);
 
-  const handleDragStart = (idx: number) => { dragItem.current = idx; };
-  const handleDragOver = (e: React.DragEvent, idx: number) => { e.preventDefault(); dragOverItem.current = idx; };
-  const handleDrop = async () => {
-    if (dragItem.current === null || dragOverItem.current === null || dragItem.current === dragOverItem.current) return;
+  const handleDragStart = (e: React.DragEvent, idx: number) => { dragItem.current = idx; e.dataTransfer.effectAllowed = "move"; };
+  const handleDragOver = (e: React.DragEvent, idx: number) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; dragOverItem.current = idx; };
+  const handleDragEnd = async () => {
+    if (dragItem.current === null || dragOverItem.current === null || dragItem.current === dragOverItem.current) {
+      dragItem.current = null; dragOverItem.current = null; return;
+    }
     const reordered = [...rules];
     const [moved] = reordered.splice(dragItem.current, 1);
     reordered.splice(dragOverItem.current, 0, moved);
     setRules(reordered);
+    const fromIdx = dragItem.current;
     dragItem.current = null;
     dragOverItem.current = null;
     try {
       const token = localStorage.getItem("aifw_token");
-      await fetch("/api/v1/rules/reorder", {
+      const res = await fetch("/api/v1/rules/reorder", {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ rule_ids: reordered.map(r => r.id) }),
       });
-      setPendingChanges(true);
+      if (res.ok) setPendingChanges(true);
+      else { setError("Failed to save rule order"); setRules(rules); } // revert on failure
     } catch { setError("Failed to save rule order"); }
   };
 
@@ -483,9 +487,9 @@ export default function RulesPage() {
                   <tr
                     key={rule.id}
                     draggable
-                    onDragStart={() => handleDragStart(idx)}
+                    onDragStart={(e) => handleDragStart(e, idx)}
                     onDragOver={(e) => handleDragOver(e, idx)}
-                    onDrop={handleDrop}
+                    onDragEnd={handleDragEnd}
                     className={`border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors cursor-grab active:cursor-grabbing ${
                       rule.status === "disabled" ? "opacity-50" : ""
                     }`}

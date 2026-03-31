@@ -52,16 +52,12 @@ export default function OutboundNatPage() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
-  const handleDragStart = (i: number) => { dragItem.current = i; };
-  const handleDragOver = (e: React.DragEvent, i: number) => { e.preventDefault(); dragOverItem.current = i; };
-  const handleDrop = async () => {
-    if (dragItem.current === null || dragOverItem.current === null || dragItem.current === dragOverItem.current) return;
-    const r = [...rules];
-    const [m] = r.splice(dragItem.current, 1);
-    r.splice(dragOverItem.current, 0, m);
-    setRules(r);
-    dragItem.current = null;
-    dragOverItem.current = null;
+  const handleDragStart = (e: React.DragEvent, i: number) => { dragItem.current = i; e.dataTransfer.effectAllowed = "move"; };
+  const handleDragOver = (e: React.DragEvent, i: number) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; dragOverItem.current = i; };
+  const handleDragEnd = async () => {
+    if (dragItem.current === null || dragOverItem.current === null || dragItem.current === dragOverItem.current) { dragItem.current = null; dragOverItem.current = null; return; }
+    const r = [...rules]; const [m] = r.splice(dragItem.current, 1); r.splice(dragOverItem.current, 0, m);
+    setRules(r); dragItem.current = null; dragOverItem.current = null;
     try {
       const t = localStorage.getItem("aifw_token");
       await fetch("/api/v1/nat/reorder", { method: "PUT", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify({ rule_ids: r.map(x => x.id) }) });
@@ -470,7 +466,7 @@ export default function OutboundNatPage() {
                   rules.map((rule, idx) => (
                     <tr
                       key={rule.id}
-                      draggable onDragStart={() => handleDragStart(idx)} onDragOver={(e) => handleDragOver(e, idx)} onDrop={handleDrop}
+                      draggable onDragStart={(e) => handleDragStart(e, idx)} onDragOver={(e) => handleDragOver(e, idx)} onDragEnd={handleDragEnd}
                       className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors cursor-grab active:cursor-grabbing"
                     >
                       <td className="py-2.5 px-3">
@@ -541,6 +537,52 @@ export default function OutboundNatPage() {
           </div>
         </div>
       )}
+
+      {/* pf NAT output */}
+      <PfNatOutput />
+    </div>
+  );
+}
+
+function PfNatOutput() {
+  const [output, setOutput] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const token = localStorage.getItem("aifw_token") || "";
+    fetch("/api/v1/rules/system", { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(d => {
+        // Also fetch NAT rules from pf anchor
+        return fetch("/api/v1/status", { headers: { Authorization: `Bearer ${token}` } })
+          .then(r => r.json())
+          .then(() => d);
+      })
+      .then(() => {
+        // Fetch pf nat rules directly
+        fetch("/api/v1/nat/pf-output", { headers: { Authorization: `Bearer ${token}` } })
+          .then(r => r.ok ? r.json() : { data: [] })
+          .then(d => setOutput(d.data || []))
+          .catch(() => {});
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-700">
+        <h3 className="text-sm font-medium text-gray-400">pf NAT Rules (live)</h3>
+      </div>
+      <div className="p-4">
+        {loading ? (
+          <div className="text-gray-500 text-xs">Loading...</div>
+        ) : output.length === 0 ? (
+          <div className="text-gray-500 text-xs font-mono">No NAT rules loaded in pf. Click Apply to load.</div>
+        ) : (
+          <pre className="text-xs font-mono text-green-400 whitespace-pre-wrap">{output.join("\n")}</pre>
+        )}
+      </div>
     </div>
   );
 }

@@ -1290,6 +1290,24 @@ pub async fn reorder_rules(
     Ok(Json(MessageResponse { message: format!("{} rules reordered", req.rule_ids.len()) }))
 }
 
+pub async fn get_nat_pf_output(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
+    let nat_rules = state.pf.get_nat_rules("aifw").await.unwrap_or_default();
+    let filter_rules = state.pf.get_rules("aifw").await.unwrap_or_default();
+    let mut output = Vec::new();
+    if !nat_rules.is_empty() {
+        output.push("# NAT Rules (anchor: aifw)".to_string());
+        output.extend(nat_rules);
+    }
+    if !filter_rules.is_empty() {
+        output.push("".to_string());
+        output.push("# Filter Rules (anchor: aifw)".to_string());
+        output.extend(filter_rules);
+    }
+    Ok(Json(ApiResponse { data: output }))
+}
+
 pub async fn reorder_nat_rules(
     State(state): State<AppState>,
     Json(req): Json<ReorderRequest>,
