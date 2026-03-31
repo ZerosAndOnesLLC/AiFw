@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useWs } from "@/context/WsContext";
 
 function formatBytes(b: number): string {
@@ -15,31 +15,83 @@ function formatBps(b: number): string {
 type Conn = { src_addr: string; dst_addr: string; src_port: number; dst_port: number; protocol: string; bytes_in: number; bytes_out: number; state: string };
 type Iface = { name: string; bytes_in: number; bytes_out: number; role?: string };
 
-interface HostNode {
-  ip: string;
-  bytes: number;
-  conns: number;
-  protocols: Set<string>;
+/** Animated dual-direction pipe: top=inbound(green), bottom=outbound(blue) */
+function FlowPipe({ rateIn, rateOut, vertical = false }: { rateIn: number; rateOut: number; vertical?: boolean }) {
+  const maxRate = 1e9; // 1Gbps = full pipe
+  const total = rateIn + rateOut;
+  // Pipe thickness: 4px minimum, scales logarithmically up to 28px
+  const thickness = Math.max(4, Math.min(28, total > 0 ? 4 + Math.log10(Math.max(total, 1)) * 3 : 4));
+  const inFrac = total > 0 ? rateIn / total : 0.5;
+  const outFrac = 1 - inFrac;
+  const inH = Math.max(1, thickness * inFrac);
+  const outH = Math.max(1, thickness * outFrac);
+
+  const cls = vertical ? "h-full flex flex-col items-center" : "w-full flex flex-col justify-center";
+  const pipeCls = vertical ? "w-full" : "";
+
+  return (
+    <div className={cls}>
+      {/* Inbound (green) — top/left */}
+      <div
+        className={`relative overflow-hidden rounded-t-sm ${pipeCls}`}
+        style={vertical ? { height: "50%", width: `${thickness}px` } : { height: `${inH}px`, width: "100%" }}
+      >
+        <div className="absolute inset-0 bg-emerald-900/40" />
+        {rateIn > 0 && (
+          <div
+            className="absolute inset-0"
+            style={{
+              background: `repeating-linear-gradient(${vertical ? "180deg" : "90deg"}, transparent, transparent 8px, rgba(34,197,94,0.5) 8px, rgba(34,197,94,0.5) 16px)`,
+              animation: `flowRight 0.8s linear infinite`,
+            }}
+          />
+        )}
+      </div>
+      {/* Outbound (blue) — bottom/right */}
+      <div
+        className={`relative overflow-hidden rounded-b-sm ${pipeCls}`}
+        style={vertical ? { height: "50%", width: `${thickness}px` } : { height: `${outH}px`, width: "100%" }}
+      >
+        <div className="absolute inset-0 bg-blue-900/40" />
+        {rateOut > 0 && (
+          <div
+            className="absolute inset-0"
+            style={{
+              background: `repeating-linear-gradient(${vertical ? "0deg" : "270deg"}, transparent, transparent 8px, rgba(59,130,246,0.5) 8px, rgba(59,130,246,0.5) 16px)`,
+              animation: `flowLeft 0.8s linear infinite`,
+            }}
+          />
+        )}
+      </div>
+      {/* Rate labels */}
+      {!vertical && (
+        <div className="flex justify-between mt-0.5 text-[9px] px-1">
+          <span className="text-emerald-400">{formatBps(rateIn)}</span>
+          <span className="text-blue-400">{formatBps(rateOut)}</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function NatFlowsPage() {
   const ws = useWs();
   const [selectedHost, setSelectedHost] = useState<string | null>(null);
-  const [prevBytes, setPrevBytes] = useState<Record<string, { in: number; out: number }>>({});
+  const prevBytes = useRef<Record<string, { in: number; out: number }>>({});
   const [rates, setRates] = useState<Record<string, { in: number; out: number }>>({});
 
   const ifaces = ws.interfaces as Iface[];
   const connections = ws.connections as Conn[];
 
   const wanIface = ifaces.find(i => i.role === "WAN") || ifaces[0];
-  const lanIfaces = ifaces.filter(i => i.role !== "WAN" && i.name !== wanIface?.name);
+  const lanIfaces = ifaces.filter(i => i.name !== wanIface?.name);
 
   // Calculate per-interface rates
   useEffect(() => {
     if (!ifaces.length) return;
     const newRates: Record<string, { in: number; out: number }> = {};
     for (const iface of ifaces) {
-      const prev = prevBytes[iface.name];
+      const prev = prevBytes.current[iface.name];
       if (prev) {
         newRates[iface.name] = {
           in: Math.max(0, (iface.bytes_in - prev.in) * 8),
@@ -47,19 +99,14 @@ export default function NatFlowsPage() {
         };
       }
     }
-    setPrevBytes(Object.fromEntries(ifaces.map(i => [i.name, { in: i.bytes_in, out: i.bytes_out }])));
+    prevBytes.current = Object.fromEntries(ifaces.map(i => [i.name, { in: i.bytes_in, out: i.bytes_out }]));
     if (Object.keys(newRates).length > 0) setRates(newRates);
-  }, [ws.status]);
+  }, [ws.status, ifaces]);
 
   // Group connections by LAN host
   const lanHosts = useMemo(() => {
-    const hosts: Record<string, HostNode> = {};
-    const lanNets = lanIfaces.map(i => {
-      // Simple: any IP that isn't the WAN interface IP
-      return i.name;
-    });
+    const hosts: Record<string, { ip: string; bytes: number; conns: number; protocols: Set<string> }> = {};
     for (const c of connections) {
-      // Source is typically the LAN host for outbound traffic
       const ip = c.src_addr;
       if (!hosts[ip]) hosts[ip] = { ip, bytes: 0, conns: 0, protocols: new Set() };
       hosts[ip].bytes += (c.bytes_in || 0) + (c.bytes_out || 0);
@@ -67,40 +114,45 @@ export default function NatFlowsPage() {
       hosts[ip].protocols.add(c.protocol);
     }
     return Object.values(hosts).sort((a, b) => b.bytes - a.bytes).slice(0, 20);
-  }, [connections, lanIfaces]);
+  }, [connections]);
 
   const maxHostBytes = lanHosts[0]?.bytes || 1;
   const selectedConns = selectedHost ? connections.filter(c => c.src_addr === selectedHost || c.dst_addr === selectedHost) : [];
 
-  // Pipe thickness helper (1-12px based on rate)
-  const pipeWidth = (bps: number) => Math.max(2, Math.min(14, Math.log2(Math.max(bps, 1)) / 3));
-
   const wanRate = rates[wanIface?.name || ""] || { in: 0, out: 0 };
-  const totalLanRate = lanIfaces.reduce((s, i) => {
-    const r = rates[i.name] || { in: 0, out: 0 };
-    return { in: s.in + r.in, out: s.out + r.out };
-  }, { in: 0, out: 0 });
 
   return (
     <div className="space-y-4">
+      {/* CSS animations for flowing pipes */}
+      <style jsx global>{`
+        @keyframes flowRight { from { background-position-x: 0; } to { background-position-x: 16px; } }
+        @keyframes flowLeft { from { background-position-x: 0; } to { background-position-x: -16px; } }
+      `}</style>
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">NAT Traffic Flows</h1>
-          <p className="text-sm text-[var(--text-muted)]">Live network topology with traffic visualization</p>
+          <p className="text-sm text-[var(--text-muted)]">Live network topology with animated traffic visualization</p>
         </div>
-        <div className="flex items-center gap-1.5">
-          <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
-          <span className="text-xs text-[var(--text-muted)]">{ws.connected ? "Live" : "Disconnected"}</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="flex items-center gap-1"><span className="w-3 h-2 bg-emerald-500/50 rounded-sm inline-block" /> Inbound</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-2 bg-blue-500/50 rounded-sm inline-block" /> Outbound</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
+            <span className="text-xs text-[var(--text-muted)]">{ws.connected ? "Live" : "..."}</span>
+          </div>
         </div>
       </div>
 
-      {/* Flow Topology */}
-      <div className="bg-gray-800 border border-gray-700 rounded-lg p-6">
-        <div className="flex items-center justify-between gap-4">
-          {/* Internet */}
-          <div className="flex-shrink-0 w-32 text-center">
-            <div className="w-16 h-16 mx-auto rounded-full bg-gradient-to-br from-blue-600 to-blue-800 flex items-center justify-center shadow-lg shadow-blue-500/20 border-2 border-blue-500/30">
-              <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      {/* Topology */}
+      <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 overflow-x-auto">
+        <div className="min-w-[700px] flex items-stretch gap-0">
+          {/* Internet Node */}
+          <div className="flex-shrink-0 w-28 flex flex-col items-center justify-center">
+            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-600 to-blue-800 flex items-center justify-center shadow-lg shadow-blue-500/20 border-2 border-blue-500/30">
+              <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9" />
               </svg>
             </div>
@@ -108,70 +160,72 @@ export default function NatFlowsPage() {
           </div>
 
           {/* WAN Pipe */}
-          <div className="flex-1 relative py-4">
-            <div className="relative h-8 flex items-center">
-              {/* Animated pipe */}
-              <div className="w-full rounded-full overflow-hidden relative" style={{ height: `${pipeWidth(wanRate.in + wanRate.out)}px`, background: 'rgba(59,130,246,0.15)' }}>
-                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/60 via-blue-400/30 to-blue-500/60 animate-pulse" />
-              </div>
-            </div>
-            <div className="flex justify-between text-[10px] text-gray-500 mt-1">
-              <span className="text-green-400">{formatBps(wanRate.in)} in</span>
-              <span className="text-blue-400">{formatBps(wanRate.out)} out</span>
-            </div>
+          <div className="flex-1 min-w-[80px] flex flex-col justify-center px-1">
+            <FlowPipe rateIn={wanRate.in} rateOut={wanRate.out} />
           </div>
 
           {/* WAN Interface */}
-          <div className="flex-shrink-0 w-24 text-center">
-            <div className="w-12 h-12 mx-auto rounded-lg bg-blue-500/20 border border-blue-500/40 flex items-center justify-center">
+          <div className="flex-shrink-0 w-20 flex flex-col items-center justify-center">
+            <div className="w-14 h-14 rounded-lg bg-blue-500/15 border border-blue-500/40 flex flex-col items-center justify-center">
               <span className="text-[10px] font-bold text-blue-400">{wanIface?.name || "?"}</span>
+              <span className="text-[8px] text-blue-300/60">WAN</span>
             </div>
-            <p className="text-[10px] text-blue-400 mt-1">WAN</p>
           </div>
 
-          {/* Firewall */}
-          <div className="flex-shrink-0 w-28 text-center">
-            <div className="w-16 h-16 mx-auto rounded-xl bg-gradient-to-br from-amber-500/20 to-red-500/20 border-2 border-amber-500/30 flex items-center justify-center">
-              <svg className="w-8 h-8 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          {/* WAN→FW Pipe (short) */}
+          <div className="flex-shrink-0 w-8 flex flex-col justify-center">
+            <FlowPipe rateIn={wanRate.in} rateOut={wanRate.out} />
+          </div>
+
+          {/* Firewall Node */}
+          <div className="flex-shrink-0 w-24 flex flex-col items-center justify-center">
+            <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-amber-500/20 to-red-500/20 border-2 border-amber-500/30 flex items-center justify-center">
+              <svg className="w-7 h-7 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
               </svg>
             </div>
-            <p className="text-xs font-medium text-amber-400 mt-2">AiFw</p>
+            <p className="text-xs font-bold text-amber-400 mt-1">AiFw</p>
             <p className="text-[10px] text-gray-500">{connections.length} states</p>
           </div>
 
-          {/* LAN Pipe */}
-          <div className="flex-1 relative py-4">
-            <div className="relative h-8 flex items-center">
-              <div className="w-full rounded-full overflow-hidden relative" style={{ height: `${pipeWidth(totalLanRate.in + totalLanRate.out)}px`, background: 'rgba(34,197,94,0.15)' }}>
-                <div className="absolute inset-0 bg-gradient-to-r from-green-500/60 via-green-400/30 to-green-500/60 animate-pulse" />
-              </div>
-            </div>
-            <div className="flex justify-between text-[10px] text-gray-500 mt-1">
-              <span className="text-green-400">{formatBps(totalLanRate.in)} in</span>
-              <span className="text-blue-400">{formatBps(totalLanRate.out)} out</span>
-            </div>
+          {/* FW → LAN fan-out */}
+          <div className="flex-1 min-w-[120px] flex flex-col justify-center gap-1 px-1">
+            {lanIfaces.length === 0 ? (
+              <div className="text-center text-gray-600 text-[10px]">No LAN</div>
+            ) : (
+              lanIfaces.map(iface => {
+                const r = rates[iface.name] || { in: 0, out: 0 };
+                return (
+                  <div key={iface.name} className="flex items-center gap-1">
+                    <div className="flex-1">
+                      <FlowPipe rateIn={r.in} rateOut={r.out} />
+                    </div>
+                    <div className="flex-shrink-0 w-16">
+                      <div className="w-12 h-10 rounded-lg bg-emerald-500/15 border border-emerald-500/40 flex flex-col items-center justify-center mx-auto">
+                        <span className="text-[9px] font-bold text-emerald-400">{iface.name}</span>
+                        <span className="text-[7px] text-emerald-300/60">{iface.role || "LAN"}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
 
-          {/* LAN Interfaces */}
-          <div className="flex-shrink-0 w-24 text-center">
-            {lanIfaces.length > 0 ? lanIfaces.map(i => (
-              <div key={i.name} className="mb-2">
-                <div className="w-12 h-12 mx-auto rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
-                  <span className="text-[10px] font-bold text-emerald-400">{i.name}</span>
-                </div>
-                <p className="text-[10px] text-emerald-400 mt-1">{i.role || "LAN"}</p>
-              </div>
-            )) : (
-              <div className="w-12 h-12 mx-auto rounded-lg bg-gray-700 border border-gray-600 flex items-center justify-center">
-                <span className="text-[10px] text-gray-500">?</span>
-              </div>
-            )}
+          {/* Hosts column */}
+          <div className="flex-shrink-0 w-20 flex flex-col items-center justify-center gap-1">
+            {lanHosts.slice(0, Math.min(lanIfaces.length * 3, 6)).map(h => (
+              <button key={h.ip} onClick={() => setSelectedHost(selectedHost === h.ip ? null : h.ip)}
+                className={`w-full px-1 py-0.5 rounded text-[8px] font-mono transition-colors ${selectedHost === h.ip ? "bg-cyan-500/20 text-cyan-400" : "text-gray-500 hover:text-gray-300"}`}>
+                {h.ip.split('.').slice(-2).join('.')}
+              </button>
+            ))}
+            {lanHosts.length > 6 && <span className="text-[8px] text-gray-600">+{lanHosts.length - 6} more</span>}
           </div>
         </div>
       </div>
 
-      {/* Active Hosts Grid */}
+      {/* Host Details */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
@@ -200,7 +254,6 @@ export default function NatFlowsPage() {
           </div>
         </div>
 
-        {/* Selected Host Details */}
         <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-700">
             <h3 className="text-sm font-medium">{selectedHost ? `Connections — ${selectedHost}` : "Host Details"}</h3>
@@ -220,7 +273,7 @@ export default function NatFlowsPage() {
                   </div>
                   {(c.bytes_in > 0 || c.bytes_out > 0) && (
                     <div className="text-[10px] text-gray-500 mt-0.5">
-                      In: {formatBytes(c.bytes_in)} · Out: {formatBytes(c.bytes_out)}
+                      <span className="text-emerald-400">In: {formatBytes(c.bytes_in)}</span> · <span className="text-blue-400">Out: {formatBytes(c.bytes_out)}</span>
                     </div>
                   )}
                 </div>
@@ -228,9 +281,7 @@ export default function NatFlowsPage() {
               {selectedConns.length === 0 && <div className="text-center py-8 text-gray-500 text-sm">No connections</div>}
             </div>
           ) : (
-            <div className="text-center py-12 text-gray-500 text-sm">
-              Click a host to view its connections
-            </div>
+            <div className="text-center py-12 text-gray-500 text-sm">Click a host to view its connections</div>
           )}
         </div>
       </div>
