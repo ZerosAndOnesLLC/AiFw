@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api, NatRule, InterfaceInfo, CreateNatRequest, UpdateNatRequest } from "@/lib/api";
 import { parsePortField } from "@/lib/ports";
+import { validateAddress, validatePort, validateIP } from "@/lib/validate";
 
 const defaultForm = {
   interface: "",
@@ -121,6 +122,17 @@ export default function PortForwardPage() {
     if (!form.redirect_addr.trim()) return;
     setSubmitting(true);
     setPendingChanges(false); setError(null);
+
+    // Client-side validation
+    const errors: string[] = [];
+    if (form.src_addr) { const e = validateAddress(form.src_addr, "Source address"); if (e) errors.push(e); }
+    if (form.dst_addr) { const e = validateAddress(form.dst_addr, "Destination address"); if (e) errors.push(e); }
+    { const e = validateIP(form.redirect_addr, "Redirect address"); if (e) errors.push(e); }
+    if (form.src_port) { const e = validatePort(form.src_port, "Source port"); if (e) errors.push(e); }
+    if (form.dst_port) { const e = validatePort(form.dst_port, "Destination port"); if (e) errors.push(e); }
+    if (form.redirect_port) { const e = validatePort(form.redirect_port, "Redirect port"); if (e) errors.push(e); }
+    if (errors.length > 0) { setError(errors.join(". ")); setSubmitting(false); return; }
+
     try {
       const body: Record<string, unknown> = {
         nat_type: "dnat",

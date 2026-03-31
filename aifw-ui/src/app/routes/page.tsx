@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { validateCIDR, validateIP } from "@/lib/validate";
 
 interface StaticRoute {
   id: string;
@@ -110,6 +111,13 @@ export default function RoutesPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+
+    // Client-side validation
+    const errors: string[] = [];
+    { const e = validateCIDR(form.destination, "Destination"); if (e) errors.push(e); }
+    { const e = validateIP(form.gateway, "Gateway"); if (e) errors.push(e); }
+    if (errors.length > 0) { setError(errors.join(". ")); return; }
+
     setSaving(true);
     setError(null);
 

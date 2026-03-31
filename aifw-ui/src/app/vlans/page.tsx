@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { validateCIDR } from "@/lib/validate";
 
 interface VlanConfig {
   id: string;
@@ -129,6 +130,17 @@ export default function VlansPage() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+
+    // Client-side validation
+    const errors: string[] = [];
+    const vid = parseInt(form.vlan_id, 10);
+    if (isNaN(vid) || vid < 1 || vid > 4094) errors.push("VLAN ID must be between 1 and 4094");
+    if (form.ipv4_mode === "static" && form.ipv4_address) {
+      const e = validateCIDR(form.ipv4_address, "IPv4 address");
+      if (e) errors.push(e);
+    }
+    if (errors.length > 0) { setError(errors.join(". ")); return; }
+
     setSaving(true);
     setError(null);
 

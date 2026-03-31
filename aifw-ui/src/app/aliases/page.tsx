@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { isValidAliasName, isValidIP, isValidCIDR, isValidPortRange, isValidURL } from "@/lib/validate";
 
 interface Alias {
   id: string;
@@ -80,6 +81,19 @@ export default function AliasesPage() {
 
   const handleSubmit = async () => {
     if (!form.name.trim()) return;
+
+    // Client-side validation
+    const errors: string[] = [];
+    if (!isValidAliasName(form.name)) errors.push("Name: must be alphanumeric, _, or - (max 31 chars)");
+    const entries = form.entries.split("\n").map(s => s.trim()).filter(Boolean);
+    for (const entry of entries) {
+      if (form.alias_type === "host" && !isValidIP(entry)) { errors.push(`Entry "${entry}": not a valid IP address`); break; }
+      if (form.alias_type === "network" && !isValidCIDR(entry)) { errors.push(`Entry "${entry}": not valid CIDR notation`); break; }
+      if (form.alias_type === "port" && !isValidPortRange(entry)) { errors.push(`Entry "${entry}": not a valid port or range`); break; }
+      if (form.alias_type === "url_table" && !isValidURL(entry)) { errors.push(`Entry "${entry}": not a valid URL`); break; }
+    }
+    if (errors.length > 0) { setError(errors.join(". ")); return; }
+
     setSubmitting(true);
     setError(null);
     try {

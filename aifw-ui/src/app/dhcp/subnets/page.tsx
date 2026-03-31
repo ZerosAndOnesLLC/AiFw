@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { validateCIDR, validateIP } from "@/lib/validate";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -171,6 +172,15 @@ export default function DhcpSubnetsPage() {
       showFeedback("error", "Network, pool start, pool end, and gateway are required");
       return;
     }
+
+    // Client-side validation
+    const errors: string[] = [];
+    { const e = validateCIDR(form.network, "Network"); if (e) errors.push(e); }
+    { const e = validateIP(form.pool_start, "Pool start"); if (e) errors.push(e); }
+    { const e = validateIP(form.pool_end, "Pool end"); if (e) errors.push(e); }
+    { const e = validateIP(form.gateway, "Gateway"); if (e) errors.push(e); }
+    if (errors.length > 0) { showFeedback("error", errors.join(". ")); return; }
+
     setSubmitting(true);
     try {
       const payload: Record<string, unknown> = {

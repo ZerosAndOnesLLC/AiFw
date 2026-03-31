@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { isValidMAC, validateIP } from "@/lib/validate";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -153,6 +154,13 @@ export default function DhcpReservationsPage() {
       showFeedback("error", "MAC address and IP address are required");
       return;
     }
+
+    // Client-side validation
+    const errors: string[] = [];
+    if (!isValidMAC(form.mac_address)) errors.push("MAC address: invalid format (expected AA:BB:CC:DD:EE:FF)");
+    { const e = validateIP(form.ip_address, "IP address"); if (e) errors.push(e); }
+    if (errors.length > 0) { showFeedback("error", errors.join(". ")); return; }
+
     setSubmitting(true);
     try {
       const payload: Record<string, unknown> = {

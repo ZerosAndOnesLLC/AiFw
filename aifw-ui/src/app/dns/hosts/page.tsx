@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { isValidHostname, isValidIPv4, isValidIPv6, isValidDomain } from "@/lib/validate";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -148,6 +149,17 @@ export default function DnsHostsPage() {
       showFeedback("error", "Hostname, domain, and value are required");
       return;
     }
+
+    // Client-side validation
+    const errors: string[] = [];
+    if (!isValidHostname(form.hostname)) errors.push("Hostname: must be alphanumeric (hyphens allowed, no dots)");
+    if (!isValidDomain(form.domain)) errors.push("Domain: invalid format (e.g. example.com)");
+    if (form.record_type === "A" && !isValidIPv4(form.value)) errors.push("Value: must be a valid IPv4 address for A records");
+    if (form.record_type === "AAAA" && !isValidIPv6(form.value)) errors.push("Value: must be a valid IPv6 address for AAAA records");
+    if (form.record_type === "CNAME" && !isValidDomain(form.value)) errors.push("Value: must be a valid domain for CNAME records");
+    if (form.record_type === "MX" && !isValidDomain(form.value)) errors.push("Value: must be a valid domain for MX records");
+    if (errors.length > 0) { showFeedback("error", errors.join(". ")); return; }
+
     setSubmitting(true);
     try {
       const payload: Record<string, unknown> = {

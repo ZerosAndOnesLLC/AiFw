@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, Rule, InterfaceInfo, Schedule } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
+import { validateAddress, validatePort } from "@/lib/validate";
 
 /* ─── Subnet masks ──────────────────────────────────────────────── */
 
@@ -185,6 +186,26 @@ export default function RulesPage() {
     if (submitting) return;
     setSubmitting(true);
     setError(null);
+
+    // Client-side validation
+    const errors: string[] = [];
+    if (form.src_type === "address" && form.src_addr) {
+      const e = validateAddress(`${form.src_addr}${form.src_mask}`, "Source address");
+      if (e) errors.push(e);
+    }
+    if (form.dst_type === "address" && form.dst_addr) {
+      const e = validateAddress(`${form.dst_addr}${form.dst_mask}`, "Destination address");
+      if (e) errors.push(e);
+    }
+    if (form.src_port) {
+      const e = validatePort(form.src_port, "Source port");
+      if (e) errors.push(e);
+    }
+    if (form.dst_port) {
+      const e = validatePort(form.dst_port, "Destination port");
+      if (e) errors.push(e);
+    }
+    if (errors.length > 0) { setError(errors.join(". ")); setSubmitting(false); return; }
 
     try {
       const srcAddr = form.src_type === "any" || !form.src_addr || form.src_addr.toLowerCase() === "any"

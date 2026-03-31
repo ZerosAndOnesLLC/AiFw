@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { validateCIDR } from "@/lib/validate";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -107,6 +108,11 @@ export default function DnsAclsPage() {
       showFeedback("error", "Network (CIDR) is required");
       return;
     }
+
+    // Client-side validation
+    const e = validateCIDR(form.network, "Network");
+    if (e) { showFeedback("error", e); return; }
+
     setSubmitting(true);
     try {
       const payload: Record<string, unknown> = {
