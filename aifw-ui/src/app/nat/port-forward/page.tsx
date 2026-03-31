@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { api, NatRule, InterfaceInfo, CreateNatRequest, UpdateNatRequest } from "@/lib/api";
 import { parsePortField } from "@/lib/ports";
 
@@ -46,15 +46,13 @@ export default function PortForwardPage() {
   const [submitting, setSubmitting] = useState(false);
   const [pendingChanges, setPendingChanges] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
-  const dragItem = useRef<number|null>(null);
-  const dragOverItem = useRef<number|null>(null);
-  const handleDragStart = (e: React.DragEvent, i: number) => { dragItem.current = i; e.dataTransfer.effectAllowed = "move"; };
-  const handleDragOver = (e: React.DragEvent, i: number) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; dragOverItem.current = i; };
-  const handleDragEnd = async () => {
-    if (dragItem.current===null||dragOverItem.current===null||dragItem.current===dragOverItem.current) { dragItem.current=null; dragOverItem.current=null; return; }
-    const r = [...rules]; const [m] = r.splice(dragItem.current,1); r.splice(dragOverItem.current,0,m);
-    setRules(r); dragItem.current=null; dragOverItem.current=null;
-    try { const t=localStorage.getItem("aifw_token"); await fetch("/api/v1/nat/reorder",{method:"PUT",headers:{Authorization:`Bearer ${t}`,"Content-Type":"application/json"},body:JSON.stringify({rule_ids:r.map(x=>x.id)})}); } catch { setError("Failed to save order"); }
+  const moveRule = async (idx: number, direction: "up" | "down") => {
+    const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= rules.length) return;
+    const reordered = [...rules];
+    [reordered[idx], reordered[targetIdx]] = [reordered[targetIdx], reordered[idx]];
+    setRules(reordered);
+    try { const t = localStorage.getItem("aifw_token"); await fetch("/api/v1/nat/reorder", { method: "PUT", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify({ rule_ids: reordered.map(x => x.id) }) }); } catch { setError("Failed to save order"); }
   };
 
   const fetchRules = useCallback(async () => {
@@ -421,15 +419,14 @@ export default function PortForwardPage() {
                   </tr>
                 ) : (
                   rules.map((rule, idx) => (
-                    <tr
-                      key={rule.id}
-                      onDragOver={(e)=>handleDragOver(e,idx)}
-                      className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors"
-                    >
-                      <td className="py-2.5 px-1 w-6">
-                        <div draggable onDragStart={(e)=>handleDragStart(e,idx)} onDragEnd={handleDragEnd}
-                          className="cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 px-1" title="Drag to reorder">
-                          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>
+                    <tr key={rule.id} className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors">
+                      <td className="py-1 px-1 w-8">
+                        <div className="flex flex-col items-center gap-0">
+                          <button onClick={() => moveRule(idx, "up")} disabled={idx === 0}
+                            className="text-gray-600 hover:text-white disabled:opacity-20 p-0.5"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg></button>
+                          <span className="text-[9px] text-gray-600">{idx + 1}</span>
+                          <button onClick={() => moveRule(idx, "down")} disabled={idx === rules.length - 1}
+                            className="text-gray-600 hover:text-white disabled:opacity-20 p-0.5"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg></button>
                         </div>
                       </td>
                       <td className="py-2.5 px-3">

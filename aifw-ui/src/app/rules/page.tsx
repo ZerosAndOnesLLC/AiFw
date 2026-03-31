@@ -127,25 +127,15 @@ export default function RulesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [pendingChanges, setPendingChanges] = useState(false);
   const [interfaceFilter, setInterfaceFilter] = useState<string>(urlInterface || "all");
-  const dragItem = useRef<number | null>(null);
-  const dragOverItem = useRef<number | null>(null);
-
   // Sync filter with URL param
   useEffect(() => { setInterfaceFilter(urlInterface || "all"); }, [urlInterface]);
 
-  const handleDragStart = (e: React.DragEvent, idx: number) => { dragItem.current = idx; e.dataTransfer.effectAllowed = "move"; };
-  const handleDragOver = (e: React.DragEvent, idx: number) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; dragOverItem.current = idx; };
-  const handleDragEnd = async () => {
-    if (dragItem.current === null || dragOverItem.current === null || dragItem.current === dragOverItem.current) {
-      dragItem.current = null; dragOverItem.current = null; return;
-    }
+  const moveRule = async (idx: number, direction: "up" | "down") => {
+    const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= rules.length) return;
     const reordered = [...rules];
-    const [moved] = reordered.splice(dragItem.current, 1);
-    reordered.splice(dragOverItem.current, 0, moved);
+    [reordered[idx], reordered[targetIdx]] = [reordered[targetIdx], reordered[idx]];
     setRules(reordered);
-    const fromIdx = dragItem.current;
-    dragItem.current = null;
-    dragOverItem.current = null;
     try {
       const token = localStorage.getItem("aifw_token");
       const res = await fetch("/api/v1/rules/reorder", {
@@ -154,7 +144,6 @@ export default function RulesPage() {
         body: JSON.stringify({ rule_ids: reordered.map(r => r.id) }),
       });
       if (res.ok) setPendingChanges(true);
-      else { setError("Failed to save rule order"); setRules(rules); } // revert on failure
     } catch { setError("Failed to save rule order"); }
   };
 
@@ -487,21 +476,22 @@ export default function RulesPage() {
                 {filteredRules.map((rule, idx) => (
                   <tr
                     key={rule.id}
-                    onDragOver={(e) => handleDragOver(e, idx)}
                     className={`border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors ${
                       rule.status === "disabled" ? "opacity-50" : ""
                     }`}
                   >
-                    {/* Drag handle */}
-                    <td className="py-2.5 px-1 w-6">
-                      <div
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, idx)}
-                        onDragEnd={handleDragEnd}
-                        className="cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 px-1"
-                        title="Drag to reorder"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>
+                    {/* Reorder arrows */}
+                    <td className="py-1 px-1 w-8">
+                      <div className="flex flex-col items-center gap-0">
+                        <button onClick={() => moveRule(idx, "up")} disabled={idx === 0}
+                          className="text-gray-600 hover:text-white disabled:opacity-20 disabled:cursor-default p-0.5" title="Move up">
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg>
+                        </button>
+                        <span className="text-[9px] text-gray-600">{idx + 1}</span>
+                        <button onClick={() => moveRule(idx, "down")} disabled={idx === filteredRules.length - 1}
+                          className="text-gray-600 hover:text-white disabled:opacity-20 disabled:cursor-default p-0.5" title="Move down">
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                        </button>
                       </div>
                     </td>
                     {/* Enable toggle */}
