@@ -87,17 +87,24 @@ impl PfBackend for PfIoctl {
             return self.flush_rules(anchor).await;
         }
         let ruleset = rules.join("\n");
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(format!("echo '{}' | sudo /sbin/pfctl -a {} -f -", ruleset, anchor))
+        tracing::debug!(anchor, rules = %ruleset, "loading pf rules");
+
+        // Write to temp file then load — avoids shell quoting issues with echo
+        let tmp = format!("/tmp/aifw_pf_{}.conf", anchor.replace('/', "_"));
+        tokio::fs::write(&tmp, &ruleset).await
+            .map_err(|e| PfError::Rule(format!("failed to write temp rules: {e}")))?;
+
+        let output = Command::new("sudo")
+            .args(["/sbin/pfctl", "-a", anchor, "-f", &tmp])
             .output()
             .await
             .map_err(|e| PfError::Rule(format!("pfctl load_rules failed: {e}")))?;
+
+        let _ = tokio::fs::remove_file(&tmp).await;
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("syntax error") {
-                return Err(PfError::Rule(stderr.to_string()));
-            }
+            return Err(PfError::Rule(format!("rule error: {}", stderr)));
         }
         Ok(())
     }
@@ -243,12 +250,24 @@ impl PfBackend for PfIoctl {
             return self.flush_nat_rules(anchor).await;
         }
         let ruleset = rules.join("\n");
-        let _ = Command::new("sh")
-            .arg("-c")
-            .arg(format!("echo '{}' | sudo /sbin/pfctl -a {} -N -f -", ruleset, anchor))
+        tracing::debug!(anchor, rules = %ruleset, "loading pf NAT rules");
+
+        let tmp = format!("/tmp/aifw_pf_nat_{}.conf", anchor.replace('/', "_"));
+        tokio::fs::write(&tmp, &ruleset).await
+            .map_err(|e| PfError::Rule(format!("failed to write temp NAT rules: {e}")))?;
+
+        let output = Command::new("sudo")
+            .args(["/sbin/pfctl", "-a", anchor, "-N", "-f", &tmp])
             .output()
             .await
             .map_err(|e| PfError::Rule(format!("pfctl load_nat failed: {e}")))?;
+
+        let _ = tokio::fs::remove_file(&tmp).await;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PfError::Rule(format!("NAT rule error: {}", stderr)));
+        }
         Ok(())
     }
 
