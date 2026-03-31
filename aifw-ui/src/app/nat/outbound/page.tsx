@@ -3,13 +3,19 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api, NatRule, InterfaceInfo, CreateNatRequest, UpdateNatRequest } from "@/lib/api";
 
+type AddrMode = "any" | "network";
+type TransMode = "interface" | "address";
+
 const defaultForm = {
   interface: "",
-  protocol: "tcp",
+  protocol: "any",
+  src_mode: "any" as AddrMode,
   src_addr: "",
   src_port: "",
+  dst_mode: "any" as AddrMode,
   dst_addr: "",
   dst_port: "",
+  trans_mode: "interface" as TransMode,
   translation_addr: "",
   static_port: false,
   label: "",
@@ -42,22 +48,28 @@ export default function OutboundNatPage() {
   const [form, setForm] = useState<FormState>(defaultForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [pendingChanges, setPendingChanges] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
-  const dragItem = useRef<number|null>(null);
-  const dragOverItem = useRef<number|null>(null);
+  const dragItem = useRef<number | null>(null);
+  const dragOverItem = useRef<number | null>(null);
   const handleDragStart = (i: number) => { dragItem.current = i; };
   const handleDragOver = (e: React.DragEvent, i: number) => { e.preventDefault(); dragOverItem.current = i; };
   const handleDrop = async () => {
-    if (dragItem.current===null||dragOverItem.current===null||dragItem.current===dragOverItem.current) return;
-    const r = [...rules]; const [m] = r.splice(dragItem.current,1); r.splice(dragOverItem.current,0,m);
-    setRules(r); dragItem.current=null; dragOverItem.current=null;
-    try { const t=localStorage.getItem("aifw_token"); await fetch("/api/v1/nat/reorder",{method:"PUT",headers:{Authorization:`Bearer ${t}`,"Content-Type":"application/json"},body:JSON.stringify({rule_ids:r.map(x=>x.id)})}); } catch { setError("Failed to save order"); }
+    if (dragItem.current === null || dragOverItem.current === null || dragItem.current === dragOverItem.current) return;
+    const r = [...rules];
+    const [m] = r.splice(dragItem.current, 1);
+    r.splice(dragOverItem.current, 0, m);
+    setRules(r);
+    dragItem.current = null;
+    dragOverItem.current = null;
+    try {
+      const t = localStorage.getItem("aifw_token");
+      await fetch("/api/v1/nat/reorder", { method: "PUT", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify({ rule_ids: r.map(x => x.id) }) });
+    } catch { setError("Failed to save order"); }
   };
 
   const fetchRules = useCallback(async () => {
     try {
-      setPendingChanges(false); setError(null);
+      setError(null);
       const res = await api.listNat();
       setRules(res.data.filter((r) => r.nat_type === "snat" || r.nat_type === "masquerade"));
     } catch (err) {
@@ -71,9 +83,7 @@ export default function OutboundNatPage() {
     try {
       const res = await api.listInterfaces();
       setInterfaces(res.data);
-    } catch {
-      // interfaces will remain empty
-    }
+    } catch { /* interfaces will remain empty */ }
   }, []);
 
   useEffect(() => {
@@ -81,7 +91,6 @@ export default function OutboundNatPage() {
     fetchInterfaces();
   }, [fetchRules, fetchInterfaces]);
 
-  // Set default interface once loaded
   useEffect(() => {
     if (interfaces.length > 0 && !form.interface && !editingId) {
       setForm((f) => ({ ...f, interface: interfaces[0].name }));
@@ -99,15 +108,23 @@ export default function OutboundNatPage() {
 
   const handleEdit = (rule: NatRule) => {
     const isInterfaceAddr =
-      rule.redirect?.address === "interface" || rule.redirect?.address === "interface address";
+      rule.nat_type === "masquerade" ||
+      rule.redirect?.address === "interface" ||
+      rule.redirect?.address === "interface address";
+    const srcIsAny = !rule.src_addr || rule.src_addr === "any";
+    const dstIsAny = !rule.dst_addr || rule.dst_addr === "any";
+
     setForm({
       interface: rule.interface,
       protocol: rule.protocol,
-      src_addr: rule.src_addr || "",
+      src_mode: srcIsAny ? "any" : "network",
+      src_addr: srcIsAny ? "" : rule.src_addr || "",
       src_port: formatPort(rule.src_port),
-      dst_addr: rule.dst_addr || "",
+      dst_mode: dstIsAny ? "any" : "network",
+      dst_addr: dstIsAny ? "" : rule.dst_addr || "",
       dst_port: formatPort(rule.dst_port),
-      translation_addr: isInterfaceAddr ? "interface address" : rule.redirect?.address || "",
+      trans_mode: isInterfaceAddr ? "interface" : "address",
+      translation_addr: isInterfaceAddr ? "" : rule.redirect?.address || "",
       static_port: false,
       label: rule.label || "",
       enabled: rule.status === "active",
@@ -117,20 +134,23 @@ export default function OutboundNatPage() {
   };
 
   const handleSubmit = async () => {
-    if (!form.translation_addr.trim()) return;
+    if (form.trans_mode === "address" && !form.translation_addr.trim()) return;
+    if (form.src_mode === "network" && !form.src_addr.trim()) return;
+    if (form.dst_mode === "network" && !form.dst_addr.trim()) return;
+
     setSubmitting(true);
-    setPendingChanges(false); setError(null);
+    setError(null);
     try {
-      const isInterfaceAddr = form.translation_addr.toLowerCase() === "interface address";
-      const natType = isInterfaceAddr ? "masquerade" : "snat";
+      const isInterface = form.trans_mode === "interface";
+      const natType = isInterface ? "masquerade" : "snat";
 
       const body: Record<string, unknown> = {
         nat_type: natType,
         interface: form.interface,
         protocol: form.protocol,
-        src_addr: form.src_addr || "any",
-        dst_addr: form.dst_addr || "any",
-        redirect_addr: form.translation_addr,
+        src_addr: form.src_mode === "any" ? "any" : form.src_addr,
+        dst_addr: form.dst_mode === "any" ? "any" : form.dst_addr,
+        redirect_addr: isInterface ? "interface" : form.translation_addr,
         status: form.enabled ? "active" : "disabled",
       };
 
@@ -146,7 +166,6 @@ export default function OutboundNatPage() {
         await api.createNat(body as unknown as CreateNatRequest);
       }
       await fetchRules();
-      setPendingChanges(true);
       resetForm();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save rule");
@@ -156,7 +175,7 @@ export default function OutboundNatPage() {
   };
 
   const handleDelete = async (rule: NatRule) => {
-    setPendingChanges(false); setError(null);
+    setError(null);
     try {
       await api.deleteNat(rule.id);
       setRules((prev) => prev.filter((r) => r.id !== rule.id));
@@ -168,7 +187,7 @@ export default function OutboundNatPage() {
   const handleToggleStatus = async (rule: NatRule) => {
     const newStatus = rule.status === "active" ? "disabled" : "active";
     setTogglingId(rule.id);
-    setPendingChanges(false); setError(null);
+    setError(null);
     try {
       await api.updateNat(rule.id, {
         nat_type: rule.nat_type,
@@ -176,7 +195,7 @@ export default function OutboundNatPage() {
         protocol: rule.protocol,
         src_addr: rule.src_addr,
         dst_addr: rule.dst_addr,
-        redirect_addr: rule.redirect?.address || "",
+        redirect_addr: rule.redirect?.address || "interface",
         redirect_port_start: rule.redirect?.port?.start,
         label: rule.label || undefined,
         status: newStatus,
@@ -195,17 +214,25 @@ export default function OutboundNatPage() {
     setForm((f) => ({ ...f, [field]: value }));
   };
 
-  const inputCls =
-    "w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors";
   const selectCls =
     "w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors";
-  const labelCls = "block text-xs text-gray-400 mb-1";
+  const inputCls =
+    "w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors";
+  const labelCls = "block text-xs font-medium text-gray-400 mb-1";
+  const hintCls = "text-[10px] text-gray-500 mt-0.5";
 
   const formatTranslation = (rule: NatRule): string => {
     if (rule.nat_type === "masquerade") return "Interface address";
     if (!rule.redirect) return "-";
     return formatAddrPort(rule.redirect.address, rule.redirect.port);
   };
+
+  const canSubmit =
+    !submitting &&
+    form.interface &&
+    (form.trans_mode === "interface" || form.translation_addr.trim()) &&
+    (form.src_mode === "any" || form.src_addr.trim()) &&
+    (form.dst_mode === "any" || form.dst_addr.trim());
 
   return (
     <div className="space-y-6">
@@ -215,47 +242,25 @@ export default function OutboundNatPage() {
           <h1 className="text-2xl font-bold text-white">Outbound NAT</h1>
           <p className="text-sm text-gray-400">
             Source NAT for traffic leaving the firewall &middot;{" "}
-            {rules.length} rules &middot;{" "}
+            {rules.length} rule{rules.length !== 1 ? "s" : ""} &middot;{" "}
             {rules.filter((r) => r.status === "active").length} active
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {pendingChanges && (
-            <button
-              onClick={async () => {
-                try {
-                  const token = localStorage.getItem("aifw_token");
-                  await fetch("/api/v1/reload", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
-                  setPendingChanges(false); setError(null);
-                } catch { setError("Failed to apply changes"); }
-              }}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors animate-pulse"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-              Apply Changes
-            </button>
-          )}
-          {!showForm && (
-            <button
-              onClick={() => {
-                setForm({
-                  ...defaultForm,
-                  interface: interfaces.length > 0 ? interfaces[0].name : "",
-                });
-                setEditingId(null);
-                setShowForm(true);
-              }}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
-              Add Rule
-            </button>
-          )}
-        </div>
+        {!showForm && (
+          <button
+            onClick={() => {
+              setForm({ ...defaultForm, interface: interfaces.length > 0 ? interfaces[0].name : "" });
+              setEditingId(null);
+              setShowForm(true);
+            }}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            Add Rule
+          </button>
+        )}
       </div>
 
       {/* Error banner */}
@@ -270,48 +275,38 @@ export default function OutboundNatPage() {
         </div>
       )}
 
-      {/* Inline Form */}
+      {/* Form */}
       {showForm && (
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-5">
-          <h3 className="text-sm font-semibold text-white mb-4">
+        <div className="bg-gray-800 border border-gray-700 rounded-lg p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-white">
             {editingId ? "Edit Outbound NAT Rule" : "New Outbound NAT Rule"}
           </h3>
 
-          {/* Row 1: Interface, Protocol, Enable */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+          {/* Row 1: Interface, Protocol, Enabled */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
               <label className={labelCls}>Interface</label>
-              <select
-                value={form.interface}
-                onChange={(e) => updateField("interface", e.target.value)}
-                className={selectCls}
-              >
-                {interfaces.length === 0 && (
-                  <option value="">Loading...</option>
-                )}
+              <select value={form.interface} onChange={(e) => updateField("interface", e.target.value)} className={selectCls}>
+                {interfaces.length === 0 && <option value="">Loading...</option>}
                 {interfaces.map((iface) => (
                   <option key={iface.name} value={iface.name}>
-                    {iface.name}
-                    {iface.description ? ` (${iface.description})` : ""}
+                    {iface.name}{iface.description ? ` (${iface.description})` : ""}
                   </option>
                 ))}
               </select>
             </div>
             <div>
               <label className={labelCls}>Protocol</label>
-              <select
-                value={form.protocol}
-                onChange={(e) => updateField("protocol", e.target.value)}
-                className={selectCls}
-              >
+              <select value={form.protocol} onChange={(e) => updateField("protocol", e.target.value)} className={selectCls}>
+                <option value="any">Any</option>
                 <option value="tcp">TCP</option>
                 <option value="udp">UDP</option>
-                <option value="tcp/udp">TCP/UDP</option>
-                <option value="any">Any</option>
+                <option value="tcp/udp">TCP + UDP</option>
+                <option value="icmp">ICMP</option>
               </select>
             </div>
-            <div className="flex items-end pb-1">
-              <label className="flex items-center gap-2 cursor-pointer">
+            <div className="flex items-end pb-0.5">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={form.enabled}
@@ -324,74 +319,124 @@ export default function OutboundNatPage() {
           </div>
 
           {/* Row 2: Source */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-            <div>
-              <label className={labelCls}>Source Network (CIDR)</label>
-              <input
-                type="text"
-                value={form.src_addr}
-                onChange={(e) => updateField("src_addr", e.target.value)}
-                placeholder="e.g. 192.168.1.0/24"
-                className={inputCls}
-              />
+          <div>
+            <label className={labelCls}>Source</label>
+            <div className="flex gap-2 items-start">
+              <select
+                value={form.src_mode}
+                onChange={(e) => updateField("src_mode", e.target.value as AddrMode)}
+                className={`${selectCls} w-36 flex-shrink-0`}
+              >
+                <option value="any">Any</option>
+                <option value="network">Network / Host</option>
+              </select>
+              {form.src_mode === "network" && (
+                <div className="flex-1">
+                  <input
+                    type="text"
+                    value={form.src_addr}
+                    onChange={(e) => updateField("src_addr", e.target.value)}
+                    placeholder="192.168.1.0/24 or 10.0.0.5"
+                    className={inputCls}
+                  />
+                  <p className={hintCls}>CIDR network (e.g. 10.0.0.0/8) or single host IP</p>
+                </div>
+              )}
+              {form.src_mode === "network" && showPortFields(form.protocol) && (
+                <div className="w-28 flex-shrink-0">
+                  <input
+                    type="text"
+                    value={form.src_port}
+                    onChange={(e) => updateField("src_port", e.target.value)}
+                    placeholder="Port"
+                    className={inputCls}
+                  />
+                  <p className={hintCls}>Optional</p>
+                </div>
+              )}
             </div>
-            {showPortFields(form.protocol) && (
-              <div>
-                <label className={labelCls}>Source Port (optional)</label>
-                <input
-                  type="text"
-                  value={form.src_port}
-                  onChange={(e) => updateField("src_port", e.target.value)}
-                  placeholder="e.g. 1024"
-                  className={inputCls}
-                />
-              </div>
-            )}
           </div>
 
           {/* Row 3: Destination */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-            <div>
-              <label className={labelCls}>Destination Network</label>
-              <input
-                type="text"
-                value={form.dst_addr}
-                onChange={(e) => updateField("dst_addr", e.target.value)}
-                placeholder="any or CIDR"
-                className={inputCls}
-              />
+          <div>
+            <label className={labelCls}>Destination</label>
+            <div className="flex gap-2 items-start">
+              <select
+                value={form.dst_mode}
+                onChange={(e) => updateField("dst_mode", e.target.value as AddrMode)}
+                className={`${selectCls} w-36 flex-shrink-0`}
+              >
+                <option value="any">Any</option>
+                <option value="network">Network / Host</option>
+              </select>
+              {form.dst_mode === "network" && (
+                <div className="flex-1">
+                  <input
+                    type="text"
+                    value={form.dst_addr}
+                    onChange={(e) => updateField("dst_addr", e.target.value)}
+                    placeholder="0.0.0.0/0 or 203.0.113.0/24"
+                    className={inputCls}
+                  />
+                  <p className={hintCls}>CIDR network or single host IP. Use 0.0.0.0/0 for all destinations.</p>
+                </div>
+              )}
+              {form.dst_mode === "network" && showPortFields(form.protocol) && (
+                <div className="w-28 flex-shrink-0">
+                  <input
+                    type="text"
+                    value={form.dst_port}
+                    onChange={(e) => updateField("dst_port", e.target.value)}
+                    placeholder="Port"
+                    className={inputCls}
+                  />
+                  <p className={hintCls}>Optional</p>
+                </div>
+              )}
             </div>
-            {showPortFields(form.protocol) && (
-              <div>
-                <label className={labelCls}>Destination Port (optional)</label>
-                <input
-                  type="text"
-                  value={form.dst_port}
-                  onChange={(e) => updateField("dst_port", e.target.value)}
-                  placeholder="e.g. 443"
-                  className={inputCls}
-                />
-              </div>
-            )}
           </div>
 
           {/* Row 4: Translation */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-            <div>
-              <label className={labelCls}>Translation Address</label>
+          <div>
+            <label className={labelCls}>Translation</label>
+            <div className="flex gap-2 items-start">
+              <select
+                value={form.trans_mode}
+                onChange={(e) => updateField("trans_mode", e.target.value as TransMode)}
+                className={`${selectCls} w-52 flex-shrink-0`}
+              >
+                <option value="interface">Interface Address (masquerade)</option>
+                <option value="address">Specific IP Address</option>
+              </select>
+              {form.trans_mode === "address" && (
+                <div className="flex-1">
+                  <input
+                    type="text"
+                    value={form.translation_addr}
+                    onChange={(e) => updateField("translation_addr", e.target.value)}
+                    placeholder="203.0.113.1"
+                    className={inputCls}
+                  />
+                  <p className={hintCls}>Public IP to NAT outbound traffic to</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Row 5: Description + Static Port */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="md:col-span-2">
+              <label className={labelCls}>Description</label>
               <input
                 type="text"
-                value={form.translation_addr}
-                onChange={(e) => updateField("translation_addr", e.target.value)}
-                placeholder='IP or "interface address"'
+                value={form.label}
+                onChange={(e) => updateField("label", e.target.value)}
+                placeholder="e.g. Default LAN outbound"
                 className={inputCls}
               />
-              <p className="text-[10px] text-gray-500 mt-1">
-                Use &quot;interface address&quot; for masquerade
-              </p>
             </div>
-            <div className="flex items-end pb-1">
-              <label className="flex items-center gap-2 cursor-pointer">
+            <div className="flex items-end pb-0.5">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={form.static_port}
@@ -403,25 +448,11 @@ export default function OutboundNatPage() {
             </div>
           </div>
 
-          {/* Row 5: Label */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            <div className="md:col-span-2">
-              <label className={labelCls}>Description / Label</label>
-              <input
-                type="text"
-                value={form.label}
-                onChange={(e) => updateField("label", e.target.value)}
-                placeholder="Rule description"
-                className={inputCls}
-              />
-            </div>
-          </div>
-
           {/* Buttons */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 pt-1">
             <button
               onClick={handleSubmit}
-              disabled={submitting || !form.translation_addr.trim()}
+              disabled={!canSubmit}
               className="px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
             >
               {submitting ? "Saving..." : editingId ? "Update Rule" : "Add Rule"}
@@ -469,7 +500,7 @@ export default function OutboundNatPage() {
                   rules.map((rule, idx) => (
                     <tr
                       key={rule.id}
-                      draggable onDragStart={()=>handleDragStart(idx)} onDragOver={(e)=>handleDragOver(e,idx)} onDrop={handleDrop}
+                      draggable onDragStart={() => handleDragStart(idx)} onDragOver={(e) => handleDragOver(e, idx)} onDrop={handleDrop}
                       className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors cursor-grab active:cursor-grabbing"
                     >
                       <td className="py-2.5 px-3">
@@ -501,16 +532,12 @@ export default function OutboundNatPage() {
                           onClick={() => handleToggleStatus(rule)}
                           disabled={togglingId === rule.id}
                           className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50"
-                          style={{
-                            backgroundColor: rule.status === "active" ? "#22c55e" : "#4b5563",
-                          }}
+                          style={{ backgroundColor: rule.status === "active" ? "#22c55e" : "#4b5563" }}
                           title={rule.status === "active" ? "Disable" : "Enable"}
                         >
                           <span
                             className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-                            style={{
-                              transform: rule.status === "active" ? "translateX(16px)" : "translateX(0)",
-                            }}
+                            style={{ transform: rule.status === "active" ? "translateX(16px)" : "translateX(0)" }}
                           />
                         </button>
                       </td>

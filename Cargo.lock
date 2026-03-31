@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ai"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-api"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -37,6 +37,7 @@ dependencies = [
  "aifw-pf",
  "anyhow",
  "argon2",
+ "async-stream",
  "axum",
  "axum-server",
  "axum-test",
@@ -64,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-cli"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -84,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-common"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "chrono",
  "serde",
@@ -96,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-conntrack"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -110,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-core"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -127,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-daemon"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -144,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-metrics"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -159,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-pf"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -171,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-plugins"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -187,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-setup"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -207,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-tui"
-version = "5.7.1"
+version = "5.7.2"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -323,6 +324,28 @@ checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

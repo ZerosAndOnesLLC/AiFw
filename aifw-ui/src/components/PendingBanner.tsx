@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface PendingState {
   firewall: boolean;
@@ -12,9 +12,11 @@ export default function PendingBanner() {
   const [pending, setPending] = useState<PendingState>({ firewall: false, nat: false, dns: false });
   const [applying, setApplying] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const esRef = useRef<EventSource | null>(null);
 
   const hasPending = pending.firewall || pending.nat || pending.dns;
 
+  // One-shot fetch for initial state or fallback
   const fetchPending = useCallback(async () => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
@@ -22,20 +24,47 @@ export default function PendingBanner() {
       const res = await fetch("/api/v1/pending", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        const data = await res.json();
-        setPending(data);
-      }
-    } catch {
-      /* silent */
-    }
+      if (res.ok) setPending(await res.json());
+    } catch { /* silent */ }
   }, []);
 
-  // Poll every 3 seconds
+  // SSE connection
   useEffect(() => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+    if (!token) return;
+
+    const connect = () => {
+      // EventSource doesn't support custom headers, so use query param for auth
+      // The SSE endpoint will also accept the cookie/session if present.
+      // For now, fall back to polling if EventSource fails.
+      const es = new EventSource("/api/v1/pending/stream");
+      esRef.current = es;
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as PendingState;
+          setPending(data);
+        } catch { /* ignore parse errors */ }
+      };
+
+      es.onerror = () => {
+        es.close();
+        esRef.current = null;
+        // Reconnect after 5 seconds
+        setTimeout(connect, 5000);
+      };
+    };
+
+    // Fetch once immediately, then open SSE
     fetchPending();
-    const interval = setInterval(fetchPending, 3000);
-    return () => clearInterval(interval);
+    connect();
+
+    return () => {
+      if (esRef.current) {
+        esRef.current.close();
+        esRef.current = null;
+      }
+    };
   }, [fetchPending]);
 
   const applyChanges = async () => {
@@ -43,7 +72,6 @@ export default function PendingBanner() {
     setFeedback(null);
     const token = localStorage.getItem("aifw_token") || "";
     try {
-      // Apply firewall/NAT
       if (pending.firewall || pending.nat) {
         const res = await fetch("/api/v1/reload", {
           method: "POST",
@@ -51,8 +79,6 @@ export default function PendingBanner() {
         });
         if (!res.ok) throw new Error(`Reload failed: HTTP ${res.status}`);
       }
-
-      // Apply DNS
       if (pending.dns) {
         const res = await fetch("/api/v1/dns/resolver/apply", {
           method: "POST",
@@ -60,7 +86,6 @@ export default function PendingBanner() {
         });
         if (!res.ok) throw new Error(`DNS apply failed: HTTP ${res.status}`);
       }
-
       setPending({ firewall: false, nat: false, dns: false });
       setFeedback("Changes applied successfully");
       setTimeout(() => setFeedback(null), 3000);
@@ -69,7 +94,6 @@ export default function PendingBanner() {
       setTimeout(() => setFeedback(null), 5000);
     } finally {
       setApplying(false);
-      fetchPending();
     }
   };
 

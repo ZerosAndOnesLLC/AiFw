@@ -2,7 +2,9 @@ use axum::{
     Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
+    response::sse::{Event, KeepAlive, Sse},
 };
+use std::convert::Infallible;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -828,7 +830,7 @@ pub async fn create_rule(
     rule.schedule_id = req.schedule_id;
 
     let rule = state.rule_engine.add_rule(rule).await.map_err(|_| bad_request())?;
-    state.pending.write().await.firewall = true;
+    state.set_pending(|p| p.firewall = true).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
 
@@ -887,7 +889,7 @@ pub async fn update_rule(
     rule.updated_at = chrono::Utc::now();
 
     state.rule_engine.update_rule(rule.clone()).await.map_err(|_| internal())?;
-    state.pending.write().await.firewall = true;
+    state.set_pending(|p| p.firewall = true).await;
     Ok(Json(ApiResponse { data: rule }))
 }
 
@@ -897,7 +899,7 @@ pub async fn delete_rule(
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     state.rule_engine.delete_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
-    state.pending.write().await.firewall = true;
+    state.set_pending(|p| p.firewall = true).await;
     Ok(Json(MessageResponse { message: format!("Rule {id} deleted") }))
 }
 
@@ -947,7 +949,7 @@ pub async fn create_nat_rule(
     rule.label = req.label;
 
     let rule = state.nat_engine.add_rule(rule).await.map_err(|_| bad_request())?;
-    state.pending.write().await.nat = true;
+    state.set_pending(|p| p.nat = true).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
 
@@ -985,7 +987,7 @@ pub async fn update_nat_rule(
     rule.updated_at = chrono::Utc::now();
 
     state.nat_engine.update_rule(&rule).await.map_err(|_| internal())?;
-    state.pending.write().await.nat = true;
+    state.set_pending(|p| p.nat = true).await;
     Ok(Json(ApiResponse { data: rule }))
 }
 
@@ -995,7 +997,7 @@ pub async fn delete_nat_rule(
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     state.nat_engine.delete_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
-    state.pending.write().await.nat = true;
+    state.set_pending(|p| p.nat = true).await;
     Ok(Json(MessageResponse { message: format!("NAT rule {id} deleted") }))
 }
 
@@ -1042,6 +1044,32 @@ pub async fn get_pending(
     Ok(Json(pending))
 }
 
+/// SSE stream that pushes PendingChanges whenever they mutate.
+/// Replaces the 3-second polling loop in the UI.
+pub async fn pending_stream(
+    State(state): State<AppState>,
+) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.pending_tx.subscribe();
+
+    let stream = async_stream::stream! {
+        // Send current state immediately on connect.
+        let current = state.pending.read().await.clone();
+        if let Ok(json) = serde_json::to_string(&current) {
+            yield Ok(Event::default().data(json));
+        }
+
+        // Then push on every change.
+        while rx.changed().await.is_ok() {
+            let val = rx.borrow_and_update().clone();
+            if let Ok(json) = serde_json::to_string(&val) {
+                yield Ok(Event::default().data(json));
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 pub async fn reload(
     State(state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
@@ -1055,11 +1083,10 @@ pub async fn reload(
         errors.push(format!("nat: {e}"));
     }
     // Clear pending flags for firewall and NAT
-    {
-        let mut p = state.pending.write().await;
+    state.set_pending(|p| {
         p.firewall = false;
         p.nat = false;
-    }
+    }).await;
     if errors.is_empty() {
         Ok(Json(MessageResponse { message: "Changes applied successfully".to_string() }))
     } else {
@@ -1138,7 +1165,7 @@ pub async fn reorder_rules(
         rule.updated_at = chrono::Utc::now();
         state.rule_engine.update_rule(rule).await.map_err(|_| internal())?;
     }
-    state.pending.write().await.firewall = true;
+    state.set_pending(|p| p.firewall = true).await;
     Ok(Json(MessageResponse { message: format!("{} rules reordered", req.rule_ids.len()) }))
 }
 
@@ -1155,7 +1182,7 @@ pub async fn reorder_nat_rules(
             .execute(&state.pool)
             .await;
     }
-    state.pending.write().await.nat = true;
+    state.set_pending(|p| p.nat = true).await;
     Ok(Json(MessageResponse { message: format!("{} NAT rules reordered", req.rule_ids.len()) }))
 }
 

@@ -25,7 +25,7 @@ use sqlx::sqlite::SqlitePool;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -47,13 +47,24 @@ pub struct AppState {
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
     pub redis: Option<redis::aio::ConnectionManager>,
     pub pending: Arc<RwLock<PendingChanges>>,
+    /// Watch channel that fires whenever `pending` changes — drives SSE.
+    pub pending_tx: watch::Sender<PendingChanges>,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct PendingChanges {
     pub firewall: bool,
     pub nat: bool,
     pub dns: bool,
+}
+
+impl AppState {
+    /// Update a pending flag and notify SSE subscribers.
+    pub async fn set_pending(&self, f: impl FnOnce(&mut PendingChanges)) {
+        let mut p = self.pending.write().await;
+        f(&mut p);
+        let _ = self.pending_tx.send(p.clone());
+    }
 }
 
 #[derive(Parser)]
@@ -237,6 +248,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas).post(routes::create_ipsec_sa))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
         .route("/api/v1/pending", get(routes::get_pending))
+        .route("/api/v1/pending/stream", get(routes::pending_stream))
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/connections", get(routes::list_connections))
         .route("/api/v1/reload", post(routes::reload))
@@ -334,6 +346,7 @@ async fn create_state_from_db(
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(METRICS_HISTORY_SIZE))),
         redis: None,
         pending: Arc::new(RwLock::new(PendingChanges::default())),
+        pending_tx: watch::channel(PendingChanges::default()).0,
     })
 }
 
