@@ -18,6 +18,20 @@ struct WsStatusUpdate {
     system: SystemPayload,
     connections: Vec<ConnectionPayload>,
     interfaces: Vec<InterfacePayload>,
+    blocked: Vec<BlockedPayload>,
+}
+
+#[derive(Serialize, Clone)]
+struct BlockedPayload {
+    timestamp: String,
+    action: String,
+    direction: String,
+    interface: String,
+    protocol: String,
+    src_addr: String,
+    src_port: u16,
+    dst_addr: String,
+    dst_port: u16,
 }
 
 #[derive(Serialize)]
@@ -225,9 +239,13 @@ async fn build_update(state: &AppState) -> Result<String, String> {
         }
     }
 
+    // Collect blocked traffic from pflog (cached, refreshed every 5 ticks)
+    let blocked = collect_blocked().await;
+
     let update = WsStatusUpdate {
         msg_type: "status_update",
         system,
+        blocked,
         status: StatusPayload {
             pf_running: stats.running,
             pf_states: stats.states_count,
@@ -396,4 +414,86 @@ async fn collect_system_metrics() -> SystemPayload {
         cpu_usage, memory_total: mem_total, memory_used: mem_used, memory_pct: mem_pct,
         disks, disk_io, uptime_secs, hostname, os_version, dns_servers, default_gateway, route_count,
     }
+}
+
+/// Collect blocked traffic from pflog. Cached with tokio RwLock, refreshes every 5 seconds.
+async fn collect_blocked() -> Vec<BlockedPayload> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::sync::RwLock;
+
+    static TICK: AtomicU64 = AtomicU64::new(0);
+    static CACHE: std::sync::OnceLock<RwLock<Vec<BlockedPayload>>> = std::sync::OnceLock::new();
+
+    let cache = CACHE.get_or_init(|| RwLock::new(Vec::new()));
+    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+
+    // Refresh every 5 seconds
+    if tick % 5 == 0 {
+        let mut entries = Vec::new();
+        if let Ok(output) = tokio::process::Command::new("sudo")
+            .args(["/usr/sbin/tcpdump", "-n", "-e", "-r", "/var/log/pflog", "-c", "200"])
+            .output().await
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines().rev() {
+                    let action = if line.contains(": block ") { "block" }
+                        else if line.contains(": pass ") { "pass" }
+                        else { continue };
+
+                    let mut entry = BlockedPayload {
+                        timestamp: line.split_whitespace().next().unwrap_or("").to_string(),
+                        action: action.to_string(),
+                        direction: String::new(), interface: String::new(),
+                        protocol: String::new(),
+                        src_addr: String::new(), src_port: 0,
+                        dst_addr: String::new(), dst_port: 0,
+                    };
+
+                    let marker = if action == "block" { ": block " } else { ": pass " };
+                    if let Some(pos) = line.find(marker) {
+                        let rest = &line[pos + 2..];
+                        let parts: Vec<&str> = rest.split_whitespace().collect();
+                        entry.direction = parts.get(1).unwrap_or(&"").to_string();
+                        entry.interface = parts.get(3).map(|s| s.trim_end_matches(':')).unwrap_or("").to_string();
+                    }
+
+                    if let Some(gt_pos) = line.find(" > ") {
+                        let before = &line[..gt_pos];
+                        let src_token = before.split_whitespace().next_back().unwrap_or("");
+                        if let Some(dot_pos) = src_token.rfind('.') {
+                            if let Ok(port) = src_token[dot_pos + 1..].parse::<u16>() {
+                                let ip = &src_token[..dot_pos];
+                                if ip.chars().filter(|c| *c == '.').count() >= 3 {
+                                    entry.src_addr = ip.to_string();
+                                    entry.src_port = port;
+                                }
+                            }
+                        }
+                        let after = &line[gt_pos + 3..];
+                        let dst_token = after.split(':').next().unwrap_or("").trim();
+                        if let Some(dot_pos) = dst_token.rfind('.') {
+                            if let Ok(port) = dst_token[dot_pos + 1..].parse::<u16>() {
+                                let ip = &dst_token[..dot_pos];
+                                if ip.chars().filter(|c| *c == '.').count() >= 3 {
+                                    entry.dst_addr = ip.to_string();
+                                    entry.dst_port = port;
+                                }
+                            }
+                        }
+                    }
+
+                    if line.contains("Flags [") { entry.protocol = "tcp".to_string(); }
+                    else if line.contains(" udp ") { entry.protocol = "udp".to_string(); }
+                    else if line.contains(" icmp") { entry.protocol = "icmp".to_string(); }
+
+                    if !entry.src_addr.is_empty() { entries.push(entry); }
+                    if entries.len() >= 200 { break; }
+                }
+            }
+        }
+        *cache.write().await = entries;
+    }
+
+    cache.read().await.clone()
 }

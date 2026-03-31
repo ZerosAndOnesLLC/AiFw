@@ -7,13 +7,14 @@ interface WsData {
   system: Record<string, unknown> | null;
   connections: Record<string, unknown>[];
   interfaces: Record<string, unknown>[];
+  blocked: Record<string, unknown>[];
   connected: boolean;
   history: Record<string, unknown>[];
   historyLoaded: boolean;
 }
 
 const WsContext = createContext<WsData>({
-  status: null, system: null, connections: [], interfaces: [],
+  status: null, system: null, connections: [], interfaces: [], blocked: [],
   connected: false, history: [], historyLoaded: false,
 });
 
@@ -24,6 +25,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
   const [system, setSystem] = useState<Record<string, unknown> | null>(null);
   const [connections, setConnections] = useState<Record<string, unknown>[]>([]);
   const [interfaces, setInterfaces] = useState<Record<string, unknown>[]>([]);
+  const [blocked, setBlocked] = useState<Record<string, unknown>[]>([]);
   const [connected, setConnected] = useState(false);
   const [history, setHistory] = useState<Record<string, unknown>[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -34,7 +36,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(() => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
-    if (wsRef.current && wsRef.current.readyState <= 1) return; // already open/connecting
+    if (wsRef.current && wsRef.current.readyState <= 1) return;
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws`);
@@ -50,12 +52,12 @@ export function WsProvider({ children }: { children: ReactNode }) {
           histBuf.current = msg.data;
           setHistory(msg.data);
           setHistoryLoaded(true);
-          // Set latest values from last entry
           const last = msg.data[msg.data.length - 1];
           if (last?.status) setStatus(last.status);
           if (last?.system) setSystem(last.system);
           if (last?.connections) setConnections(last.connections);
           if (last?.interfaces) setInterfaces(last.interfaces);
+          if (last?.blocked) setBlocked(last.blocked);
           return;
         }
 
@@ -64,7 +66,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
           if (msg.system) setSystem(msg.system);
           if (msg.connections) setConnections(msg.connections);
           if (msg.interfaces) setInterfaces(msg.interfaces);
-          // Append to history buffer
+          if (msg.blocked) setBlocked(msg.blocked);
           histBuf.current = [...histBuf.current, msg].slice(-1800);
           setHistory(histBuf.current);
         }
@@ -89,7 +91,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
   }, [connect]);
 
   return (
-    <WsContext.Provider value={{ status, system, connections, interfaces, connected, history, historyLoaded }}>
+    <WsContext.Provider value={{ status, system, connections, interfaces, blocked, connected, history, historyLoaded }}>
       {children}
     </WsContext.Provider>
   );

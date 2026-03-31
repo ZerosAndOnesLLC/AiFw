@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useMemo } from "react";
+import { useWs } from "@/context/WsContext";
 
 interface BlockedEntry {
   timestamp: string;
@@ -12,40 +13,14 @@ interface BlockedEntry {
   src_port: number;
   dst_addr: string;
   dst_port: number;
-  reason: string;
-}
-
-function authHeaders(): HeadersInit {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : "";
-  return { Authorization: `Bearer ${token}` };
 }
 
 export default function BlockedTrafficPage() {
-  const [entries, setEntries] = useState<BlockedEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const ws = useWs();
+  const entries = (ws.blocked as unknown) as BlockedEntry[];
+  const loading = !ws.connected;
   const [filterProto, setFilterProto] = useState<string>("all");
   const [filterIface, setFilterIface] = useState<string>("all");
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-
-  const fetchBlocked = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v1/blocked", { headers: authHeaders() });
-      if (res.ok) {
-        const body = await res.json();
-        setEntries(body.data || []);
-        setLastUpdated(new Date());
-      }
-    } catch { /* silent */ }
-    finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => {
-    fetchBlocked();
-    if (!autoRefresh) return;
-    const interval = setInterval(fetchBlocked, 5000);
-    return () => clearInterval(interval);
-  }, [fetchBlocked, autoRefresh]);
 
   // Aggregate stats
   const stats = useMemo(() => {
@@ -97,19 +72,9 @@ export default function BlockedTrafficPage() {
             Non-accepted connections rejected by firewall policy &middot; {stats.total} events
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-900 text-blue-500" />
-            <span className="text-xs text-gray-400">Auto-refresh</span>
-          </label>
-          {autoRefresh && (
-            <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-xs text-gray-500">Live</span>
-            </div>
-          )}
-          {lastUpdated && <span className="text-[10px] text-gray-600">{lastUpdated.toLocaleTimeString()}</span>}
+        <div className="flex items-center gap-1.5">
+          <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-red-500 animate-pulse" : "bg-gray-500"}`} />
+          <span className="text-xs text-gray-500">{ws.connected ? "Live" : "..."}</span>
         </div>
       </div>
 

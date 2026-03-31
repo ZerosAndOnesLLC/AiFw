@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useState } from "react";
 import Card from "@/components/Card";
 import StatusBadge from "@/components/StatusBadge";
+import { useWs } from "@/context/WsContext";
 
 interface Connection {
   id: number;
@@ -95,35 +96,12 @@ function SortHeader({
 }
 
 export default function ConnectionsPage() {
-  const [connections, setConnections] = useState<Connection[]>([]);
-  const [lastRefresh, setLastRefresh] = useState(new Date());
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const ws = useWs();
+  const connections = (ws.connections as unknown) as Connection[];
+  const loading = !ws.connected && connections.length === 0;
+  const error: string | null = null;
   const [sortKey, setSortKey] = useState<SortKey>("bytes");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
-  const initialLoad = useRef(true);
-
-  const fetchData = useCallback(async () => {
-    try {
-      const res = await apiFetch<{ data: Connection[] }>("/api/v1/connections");
-      setConnections(res.data || []);
-      setLastRefresh(new Date());
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch connections");
-    } finally {
-      if (initialLoad.current) {
-        setLoading(false);
-        initialLoad.current = false;
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 3000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -182,13 +160,10 @@ export default function ConnectionsPage() {
         <div>
           <h1 className="text-2xl font-bold">Live Connections</h1>
           <p className="text-sm text-[var(--text-muted)]">
-            {connections.length} active connections &middot; auto-refreshing every 3s
+            {connections.length} active connections
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-[var(--text-muted)]">
-            Last update: {lastRefresh.toLocaleTimeString()}
-          </span>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
