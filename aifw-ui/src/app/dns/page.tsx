@@ -16,12 +16,14 @@ interface DnsStatus {
 }
 
 interface ResolverConfig {
+  backend: string;
   enabled: boolean;
   listen_interfaces: string[];
   port: number;
   dnssec: boolean;
   dns64: boolean;
   register_dhcp: boolean;
+  dhcp_domain: string;
   local_zone_type: string;
   outgoing_interface: string;
   num_threads: number;
@@ -471,6 +473,30 @@ export default function DnsResolverPage() {
           {/* ===================== General Tab ===================== */}
           {activeTab === "General" && (
             <div className="space-y-5">
+              {/* Backend selector */}
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-2">DNS Backend</label>
+                <div className="flex gap-2">
+                  {[
+                    { value: "rdns", label: "rDNS", desc: "High-performance resolver with DNSSEC, RPZ, DoT" },
+                    { value: "unbound", label: "Unbound", desc: "Traditional recursive resolver" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setConfig((p) => ({ ...p, backend: opt.value }))}
+                      className={`flex-1 px-4 py-3 rounded-lg border text-left transition-colors ${
+                        config.backend === opt.value
+                          ? "bg-blue-600/15 border-blue-500/50 text-blue-400"
+                          : "bg-gray-900 border-gray-700 text-[var(--text-secondary)] hover:border-gray-500"
+                      }`}
+                    >
+                      <div className="text-sm font-medium">{opt.label}</div>
+                      <div className="text-[10px] text-[var(--text-muted)] mt-0.5">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Enable toggle */}
               <div className="flex items-center gap-3">
                 <button
@@ -610,6 +636,25 @@ export default function DnsResolverPage() {
                 </button>
                 <span className="text-sm text-[var(--text-primary)]">Register DHCP Leases in DNS</span>
               </div>
+
+              {/* DHCP domain */}
+              {config.register_dhcp && (
+                <div className="max-w-xs">
+                  <label className="block text-xs text-[var(--text-muted)] mb-1.5">
+                    DHCP Lease Domain
+                  </label>
+                  <input
+                    type="text"
+                    value={config.dhcp_domain || ""}
+                    onChange={(e) => setConfig((p) => ({ ...p, dhcp_domain: e.target.value }))}
+                    placeholder="local"
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    DHCP clients will be registered as hostname.{config.dhcp_domain || "local"}
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

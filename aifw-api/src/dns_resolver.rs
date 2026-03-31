@@ -13,12 +13,14 @@ use crate::AppState;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResolverConfig {
+    pub backend: String,  // "unbound" or "rdns"
     pub enabled: bool,
     pub listen_interfaces: Vec<String>,
     pub port: u16,
     pub dnssec: bool,
     pub dns64: bool,
     pub register_dhcp: bool,
+    pub dhcp_domain: String,  // domain for DHCP lease DNS registration (e.g. "local")
     pub local_zone_type: String,  // transparent, static, redirect, etc.
     pub outgoing_interface: Option<String>,
     // Advanced
@@ -58,12 +60,14 @@ pub struct ResolverConfig {
 impl Default for ResolverConfig {
     fn default() -> Self {
         Self {
+            backend: "rdns".to_string(),
             enabled: false,
             listen_interfaces: vec!["0.0.0.0".to_string()],
             port: 53,
             dnssec: true,
             dns64: false,
             register_dhcp: true,
+            dhcp_domain: "local".to_string(),
             local_zone_type: "transparent".to_string(),
             outgoing_interface: None,
             num_threads: 2,
@@ -225,7 +229,9 @@ async fn load_config(pool: &SqlitePool) -> ResolverConfig {
     let mut c = ResolverConfig::default();
     for (k, v) in rows {
         match k.as_str() {
+            "backend" => c.backend = v,
             "enabled" => c.enabled = v == "true",
+            "dhcp_domain" => c.dhcp_domain = v,
             "listen_interfaces" => c.listen_interfaces = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             "port" => c.port = v.parse().unwrap_or(53),
             "dnssec" => c.dnssec = v == "true",
@@ -439,24 +445,284 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
 }
 
 // ============================================================
+// rDNS TOML + Zone Generation
+// ============================================================
+
+/// Generate rDNS TOML configuration from the shared DB config.
+async fn generate_rdns_conf(pool: &SqlitePool) -> String {
+    let c = load_config(pool).await;
+
+    let hosts_count = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_host_overrides WHERE enabled=1")
+        .fetch_one(pool).await.map(|r| r.0).unwrap_or(0);
+    let need_auth = hosts_count > 0 || c.register_dhcp;
+
+    let listen_udp: Vec<String> = c.listen_interfaces.iter().map(|i| format!("\"{}:{}\"", i, c.port)).collect();
+    let listen_tcp = listen_udp.clone();
+
+    let mode = if need_auth { "both" } else { "resolver" };
+
+    let mut toml = String::from("# AiFw rDNS Configuration — Auto-generated\n\n");
+
+    // [server]
+    toml.push_str(&format!("[server]\nmode = \"{}\"\nuser = \"rdns\"\ngroup = \"rdns\"\npidfile = \"/var/run/rdns/rdns.pid\"\n\n", mode));
+
+    // [listeners]
+    toml.push_str(&format!("[listeners]\nudp = [{}]\ntcp = [{}]\n\n", listen_udp.join(", "), listen_tcp.join(", ")));
+
+    // [cache]
+    toml.push_str(&format!("[cache]\nmax_entries = 1000000\nmax_ttl = {}\nmin_ttl = {}\nnegative_ttl = 300\n\n", c.cache_max_ttl, c.cache_min_ttl));
+
+    // [resolver]
+    toml.push_str("[resolver]\n");
+    if c.forwarding_enabled && !c.forwarding_servers.is_empty() {
+        let fwd: Vec<String> = c.forwarding_servers.iter().map(|s| format!("\"{}\"", s)).collect();
+        toml.push_str(&format!("forwarders = [{}]\n", fwd.join(", ")));
+    } else {
+        toml.push_str("forwarders = []\n");
+    }
+    toml.push_str(&format!("dnssec = {}\nqname_minimization = true\n", c.dnssec));
+
+    // Per-domain forward zones
+    let domains = sqlx::query_as::<_, (String, String)>(
+        "SELECT domain, server FROM dns_domain_overrides WHERE enabled = 1"
+    ).fetch_all(pool).await.unwrap_or_default();
+    if !domains.is_empty() {
+        toml.push('\n');
+        for (domain, server) in &domains {
+            // Extract IP from "IP:port" or just "IP"
+            let ip = if server.contains(':') { server.split(':').next().unwrap_or(server) } else { server.as_str() };
+            toml.push_str(&format!("[[resolver.forward_zones]]\nname = \"{}\"\nforwarders = [\"{}\"]\n\n", domain, ip));
+        }
+    }
+    toml.push('\n');
+
+    // [authoritative]
+    if need_auth {
+        toml.push_str("[authoritative]\nsource = \"zone-files\"\ndirectory = \"/usr/local/etc/rdns/zones\"\n\n");
+    } else {
+        toml.push_str("[authoritative]\nsource = \"none\"\n\n");
+    }
+
+    // [control]
+    toml.push_str("[control]\nsocket = \"/var/run/rdns/control.sock\"\n\n");
+
+    // [metrics]
+    toml.push_str("[metrics]\nenabled = true\naddress = \"127.0.0.1:9153\"\n\n");
+
+    // [logging]
+    let level = if c.log_queries || c.log_verbosity >= 3 { "debug" } else if c.log_verbosity >= 2 { "debug" } else { "info" };
+    toml.push_str(&format!("[logging]\nlevel = \"{}\"\nformat = \"text\"\n\n", level));
+
+    // [security]
+    toml.push_str("[security]\nsandbox = false\nrate_limit = 1000\n\n");
+
+    // [rpz] — blocklists
+    if c.blocklists_enabled && !c.blocklist_urls.is_empty() {
+        toml.push_str("[[rpz.zones]]\nname = \"rpz.blocklist\"\nfile = \"/usr/local/etc/rdns/rpz/blocklist.rpz\"\n\n");
+    }
+
+    toml
+}
+
+/// Generate RFC 1035 zone files for rDNS from host overrides + DHCP leases.
+/// Returns Vec<(filename, content)>.
+async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
+    let c = load_config(pool).await;
+    let mut zones = Vec::new();
+    let serial = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    // Collect host overrides grouped by domain
+    let hosts = sqlx::query_as::<_, (String, String, String, String, Option<i64>)>(
+        "SELECT hostname, domain, record_type, value, mx_priority FROM dns_host_overrides WHERE enabled = 1"
+    ).fetch_all(pool).await.unwrap_or_default();
+
+    let mut domain_records: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut ptr_records: Vec<String> = Vec::new();
+
+    for (hostname, domain, rtype, value, mx_pri) in &hosts {
+        let domain_key = if domain.is_empty() { "local".to_string() } else { domain.clone() };
+        let entry = domain_records.entry(domain_key.clone()).or_default();
+        let name = if domain.is_empty() { hostname.clone() } else { hostname.clone() };
+        match rtype.as_str() {
+            "A" => {
+                entry.push(format!("{:<24} IN A       {}", name, value));
+                // PTR record
+                let octets: Vec<&str> = value.split('.').collect();
+                if octets.len() == 4 {
+                    let fqdn = if domain.is_empty() { hostname.clone() } else { format!("{}.{}", hostname, domain) };
+                    ptr_records.push(format!("{}.{}.{}.{}.in-addr.arpa. IN PTR {}.{}.", octets[3], octets[2], octets[1], octets[0], fqdn, if fqdn.ends_with('.') { "" } else { "." }));
+                }
+            }
+            "AAAA" => entry.push(format!("{:<24} IN AAAA    {}", name, value)),
+            "CNAME" => entry.push(format!("{:<24} IN CNAME   {}", name, value)),
+            "MX" => entry.push(format!("{:<24} IN MX      {} {}", name, mx_pri.unwrap_or(10), value)),
+            "TXT" => entry.push(format!("{:<24} IN TXT     \"{}\"", name, value)),
+            _ => {}
+        }
+    }
+
+    // Write a zone file per domain
+    for (domain, records) in &domain_records {
+        let mut zone = format!(
+            "$TTL 300\n$ORIGIN {}.\n@ IN SOA ns1.{domain}. admin.{domain}. ({serial} 3600 900 604800 300)\n  IN NS  ns1.{domain}.\n",
+            domain, domain = domain, serial = serial
+        );
+        for record in records {
+            zone.push_str(record);
+            zone.push('\n');
+        }
+        zones.push((format!("{}.zone", domain), zone));
+    }
+
+    // DHCP lease zone
+    if c.register_dhcp {
+        let dhcp_domain = if c.dhcp_domain.is_empty() { "local".to_string() } else { c.dhcp_domain.clone() };
+        if let Ok(output) = tokio::process::Command::new("curl")
+            .args(["-sf", "--max-time", "3", "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000"])
+            .output().await
+        {
+            if output.status.success() {
+                let body = String::from_utf8_lossy(&output.stdout);
+                if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
+                    let mut zone = format!(
+                        "$TTL 60\n$ORIGIN {}.\n@ IN SOA ns1.{d}. admin.{d}. ({s} 3600 900 604800 60)\n  IN NS  ns1.{d}.\n",
+                        dhcp_domain, d = dhcp_domain, s = serial
+                    );
+                    for lease in &leases {
+                        let ip = lease["ip"].as_str().unwrap_or("");
+                        let hostname = lease["hostname"].as_str().unwrap_or("");
+                        if !ip.is_empty() && !hostname.is_empty() {
+                            // Sanitize hostname (no dots, lowercase)
+                            let safe_host = hostname.split('.').next().unwrap_or(hostname).to_lowercase();
+                            zone.push_str(&format!("{:<24} IN A       {}\n", safe_host, ip));
+                            // PTR
+                            let octets: Vec<&str> = ip.split('.').collect();
+                            if octets.len() == 4 {
+                                ptr_records.push(format!("{}.{}.{}.{}.in-addr.arpa. IN PTR {}.{}.", octets[3], octets[2], octets[1], octets[0], safe_host, dhcp_domain));
+                            }
+                        }
+                    }
+                    zones.push((format!("dhcp.{}.zone", dhcp_domain), zone));
+                }
+            }
+        }
+    }
+
+    // Reverse (PTR) zone — group by /24 subnet
+    if !ptr_records.is_empty() {
+        let mut reverse_zones: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for ptr in &ptr_records {
+            // ptr looks like "X.C.B.A.in-addr.arpa. IN PTR host.domain."
+            let parts: Vec<&str> = ptr.split('.').collect();
+            if parts.len() >= 6 {
+                let zone_key = format!("{}.{}.{}.in-addr.arpa", parts[1], parts[2], parts[3]);
+                reverse_zones.entry(zone_key).or_default().push(ptr.clone());
+            }
+        }
+        for (zone_name, records) in &reverse_zones {
+            let mut zone = format!(
+                "$TTL 300\n$ORIGIN {}.\n@ IN SOA ns1.aifw.local. admin.aifw.local. ({} 3600 900 604800 300)\n  IN NS  ns1.aifw.local.\n",
+                zone_name, serial
+            );
+            for record in records {
+                // Extract just the host part relative to the zone
+                let parts: Vec<&str> = record.splitn(2, ".in-addr.arpa").collect();
+                if let Some(host_part) = parts.first() {
+                    let zone_origin = format!(".{}", zone_name);
+                    let relative = host_part.strip_suffix(&zone_origin.replace(".in-addr.arpa", "")).unwrap_or(host_part);
+                    // Just write the full record
+                    zone.push_str(record);
+                    zone.push('\n');
+                    let _ = relative;
+                }
+            }
+            zones.push((format!("{}.zone", zone_name), zone));
+        }
+    }
+
+    zones
+}
+
+/// Download blocklists and generate an RPZ zone file for rDNS.
+async fn generate_rdns_rpz(pool: &SqlitePool) -> Option<String> {
+    let c = load_config(pool).await;
+    if !c.blocklists_enabled || c.blocklist_urls.is_empty() {
+        return None;
+    }
+
+    let serial = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let mut zone = format!(
+        "$TTL 300\n@ IN SOA localhost. admin.localhost. ({} 3600 900 604800 300)\n  IN NS  localhost.\n",
+        serial
+    );
+
+    // Whitelist entries (passthru)
+    for domain in &c.whitelist {
+        let d = domain.trim().trim_end_matches('.');
+        if !d.is_empty() {
+            zone.push_str(&format!("{} CNAME rpz-passthru.\n", d));
+        }
+    }
+
+    // Download and parse blocklists
+    for url in &c.blocklist_urls {
+        if url.trim().is_empty() { continue; }
+        let output = tokio::process::Command::new("curl")
+            .args(["-sf", "--max-time", "30", url.trim()])
+            .output().await;
+        if let Ok(o) = output {
+            if o.status.success() {
+                let body = String::from_utf8_lossy(&o.stdout);
+                for line in body.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') || line.starts_with('!') { continue; }
+                    // hosts file format: "0.0.0.0 domain" or "127.0.0.1 domain" or just "domain"
+                    let domain = if line.starts_with("0.0.0.0") || line.starts_with("127.0.0.1") {
+                        line.split_whitespace().nth(1).unwrap_or("")
+                    } else {
+                        line.split_whitespace().next().unwrap_or("")
+                    };
+                    let domain = domain.trim().trim_end_matches('.');
+                    if domain.is_empty() || domain == "localhost" || domain == "local" { continue; }
+                    match c.blocklist_action.as_str() {
+                        "redirect" => {
+                            let ip = c.blocklist_redirect_ip.as_deref().unwrap_or("0.0.0.0");
+                            zone.push_str(&format!("{} A {}\n", domain, ip));
+                        }
+                        _ => zone.push_str(&format!("{} CNAME .\n", domain)),
+                    }
+                }
+            }
+        }
+    }
+
+    Some(zone)
+}
+
+// ============================================================
 // Handlers
 // ============================================================
 
 pub async fn resolver_status(
     State(state): State<AppState>,
 ) -> Result<Json<ResolverStatus>, StatusCode> {
-    let running = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "status"]).output().await
+    let config = load_config(&state.pool).await;
+    let is_rdns = config.backend == "rdns";
+
+    let service_name = if is_rdns { "rdns" } else { "local_unbound" };
+    let running = Command::new("sudo").args(["/usr/sbin/service", service_name, "status"]).output().await
         .map(|o| o.status.success()).unwrap_or(false);
 
-    let version = {
+    let version = if is_rdns {
+        let v = Command::new("/usr/local/sbin/rdns").arg("--version").output().await
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        if v.is_empty() { "rDNS".to_string() } else { v }
+    } else {
         let v = Command::new("unbound").arg("-V").output().await
             .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string())
             .unwrap_or_default();
-        if v.is_empty() {
-            Command::new("pkg").args(["query", "%v", "unbound"]).output().await
-                .map(|o| { let s = String::from_utf8_lossy(&o.stdout).trim().to_string(); if s.is_empty() { "not installed".to_string() } else { format!("Unbound {}", s) } })
-                .unwrap_or_else(|_| "not installed".to_string())
-        } else { v }
+        if v.is_empty() { "Unbound".to_string() } else { v }
     };
 
     let hosts = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_host_overrides")
@@ -466,19 +732,40 @@ pub async fn resolver_status(
     let acls = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_access_lists")
         .fetch_one(&state.pool).await.map(|r| r.0 as usize).unwrap_or(0);
 
-    // Get stats from unbound-control
-    let (cache_hits, cache_misses, queries_total) = Command::new("sudo")
-        .args(["/usr/local/sbin/unbound-control", "stats_noreset"]).output().await
-        .map(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let mut hits = 0u64; let mut misses = 0u64; let mut total = 0u64;
-            for line in s.lines() {
-                if line.starts_with("total.num.cachehits=") { hits = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
-                if line.starts_with("total.num.cachemiss=") { misses = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
-                if line.starts_with("total.num.queries=") { total = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
-            }
-            (hits, misses, total)
-        }).unwrap_or((0, 0, 0));
+    let (cache_hits, cache_misses, queries_total) = if is_rdns {
+        // rDNS stats via control socket
+        Command::new("/usr/local/sbin/rdns-control")
+            .args(["--socket", "/var/run/rdns/control.sock", "stats"]).output().await
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let mut hits = 0u64; let mut misses = 0u64;
+                for line in s.lines() {
+                    let parts: Vec<&str> = line.split('=').collect();
+                    if parts.len() == 2 {
+                        let val: u64 = parts[1].trim().parse().unwrap_or(0);
+                        match parts[0].trim() {
+                            "cache.hits" => hits = val,
+                            "cache.misses" => misses = val,
+                            _ => {}
+                        }
+                    }
+                }
+                (hits, misses, hits + misses)
+            }).unwrap_or((0, 0, 0))
+    } else {
+        Command::new("sudo")
+            .args(["/usr/local/sbin/unbound-control", "stats_noreset"]).output().await
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let mut hits = 0u64; let mut misses = 0u64; let mut total = 0u64;
+                for line in s.lines() {
+                    if line.starts_with("total.num.cachehits=") { hits = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
+                    if line.starts_with("total.num.cachemiss=") { misses = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
+                    if line.starts_with("total.num.queries=") { total = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
+                }
+                (hits, misses, total)
+            }).unwrap_or((0, 0, 0))
+    };
 
     Ok(Json(ResolverStatus {
         running, version, total_hosts: hosts, total_domains: domains, total_acls: acls,
@@ -497,7 +784,9 @@ pub async fn update_config_handler(
     Json(c): Json<ResolverConfig>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let pool = &state.pool;
+    save_key(pool, "backend", &c.backend).await;
     save_key(pool, "enabled", bool_str(c.enabled)).await;
+    save_key(pool, "dhcp_domain", &c.dhcp_domain).await;
     save_key(pool, "listen_interfaces", &c.listen_interfaces.join(",")).await;
     save_key(pool, "port", &c.port.to_string()).await;
     save_key(pool, "dnssec", bool_str(c.dnssec)).await;
@@ -540,9 +829,19 @@ pub async fn apply_resolver(
     State(state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let config = load_config(&state.pool).await;
-    let conf = generate_unbound_conf(&state.pool).await;
 
-    // Write config via shell pipe to sudo tee
+    match config.backend.as_str() {
+        "rdns" => apply_rdns(&state, &config).await,
+        _ => apply_unbound(&state, &config).await,
+    }
+}
+
+async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json<MessageResponse>, StatusCode> {
+    // Stop rDNS if running
+    let _ = Command::new("sudo").args(["/usr/sbin/service", "rdns", "stop"]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdns_enable=NO"]).output().await;
+
+    let conf = generate_unbound_conf(&state.pool).await;
     let tmp_path = "/tmp/aifw_unbound.conf";
     tokio::fs::write(tmp_path, &conf).await.map_err(|_| internal())?;
     let _ = Command::new("sh").args(["-c", "cat /tmp/aifw_unbound.conf | sudo /usr/bin/tee /var/unbound/unbound.conf > /dev/null"]).output().await;
@@ -557,9 +856,9 @@ pub async fn apply_resolver(
                 let msg = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
                 if o.status.success() {
                     state.set_pending(|p| p.dns = false).await;
-                    Ok(Json(MessageResponse { message: "DNS resolver config applied and restarted".to_string() }))
+                    Ok(Json(MessageResponse { message: "Unbound config applied and restarted".to_string() }))
                 } else {
-                    Ok(Json(MessageResponse { message: format!("DNS restart issue: {}", msg.trim()) }))
+                    Ok(Json(MessageResponse { message: format!("Unbound restart issue: {}", msg.trim()) }))
                 }
             }
             Err(e) => Ok(Json(MessageResponse { message: format!("Failed: {}", e) })),
@@ -572,26 +871,96 @@ pub async fn apply_resolver(
     }
 }
 
-// Service control
-pub async fn resolver_start() -> Result<Json<MessageResponse>, StatusCode> {
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=YES"]).output().await;
-    let o = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "start"]).output().await;
-    let msg = o.map(|o| {
-        let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-        if stdout.is_empty() && !stderr.is_empty() { stderr } else if stdout.is_empty() { "DNS resolver started".to_string() } else { stdout }
-    }).unwrap_or_else(|e| e.to_string());
-    Ok(Json(MessageResponse { message: msg }))
-}
-pub async fn resolver_stop() -> Result<Json<MessageResponse>, StatusCode> {
+async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<MessageResponse>, StatusCode> {
+    // Stop Unbound if running
     let _ = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "stop"]).output().await;
     let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=NO"]).output().await;
+
+    // Create directories
+    let _ = Command::new("sudo").args(["mkdir", "-p", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz", "/var/run/rdns", "/var/log/rdns"]).output().await;
+
+    // Generate and write rDNS config
+    let conf = generate_rdns_conf(&state.pool).await;
+    let tmp = "/tmp/aifw_rdns.toml";
+    tokio::fs::write(tmp, &conf).await.map_err(|_| internal())?;
+    let _ = Command::new("sh").args(["-c", &format!("cat {} | sudo /usr/bin/tee /usr/local/etc/rdns/rdns.toml > /dev/null", tmp)]).output().await;
+    let _ = tokio::fs::remove_file(tmp).await;
+
+    // Generate and write zone files
+    let zones = generate_rdns_zones(&state.pool).await;
+    // Clear old auto-generated zones
+    let _ = Command::new("sudo").args(["sh", "-c", "rm -f /usr/local/etc/rdns/zones/*.zone"]).output().await;
+    for (filename, content) in &zones {
+        let tmp_zone = format!("/tmp/aifw_zone_{}", filename);
+        tokio::fs::write(&tmp_zone, content).await.map_err(|_| internal())?;
+        let _ = Command::new("sh").args(["-c", &format!("cat {} | sudo /usr/bin/tee /usr/local/etc/rdns/zones/{} > /dev/null", tmp_zone, filename)]).output().await;
+        let _ = tokio::fs::remove_file(&tmp_zone).await;
+    }
+
+    // Generate and write RPZ blocklist
+    if let Some(rpz_content) = generate_rdns_rpz(&state.pool).await {
+        let tmp_rpz = "/tmp/aifw_rpz_blocklist.rpz";
+        tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
+        let _ = Command::new("sh").args(["-c", &format!("cat {} | sudo /usr/bin/tee /usr/local/etc/rdns/rpz/blocklist.rpz > /dev/null", tmp_rpz)]).output().await;
+        let _ = tokio::fs::remove_file(tmp_rpz).await;
+    }
+
+    if config.enabled {
+        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdns_enable=YES"]).output().await;
+        let output = Command::new("sudo").args(["/usr/sbin/service", "rdns", "restart"]).output().await;
+        match output {
+            Ok(o) => {
+                let msg = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+                if o.status.success() {
+                    state.set_pending(|p| p.dns = false).await;
+                    Ok(Json(MessageResponse { message: format!("rDNS config applied — {} zone file(s)", zones.len()) }))
+                } else {
+                    Ok(Json(MessageResponse { message: format!("rDNS restart issue: {}", msg.trim()) }))
+                }
+            }
+            Err(e) => Ok(Json(MessageResponse { message: format!("Failed: {}", e) })),
+        }
+    } else {
+        let _ = Command::new("sudo").args(["/usr/sbin/service", "rdns", "stop"]).output().await;
+        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdns_enable=NO"]).output().await;
+        state.set_pending(|p| p.dns = false).await;
+        Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
+    }
+}
+
+// Service control — backend-aware
+pub async fn resolver_start(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
+    let config = load_config(&state.pool).await;
+    let (svc, enable_key, other_svc, other_key) = if config.backend == "rdns" {
+        ("rdns", "rdns_enable=YES", "local_unbound", "local_unbound_enable=NO")
+    } else {
+        ("local_unbound", "local_unbound_enable=YES", "rdns", "rdns_enable=NO")
+    };
+    let _ = Command::new("sudo").args(["/usr/sbin/service", other_svc, "stop"]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", other_key]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", enable_key]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/service", svc, "start"]).output().await;
+    Ok(Json(MessageResponse { message: format!("{} started", if config.backend == "rdns" { "rDNS" } else { "Unbound" }) }))
+}
+pub async fn resolver_stop(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
+    let config = load_config(&state.pool).await;
+    let (svc, disable_key) = if config.backend == "rdns" { ("rdns", "rdns_enable=NO") } else { ("local_unbound", "local_unbound_enable=NO") };
+    let _ = Command::new("sudo").args(["/usr/sbin/service", svc, "stop"]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", disable_key]).output().await;
     Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
 }
-pub async fn resolver_restart() -> Result<Json<MessageResponse>, StatusCode> {
-    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "local_unbound_enable=YES"]).output().await;
-    let _ = Command::new("sudo").args(["/usr/sbin/service", "local_unbound", "restart"]).output().await;
-    Ok(Json(MessageResponse { message: "DNS resolver restarted".to_string() }))
+pub async fn resolver_restart(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
+    let config = load_config(&state.pool).await;
+    let (svc, enable_key, other_svc, other_key) = if config.backend == "rdns" {
+        ("rdns", "rdns_enable=YES", "local_unbound", "local_unbound_enable=NO")
+    } else {
+        ("local_unbound", "local_unbound_enable=YES", "rdns", "rdns_enable=NO")
+    };
+    let _ = Command::new("sudo").args(["/usr/sbin/service", other_svc, "stop"]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", other_key]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", enable_key]).output().await;
+    let _ = Command::new("sudo").args(["/usr/sbin/service", svc, "restart"]).output().await;
+    Ok(Json(MessageResponse { message: format!("{} restarted", if config.backend == "rdns" { "rDNS" } else { "Unbound" }) }))
 }
 
 // Host overrides CRUD
@@ -690,9 +1059,20 @@ pub async fn delete_acl(State(state): State<AppState>, Path(id): Path<String>) -
     Ok(Json(MessageResponse { message: "ACL entry deleted".to_string() }))
 }
 
-// Query log
-pub async fn resolver_logs() -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
-    let content = {
+// Query log — backend-aware
+pub async fn resolver_logs(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
+    let config = load_config(&state.pool).await;
+    let is_rdns = config.backend == "rdns";
+
+    let content = if is_rdns {
+        // rDNS logs to stderr (captured by daemon) — check syslog
+        let primary = Command::new("sudo").args(["/bin/cat", "/var/log/rdns.log"]).output().await;
+        match primary {
+            Ok(o) if o.status.success() && !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => Command::new("sudo").args(["/bin/cat", "/var/log/messages"]).output().await
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default(),
+        }
+    } else {
         let primary = Command::new("sudo").args(["/bin/cat", "/var/log/unbound.log"]).output().await;
         match primary {
             Ok(o) if o.status.success() && !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
@@ -701,8 +1081,9 @@ pub async fn resolver_logs() -> Result<Json<ApiResponse<Vec<String>>>, StatusCod
         }
     };
 
+    let filter_term = if is_rdns { "rdns" } else { "unbound" };
     let lines: Vec<String> = content.lines()
-        .filter(|l| l.contains("unbound"))
+        .filter(|l| l.to_lowercase().contains(filter_term))
         .map(String::from)
         .collect::<Vec<_>>()
         .into_iter().rev().take(200).collect();

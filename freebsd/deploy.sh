@@ -9,6 +9,7 @@ REPO_DIR="/root/AiFw"
 BINS="aifw aifw-api aifw-daemon aifw-setup aifw-tui"
 TRAFFICCOP_DIR="/root/trafficcop"
 RDHCP_DIR="/root/rDHCP"
+RDNS_DIR="/root/rDNS"
 BIN_DIR="/usr/local/sbin"
 UI_DIR="/usr/local/share/aifw/ui"
 
@@ -88,6 +89,21 @@ elif [ ! -f "$BIN_DIR/rdhcpd" ]; then
     cargo build --release 2>&1 | tail -3
     cd "$REPO_DIR"
 fi
+
+# Build rDNS if source available
+if [ -d "$RDNS_DIR" ]; then
+    echo "  Building rDNS..."
+    cd "$RDNS_DIR"
+    git pull 2>/dev/null || true
+    cargo build --release 2>&1 | tail -3
+    cd "$REPO_DIR"
+elif [ ! -f "$BIN_DIR/rdns" ]; then
+    echo "  Cloning rDNS..."
+    git clone https://github.com/ZerosAndOnesLLC/rDNS.git "$RDNS_DIR"
+    cd "$RDNS_DIR"
+    cargo build --release 2>&1 | tail -3
+    cd "$REPO_DIR"
+fi
 echo ""
 
 # --- Build UI ---
@@ -126,6 +142,15 @@ if [ -f "$RDHCP_DIR/target/release/rdhcpd" ]; then
     cp "$RDHCP_DIR/target/release/rdhcpd" "$BIN_DIR/rdhcpd"
     chmod 755 "$BIN_DIR/rdhcpd"
 fi
+# Copy rDNS binaries
+if [ -f "$RDNS_DIR/target/release/rdns" ]; then
+    cp "$RDNS_DIR/target/release/rdns" "$BIN_DIR/rdns"
+    chmod 755 "$BIN_DIR/rdns"
+fi
+if [ -f "$RDNS_DIR/target/release/rdns-control" ]; then
+    cp "$RDNS_DIR/target/release/rdns-control" "$BIN_DIR/rdns-control"
+    chmod 755 "$BIN_DIR/rdns-control"
+fi
 echo "  Binaries installed to $BIN_DIR"
 
 # Copy UI
@@ -141,6 +166,9 @@ mkdir -p /usr/local/etc/trafficcop
 chown -R aifw:aifw /usr/local/etc/trafficcop 2>/dev/null || true
 mkdir -p /var/db/rdhcpd/leases /var/log/rdhcpd /usr/local/etc/rdhcpd
 chown -R aifw:aifw /var/db/rdhcpd /var/log/rdhcpd /usr/local/etc/rdhcpd 2>/dev/null || true
+mkdir -p /usr/local/etc/rdns/zones /usr/local/etc/rdns/rpz /var/run/rdns /var/log/rdns
+# Create rdns user if not exists
+pw user show rdns >/dev/null 2>&1 || pw useradd rdns -d /nonexistent -s /usr/sbin/nologin -c "rDNS DNS Server" 2>/dev/null || true
 
 # Install TrafficCop default config if not present
 if [ ! -f /usr/local/etc/trafficcop/config.yaml ]; then
@@ -156,9 +184,13 @@ chmod 755 /usr/local/etc/rc.d/trafficcop
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/rdhcpd" /usr/local/etc/rc.d/rdhcpd
 chmod 755 /usr/local/etc/rc.d/rdhcpd
 
+# Install rDNS rc.d script
+cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/rdns" /usr/local/etc/rc.d/rdns
+chmod 755 /usr/local/etc/rc.d/rdns
+
 # Ensure sudoers for aifw user
 mkdir -p /usr/local/etc/sudoers.d
-echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /sbin/ifconfig, /sbin/dhclient, /sbin/route, /usr/sbin/service, /usr/sbin/sysrc, /usr/sbin/pkg, /usr/sbin/freebsd-update, /sbin/shutdown, /bin/cat, /bin/pkill, /usr/bin/pkill, /usr/bin/tee, /usr/sbin/chown' > /usr/local/etc/sudoers.d/aifw
+echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /sbin/ifconfig, /sbin/dhclient, /sbin/route, /usr/sbin/service, /usr/sbin/sysrc, /usr/sbin/pkg, /usr/sbin/freebsd-update, /sbin/shutdown, /bin/cat, /bin/pkill, /usr/bin/pkill, /usr/bin/tee, /usr/sbin/chown, /bin/mkdir' > /usr/local/etc/sudoers.d/aifw
 chmod 440 /usr/local/etc/sudoers.d/aifw
 
 echo ""

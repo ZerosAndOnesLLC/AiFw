@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# PROVIDE: rdns
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf to enable rdns:
+#   rdns_enable="YES"
+#   rdns_config="/usr/local/etc/rdns/rdns.toml"
+
+. /etc/rc.subr
+
+name="rdns"
+rcvar="rdns_enable"
+
+load_rc_config $name
+
+: ${rdns_enable:="NO"}
+: ${rdns_config:="/usr/local/etc/rdns/rdns.toml"}
+: ${rdns_user:="rdns"}
+: ${rdns_pidfile:="/var/run/rdns/rdns.pid"}
+
+pidfile="${rdns_pidfile}"
+command="/usr/local/sbin/rdns"
+command_args="-c ${rdns_config}"
+
+start_precmd="rdns_precmd"
+
+rdns_precmd()
+{
+    /bin/mkdir -p /var/run/rdns
+    /usr/sbin/chown ${rdns_user}:${rdns_user} /var/run/rdns
+}
+
+run_rc_command "$1"
