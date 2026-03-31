@@ -288,6 +288,11 @@ impl Rule {
             parts.push(dir);
         }
 
+        // log (must come before quick in pf syntax)
+        if self.log {
+            parts.push("log".to_string());
+        }
+
         // quick
         if self.quick {
             parts.push("quick".to_string());
@@ -334,11 +339,6 @@ impl Rule {
                 state_part.push_str(&format!(" (adaptive.start {}, adaptive.end {})", adaptive.start, adaptive.end));
             }
             parts.push(state_part);
-        }
-
-        // log
-        if self.log {
-            parts.push("log".to_string());
         }
 
         // label
