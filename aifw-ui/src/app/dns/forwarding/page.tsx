@@ -42,8 +42,7 @@ export default function DnsForwardingPage() {
     try {
       const res = await fetch("/api/v1/dns/resolver/config", { headers: authHeadersPlain() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
-      const c = body.data;
+      const c = await res.json();
       setForwardingEnabled(c.forwarding_enabled ?? false);
       setUseSystemNs(c.use_system_nameservers ?? false);
       setServers(c.forwarding_servers ?? []);
