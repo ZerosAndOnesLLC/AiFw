@@ -157,6 +157,10 @@ echo "  Binaries installed to $BIN_DIR"
 cp -a aifw-ui/out/* "$UI_DIR/"
 echo "  UI deployed to $UI_DIR"
 
+# Update version file
+echo "$VERSION" > /usr/local/share/aifw/version
+echo "  Version file updated to $VERSION"
+
 # Ensure permissions
 chown -R aifw:aifw /var/db/aifw 2>/dev/null || true
 chown -R aifw:aifw /var/log/aifw 2>/dev/null || true
