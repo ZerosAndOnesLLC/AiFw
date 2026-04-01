@@ -97,6 +97,18 @@ git pull 2>/dev/null || true
 cargo build --release
 cd "$PROJECT_ROOT"
 
+# Build rTIME (NTP/PTP time service)
+RTIME_DIR="$PROJECT_ROOT/../rTIME"
+if [ ! -d "$RTIME_DIR" ]; then
+    echo "Cloning rTIME..."
+    git clone https://github.com/ZerosAndOnesLLC/rTIME.git "$RTIME_DIR"
+fi
+echo "Building rTIME..."
+cd "$RTIME_DIR"
+git pull 2>/dev/null || true
+cargo build --release
+cd "$PROJECT_ROOT"
+
 # --- Stage build inputs ---
 echo "=== [4/6] Staging build inputs ==="
 mkdir -p "$SCRIPT_DIR/release"
@@ -114,6 +126,10 @@ fi
 # Stage rDNS binaries if built
 if [ -f "$RDNS_DIR/target/release/rdns" ]; then
     cp "$RDNS_DIR/target/release/rdns" "$SCRIPT_DIR/release/rdns"
+fi
+# Stage rTIME binary if built
+if [ -f "$RTIME_DIR/target/release/rtime" ]; then
+    cp "$RTIME_DIR/target/release/rtime" "$SCRIPT_DIR/release/rtime"
 fi
 if [ -f "$RDNS_DIR/target/release/rdns-control" ]; then
     cp "$RDNS_DIR/target/release/rdns-control" "$SCRIPT_DIR/release/rdns-control"
@@ -144,6 +160,10 @@ if [ -f "$RDNS_DIR/target/release/rdns" ]; then
 fi
 if [ -f "$RDNS_DIR/target/release/rdns-control" ]; then
     cp "$RDNS_DIR/target/release/rdns-control" "$TARBALL_DIR/bin/"
+fi
+# Include rTIME in update tarball
+if [ -f "$RTIME_DIR/target/release/rtime" ]; then
+    cp "$RTIME_DIR/target/release/rtime" "$TARBALL_DIR/bin/"
 fi
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
 echo "$VERSION" > "$TARBALL_DIR/version"

@@ -7,6 +7,7 @@ mod dns_resolver;
 mod iface;
 mod reverse_proxy;
 mod routes;
+mod time_service;
 mod updates;
 mod ws;
 
@@ -212,6 +213,16 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/reverse-proxy/tls/options/{id}", put(reverse_proxy::update_tls_option).delete(reverse_proxy::delete_tls_option))
         .route("/api/v1/reverse-proxy/cert-resolvers", get(reverse_proxy::list_cert_resolvers).post(reverse_proxy::create_cert_resolver))
         .route("/api/v1/reverse-proxy/cert-resolvers/{id}", put(reverse_proxy::update_cert_resolver).delete(reverse_proxy::delete_cert_resolver))
+        // Time Service (rTIME)
+        .route("/api/v1/time/status", get(time_service::time_status))
+        .route("/api/v1/time/start", post(time_service::time_start))
+        .route("/api/v1/time/stop", post(time_service::time_stop))
+        .route("/api/v1/time/restart", post(time_service::time_restart))
+        .route("/api/v1/time/config", get(time_service::get_config).put(time_service::update_config))
+        .route("/api/v1/time/apply", post(time_service::apply_config))
+        .route("/api/v1/time/sources", get(time_service::list_sources).post(time_service::create_source))
+        .route("/api/v1/time/sources/{id}", put(time_service::update_source).delete(time_service::delete_source))
+        .route("/api/v1/time/logs", get(time_service::time_logs))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/config/history", get(backup::config_history))
@@ -340,6 +351,7 @@ async fn create_state_from_db(
     iface::migrate(&pool).await?;
     dns_resolver::migrate(&pool).await?;
     reverse_proxy::migrate(&pool).await?;
+    time_service::migrate(&pool).await?;
     aifw_core::config_manager::ConfigManager::new(pool.clone()).migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let alias_engine = Arc::new(AliasEngine::new(pool.clone(), pf.clone()));
     alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;

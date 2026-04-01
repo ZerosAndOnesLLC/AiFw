@@ -10,6 +10,7 @@ BINS="aifw aifw-api aifw-daemon aifw-setup aifw-tui"
 TRAFFICCOP_DIR="/root/trafficcop"
 RDHCP_DIR="/root/rDHCP"
 RDNS_DIR="/root/rDNS"
+RTIME_DIR="/root/rTIME"
 BIN_DIR="/usr/local/sbin"
 UI_DIR="/usr/local/share/aifw/ui"
 
@@ -104,6 +105,21 @@ elif [ ! -f "$BIN_DIR/rdns" ]; then
     cargo build --release 2>&1 | tail -3
     cd "$REPO_DIR"
 fi
+
+# Build rTIME if source available
+if [ -d "$RTIME_DIR" ]; then
+    echo "  Building rTIME..."
+    cd "$RTIME_DIR"
+    git pull 2>/dev/null || true
+    cargo build --release 2>&1 | tail -3
+    cd "$REPO_DIR"
+elif [ ! -f "$BIN_DIR/rtime" ]; then
+    echo "  Cloning rTIME..."
+    git clone https://github.com/ZerosAndOnesLLC/rTIME.git "$RTIME_DIR"
+    cd "$RTIME_DIR"
+    cargo build --release 2>&1 | tail -3
+    cd "$REPO_DIR"
+fi
 echo ""
 
 # --- Build UI ---
@@ -125,6 +141,9 @@ pkill -9 -f rdhcpd 2>/dev/null || true
 service rdns stop 2>/dev/null || true
 pkill -9 -f "daemon.*rdns" 2>/dev/null || true
 pkill -9 -f rdns 2>/dev/null || true
+service rtime stop 2>/dev/null || true
+pkill -9 -f "daemon.*rtime" 2>/dev/null || true
+pkill -9 -f rtime 2>/dev/null || true
 service aifw_api stop 2>/dev/null || true
 service aifw_daemon stop 2>/dev/null || true
 pkill -9 -f "aifw-api.*8081" 2>/dev/null || true
@@ -154,6 +173,11 @@ if [ -f "$RDNS_DIR/target/release/rdns-control" ]; then
     cp "$RDNS_DIR/target/release/rdns-control" "$BIN_DIR/rdns-control"
     chmod 755 "$BIN_DIR/rdns-control"
 fi
+# Copy rTIME binary
+if [ -f "$RTIME_DIR/target/release/rtime" ]; then
+    cp "$RTIME_DIR/target/release/rtime" "$BIN_DIR/rtime"
+    chmod 755 "$BIN_DIR/rtime"
+fi
 echo "  Binaries installed to $BIN_DIR"
 
 # Copy UI
@@ -176,6 +200,8 @@ chown -R aifw:aifw /var/db/rdhcpd /var/log/rdhcpd /usr/local/etc/rdhcpd 2>/dev/n
 mkdir -p /usr/local/etc/rdns/zones /usr/local/etc/rdns/rpz /var/run/rdns /var/log/rdns
 # Create rdns user if not exists
 pw user show rdns >/dev/null 2>&1 || pw useradd rdns -d /nonexistent -s /usr/sbin/nologin -c "rDNS DNS Server" 2>/dev/null || true
+mkdir -p /usr/local/etc/rtime /var/run/rtime /var/log/rtime
+chown -R aifw:aifw /usr/local/etc/rtime /var/log/rtime 2>/dev/null || true
 
 # Install TrafficCop default config if not present
 if [ ! -f /usr/local/etc/trafficcop/config.yaml ]; then
@@ -194,6 +220,10 @@ chmod 755 /usr/local/etc/rc.d/rdhcpd
 # Install rDNS rc.d script
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/rdns" /usr/local/etc/rc.d/rdns
 chmod 755 /usr/local/etc/rc.d/rdns
+
+# Install rTIME rc.d script
+cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/rtime" /usr/local/etc/rc.d/rtime
+chmod 755 /usr/local/etc/rc.d/rtime
 
 # Ensure sudoers for aifw user
 mkdir -p /usr/local/etc/sudoers.d
@@ -217,6 +247,10 @@ fi
 # Start rDNS if enabled
 if [ "$(sysrc -n rdns_enable 2>/dev/null)" = "YES" ]; then
     service rdns start </dev/null >/dev/null 2>&1 || true
+fi
+# Start rTIME if enabled
+if [ "$(sysrc -n rtime_enable 2>/dev/null)" = "YES" ]; then
+    service rtime start </dev/null >/dev/null 2>&1 || true
 fi
 sleep 1
 

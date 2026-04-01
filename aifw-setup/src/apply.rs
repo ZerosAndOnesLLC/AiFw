@@ -118,6 +118,15 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n";
         });
     console::success("rDNS configured");
 
+    // 5c4. Setup rTIME directories
+    console::info("Configuring rTIME time service...");
+    for dir in ["/usr/local/etc/rtime", "/var/run/rtime", "/var/log/rtime"] {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/usr/local/etc/rtime"]).status();
+    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/var/log/rtime"]).status();
+    console::success("rTIME configured");
+
     // 5d. Configure devfs rules for /dev/pf and /dev/bpf* access
     console::info("Configuring device permissions...");
     configure_devfs()?;
