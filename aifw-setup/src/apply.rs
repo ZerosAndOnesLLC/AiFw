@@ -177,6 +177,69 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n";
         console::success("DNS configured");
     }
 
+    // 8. Configure network interfaces in rc.conf
+    #[cfg(target_os = "freebsd")]
+    {
+        use std::process::Command;
+        console::info("Configuring network interfaces...");
+
+        // WAN interface
+        match config.wan_mode {
+            crate::config::WanMode::Dhcp => {
+                let _ = Command::new("sysrc").args([&format!("ifconfig_{}=DHCP", config.wan_interface)]).output();
+            }
+            crate::config::WanMode::Static => {
+                if let Some(ref ip) = config.wan_ip {
+                    let _ = Command::new("sysrc").args([&format!("ifconfig_{}=inet {}", config.wan_interface, ip)]).output();
+                }
+                if let Some(ref gw) = config.wan_gateway {
+                    let _ = Command::new("sysrc").args([&format!("defaultrouter={}", gw)]).output();
+                }
+            }
+            crate::config::WanMode::Pppoe => {
+                let _ = Command::new("sysrc").args([&format!("ifconfig_{}=DHCP", config.wan_interface)]).output();
+            }
+        }
+
+        // LAN interface
+        if let (Some(ref iface), Some(ref ip)) = (&config.lan_interface, &config.lan_ip) {
+            let _ = Command::new("sysrc").args([&format!("ifconfig_{}=inet {}", iface, ip)]).output();
+            // Apply immediately
+            let _ = Command::new("ifconfig").args([iface.as_str(), "inet", ip]).output();
+        }
+
+        // Gateway forwarding
+        let _ = Command::new("sysrc").args(["gateway_enable=YES"]).output();
+
+        console::success("Network interfaces configured");
+    }
+
+    // 9. Start services
+    #[cfg(target_os = "freebsd")]
+    {
+        use std::process::Command;
+        console::info("Starting services...");
+
+        // Load pf rules
+        let _ = Command::new("pfctl").args(["-f", &format!("{}/pf.conf.aifw", config.config_dir)]).output();
+        console::success("pf rules loaded");
+
+        // Start core services
+        let _ = Command::new("service").args(["aifw_daemon", "start"]).output();
+        let _ = Command::new("service").args(["aifw_api", "start"]).output();
+        console::success("AiFw daemon and API started");
+
+        // Start rDNS
+        let _ = Command::new("service").args(["rdns", "start"]).output();
+        console::success("rDNS started");
+
+        // Start rDHCP if enabled
+        if config.dhcp_enabled {
+            let _ = Command::new("service").args(["rdhcpd", "start"]).output();
+            console::success("rDHCP started");
+        }
+    }
+
     console::header("Setup Complete");
     console::success(&format!("AiFw is configured on {}", config.hostname));
     console::info("");
@@ -184,13 +247,6 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n";
     console::info(&format!("  API:      https://{}:{}/api/v1/", config.api_listen, config.api_port));
     console::info(&format!("  Admin:    {}", config.admin_username));
     console::info(&format!("  MFA:      {}", if config.totp_enabled { "enabled" } else { "disabled" }));
-    console::info("");
-    console::info("To start services:");
-    console::info("  service aifw_daemon start");
-    console::info("  service aifw_api start");
-    console::info("");
-    console::info("To apply pf rules:");
-    console::info(&format!("  pfctl -f {}/pf.conf.aifw", config.config_dir));
     console::info("");
 
     Ok(())

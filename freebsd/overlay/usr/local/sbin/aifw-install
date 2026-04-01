@@ -337,8 +337,26 @@ write_rc_conf() {
         sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_firstboot_enable="YES"
     fi
 
-    # TrafficCop disabled by default (user enables via UI)
-    sysrc -f "$INSTALL_ROOT/etc/rc.conf" trafficcop_enable="NO"
+    # Copy network interface settings from live system
+    for var in $(sysrc -aN 2>/dev/null | grep -E '^ifconfig_|^defaultrouter'); do
+        val=$(sysrc -n "$var" 2>/dev/null)
+        if [ -n "$val" ]; then
+            sysrc -f "$INSTALL_ROOT/etc/rc.conf" "${var}=${val}"
+        fi
+    done
+
+    # Copy service enable flags from live system
+    for svc in rdhcpd rdns rtime trafficcop; do
+        val=$(sysrc -n "${svc}_enable" 2>/dev/null)
+        if [ -n "$val" ]; then
+            sysrc -f "$INSTALL_ROOT/etc/rc.conf" "${svc}_enable=${val}"
+        fi
+    done
+
+    # TrafficCop disabled by default if not already set
+    if ! sysrc -f "$INSTALL_ROOT/etc/rc.conf" -c trafficcop_enable 2>/dev/null; then
+        sysrc -f "$INSTALL_ROOT/etc/rc.conf" trafficcop_enable="NO"
+    fi
 
     # ZFS-specific
     if [ "$FS_TYPE" = "zfs" ]; then
