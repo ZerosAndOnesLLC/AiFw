@@ -311,8 +311,8 @@ ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
 echo "[9/9] Building USB image..."
 
 IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
-# Stage size + headroom for EFI partition (260MB), UFS journal, inodes, and metadata
-IMG_SIZE=$(du -sm "$STAGEDIR" | awk '{print int($1 * 2) + 300}')
+# Fixed 2GB image — plenty of room for base system + AiFw + headroom
+IMG_SIZE=2048
 
 # Clean up any stale md devices from previous failed runs
 for stale_md in $(mdconfig -l 2>/dev/null); do
