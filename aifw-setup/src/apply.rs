@@ -202,7 +202,7 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n";
         }
 
         // LAN interface
-        if let (Some(ref iface), Some(ref ip)) = (&config.lan_interface, &config.lan_ip) {
+        if let (Some(iface), Some(ip)) = (&config.lan_interface, &config.lan_ip) {
             let _ = Command::new("sysrc").args([&format!("ifconfig_{}=inet {}", iface, ip)]).output();
             // Apply immediately
             let _ = Command::new("ifconfig").args([iface.as_str(), "inet", ip]).output();
