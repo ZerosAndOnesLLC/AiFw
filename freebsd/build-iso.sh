@@ -91,29 +91,18 @@ rm -rf "$STAGEDIR/usr/share/dtrace"
 rm -rf "$STAGEDIR/usr/tests"
 rm -rf "$STAGEDIR/usr/lib/debug"
 rm -rf "$STAGEDIR/usr/lib/clang"
-rm -rf "$STAGEDIR/rescue"
-
-# Profiling libraries
-rm -rf "$STAGEDIR/usr/lib"/*.a 2>/dev/null || true
-
-# Unnecessary binaries — compilers, debuggers, profilers
+# Compilers, debuggers, headers (not needed on an appliance)
 rm -f "$STAGEDIR/usr/bin/clang"* "$STAGEDIR/usr/bin/llvm"* "$STAGEDIR/usr/bin/lldb"*
 rm -f "$STAGEDIR/usr/bin/cc" "$STAGEDIR/usr/bin/c++" "$STAGEDIR/usr/bin/cpp"
 rm -f "$STAGEDIR/usr/bin/gdb"* "$STAGEDIR/usr/bin/objdump"
 rm -f "$STAGEDIR/usr/bin/addr2line" "$STAGEDIR/usr/bin/readelf"
 rm -f "$STAGEDIR/usr/bin/lld" "$STAGEDIR/usr/bin/ld.lld"
 rm -rf "$STAGEDIR/usr/include"
+rm -rf "$STAGEDIR/usr/lib/clang"
 
-# Strip debug symbols from all binaries and libraries
-find "$STAGEDIR/usr/bin" "$STAGEDIR/usr/sbin" "$STAGEDIR/usr/local/sbin" \
-     "$STAGEDIR/bin" "$STAGEDIR/sbin" \
-     -type f -perm +0111 -exec strip -s {} \; 2>/dev/null || true
-find "$STAGEDIR/usr/lib" "$STAGEDIR/usr/local/lib" "$STAGEDIR/lib" \
-     -name '*.so*' -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
-
-# Strip debug info from kernel modules (keep all modules for hardware compatibility)
-if [ -d "$STAGEDIR/boot/kernel" ]; then
-    find "$STAGEDIR/boot/kernel" -name '*.ko' -exec strip --strip-debug {} \; 2>/dev/null || true
+# Strip only AiFw binaries (leave base system untouched for stability)
+if [ -d "$STAGEDIR/usr/local/sbin" ]; then
+    find "$STAGEDIR/usr/local/sbin" -type f -perm +0111 -exec strip -s {} \; 2>/dev/null || true
 fi
 
 echo "  Stripped size: $(du -sh "$STAGEDIR" | awk '{print $1}')"
