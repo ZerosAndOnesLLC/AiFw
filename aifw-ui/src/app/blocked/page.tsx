@@ -25,7 +25,6 @@ const TIME_PERIODS = [
 ];
 
 function parseTimestamp(ts: string): number {
-  // Format: "2026-04-01T13:09:28.475326"
   const d = new Date(ts);
   return isNaN(d.getTime()) ? 0 : d.getTime();
 }
@@ -43,25 +42,63 @@ export default function BlockedTrafficPage() {
   const ws = useWs();
   const allEntries = (ws.blocked as unknown) as BlockedEntry[];
   const loading = !ws.connected;
+
+  const [timePeriod, setTimePeriod] = useState(24);
   const [filterProto, setFilterProto] = useState<string>("all");
   const [filterIface, setFilterIface] = useState<string>("all");
-  const [timePeriod, setTimePeriod] = useState(24);
+  const [filterDir, setFilterDir] = useState<string>("all");
+  const [filterAction, setFilterAction] = useState<string>("all");
+  const [filterSrcAddr, setFilterSrcAddr] = useState("");
+  const [filterDstAddr, setFilterDstAddr] = useState("");
+  const [filterSrcPort, setFilterSrcPort] = useState("");
+  const [filterDstPort, setFilterDstPort] = useState("");
 
-  // Time-filtered entries
-  const entries = useMemo(() => {
+  const hasFilters = filterProto !== "all" || filterIface !== "all" || filterDir !== "all" || filterAction !== "all" || filterSrcAddr || filterDstAddr || filterSrcPort || filterDstPort;
+
+  const clearFilters = () => {
+    setFilterProto("all"); setFilterIface("all"); setFilterDir("all"); setFilterAction("all");
+    setFilterSrcAddr(""); setFilterDstAddr(""); setFilterSrcPort(""); setFilterDstPort("");
+  };
+
+  // Available values for dropdowns (from all time-filtered data)
+  const timeFiltered = useMemo(() => {
     if (timePeriod === 0) return allEntries;
     const cutoff = Date.now() - timePeriod * 3600_000;
     return allEntries.filter(e => parseTimestamp(e.timestamp) >= cutoff);
   }, [allEntries, timePeriod]);
 
-  // Aggregate stats from time-filtered entries
+  const interfaces = useMemo(() => [...new Set(timeFiltered.map(e => e.interface).filter(Boolean))], [timeFiltered]);
+  const protocols = useMemo(() => {
+    const seen = new Set(timeFiltered.map(e => e.protocol).filter(Boolean));
+    for (const p of ["tcp", "udp", "icmp"]) seen.add(p);
+    return [...seen];
+  }, [timeFiltered]);
+  const directions = useMemo(() => [...new Set(timeFiltered.map(e => e.direction).filter(Boolean))], [timeFiltered]);
+  const actions = useMemo(() => [...new Set(timeFiltered.map(e => e.action).filter(Boolean))], [timeFiltered]);
+
+  // Apply all filters
+  const filtered = useMemo(() => {
+    return timeFiltered.filter(e => {
+      if (filterProto !== "all" && e.protocol !== filterProto) return false;
+      if (filterIface !== "all" && e.interface !== filterIface) return false;
+      if (filterDir !== "all" && e.direction !== filterDir) return false;
+      if (filterAction !== "all" && e.action !== filterAction) return false;
+      if (filterSrcAddr && !e.src_addr.includes(filterSrcAddr)) return false;
+      if (filterDstAddr && !e.dst_addr.includes(filterDstAddr)) return false;
+      if (filterSrcPort && e.src_port !== Number(filterSrcPort)) return false;
+      if (filterDstPort && e.dst_port !== Number(filterDstPort)) return false;
+      return true;
+    });
+  }, [timeFiltered, filterProto, filterIface, filterDir, filterAction, filterSrcAddr, filterDstAddr, filterSrcPort, filterDstPort]);
+
+  // Stats computed from filtered set
   const stats = useMemo(() => {
     const bySource: Record<string, { count: number; lastSeen: string }> = {};
     const byPort: Record<string, number> = {};
     const byProto: Record<string, number> = {};
     const byIface: Record<string, number> = {};
 
-    for (const e of entries) {
+    for (const e of filtered) {
       if (!bySource[e.src_addr]) bySource[e.src_addr] = { count: 0, lastSeen: e.timestamp };
       bySource[e.src_addr].count++;
       if (e.dst_port > 0) byPort[`${e.dst_port}/${e.protocol}`] = (byPort[`${e.dst_port}/${e.protocol}`] || 0) + 1;
@@ -79,23 +116,8 @@ export default function BlockedTrafficPage() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
-    return { topSources, topPorts, byProto, byIface, total: entries.length };
-  }, [entries]);
-
-  const filtered = useMemo(() => {
-    return entries.filter(e => {
-      if (filterProto !== "all" && e.protocol !== filterProto) return false;
-      if (filterIface !== "all" && e.interface !== filterIface) return false;
-      return true;
-    });
-  }, [entries, filterProto, filterIface]);
-
-  const interfaces = useMemo(() => [...new Set(entries.map(e => e.interface).filter(Boolean))], [entries]);
-  const protocols = useMemo(() => {
-    const seen = new Set(entries.map(e => e.protocol).filter(Boolean));
-    for (const p of ["tcp", "udp", "icmp"]) seen.add(p);
-    return [...seen];
-  }, [entries]);
+    return { topSources, topPorts, byProto, byIface, total: filtered.length };
+  }, [filtered]);
 
   const maxSourceCount = stats.topSources[0]?.count || 1;
 
@@ -105,11 +127,10 @@ export default function BlockedTrafficPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Blocked Traffic</h1>
           <p className="text-sm text-gray-400">
-            Non-accepted connections rejected by firewall policy &middot; {stats.total} events
+            Non-accepted connections rejected by firewall policy &middot; {stats.total} events{hasFilters ? ` (filtered from ${timeFiltered.length})` : ""}
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {/* Time period selector */}
           <div className="flex items-center bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
             {TIME_PERIODS.map(tp => (
               <button key={tp.label} onClick={() => setTimePeriod(tp.hours)}
@@ -122,6 +143,47 @@ export default function BlockedTrafficPage() {
             <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
             <span className="text-xs text-gray-500">{ws.connected ? "Live" : "..."}</span>
           </div>
+        </div>
+      </div>
+
+      {/* Filters — above all metrics */}
+      <div className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-gray-400 font-medium">Filters</span>
+          {hasFilters && (
+            <button onClick={clearFilters} className="text-[10px] text-blue-400 hover:text-blue-300">Clear all</button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={filterAction} onChange={(e) => setFilterAction(e.target.value)}
+            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white min-w-[90px]">
+            <option value="all">Any Action</option>
+            {actions.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <select value={filterProto} onChange={(e) => setFilterProto(e.target.value)}
+            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white min-w-[100px]">
+            <option value="all">Any Protocol</option>
+            {protocols.map(p => <option key={p} value={p}>{p.toUpperCase()}</option>)}
+          </select>
+          <select value={filterIface} onChange={(e) => setFilterIface(e.target.value)}
+            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white min-w-[100px]">
+            <option value="all">Any Interface</option>
+            {interfaces.map(i => <option key={i} value={i}>{i}</option>)}
+          </select>
+          <select value={filterDir} onChange={(e) => setFilterDir(e.target.value)}
+            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white min-w-[90px]">
+            <option value="all">Any Direction</option>
+            {directions.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <input type="text" placeholder="Source IP" value={filterSrcAddr} onChange={(e) => setFilterSrcAddr(e.target.value)}
+            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white w-28 placeholder-gray-600" />
+          <input type="text" placeholder="Src Port" value={filterSrcPort} onChange={(e) => setFilterSrcPort(e.target.value.replace(/\D/g, ""))}
+            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white w-20 placeholder-gray-600" />
+          <input type="text" placeholder="Dest IP" value={filterDstAddr} onChange={(e) => setFilterDstAddr(e.target.value)}
+            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white w-28 placeholder-gray-600" />
+          <input type="text" placeholder="Dst Port" value={filterDstPort} onChange={(e) => setFilterDstPort(e.target.value.replace(/\D/g, ""))}
+            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white w-20 placeholder-gray-600" />
+          <span className="text-[10px] text-gray-600 ml-auto">{filtered.length} matches</span>
         </div>
       </div>
 
@@ -161,7 +223,7 @@ export default function BlockedTrafficPage() {
           ) : (
             <div className="divide-y divide-gray-700/50">
               {stats.topSources.map((s, i) => (
-                <div key={s.ip} className="px-4 py-2 hover:bg-gray-700/30">
+                <div key={s.ip} className="px-4 py-2 hover:bg-gray-700/30 cursor-pointer" onClick={() => setFilterSrcAddr(s.ip)}>
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] text-gray-600 w-4">{i + 1}.</span>
@@ -190,7 +252,7 @@ export default function BlockedTrafficPage() {
               {stats.topPorts.map(p => {
                 const [port, proto] = p.port.split('/');
                 return (
-                  <div key={p.port} className="px-4 py-1.5 hover:bg-gray-700/30 flex items-center gap-3">
+                  <div key={p.port} className="px-4 py-1.5 hover:bg-gray-700/30 cursor-pointer flex items-center gap-3" onClick={() => { setFilterDstPort(port); if (proto) setFilterProto(proto); }}>
                     <span className={`uppercase text-[10px] font-bold w-7 ${proto === "tcp" ? "text-blue-400" : proto === "udp" ? "text-purple-400" : "text-gray-400"}`}>{proto}</span>
                     <span className="font-mono text-xs text-amber-400 w-14 text-right">{port}</span>
                     <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
@@ -203,22 +265,6 @@ export default function BlockedTrafficPage() {
             </div>
           )}
         </div>
-      </div>
-
-      {/* Filters */}
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-gray-500">Filter:</span>
-        <select value={filterProto} onChange={(e) => setFilterProto(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
-          <option value="all">All Protocols</option>
-          {protocols.map(p => <option key={p} value={p}>{p.toUpperCase()}</option>)}
-        </select>
-        <select value={filterIface} onChange={(e) => setFilterIface(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
-          <option value="all">All Interfaces</option>
-          {interfaces.map(i => <option key={i} value={i}>{i}</option>)}
-        </select>
-        <span className="text-[10px] text-gray-600 ml-auto">{filtered.length} entries</span>
       </div>
 
       {/* Event Log Table */}
