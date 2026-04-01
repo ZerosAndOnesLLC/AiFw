@@ -210,6 +210,14 @@ clone_system() {
     chown -R 470:470 "$INSTALL_ROOT/var/log/aifw" 2>/dev/null || true
     chown -R 470:470 "$INSTALL_ROOT/var/log/trafficcop" 2>/dev/null || true
 
+    # Verify critical system files exist
+    for f in usr/libexec/getty libexec/ld-elf.so.1 bin/sh sbin/init; do
+        if [ ! -f "$INSTALL_ROOT/$f" ]; then
+            echo "  WARNING: Missing critical file /$f — retrying copy..."
+            tar -cf - -C / "$(dirname $f)" 2>/dev/null | tar -xpf - -C "$INSTALL_ROOT" 2>/dev/null
+        fi
+    done
+
     # Create other required directories
     mkdir -p "$INSTALL_ROOT/dev"
     mkdir -p "$INSTALL_ROOT/mnt"
@@ -347,6 +355,11 @@ LOADER
 fix_ttys() {
     # ttyv0: auto-login to console menu on physical terminal
     sed -i '' 's|^ttyv0.*|ttyv0 "/usr/libexec/getty autologin" xterm on secure|' "$INSTALL_ROOT/etc/ttys"
+
+    # Disable unused virtual terminals (ttyv1-ttyv8) — appliance only uses ttyv0
+    for vt in ttyv1 ttyv2 ttyv3 ttyv4 ttyv5 ttyv6 ttyv7 ttyv8; do
+        sed -i '' "s|^${vt}.*|${vt} \"/usr/libexec/getty Pc\" xterm off secure|" "$INSTALL_ROOT/etc/ttys"
+    done
 
     # Ensure gettytab has autologin entry
     if ! grep -q 'autologin' "$INSTALL_ROOT/etc/gettytab" 2>/dev/null; then

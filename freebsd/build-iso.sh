@@ -237,6 +237,11 @@ LOADER
 # /etc/ttys — auto-login on ttyv0 runs the console menu
 sed -i '' 's|^ttyv0.*|ttyv0 "/usr/libexec/getty autologin" xterm on secure|' "$STAGEDIR/etc/ttys"
 
+# Disable unused virtual terminals — appliance only uses ttyv0
+for vt in ttyv1 ttyv2 ttyv3 ttyv4 ttyv5 ttyv6 ttyv7 ttyv8; do
+    sed -i '' "s|^${vt}.*|${vt} \"/usr/libexec/getty Pc\" xterm off secure|" "$STAGEDIR/etc/ttys"
+done
+
 # Add aifw-console to /etc/shells so it can be used as a login shell
 echo "/usr/local/sbin/aifw-console" >> "$STAGEDIR/etc/shells"
 
