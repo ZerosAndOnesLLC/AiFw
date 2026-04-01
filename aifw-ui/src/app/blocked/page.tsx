@@ -59,7 +59,11 @@ export default function BlockedTrafficPage() {
   }, [entries, filterProto, filterIface]);
 
   const interfaces = useMemo(() => [...new Set(entries.map(e => e.interface).filter(Boolean))], [entries]);
-  const protocols = useMemo(() => [...new Set(entries.map(e => e.protocol).filter(Boolean))], [entries]);
+  const protocols = useMemo(() => {
+    const seen = new Set(entries.map(e => e.protocol).filter(Boolean));
+    for (const p of ["tcp", "udp", "icmp"]) seen.add(p);
+    return [...seen];
+  }, [entries]);
 
   const maxSourceCount = stats.topSources[0]?.count || 1;
 

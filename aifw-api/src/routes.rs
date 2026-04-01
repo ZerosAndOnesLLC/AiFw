@@ -1180,7 +1180,13 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                             if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
                                 entry.src_addr = maybe_ip.to_string();
                                 entry.src_port = port;
+                            } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
+                                // Last octet looks like a port but IP part has too few dots —
+                                // this is a plain IP (e.g. ICMP 192.168.1.1)
+                                entry.src_addr = src_token.to_string();
                             }
+                        } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
+                            entry.src_addr = src_token.to_string();
                         }
                     }
 
@@ -1194,7 +1200,11 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                             if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
                                 entry.dst_addr = maybe_ip.to_string();
                                 entry.dst_port = port;
+                            } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
+                                entry.dst_addr = dst_token.to_string();
                             }
+                        } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
+                            entry.dst_addr = dst_token.to_string();
                         }
                     }
                 }
