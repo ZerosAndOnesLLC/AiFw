@@ -15,14 +15,46 @@ interface BlockedEntry {
   dst_port: number;
 }
 
+const TIME_PERIODS = [
+  { label: "1h", hours: 1 },
+  { label: "6h", hours: 6 },
+  { label: "12h", hours: 12 },
+  { label: "24h", hours: 24 },
+  { label: "7d", hours: 168 },
+  { label: "All", hours: 0 },
+];
+
+function parseTimestamp(ts: string): number {
+  // Format: "2026-04-01T13:09:28.475326"
+  const d = new Date(ts);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+function formatTime(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 export default function BlockedTrafficPage() {
   const ws = useWs();
-  const entries = (ws.blocked as unknown) as BlockedEntry[];
+  const allEntries = (ws.blocked as unknown) as BlockedEntry[];
   const loading = !ws.connected;
   const [filterProto, setFilterProto] = useState<string>("all");
   const [filterIface, setFilterIface] = useState<string>("all");
+  const [timePeriod, setTimePeriod] = useState(24);
 
-  // Aggregate stats
+  // Time-filtered entries
+  const entries = useMemo(() => {
+    if (timePeriod === 0) return allEntries;
+    const cutoff = Date.now() - timePeriod * 3600_000;
+    return allEntries.filter(e => parseTimestamp(e.timestamp) >= cutoff);
+  }, [allEntries, timePeriod]);
+
+  // Aggregate stats from time-filtered entries
   const stats = useMemo(() => {
     const bySource: Record<string, { count: number; lastSeen: string }> = {};
     const byPort: Record<string, number> = {};
@@ -76,9 +108,20 @@ export default function BlockedTrafficPage() {
             Non-accepted connections rejected by firewall policy &middot; {stats.total} events
           </p>
         </div>
-        <div className="flex items-center gap-1.5">
-          <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
-          <span className="text-xs text-gray-500">{ws.connected ? "Live" : "..."}</span>
+        <div className="flex items-center gap-3">
+          {/* Time period selector */}
+          <div className="flex items-center bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+            {TIME_PERIODS.map(tp => (
+              <button key={tp.label} onClick={() => setTimePeriod(tp.hours)}
+                className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${timePeriod === tp.hours ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-700"}`}>
+                {tp.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
+            <span className="text-xs text-gray-500">{ws.connected ? "Live" : "..."}</span>
+          </div>
         </div>
       </div>
 
@@ -199,7 +242,7 @@ export default function BlockedTrafficPage() {
                 <tr><td colSpan={6} className="text-center py-8 text-gray-500">No blocked traffic — your network is clean</td></tr>
               ) : filtered.map((e, i) => (
                 <tr key={i} className="border-b border-gray-700/30 hover:bg-gray-700/20">
-                  <td className="py-1.5 px-3 text-gray-500 font-mono text-[10px]">{e.timestamp}</td>
+                  <td className="py-1.5 px-3 text-gray-500 font-mono text-[10px]">{formatTime(e.timestamp)}</td>
                   <td className="py-1.5 px-3 text-gray-400">{e.interface}</td>
                   <td className="py-1.5 px-3">
                     <span className={`uppercase font-bold ${e.protocol === "tcp" ? "text-blue-400" : e.protocol === "udp" ? "text-purple-400" : e.protocol === "icmp" ? "text-cyan-400" : "text-gray-400"}`}>{e.protocol}</span>

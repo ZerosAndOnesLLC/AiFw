@@ -1129,14 +1129,12 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
     // Read from /var/log/pflog binary — this is where pf logs all block/pass with log flag
     // tcpdump -n -e -r /var/log/pflog shows: "rule X(match): block/pass in/out on iface: src > dst"
     if let Ok(output) = tokio::process::Command::new("sudo")
-        .args(["/usr/sbin/tcpdump", "-n", "-e", "-r", "/var/log/pflog"])
+        .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
         .output().await
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().rev() {
-                // Format: "17:02:16.372520 rule 0.aifw.0/0(match): block in on em0: 1.2.3.4.12345 > 5.6.7.8.80: ..."
-                // We want both block AND pass-with-log to show scan attempts
                 let action = if line.contains(": block ") {
                     "block"
                 } else if line.contains(": pass ") {
@@ -1145,8 +1143,14 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                     continue;
                 };
 
+                // -tttt format: "2026-04-01 13:09:28.475326 rule ..."
+                let mut words = line.split_whitespace();
+                let date_part = words.next().unwrap_or("");
+                let time_part = words.next().unwrap_or("");
+                let timestamp = format!("{date_part}T{time_part}");
+
                 let mut entry = BlockedEntry {
-                    timestamp: line.split_whitespace().next().unwrap_or("").to_string(),
+                    timestamp,
                     action: action.to_string(),
                     direction: String::new(),
                     interface: String::new(),
@@ -1158,19 +1162,15 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                     reason: "policy".to_string(),
                 };
 
-                // Parse "block in on em0:" or "pass in on em0:"
                 let action_pos = if action == "block" { line.find(": block ") } else { line.find(": pass ") };
                 if let Some(pos) = action_pos {
                     let rest = &line[pos + 2..];
                     let parts: Vec<&str> = rest.split_whitespace().collect();
-                    // parts[0] = "block"/"pass", [1] = "in"/"out", [2] = "on", [3] = "em0:"
                     entry.direction = parts.get(1).unwrap_or(&"").to_string();
                     entry.interface = parts.get(3).map(|s| s.trim_end_matches(':')).unwrap_or("").to_string();
                 }
 
-                // Parse "src.port > dst.port:" addresses
                 if let Some(gt_pos) = line.find(" > ") {
-                    // Source: everything before " > " that looks like IP.port
                     let before = &line[..gt_pos];
                     let src_token = before.split_whitespace().next_back().unwrap_or("");
                     if let Some(dot_pos) = src_token.rfind('.') {
@@ -1181,8 +1181,6 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                                 entry.src_addr = maybe_ip.to_string();
                                 entry.src_port = port;
                             } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
-                                // Last octet looks like a port but IP part has too few dots —
-                                // this is a plain IP (e.g. ICMP 192.168.1.1)
                                 entry.src_addr = src_token.to_string();
                             }
                         } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
@@ -1190,7 +1188,6 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                         }
                     }
 
-                    // Destination: after " > " until ":"
                     let after = &line[gt_pos + 3..];
                     let dst_token = after.split(':').next().unwrap_or("").trim();
                     if let Some(dot_pos) = dst_token.rfind('.') {
@@ -1209,7 +1206,6 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                     }
                 }
 
-                // Protocol from Flags or keywords
                 if line.contains("Flags [") || line.contains("tcp") { entry.protocol = "tcp".to_string(); }
                 else if line.contains("UDP") || line.contains("udp") { entry.protocol = "udp".to_string(); }
                 else if line.contains("ICMP") || line.contains("icmp") { entry.protocol = "icmp".to_string(); }
@@ -1217,7 +1213,6 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                 if !entry.src_addr.is_empty() {
                     entries.push(entry);
                 }
-                if entries.len() >= 300 { break; }
             }
         }
     }

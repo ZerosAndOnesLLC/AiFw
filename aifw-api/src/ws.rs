@@ -431,7 +431,7 @@ async fn collect_blocked() -> Vec<BlockedPayload> {
     if tick % 5 == 0 {
         let mut entries = Vec::new();
         if let Ok(output) = tokio::process::Command::new("sudo")
-            .args(["/usr/sbin/tcpdump", "-n", "-e", "-r", "/var/log/pflog"])
+            .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
             .output().await
         {
             if output.status.success() {
@@ -441,8 +441,14 @@ async fn collect_blocked() -> Vec<BlockedPayload> {
                         else if line.contains(": pass ") { "pass" }
                         else { continue };
 
+                    // -tttt format: "2026-04-01 13:09:28.475326 rule ..."
+                    let mut words = line.split_whitespace();
+                    let date_part = words.next().unwrap_or("");
+                    let time_part = words.next().unwrap_or("");
+                    let timestamp = format!("{date_part}T{time_part}");
+
                     let mut entry = BlockedPayload {
-                        timestamp: line.split_whitespace().next().unwrap_or("").to_string(),
+                        timestamp,
                         action: action.to_string(),
                         direction: String::new(), interface: String::new(),
                         protocol: String::new(),
@@ -461,7 +467,6 @@ async fn collect_blocked() -> Vec<BlockedPayload> {
                     if let Some(gt_pos) = line.find(" > ") {
                         let before = &line[..gt_pos];
                         let src_token = before.split_whitespace().next_back().unwrap_or("");
-                        // Try IP.port first (TCP/UDP), fall back to plain IP (ICMP)
                         if let Some(dot_pos) = src_token.rfind('.') {
                             let maybe_port = &src_token[dot_pos + 1..];
                             let maybe_ip = &src_token[..dot_pos];
@@ -470,8 +475,6 @@ async fn collect_blocked() -> Vec<BlockedPayload> {
                                     entry.src_addr = maybe_ip.to_string();
                                     entry.src_port = port;
                                 } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
-                                    // Last octet looks like a port but IP part has too few dots —
-                                    // this is a plain IP (e.g. ICMP 192.168.1.1)
                                     entry.src_addr = src_token.to_string();
                                 }
                             } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
@@ -502,7 +505,6 @@ async fn collect_blocked() -> Vec<BlockedPayload> {
                     else if lower.contains("icmp") { entry.protocol = "icmp".to_string(); }
 
                     if !entry.src_addr.is_empty() { entries.push(entry); }
-                    if entries.len() >= 200 { break; }
                 }
             }
         }
