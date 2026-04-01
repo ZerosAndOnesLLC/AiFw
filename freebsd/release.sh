@@ -23,8 +23,12 @@ TAG="v${VERSION}"
 OUTPUTDIR="/usr/obj/aifw-iso/output"
 ISO="${OUTPUTDIR}/aifw-${VERSION}-amd64.iso"
 IMG="${OUTPUTDIR}/aifw-${VERSION}-amd64.img"
+ISO_XZ="${ISO}.xz"
+IMG_XZ="${IMG}.xz"
 ISO_SHA="${ISO}.sha256"
 IMG_SHA="${IMG}.sha256"
+ISO_XZ_SHA="${ISO_XZ}.sha256"
+IMG_XZ_SHA="${IMG_XZ}.sha256"
 
 echo "============================================"
 echo "  AiFw Release"
@@ -33,32 +37,46 @@ echo "  Tag:     ${TAG}"
 echo "============================================"
 echo ""
 
-# --- Verify build artifacts exist ---
-for f in "$ISO" "$IMG" "$ISO_SHA" "$IMG_SHA"; do
-    [ -f "$f" ] || die "Missing: $f — run build-local.sh first"
+# --- Verify build artifacts exist (prefer .xz, fall back to uncompressed) ---
+if [ -f "$ISO_XZ" ]; then
+    ISO_UPLOAD="$ISO_XZ"
+    ISO_SHA_UPLOAD="$ISO_XZ_SHA"
+elif [ -f "$ISO" ]; then
+    ISO_UPLOAD="$ISO"
+    ISO_SHA_UPLOAD="$ISO_SHA"
+else
+    die "Missing: $ISO (or ${ISO}.xz) — run build-local.sh first"
+fi
+
+if [ -f "$IMG_XZ" ]; then
+    IMG_UPLOAD="$IMG_XZ"
+    IMG_SHA_UPLOAD="$IMG_XZ_SHA"
+elif [ -f "$IMG" ]; then
+    IMG_UPLOAD="$IMG"
+    IMG_SHA_UPLOAD="$IMG_SHA"
+else
+    die "Missing: $IMG (or ${IMG}.xz) — run build-local.sh first"
+fi
+
+# Verify checksum files exist
+for f in "$ISO_SHA_UPLOAD" "$IMG_SHA_UPLOAD"; do
+    [ -f "$f" ] || die "Missing checksum: $f"
 done
 
-# --- Compress large files for GitHub (2GB limit) ---
-ISO_UPLOAD="$ISO"
-IMG_UPLOAD="$IMG"
-ISO_SHA_UPLOAD="$ISO_SHA"
-IMG_SHA_UPLOAD="$IMG_SHA"
-
-# Compress IMG with xz if apparent size over 1.5GB (GitHub limit is 2GB)
-# Use stat for apparent size since sparse files report smaller with du
-IMG_SIZE_BYTES=$(stat -f%z "$IMG" 2>/dev/null || stat -c%s "$IMG" 2>/dev/null || echo 0)
-IMG_SIZE_MB=$((IMG_SIZE_BYTES / 1048576))
-if [ "$IMG_SIZE_MB" -gt 1500 ]; then
-    # Compress to /tmp to avoid permission issues (output dir is root-owned)
-    XZ_IMG="/tmp/aifw-${VERSION}-amd64.img.xz"
-    if [ ! -f "$XZ_IMG" ] || [ "$IMG" -nt "$XZ_IMG" ]; then
-        echo "Compressing IMG (${IMG_SIZE_MB}MB) with xz..."
-        xz -k -9 -T0 --stdout "$IMG" > "$XZ_IMG"
+# If uncompressed IMG exists and is over 1.5GB, compress for GitHub (2GB limit)
+if [ "$IMG_UPLOAD" = "$IMG" ]; then
+    IMG_SIZE_BYTES=$(stat -f%z "$IMG" 2>/dev/null || stat -c%s "$IMG" 2>/dev/null || echo 0)
+    IMG_SIZE_MB=$((IMG_SIZE_BYTES / 1048576))
+    if [ "$IMG_SIZE_MB" -gt 1500 ]; then
+        XZ_IMG="/tmp/aifw-${VERSION}-amd64.img.xz"
+        if [ ! -f "$XZ_IMG" ] || [ "$IMG" -nt "$XZ_IMG" ]; then
+            echo "Compressing IMG (${IMG_SIZE_MB}MB) with xz..."
+            xz -k -9 -T0 --stdout "$IMG" > "$XZ_IMG"
+        fi
+        IMG_UPLOAD="$XZ_IMG"
+        IMG_SHA_UPLOAD="${XZ_IMG}.sha256"
+        sha256 "$XZ_IMG" > "$IMG_SHA_UPLOAD"
     fi
-    IMG_UPLOAD="$XZ_IMG"
-    # Generate checksum for compressed file
-    IMG_SHA_UPLOAD="${XZ_IMG}.sha256"
-    sha256 "$XZ_IMG" > "$IMG_SHA_UPLOAD"
 fi
 
 # --- Locate update tarball ---
