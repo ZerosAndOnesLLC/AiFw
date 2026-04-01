@@ -220,6 +220,11 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n";
         use std::process::Command;
         console::info("Starting services...");
 
+        // Write seeded rules to anchor files so pf has them on first load
+        console::info("Writing anchor rules...");
+        write_anchor_rules(&pool, config).await;
+        console::success("Anchor rules written");
+
         // Load pf rules
         let _ = Command::new("pfctl").args(["-f", &format!("{}/pf.conf.aifw", config.config_dir)]).output();
         console::success("pf rules loaded");
@@ -808,6 +813,65 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
     Ok(())
 }
 
+/// Write seeded DB rules to pf anchor files so they're active on first pf load
+#[allow(dead_code)]
+async fn write_anchor_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) {
+    let anchors_dir = format!("{}/anchors", config.config_dir);
+
+    // Write firewall rules to aifw anchor
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, String, Option<i64>, Option<i64>, String, Option<i64>, Option<i64>, bool, bool, Option<String>)>(
+        "SELECT action, direction, interface, protocol, src_addr, src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, log, quick, label FROM rules WHERE status='active' ORDER BY priority ASC"
+    ).fetch_all(pool).await.unwrap_or_default();
+
+    let mut pf_rules = Vec::new();
+    for (action, dir, iface, proto, src, _sp_s, _sp_e, dst, dp_s, _dp_e, log, quick, label) in &rows {
+        let mut r = String::new();
+        // action
+        r.push_str(action);
+        if action == "block" { r.push_str(" drop"); }
+        // direction
+        if dir != "any" { r.push_str(&format!(" {dir}")); }
+        // log
+        if *log { r.push_str(" log"); }
+        // quick
+        if *quick { r.push_str(" quick"); }
+        // interface
+        if let Some(i) = iface { if !i.is_empty() { r.push_str(&format!(" on {i}")); } }
+        // protocol
+        if proto != "any" { r.push_str(&format!(" proto {proto}")); }
+        // src
+        if src != "any" { r.push_str(&format!(" from {src}")); } else { r.push_str(" from any"); }
+        // dst + port
+        if dst != "any" || dp_s.is_some() {
+            r.push_str(&format!(" to {dst}"));
+        } else {
+            r.push_str(" to any");
+        }
+        if let Some(p) = dp_s { r.push_str(&format!(" port {p}")); }
+        // state
+        r.push_str(" keep state");
+        if let Some(l) = label { if !l.is_empty() { r.push_str(&format!(" label \"{l}\"")); } }
+        pf_rules.push(r);
+    }
+    let _ = std::fs::write(format!("{anchors_dir}/aifw"), pf_rules.join("\n"));
+
+    // Write NAT rules to aifw-nat anchor
+    let nat_rows = sqlx::query_as::<_, (String, String, String, String, String, Option<i64>)>(
+        "SELECT nat_type, interface, protocol, src_addr, redirect_addr, redirect_port_start FROM nat_rules WHERE status='active'"
+    ).fetch_all(pool).await.unwrap_or_default();
+
+    let mut nat_rules = Vec::new();
+    for (nat_type, iface, _proto, src, _redir, _rp) in &nat_rows {
+        match nat_type.as_str() {
+            "masquerade" => {
+                nat_rules.push(format!("nat on {iface} from {src} to any -> ({iface})"));
+            }
+            _ => {}
+        }
+    }
+    let _ = std::fs::write(format!("{anchors_dir}/aifw-nat"), nat_rules.join("\n"));
+}
+
 fn hash_for_db(password: &str) -> String {
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng};
     let salt = SaltString::generate(&mut OsRng);
@@ -828,9 +892,15 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
         lines.push(format!("lan_if = \"{lan}\""));
     }
     if let Some(ref ip) = config.lan_ip {
-        let net = ip.split('/').next().unwrap_or("192.168.1.0");
+        let host = ip.split('/').next().unwrap_or("192.168.1.1");
         let prefix = ip.split('/').nth(1).unwrap_or("24");
-        // Derive network from IP (simplified)
+        // Derive network address from host IP (e.g. 192.168.1.1 -> 192.168.1.0)
+        let octets: Vec<&str> = host.split('.').collect();
+        let net = if octets.len() == 4 {
+            format!("{}.{}.{}.0", octets[0], octets[1], octets[2])
+        } else {
+            host.to_string()
+        };
         lines.push(format!("lan_net = \"{net}/{prefix}\""));
     }
     lines.push(String::new());
