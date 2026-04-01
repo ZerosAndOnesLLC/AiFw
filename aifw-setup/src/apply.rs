@@ -430,6 +430,66 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
             .bind(lan).bind(&now).execute(&pool).await;
     }
 
+    // Seed DNS resolver config — rDNS enabled by default with forwarding to user's DNS servers
+    sqlx::query("CREATE TABLE IF NOT EXISTS dns_resolver_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(&pool).await.map_err(|e| format!("dns config table: {e}"))?;
+
+    let dns_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM dns_resolver_config")
+        .fetch_one(&pool).await.map_err(|e| format!("dns count: {e}"))?;
+    if dns_count.0 == 0 {
+        let dns_defaults = [
+            ("backend", "rdns"),
+            ("enabled", "true"),
+            ("port", "53"),
+            ("dnssec", "false"),
+            ("forwarding_enabled", "true"),
+            ("use_system_nameservers", "true"),
+            ("log_queries", "false"),
+            ("prefetch", "true"),
+            ("hide_identity", "true"),
+            ("hide_version", "true"),
+            ("rebind_protection", "true"),
+        ];
+        for (k, v) in &dns_defaults {
+            let _ = sqlx::query("INSERT OR IGNORE INTO dns_resolver_config (key, value) VALUES (?1, ?2)")
+                .bind(k).bind(v).execute(&pool).await;
+        }
+        // Forward to user's configured DNS servers
+        if !config.dns_servers.is_empty() {
+            let _ = sqlx::query("INSERT OR IGNORE INTO dns_resolver_config (key, value) VALUES ('forwarding_servers', ?1)")
+                .bind(config.dns_servers.join(",")).execute(&pool).await;
+        }
+    }
+
+    // Write default rDNS config file and enable service
+    let rdns_conf = format!(r#"[server]
+listen = ["0.0.0.0:53"]
+threads = 2
+
+[cache]
+max_ttl = 86400
+min_ttl = 60
+max_entries = 50000
+prefetch = true
+
+[forwarding]
+servers = [{}]
+
+[logging]
+level = "info"
+"#, config.dns_servers.iter().map(|s| format!("\"{s}:53\"")).collect::<Vec<_>>().join(", "));
+
+    let _ = std::fs::create_dir_all("/usr/local/etc/rdns");
+    let _ = std::fs::write("/usr/local/etc/rdns/rdns.toml", &rdns_conf);
+
+    // Enable rDNS at boot
+    #[cfg(target_os = "freebsd")]
+    {
+        let _ = std::process::Command::new("sysrc").args(["rdns_enable=YES"]).status();
+        // Disable unbound to avoid port conflict
+        let _ = std::process::Command::new("sysrc").args(["local_unbound_enable=NO"]).status();
+    }
+
     Ok(())
 }
 
