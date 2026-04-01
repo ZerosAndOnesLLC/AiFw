@@ -485,6 +485,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Start persistent pflog0 live capture for blocked traffic page
+    ws::start_pflog_collector().await;
+
     let app = build_router(state, args.ui_dir.as_deref());
 
     if args.no_tls {

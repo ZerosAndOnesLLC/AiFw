@@ -417,99 +417,144 @@ async fn collect_system_metrics() -> SystemPayload {
 }
 
 /// Collect blocked traffic from pflog. Cached with tokio RwLock, refreshes every 5 seconds.
-async fn collect_blocked() -> Vec<BlockedPayload> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use tokio::sync::RwLock;
+const PFLOG_MAX_ENTRIES: usize = 10_000;
 
-    static TICK: AtomicU64 = AtomicU64::new(0);
-    static CACHE: std::sync::OnceLock<RwLock<Vec<BlockedPayload>>> = std::sync::OnceLock::new();
+fn parse_pflog_line(line: &str) -> Option<BlockedPayload> {
+    let action = if line.contains(": block ") { "block" }
+        else if line.contains(": pass ") { "pass" }
+        else { return None };
 
-    let cache = CACHE.get_or_init(|| RwLock::new(Vec::new()));
-    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+    // -tttt format: "2026-04-01 13:09:28.475326 rule ..."
+    let mut words = line.split_whitespace();
+    let date_part = words.next().unwrap_or("");
+    let time_part = words.next().unwrap_or("");
+    let timestamp = format!("{date_part}T{time_part}");
 
-    // Refresh every 5 seconds
-    if tick % 5 == 0 {
-        let mut entries = Vec::new();
-        if let Ok(output) = tokio::process::Command::new("sudo")
-            .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
-            .output().await
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines().rev() {
-                    let action = if line.contains(": block ") { "block" }
-                        else if line.contains(": pass ") { "pass" }
-                        else { continue };
+    let mut entry = BlockedPayload {
+        timestamp,
+        action: action.to_string(),
+        direction: String::new(), interface: String::new(),
+        protocol: String::new(),
+        src_addr: String::new(), src_port: 0,
+        dst_addr: String::new(), dst_port: 0,
+    };
 
-                    // -tttt format: "2026-04-01 13:09:28.475326 rule ..."
-                    let mut words = line.split_whitespace();
-                    let date_part = words.next().unwrap_or("");
-                    let time_part = words.next().unwrap_or("");
-                    let timestamp = format!("{date_part}T{time_part}");
-
-                    let mut entry = BlockedPayload {
-                        timestamp,
-                        action: action.to_string(),
-                        direction: String::new(), interface: String::new(),
-                        protocol: String::new(),
-                        src_addr: String::new(), src_port: 0,
-                        dst_addr: String::new(), dst_port: 0,
-                    };
-
-                    let marker = if action == "block" { ": block " } else { ": pass " };
-                    if let Some(pos) = line.find(marker) {
-                        let rest = &line[pos + 2..];
-                        let parts: Vec<&str> = rest.split_whitespace().collect();
-                        entry.direction = parts.get(1).unwrap_or(&"").to_string();
-                        entry.interface = parts.get(3).map(|s| s.trim_end_matches(':')).unwrap_or("").to_string();
-                    }
-
-                    if let Some(gt_pos) = line.find(" > ") {
-                        let before = &line[..gt_pos];
-                        let src_token = before.split_whitespace().next_back().unwrap_or("");
-                        if let Some(dot_pos) = src_token.rfind('.') {
-                            let maybe_port = &src_token[dot_pos + 1..];
-                            let maybe_ip = &src_token[..dot_pos];
-                            if let Ok(port) = maybe_port.parse::<u16>() {
-                                if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
-                                    entry.src_addr = maybe_ip.to_string();
-                                    entry.src_port = port;
-                                } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
-                                    entry.src_addr = src_token.to_string();
-                                }
-                            } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
-                                entry.src_addr = src_token.to_string();
-                            }
-                        }
-                        let after = &line[gt_pos + 3..];
-                        let dst_token = after.split(':').next().unwrap_or("").trim();
-                        if let Some(dot_pos) = dst_token.rfind('.') {
-                            let maybe_port = &dst_token[dot_pos + 1..];
-                            let maybe_ip = &dst_token[..dot_pos];
-                            if let Ok(port) = maybe_port.parse::<u16>() {
-                                if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
-                                    entry.dst_addr = maybe_ip.to_string();
-                                    entry.dst_port = port;
-                                } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
-                                    entry.dst_addr = dst_token.to_string();
-                                }
-                            } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
-                                entry.dst_addr = dst_token.to_string();
-                            }
-                        }
-                    }
-
-                    let lower = line.to_lowercase();
-                    if line.contains("Flags [") || lower.contains(" tcp ") { entry.protocol = "tcp".to_string(); }
-                    else if lower.contains(" udp ") { entry.protocol = "udp".to_string(); }
-                    else if lower.contains("icmp") { entry.protocol = "icmp".to_string(); }
-
-                    if !entry.src_addr.is_empty() { entries.push(entry); }
-                }
-            }
-        }
-        *cache.write().await = entries;
+    let marker = if action == "block" { ": block " } else { ": pass " };
+    if let Some(pos) = line.find(marker) {
+        let rest = &line[pos + 2..];
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        entry.direction = parts.get(1).unwrap_or(&"").to_string();
+        entry.interface = parts.get(3).map(|s| s.trim_end_matches(':')).unwrap_or("").to_string();
     }
 
-    cache.read().await.clone()
+    if let Some(gt_pos) = line.find(" > ") {
+        let before = &line[..gt_pos];
+        let src_token = before.split_whitespace().next_back().unwrap_or("");
+        if let Some(dot_pos) = src_token.rfind('.') {
+            let maybe_port = &src_token[dot_pos + 1..];
+            let maybe_ip = &src_token[..dot_pos];
+            if let Ok(port) = maybe_port.parse::<u16>() {
+                if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
+                    entry.src_addr = maybe_ip.to_string();
+                    entry.src_port = port;
+                } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
+                    entry.src_addr = src_token.to_string();
+                }
+            } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
+                entry.src_addr = src_token.to_string();
+            }
+        }
+        let after = &line[gt_pos + 3..];
+        let dst_token = after.split(':').next().unwrap_or("").trim();
+        if let Some(dot_pos) = dst_token.rfind('.') {
+            let maybe_port = &dst_token[dot_pos + 1..];
+            let maybe_ip = &dst_token[..dot_pos];
+            if let Ok(port) = maybe_port.parse::<u16>() {
+                if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
+                    entry.dst_addr = maybe_ip.to_string();
+                    entry.dst_port = port;
+                } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
+                    entry.dst_addr = dst_token.to_string();
+                }
+            } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
+                entry.dst_addr = dst_token.to_string();
+            }
+        }
+    }
+
+    let lower = line.to_lowercase();
+    if line.contains("Flags [") || lower.contains(" tcp ") { entry.protocol = "tcp".to_string(); }
+    else if lower.contains(" udp ") { entry.protocol = "udp".to_string(); }
+    else if lower.contains("icmp") { entry.protocol = "icmp".to_string(); }
+
+    if entry.src_addr.is_empty() { return None; }
+    Some(entry)
+}
+
+type BlockedBuffer = std::sync::Arc<tokio::sync::RwLock<Vec<BlockedPayload>>>;
+
+fn blocked_buffer() -> &'static BlockedBuffer {
+    static BUF: std::sync::OnceLock<BlockedBuffer> = std::sync::OnceLock::new();
+    BUF.get_or_init(|| std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())))
+}
+
+/// Call once on API startup to bootstrap from pflog file and start live capture.
+pub async fn start_pflog_collector() {
+    let buf = blocked_buffer().clone();
+
+    // Bootstrap: load historical entries from /var/log/pflog
+    if let Ok(output) = tokio::process::Command::new("sudo")
+        .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
+        .output().await
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut entries: Vec<BlockedPayload> = stdout.lines()
+                .filter_map(|line| parse_pflog_line(line))
+                .collect();
+            // Keep only the most recent entries
+            if entries.len() > PFLOG_MAX_ENTRIES {
+                entries.drain(..entries.len() - PFLOG_MAX_ENTRIES);
+            }
+            *buf.write().await = entries;
+        }
+    }
+
+    // Live capture: persistent tcpdump on pflog0 interface
+    let buf2 = buf.clone();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        loop {
+            let child = tokio::process::Command::new("sudo")
+                .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-l", "-i", "pflog0"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+
+            if let Ok(mut child) = child {
+                if let Some(stdout) = child.stdout.take() {
+                    let mut reader = BufReader::new(stdout).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        if let Some(entry) = parse_pflog_line(&line) {
+                            let mut buf = buf2.write().await;
+                            buf.push(entry);
+                            let excess = buf.len().saturating_sub(PFLOG_MAX_ENTRIES);
+                            if excess > 0 {
+                                buf.drain(..excess);
+                            }
+                        }
+                    }
+                }
+                let _ = child.wait().await;
+            }
+
+            // If tcpdump exits, restart after a brief pause
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+}
+
+async fn collect_blocked() -> Vec<BlockedPayload> {
+    let buf = blocked_buffer();
+    buf.read().await.clone()
 }
