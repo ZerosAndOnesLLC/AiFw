@@ -414,6 +414,96 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
         .await
         .map_err(|e| format!("config error: {e}"))?;
 
+    // Seed firewall rules based on chosen policy
+    seed_default_rules(&pool, config).await?;
+
+    // Seed interface roles (WAN/LAN descriptions)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS interface_roles (interface_name TEXT PRIMARY KEY, role TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    ).execute(&pool).await.map_err(|e| format!("interface_roles table: {e}"))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("INSERT OR REPLACE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'WAN', ?2)")
+        .bind(&config.wan_interface).bind(&now).execute(&pool).await;
+    if let Some(ref lan) = config.lan_interface {
+        let _ = sqlx::query("INSERT OR REPLACE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'LAN', ?2)")
+            .bind(lan).bind(&now).execute(&pool).await;
+    }
+
+    Ok(())
+}
+
+async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Result<(), String> {
+    use crate::config::DefaultPolicy;
+
+    // Create rules table if not exists (same schema as aifw-core)
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS rules (
+            id TEXT PRIMARY KEY, priority INTEGER NOT NULL DEFAULT 100,
+            action TEXT NOT NULL, direction TEXT NOT NULL, interface TEXT,
+            protocol TEXT NOT NULL, src_addr TEXT NOT NULL,
+            src_port_start INTEGER, src_port_end INTEGER,
+            dst_addr TEXT NOT NULL, dst_port_start INTEGER, dst_port_end INTEGER,
+            log INTEGER NOT NULL DEFAULT 0, quick INTEGER NOT NULL DEFAULT 1,
+            label TEXT, state_tracking TEXT NOT NULL DEFAULT 'keep_state',
+            state_policy TEXT, adaptive_start INTEGER, adaptive_end INTEGER,
+            timeout_tcp INTEGER, timeout_udp INTEGER, timeout_icmp INTEGER,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, schedule_id TEXT
+        )"#,
+    )
+    .execute(pool).await.map_err(|e| format!("rules table: {e}"))?;
+
+    // Skip if rules already exist
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM rules")
+        .fetch_one(pool).await.map_err(|e| format!("count: {e}"))?;
+    if count.0 > 0 { return Ok(()); }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let wan = &config.wan_interface;
+    let lan = config.lan_interface.as_deref();
+
+    struct R { pri: i32, action: &'static str, dir: &'static str, iface: Option<String>, proto: &'static str, dst_port: Option<u16>, log: bool, label: &'static str }
+
+    let mut rules: Vec<R> = Vec::new();
+
+    match config.default_policy {
+        DefaultPolicy::Standard => {
+            rules.push(R { pri: 1, action: "pass", dir: "out", iface: Some(wan.clone()), proto: "any", dst_port: None, log: false, label: "Allow outbound (WAN)" });
+            if let Some(li) = lan {
+                rules.push(R { pri: 2, action: "pass", dir: "out", iface: Some(li.to_string()), proto: "any", dst_port: None, log: false, label: "Allow outbound (LAN)" });
+                rules.push(R { pri: 3, action: "pass", dir: "in", iface: Some(li.to_string()), proto: "any", dst_port: None, log: false, label: "Allow LAN inbound" });
+            }
+            rules.push(R { pri: 10, action: "pass", dir: "in", iface: None, proto: "icmp", dst_port: None, log: false, label: "Allow ICMP" });
+            rules.push(R { pri: 20, action: "pass", dir: "in", iface: None, proto: "tcp", dst_port: Some(22), log: false, label: "Allow SSH" });
+            rules.push(R { pri: 21, action: "pass", dir: "in", iface: None, proto: "tcp", dst_port: Some(config.api_port), log: false, label: "Allow AiFw Web UI" });
+            rules.push(R { pri: 1000, action: "block", dir: "in", iface: None, proto: "any", dst_port: None, log: true, label: "Default block inbound" });
+        }
+        DefaultPolicy::Strict => {
+            rules.push(R { pri: 20, action: "pass", dir: "in", iface: Some(wan.clone()), proto: "tcp", dst_port: Some(22), log: false, label: "Allow SSH (WAN)" });
+            rules.push(R { pri: 21, action: "pass", dir: "in", iface: Some(wan.clone()), proto: "tcp", dst_port: Some(config.api_port), log: false, label: "Allow AiFw Web UI (WAN)" });
+            rules.push(R { pri: 1000, action: "block", dir: "any", iface: None, proto: "any", dst_port: None, log: true, label: "Default block all" });
+        }
+        DefaultPolicy::Permissive => {
+            rules.push(R { pri: 1, action: "pass", dir: "any", iface: None, proto: "any", dst_port: None, log: false, label: "Allow all (permissive)" });
+        }
+    }
+
+    for r in &rules {
+        let id = uuid::Uuid::new_v4().to_string();
+        let _ = sqlx::query(
+            "INSERT INTO rules (id, priority, action, direction, interface, protocol, src_addr, \
+             src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
+             log, quick, label, state_tracking, status, created_at, updated_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,'any',NULL,NULL,'any',?7,?8,?9,1,?10,'keep_state','active',?11,?12)"
+        )
+        .bind(&id).bind(r.pri).bind(r.action).bind(r.dir).bind(&r.iface)
+        .bind(r.proto)
+        .bind(r.dst_port.map(|p| p as i64)).bind(r.dst_port.map(|p| p as i64))
+        .bind(r.log).bind(r.label).bind(&now).bind(&now)
+        .execute(pool).await.map_err(|e| format!("seed rule: {e}"))?;
+    }
+
     Ok(())
 }
 
