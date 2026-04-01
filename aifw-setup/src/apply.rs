@@ -504,6 +504,52 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
         .execute(pool).await.map_err(|e| format!("seed rule: {e}"))?;
     }
 
+    // Seed NAT rules if NAT is enabled (LAN behind WAN)
+    if config.nat_enabled {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS nat_rules (
+                id TEXT PRIMARY KEY, nat_type TEXT NOT NULL, interface TEXT NOT NULL,
+                protocol TEXT NOT NULL, src_addr TEXT NOT NULL,
+                src_port_start INTEGER, src_port_end INTEGER,
+                dst_addr TEXT NOT NULL, dst_port_start INTEGER, dst_port_end INTEGER,
+                redirect_addr TEXT NOT NULL, redirect_port_start INTEGER, redirect_port_end INTEGER,
+                label TEXT, status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )"#,
+        ).execute(pool).await.map_err(|e| format!("nat table: {e}"))?;
+
+        let nat_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM nat_rules")
+            .fetch_one(pool).await.map_err(|e| format!("nat count: {e}"))?;
+        if nat_count.0 == 0 {
+            let id = uuid::Uuid::new_v4().to_string();
+            let src = if let Some(ref _li) = config.lan_interface {
+                // Use LAN subnet if we have a LAN IP (e.g. 192.168.1.1 -> 192.168.1.0/24)
+                if let Some(ref lip) = config.lan_ip {
+                    let parts: Vec<&str> = lip.split('.').collect();
+                    if parts.len() == 4 {
+                        format!("{}.{}.{}.0/24", parts[0], parts[1], parts[2])
+                    } else {
+                        "any".to_string()
+                    }
+                } else {
+                    "any".to_string()
+                }
+            } else {
+                "any".to_string()
+            };
+
+            let _ = sqlx::query(
+                "INSERT INTO nat_rules (id, nat_type, interface, protocol, src_addr, \
+                 src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
+                 redirect_addr, redirect_port_start, redirect_port_end, \
+                 label, status, created_at, updated_at) \
+                 VALUES (?1,'masquerade',?2,'any',?3,NULL,NULL,'any',NULL,NULL,'any',NULL,NULL,?4,'active',?5,?6)"
+            )
+            .bind(&id).bind(wan).bind(&src).bind("Default Outbound NAT").bind(&now).bind(&now)
+            .execute(pool).await.map_err(|e| format!("seed nat: {e}"))?;
+        }
+    }
+
     Ok(())
 }
 
