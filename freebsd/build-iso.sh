@@ -100,10 +100,23 @@ rm -f "$STAGEDIR/usr/bin/lld" "$STAGEDIR/usr/bin/ld.lld"
 rm -rf "$STAGEDIR/usr/include"
 rm -rf "$STAGEDIR/usr/lib/clang"
 
+# Large directories safe to remove on an appliance (no strip, just delete)
+rm -rf "$STAGEDIR/usr/lib32"           # 32-bit compat libs (~300MB)
+rm -rf "$STAGEDIR/usr/lib/debug"       # debug symbols (~400MB)
+rm -rf "$STAGEDIR/usr/src"             # kernel source (if present)
+rm -rf "$STAGEDIR/usr/obj"             # build objects (if present)
+rm -rf "$STAGEDIR/usr/libdata"         # lint/pkgconfig data
+rm -rf "$STAGEDIR/var/db/etcupdate"    # etcupdate snapshots (~50MB)
+rm -rf "$STAGEDIR/var/db/freebsd-update" # update staging
+rm -f "$STAGEDIR/usr/lib"/*.a 2>/dev/null || true  # static archives
+
 # Strip only AiFw binaries (leave base system binaries and shared libs untouched)
 if [ -d "$STAGEDIR/usr/local/sbin" ]; then
     find "$STAGEDIR/usr/local/sbin" -type f -perm +0111 -exec strip -s {} \; 2>/dev/null || true
 fi
+
+# Report final staging size
+echo "  Staged size: $(du -sm "$STAGEDIR" | awk '{print $1}')MB"
 
 echo "  Stripped size: $(du -sh "$STAGEDIR" | awk '{print $1}')"
 
@@ -311,8 +324,10 @@ ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
 echo "[9/9] Building USB image..."
 
 IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
-# Fixed 4GB image — base system + AiFw + UFS journal + headroom
-IMG_SIZE=4096
+# Stage size + 100% headroom for EFI(260MB) + UFS journal/inodes + growth room
+STAGE_MB=$(du -sm "$STAGEDIR" | awk '{print $1}')
+IMG_SIZE=$((STAGE_MB * 2 + 512))
+echo "  Staging: ${STAGE_MB}MB, IMG: ${IMG_SIZE}MB"
 
 # Clean up any stale md devices from previous failed runs
 for stale_md in $(mdconfig -l 2>/dev/null); do
