@@ -204,28 +204,29 @@ echo ""
 
 # --- Restart services ---
 echo "[5/5] Restarting services..."
-service aifw_daemon start 2>/dev/null || echo "  WARNING: aifw_daemon not configured"
-service aifw_api start 2>/dev/null || echo "  WARNING: aifw_api not configured"
+service aifw_daemon start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_daemon not configured"
+service aifw_api start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_api not configured"
 # Start TrafficCop if enabled
 if [ "$(sysrc -n trafficcop_enable 2>/dev/null)" = "YES" ]; then
-    service trafficcop start 2>/dev/null || true
+    service trafficcop start </dev/null >/dev/null 2>&1 || true
 fi
 # Start rDHCP if enabled
 if [ "$(sysrc -n rdhcpd_enable 2>/dev/null)" = "YES" ]; then
-    service rdhcpd start 2>/dev/null || true
+    service rdhcpd start </dev/null >/dev/null 2>&1 || true
 fi
 # Start rDNS if enabled
 if [ "$(sysrc -n rdns_enable 2>/dev/null)" = "YES" ]; then
-    service rdns start 2>/dev/null || true
+    service rdns start </dev/null >/dev/null 2>&1 || true
 fi
-sleep 2
+sleep 1
 
 # --- Verify ---
+echo ""
+DAEMON_STATUS=$(service aifw_daemon status 2>&1 || true)
+API_STATUS=$(service aifw_api status 2>&1 || true)
+echo "  $DAEMON_STATUS"
+echo "  $API_STATUS"
 echo ""
 echo "============================================"
 echo "  Deploy complete — v$VERSION"
 echo "============================================"
-echo ""
-service aifw_daemon status 2>&1 || true
-service aifw_api status 2>&1 || true
-echo ""
