@@ -605,7 +605,7 @@ aifw_api_user="aifw"
 
 aifw_api_start()
 {{
-    /usr/sbin/daemon -u $aifw_api_user -p $pidfile -f $command $command_args
+    /usr/sbin/daemon -u $aifw_api_user -p $pidfile -f -R 5 -S -T aifw_api $command $command_args
 }}
 
 load_rc_config $name

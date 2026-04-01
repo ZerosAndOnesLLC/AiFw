@@ -74,7 +74,7 @@ impl Protocol {
             "udp" => Ok(Protocol::Udp),
             "icmp" => Ok(Protocol::Icmp),
             "icmp6" => Ok(Protocol::Icmp6),
-            "tcp/udp" | "tcpudp" | "tcp+udp" => Ok(Protocol::TcpUdp),
+            "tcp/udp" | "tcpudp" | "tcp+udp" | "{ tcp udp }" | "{tcp udp}" => Ok(Protocol::TcpUdp),
             "esp" => Ok(Protocol::Esp),
             "ah" => Ok(Protocol::Ah),
             "gre" => Ok(Protocol::Gre),
