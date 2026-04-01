@@ -196,19 +196,34 @@ clone_system() {
     # /var is tmpfs on the live CD, so create a proper var structure
     echo "  Creating /var structure..."
     mkdir -p "$INSTALL_ROOT/var"
-    for vdir in cache db db/pkg db/aifw empty games heimdal log log/aifw \
-                log/trafficcop \
-                mail msgs preserve run rwho spool spool/lock spool/output \
+    for vdir in cache db db/pkg db/aifw db/rdhcpd db/rdhcpd/leases \
+                empty games heimdal log log/aifw \
+                log/trafficcop log/rdhcpd log/rdns log/rtime \
+                mail msgs preserve run run/rdns run/rtime \
+                rwho spool spool/lock spool/output \
                 tmp unbound yp; do
         mkdir -p "$INSTALL_ROOT/var/$vdir"
     done
     chmod 1777 "$INSTALL_ROOT/var/tmp"
     chmod 0555 "$INSTALL_ROOT/var/empty"
 
-    # Set ownership for service directories
+    # Create service config directories
+    mkdir -p "$INSTALL_ROOT/usr/local/etc/rdhcpd"
+    mkdir -p "$INSTALL_ROOT/usr/local/etc/rdns/zones"
+    mkdir -p "$INSTALL_ROOT/usr/local/etc/rdns/rpz"
+    mkdir -p "$INSTALL_ROOT/usr/local/etc/rtime"
+    mkdir -p "$INSTALL_ROOT/usr/local/etc/trafficcop"
+
+    # Set ownership for service directories (aifw user UID 470)
     chown -R 470:470 "$INSTALL_ROOT/var/db/aifw" 2>/dev/null || true
     chown -R 470:470 "$INSTALL_ROOT/var/log/aifw" 2>/dev/null || true
     chown -R 470:470 "$INSTALL_ROOT/var/log/trafficcop" 2>/dev/null || true
+    chown -R 470:470 "$INSTALL_ROOT/var/db/rdhcpd" 2>/dev/null || true
+    chown -R 470:470 "$INSTALL_ROOT/var/log/rdhcpd" 2>/dev/null || true
+    chown -R 470:470 "$INSTALL_ROOT/usr/local/etc/rdhcpd" 2>/dev/null || true
+    chown -R 470:470 "$INSTALL_ROOT/var/log/rdns" 2>/dev/null || true
+    chown -R 470:470 "$INSTALL_ROOT/usr/local/etc/rtime" 2>/dev/null || true
+    chown -R 470:470 "$INSTALL_ROOT/var/log/rtime" 2>/dev/null || true
 
     # Verify critical system files exist
     for f in usr/libexec/getty libexec/ld-elf.so.1 bin/sh sbin/init; do
