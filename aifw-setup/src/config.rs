@@ -28,6 +28,9 @@ pub struct SetupConfig {
     // DNS
     pub dns_servers: Vec<String>,
 
+    // Services
+    pub dhcp_enabled: bool,
+
     // Firewall
     pub default_policy: DefaultPolicy,
     pub nat_enabled: bool,
@@ -95,6 +98,7 @@ impl Default for SetupConfig {
             api_port: 8080,
             ui_enabled: true,
             dns_servers: vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()],
+            dhcp_enabled: false,
             default_policy: DefaultPolicy::Standard,
             nat_enabled: false,
             db_path: "/var/db/aifw/aifw.db".to_string(),

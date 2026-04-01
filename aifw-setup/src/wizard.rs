@@ -216,6 +216,11 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             }
             console::warn("Invalid IP/prefix format.");
         }
+        // Ask about DHCP server on LAN
+        if console::confirm("Enable DHCP server on the LAN interface?", true) {
+            config.dhcp_enabled = true;
+            console::success("DHCP server will be enabled on LAN.");
+        }
     } else {
         console::header("Step 6/11 — LAN Configuration");
         if config.nat_enabled {
@@ -300,6 +305,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     console::info(&format!("API:            {}:{}", config.api_listen, config.api_port));
     console::info(&format!("Web UI:         {}", if config.ui_enabled { "enabled" } else { "disabled" }));
     console::info(&format!("NAT:            {}", if config.nat_enabled { "enabled" } else { "disabled (single NIC)" }));
+    console::info(&format!("DHCP Server:    {}", if config.dhcp_enabled { "enabled (LAN)" } else { "disabled" }));
     console::info(&format!("DNS:            {}", config.dns_servers.join(", ")));
     console::info(&format!("Policy:         {}", config.default_policy));
     console::info(&format!("Database:       {}", config.db_path));

@@ -490,6 +490,83 @@ level = "info"
         let _ = std::process::Command::new("sysrc").args(["local_unbound_enable=NO"]).status();
     }
 
+    // Seed DHCP server config if enabled
+    if config.dhcp_enabled {
+        if let Some(ref lan_cidr) = config.lan_ip {
+            seed_dhcp_config(&pool, config, lan_cidr).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn seed_dhcp_config(pool: &sqlx::SqlitePool, config: &SetupConfig, lan_cidr: &str) -> Result<(), String> {
+    // Parse LAN IP: "192.168.1.1/24" -> ip=192.168.1.1, prefix=24
+    let parts: Vec<&str> = lan_cidr.split('/').collect();
+    let lan_ip = parts[0];
+    let octets: Vec<&str> = lan_ip.split('.').collect();
+    if octets.len() != 4 { return Ok(()); }
+    let base = format!("{}.{}.{}", octets[0], octets[1], octets[2]);
+    let network = format!("{}.0/24", base);
+    let pool_start = format!("{}.20", base);
+    let pool_end = format!("{}.219", base);
+    let gateway = lan_ip.to_string();
+
+    // Create DHCP config table
+    sqlx::query("CREATE TABLE IF NOT EXISTS dhcp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(pool).await.map_err(|e| format!("dhcp config table: {e}"))?;
+
+    let dhcp_defaults = [
+        ("enabled", "true"),
+        ("authoritative", "true"),
+        ("default_lease_time", "3600"),
+        ("max_lease_time", "86400"),
+        ("log_level", "info"),
+        ("log_format", "text"),
+        ("api_port", "9967"),
+        ("workers", "1"),
+        ("domain_name", "local"),
+    ];
+    for (k, v) in &dhcp_defaults {
+        let _ = sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES (?1, ?2)")
+            .bind(k).bind(v).execute(pool).await;
+    }
+    // Bind to LAN interface
+    if let Some(ref li) = config.lan_interface {
+        let _ = sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES ('interfaces', ?1)")
+            .bind(li).execute(pool).await;
+    }
+    // DNS for scope = LAN IP (rDNS is on the firewall)
+    let _ = sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES ('dns_servers', ?1)")
+        .bind(lan_ip).execute(pool).await;
+
+    // Create subnets table and default pool
+    sqlx::query(r#"CREATE TABLE IF NOT EXISTS dhcp_subnets (
+        id TEXT PRIMARY KEY, network TEXT NOT NULL, pool_start TEXT NOT NULL, pool_end TEXT NOT NULL,
+        gateway TEXT NOT NULL, dns_servers TEXT, domain_name TEXT,
+        lease_time INTEGER, max_lease_time INTEGER, renewal_time INTEGER, rebinding_time INTEGER,
+        preferred_time INTEGER, subnet_type TEXT NOT NULL DEFAULT 'address',
+        delegated_length INTEGER, enabled INTEGER NOT NULL DEFAULT 1,
+        description TEXT, created_at TEXT NOT NULL
+    )"#).execute(pool).await.map_err(|e| format!("dhcp subnets table: {e}"))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = uuid::Uuid::new_v4().to_string();
+    let _ = sqlx::query(
+        "INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, \
+         lease_time, subnet_type, enabled, description, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'local', 3600, 'address', 1, 'Default LAN pool', ?7)"
+    )
+    .bind(&id).bind(&network).bind(&pool_start).bind(&pool_end)
+    .bind(&gateway).bind(lan_ip).bind(&now)
+    .execute(pool).await.map_err(|e| format!("seed dhcp subnet: {e}"))?;
+
+    // Enable rDHCP at boot
+    #[cfg(target_os = "freebsd")]
+    {
+        let _ = std::process::Command::new("sysrc").args(["rdhcpd_enable=YES"]).status();
+    }
+
     Ok(())
 }
 
