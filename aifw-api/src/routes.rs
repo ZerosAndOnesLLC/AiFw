@@ -737,14 +737,29 @@ pub async fn delete_schedule(
 // --- System PF rules (from pfctl, read-only) ---
 
 pub async fn list_system_rules() -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
-    let output = tokio::process::Command::new("sudo")
-        .args(["pfctl", "-sr"])
-        .output()
-        .await
-        .map_err(|_| internal())?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let rules: Vec<String> = stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect();
-    Ok(Json(ApiResponse { data: rules }))
+    let mut all_rules = Vec::new();
+
+    // Main ruleset
+    if let Ok(output) = tokio::process::Command::new("sudo")
+        .args(["pfctl", "-sr"]).output().await {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        all_rules.extend(stdout.lines().filter(|l| !l.is_empty()).map(String::from));
+    }
+
+    // AiFw anchor rules
+    for anchor in ["aifw", "aifw-nat", "aifw-vpn", "aifw-geoip"] {
+        if let Ok(output) = tokio::process::Command::new("sudo")
+            .args(["pfctl", "-a", anchor, "-sr"]).output().await {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let anchor_rules: Vec<String> = stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect();
+            if !anchor_rules.is_empty() {
+                all_rules.push(format!("# --- anchor \"{}\" ---", anchor));
+                all_rules.extend(anchor_rules);
+            }
+        }
+    }
+
+    Ok(Json(ApiResponse { data: all_rules }))
 }
 
 // --- Rules endpoints ---
