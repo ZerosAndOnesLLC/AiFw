@@ -19,7 +19,7 @@ FREEBSD_MIRROR="https://download.freebsd.org/releases/${ARCH}/${FREEBSD_RELEASE}
 WORKDIR="/usr/obj/aifw-iso"
 STAGEDIR="${WORKDIR}/stage"
 ISODIR="${WORKDIR}/iso"
-DISTDIR="${WORKDIR}/dist"
+DISTDIR="/usr/obj/aifw-distcache"
 OUTPUTDIR="${WORKDIR}/output"
 
 # cd9660 labels must be d-characters only (A-Z, 0-9, _)
@@ -52,11 +52,26 @@ if [ -d "$WORKDIR" ]; then
 fi
 mkdir -p "$STAGEDIR" "$ISODIR" "$DISTDIR" "$OUTPUTDIR"
 
-# --- Fetch FreeBSD base + kernel ---
+# --- Fetch FreeBSD base + kernel (cached, re-downloads if remote size differs) ---
 echo "[2/9] Fetching FreeBSD ${FREEBSD_RELEASE} base and kernel..."
+mkdir -p "$DISTDIR"
 for dist in base.txz kernel.txz; do
+    NEED_FETCH=0
     if [ ! -f "${DISTDIR}/${dist}" ]; then
+        NEED_FETCH=1
+    else
+        # Check if remote file size differs from cached
+        REMOTE_SIZE=$(fetch -s "${FREEBSD_MIRROR}/${dist}" 2>/dev/null || echo "0")
+        LOCAL_SIZE=$(stat -f%z "${DISTDIR}/${dist}" 2>/dev/null || echo "-1")
+        if [ "$REMOTE_SIZE" != "$LOCAL_SIZE" ] && [ "$REMOTE_SIZE" != "0" ]; then
+            echo "  ${dist}: remote size changed (${LOCAL_SIZE} -> ${REMOTE_SIZE}), re-downloading"
+            NEED_FETCH=1
+        fi
+    fi
+    if [ "$NEED_FETCH" -eq 1 ]; then
         fetch -o "${DISTDIR}/${dist}" "${FREEBSD_MIRROR}/${dist}"
+    else
+        echo "  ${dist}: using cached copy"
     fi
 done
 
