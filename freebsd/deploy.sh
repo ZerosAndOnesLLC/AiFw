@@ -122,6 +122,9 @@ pkill -9 -f trafficcop 2>/dev/null || true
 service rdhcpd stop 2>/dev/null || true
 pkill -9 -f "daemon.*rdhcpd" 2>/dev/null || true
 pkill -9 -f rdhcpd 2>/dev/null || true
+service rdns stop 2>/dev/null || true
+pkill -9 -f "daemon.*rdns" 2>/dev/null || true
+pkill -9 -f rdns 2>/dev/null || true
 service aifw_api stop 2>/dev/null || true
 service aifw_daemon stop 2>/dev/null || true
 pkill -9 -f "aifw-api.*8081" 2>/dev/null || true
@@ -210,6 +213,10 @@ fi
 # Start rDHCP if enabled
 if [ "$(sysrc -n rdhcpd_enable 2>/dev/null)" = "YES" ]; then
     service rdhcpd start 2>/dev/null || true
+fi
+# Start rDNS if enabled
+if [ "$(sysrc -n rdns_enable 2>/dev/null)" = "YES" ]; then
+    service rdns start 2>/dev/null || true
 fi
 sleep 2
 

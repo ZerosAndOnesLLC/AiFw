@@ -110,6 +110,62 @@ export default function TrafficPage() {
 
   const visibleNics = allSelected ? ifaceNames.map(i => i.name) : [...selectedNics].filter(n => ifaceNames.some(i => i.name === n));
 
+  const historyProcessed = useRef(false);
+  const lastHistoryLen = useRef(0);
+
+  // Pre-populate rate histories from WebSocket history (same pattern as dashboard)
+  useEffect(() => {
+    if (!ws.historyLoaded || ws.history.length === 0) return;
+    if (historyProcessed.current && ws.history.length === lastHistoryLen.current) return;
+
+    const rawHistory = ws.history as Record<string, unknown>[];
+    const prevByIf: Record<string, { bytes_in: number; bytes_out: number }> = {};
+    const histories: Record<string, RatePoint[]> = {};
+    let prevTs = 0;
+
+    for (let idx = 0; idx < rawHistory.length; idx++) {
+      const entry = rawHistory[idx];
+      if ((entry as { type?: string }).type !== "status_update") continue;
+      const ts = Date.now() - (rawHistory.length - idx) * 1000;
+      const entryIfaces = ((entry as { interfaces?: IfaceData[] }).interfaces || []) as IfaceData[];
+
+      for (const cur of entryIfaces) {
+        const prev = prevByIf[cur.name];
+        if (prev && prevTs) {
+          const dt = (ts - prevTs) / 1000;
+          if (dt > 0 && dt < 5) {
+            const bi = Math.max(0, (cur.bytes_in - prev.bytes_in) / dt * 8);
+            const bo = Math.max(0, (cur.bytes_out - prev.bytes_out) / dt * 8);
+            if (!histories[cur.name]) histories[cur.name] = [];
+            histories[cur.name].push({ time: ts, bpsIn: bi, bpsOut: bo });
+          }
+        }
+        prevByIf[cur.name] = { bytes_in: cur.bytes_in, bytes_out: cur.bytes_out };
+      }
+      prevTs = ts;
+    }
+
+    // Trim to MAX_POINTS and set state
+    for (const name of Object.keys(histories)) {
+      histories[name] = histories[name].slice(-MAX_POINTS);
+    }
+    Object.assign(prevIface.current, prevByIf);
+    prevTime.current = Date.now();
+    lastHistoryLen.current = ws.history.length;
+    historyProcessed.current = true;
+    setRateHistories(histories);
+
+    // Set current rates from the last computed points
+    const rates: Record<string, { in: number; out: number }> = {};
+    for (const [name, pts] of Object.entries(histories)) {
+      if (pts.length > 0) {
+        const last = pts[pts.length - 1];
+        rates[name] = { in: last.bpsIn, out: last.bpsOut };
+      }
+    }
+    setCurrentRates(rates);
+  }, [ws.historyLoaded, ws.history, ws.history.length]);
+
   // Process live updates — all interfaces
   useEffect(() => {
     if (!ws.status || !ws.interfaces.length) return;
