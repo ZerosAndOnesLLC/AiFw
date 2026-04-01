@@ -82,13 +82,16 @@ function validatePollRange(min: number, max: number): string | null {
 
 export default function TimeServicePage() {
   const [status, setStatus] = useState<TimeStatus | null>(null);
-  const [config, setConfig] = useState<TimeConfig>(defaultConfig);
+  const [config, setConfigRaw] = useState<TimeConfig>(defaultConfig);
+  const setConfig: typeof setConfigRaw = (v) => { setConfigRaw(v); setIsDirty(true); };
   const [sources, setSources] = useState<NtpSource[]>([]);
   const [interfaces, setInterfaces] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isDirty, setIsDirty] = useState(false);
 
   // New source form
   const [newAddr, setNewAddr] = useState("");
@@ -106,7 +109,7 @@ export default function TimeServicePage() {
   const fetchConfig = useCallback(async () => {
     try {
       const res = await fetch("/api/v1/time/config", { headers: authHeadersPlain() });
-      if (res.ok) setConfig(await res.json());
+      if (res.ok) setConfigRaw(await res.json());
     } catch { /* */ }
   }, []);
 
@@ -158,7 +161,8 @@ export default function TimeServicePage() {
       const res = await fetch("/api/v1/time/config", { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
       const body = await res.json();
       setActionMsg(body.message || "Saved");
-    } catch (e) { setActionMsg("Save failed"); }
+      setIsDirty(false);
+    } catch { setActionMsg("Save failed"); }
     setSaving(false);
     setTimeout(() => setActionMsg(""), 3000);
   };
@@ -167,24 +171,26 @@ export default function TimeServicePage() {
     if (!validate()) return;
     setApplying(true);
     try {
-      // Save first, then apply
       await fetch("/api/v1/time/config", { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
       const res = await fetch("/api/v1/time/apply", { method: "POST", headers: authHeaders() });
       const body = await res.json();
       setActionMsg(body.message || "Applied");
+      setIsDirty(false);
       fetchStatus();
-    } catch (e) { setActionMsg("Apply failed"); }
+    } catch { setActionMsg("Apply failed"); }
     setApplying(false);
     setTimeout(() => setActionMsg(""), 5000);
   };
 
   const serviceAction = async (action: string) => {
+    setActionLoading(action);
     try {
       const res = await fetch(`/api/v1/time/${action}`, { method: "POST", headers: authHeaders() });
       const body = await res.json();
       setActionMsg(body.message || action);
       fetchStatus();
     } catch { setActionMsg(`${action} failed`); }
+    setActionLoading(null);
     setTimeout(() => setActionMsg(""), 3000);
   };
 
@@ -249,16 +255,29 @@ export default function TimeServicePage() {
 
       {/* Action bar */}
       <div className="flex items-center gap-2">
-        <button onClick={() => serviceAction("start")} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-700 text-white rounded">Start</button>
-        <button onClick={() => serviceAction("stop")} className="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded">Stop</button>
-        <button onClick={() => serviceAction("restart")} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded">Restart</button>
-        <div className="flex-1" />
-        <button onClick={saveConfig} disabled={saving} className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">
-          {saving ? "Saving..." : "Save Settings"}
+        <button onClick={() => serviceAction("start")} disabled={!!actionLoading || !!status?.running}
+          className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-700 text-white rounded disabled:opacity-50">
+          {actionLoading === "start" ? "Starting..." : "Start"}
         </button>
-        <button onClick={applyConfig} disabled={applying} className="px-4 py-1.5 text-xs bg-purple-600 hover:bg-purple-700 text-white rounded disabled:opacity-50">
-          {applying ? "Applying..." : "Apply & Restart"}
+        <button onClick={() => serviceAction("stop")} disabled={!!actionLoading || !status?.running}
+          className="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded disabled:opacity-50">
+          {actionLoading === "stop" ? "Stopping..." : "Stop"}
         </button>
+        <button onClick={() => serviceAction("restart")} disabled={!!actionLoading || !status?.running}
+          className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded disabled:opacity-50">
+          {actionLoading === "restart" ? "Restarting..." : "Restart"}
+        </button>
+        {isDirty && (
+          <>
+            <div className="flex-1" />
+            <button onClick={saveConfig} disabled={saving} className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">
+              {saving ? "Saving..." : "Save Settings"}
+            </button>
+            <button onClick={applyConfig} disabled={applying} className="px-4 py-1.5 text-xs bg-purple-600 hover:bg-purple-700 text-white rounded disabled:opacity-50">
+              {applying ? "Applying..." : "Apply & Restart"}
+            </button>
+          </>
+        )}
       </div>
       {actionMsg && <div className="bg-blue-900/30 border border-blue-700 rounded px-3 py-2 text-xs text-blue-300">{actionMsg}</div>}
 

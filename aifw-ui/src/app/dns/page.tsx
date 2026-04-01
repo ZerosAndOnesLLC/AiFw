@@ -128,7 +128,9 @@ const LOCAL_ZONE_TYPES = [
 
 export default function DnsResolverPage() {
   const [status, setStatus] = useState<DnsStatus | null>(null);
-  const [config, setConfig] = useState<ResolverConfig>(defaultConfig);
+  const [config, setConfigRaw] = useState<ResolverConfig>(defaultConfig);
+  const [isDirty, setIsDirty] = useState(false);
+  const setConfig: typeof setConfigRaw = (v) => { setConfigRaw(v); setIsDirty(true); };
   const [interfaces, setInterfaces] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -165,7 +167,7 @@ export default function DnsResolverPage() {
       const res = await fetch("/api/v1/dns/resolver/config", { headers: authHeadersPlain() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: ResolverConfig = await res.json();
-      setConfig(data);
+      setConfigRaw(data);
     } catch {
       /* silent */
     }
@@ -227,6 +229,7 @@ export default function DnsResolverPage() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showFeedback("success", "DNS Resolver settings saved");
+      setIsDirty(false);
       await fetchConfig();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to save config");
@@ -253,6 +256,7 @@ export default function DnsResolverPage() {
       if (!res.ok) throw new Error(`Apply failed: HTTP ${res.status}`);
       const data = await res.json().catch(() => ({ message: "" }));
       showFeedback("success", data.message || "Configuration applied and service restarted");
+      setIsDirty(false);
       await fetchStatus();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to apply config");
@@ -1172,28 +1176,30 @@ export default function DnsResolverPage() {
           )}
 
           {/* Save */}
-          <div className="flex gap-3 pt-4 mt-4 border-t border-[var(--border)]">
-            <button
-              onClick={saveConfig}
-              disabled={saving}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-              {saving ? "Saving..." : "Save Settings"}
-            </button>
-            <button
-              onClick={applyConfig}
-              disabled={applying}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              {applying ? "Applying..." : "Apply & Restart"}
-            </button>
-          </div>
+          {isDirty && (
+            <div className="flex gap-3 pt-4 mt-4 border-t border-[var(--border)]">
+              <button
+                onClick={saveConfig}
+                disabled={saving}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                {saving ? "Saving..." : "Save Settings"}
+              </button>
+              <button
+                onClick={applyConfig}
+                disabled={applying}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {applying ? "Applying..." : "Apply & Restart"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

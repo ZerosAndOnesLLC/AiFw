@@ -87,13 +87,15 @@ const defaultConfig: DhcpGlobalConfig = {
 
 export default function DhcpOverviewPage() {
   const [status, setStatus] = useState<DhcpStatus | null>(null);
-  const [config, setConfig] = useState<DhcpGlobalConfig>(defaultConfig);
+  const [config, setConfigRaw] = useState<DhcpGlobalConfig>(defaultConfig);
+  const setConfig: typeof setConfigRaw = (v) => { setConfigRaw(v); setIsDirty(true); };
   const [interfaces, setInterfaces] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
 
   // form fields (managed separately for comma-separated inputs)
   const [dnsInput, setDnsInput] = useState("");
@@ -120,7 +122,7 @@ export default function DhcpOverviewPage() {
       const res = await fetch("/api/v1/dhcp/v4/config", { headers: authHeadersPlain() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: DhcpGlobalConfig = await res.json();
-      setConfig(data);
+      setConfigRaw(data);
       setDnsInput((data.dns_servers || []).join(", "));
     } catch {
       /* silent */
@@ -190,6 +192,7 @@ export default function DhcpOverviewPage() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showFeedback("success", "Global settings saved");
+      setIsDirty(false);
       await fetchConfig();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to save config");
@@ -207,6 +210,7 @@ export default function DhcpOverviewPage() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showFeedback("success", "Configuration applied and rDHCP restarted");
+      setIsDirty(false);
       await fetchStatus();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to apply config");
@@ -333,7 +337,7 @@ export default function DhcpOverviewPage() {
         <div className="flex gap-3">
           <button
             onClick={() => serviceAction("start")}
-            disabled={!!actionLoading}
+            disabled={!!actionLoading || !!status?.running}
             className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -344,7 +348,7 @@ export default function DhcpOverviewPage() {
           </button>
           <button
             onClick={() => serviceAction("stop")}
-            disabled={!!actionLoading}
+            disabled={!!actionLoading || !status?.running}
             className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -355,7 +359,7 @@ export default function DhcpOverviewPage() {
           </button>
           <button
             onClick={() => serviceAction("restart")}
-            disabled={!!actionLoading}
+            disabled={!!actionLoading || !status?.running}
             className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -613,29 +617,31 @@ export default function DhcpOverviewPage() {
             </div>
           </div>
 
-          {/* Save + Apply */}
-          <div className="flex gap-3 pt-2">
-            <button
-              onClick={saveConfig}
-              disabled={saving}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-              {saving ? "Saving..." : "Save Settings"}
-            </button>
-            <button
-              onClick={applyConfig}
-              disabled={applying}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              {applying ? "Applying..." : "Apply & Restart"}
-            </button>
-          </div>
+          {/* Save + Apply — only shown when settings have changed */}
+          {isDirty && (
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={saveConfig}
+                disabled={saving}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                {saving ? "Saving..." : "Save Settings"}
+              </button>
+              <button
+                onClick={applyConfig}
+                disabled={applying}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {applying ? "Applying..." : "Apply & Restart"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

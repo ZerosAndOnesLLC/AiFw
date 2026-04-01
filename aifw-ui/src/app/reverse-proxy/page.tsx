@@ -57,7 +57,9 @@ const defaultConfig: GlobalConfig = {
 
 export default function ReverseProxyPage() {
   const [status, setStatus] = useState<ReverseProxyStatus | null>(null);
-  const [config, setConfig] = useState<GlobalConfig>(defaultConfig);
+  const [config, setConfigRaw] = useState<GlobalConfig>(defaultConfig);
+  const [isDirty, setIsDirty] = useState(false);
+  const setConfig: typeof setConfigRaw = (v) => { setConfigRaw(v); setIsDirty(true); };
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -87,7 +89,7 @@ export default function ReverseProxyPage() {
       const res = await fetch("/api/v1/reverse-proxy/config", { headers: authHeadersPlain() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: GlobalConfig = await res.json();
-      setConfig(data);
+      setConfigRaw(data);
     } catch {
       /* silent */
     }
@@ -135,6 +137,7 @@ export default function ReverseProxyPage() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showFeedback("success", "Global settings saved");
+      setIsDirty(false);
       await fetchConfig();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to save config");
@@ -152,6 +155,7 @@ export default function ReverseProxyPage() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showFeedback("success", "Configuration applied and service restarted");
+      setIsDirty(false);
       await fetchStatus();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to apply config");
@@ -446,39 +450,41 @@ export default function ReverseProxyPage() {
             </button>
           </div>
 
-          {/* Save + Apply + Validate */}
-          <div className="flex gap-3 pt-2">
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-              {saving ? "Saving..." : "Save Settings"}
-            </button>
-            <button
-              onClick={handleApply}
-              disabled={applying}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              {applying ? "Applying..." : "Apply & Restart"}
-            </button>
-            <button
-              onClick={handleValidate}
-              disabled={validating}
-              className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {validating ? "Validating..." : "Validate Config"}
-            </button>
-          </div>
+          {/* Save + Apply + Validate — only shown when settings have changed */}
+          {isDirty && (
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                {saving ? "Saving..." : "Save Settings"}
+              </button>
+              <button
+                onClick={handleApply}
+                disabled={applying}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                {applying ? "Applying..." : "Apply & Restart"}
+              </button>
+              <button
+                onClick={handleValidate}
+                disabled={validating}
+                className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                {validating ? "Validating..." : "Validate Config"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
