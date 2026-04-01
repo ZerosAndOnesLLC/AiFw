@@ -65,58 +65,24 @@ echo "[3/9] Extracting base system..."
 tar -xf "${DISTDIR}/base.txz" -C "$STAGEDIR"
 tar -xf "${DISTDIR}/kernel.txz" -C "$STAGEDIR"
 
-# --- Strip unnecessary components ---
+# --- Strip unnecessary components (file deletions only, no binary stripping) ---
 echo "[4/9] Stripping unnecessary components..."
-
-# Documentation, examples, tests
 rm -rf "$STAGEDIR/usr/share/doc"
 rm -rf "$STAGEDIR/usr/share/examples"
 rm -rf "$STAGEDIR/usr/share/games"
 rm -rf "$STAGEDIR/usr/share/man"
 rm -rf "$STAGEDIR/usr/share/info"
+rm -rf "$STAGEDIR/usr/lib/debug"
+rm -rf "$STAGEDIR/usr/tests"
 rm -rf "$STAGEDIR/usr/share/calendar"
 rm -rf "$STAGEDIR/usr/share/dict"
 rm -rf "$STAGEDIR/usr/share/groff_font"
 rm -rf "$STAGEDIR/usr/share/me"
 rm -rf "$STAGEDIR/usr/share/openssl"
-rm -rf "$STAGEDIR/usr/share/i18n"
-rm -rf "$STAGEDIR/usr/share/nls"
-rm -rf "$STAGEDIR/usr/share/syscons/fonts"
-rm -rf "$STAGEDIR/usr/share/syscons/keymaps"
-rm -rf "$STAGEDIR/usr/share/syscons/scrnmaps"
-rm -rf "$STAGEDIR/usr/share/vt/keymaps"
-rm -rf "$STAGEDIR/usr/share/bsdconfig"
-rm -rf "$STAGEDIR/usr/share/sendmail"
-rm -rf "$STAGEDIR/usr/share/dtrace"
-rm -rf "$STAGEDIR/usr/tests"
-rm -rf "$STAGEDIR/usr/lib/debug"
-rm -rf "$STAGEDIR/usr/lib/clang"
-# Compilers, debuggers, headers (not needed on an appliance)
-rm -f "$STAGEDIR/usr/bin/clang"* "$STAGEDIR/usr/bin/llvm"* "$STAGEDIR/usr/bin/lldb"*
-rm -f "$STAGEDIR/usr/bin/cc" "$STAGEDIR/usr/bin/c++" "$STAGEDIR/usr/bin/cpp"
-rm -f "$STAGEDIR/usr/bin/gdb"* "$STAGEDIR/usr/bin/objdump"
-rm -f "$STAGEDIR/usr/bin/addr2line" "$STAGEDIR/usr/bin/readelf"
-rm -f "$STAGEDIR/usr/bin/lld" "$STAGEDIR/usr/bin/ld.lld"
-rm -rf "$STAGEDIR/usr/include"
-rm -rf "$STAGEDIR/usr/lib/clang"
-
-# Large directories safe to remove on an appliance (no strip, just delete)
-rm -rf "$STAGEDIR/usr/lib32"           # 32-bit compat libs (~300MB)
-rm -rf "$STAGEDIR/usr/lib/debug"       # debug symbols (~400MB)
-rm -rf "$STAGEDIR/usr/src"             # kernel source (if present)
-rm -rf "$STAGEDIR/usr/obj"             # build objects (if present)
-rm -rf "$STAGEDIR/usr/libdata"         # lint/pkgconfig data
-rm -rf "$STAGEDIR/var/db/etcupdate"    # etcupdate snapshots (~50MB)
-rm -rf "$STAGEDIR/var/db/freebsd-update" # update staging
-rm -f "$STAGEDIR/usr/lib"/*.a 2>/dev/null || true  # static archives
-
-# Strip only AiFw binaries (leave base system binaries and shared libs untouched)
-if [ -d "$STAGEDIR/usr/local/sbin" ]; then
-    find "$STAGEDIR/usr/local/sbin" -type f -perm +0111 -exec strip -s {} \; 2>/dev/null || true
-fi
-
-# Report final staging size
-echo "  Staged size: $(du -sm "$STAGEDIR" | awk '{print $1}')MB"
+rm -rf "$STAGEDIR/rescue"
+rm -rf "$STAGEDIR/usr/lib32"
+rm -rf "$STAGEDIR/var/db/etcupdate"
+echo "  Stripped size: $(du -sm "$STAGEDIR" | awk '{print $1}')MB"
 
 echo "  Stripped size: $(du -sh "$STAGEDIR" | awk '{print $1}')"
 
@@ -324,10 +290,7 @@ ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
 echo "[9/9] Building USB image..."
 
 IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
-# Stage size + 100% headroom for EFI(260MB) + UFS journal/inodes + growth room
-STAGE_MB=$(du -sm "$STAGEDIR" | awk '{print $1}')
-IMG_SIZE=$((STAGE_MB * 2 + 512))
-echo "  Staging: ${STAGE_MB}MB, IMG: ${IMG_SIZE}MB"
+IMG_SIZE=$(du -sm "$STAGEDIR" | awk '{print $1 + 512}')
 
 # Clean up any stale md devices from previous failed runs
 for stale_md in $(mdconfig -l 2>/dev/null); do

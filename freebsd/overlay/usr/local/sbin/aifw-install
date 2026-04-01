@@ -182,21 +182,13 @@ clone_system() {
     CLONE_LOG="/tmp/aifw-install.log"
     : > "$CLONE_LOG"
 
-    # Copy each top-level directory from the live CD to the target.
-    # Use cpdup (handles cd9660 correctly) with cp -a fallback.
+    # Use tar pipe to clone — more reliable than cpdup on cd9660
     for dir in bin boot etc lib libexec root sbin usr; do
         if [ -d "/$dir" ]; then
             echo "  Copying /$dir..."
-            if command -v cpdup >/dev/null 2>&1; then
-                cpdup -v "/$dir" "$INSTALL_ROOT/$dir" >>"$CLONE_LOG" 2>&1 || {
-                    echo "  WARNING: cpdup /$dir had errors"
-                    CLONE_ERRORS=$((CLONE_ERRORS + 1))
-                }
-            else
-                cp -a "/$dir" "$INSTALL_ROOT/" 2>>"$CLONE_LOG" || {
-                    echo "  WARNING: cp /$dir had errors"
-                    CLONE_ERRORS=$((CLONE_ERRORS + 1))
-                }
+            if ! tar -cf - -C / "$dir" 2>>"$CLONE_LOG" | tar -xpf - -C "$INSTALL_ROOT" 2>>"$CLONE_LOG"; then
+                echo "  ERROR: failed to copy /$dir"
+                CLONE_ERRORS=$((CLONE_ERRORS + 1))
             fi
         fi
     done
