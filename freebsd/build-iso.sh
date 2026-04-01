@@ -311,8 +311,8 @@ ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
 echo "[9/9] Building USB image..."
 
 IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
-# Fixed 2GB image — plenty of room for base system + AiFw + headroom
-IMG_SIZE=2048
+# Fixed 4GB image — base system + AiFw + UFS journal + headroom
+IMG_SIZE=4096
 
 # Clean up any stale md devices from previous failed runs
 for stale_md in $(mdconfig -l 2>/dev/null); do
