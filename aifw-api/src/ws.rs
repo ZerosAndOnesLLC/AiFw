@@ -431,7 +431,7 @@ async fn collect_blocked() -> Vec<BlockedPayload> {
     if tick % 5 == 0 {
         let mut entries = Vec::new();
         if let Ok(output) = tokio::process::Command::new("sudo")
-            .args(["/usr/sbin/tcpdump", "-n", "-e", "-r", "/var/log/pflog", "-c", "200"])
+            .args(["/usr/sbin/tcpdump", "-n", "-e", "-r", "/var/log/pflog"])
             .output().await
         {
             if output.status.success() {

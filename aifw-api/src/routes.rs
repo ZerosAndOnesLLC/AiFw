@@ -1129,7 +1129,7 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
     // Read from /var/log/pflog binary — this is where pf logs all block/pass with log flag
     // tcpdump -n -e -r /var/log/pflog shows: "rule X(match): block/pass in/out on iface: src > dst"
     if let Ok(output) = tokio::process::Command::new("sudo")
-        .args(["/usr/sbin/tcpdump", "-n", "-e", "-r", "/var/log/pflog", "-c", "500"])
+        .args(["/usr/sbin/tcpdump", "-n", "-e", "-r", "/var/log/pflog"])
         .output().await
     {
         if output.status.success() {
