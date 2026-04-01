@@ -108,9 +108,6 @@ trap - EXIT
 rm -rf "$STAGEDIR/var/db/pkg/repos"
 rm -rf "$STAGEDIR/var/cache/pkg"
 rm -rf "$STAGEDIR/tmp/"*
-# Strip package binaries too
-find "$STAGEDIR/usr/local/bin" "$STAGEDIR/usr/local/sbin" "$STAGEDIR/usr/local/lib" \
-     -type f \( -perm +0111 -o -name '*.so*' \) -exec strip -s {} \; 2>/dev/null || true
 
 # --- Overlay AiFw binaries and config ---
 echo "[6/9] Installing AiFw..."
