@@ -461,31 +461,40 @@ async fn collect_blocked() -> Vec<BlockedPayload> {
                     if let Some(gt_pos) = line.find(" > ") {
                         let before = &line[..gt_pos];
                         let src_token = before.split_whitespace().next_back().unwrap_or("");
+                        // Try IP.port first (TCP/UDP), fall back to plain IP (ICMP)
                         if let Some(dot_pos) = src_token.rfind('.') {
-                            if let Ok(port) = src_token[dot_pos + 1..].parse::<u16>() {
-                                let ip = &src_token[..dot_pos];
-                                if ip.chars().filter(|c| *c == '.').count() >= 3 {
-                                    entry.src_addr = ip.to_string();
+                            let maybe_port = &src_token[dot_pos + 1..];
+                            let maybe_ip = &src_token[..dot_pos];
+                            if let Ok(port) = maybe_port.parse::<u16>() {
+                                if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
+                                    entry.src_addr = maybe_ip.to_string();
                                     entry.src_port = port;
                                 }
+                            } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
+                                // Plain IP without port (ICMP)
+                                entry.src_addr = src_token.to_string();
                             }
                         }
                         let after = &line[gt_pos + 3..];
                         let dst_token = after.split(':').next().unwrap_or("").trim();
                         if let Some(dot_pos) = dst_token.rfind('.') {
-                            if let Ok(port) = dst_token[dot_pos + 1..].parse::<u16>() {
-                                let ip = &dst_token[..dot_pos];
-                                if ip.chars().filter(|c| *c == '.').count() >= 3 {
-                                    entry.dst_addr = ip.to_string();
+                            let maybe_port = &dst_token[dot_pos + 1..];
+                            let maybe_ip = &dst_token[..dot_pos];
+                            if let Ok(port) = maybe_port.parse::<u16>() {
+                                if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
+                                    entry.dst_addr = maybe_ip.to_string();
                                     entry.dst_port = port;
                                 }
+                            } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
+                                entry.dst_addr = dst_token.to_string();
                             }
                         }
                     }
 
-                    if line.contains("Flags [") { entry.protocol = "tcp".to_string(); }
-                    else if line.contains(" udp ") { entry.protocol = "udp".to_string(); }
-                    else if line.contains(" icmp") { entry.protocol = "icmp".to_string(); }
+                    let lower = line.to_lowercase();
+                    if line.contains("Flags [") || lower.contains(" tcp ") { entry.protocol = "tcp".to_string(); }
+                    else if lower.contains(" udp ") { entry.protocol = "udp".to_string(); }
+                    else if lower.contains("icmp") { entry.protocol = "icmp".to_string(); }
 
                     if !entry.src_addr.is_empty() { entries.push(entry); }
                     if entries.len() >= 200 { break; }
