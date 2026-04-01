@@ -852,8 +852,8 @@ async fn write_anchor_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) {
             r.push_str(" to any");
         }
         if let Some(p) = dp_s { r.push_str(&format!(" port {p}")); }
-        // state
-        r.push_str(" keep state");
+        // state (only for pass rules)
+        if action != "block" { r.push_str(" keep state"); }
         if let Some(l) = label { if !l.is_empty() { r.push_str(&format!(" label \"{l}\"")); } }
         pf_rules.push(r);
     }
@@ -928,6 +928,13 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push("scrub in all".to_string());
     lines.push(String::new());
 
+    // NAT (must come before filter rules in pf)
+    if config.lan_interface.is_some() && config.nat_enabled {
+        lines.push("# NAT — LAN masquerade".to_string());
+        lines.push("nat on $wan_if from $lan_net to any -> ($wan_if)".to_string());
+        lines.push(String::new());
+    }
+
     // AiFw managed anchors — NAT anchors must come before filter anchors
     lines.push("# AiFw NAT anchors".to_string());
     lines.push("nat-anchor \"aifw\"".to_string());
@@ -981,10 +988,8 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
 
     // Allow all traffic from local subnet
     lines.push("# Local subnet — allow all".to_string());
-    if let Some(ref ip) = config.lan_ip {
-        let net = ip.split('/').next().unwrap_or("192.168.1.0");
-        let prefix = ip.split('/').nth(1).unwrap_or("24");
-        lines.push(format!("pass in quick from {net}/{prefix} keep state label \"local-subnet\""));
+    if config.lan_ip.is_some() {
+        lines.push("pass in quick from $lan_net keep state label \"local-subnet\"".to_string());
     } else {
         // Derive subnet from WAN if no LAN — use common private ranges
         lines.push("pass in quick from 10.0.0.0/8 keep state label \"local-rfc1918\"".to_string());
@@ -1003,17 +1008,9 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push(format!("pass in quick proto tcp to any port {} keep state label \"aifw-api\"", config.api_port));
     lines.push(String::new());
 
-    // LAN to WAN (only with dual-NIC + NAT enabled)
-    if config.lan_interface.is_some() && config.nat_enabled {
+    // LAN to WAN pass rule
+    if config.lan_interface.is_some() {
         lines.push("# LAN to WAN".to_string());
-        lines.push("pass in on $lan_if from $lan_net keep state".to_string());
-        lines.push(String::new());
-
-        lines.push("# NAT — LAN masquerade".to_string());
-        lines.push("nat on $wan_if from $lan_net to any -> ($wan_if)".to_string());
-        lines.push(String::new());
-    } else if config.lan_interface.is_some() {
-        lines.push("# LAN to WAN (NAT disabled)".to_string());
         lines.push("pass in on $lan_if from $lan_net keep state".to_string());
         lines.push(String::new());
     }
