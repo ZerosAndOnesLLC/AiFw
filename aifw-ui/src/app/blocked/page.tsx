@@ -73,7 +73,7 @@ export default function BlockedTrafficPage() {
           </p>
         </div>
         <div className="flex items-center gap-1.5">
-          <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-red-500 animate-pulse" : "bg-gray-500"}`} />
+          <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
           <span className="text-xs text-gray-500">{ws.connected ? "Live" : "..."}</span>
         </div>
       </div>

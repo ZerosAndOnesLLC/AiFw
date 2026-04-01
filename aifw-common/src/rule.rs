@@ -289,7 +289,8 @@ impl Rule {
         }
 
         // log (must come before quick in pf syntax)
-        if self.log {
+        // Block rules always log so blocked traffic is visible in pflog
+        if self.log || self.action == Action::Block {
             parts.push("log".to_string());
         }
 
