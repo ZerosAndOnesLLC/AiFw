@@ -100,7 +100,7 @@ rm -f "$STAGEDIR/usr/bin/lld" "$STAGEDIR/usr/bin/ld.lld"
 rm -rf "$STAGEDIR/usr/include"
 rm -rf "$STAGEDIR/usr/lib/clang"
 
-# Strip only AiFw binaries (leave base system untouched for stability)
+# Strip only AiFw binaries (leave base system binaries and shared libs untouched)
 if [ -d "$STAGEDIR/usr/local/sbin" ]; then
     find "$STAGEDIR/usr/local/sbin" -type f -perm +0111 -exec strip -s {} \; 2>/dev/null || true
 fi
