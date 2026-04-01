@@ -222,7 +222,11 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n";
 
         // Write seeded rules to anchor files so pf has them on first load
         console::info("Writing anchor rules...");
-        write_anchor_rules(&pool, config).await;
+        {
+            let db = aifw_core::Database::new(std::path::Path::new(&config.db_path)).await
+                .map_err(|e| format!("db open: {e}"))?;
+            write_anchor_rules(db.pool(), config).await;
+        }
         console::success("Anchor rules written");
 
         // Load pf rules
