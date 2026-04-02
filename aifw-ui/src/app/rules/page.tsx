@@ -127,6 +127,7 @@ export default function RulesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [pendingChanges, setPendingChanges] = useState(false);
+  const [blockLogging, setBlockLogging] = useState(true);
   const [interfaceFilter, setInterfaceFilter] = useState<string>(urlInterface || "all");
   // Sync filter with URL param
   useEffect(() => { setInterfaceFilter(urlInterface || "all"); }, [urlInterface]);
@@ -157,12 +158,39 @@ export default function RulesPage() {
       setError(null);
       const res = await api.listRules();
       setRules(res.data);
+      // Derive block logging state from rules
+      const blockRules = res.data.filter((r: Rule) => r.action.startsWith("block"));
+      if (blockRules.length > 0) {
+        setBlockLogging(blockRules.some((r: Rule) => r.log));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch rules");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const [blockLoggingPending, setBlockLoggingPending] = useState(false);
+
+  const toggleBlockLogging = (enabled: boolean) => {
+    setBlockLogging(enabled);
+    setBlockLoggingPending(true);
+  };
+
+  const applyBlockLogging = async () => {
+    const token = localStorage.getItem("aifw_token") || "";
+    try {
+      const res = await fetch("/api/v1/rules/block-logging", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ enabled: blockLogging }),
+      });
+      if (res.ok) {
+        setBlockLoggingPending(false);
+        fetchRules();
+      }
+    } catch { /* silent */ }
+  };
 
   useEffect(() => {
     fetchRules();
@@ -410,7 +438,23 @@ export default function RulesPage() {
             {rules.filter((r) => r.status === "active").length} active
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer" title="Toggle logging on all block rules for performance testing">
+              <button
+                onClick={() => toggleBlockLogging(!blockLogging)}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${blockLogging ? "bg-green-500" : "bg-gray-600"}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${blockLogging ? "translate-x-[18px]" : "translate-x-[3px]"}`} />
+              </button>
+              Block Logging
+            </label>
+            {blockLoggingPending && (
+              <button onClick={applyBlockLogging} className="px-2 py-1 text-[10px] bg-purple-600 hover:bg-purple-700 text-white rounded">
+                Apply
+              </button>
+            )}
+          </div>
           <button
             onClick={() => {
               setForm(defaultForm);

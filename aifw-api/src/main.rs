@@ -241,6 +241,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/rules/system", get(routes::list_system_rules))
         .route("/api/v1/rules", get(routes::list_rules).post(routes::create_rule))
         .route("/api/v1/rules/{id}", get(routes::get_rule).put(routes::update_rule).delete(routes::delete_rule))
+        .route("/api/v1/rules/block-logging", post(routes::toggle_block_logging))
         .route("/api/v1/nat", get(routes::list_nat_rules).post(routes::create_nat_rule))
         .route("/api/v1/nat/pf-output", get(routes::get_nat_pf_output))
         .route("/api/v1/nat/{id}", put(routes::update_nat_rule).delete(routes::delete_nat_rule))

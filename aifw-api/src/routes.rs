@@ -919,6 +919,27 @@ pub async fn delete_rule(
     Ok(Json(MessageResponse { message: format!("Rule {id} deleted") }))
 }
 
+pub async fn toggle_block_logging(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Update all block rules' log flag
+    sqlx::query("UPDATE rules SET log = ?1, updated_at = ?2 WHERE action IN ('block', 'blockdrop', 'block_return', 'blockreturn')")
+        .bind(enabled).bind(&now)
+        .execute(&state.pool).await.map_err(|_| internal())?;
+
+    // Reload pf rules
+    let rules = state.rule_engine.list_rules().await.map_err(|_| internal())?;
+    let pf_rules: Vec<String> = rules.iter().map(|r| r.to_pf_rule("aifw")).collect();
+    let _ = state.pf.load_rules("aifw", &pf_rules).await;
+
+    let msg = if enabled { "Block logging enabled" } else { "Block logging disabled" };
+    Ok(Json(MessageResponse { message: msg.to_string() }))
+}
+
 // --- NAT endpoints ---
 
 pub async fn list_nat_rules(
