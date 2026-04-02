@@ -394,25 +394,6 @@ pub async fn apply_config(
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rtime_enable=YES"]).output().await;
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rtime", "restart"]).output().await;
 
-        // Add pf rules to allow NTP traffic on configured interfaces
-        if config.ntp_enabled {
-            let pf_tmp = "/tmp/aifw-ntp-pf.conf";
-            let mut pf_rules = String::new();
-            if config.ntp_interfaces.is_empty() {
-                pf_rules.push_str("pass in quick proto udp from any to any port 123 keep state\n");
-            } else {
-                for iface in &config.ntp_interfaces {
-                    pf_rules.push_str(&format!(
-                        "pass in quick on {} proto udp from any to any port 123 keep state\n",
-                        iface
-                    ));
-                }
-            }
-            let _ = tokio::fs::write(pf_tmp, &pf_rules).await;
-            let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-f", pf_tmp]).output().await;
-            let _ = tokio::fs::remove_file(pf_tmp).await;
-        }
-
         Ok(Json(MessageResponse { message: "Time config applied and rTime restarted".to_string() }))
     } else {
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rtime", "stop"]).output().await;

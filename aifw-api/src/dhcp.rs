@@ -8,6 +8,13 @@ use tokio::process::Command;
 use crate::AppState;
 
 const RDHCP_CONFIG_PATH: &str = "/usr/local/etc/rdhcpd/config.toml";
+
+/// Reload all aifw anchor rules — user firewall rules + service pass rules.
+/// This is the safe way for services to update pf without clobbering other rules.
+async fn reload_aifw_anchor(state: &AppState) {
+    let _ = state.rule_engine.apply_rules().await;
+    let _ = state.nat_engine.apply_rules().await;
+}
 const RDHCP_LEASE_DB: &str = "/var/db/rdhcpd/leases";
 const RDHCP_LOG_PATH: &str = "/var/log/rdhcpd/rdhcpd.log";
 
@@ -1176,32 +1183,16 @@ pub async fn apply_config(
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
 
-        // Add pf rules to allow DHCP traffic on configured interfaces
-        let pf_tmp = "/tmp/aifw-dhcp-pf.conf";
-        let mut pf_rules = String::new();
-        if config.interfaces.is_empty() {
-            // No interfaces specified — allow DHCP on all
-            pf_rules.push_str("pass in quick proto udp from any to any port { 67, 68 } keep state\n");
-        } else {
-            for iface in &config.interfaces {
-                pf_rules.push_str(&format!(
-                    "pass in quick on {} proto udp from any to any port {{ 67, 68 }} keep state\n",
-                    iface
-                ));
-            }
-        }
-        // Flush the anchor first, then load new rules
-        let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-Fa"]).output().await;
-        let _ = tokio::fs::write(pf_tmp, &pf_rules).await;
-        let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-f", pf_tmp]).output().await;
-        let _ = tokio::fs::remove_file(pf_tmp).await;
+        // Reload all aifw anchor rules (includes user rules + service rules)
+        // This preserves existing firewall rules while adding DHCP pass rules
+        reload_aifw_anchor(&state).await;
 
         Ok(Json(MessageResponse { message: "DHCP config applied and rDHCP restarted".to_string() }))
     } else {
         let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "stop"]).output().await;
         let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=NO"]).output().await;
-        // Remove DHCP pf rules when disabled
-        let _ = Command::new("sudo").args(["/sbin/pfctl", "-a", "aifw", "-Fa"]).output().await;
+        // Reload anchor to remove DHCP rules
+        reload_aifw_anchor(&state).await;
         Ok(Json(MessageResponse { message: "DHCP config saved, rDHCP stopped".to_string() }))
     }
 }
