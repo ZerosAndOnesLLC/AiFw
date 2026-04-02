@@ -9,7 +9,7 @@ interface StatusData {
   packets_in: number; packets_out: number; bytes_in: number; bytes_out: number;
 }
 interface SystemData {
-  cpu_usage: number; memory_total: number; memory_used: number; memory_pct: number;
+  cpu_usage: number; cpu_cores: number; memory_total: number; memory_used: number; memory_pct: number;
   disks: { mount: string; filesystem: string; total: number; used: number; pct: number }[];
   disk_io: { reads_per_sec: number; writes_per_sec: number; read_kbps: number; write_kbps: number };
   uptime_secs: number; hostname: string; os_version: string;
@@ -339,7 +339,7 @@ export default function Dashboard() {
       {/* Summary Stats Row */}
       <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
         {[
-          { l:`CPU (${(system as Record<string,unknown>)?.cpu_cores ?? "?"}c)`, v:`${(system?.cpu_usage??0).toFixed(0)}%`, c: (system?.cpu_usage??0) > 80 ? "#ef4444" : "#3b82f6" },
+          { l:`CPU (${system?.cpu_cores ?? "?"}c)`, v:`${(system?.cpu_usage??0).toFixed(0)}%`, c: (system?.cpu_usage??0) > 80 ? "#ef4444" : "#3b82f6" },
           { l:"Memory", v:`${(system?.memory_pct??0).toFixed(0)}%`, c: (system?.memory_pct??0) > 80 ? "#ef4444" : "#8b5cf6" },
           { l:"Disk", v:`${(system?.disks?.[0]?.pct??0).toFixed(0)}%`, c: (system?.disks?.[0]?.pct??0) > 90 ? "#ef4444" : "#06b6d4" },
           { l:"In", v:formatBps(rateIn), c:"#22c55e" },
