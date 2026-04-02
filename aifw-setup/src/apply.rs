@@ -791,6 +791,13 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
             if let Some(ref subnet) = lan_subnet {
                 ins(pool, 3, "pass", "in", lan, "any", subnet, None, false, "Allow LAN subnet", &now).await?;
             }
+            // DHCP on LAN (src is 0.0.0.0 for discovery, must allow from any)
+            if config.dhcp_enabled {
+                if let Some(li) = lan {
+                    ins(pool, 4, "pass", "in", Some(li), "udp", "any", Some(67), false, "Allow DHCP server (LAN)", &now).await?;
+                    ins(pool, 5, "pass", "in", Some(li), "udp", "any", Some(68), false, "Allow DHCP client (LAN)", &now).await?;
+                }
+            }
             // Management: SSH + Web UI from LAN subnet only
             let mgmt_src = lan_subnet.as_deref().unwrap_or("any");
             ins(pool, 20, "pass", "in", None, "tcp", mgmt_src, Some(22), false, "Allow SSH (LAN)", &now).await?;
@@ -1051,6 +1058,13 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
         lines.push("# LAN to WAN".to_string());
         lines.push("pass in on $lan_if from $lan_net keep state".to_string());
         lines.push(String::new());
+
+        // DHCP on LAN (client sends from 0.0.0.0, must allow from any on LAN)
+        if config.dhcp_enabled {
+            lines.push("# DHCP on LAN".to_string());
+            lines.push("pass in quick on $lan_if proto udp from any to any port { 67, 68 } keep state".to_string());
+            lines.push(String::new());
+        }
     }
 
     // Load AiFw managed rules
