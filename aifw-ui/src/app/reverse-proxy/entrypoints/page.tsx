@@ -383,7 +383,8 @@ export default function EntrypointsPage() {
                   return (
                     <tr
                       key={ep.id}
-                      className="border-b border-[var(--border)] hover:bg-white/[0.02]"
+                      className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer"
+                      onClick={() => openEdit(ep)}
                     >
                       <td className="px-6 py-3 text-[var(--text-primary)] font-medium">
                         {ep.name}
@@ -417,7 +418,7 @@ export default function EntrypointsPage() {
                           {ep.enabled ? "Active" : "Disabled"}
                         </span>
                       </td>
-                      <td className="px-6 py-3">
+                      <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={() => openEdit(ep)}

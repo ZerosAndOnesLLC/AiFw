@@ -404,7 +404,8 @@ export default function NatPage() {
                   natRules.map((rule) => (
                     <tr
                       key={rule.id}
-                      className="border-b border-gray-700 hover:bg-gray-750 transition-colors"
+                      className="border-b border-gray-700 hover:bg-gray-750 transition-colors cursor-pointer"
+                      onClick={() => handleEdit(rule)}
                     >
                       {/* Type */}
                       <td className="py-2.5 px-3">{natTypeBadge(rule.nat_type)}</td>
@@ -441,7 +442,7 @@ export default function NatPage() {
                         <span className="text-xs text-gray-400">{rule.label || "-"}</span>
                       </td>
                       {/* Status toggle */}
-                      <td className="py-2.5 px-3">
+                      <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={() => handleToggleStatus(rule)}
                           disabled={togglingId === rule.id}
@@ -459,7 +460,7 @@ export default function NatPage() {
                         </button>
                       </td>
                       {/* Actions */}
-                      <td className="py-2.5 px-2">
+                      <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1">
                           {/* Edit button */}
                           <button

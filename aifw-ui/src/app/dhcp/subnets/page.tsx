@@ -146,7 +146,7 @@ export default function DhcpSubnetsPage() {
       pool_start: subnet.pool_start,
       pool_end: subnet.pool_end,
       gateway: subnet.gateway,
-      dns_servers: (subnet.dns_servers || []).join(", "),
+      dns_servers: Array.isArray(subnet.dns_servers) ? subnet.dns_servers.join(", ") : (subnet.dns_servers || ""),
       domain_name: subnet.domain_name || "",
       lease_time: subnet.lease_time ? String(subnet.lease_time) : "",
       max_lease_time: subnet.max_lease_time ? String(subnet.max_lease_time) : "",
@@ -311,7 +311,8 @@ export default function DhcpSubnetsPage() {
                 {subnets.map((subnet) => (
                   <tr
                     key={subnet.id}
-                    className="border-b border-[var(--border)] hover:bg-white/[0.02]"
+                    className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer"
+                    onClick={() => openEdit(subnet)}
                   >
                     <td className="px-6 py-3 text-[var(--text-primary)] font-mono text-xs font-medium">
                       {subnet.network}
@@ -353,7 +354,7 @@ export default function DhcpSubnetsPage() {
                     <td className="px-6 py-3 text-[var(--text-secondary)]">
                       {fmtDate(subnet.created_at)}
                     </td>
-                    <td className="px-6 py-3">
+                    <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => openEdit(subnet)}

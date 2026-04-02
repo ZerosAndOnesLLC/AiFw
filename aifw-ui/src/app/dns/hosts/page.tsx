@@ -292,7 +292,8 @@ export default function DnsHostsPage() {
                 {hosts.map((host) => (
                   <tr
                     key={host.id}
-                    className="border-b border-[var(--border)] hover:bg-white/[0.02]"
+                    className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer"
+                    onClick={() => openEdit(host)}
                   >
                     <td className="px-6 py-3 text-[var(--text-primary)] font-mono text-xs font-medium">
                       {host.hostname}.{host.domain}
@@ -308,7 +309,7 @@ export default function DnsHostsPage() {
                     <td className="px-6 py-3 text-[var(--text-secondary)]">
                       {host.description || "-"}
                     </td>
-                    <td className="px-6 py-3">
+                    <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => toggleEnabled(host)}
                         className={`relative w-9 h-5 rounded-full transition-colors ${
@@ -325,7 +326,7 @@ export default function DnsHostsPage() {
                     <td className="px-6 py-3 text-[var(--text-secondary)]">
                       {fmtDate(host.created_at)}
                     </td>
-                    <td className="px-6 py-3">
+                    <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => openEdit(host)}

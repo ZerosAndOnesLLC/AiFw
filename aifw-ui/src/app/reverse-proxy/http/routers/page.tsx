@@ -566,7 +566,8 @@ export default function HttpRoutersPage() {
                   return (
                     <tr
                       key={router.id}
-                      className="border-b border-[var(--border)] hover:bg-[var(--bg-secondary)] transition-colors"
+                      className="border-b border-[var(--border)] hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer"
+                      onClick={() => openEdit(router)}
                     >
                       {/* Name */}
                       <td className="py-2.5 px-3">
@@ -623,7 +624,7 @@ export default function HttpRoutersPage() {
                         )}
                       </td>
                       {/* Enabled toggle */}
-                      <td className="py-2.5 px-3">
+                      <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={() => handleToggleEnabled(router)}
                           className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
@@ -640,7 +641,7 @@ export default function HttpRoutersPage() {
                         </button>
                       </td>
                       {/* Actions */}
-                      <td className="py-2.5 px-2">
+                      <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => openEdit(router)}

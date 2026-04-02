@@ -320,7 +320,7 @@ export default function GeoIpPage() {
               </thead>
               <tbody>
                 {rules.map((rule) => (
-                  <tr key={rule.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                  <tr key={rule.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors cursor-pointer" onClick={() => editingId !== rule.id && startEdit(rule)}>
                     {editingId === rule.id ? (
                       <>
                         {/* Inline edit row */}
@@ -359,7 +359,7 @@ export default function GeoIpPage() {
                         <td className="py-2.5 px-3 text-xs text-[var(--text-muted)]">
                           {new Date(rule.created_at).toLocaleDateString()}
                         </td>
-                        <td className="py-2.5 px-3 text-right">
+                        <td className="py-2.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-2">
                             <button
                               onClick={() => handleUpdateRule(rule.id)}
@@ -387,7 +387,7 @@ export default function GeoIpPage() {
                         <td className="py-2.5 px-3 text-xs text-right text-[var(--text-secondary)]">
                           {(rule.cidr_count || 0).toLocaleString()}
                         </td>
-                        <td className="py-2.5 px-3">
+                        <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
                           <button
                             onClick={() => handleToggleStatus(rule)}
                             disabled={togglingId === rule.id}
@@ -413,7 +413,7 @@ export default function GeoIpPage() {
                         <td className="py-2.5 px-3 text-xs text-[var(--text-muted)]">
                           {new Date(rule.created_at).toLocaleDateString()}
                         </td>
-                        <td className="py-2.5 px-3 text-right">
+                        <td className="py-2.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-2">
                             <button
                               onClick={() => startEdit(rule)}

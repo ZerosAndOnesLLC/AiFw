@@ -339,12 +339,12 @@ export default function RoutesPage() {
                 </tr>
               ) : (
                 staticRoutes.map((route) => (
-                  <tr key={route.id} className="hover:bg-gray-700/30 transition-colors">
+                  <tr key={route.id} className="hover:bg-gray-700/30 transition-colors cursor-pointer" onClick={() => startEdit(route)}>
                     <td className="px-6 py-3 font-mono text-white">{route.destination}</td>
                     <td className="px-6 py-3 font-mono text-gray-300">{route.gateway}</td>
                     <td className="px-6 py-3 text-gray-300">{route.interface || "auto"}</td>
                     <td className="px-6 py-3 text-gray-300">{route.metric}</td>
-                    <td className="px-6 py-3">
+                    <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => toggleEnabled(route)}
                         className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full transition-colors ${
@@ -360,7 +360,7 @@ export default function RoutesPage() {
                     <td className="px-6 py-3 text-gray-400 text-xs max-w-[200px] truncate">
                       {route.description || "--"}
                     </td>
-                    <td className="px-6 py-3 text-right">
+                    <td className="px-6 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-2">
                         <button
                           onClick={() => startEdit(route)}

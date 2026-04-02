@@ -1238,7 +1238,8 @@ export default function HttpMiddlewaresPage() {
                 middlewares.map((mw) => (
                   <tr
                     key={mw.id}
-                    className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors"
+                    className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors cursor-pointer"
+                    onClick={() => openEdit(mw)}
                   >
                     <td className="py-2.5 px-3 font-medium text-[var(--text-primary)]">
                       {mw.name}
@@ -1246,7 +1247,7 @@ export default function HttpMiddlewaresPage() {
                     <td className="py-2.5 px-3">
                       <TypeBadge mtype={mw.middleware_type} />
                     </td>
-                    <td className="py-2.5 px-3">
+                    <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => handleToggleEnabled(mw)}
                         className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
@@ -1265,7 +1266,7 @@ export default function HttpMiddlewaresPage() {
                     <td className="py-2.5 px-3 text-xs text-[var(--text-muted)]">
                       {fmtDate(mw.created_at)}
                     </td>
-                    <td className="py-2.5 px-3 text-right">
+                    <td className="py-2.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => openEdit(mw)}

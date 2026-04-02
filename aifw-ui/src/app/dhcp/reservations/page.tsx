@@ -276,7 +276,8 @@ export default function DhcpReservationsPage() {
                 {reservations.map((r) => (
                   <tr
                     key={r.id}
-                    className="border-b border-[var(--border)] hover:bg-white/[0.02]"
+                    className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer"
+                    onClick={() => openEdit(r)}
                   >
                     <td className="px-6 py-3 text-[var(--text-primary)] font-mono text-xs font-medium">
                       {r.mac_address}
@@ -296,7 +297,7 @@ export default function DhcpReservationsPage() {
                     <td className="px-6 py-3 text-[var(--text-secondary)]">
                       {fmtDate(r.created_at)}
                     </td>
-                    <td className="px-6 py-3">
+                    <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => openEdit(r)}

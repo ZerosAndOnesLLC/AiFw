@@ -271,7 +271,7 @@ export default function AliasesPage() {
                 ) : aliases.map((alias) => {
                   const ti = TYPE_LABELS[alias.alias_type] || TYPE_LABELS.host;
                   return (
-                    <tr key={alias.id} className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors">
+                    <tr key={alias.id} className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors cursor-pointer" onClick={() => handleEdit(alias)}>
                       <td className="py-2.5 px-4">
                         <span className="font-mono text-sm text-white font-medium">&lt;{alias.name}&gt;</span>
                       </td>
@@ -286,7 +286,7 @@ export default function AliasesPage() {
                       <td className="py-2.5 px-4">
                         <span className="text-xs text-gray-400">{alias.description || "-"}</span>
                       </td>
-                      <td className="py-2.5 px-4">
+                      <td className="py-2.5 px-4" onClick={(e) => e.stopPropagation()}>
                         <button onClick={() => handleToggle(alias)}
                           className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200"
                           style={{ backgroundColor: alias.enabled ? "#22c55e" : "#4b5563" }}
@@ -295,7 +295,7 @@ export default function AliasesPage() {
                             style={{ transform: alias.enabled ? "translateX(16px)" : "translateX(0)" }} />
                         </button>
                       </td>
-                      <td className="py-2.5 px-2">
+                      <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1">
                           <button onClick={() => handleEdit(alias)}
                             className="p-1.5 text-gray-400 hover:text-blue-400 transition-colors rounded hover:bg-gray-700" title="Edit">

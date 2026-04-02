@@ -839,7 +839,7 @@ export default function HttpServicesPage() {
                 </tr>
               ) : (
                 services.map((svc) => (
-                  <tr key={svc.id} className="hover:bg-gray-700/30 transition-colors">
+                  <tr key={svc.id} className="hover:bg-gray-700/30 transition-colors cursor-pointer" onClick={() => openEdit(svc)}>
                     <td className="py-2.5 px-4">
                       <span className="text-white font-medium">{svc.name}</span>
                     </td>
@@ -850,7 +850,7 @@ export default function HttpServicesPage() {
                     <td className="py-2.5 px-4">
                       <span className="text-xs text-gray-400 font-mono">{describeHealthCheck(svc)}</span>
                     </td>
-                    <td className="py-2.5 px-4">
+                    <td className="py-2.5 px-4" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => handleToggleEnabled(svc)}
                         className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
@@ -864,7 +864,7 @@ export default function HttpServicesPage() {
                         />
                       </button>
                     </td>
-                    <td className="py-2.5 px-2">
+                    <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => openEdit(svc)}

@@ -589,11 +589,11 @@ export default function TlsCertsPage() {
               </thead>
               <tbody>
                 {certs.map((cert) => (
-                  <tr key={cert.id} className="border-b border-[var(--border)] hover:bg-white/[0.02]">
+                  <tr key={cert.id} className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer" onClick={() => openEditCert(cert)}>
                     <td className="px-6 py-3 text-[var(--text-primary)] font-medium">{cert.name}</td>
                     <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs">{cert.cert_file}</td>
                     <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs">{cert.key_file}</td>
-                    <td className="px-6 py-3">
+                    <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => openEditCert(cert)}
@@ -659,7 +659,7 @@ export default function TlsCertsPage() {
                 {tlsOptions.map((opt) => {
                   const display = parseTlsOptionDisplay(opt.config_json);
                   return (
-                    <tr key={opt.id} className="border-b border-[var(--border)] hover:bg-white/[0.02]">
+                    <tr key={opt.id} className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer" onClick={() => openEditOption(opt)}>
                       <td className="px-6 py-3 text-[var(--text-primary)] font-medium">{opt.name}</td>
                       <td className="px-6 py-3 text-[var(--text-secondary)] text-xs">{display.minVersion}</td>
                       <td className="px-6 py-3 text-[var(--text-secondary)] text-xs">{display.maxVersion}</td>
@@ -672,7 +672,7 @@ export default function TlsCertsPage() {
                           <span className="text-[var(--text-muted)]">-</span>
                         )}
                       </td>
-                      <td className="px-6 py-3">
+                      <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={() => openEditOption(opt)}
@@ -738,7 +738,7 @@ export default function TlsCertsPage() {
                 {resolvers.map((r) => {
                   const display = parseCertResolverDisplay(r.config_json);
                   return (
-                    <tr key={r.id} className="border-b border-[var(--border)] hover:bg-white/[0.02]">
+                    <tr key={r.id} className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer" onClick={() => openEditResolver(r)}>
                       <td className="px-6 py-3 text-[var(--text-primary)] font-medium">{r.name}</td>
                       <td className="px-6 py-3 text-[var(--text-secondary)] text-xs">{display.email}</td>
                       <td className="px-6 py-3">
@@ -746,7 +746,7 @@ export default function TlsCertsPage() {
                           {display.challengeType}
                         </span>
                       </td>
-                      <td className="px-6 py-3">
+                      <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={() => openEditResolver(r)}
