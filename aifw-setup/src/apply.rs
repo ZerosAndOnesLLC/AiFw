@@ -581,6 +581,29 @@ rate_limit = 1000
         let _ = std::process::Command::new("sysrc").args(["local_unbound_enable=NO"]).status();
     }
 
+    // Seed DNS ACL entries — allow LAN subnet and localhost
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS dns_access_lists (id TEXT PRIMARY KEY, network TEXT NOT NULL, action TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)"
+    ).execute(&pool).await.map_err(|e| format!("dns acl table: {e}"))?;
+
+    let acl_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM dns_access_lists")
+        .fetch_one(&pool).await.map_err(|e| format!("acl count: {e}"))?;
+    if acl_count.0 == 0 {
+        let now = chrono::Utc::now().to_rfc3339();
+        // Allow localhost
+        let _ = sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1, '127.0.0.0/8', 'allow', 'Localhost', ?2)")
+            .bind(uuid::Uuid::new_v4().to_string()).bind(&now).execute(&pool).await;
+        // Allow LAN subnet if configured
+        if let Some(ref lip) = config.lan_ip {
+            let octets: Vec<&str> = lip.split('/').next().unwrap_or("192.168.1.1").split('.').collect();
+            if octets.len() == 4 {
+                let subnet = format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2]);
+                let _ = sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1, ?2, 'allow', 'LAN subnet', ?3)")
+                    .bind(uuid::Uuid::new_v4().to_string()).bind(&subnet).bind(&now).execute(&pool).await;
+            }
+        }
+    }
+
     // Seed DHCP server config if enabled
     if config.dhcp_enabled {
         if let Some(ref lan_cidr) = config.lan_ip {

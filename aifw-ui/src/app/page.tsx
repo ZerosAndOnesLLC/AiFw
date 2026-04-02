@@ -173,6 +173,7 @@ export default function Dashboard() {
   const system = ws.system as SystemData | null;
   const connections = (ws.connections || []) as unknown as Connection[];
   const ifaces = (ws.interfaces || []) as unknown as InterfaceEntry[];
+  const services = (ws.services || []) as unknown as { name: string; running: boolean; enabled: boolean }[];
 
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [rateIn, setRateIn] = useState(0);
@@ -338,7 +339,7 @@ export default function Dashboard() {
       {/* Summary Stats Row */}
       <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
         {[
-          { l:"CPU", v:`${(system?.cpu_usage??0).toFixed(0)}%`, c: (system?.cpu_usage??0) > 80 ? "#ef4444" : "#3b82f6" },
+          { l:`CPU (${(system as Record<string,unknown>)?.cpu_cores ?? "?"}c)`, v:`${(system?.cpu_usage??0).toFixed(0)}%`, c: (system?.cpu_usage??0) > 80 ? "#ef4444" : "#3b82f6" },
           { l:"Memory", v:`${(system?.memory_pct??0).toFixed(0)}%`, c: (system?.memory_pct??0) > 80 ? "#ef4444" : "#8b5cf6" },
           { l:"Disk", v:`${(system?.disks?.[0]?.pct??0).toFixed(0)}%`, c: (system?.disks?.[0]?.pct??0) > 90 ? "#ef4444" : "#06b6d4" },
           { l:"In", v:formatBps(rateIn), c:"#22c55e" },
@@ -353,6 +354,20 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {/* Service Health — only enabled services */}
+      {services.filter(s => s.enabled).length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {services.filter(s => s.enabled).map(svc => (
+            <div key={svc.name} className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-2 flex items-center justify-between">
+              <span className="text-xs font-medium">{svc.name}</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full ${svc.running ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                {svc.running ? "Running" : "Stopped"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Stacked Graphs — all share hoverIdx for time-aligned tooltip */}
       <StackedChart data={history} title="CPU" height={90} hoverIdx={hoverIdx} onHover={setHoverIdx}
@@ -376,33 +391,36 @@ export default function Dashboard() {
         formatY={formatBps}
       />
 
-      {/* Info + Connections Row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {/* Resources */}
+      {/* System Info Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        {/* Memory */}
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase mb-2">Resources</h3>
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase mb-2">Memory</h3>
           <div className="space-y-1.5 text-xs">
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Memory</span><span>{formatBytes(system?.memory_used??0)} / {formatBytes(system?.memory_total??0)}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Used</span><span>{formatBytes(system?.memory_used??0)} / {formatBytes(system?.memory_total??0)}</span></div>
+            <div className="w-full h-1.5 bg-gray-700 rounded-full"><div className="h-full rounded-full transition-all" style={{width:`${system?.memory_pct??0}%`,backgroundColor:(system?.memory_pct??0)>80?"#ef4444":"#8b5cf6"}}/></div>
+          </div>
+        </div>
+        {/* Disk / Mounts */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase mb-2">Disk</h3>
+          <div className="space-y-1.5 text-xs">
             {system?.disks?.map(d => (
               <div key={d.mount}>
-                <div className="flex justify-between"><span className="text-[var(--text-muted)]">{d.mount}</span><span>{d.pct.toFixed(0)}% — {formatBytes(d.used)}</span></div>
+                <div className="flex justify-between"><span className="text-[var(--text-muted)] font-mono">{d.mount}</span><span>{d.pct.toFixed(0)}% ({formatBytes(d.used)})</span></div>
                 <div className="w-full h-1 bg-gray-700 rounded-full mt-0.5"><div className="h-full rounded-full transition-all" style={{width:`${d.pct}%`,backgroundColor:d.pct>80?"#ef4444":"#06b6d4"}}/></div>
               </div>
             ))}
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Total In</span><span>{formatBytes(status.bytes_in)}</span></div>
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Total Out</span><span>{formatBytes(status.bytes_out)}</span></div>
           </div>
         </div>
         {/* Network */}
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
           <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase mb-2">Network</h3>
-          <div className="space-y-1.5 text-xs">
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Gateway</span><span className="font-mono">{system?.default_gateway||"—"}</span></div>
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Routes</span><span>{system?.route_count??0}</span></div>
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">DNS</span>
-              <span className="font-mono">{system?.dns_servers?.join(", ")||"—"}</span>
-            </div>
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Packets</span><span>{formatNumber(status.packets_in+status.packets_out)}</span></div>
+          <div className="space-y-1 text-xs">
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">GW</span><span className="font-mono text-[10px]">{system?.default_gateway||"—"}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">DNS</span><span className="font-mono text-[10px]">{system?.dns_servers?.join(", ")||"—"}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">In / Out</span><span>{formatBytes(status.bytes_in)} / {formatBytes(status.bytes_out)}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Packets</span><span>{formatNumber(status.packets_in+status.packets_out)} ({system?.route_count??0} routes)</span></div>
           </div>
         </div>
         {/* Top Talkers */}
@@ -412,7 +430,7 @@ export default function Dashboard() {
             <div className="space-y-1.5">
               {topTalkers.map(t => (
                 <div key={t.ip}>
-                  <div className="flex justify-between text-xs"><span className="font-mono">{t.ip}</span><span className="text-[var(--text-muted)]">{formatBytes(t.bytes)}</span></div>
+                  <div className="flex justify-between text-xs"><span className="font-mono text-[10px]">{t.ip}</span><span className="text-[var(--text-muted)]">{formatBytes(t.bytes)}</span></div>
                   <div className="w-full h-1 bg-gray-700 rounded-full mt-0.5"><div className="h-full rounded-full bg-cyan-500 transition-all" style={{width:`${(t.bytes/mtb)*100}%`}}/></div>
                 </div>
               ))}

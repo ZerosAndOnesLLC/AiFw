@@ -544,7 +544,7 @@ export default function TcpPage() {
                       ? tls.certResolver
                       : "-";
                     return (
-                      <tr key={r.id} className="border-b border-[var(--border)] hover:bg-white/[0.02]">
+                      <tr key={r.id} className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer" onClick={() => openEditRouter(r)}>
                         <td className="px-6 py-3 text-[var(--text-primary)] font-medium">{r.name}</td>
                         <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs max-w-[200px] truncate">
                           {r.rule}
@@ -572,17 +572,8 @@ export default function TcpPage() {
                             {r.enabled ? "Active" : "Disabled"}
                           </span>
                         </td>
-                        <td className="px-6 py-3">
+                        <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1">
-                            <button
-                              onClick={() => openEditRouter(r)}
-                              title="Edit"
-                              className="p-1.5 text-[var(--text-muted)] hover:text-blue-400 rounded hover:bg-blue-500/10"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                              </svg>
-                            </button>
                             <button
                               onClick={() => setDeleteRouterId(r.id)}
                               title="Delete"
@@ -655,7 +646,7 @@ export default function TcpPage() {
                       /* ignore */
                     }
                     return (
-                      <tr key={s.id} className="border-b border-[var(--border)] hover:bg-white/[0.02]">
+                      <tr key={s.id} className="border-b border-[var(--border)] hover:bg-white/[0.02] cursor-pointer" onClick={() => openEditService(s)}>
                         <td className="px-6 py-3 text-[var(--text-primary)] font-medium">{s.name}</td>
                         <td className="px-6 py-3">
                           <span className="text-xs px-2 py-0.5 rounded-full border bg-purple-500/20 text-purple-400 border-purple-500/30">
@@ -676,17 +667,8 @@ export default function TcpPage() {
                             {s.enabled ? "Active" : "Disabled"}
                           </span>
                         </td>
-                        <td className="px-6 py-3">
+                        <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1">
-                            <button
-                              onClick={() => openEditService(s)}
-                              title="Edit"
-                              className="p-1.5 text-[var(--text-muted)] hover:text-blue-400 rounded hover:bg-blue-500/10"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                              </svg>
-                            </button>
                             <button
                               onClick={() => setDeleteServiceId(s.id)}
                               title="Delete"

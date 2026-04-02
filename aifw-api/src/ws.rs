@@ -19,6 +19,14 @@ struct WsStatusUpdate {
     connections: Vec<ConnectionPayload>,
     interfaces: Vec<InterfacePayload>,
     blocked: Vec<BlockedPayload>,
+    services: Vec<ServiceStatusPayload>,
+}
+
+#[derive(Serialize, Clone)]
+struct ServiceStatusPayload {
+    name: String,
+    running: bool,
+    enabled: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -37,6 +45,7 @@ struct BlockedPayload {
 #[derive(Serialize)]
 struct SystemPayload {
     cpu_usage: f64,
+    cpu_cores: u32,
     memory_total: u64,
     memory_used: u64,
     memory_pct: f64,
@@ -242,10 +251,14 @@ async fn build_update(state: &AppState) -> Result<String, String> {
     // Collect blocked traffic from pflog (cached, refreshed every 5 ticks)
     let blocked = collect_blocked().await;
 
+    // Collect service status (lightweight — just check PIDs)
+    let services = collect_services().await;
+
     let update = WsStatusUpdate {
         msg_type: "status_update",
         system,
         blocked,
+        services,
         status: StatusPayload {
             pf_running: stats.running,
             pf_states: stats.states_count,
@@ -410,8 +423,10 @@ async fn collect_system_metrics() -> SystemPayload {
         Some(total)
     }.await.unwrap_or_default();
 
+    let cpu_cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+
     SystemPayload {
-        cpu_usage, memory_total: mem_total, memory_used: mem_used, memory_pct: mem_pct,
+        cpu_usage, cpu_cores, memory_total: mem_total, memory_used: mem_used, memory_pct: mem_pct,
         disks, disk_io, uptime_secs, hostname, os_version, dns_servers, default_gateway, route_count,
     }
 }
@@ -557,4 +572,34 @@ pub async fn start_pflog_collector() {
 async fn collect_blocked() -> Vec<BlockedPayload> {
     let buf = blocked_buffer();
     buf.read().await.clone()
+}
+
+async fn collect_services() -> Vec<ServiceStatusPayload> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::sync::RwLock;
+
+    static TICK: AtomicU64 = AtomicU64::new(0);
+    static CACHE: std::sync::OnceLock<RwLock<Vec<ServiceStatusPayload>>> = std::sync::OnceLock::new();
+
+    let cache = CACHE.get_or_init(|| RwLock::new(Vec::new()));
+    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+
+    // Refresh every 10 seconds
+    if tick % 10 == 0 {
+        let mut svcs = Vec::new();
+        for (name, svc_name) in [("rDNS", "rdns"), ("rDHCP", "rdhcpd"), ("rTIME", "rtime"), ("TrafficCop", "trafficcop")] {
+            let running = tokio::process::Command::new("sudo")
+                .args(["/usr/sbin/service", svc_name, "status"])
+                .output().await
+                .map(|o| o.status.success()).unwrap_or(false);
+            let enabled = tokio::process::Command::new("sudo")
+                .args(["/usr/sbin/sysrc", "-n", &format!("{svc_name}_enable")])
+                .output().await
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES").unwrap_or(false);
+            svcs.push(ServiceStatusPayload { name: name.to_string(), running, enabled });
+        }
+        *cache.write().await = svcs;
+    }
+
+    cache.read().await.clone()
 }

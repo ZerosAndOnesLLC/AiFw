@@ -8,13 +8,14 @@ interface WsData {
   connections: Record<string, unknown>[];
   interfaces: Record<string, unknown>[];
   blocked: Record<string, unknown>[];
+  services: Record<string, unknown>[];
   connected: boolean;
   history: Record<string, unknown>[];
   historyLoaded: boolean;
 }
 
 const WsContext = createContext<WsData>({
-  status: null, system: null, connections: [], interfaces: [], blocked: [],
+  status: null, system: null, connections: [], interfaces: [], blocked: [], services: [],
   connected: false, history: [], historyLoaded: false,
 });
 
@@ -26,6 +27,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
   const [connections, setConnections] = useState<Record<string, unknown>[]>([]);
   const [interfaces, setInterfaces] = useState<Record<string, unknown>[]>([]);
   const [blocked, setBlocked] = useState<Record<string, unknown>[]>([]);
+  const [services, setServices] = useState<Record<string, unknown>[]>([]);
   const [connected, setConnected] = useState(false);
   const [history, setHistory] = useState<Record<string, unknown>[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -58,6 +60,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
           if (last?.connections) setConnections(last.connections);
           if (last?.interfaces) setInterfaces(last.interfaces);
           if (last?.blocked) setBlocked(last.blocked);
+          if (last?.services) setServices(last.services);
           return;
         }
 
@@ -67,6 +70,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
           if (msg.connections) setConnections(msg.connections);
           if (msg.interfaces) setInterfaces(msg.interfaces);
           if (msg.blocked) setBlocked(msg.blocked);
+          if (msg.services) setServices(msg.services);
           histBuf.current = [...histBuf.current, msg].slice(-1800);
           setHistory(histBuf.current);
         }
@@ -91,7 +95,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
   }, [connect]);
 
   return (
-    <WsContext.Provider value={{ status, system, connections, interfaces, blocked, connected, history, historyLoaded }}>
+    <WsContext.Provider value={{ status, system, connections, interfaces, blocked, services, connected, history, historyLoaded }}>
       {children}
     </WsContext.Provider>
   );

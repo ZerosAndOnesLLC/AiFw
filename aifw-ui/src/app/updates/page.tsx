@@ -135,7 +135,10 @@ export default function UpdatesPage() {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetchStatus(), fetchSchedule(), fetchHistory(), fetchAifwStatus()]).finally(() => setLoading(false));
+    // Load fast endpoints first, then slow ones in background
+    Promise.all([fetchSchedule(), fetchHistory()]).finally(() => setLoading(false));
+    fetchStatus();
+    fetchAifwStatus();
   }, [fetchStatus, fetchSchedule, fetchHistory, fetchAifwStatus]);
 
   // Poll status while checking or installing
