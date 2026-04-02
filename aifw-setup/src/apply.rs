@@ -750,45 +750,65 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
     let wan = &config.wan_interface;
     let lan = config.lan_interface.as_deref();
 
-    struct R { pri: i32, action: &'static str, dir: &'static str, iface: Option<String>, proto: &'static str, dst_port: Option<u16>, log: bool, label: &'static str }
-
-    let mut rules: Vec<R> = Vec::new();
-
-    match config.default_policy {
-        DefaultPolicy::Standard => {
-            rules.push(R { pri: 1, action: "pass", dir: "out", iface: Some(wan.clone()), proto: "any", dst_port: None, log: false, label: "Allow outbound (WAN)" });
-            if let Some(li) = lan {
-                rules.push(R { pri: 2, action: "pass", dir: "out", iface: Some(li.to_string()), proto: "any", dst_port: None, log: false, label: "Allow outbound (LAN)" });
-                rules.push(R { pri: 3, action: "pass", dir: "in", iface: Some(li.to_string()), proto: "any", dst_port: None, log: false, label: "Allow LAN inbound" });
-            }
-            rules.push(R { pri: 10, action: "pass", dir: "in", iface: None, proto: "icmp", dst_port: None, log: false, label: "Allow ICMP" });
-            rules.push(R { pri: 20, action: "pass", dir: "in", iface: None, proto: "tcp", dst_port: Some(22), log: false, label: "Allow SSH" });
-            rules.push(R { pri: 21, action: "pass", dir: "in", iface: None, proto: "tcp", dst_port: Some(config.api_port), log: false, label: "Allow AiFw Web UI" });
-            rules.push(R { pri: 1000, action: "block", dir: "in", iface: None, proto: "any", dst_port: None, log: true, label: "Default block inbound" });
+    // Derive LAN subnet from LAN IP (e.g. 192.168.1.1/24 -> 192.168.1.0/24)
+    let lan_subnet = config.lan_ip.as_ref().map(|ip| {
+        let host = ip.split('/').next().unwrap_or("192.168.1.1");
+        let prefix = ip.split('/').nth(1).unwrap_or("24");
+        let octets: Vec<&str> = host.split('.').collect();
+        if octets.len() == 4 {
+            format!("{}.{}.{}.0/{}", octets[0], octets[1], octets[2], prefix)
+        } else {
+            ip.clone()
         }
-        DefaultPolicy::Strict => {
-            rules.push(R { pri: 20, action: "pass", dir: "in", iface: Some(wan.clone()), proto: "tcp", dst_port: Some(22), log: false, label: "Allow SSH (WAN)" });
-            rules.push(R { pri: 21, action: "pass", dir: "in", iface: Some(wan.clone()), proto: "tcp", dst_port: Some(config.api_port), log: false, label: "Allow AiFw Web UI (WAN)" });
-            rules.push(R { pri: 1000, action: "block", dir: "any", iface: None, proto: "any", dst_port: None, log: true, label: "Default block all" });
-        }
-        DefaultPolicy::Permissive => {
-            rules.push(R { pri: 1, action: "pass", dir: "any", iface: None, proto: "any", dst_port: None, log: false, label: "Allow all (permissive)" });
-        }
-    }
+    });
 
-    for r in &rules {
+    // Helper to insert a rule
+    async fn ins(pool: &sqlx::SqlitePool, pri: i32, action: &str, dir: &str, iface: Option<&str>,
+                 proto: &str, src: &str, dst_port: Option<u16>, log: bool, label: &str, now: &str) -> Result<(), String> {
         let id = uuid::Uuid::new_v4().to_string();
-        let _ = sqlx::query(
+        sqlx::query(
             "INSERT INTO rules (id, priority, action, direction, interface, protocol, src_addr, \
              src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
              log, quick, label, state_tracking, status, created_at, updated_at) \
-             VALUES (?1,?2,?3,?4,?5,?6,'any',NULL,NULL,'any',?7,?8,?9,1,?10,'keep_state','active',?11,?12)"
+             VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,NULL,'any',?8,?9,?10,1,?11,'keep_state','active',?12,?13)"
         )
-        .bind(&id).bind(r.pri).bind(r.action).bind(r.dir).bind(&r.iface)
-        .bind(r.proto)
-        .bind(r.dst_port.map(|p| p as i64)).bind(r.dst_port.map(|p| p as i64))
-        .bind(r.log).bind(r.label).bind(&now).bind(&now)
+        .bind(&id).bind(pri).bind(action).bind(dir).bind(iface)
+        .bind(proto).bind(src)
+        .bind(dst_port.map(|p| p as i64)).bind(dst_port.map(|p| p as i64))
+        .bind(log).bind(label).bind(now).bind(now)
         .execute(pool).await.map_err(|e| format!("seed rule: {e}"))?;
+        Ok(())
+    }
+
+    match config.default_policy {
+        DefaultPolicy::Standard => {
+            // Outbound: allow all out on both interfaces
+            ins(pool, 1, "pass", "out", Some(wan), "any", "any", None, false, "Allow outbound (WAN)", &now).await?;
+            if let Some(li) = lan {
+                ins(pool, 2, "pass", "out", Some(li), "any", "any", None, false, "Allow outbound (LAN)", &now).await?;
+            }
+            // LAN inbound: only from configured LAN subnet
+            if let Some(ref subnet) = lan_subnet {
+                ins(pool, 3, "pass", "in", lan, "any", subnet, None, false, "Allow LAN subnet", &now).await?;
+            }
+            // Management: SSH + Web UI from LAN subnet only
+            let mgmt_src = lan_subnet.as_deref().unwrap_or("any");
+            ins(pool, 20, "pass", "in", None, "tcp", mgmt_src, Some(22), false, "Allow SSH (LAN)", &now).await?;
+            ins(pool, 21, "pass", "in", None, "tcp", mgmt_src, Some(config.api_port), false, "Allow AiFw Web UI (LAN)", &now).await?;
+            // ICMP from LAN subnet
+            ins(pool, 10, "pass", "in", None, "icmp", mgmt_src, None, false, "Allow ICMP (LAN)", &now).await?;
+            // Block all inbound (WAN + anything else)
+            ins(pool, 1000, "block", "in", None, "any", "any", None, true, "Default block inbound", &now).await?;
+        }
+        DefaultPolicy::Strict => {
+            // Only SSH + Web UI on WAN, block everything else
+            ins(pool, 20, "pass", "in", Some(wan), "tcp", "any", Some(22), false, "Allow SSH (WAN)", &now).await?;
+            ins(pool, 21, "pass", "in", Some(wan), "tcp", "any", Some(config.api_port), false, "Allow AiFw Web UI (WAN)", &now).await?;
+            ins(pool, 1000, "block", "any", None, "any", "any", None, true, "Default block all", &now).await?;
+        }
+        DefaultPolicy::Permissive => {
+            ins(pool, 1, "pass", "any", None, "any", "any", None, false, "Allow all (permissive)", &now).await?;
+        }
     }
 
     // Seed NAT rules if NAT is enabled (LAN behind WAN)
@@ -1009,15 +1029,10 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push("pass in quick inet proto icmp icmp-type echoreq keep state".to_string());
     lines.push(String::new());
 
-    // Allow all traffic from local subnet
-    lines.push("# Local subnet — allow all".to_string());
+    // Allow traffic from LAN subnet only
     if config.lan_ip.is_some() {
+        lines.push("# LAN subnet — allow inbound".to_string());
         lines.push("pass in quick from $lan_net keep state label \"local-subnet\"".to_string());
-    } else {
-        // Derive subnet from WAN if no LAN — use common private ranges
-        lines.push("pass in quick from 10.0.0.0/8 keep state label \"local-rfc1918\"".to_string());
-        lines.push("pass in quick from 172.16.0.0/12 keep state label \"local-rfc1918\"".to_string());
-        lines.push("pass in quick from 192.168.0.0/16 keep state label \"local-rfc1918\"".to_string());
     }
     lines.push(String::new());
 

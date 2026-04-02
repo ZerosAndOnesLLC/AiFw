@@ -2,6 +2,29 @@
 
 High-performance, AI-powered firewall for FreeBSD built in Rust on top of pf. All features free and open source.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![FreeBSD](https://img.shields.io/badge/FreeBSD-15.0-red.svg)](https://www.freebsd.org/)
+[![Rust](https://img.shields.io/badge/Rust-2024-orange.svg)](https://www.rust-lang.org/)
+
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/dashboard.png" alt="Dashboard" width="48%">
+  <img src="screenshots/rules.png" alt="Firewall Rules" width="48%">
+</p>
+<p align="center">
+  <img src="screenshots/blocked.png" alt="Blocked Traffic" width="48%">
+  <img src="screenshots/traffic.png" alt="Traffic Analytics" width="48%">
+</p>
+<p align="center">
+  <img src="screenshots/dhcp.png" alt="DHCP Server" width="48%">
+  <img src="screenshots/dns.png" alt="DNS Resolver" width="48%">
+</p>
+<p align="center">
+  <img src="screenshots/time.png" alt="NTP/PTP Time Service" width="48%">
+  <img src="screenshots/interfaces.png" alt="Interfaces" width="48%">
+</p>
+
 ## Features
 
 - **Stateful packet filtering** via FreeBSD's pf with anchor isolation
