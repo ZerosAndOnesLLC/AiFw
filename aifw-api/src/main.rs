@@ -5,6 +5,7 @@ mod ca;
 mod dhcp;
 mod dns_resolver;
 mod iface;
+mod plugins;
 mod reverse_proxy;
 mod routes;
 mod time_service;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub geoip_engine: Arc<GeoIpEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
+    pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
     pub auth_settings: auth::AuthSettings,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
     pub redis: Option<redis::aio::ConnectionManager>,
@@ -223,6 +225,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/time/sources", get(time_service::list_sources).post(time_service::create_source))
         .route("/api/v1/time/sources/{id}", put(time_service::update_source).delete(time_service::delete_source))
         .route("/api/v1/time/logs", get(time_service::time_logs))
+        // Plugins
+        .route("/api/v1/plugins", get(plugins::list_plugins))
+        .route("/api/v1/plugins/toggle", post(plugins::enable_plugin))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/config/history", get(backup::config_history))
@@ -362,6 +367,26 @@ async fn create_state_from_db(
     alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
+    // Initialize plugin system
+    let plugin_ctx = aifw_plugins::PluginContext::new(pf.clone());
+    let mut plugin_mgr = aifw_plugins::PluginManager::new(plugin_ctx);
+
+    // Register built-in plugins (disabled by default — user enables via UI)
+    let _ = plugin_mgr.register(
+        Box::new(aifw_plugins::examples::LoggingPlugin::new()),
+        aifw_plugins::PluginConfig { enabled: false, ..Default::default() },
+    ).await;
+    let _ = plugin_mgr.register(
+        Box::new(aifw_plugins::examples::IpReputationPlugin::new()),
+        aifw_plugins::PluginConfig { enabled: false, ..Default::default() },
+    ).await;
+    let _ = plugin_mgr.register(
+        Box::new(aifw_plugins::examples::WebhookPlugin::new()),
+        aifw_plugins::PluginConfig { enabled: false, ..Default::default() },
+    ).await;
+
+    tracing::info!(plugins = plugin_mgr.count(), "plugin system initialized");
+
     Ok(AppState {
         pool,
         pf,
@@ -371,6 +396,7 @@ async fn create_state_from_db(
         geoip_engine,
         alias_engine,
         conntrack,
+        plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
         auth_settings,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(METRICS_HISTORY_SIZE))),
         redis: None,
