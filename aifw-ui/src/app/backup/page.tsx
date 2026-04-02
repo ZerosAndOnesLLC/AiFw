@@ -93,7 +93,12 @@ export default function BackupPage() {
   // OPNsense
   const [opnXml, setOpnXml] = useState("");
   const [opnImporting, setOpnImporting] = useState(false);
+  const [opnPreview, setOpnPreview] = useState<Record<string, unknown> | null>(null);
+  const [opnIfaceMap, setOpnIfaceMap] = useState<Record<string, string>>({});
   const opnFileRef = useRef<HTMLInputElement>(null);
+
+  // Commit Confirm
+  const [commitConfirm, setCommitConfirm] = useState<{ active: boolean; seconds_remaining: number; description: string } | null>(null);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -268,19 +273,40 @@ export default function BackupPage() {
     reader.readAsText(file);
   };
 
-  const handleOpnImport = async () => {
+  const handleOpnPreview = async () => {
     if (!opnXml.trim()) return;
-    setOpnImporting(true);
     try {
-      const res = await fetch("/api/v1/config/import-opnsense", {
+      const res = await fetch("/api/v1/config/preview-opnsense", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ xml: opnXml }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setOpnPreview(data);
+      // Initialize interface mapping with empty values
+      const found = (data.interfaces_found || []) as string[];
+      const map: Record<string, string> = {};
+      for (const i of found) map[i] = "";
+      setOpnIfaceMap(map);
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Preview failed");
+    }
+  };
+
+  const handleOpnImport = async () => {
+    if (!opnXml.trim() || !opnPreview) return;
+    setOpnImporting(true);
+    try {
+      const res = await fetch("/api/v1/config/import-opnsense", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ xml: opnXml, interface_map: opnIfaceMap }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       showFeedback("success", body.message || "OPNsense config imported");
-      setOpnXml("");
+      setOpnXml(""); setOpnPreview(null); setOpnIfaceMap({});
       if (opnFileRef.current) opnFileRef.current.value = "";
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Import failed");
@@ -288,6 +314,38 @@ export default function BackupPage() {
       setOpnImporting(false);
     }
   };
+
+  /* -- Commit Confirm ------------------------------------------------ */
+
+  const fetchCommitStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/config/commit-confirm/status", { headers: authHeadersPlain() });
+      if (res.ok) {
+        const data = await res.json();
+        setCommitConfirm(data.active ? data : null);
+      }
+    } catch { /* silent */ }
+  }, []);
+
+  const handleCommitConfirm = async () => {
+    try {
+      const res = await fetch("/api/v1/config/commit-confirm/confirm", { method: "POST", headers: authHeaders() });
+      if (res.ok) {
+        const body = await res.json();
+        showFeedback("success", body.message);
+        setCommitConfirm(null);
+      }
+    } catch (err) {
+      showFeedback("error", "Failed to confirm");
+    }
+  };
+
+  // Poll commit confirm status
+  useEffect(() => {
+    fetchCommitStatus();
+    const t = setInterval(fetchCommitStatus, 5000);
+    return () => clearInterval(t);
+  }, [fetchCommitStatus]);
 
   /* -- Render -------------------------------------------------------- */
 
@@ -621,50 +679,110 @@ export default function BackupPage() {
           {/* ===================== OPNsense Import Tab ================ */}
           {activeTab === "OPNsense Import" && (
             <div className="space-y-5">
+              {/* Commit Confirm Banner */}
+              {commitConfirm && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-amber-400">Pending Config Change — Confirm Required</p>
+                      <p className="text-xs text-amber-300 mt-1">
+                        {commitConfirm.description}. If you do not confirm within <strong>{commitConfirm.seconds_remaining}s</strong>, the configuration will automatically revert to the previous state.
+                      </p>
+                      <p className="text-xs text-amber-300/70 mt-1">
+                        If your network configuration changed, log in at the new IP address to confirm.
+                      </p>
+                    </div>
+                    <button onClick={handleCommitConfirm}
+                      className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded font-medium whitespace-nowrap">
+                      Confirm Config
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <h2 className="text-lg font-semibold">Import from OPNsense</h2>
                 <p className="text-xs text-[var(--text-muted)] mt-1">
                   Upload an OPNsense/pfSense <code className="bg-[var(--bg-primary)] px-1 rounded">config.xml</code> backup file.
-                  AiFw will extract firewall rules, NAT port forwards, static routes, DNS servers, and hostname.
+                  AiFw will validate and show a summary before importing.
                 </p>
               </div>
 
-              <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 text-sm text-yellow-300 space-y-1">
-                <p className="font-semibold">Migration Notes:</p>
-                <ul className="list-disc list-inside text-xs space-y-0.5">
-                  <li>Firewall rules (pass/block/reject) with direction, protocol, source, destination, and logging</li>
-                  <li>NAT port forward rules</li>
-                  <li>Static routes with gateway and description</li>
-                  <li>DNS nameserver configuration</li>
-                  <li>Not all OPNsense features have direct equivalents — review imported rules after migration</li>
-                </ul>
-              </div>
-
+              {/* Step 1: Upload */}
               <div className="space-y-3">
-                <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider block">Upload config.xml</label>
+                <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider block">Step 1: Upload config.xml</label>
                 <input ref={opnFileRef} type="file" accept=".xml" onChange={handleOpnFileSelect}
                   className="block w-full text-sm text-[var(--text-secondary)] file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-[var(--accent)] file:text-white hover:file:bg-[var(--accent-hover)]" />
 
-                {opnXml && (
-                  <div className="space-y-3">
-                    <details>
-                      <summary className="text-xs text-[var(--text-muted)] cursor-pointer hover:text-[var(--text-secondary)]">
-                        Preview XML ({(opnXml.length / 1024).toFixed(1)} KB)
-                      </summary>
-                      <pre className="mt-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded p-3 text-xs font-mono overflow-auto max-h-60 text-[var(--text-secondary)]">
-                        {opnXml.substring(0, 3000)}{opnXml.length > 3000 ? "\n... (truncated)" : ""}
-                      </pre>
-                    </details>
-                    <div className="flex gap-3">
-                      <button onClick={handleOpnImport} disabled={opnImporting} className={btnPrimary}>
-                        {opnImporting ? "Importing..." : "Import OPNsense Config"}
-                      </button>
-                      <button onClick={() => { setOpnXml(""); if (opnFileRef.current) opnFileRef.current.value = ""; }}
-                        className={btnSecondary}>Cancel</button>
-                    </div>
+                {opnXml && !opnPreview && (
+                  <div className="flex gap-3">
+                    <button onClick={handleOpnPreview} className={btnPrimary}>Analyze Config</button>
+                    <button onClick={() => { setOpnXml(""); if (opnFileRef.current) opnFileRef.current.value = ""; }}
+                      className={btnSecondary}>Cancel</button>
                   </div>
                 )}
               </div>
+
+              {/* Step 2: Preview + Interface Mapping */}
+              {opnPreview && (
+                <div className="space-y-4">
+                  {!(opnPreview as Record<string, unknown>).valid ? (
+                    <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-sm text-red-400">
+                      This does not appear to be a valid OPNsense/pfSense configuration file.
+                    </div>
+                  ) : (
+                    <>
+                      <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider block">Step 2: Review Summary</label>
+                      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4 space-y-2 text-sm">
+                        {(opnPreview as { hostname?: string }).hostname && (
+                          <div className="flex justify-between"><span className="text-[var(--text-muted)]">Hostname</span><span>{(opnPreview as { hostname: string }).hostname}</span></div>
+                        )}
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Firewall Rules</span><span className="font-mono">{((opnPreview as { rules: unknown[] }).rules || []).length}</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">NAT Rules</span><span className="font-mono">{((opnPreview as { nat_rules: unknown[] }).nat_rules || []).length}</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Static Routes</span><span className="font-mono">{((opnPreview as { routes: unknown[] }).routes || []).length}</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">DNS Servers</span><span className="font-mono">{((opnPreview as { dns_servers: string[] }).dns_servers || []).join(", ") || "none"}</span></div>
+                      </div>
+
+                      {/* Interface Mapping */}
+                      {(opnPreview as { interfaces_need_mapping: boolean }).interfaces_need_mapping && (
+                        <div className="space-y-2">
+                          <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider block">Step 3: Map Interfaces</label>
+                          <p className="text-xs text-amber-300">
+                            The config references interfaces that don't match this system. Map each OPNsense interface to a local interface.
+                          </p>
+                          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3 space-y-2">
+                            {((opnPreview as { interfaces_found: string[] }).interfaces_found || []).map((ci: string) => (
+                              <div key={ci} className="flex items-center gap-3">
+                                <span className="text-xs font-mono text-amber-400 w-20">{ci}</span>
+                                <span className="text-xs text-[var(--text-muted)]">→</span>
+                                <select value={opnIfaceMap[ci] || ""} onChange={(e) => setOpnIfaceMap(prev => ({ ...prev, [ci]: e.target.value }))}
+                                  className="bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-xs text-white">
+                                  <option value="">-- select --</option>
+                                  {((opnPreview as { interfaces_system: string[] }).interfaces_system || []).map((si: string) => (
+                                    <option key={si} value={si}>{si}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Confirm Import */}
+                      <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 text-xs text-yellow-300">
+                        Review the summary above. Imported rules will be added to your existing configuration. DNS servers will be applied immediately.
+                      </div>
+                      <div className="flex gap-3">
+                        <button onClick={handleOpnImport} disabled={opnImporting} className={btnPrimary}>
+                          {opnImporting ? "Importing..." : "Confirm & Import"}
+                        </button>
+                        <button onClick={() => { setOpnXml(""); setOpnPreview(null); setOpnIfaceMap({}); if (opnFileRef.current) opnFileRef.current.value = ""; }}
+                          className={btnSecondary}>Cancel</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

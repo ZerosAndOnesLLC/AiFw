@@ -2,10 +2,38 @@ use axum::{extract::{Query, State}, http::StatusCode, Json};
 use aifw_core::config_manager::{ConfigManager, ConfigVersion, ConfigDiff};
 use aifw_core::config::FirewallConfig;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::AppState;
 
 fn internal() -> StatusCode { StatusCode::INTERNAL_SERVER_ERROR }
+
+// ============================================================
+// Commit Confirm — Juniper-style timed rollback
+// ============================================================
+
+#[derive(Clone, Serialize)]
+pub struct CommitConfirmState {
+    active: bool,
+    expires_at: String,
+    seconds_remaining: u64,
+    description: String,
+}
+
+type CommitConfirmStore = Arc<RwLock<Option<CommitConfirmInner>>>;
+
+struct CommitConfirmInner {
+    rollback_config: String,  // JSON snapshot of pre-change config
+    expires_at: chrono::DateTime<chrono::Utc>,
+    description: String,
+    cancel_tx: tokio::sync::oneshot::Sender<()>,
+}
+
+fn commit_store() -> &'static CommitConfirmStore {
+    static STORE: std::sync::OnceLock<CommitConfirmStore> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| Arc::new(RwLock::new(None)))
+}
 
 #[derive(Serialize)]
 pub struct ApiResponse<T: Serialize> {
@@ -245,6 +273,15 @@ pub async fn import_opnsense(
     let xml = payload.get("xml").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
     let mut imported = Vec::new();
 
+    // Interface mapping — user maps OPNsense names (wan, lan, opt1) to real interfaces
+    let iface_map: std::collections::HashMap<String, String> = payload.get("interface_map")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    let map_iface = |name: &str| -> String {
+        iface_map.get(name).cloned().unwrap_or_else(|| name.to_string())
+    };
+
     // Parse OPNsense XML config — extract rules, NAT, DNS, routes, interfaces
     // OPNsense uses <opnsense> or <pfsense> root with <filter><rule>, <nat><rule>, etc.
 
@@ -262,7 +299,7 @@ pub async fn import_opnsense(
         let protocol = extract_xml_value(&rule_xml, "protocol").unwrap_or_else(|| "any".to_string());
         let src = extract_xml_value(&rule_xml, "source").map(|s| parse_opn_addr(&s)).unwrap_or_default();
         let dst = extract_xml_value(&rule_xml, "destination").map(|s| parse_opn_addr(&s)).unwrap_or_default();
-        let interface = extract_xml_value(&rule_xml, "interface");
+        let interface = extract_xml_value(&rule_xml, "interface").map(|i| map_iface(&i));
         let descr = extract_xml_value(&rule_xml, "descr");
         let disabled = extract_xml_value(&rule_xml, "disabled").is_some();
         let log = extract_xml_value(&rule_xml, "log").is_some();
@@ -289,7 +326,7 @@ pub async fn import_opnsense(
     // Extract NAT port forwards
     let mut nat_count = 0;
     for nat_xml in extract_xml_blocks(xml, "nat", "rule") {
-        let interface = extract_xml_value(&nat_xml, "interface").unwrap_or_else(|| "wan".to_string());
+        let interface = extract_xml_value(&nat_xml, "interface").map(|i| map_iface(&i)).unwrap_or_else(|| "wan".to_string());
         let protocol = extract_xml_value(&nat_xml, "protocol").unwrap_or_else(|| "tcp".to_string());
         let target = extract_xml_value(&nat_xml, "target");
         let local_port = extract_xml_value(&nat_xml, "local-port");
@@ -320,7 +357,10 @@ pub async fn import_opnsense(
         if !ns.is_empty() { dns_servers.push(ns); }
     }
     if !dns_servers.is_empty() {
-        imported.push(format!("{} DNS servers", dns_servers.len()));
+        // Apply DNS servers to resolv.conf
+        let resolv = dns_servers.iter().map(|s| format!("nameserver {s}")).collect::<Vec<_>>().join("\n");
+        let _ = tokio::fs::write("/etc/resolv.conf", &resolv).await;
+        imported.push(format!("{} DNS servers (applied)", dns_servers.len()));
     }
 
     // Extract hostname
@@ -351,6 +391,14 @@ pub async fn import_opnsense(
     }
     if route_count > 0 { imported.push(format!("{route_count} static routes")); }
 
+    // Reload pf rules to apply imported firewall rules
+    if rule_count > 0 || nat_count > 0 {
+        let rules = state.rule_engine.list_rules().await.map_err(|_| internal())?;
+        let pf_rules: Vec<String> = rules.iter().map(|r| r.to_pf_rule("aifw")).collect();
+        let _ = state.pf.load_rules("aifw", &pf_rules).await;
+        imported.push("pf rules reloaded".to_string());
+    }
+
     let msg = if imported.is_empty() {
         "No configuration could be parsed from OPNsense XML".to_string()
     } else {
@@ -358,6 +406,247 @@ pub async fn import_opnsense(
     };
 
     Ok(Json(MessageResponse { message: msg }))
+}
+
+// ============================================================
+// OPNsense Preview — parse XML and return summary without applying
+// ============================================================
+
+#[derive(Serialize)]
+pub struct OpnPreview {
+    valid: bool,
+    rules: Vec<OpnPreviewRule>,
+    nat_rules: Vec<OpnPreviewNat>,
+    routes: Vec<OpnPreviewRoute>,
+    dns_servers: Vec<String>,
+    hostname: Option<String>,
+    interfaces_found: Vec<String>,       // interfaces referenced in config
+    interfaces_system: Vec<String>,      // interfaces on this system
+    interfaces_need_mapping: bool,       // true if config has interfaces not on this system
+}
+
+#[derive(Serialize)]
+struct OpnPreviewRule {
+    action: String, direction: String, protocol: String,
+    src: String, dst: String, interface: Option<String>,
+    label: Option<String>, disabled: bool, log: bool,
+}
+#[derive(Serialize)]
+struct OpnPreviewNat {
+    interface: String, protocol: String, target: String,
+    port: String, label: Option<String>,
+}
+#[derive(Serialize)]
+struct OpnPreviewRoute {
+    network: String, gateway: String, description: Option<String>, disabled: bool,
+}
+
+pub async fn preview_opnsense(
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<OpnPreview>, StatusCode> {
+    let xml = payload.get("xml").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Validate it looks like an OPNsense/pfSense config
+    if !xml.contains("<opnsense") && !xml.contains("<pfsense") {
+        return Ok(Json(OpnPreview {
+            valid: false, rules: vec![], nat_rules: vec![], routes: vec![],
+            dns_servers: vec![], hostname: None, interfaces_found: vec![],
+            interfaces_system: vec![], interfaces_need_mapping: false,
+        }));
+    }
+
+    let mut rules = Vec::new();
+    let mut interfaces_found = std::collections::HashSet::new();
+
+    for rule_xml in extract_xml_blocks(xml, "filter", "rule") {
+        let action = extract_xml_value(&rule_xml, "type").unwrap_or_default();
+        if !["pass", "block", "reject"].contains(&action.as_str()) { continue; }
+        let iface = extract_xml_value(&rule_xml, "interface");
+        if let Some(ref i) = iface { interfaces_found.insert(i.clone()); }
+        rules.push(OpnPreviewRule {
+            action: match action.as_str() { "reject" => "block_return".into(), a => a.into() },
+            direction: extract_xml_value(&rule_xml, "direction").unwrap_or_else(|| "in".into()),
+            protocol: extract_xml_value(&rule_xml, "protocol").unwrap_or_else(|| "any".into()),
+            src: extract_xml_value(&rule_xml, "source").map(|s| parse_opn_addr(&s)).unwrap_or_else(|| "any".into()),
+            dst: extract_xml_value(&rule_xml, "destination").map(|s| parse_opn_addr(&s)).unwrap_or_else(|| "any".into()),
+            interface: iface,
+            label: extract_xml_value(&rule_xml, "descr"),
+            disabled: extract_xml_value(&rule_xml, "disabled").is_some(),
+            log: extract_xml_value(&rule_xml, "log").is_some(),
+        });
+    }
+
+    let mut nat_rules = Vec::new();
+    for nat_xml in extract_xml_blocks(xml, "nat", "rule") {
+        let iface = extract_xml_value(&nat_xml, "interface").unwrap_or_else(|| "wan".into());
+        interfaces_found.insert(iface.clone());
+        let target = extract_xml_value(&nat_xml, "target").unwrap_or_default();
+        let port = extract_xml_value(&nat_xml, "local-port").unwrap_or_default();
+        nat_rules.push(OpnPreviewNat {
+            interface: iface,
+            protocol: extract_xml_value(&nat_xml, "protocol").unwrap_or_else(|| "tcp".into()),
+            target, port,
+            label: extract_xml_value(&nat_xml, "descr"),
+        });
+    }
+
+    let mut routes = Vec::new();
+    for route_xml in extract_xml_blocks(xml, "staticroutes", "route") {
+        routes.push(OpnPreviewRoute {
+            network: extract_xml_value(&route_xml, "network").unwrap_or_default(),
+            gateway: extract_xml_value(&route_xml, "gateway").unwrap_or_default(),
+            description: extract_xml_value(&route_xml, "descr"),
+            disabled: extract_xml_value(&route_xml, "disabled").is_some(),
+        });
+    }
+
+    let system_block = extract_xml_block(xml, "system").unwrap_or_default();
+    let dns_servers: Vec<String> = extract_xml_values(&system_block, "dnsserver").into_iter().filter(|s| !s.is_empty()).collect();
+    let hostname = extract_xml_value(&system_block, "hostname");
+
+    // Get system interfaces
+    let sys_ifaces: Vec<String> = if let Ok(output) = tokio::process::Command::new("ifconfig").args(["-l"]).output().await {
+        String::from_utf8_lossy(&output.stdout).split_whitespace()
+            .filter(|n| !n.starts_with("lo") && !n.starts_with("pflog"))
+            .map(String::from).collect()
+    } else { vec![] };
+
+    let config_ifaces: Vec<String> = interfaces_found.into_iter().collect();
+    let need_mapping = config_ifaces.iter().any(|ci| {
+        // OPNsense uses "wan", "lan", "opt1" etc. — not real interface names
+        !sys_ifaces.contains(ci)
+    });
+
+    Ok(Json(OpnPreview {
+        valid: true, rules, nat_rules, routes, dns_servers, hostname,
+        interfaces_found: config_ifaces, interfaces_system: sys_ifaces,
+        interfaces_need_mapping: need_mapping,
+    }))
+}
+
+// ============================================================
+// Commit Confirm endpoints
+// ============================================================
+
+pub async fn commit_confirm_start(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let timeout_secs = payload.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(300);
+    let description = payload.get("description").and_then(|v| v.as_str()).unwrap_or("Config change").to_string();
+
+    // Snapshot current rules + NAT before the change
+    let rules = state.rule_engine.list_rules().await.map_err(|_| internal())?;
+    let nat_rules = state.nat_engine.list_rules().await.map_err(|_| internal())?;
+    let snapshot = FirewallConfig {
+        rules: rules.iter().map(|r| {
+            use aifw_core::config::RuleConfig;
+            RuleConfig {
+                id: r.id.to_string(), priority: r.priority,
+                action: format!("{:?}", r.action).to_lowercase(),
+                direction: format!("{:?}", r.direction).to_lowercase(),
+                protocol: r.protocol.to_string(),
+                interface: r.interface.as_ref().map(|i| i.0.clone()),
+                src_addr: Some(r.rule_match.src_addr.to_string()),
+                src_port_start: r.rule_match.src_port.as_ref().map(|p| p.start),
+                src_port_end: r.rule_match.src_port.as_ref().map(|p| p.end),
+                dst_addr: Some(r.rule_match.dst_addr.to_string()),
+                dst_port_start: r.rule_match.dst_port.as_ref().map(|p| p.start),
+                dst_port_end: r.rule_match.dst_port.as_ref().map(|p| p.end),
+                log: r.log, quick: r.quick, label: r.label.clone(),
+                state_tracking: "keep_state".into(),
+                status: match r.status { aifw_common::RuleStatus::Active => "active".into(), _ => "disabled".into() },
+            }
+        }).collect(),
+        nat: nat_rules.iter().map(|n| {
+            use aifw_core::config::NatRuleConfig;
+            NatRuleConfig {
+                id: n.id.to_string(), nat_type: format!("{:?}", n.nat_type).to_lowercase(),
+                interface: n.interface.0.clone(), protocol: n.protocol.to_string(),
+                src_addr: Some(n.src_addr.to_string()),
+                src_port_start: n.src_port.as_ref().map(|p| p.start),
+                src_port_end: n.src_port.as_ref().map(|p| p.end),
+                dst_addr: Some(n.dst_addr.to_string()),
+                dst_port_start: n.dst_port.as_ref().map(|p| p.start),
+                dst_port_end: n.dst_port.as_ref().map(|p| p.end),
+                redirect_addr: n.redirect.address.to_string(),
+                redirect_port_start: n.redirect.port.as_ref().map(|p| p.start),
+                redirect_port_end: n.redirect.port.as_ref().map(|p| p.end),
+                label: n.label.clone(),
+                status: match n.status { aifw_common::NatStatus::Active => "active".into(), _ => "disabled".into() },
+            }
+        }).collect(),
+        ..Default::default()
+    };
+    let snapshot_json = serde_json::to_string(&snapshot).map_err(|_| internal())?;
+
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs as i64);
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+    // Store the rollback state
+    {
+        let mut store = commit_store().write().await;
+        *store = Some(CommitConfirmInner {
+            rollback_config: snapshot_json.clone(),
+            expires_at,
+            description: description.clone(),
+            cancel_tx,
+        });
+    }
+
+    // Spawn timer that auto-rollbacks if not confirmed
+    let rollback_state = state.clone();
+    let store = commit_store().clone();
+
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => {
+                // Timer expired — rollback!
+                tracing::warn!("Commit confirm expired after {timeout_secs}s — rolling back");
+                if let Some(inner) = store.write().await.take() {
+                    if let Ok(config) = serde_json::from_str::<FirewallConfig>(&inner.rollback_config) {
+                        let _ = apply_firewall_config(&rollback_state, &config).await;
+                        tracing::info!("Config rolled back successfully");
+                    }
+                }
+            }
+            _ = cancel_rx => {
+                // Confirmed — do nothing, config stays
+                tracing::info!("Commit confirmed — config accepted");
+            }
+        }
+    });
+
+    Ok(Json(MessageResponse {
+        message: format!("Commit confirm started. You have {timeout_secs} seconds to confirm. If you do not log in and confirm, the configuration will automatically revert."),
+    }))
+}
+
+pub async fn commit_confirm_accept() -> Result<Json<MessageResponse>, StatusCode> {
+    let mut store = commit_store().write().await;
+    if let Some(inner) = store.take() {
+        let _ = inner.cancel_tx.send(()); // Cancel the rollback timer
+        Ok(Json(MessageResponse { message: "Configuration confirmed and accepted permanently.".to_string() }))
+    } else {
+        Ok(Json(MessageResponse { message: "No pending commit confirm to accept.".to_string() }))
+    }
+}
+
+pub async fn commit_confirm_status() -> Result<Json<CommitConfirmState>, StatusCode> {
+    let store = commit_store().read().await;
+    if let Some(inner) = store.as_ref() {
+        let remaining = (inner.expires_at - chrono::Utc::now()).num_seconds().max(0) as u64;
+        Ok(Json(CommitConfirmState {
+            active: true,
+            expires_at: inner.expires_at.to_rfc3339(),
+            seconds_remaining: remaining,
+            description: inner.description.clone(),
+        }))
+    } else {
+        Ok(Json(CommitConfirmState {
+            active: false, expires_at: String::new(), seconds_remaining: 0, description: String::new(),
+        }))
+    }
 }
 
 // ============================================================
