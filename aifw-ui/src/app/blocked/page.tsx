@@ -47,16 +47,16 @@ export default function BlockedTrafficPage() {
   const [filterProto, setFilterProto] = useState<string>("all");
   const [filterIface, setFilterIface] = useState<string>("all");
   const [filterDir, setFilterDir] = useState<string>("all");
-  const [filterAction, setFilterAction] = useState<string>("all");
+  const filterAction = "all";
   const [filterSrcAddr, setFilterSrcAddr] = useState("");
   const [filterDstAddr, setFilterDstAddr] = useState("");
   const [filterSrcPort, setFilterSrcPort] = useState("");
   const [filterDstPort, setFilterDstPort] = useState("");
 
-  const hasFilters = filterProto !== "all" || filterIface !== "all" || filterDir !== "all" || filterAction !== "all" || filterSrcAddr || filterDstAddr || filterSrcPort || filterDstPort;
+  const hasFilters = filterProto !== "all" || filterIface !== "all" || filterDir !== "all" || filterSrcAddr || filterDstAddr || filterSrcPort || filterDstPort;
 
   const clearFilters = () => {
-    setFilterProto("all"); setFilterIface("all"); setFilterDir("all"); setFilterAction("all");
+    setFilterProto("all"); setFilterIface("all"); setFilterDir("all");
     setFilterSrcAddr(""); setFilterDstAddr(""); setFilterSrcPort(""); setFilterDstPort("");
   };
 
@@ -70,11 +70,10 @@ export default function BlockedTrafficPage() {
   const interfaces = useMemo(() => [...new Set(timeFiltered.map(e => e.interface).filter(Boolean))], [timeFiltered]);
   const protocols = useMemo(() => {
     const seen = new Set(timeFiltered.map(e => e.protocol).filter(Boolean));
-    for (const p of ["tcp", "udp", "icmp"]) seen.add(p);
+    for (const p of ["tcp", "udp", "icmp", "esp", "ah", "gre", "igmp"]) seen.add(p);
     return [...seen];
   }, [timeFiltered]);
   const directions = useMemo(() => [...new Set(timeFiltered.map(e => e.direction).filter(Boolean))], [timeFiltered]);
-  const actions = useMemo(() => [...new Set(timeFiltered.map(e => e.action).filter(Boolean))], [timeFiltered]);
 
   // Apply all filters
   const filtered = useMemo(() => {
@@ -155,11 +154,6 @@ export default function BlockedTrafficPage() {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <select value={filterAction} onChange={(e) => setFilterAction(e.target.value)}
-            className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white min-w-[90px]">
-            <option value="all">Any Action</option>
-            {actions.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
           <select value={filterProto} onChange={(e) => setFilterProto(e.target.value)}
             className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white min-w-[100px]">
             <option value="all">Any Protocol</option>

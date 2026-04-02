@@ -1221,9 +1221,14 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                     }
                 }
 
-                if line.contains("Flags [") || line.contains("tcp") { entry.protocol = "tcp".to_string(); }
-                else if line.contains("UDP") || line.contains("udp") { entry.protocol = "udp".to_string(); }
-                else if line.contains("ICMP") || line.contains("icmp") { entry.protocol = "icmp".to_string(); }
+                let lower = line.to_lowercase();
+                if line.contains("Flags [") || lower.contains(" tcp ") { entry.protocol = "tcp".to_string(); }
+                else if lower.contains(" udp ") { entry.protocol = "udp".to_string(); }
+                else if lower.contains("icmp") { entry.protocol = "icmp".to_string(); }
+                else if lower.contains(" esp ") || lower.contains("esp(") { entry.protocol = "esp".to_string(); }
+                else if lower.contains(" ah ") || lower.contains("ah(") { entry.protocol = "ah".to_string(); }
+                else if lower.contains(" gre ") || lower.contains("gre(") { entry.protocol = "gre".to_string(); }
+                else if lower.contains("igmp") { entry.protocol = "igmp".to_string(); }
 
                 if !entry.src_addr.is_empty() {
                     entries.push(entry);
