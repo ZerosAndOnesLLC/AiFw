@@ -1,6 +1,8 @@
 # AiFw
 
-High-performance, AI-powered firewall for FreeBSD built in Rust on top of pf. All features free and open source.
+High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML threat detection. All features free and open source.
+
+> **AI is optional.** AiFw is a full-featured firewall, router, DHCP server, DNS resolver, and NTP server that works without any AI features enabled. The AI/ML threat detection module is an opt-in add-on for users who want automated port scan, DDoS, brute force, and C2 beacon detection. You can run AiFw purely as a traditional firewall — no AI, no cloud, no telemetry.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![FreeBSD](https://img.shields.io/badge/FreeBSD-15.0-red.svg)](https://www.freebsd.org/)
@@ -31,7 +33,7 @@ High-performance, AI-powered firewall for FreeBSD built in Rust on top of pf. Al
 - **NAT** — SNAT, DNAT/RDR, masquerade, binat, NAT64/NAT46
 - **Connection tracking** — real-time state table monitoring, top talkers, protocol breakdown
 - **Rate limiting & traffic shaping** — CoDel/HFSC/PriQ queues, per-IP overload tables, SYN flood protection
-- **AI/ML threat detection** — port scan, DDoS, brute force, C2 beacon, DNS tunnel detection with auto-response
+- **AI/ML threat detection** *(optional)* — port scan, DDoS, brute force, C2 beacon, DNS tunnel detection with auto-response
 - **VPN integration** — WireGuard tunnels + peers, IPsec SAs with pf rule generation
 - **Geo-IP filtering** — country-based block/allow with GeoLite2 CSV, CIDR aggregation
 - **TLS inspection** — JA3/JA3S fingerprinting, SNI filtering, cert validation, version enforcement
