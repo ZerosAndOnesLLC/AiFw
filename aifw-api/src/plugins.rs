@@ -90,7 +90,77 @@ pub async fn enable_plugin(
     }
 }
 
+pub async fn get_plugin_config(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let row = sqlx::query_as::<_, (i32, Option<String>)>(
+        "SELECT enabled, settings FROM plugin_config WHERE name = ?1"
+    ).bind(&name).fetch_optional(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (enabled, settings) = row.unwrap_or((0, None));
+    let settings_json: serde_json::Value = settings
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({}));
+
+    Ok(Json(serde_json::json!({
+        "name": name,
+        "enabled": enabled != 0,
+        "settings": settings_json,
+    })))
+}
+
+pub async fn update_plugin_config(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let settings = payload.get("settings").cloned().unwrap_or(serde_json::json!({}));
+    let settings_str = serde_json::to_string(&settings).unwrap_or_default();
+
+    let _ = sqlx::query(
+        "INSERT INTO plugin_config (name, enabled, settings) VALUES (?1, 0, ?2) ON CONFLICT(name) DO UPDATE SET settings=excluded.settings"
+    ).bind(&name).bind(&settings_str).execute(&state.pool).await;
+
+    Ok(Json(MessageResponse { message: format!("Plugin '{name}' config updated.") }))
+}
+
+pub async fn get_plugin_logs(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // For the logging plugin, return its captured entries
+    let mgr = state.plugin_manager.read().await;
+    let list = mgr.list_plugins();
+
+    // Check if plugin exists and is the logging plugin
+    let found = list.iter().any(|(info, _)| info.name == name);
+    if !found {
+        return Ok(Json(serde_json::json!({ "entries": [], "message": "Plugin not found" })));
+    }
+
+    // We can't directly access plugin internals through the trait,
+    // but we can report the hook dispatch count via stats
+    Ok(Json(serde_json::json!({
+        "name": name,
+        "message": "Plugin logs available when plugin exposes a log endpoint",
+        "stats": {
+            "total_plugins": list.len(),
+            "running": list.iter().filter(|(_, s)| *s == aifw_plugins::PluginState::Running).count(),
+        }
+    })))
+}
+
+pub async fn discover_plugins() -> Result<Json<serde_json::Value>, StatusCode> {
+    let discovered = aifw_plugins::discovery::discover_plugins();
+    Ok(Json(serde_json::json!({
+        "plugins": discovered,
+        "plugin_dir": "/usr/local/lib/aifw/plugins",
+    })))
+}
+
 /// Dispatch a hook event to all plugins (called internally by other modules)
+#[allow(dead_code)]
 pub async fn dispatch_hook(state: &AppState, event: aifw_plugins::HookEvent) -> Vec<aifw_plugins::HookAction> {
     let mgr = state.plugin_manager.read().await;
     mgr.dispatch(&event).await

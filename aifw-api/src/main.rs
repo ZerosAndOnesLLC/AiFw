@@ -228,6 +228,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         // Plugins
         .route("/api/v1/plugins", get(plugins::list_plugins))
         .route("/api/v1/plugins/toggle", post(plugins::enable_plugin))
+        .route("/api/v1/plugins/{name}/config", get(plugins::get_plugin_config).put(plugins::update_plugin_config))
+        .route("/api/v1/plugins/{name}/logs", get(plugins::get_plugin_logs))
+        .route("/api/v1/plugins/discover", get(plugins::discover_plugins))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/config/history", get(backup::config_history))
@@ -548,6 +551,29 @@ async fn main() -> anyhow::Result<()> {
 
     // Start persistent pflog0 live capture for blocked traffic page
     ws::start_pflog_collector(state.plugin_manager.clone()).await;
+
+    // Start plugin timer hook — fires every 60 seconds for cron-like plugins
+    {
+        let pmgr = state.plugin_manager.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let mgr = pmgr.read().await;
+                if mgr.running_count() > 0 {
+                    let event = aifw_plugins::HookEvent {
+                        hook: aifw_plugins::HookPoint::Timer,
+                        data: aifw_plugins::hooks::HookEventData::Tick {
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default().as_secs(),
+                        },
+                    };
+                    let _ = mgr.dispatch(&event).await;
+                }
+            }
+        });
+    }
 
     let app = build_router(state, args.ui_dir.as_deref());
 

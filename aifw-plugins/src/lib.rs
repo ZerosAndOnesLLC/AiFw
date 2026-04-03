@@ -1,4 +1,5 @@
 pub mod context;
+pub mod discovery;
 pub mod examples;
 pub mod hooks;
 pub mod manager;

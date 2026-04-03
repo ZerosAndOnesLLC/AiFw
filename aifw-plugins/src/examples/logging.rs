@@ -107,6 +107,7 @@ impl Plugin for LoggingPlugin {
             HookEventData::Api { method, path, .. } => {
                 format!("api: {} {}", method, path)
             }
+            _ => format!("{:?}", event.data),
         };
 
         self.append(event.hook, msg).await;

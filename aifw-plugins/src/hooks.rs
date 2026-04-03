@@ -19,6 +19,16 @@ pub enum HookPoint {
     LogEvent,
     /// API request received (before handler)
     ApiRequest,
+    /// DNS query received (rDNS integration)
+    DnsQuery,
+    /// DNS response sent
+    DnsResponse,
+    /// DHCP lease assigned (rDHCP integration)
+    DhcpLease,
+    /// VPN tunnel state change
+    VpnEvent,
+    /// Scheduled timer tick (cron-like)
+    Timer,
 }
 
 impl std::fmt::Display for HookPoint {
@@ -31,6 +41,11 @@ impl std::fmt::Display for HookPoint {
             HookPoint::ConnectionClosed => write!(f, "connection_closed"),
             HookPoint::LogEvent => write!(f, "log_event"),
             HookPoint::ApiRequest => write!(f, "api_request"),
+            HookPoint::DnsQuery => write!(f, "dns_query"),
+            HookPoint::DnsResponse => write!(f, "dns_response"),
+            HookPoint::DhcpLease => write!(f, "dhcp_lease"),
+            HookPoint::VpnEvent => write!(f, "vpn_event"),
+            HookPoint::Timer => write!(f, "timer"),
         }
     }
 }
@@ -77,6 +92,30 @@ pub enum HookEventData {
         path: String,
         remote_addr: Option<String>,
     },
+    /// DNS query/response event
+    Dns {
+        query_name: String,
+        query_type: String,
+        src_ip: Option<IpAddr>,
+        response_code: Option<String>,
+    },
+    /// DHCP lease event
+    Dhcp {
+        mac_address: String,
+        ip_address: IpAddr,
+        hostname: Option<String>,
+        lease_action: String,  // "assign", "renew", "release"
+    },
+    /// VPN event
+    Vpn {
+        tunnel_name: String,
+        peer: Option<String>,
+        action: String,  // "up", "down", "handshake"
+    },
+    /// Timer tick
+    Tick {
+        timestamp: u64,
+    },
 }
 
 /// Action returned by a plugin to influence firewall behavior
@@ -93,6 +132,10 @@ pub enum HookAction {
     Log(String),
     /// Add an IP to a pf table (e.g., block list)
     AddToTable { table: String, ip: IpAddr },
+    /// Remove an IP from a pf table
+    RemoveFromTable { table: String, ip: IpAddr },
+    /// Modify a value (e.g., rewrite DNS response)
+    Modify(String),
     /// Multiple actions
     Multi(Vec<HookAction>),
 }

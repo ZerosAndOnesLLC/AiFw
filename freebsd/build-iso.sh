@@ -169,6 +169,7 @@ mkdir -p "$STAGEDIR/usr/local/etc/rdns/rpz"
 mkdir -p "$STAGEDIR/var/run/rdns"
 mkdir -p "$STAGEDIR/var/log/rdns"
 mkdir -p "$STAGEDIR/usr/local/etc/rtime"
+mkdir -p "$STAGEDIR/usr/local/lib/aifw/plugins"
 mkdir -p "$STAGEDIR/var/run/rtime"
 mkdir -p "$STAGEDIR/var/log/rtime"
 
