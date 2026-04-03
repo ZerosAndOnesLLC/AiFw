@@ -362,6 +362,7 @@ async fn create_state_from_db(
     dns_resolver::migrate(&pool).await?;
     reverse_proxy::migrate(&pool).await?;
     time_service::migrate(&pool).await?;
+    plugins::migrate(&pool).await?;
     aifw_core::config_manager::ConfigManager::new(pool.clone()).migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let alias_engine = Arc::new(AliasEngine::new(pool.clone(), pf.clone()));
     alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
@@ -385,7 +386,24 @@ async fn create_state_from_db(
         aifw_plugins::PluginConfig { enabled: false, ..Default::default() },
     ).await;
 
-    tracing::info!(plugins = plugin_mgr.count(), "plugin system initialized");
+    // Load persisted plugin enable states from DB
+    let enabled_plugins: Vec<(String,)> = sqlx::query_as("SELECT name FROM plugin_config WHERE enabled = 1")
+        .fetch_all(&pool).await.unwrap_or_default();
+    for (name,) in &enabled_plugins {
+        // Unload disabled version and re-register as enabled
+        let _ = plugin_mgr.unload(name).await;
+        let plugin: Option<Box<dyn aifw_plugins::Plugin>> = match name.as_str() {
+            "logging" => Some(Box::new(aifw_plugins::examples::LoggingPlugin::new())),
+            "ip_reputation" => Some(Box::new(aifw_plugins::examples::IpReputationPlugin::new())),
+            "webhook" => Some(Box::new(aifw_plugins::examples::WebhookPlugin::new())),
+            _ => None,
+        };
+        if let Some(p) = plugin {
+            let _ = plugin_mgr.register(p, aifw_plugins::PluginConfig { enabled: true, ..Default::default() }).await;
+        }
+    }
+
+    tracing::info!(plugins = plugin_mgr.count(), running = plugin_mgr.running_count(), "plugin system initialized");
 
     Ok(AppState {
         pool,
@@ -529,7 +547,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Start persistent pflog0 live capture for blocked traffic page
-    ws::start_pflog_collector().await;
+    ws::start_pflog_collector(state.plugin_manager.clone()).await;
 
     let app = build_router(state, args.ui_dir.as_deref());
 

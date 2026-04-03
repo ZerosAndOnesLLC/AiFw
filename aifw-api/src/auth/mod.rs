@@ -560,6 +560,27 @@ pub async fn auth_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     };
 
+    // Dispatch ApiRequest hook to plugins
+    {
+        let mgr = state.plugin_manager.read().await;
+        if mgr.running_count() > 0 {
+            let method = request.method().to_string();
+            let path = request.uri().path().to_string();
+            let event = aifw_plugins::HookEvent {
+                hook: aifw_plugins::HookPoint::ApiRequest,
+                data: aifw_plugins::hooks::HookEventData::Api {
+                    method, path, remote_addr: None,
+                },
+            };
+            let actions = mgr.dispatch(&event).await;
+            for action in &actions {
+                if matches!(action, aifw_plugins::HookAction::Block) {
+                    return Err(StatusCode::FORBIDDEN);
+                }
+            }
+        }
+    }
+
     request.extensions_mut().insert(AuthUser(user_id));
     Ok(next.run(request).await)
 }

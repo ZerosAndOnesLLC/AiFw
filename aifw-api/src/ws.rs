@@ -196,6 +196,60 @@ async fn build_update(state: &AppState) -> Result<String, String> {
     state.conntrack.refresh().await.map_err(|e| e.to_string())?;
     let conns = state.conntrack.get_connections().await;
 
+    // Dispatch plugin hooks for new/closed connections
+    {
+        use std::collections::HashSet;
+        static PREV_CONNS: std::sync::OnceLock<tokio::sync::RwLock<HashSet<String>>> = std::sync::OnceLock::new();
+        let prev_lock = PREV_CONNS.get_or_init(|| tokio::sync::RwLock::new(HashSet::new()));
+
+        let current_keys: HashSet<String> = conns.iter().map(|c| format!("{}:{}:{}:{}", c.src_addr, c.src_port, c.dst_addr, c.dst_port)).collect();
+        let prev_keys = prev_lock.read().await.clone();
+
+        // New connections
+        let mgr = state.plugin_manager.read().await;
+        if mgr.running_count() > 0 {
+            for c in &conns {
+                let key = format!("{}:{}:{}:{}", c.src_addr, c.src_port, c.dst_addr, c.dst_port);
+                if !prev_keys.contains(&key) {
+                    let event = aifw_plugins::HookEvent {
+                        hook: aifw_plugins::HookPoint::ConnectionNew,
+                        data: aifw_plugins::hooks::HookEventData::Connection {
+                            src_ip: c.src_addr, dst_ip: c.dst_addr,
+                            src_port: c.src_port, dst_port: c.dst_port,
+                            protocol: c.protocol.clone(), state: c.state.clone(),
+                        },
+                    };
+                    let actions = mgr.dispatch(&event).await;
+                    for action in actions {
+                        if let aifw_plugins::HookAction::AddToTable { ref table, ip } = action {
+                            let _ = state.pf.add_table_entry(table, ip).await;
+                        }
+                    }
+                }
+            }
+            // Closed connections
+            for key in &prev_keys {
+                if !current_keys.contains(key) {
+                    let parts: Vec<&str> = key.split(':').collect();
+                    if parts.len() >= 4 {
+                        let event = aifw_plugins::HookEvent {
+                            hook: aifw_plugins::HookPoint::ConnectionClosed,
+                            data: aifw_plugins::hooks::HookEventData::Connection {
+                                src_ip: parts[0].parse().unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+                                dst_ip: parts[2].parse().unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+                                src_port: parts[1].parse().unwrap_or(0),
+                                dst_port: parts[3].parse().unwrap_or(0),
+                                protocol: String::new(), state: "closed".to_string(),
+                            },
+                        };
+                        let _ = mgr.dispatch(&event).await;
+                    }
+                }
+            }
+        }
+        *prev_lock.write().await = current_keys;
+    }
+
     let connections: Vec<ConnectionPayload> = conns.iter().map(|c| ConnectionPayload {
         protocol: c.protocol.clone(),
         src_addr: c.src_addr.to_string(),
@@ -518,7 +572,7 @@ fn blocked_buffer() -> &'static BlockedBuffer {
 }
 
 /// Call once on API startup to bootstrap from pflog file and start live capture.
-pub async fn start_pflog_collector() {
+pub async fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw_plugins::PluginManager>>) {
     let buf = blocked_buffer().clone();
 
     // Bootstrap: load historical entries from /var/log/pflog
@@ -541,6 +595,7 @@ pub async fn start_pflog_collector() {
 
     // Live capture: persistent tcpdump on pflog0 interface
     let buf2 = buf.clone();
+    let pmgr = plugin_mgr.clone();
     tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, BufReader};
         loop {
@@ -555,6 +610,25 @@ pub async fn start_pflog_collector() {
                     let mut reader = BufReader::new(stdout).lines();
                     while let Ok(Some(line)) = reader.next_line().await {
                         if let Some(entry) = parse_pflog_line(&line) {
+                            // Dispatch PostRule hook for blocked/passed traffic
+                            {
+                                let mgr = pmgr.read().await;
+                                if mgr.running_count() > 0 {
+                                    let event = aifw_plugins::HookEvent {
+                                        hook: aifw_plugins::HookPoint::PostRule,
+                                        data: aifw_plugins::hooks::HookEventData::Rule {
+                                            src_ip: entry.src_addr.parse().ok(),
+                                            dst_ip: entry.dst_addr.parse().ok(),
+                                            src_port: if entry.src_port > 0 { Some(entry.src_port) } else { None },
+                                            dst_port: if entry.dst_port > 0 { Some(entry.dst_port) } else { None },
+                                            protocol: entry.protocol.clone(),
+                                            action: entry.action.clone(),
+                                            rule_id: None,
+                                        },
+                                    };
+                                    let _ = mgr.dispatch(&event).await;
+                                }
+                            }
                             let mut buf = buf2.write().await;
                             buf.push(entry);
                             let excess = buf.len().saturating_sub(PFLOG_MAX_ENTRIES);

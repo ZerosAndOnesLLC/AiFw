@@ -1,7 +1,14 @@
 use axum::{extract::State, http::StatusCode, Json};
 use serde::Serialize;
+use sqlx::sqlite::SqlitePool;
 
 use crate::AppState;
+
+pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS plugin_config (name TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, settings TEXT)")
+        .execute(pool).await?;
+    Ok(())
+}
 
 #[derive(Serialize)]
 pub struct PluginListEntry {
@@ -54,16 +61,32 @@ pub async fn enable_plugin(
     let name = payload.get("name").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
     let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
 
+    // Persist to DB
+    let _ = sqlx::query("INSERT INTO plugin_config (name, enabled) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET enabled=excluded.enabled")
+        .bind(name).bind(enabled as i32)
+        .execute(&state.pool).await;
+
     let mut mgr = state.plugin_manager.write().await;
 
-    if enabled {
-        // Unload and re-register with enabled=true
-        // For now, just report — full enable/disable needs manager API enhancement
-        drop(mgr);
-        Ok(Json(MessageResponse { message: format!("Plugin '{name}' enable requested. Restart API to apply.") }))
-    } else {
+    if !enabled {
         let _ = mgr.unload(name).await;
-        Ok(Json(MessageResponse { message: format!("Plugin '{name}' disabled and unloaded.") }))
+        Ok(Json(MessageResponse { message: format!("Plugin '{name}' disabled.") }))
+    } else {
+        // Re-register with enabled=true — need to create a new instance
+        let plugin: Option<Box<dyn aifw_plugins::Plugin>> = match name {
+            "logging" => Some(Box::new(aifw_plugins::examples::LoggingPlugin::new())),
+            "ip_reputation" => Some(Box::new(aifw_plugins::examples::IpReputationPlugin::new())),
+            "webhook" => Some(Box::new(aifw_plugins::examples::WebhookPlugin::new())),
+            _ => None,
+        };
+        if let Some(p) = plugin {
+            // Unload old instance if exists
+            let _ = mgr.unload(name).await;
+            let _ = mgr.register(p, aifw_plugins::PluginConfig { enabled: true, ..Default::default() }).await;
+            Ok(Json(MessageResponse { message: format!("Plugin '{name}' enabled and running.") }))
+        } else {
+            Ok(Json(MessageResponse { message: format!("Unknown plugin '{name}'.") }))
+        }
     }
 }
 
