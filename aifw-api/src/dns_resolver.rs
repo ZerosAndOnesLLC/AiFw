@@ -25,6 +25,31 @@ async fn sysrc(setting: &str) {
     let _ = run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/sysrc", setting]).await;
 }
 
+/// Copy a file to a destination using sudo tee — no shell interpolation.
+async fn sudo_copy(src: &str, dest: &str) {
+    let _ = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/bin/install", "-m", "0644", src, dest])
+        .output()
+        .await;
+}
+
+/// Validate a domain name — alphanumeric, hyphens, dots only.
+fn validate_domain(domain: &str) -> bool {
+    !domain.is_empty()
+        && domain.len() <= 253
+        && domain.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        && !domain.contains("..")
+        && !domain.starts_with('-')
+        && !domain.starts_with('.')
+}
+
+/// Sanitize a filename derived from a domain — strip anything that's not alphanumeric/hyphen/dot.
+fn sanitize_zone_filename(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.')
+        .collect()
+}
+
 // ============================================================
 // Types
 // ============================================================
@@ -863,7 +888,7 @@ async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json
     let conf = generate_unbound_conf(&state.pool).await;
     let tmp_path = "/tmp/aifw_unbound.conf";
     tokio::fs::write(tmp_path, &conf).await.map_err(|_| internal())?;
-    let _ = Command::new("sh").args(["-c", "cat /tmp/aifw_unbound.conf | sudo /usr/bin/tee /var/unbound/unbound.conf > /dev/null"]).output().await;
+    sudo_copy(tmp_path, "/var/unbound/unbound.conf").await;
     let _ = tokio::fs::remove_file(tmp_path).await;
     let _ = Command::new("sudo").args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
 
@@ -903,17 +928,22 @@ async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<Me
     let conf = generate_rdns_conf(&state.pool).await;
     let tmp = "/tmp/aifw_rdns.toml";
     tokio::fs::write(tmp, &conf).await.map_err(|_| internal())?;
-    let _ = Command::new("sh").args(["-c", &format!("cat {} | sudo /usr/bin/tee /usr/local/etc/rdns/rdns.toml > /dev/null", tmp)]).output().await;
+    sudo_copy(tmp, "/usr/local/etc/rdns/rdns.toml").await;
     let _ = tokio::fs::remove_file(tmp).await;
 
     // Generate and write zone files
     let zones = generate_rdns_zones(&state.pool).await;
     // Clear old auto-generated zones
-    let _ = Command::new("sudo").args(["sh", "-c", "rm -f /usr/local/etc/rdns/zones/*.zone"]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/bin/find", "/usr/local/etc/rdns/zones", "-name", "*.zone", "-delete"])
+        .output().await;
     for (filename, content) in &zones {
-        let tmp_zone = format!("/tmp/aifw_zone_{}", filename);
+        let safe_name = sanitize_zone_filename(filename);
+        if safe_name.is_empty() { continue; }
+        let tmp_zone = format!("/tmp/aifw_zone_{}", safe_name);
+        let dest_zone = format!("/usr/local/etc/rdns/zones/{}", safe_name);
         tokio::fs::write(&tmp_zone, content).await.map_err(|_| internal())?;
-        let _ = Command::new("sh").args(["-c", &format!("cat {} | sudo /usr/bin/tee /usr/local/etc/rdns/zones/{} > /dev/null", tmp_zone, filename)]).output().await;
+        sudo_copy(&tmp_zone, &dest_zone).await;
         let _ = tokio::fs::remove_file(&tmp_zone).await;
     }
 
@@ -921,7 +951,7 @@ async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<Me
     if let Some(rpz_content) = generate_rdns_rpz(&state.pool).await {
         let tmp_rpz = "/tmp/aifw_rpz_blocklist.rpz";
         tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
-        let _ = Command::new("sh").args(["-c", &format!("cat {} | sudo /usr/bin/tee /usr/local/etc/rdns/rpz/blocklist.rpz > /dev/null", tmp_rpz)]).output().await;
+        sudo_copy(tmp_rpz, "/usr/local/etc/rdns/rpz/blocklist.rpz").await;
         let _ = tokio::fs::remove_file(tmp_rpz).await;
     }
 
@@ -996,6 +1026,9 @@ pub async fn list_hosts(State(state): State<AppState>) -> Result<Json<ApiRespons
 }
 
 pub async fn create_host(State(state): State<AppState>, Json(req): Json<CreateHostOverride>) -> Result<(StatusCode, Json<ApiResponse<HostOverride>>), StatusCode> {
+    if !validate_domain(&req.hostname) || !validate_domain(&req.domain) {
+        return Err(bad_request());
+    }
     let id = Uuid::new_v4().to_string(); let now = Utc::now().to_rfc3339();
     let rt = req.record_type.unwrap_or_else(|| "A".to_string());
     let enabled = req.enabled.unwrap_or(true);
@@ -1007,6 +1040,9 @@ pub async fn create_host(State(state): State<AppState>, Json(req): Json<CreateHo
 }
 
 pub async fn update_host(State(state): State<AppState>, Path(id): Path<String>, Json(req): Json<CreateHostOverride>) -> Result<Json<ApiResponse<HostOverride>>, StatusCode> {
+    if !validate_domain(&req.hostname) || !validate_domain(&req.domain) {
+        return Err(bad_request());
+    }
     let rt = req.record_type.unwrap_or_else(|| "A".to_string());
     let enabled = req.enabled.unwrap_or(true);
     let r = sqlx::query("UPDATE dns_host_overrides SET hostname=?2, domain=?3, record_type=?4, value=?5, mx_priority=?6, description=?7, enabled=?8 WHERE id=?1")
@@ -1033,6 +1069,9 @@ pub async fn list_domains(State(state): State<AppState>) -> Result<Json<ApiRespo
 }
 
 pub async fn create_domain(State(state): State<AppState>, Json(req): Json<CreateDomainOverride>) -> Result<(StatusCode, Json<ApiResponse<DomainOverride>>), StatusCode> {
+    if !validate_domain(&req.domain) {
+        return Err(bad_request());
+    }
     let id = Uuid::new_v4().to_string(); let now = Utc::now().to_rfc3339();
     let enabled = req.enabled.unwrap_or(true);
     sqlx::query("INSERT INTO dns_domain_overrides (id, domain, server, description, enabled, created_at) VALUES (?1,?2,?3,?4,?5,?6)")

@@ -163,20 +163,31 @@ fn internal() -> StatusCode {
 
 // --- Auth endpoints ---
 
+/// Dummy hash for constant-time login — prevents user enumeration via timing.
+const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
 pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<auth::LoginRequest>,
 ) -> Result<Json<auth::LoginResponse>, StatusCode> {
-    let user = auth::get_user_by_username(&state.pool, &req.username)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let user = auth::get_user_by_username(&state.pool, &req.username).await?;
+
+    // Always run Argon2 to prevent timing-based user enumeration
+    let password_valid = if let Some(ref u) = user {
+        auth::verify_password(&req.password, &u.password_hash)
+    } else {
+        let _ = auth::verify_password(&req.password, DUMMY_HASH);
+        false
+    };
+
+    let user = user.ok_or(StatusCode::UNAUTHORIZED)?;
 
     if !user.enabled {
         auth::log_user_audit(&state.pool, &user.id.to_string(), Some(&user.id.to_string()), "login_denied_disabled", Some(&req.username)).await;
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    if !auth::verify_password(&req.password, &user.password_hash) {
+    if !password_valid {
         auth::log_user_audit(&state.pool, &user.id.to_string(), Some(&user.id.to_string()), "login_failed", Some(&req.username)).await;
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -221,6 +232,11 @@ pub async fn totp_login(
     let user = auth::get_user_by_username(&state.pool, &req.username)
         .await?
         .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Verify password first — TOTP is second factor, not replacement
+    if !auth::verify_password(&req.password, &user.password_hash) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
 
     // Verify TOTP code or recovery code
     let totp_valid = if let Some(ref secret) = user.totp_secret {
@@ -441,21 +457,52 @@ pub async fn oauth_callback(
 
 /// Public registration — only allowed when no users exist (first-user bootstrap).
 /// First user is always created as admin regardless of request.
+/// Uses a DB-level check to prevent TOCTOU race conditions.
 pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<auth::CreateUserRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<auth::User>>), StatusCode> {
-    let count = auth::user_count(&state.pool).await?;
-    if count > 0 {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    // Force first user to admin
+    // Atomic check: INSERT only succeeds if users table is empty.
+    // If two requests race, only one INSERT will find COUNT(*)=0.
     let admin_req = auth::CreateUserRequest {
         username: req.username,
         password: req.password,
         role: Some("admin".to_string()),
     };
-    let user = auth::create_user(&state.pool, &admin_req).await?;
+    auth::validate_password(&admin_req.password)?;
+    let pw_hash = auth::hash_password(&admin_req.password)?;
+    let user_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Atomic: INSERT ... WHERE (SELECT COUNT(*) FROM users) = 0
+    let result = sqlx::query(
+        r#"INSERT INTO users (id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, enabled, created_at)
+           SELECT ?1, ?2, ?3, 0, NULL, 'local', 'admin', 1, ?4
+           WHERE (SELECT COUNT(*) FROM users) = 0"#,
+    )
+    .bind(user_id.to_string())
+    .bind(&admin_req.username)
+    .bind(&pw_hash)
+    .bind(&now)
+    .execute(&state.pool)
+    .await
+    .map_err(|_| StatusCode::CONFLICT)?;
+
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let user = auth::User {
+        id: user_id,
+        username: admin_req.username,
+        password_hash: pw_hash,
+        totp_enabled: false,
+        totp_secret: None,
+        auth_provider: "local".to_string(),
+        role: "admin".to_string(),
+        enabled: true,
+        created_at: now,
+    };
     Ok((StatusCode::CREATED, Json(ApiResponse { data: user })))
 }
 

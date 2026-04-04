@@ -537,7 +537,7 @@ mod tests {
         let code = crate::auth::totp::generate_current(&secret).unwrap();
         let resp = server
             .post("/api/v1/auth/totp/login")
-            .json(&json!({"username": "admin", "totp_code": &code}))
+            .json(&json!({"username": "admin", "password": "TestPass123", "totp_code": &code}))
             .await;
 
         resp.assert_status_ok();
@@ -570,7 +570,7 @@ mod tests {
         // Login with recovery code instead of TOTP
         let resp = server
             .post("/api/v1/auth/totp/login")
-            .json(&json!({"username": "admin", "totp_code": &recovery}))
+            .json(&json!({"username": "admin", "password": "TestPass123", "totp_code": &recovery}))
             .await;
 
         resp.assert_status_ok();
@@ -578,7 +578,7 @@ mod tests {
         // Same recovery code should not work again
         let resp = server
             .post("/api/v1/auth/totp/login")
-            .json(&json!({"username": "admin", "totp_code": &recovery}))
+            .json(&json!({"username": "admin", "password": "TestPass123", "totp_code": &recovery}))
             .await;
 
         resp.assert_status(StatusCode::UNAUTHORIZED);

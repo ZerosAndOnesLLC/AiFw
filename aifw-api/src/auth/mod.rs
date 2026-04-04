@@ -401,14 +401,6 @@ pub async fn list_user_audit_log(pool: &SqlitePool, limit: i64) -> Result<Vec<Us
     }).collect())
 }
 
-pub async fn user_count(pool: &SqlitePool) -> Result<i64, StatusCode> {
-    let (count,) = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM users")
-        .fetch_one(pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(count)
-}
-
 pub async fn get_user_by_username(pool: &SqlitePool, username: &str) -> Result<Option<User>, StatusCode> {
     let row = sqlx::query_as::<_, (String, String, String, bool, Option<String>, String, String, bool, String)>(
         "SELECT id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, enabled, created_at FROM users WHERE username = ?1",

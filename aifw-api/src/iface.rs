@@ -340,6 +340,11 @@ pub async fn configure_interface(
     Path(name): Path<String>,
     Json(req): Json<ConfigureInterfaceRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
+    // Validate interface name to prevent command injection
+    if !validate_iface_name(&name) {
+        return Ok(Json(MessageResponse { message: "Invalid interface name".to_string() }));
+    }
+
     // Validate inputs before applying anything
     if let Some(ref mode) = req.ipv4_mode {
         if !["dhcp", "static", "none"].contains(&mode.as_str()) {
@@ -378,15 +383,15 @@ pub async fn configure_interface(
     // Handle enable/disable
     if let Some(enabled) = req.enabled {
         if enabled {
-            let _ = run_cmd(&format!("sudo /sbin/ifconfig {} up", name)).await;
+            let _ = sudo_cmd(&["/sbin/ifconfig", &name, "up"]).await;
         } else {
-            let _ = run_cmd(&format!("sudo /sbin/ifconfig {} down", name)).await;
+            let _ = sudo_cmd(&["/sbin/ifconfig", &name, "down"]).await;
         }
     }
 
     // Handle MTU
     if let Some(mtu) = req.mtu {
-        let _ = run_cmd(&format!("sudo /sbin/ifconfig {} mtu {}", name, mtu)).await;
+        let _ = sudo_cmd(&["/sbin/ifconfig", &name, "mtu", &mtu.to_string()]).await;
     }
 
     // Handle IPv4 mode change
@@ -394,9 +399,9 @@ pub async fn configure_interface(
         match mode.as_str() {
             "dhcp" => {
                 // Kill any existing dhclient, remove static address, then start dhclient
-                let _ = run_cmd(&format!("sudo pkill -f 'dhclient.*{}'", name)).await;
-                let _ = run_cmd(&format!("sudo /sbin/ifconfig {} delete 2>/dev/null || true", name)).await;
-                let _ = run_cmd(&format!("sudo /sbin/dhclient {}", name)).await;
+                let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
+                let _ = sudo_cmd(&["/sbin/ifconfig", &name, "delete"]).await;
+                let _ = sudo_cmd(&["/sbin/dhclient", &name]).await;
                 // Persist
                 let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}=DHCP", name)]).output().await;
                 // Remove static defaultrouter if we're switching to DHCP (DHCP will set it)
@@ -404,7 +409,7 @@ pub async fn configure_interface(
             }
             "static" => {
                 // Kill dhclient first so it doesn't overwrite our static IP
-                let _ = run_cmd(&format!("sudo pkill -f 'dhclient.*{}'", name)).await;
+                let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
                 // Brief pause for dhclient to fully exit
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -433,8 +438,8 @@ pub async fn configure_interface(
                         let owns_default = cur_gw_iface.as_deref() == Some(&name)
                             || cur_gw_iface.is_none();
                         if owns_default {
-                            let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
-                            let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
+                            let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
+                            let _ = sudo_cmd(&["/sbin/route", "add", "default", gw]).await;
                             let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
                             msgs.push(format!("Gateway set to {}", gw));
                         } else {
@@ -447,7 +452,7 @@ pub async fn configure_interface(
                     else {
                         let (_, cur_gw_iface) = get_default_gateway().await;
                         if cur_gw_iface.as_deref() == Some(&name) {
-                            let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+                            let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
                             let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
                             msgs.push("Default gateway removed".to_string());
                         }
@@ -455,8 +460,8 @@ pub async fn configure_interface(
                 }
             }
             "none" => {
-                let _ = run_cmd(&format!("sudo pkill -f 'dhclient.*{}'", name)).await;
-                let _ = run_cmd(&format!("sudo /sbin/ifconfig {} delete 2>/dev/null || true", name)).await;
+                let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
+                let _ = sudo_cmd(&["/sbin/ifconfig", &name, "delete"]).await;
                 let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", name)]).output().await;
                 msgs.push("Removed IP configuration".to_string());
             }
@@ -470,8 +475,8 @@ pub async fn configure_interface(
             let owns_default = cur_gw_iface.as_deref() == Some(&name)
                 || cur_gw_iface.is_none();
             if owns_default {
-                let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
-                let _ = run_cmd(&format!("sudo route add default {}", gw)).await;
+                let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
+                let _ = sudo_cmd(&["/sbin/route", "add", "default", gw]).await;
                 let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
                 msgs.push(format!("Gateway set to {}", gw));
             } else {
@@ -479,7 +484,7 @@ pub async fn configure_interface(
                     gw, cur_gw_iface.as_deref().unwrap_or("unknown")));
             }
         } else if cur_gw_iface.as_deref() == Some(&name) {
-            let _ = run_cmd("sudo route delete default 2>/dev/null || true").await;
+            let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
             let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
             msgs.push("Default gateway removed".to_string());
         }
@@ -487,12 +492,12 @@ pub async fn configure_interface(
 
     if let Some(ref ipv6) = req.ipv6_address {
         if !ipv6.is_empty() {
-            let _ = run_cmd(&format!("sudo /sbin/ifconfig {} inet6 {}", name, ipv6)).await;
+            let _ = sudo_cmd(&["/sbin/ifconfig", &name, "inet6", ipv6]).await;
         }
     }
 
     if let Some(ref desc) = req.description {
-        let _ = run_cmd(&format!("sudo /sbin/ifconfig {} description \"{}\"", name, desc)).await;
+        let _ = sudo_cmd(&["/sbin/ifconfig", &name, "description", desc]).await;
     }
 
     let summary = if msgs.is_empty() {
@@ -559,11 +564,18 @@ async fn get_iface_ipv4s(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Run a shell command and return success/failure
-async fn run_cmd(cmd: &str) -> bool {
-    Command::new("sh").arg("-c").arg(cmd).output().await
+/// Run a command safely with direct args (no shell interpolation).
+async fn sudo_cmd(args: &[&str]) -> bool {
+    Command::new("/usr/local/bin/sudo").args(args).output().await
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Validate interface name — alphanumeric, underscore, hyphen, dot only. Max 15 chars.
+fn validate_iface_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 15
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 // --- VLAN Apply (called by reload) ---

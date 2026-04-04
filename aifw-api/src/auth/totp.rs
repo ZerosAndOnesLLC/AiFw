@@ -290,6 +290,7 @@ pub struct TotpVerifyRequest {
 #[derive(Debug, Deserialize)]
 pub struct TotpLoginRequest {
     pub username: String,
+    pub password: String,
     pub totp_code: String,
 }
 
