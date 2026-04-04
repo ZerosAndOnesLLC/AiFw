@@ -10,7 +10,9 @@ const VERSION_FILE: &str = "/usr/local/share/aifw/version";
 const BACKUP_DIR: &str = "/usr/local/share/aifw/backup";
 const BIN_DIR: &str = "/usr/local/sbin";
 const UI_DIR: &str = "/usr/local/share/aifw/ui";
-const BINARIES: &[&str] = &["aifw", "aifw-daemon", "aifw-api", "aifw-tui", "aifw-setup", "trafficcop", "rdhcpd", "rdns", "rdns-control"];
+const BINARIES: &[&str] = &["aifw", "aifw-daemon", "aifw-api", "aifw-tui", "aifw-setup", "trafficcop", "rdhcpd", "rdns", "rdns-control", "rtime"];
+const RC_SCRIPTS: &[&str] = &["aifw_firstboot", "rdhcpd", "rdns", "rtime", "trafficcop"];
+const SBIN_SCRIPTS: &[&str] = &["aifw-console", "aifw-install"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdaterError {
@@ -203,6 +205,53 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             .await;
     }
 
+    // Install rc.d scripts (service definitions)
+    let rcd_src = update_dir.join("rc.d");
+    if rcd_src.exists() {
+        info!("Installing rc.d scripts...");
+        for script in RC_SCRIPTS {
+            let src = rcd_src.join(script);
+            if src.exists() {
+                let dst = format!("/usr/local/etc/rc.d/{}", script);
+                let _ = Command::new("/usr/local/bin/sudo")
+                    .args(["install", "-m", "755", src.to_str().unwrap(), &dst])
+                    .output()
+                    .await;
+            }
+        }
+    }
+
+    // Install sbin scripts (console, installer)
+    let sbin_src = update_dir.join("sbin");
+    if sbin_src.exists() {
+        info!("Installing utility scripts...");
+        for script in SBIN_SCRIPTS {
+            let src = sbin_src.join(script);
+            if src.exists() {
+                let dst = format!("{}/{}", BIN_DIR, script);
+                let _ = Command::new("/usr/local/bin/sudo")
+                    .args(["install", "-m", "755", src.to_str().unwrap(), &dst])
+                    .output()
+                    .await;
+            }
+        }
+    }
+
+    // Ensure required directories exist (new services may need them)
+    for dir in &[
+        "/usr/local/etc/aifw", "/usr/local/etc/aifw/anchors",
+        "/var/db/aifw", "/var/log/aifw",
+        "/var/log/trafficcop", "/var/db/rdhcpd/leases", "/var/log/rdhcpd",
+        "/usr/local/etc/rdhcpd", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz",
+        "/var/run/rdns", "/var/log/rdns", "/usr/local/etc/rtime",
+        "/var/run/rtime", "/var/log/rtime", "/usr/local/lib/aifw/plugins",
+    ] {
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["mkdir", "-p", dir])
+            .output()
+            .await;
+    }
+
     // Update version file
     let ver_src = update_dir.join("version");
     if ver_src.exists() {
@@ -276,6 +325,18 @@ pub async fn rollback() -> Result<String, UpdaterError> {
         }
     }
 
+    // Restore rc.d scripts
+    for script in RC_SCRIPTS {
+        let src = format!("{}/rc.d/{}", BACKUP_DIR, script);
+        if std::path::Path::new(&src).exists() {
+            let dst = format!("/usr/local/etc/rc.d/{}", script);
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["install", "-m", "755", &src, &dst])
+                .output()
+                .await;
+        }
+    }
+
     // Restore UI
     let backup_ui = format!("{}/ui", BACKUP_DIR);
     if std::path::Path::new(&backup_ui).exists() {
@@ -307,7 +368,7 @@ async fn backup_current() -> Result<(), UpdaterError> {
         .output()
         .await;
     let _ = Command::new("/usr/local/bin/sudo")
-        .args(["mkdir", "-p", &format!("{}/bin", BACKUP_DIR)])
+        .args(["mkdir", "-p", &format!("{}/bin", BACKUP_DIR), &format!("{}/rc.d", BACKUP_DIR)])
         .output()
         .await;
 
@@ -316,6 +377,17 @@ async fn backup_current() -> Result<(), UpdaterError> {
         if std::path::Path::new(&src).exists() {
             let _ = Command::new("/usr/local/bin/sudo")
                 .args(["cp", "-p", &src, &format!("{}/bin/{}", BACKUP_DIR, bin)])
+                .output()
+                .await;
+        }
+    }
+
+    // Backup rc.d scripts
+    for script in RC_SCRIPTS {
+        let src = format!("/usr/local/etc/rc.d/{}", script);
+        if std::path::Path::new(&src).exists() {
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["cp", "-p", &src, &format!("{}/rc.d/{}", BACKUP_DIR, script)])
                 .output()
                 .await;
         }
