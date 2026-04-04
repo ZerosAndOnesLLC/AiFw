@@ -107,7 +107,8 @@ mod tests {
             },
         );
         let pf = rule.to_pf_rule("aifw");
-        assert_eq!(pf, "block in quick proto tcp to any port 22 keep state");
+        // Block rules always log, state tracking only on pass rules
+        assert_eq!(pf, "block in log quick proto tcp to any port 22");
     }
 
     #[test]
@@ -129,9 +130,10 @@ mod tests {
         rule.log = true;
         rule.label = Some("allow-https".to_string());
         let pf = rule.to_pf_rule("aifw");
+        // log comes before quick in pf syntax
         assert_eq!(
             pf,
-            "pass in quick proto tcp to any port 443 keep state log label \"allow-https\""
+            "pass in log quick proto tcp to any port 443 keep state label \"allow-https\""
         );
     }
 
@@ -149,7 +151,8 @@ mod tests {
             },
         );
         let pf = rule.to_pf_rule("aifw");
-        assert_eq!(pf, "block drop in quick from 192.168.1.0/24 keep state");
+        // block drop doesn't auto-log (only plain "block" does), no state tracking on block
+        assert_eq!(pf, "block drop in quick from 192.168.1.0/24");
     }
 
     #[test]
@@ -166,7 +169,7 @@ mod tests {
             },
         );
         let pf = rule.to_pf_rule("aifw");
-        assert_eq!(pf, "block return in quick from <bruteforce> keep state");
+        assert_eq!(pf, "block return in quick from <bruteforce>");
     }
 
     #[test]
@@ -221,7 +224,8 @@ mod tests {
         );
         rule.state_options.tracking = StateTracking::None;
         let pf = rule.to_pf_rule("aifw");
-        assert_eq!(pf, "block in quick");
+        // Block rules always log
+        assert_eq!(pf, "block in log quick");
     }
 
     // --- NAT tests ---
@@ -329,7 +333,9 @@ mod tests {
         );
         rule.label = Some("outbound-nat".to_string());
         let pf = rule.to_pf_rule();
-        assert!(pf.ends_with("label \"outbound-nat\""));
+        // pf NAT rules don't support labels — label stored in DB for UI only
+        assert!(pf.starts_with("nat on em0"));
+        assert!(!pf.contains("label"));
     }
 
     #[test]

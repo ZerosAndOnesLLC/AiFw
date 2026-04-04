@@ -1238,6 +1238,7 @@ pub mod tests_support {
     use super::*;
     use crate::config::SetupConfig;
 
+    #[allow(dead_code)]
     pub fn test_pf_conf() -> String {
         let config = SetupConfig {
             wan_interface: "em0".to_string(),

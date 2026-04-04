@@ -75,6 +75,7 @@ mod tests {
             lan_ip: Some("192.168.1.1/24".to_string()),
             api_port: 8080,
             default_policy: DefaultPolicy::Standard,
+            nat_enabled: true,
             ..Default::default()
         };
         let pf = apply::generate_pf_conf(&config);

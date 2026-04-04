@@ -313,7 +313,12 @@ mod tests {
     async fn test_context_table_operations() {
         let ctx = make_ctx();
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        ctx.add_to_table("test_table", ip).await.unwrap();
-        ctx.remove_from_table("test_table", ip).await.unwrap();
+        // Plugins can only modify tables with "plugin_" prefix
+        ctx.add_to_table("plugin_test", ip).await.unwrap();
+        ctx.remove_from_table("plugin_test", ip).await.unwrap();
+
+        // Non-prefixed table should be rejected
+        assert!(ctx.add_to_table("system_table", ip).await.is_err());
+        assert!(ctx.remove_from_table("system_table", ip).await.is_err());
     }
 }

@@ -76,6 +76,7 @@ impl Database {
                 timeout_udp INTEGER,
                 timeout_icmp INTEGER,
                 status TEXT NOT NULL DEFAULT 'active',
+                schedule_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
