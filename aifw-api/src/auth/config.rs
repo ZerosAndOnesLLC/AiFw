@@ -4,6 +4,7 @@ use sqlx::sqlite::SqlitePool;
 /// Global auth settings (stored in DB, loaded at startup)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSettings {
+    #[serde(skip_serializing)]
     pub jwt_secret: String,
     /// Access token expiry in minutes (default 15)
     pub access_token_expiry_mins: i64,
@@ -19,8 +20,14 @@ pub struct AuthSettings {
 
 impl Default for AuthSettings {
     fn default() -> Self {
+        // Generate 256-bit secret from two UUIDs (2 × 128-bit = 256-bit entropy)
+        let jwt_secret = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().to_string().replace('-', ""),
+            uuid::Uuid::new_v4().to_string().replace('-', ""),
+        );
         Self {
-            jwt_secret: uuid::Uuid::new_v4().to_string(),
+            jwt_secret,
             access_token_expiry_mins: 480,
             refresh_token_expiry_days: 30,
             require_totp: false,

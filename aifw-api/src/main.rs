@@ -116,11 +116,23 @@ struct Args {
     log_level: String,
 }
 
-pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_origins: &str) -> Router {
+    use tower_http::cors::AllowOrigin;
+    let cors = if cors_origins == "*" {
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        let origins: Vec<_> = cors_origins
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(origins))
+            .allow_methods(Any)
+            .allow_headers(Any)
+    };
 
     // Public routes (no auth)
     let public_routes = Router::new()
@@ -129,11 +141,30 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/auth/refresh", post(routes::refresh_token))
         .route("/api/v1/auth/oauth/{provider}/authorize", get(routes::oauth_authorize))
         .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback))
-        .route("/api/v1/auth/register", post(routes::create_user))
-        .route("/api/v1/ws", get(ws::ws_handler))
-        .route("/api/v1/pending/stream", get(routes::pending_stream));
+        .route("/api/v1/auth/register", post(routes::register));
 
-    // Protected routes (require auth)
+    // Admin-only routes (require auth + admin role)
+    let admin_routes = Router::new()
+        .route("/api/v1/auth/users", get(routes::list_users).post(routes::create_user))
+        .route("/api/v1/auth/users/{id}", get(routes::get_user).put(routes::update_user).delete(routes::delete_user_handler))
+        .route("/api/v1/auth/audit", get(routes::list_user_audit))
+        .route("/api/v1/auth/api-keys", post(routes::create_api_key))
+        .route("/api/v1/auth/settings", get(routes::get_auth_settings).put(routes::update_auth_settings))
+        .route("/api/v1/auth/oauth/providers", get(routes::list_oauth_providers).post(routes::create_oauth_provider))
+        .route("/api/v1/auth/oauth/providers/{id}", delete(routes::delete_oauth_provider))
+        .route("/api/v1/config/import", post(routes::import_config))
+        .route("/api/v1/config/restore", post(backup::restore_version))
+        .route("/api/v1/config/import-opnsense", post(backup::import_opnsense))
+        .route("/api/v1/updates/install", post(updates::install_updates))
+        .route("/api/v1/updates/reboot", post(updates::reboot_system))
+        .route("/api/v1/updates/aifw/install", post(updates::aifw_install_update))
+        .route("/api/v1/updates/aifw/rollback", post(updates::aifw_rollback))
+        .route("/api/v1/settings/tls", get(routes::get_tls_settings).put(routes::update_tls_settings))
+        .route("/api/v1/settings/valkey", get(routes::get_valkey_settings).put(routes::update_valkey_settings))
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require_admin))
+        .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
+
+    // Protected routes (require auth, any role)
     let protected_routes = Router::new()
         .route("/api/v1/ca", get(ca::get_ca_info).post(ca::generate_ca))
         .route("/api/v1/ca/cert.pem", get(ca::get_ca_cert_pem))
@@ -176,14 +207,10 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/dns/resolver/logs", get(dns_resolver::resolver_logs))
         .route("/api/v1/updates/status", get(updates::update_status))
         .route("/api/v1/updates/check", post(updates::check_updates))
-        .route("/api/v1/updates/install", post(updates::install_updates))
-        .route("/api/v1/updates/reboot", post(updates::reboot_system))
         .route("/api/v1/updates/schedule", get(updates::get_schedule).put(updates::update_schedule))
         .route("/api/v1/updates/history", get(updates::update_history))
         .route("/api/v1/updates/aifw/status", get(updates::aifw_update_status))
         .route("/api/v1/updates/aifw/check", post(updates::aifw_check_update))
-        .route("/api/v1/updates/aifw/install", post(updates::aifw_install_update))
-        .route("/api/v1/updates/aifw/rollback", post(updates::aifw_rollback))
         // Reverse Proxy (TrafficCop)
         .route("/api/v1/reverse-proxy/status", get(reverse_proxy::rp_status))
         .route("/api/v1/reverse-proxy/start", post(reverse_proxy::rp_start))
@@ -232,14 +259,11 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/plugins/{name}/logs", get(plugins::get_plugin_logs))
         .route("/api/v1/plugins/discover", get(plugins::discover_plugins))
         .route("/api/v1/config/export", get(routes::export_config))
-        .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/config/history", get(backup::config_history))
         .route("/api/v1/config/version", get(backup::get_version))
         .route("/api/v1/config/diff", get(backup::diff_versions))
         .route("/api/v1/config/save", post(backup::save_version))
-        .route("/api/v1/config/restore", post(backup::restore_version))
         .route("/api/v1/config/check", get(backup::check_config))
-        .route("/api/v1/config/import-opnsense", post(backup::import_opnsense))
         .route("/api/v1/config/preview-opnsense", post(backup::preview_opnsense))
         .route("/api/v1/config/commit-confirm", post(backup::commit_confirm_start))
         .route("/api/v1/config/commit-confirm/confirm", post(backup::commit_confirm_accept))
@@ -256,8 +280,6 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/rules/reorder", put(routes::reorder_rules))
         .route("/api/v1/nat/reorder", put(routes::reorder_nat_rules))
         .route("/api/v1/dns", get(routes::get_dns).put(routes::update_dns))
-        .route("/api/v1/settings/tls", get(routes::get_tls_settings).put(routes::update_tls_settings))
-        .route("/api/v1/settings/valkey", get(routes::get_valkey_settings).put(routes::update_valkey_settings))
         .route("/api/v1/routes", get(routes::list_static_routes).post(routes::create_static_route))
         .route("/api/v1/routes/{id}", put(routes::update_static_route).delete(routes::delete_static_route))
         .route("/api/v1/routes/system", get(routes::get_system_routes))
@@ -280,6 +302,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/vpn/wg/{tid}/peers/{pid}", delete(routes::delete_wg_peer))
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas).post(routes::create_ipsec_sa))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
+        .route("/api/v1/ws", get(ws::ws_handler))
+        .route("/api/v1/pending/stream", get(routes::pending_stream))
         .route("/api/v1/pending", get(routes::get_pending))
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/connections", get(routes::list_connections))
@@ -287,21 +311,15 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>) -> Router
         .route("/api/v1/reload", post(routes::reload))
         .route("/api/v1/metrics", get(routes::metrics))
         .route("/api/v1/logs", get(routes::list_logs))
-        .route("/api/v1/auth/users", get(routes::list_users).post(routes::create_user))
-        .route("/api/v1/auth/users/{id}", get(routes::get_user).put(routes::update_user).delete(routes::delete_user_handler))
-        .route("/api/v1/auth/audit", get(routes::list_user_audit))
-        .route("/api/v1/auth/api-keys", post(routes::create_api_key))
         .route("/api/v1/auth/logout", post(routes::logout))
         .route("/api/v1/auth/totp/setup", post(routes::totp_setup))
         .route("/api/v1/auth/totp/verify", post(routes::totp_verify))
         .route("/api/v1/auth/totp/disable", post(routes::totp_disable))
-        .route("/api/v1/auth/settings", get(routes::get_auth_settings).put(routes::update_auth_settings))
-        .route("/api/v1/auth/oauth/providers", get(routes::list_oauth_providers).post(routes::create_oauth_provider))
-        .route("/api/v1/auth/oauth/providers/{id}", delete(routes::delete_oauth_provider))
         .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
 
     let mut app = Router::new()
         .merge(public_routes)
+        .merge(admin_routes)
         .merge(protected_routes)
         .layer(
             ServiceBuilder::new()
@@ -575,7 +593,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = build_router(state, args.ui_dir.as_deref());
+    let app = build_router(state, args.ui_dir.as_deref(), &args.cors_origins);
 
     if args.no_tls {
         let listener = tokio::net::TcpListener::bind(&args.listen).await?;

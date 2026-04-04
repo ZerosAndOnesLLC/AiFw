@@ -439,6 +439,27 @@ pub async fn oauth_callback(
     }))
 }
 
+/// Public registration — only allowed when no users exist (first-user bootstrap).
+/// First user is always created as admin regardless of request.
+pub async fn register(
+    State(state): State<AppState>,
+    Json(req): Json<auth::CreateUserRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<auth::User>>), StatusCode> {
+    let count = auth::user_count(&state.pool).await?;
+    if count > 0 {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    // Force first user to admin
+    let admin_req = auth::CreateUserRequest {
+        username: req.username,
+        password: req.password,
+        role: Some("admin".to_string()),
+    };
+    let user = auth::create_user(&state.pool, &admin_req).await?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: user })))
+}
+
+/// Protected user creation — requires authentication (admin only via RBAC middleware)
 pub async fn create_user(
     State(state): State<AppState>,
     Json(req): Json<auth::CreateUserRequest>,
@@ -845,6 +866,14 @@ pub async fn create_rule(
 
     rule.schedule_id = req.schedule_id;
 
+    // Validate label and interface to prevent pf rule injection
+    if let Some(ref iface) = rule.interface {
+        aifw_core::validation::validate_interface_name(&iface.0).map_err(|_| bad_request())?;
+    }
+    if let Some(ref label) = rule.label {
+        aifw_core::validation::validate_label(label).map_err(|_| bad_request())?;
+    }
+
     let rule = state.rule_engine.add_rule(rule).await.map_err(|_| bad_request())?;
     state.set_pending(|p| p.firewall = true).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
@@ -903,6 +932,14 @@ pub async fn update_rule(
     }
     rule.schedule_id = req.schedule_id;
     rule.updated_at = chrono::Utc::now();
+
+    // Validate label and interface to prevent pf rule injection
+    if let Some(ref iface) = rule.interface {
+        aifw_core::validation::validate_interface_name(&iface.0).map_err(|_| bad_request())?;
+    }
+    if let Some(ref label) = rule.label {
+        aifw_core::validation::validate_label(label).map_err(|_| bad_request())?;
+    }
 
     state.rule_engine.update_rule(rule.clone()).await.map_err(|_| internal())?;
     state.set_pending(|p| p.firewall = true).await;
@@ -970,6 +1007,12 @@ pub async fn create_nat_rule(
 
     let redirect_addr = Address::parse(&req.redirect_addr).map_err(|_| bad_request())?;
 
+    // Validate interface and label to prevent pf rule injection
+    aifw_core::validation::validate_interface_name(&req.interface).map_err(|_| bad_request())?;
+    if let Some(ref label) = req.label {
+        aifw_core::validation::validate_label(label).map_err(|_| bad_request())?;
+    }
+
     let mut rule = NatRule::new(
         nat_type,
         Interface(req.interface),
@@ -999,6 +1042,12 @@ pub async fn update_nat_rule(
     let mut rule = state.nat_engine.get_rule(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
 
     rule.nat_type = NatType::parse(&req.nat_type).map_err(|_| bad_request())?;
+    // Validate interface and label to prevent pf rule injection
+    aifw_core::validation::validate_interface_name(&req.interface).map_err(|_| bad_request())?;
+    if let Some(ref label) = req.label {
+        aifw_core::validation::validate_label(label).map_err(|_| bad_request())?;
+    }
+
     rule.interface = Interface(req.interface);
     rule.protocol = Protocol::parse(&req.protocol).map_err(|_| bad_request())?;
     rule.src_addr = req.src_addr.as_deref()

@@ -29,6 +29,54 @@ pub fn validate_rule(rule: &Rule) -> Result<()> {
         ));
     }
 
+    if let Some(ref iface) = rule.interface {
+        validate_interface_name(&iface.0)?;
+    }
+
+    if let Some(ref label) = rule.label {
+        validate_label(label)?;
+    }
+
+    Ok(())
+}
+
+/// Validate interface name — alphanumeric, underscore, hyphen, dot only. Max 15 chars.
+pub fn validate_interface_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.len() > 15 {
+        return Err(AifwError::Validation(
+            "interface name must be 1-15 characters".to_string(),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(AifwError::Validation(
+            "interface name contains invalid characters (allowed: alphanumeric, _, -, .)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate pf rule label — no quotes, semicolons, newlines, or other injection chars. Max 63 chars.
+pub fn validate_label(label: &str) -> Result<()> {
+    if label.len() > 63 {
+        return Err(AifwError::Validation(
+            "label must be at most 63 characters".to_string(),
+        ));
+    }
+    if label.contains('"')
+        || label.contains('\'')
+        || label.contains(';')
+        || label.contains('\n')
+        || label.contains('\r')
+        || label.contains('\\')
+        || label.contains('\0')
+    {
+        return Err(AifwError::Validation(
+            "label contains invalid characters (quotes, semicolons, backslashes, newlines not allowed)".to_string(),
+        ));
+    }
     Ok(())
 }
 

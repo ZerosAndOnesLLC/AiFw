@@ -8,12 +8,9 @@ const TOLERANCE: u64 = 1; // ±1 time step
 
 /// Generate a random TOTP secret (20 bytes = 160 bits, base32 encoded)
 pub fn generate_secret() -> String {
+    use argon2::password_hash::rand_core::{OsRng, RngCore};
     let mut bytes = [0u8; 20];
-    // Use UUID bytes as entropy source (no external RNG crate needed)
-    let u1 = uuid::Uuid::new_v4();
-    let u2 = uuid::Uuid::new_v4();
-    bytes[..16].copy_from_slice(u1.as_bytes());
-    bytes[16..20].copy_from_slice(&u2.as_bytes()[..4]);
+    OsRng.fill_bytes(&mut bytes);
     base32_encode(&bytes)
 }
 

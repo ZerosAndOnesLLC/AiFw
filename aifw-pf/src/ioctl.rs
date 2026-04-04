@@ -42,7 +42,7 @@ impl Drop for PfIoctl {
 }
 
 async fn pfctl(args: &[&str]) -> Result<String, PfError> {
-    let output = Command::new("sudo")
+    let output = Command::new("/usr/local/bin/sudo")
         .arg("/sbin/pfctl")
         .args(args)
         .output()
@@ -61,11 +61,19 @@ async fn pfctl(args: &[&str]) -> Result<String, PfError> {
 #[async_trait]
 impl PfBackend for PfIoctl {
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), PfError> {
-        let anchor_arg = format!("-a {anchor}");
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(format!("echo '{}' | sudo /sbin/pfctl{anchor_arg} -f -", rule))
-            .output()
+        let mut child = Command::new("/usr/local/bin/sudo")
+            .args(["/sbin/pfctl", "-a", anchor, "-f", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| PfError::Rule(format!("pfctl add_rule spawn failed: {e}")))?;
+        if let Some(ref mut stdin) = child.stdin {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(rule.as_bytes()).await;
+        }
+        let output = child
+            .wait_with_output()
             .await
             .map_err(|e| PfError::Rule(format!("pfctl add_rule failed: {e}")))?;
         if !output.status.success() {
@@ -94,7 +102,7 @@ impl PfBackend for PfIoctl {
         tokio::fs::write(&tmp, &ruleset).await
             .map_err(|e| PfError::Rule(format!("failed to write temp rules: {e}")))?;
 
-        let output = Command::new("sudo")
+        let output = Command::new("/usr/local/bin/sudo")
             .args(["/sbin/pfctl", "-a", anchor, "-f", &tmp])
             .output()
             .await
@@ -294,7 +302,7 @@ impl PfBackend for PfIoctl {
         tokio::fs::write(&tmp, &ruleset).await
             .map_err(|e| PfError::Rule(format!("failed to write temp NAT rules: {e}")))?;
 
-        let output = Command::new("sudo")
+        let output = Command::new("/usr/local/bin/sudo")
             .args(["/sbin/pfctl", "-a", anchor, "-N", "-f", &tmp])
             .output()
             .await
@@ -324,12 +332,15 @@ impl PfBackend for PfIoctl {
             return self.flush_queues(anchor).await;
         }
         let ruleset = queues.join("\n");
-        let _ = Command::new("sh")
-            .arg("-c")
-            .arg(format!("echo '{}' | sudo /sbin/pfctl -a {} -f -", ruleset, anchor))
+        let tmp = format!("/tmp/aifw_pf_queue_{}.conf", anchor.replace('/', "_"));
+        tokio::fs::write(&tmp, &ruleset).await
+            .map_err(|e| PfError::Rule(format!("failed to write temp queue rules: {e}")))?;
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["/sbin/pfctl", "-a", anchor, "-f", &tmp])
             .output()
             .await
             .map_err(|e| PfError::Rule(format!("pfctl load_queues failed: {e}")))?;
+        let _ = tokio::fs::remove_file(&tmp).await;
         Ok(())
     }
 

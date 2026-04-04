@@ -20,7 +20,7 @@ mod tests {
             .await
             .unwrap();
 
-        let app = crate::build_router(state, None);
+        let app = crate::build_router(state, None, "*");
         let server = TestServer::new(app).unwrap();
         (server, auth_settings)
     }
@@ -31,7 +31,7 @@ mod tests {
             .post("/api/v1/auth/register")
             .json(&json!({
                 "username": "admin",
-                "password": "testpass123"
+                "password": "TestPass123"
             }))
             .await;
 
@@ -40,7 +40,7 @@ mod tests {
             .post("/api/v1/auth/login")
             .json(&json!({
                 "username": "admin",
-                "password": "testpass123"
+                "password": "TestPass123"
             }))
             .await;
 
@@ -57,7 +57,7 @@ mod tests {
             .post("/api/v1/auth/register")
             .json(&json!({
                 "username": "admin",
-                "password": "testpass123"
+                "password": "TestPass123"
             }))
             .await;
 
@@ -75,7 +75,7 @@ mod tests {
             .post("/api/v1/auth/register")
             .json(&json!({
                 "username": "admin",
-                "password": "testpass123"
+                "password": "TestPass123"
             }))
             .await;
 
@@ -83,7 +83,7 @@ mod tests {
             .post("/api/v1/auth/login")
             .json(&json!({
                 "username": "admin",
-                "password": "testpass123"
+                "password": "TestPass123"
             }))
             .await;
 
@@ -102,7 +102,7 @@ mod tests {
             .post("/api/v1/auth/register")
             .json(&json!({
                 "username": "admin",
-                "password": "testpass123"
+                "password": "TestPass123"
             }))
             .await;
 
@@ -376,13 +376,13 @@ mod tests {
 
         server
             .post("/api/v1/auth/register")
-            .json(&json!({"username": "rfuser", "password": "pass123"}))
+            .json(&json!({"username": "rfuser", "password": "TestPass123"}))
             .await;
 
         // Login to get tokens
         let resp = server
             .post("/api/v1/auth/login")
-            .json(&json!({"username": "rfuser", "password": "pass123"}))
+            .json(&json!({"username": "rfuser", "password": "TestPass123"}))
             .await;
 
         let body: Value = resp.json();
@@ -408,12 +408,12 @@ mod tests {
 
         server
             .post("/api/v1/auth/register")
-            .json(&json!({"username": "reuseuser", "password": "pass123"}))
+            .json(&json!({"username": "reuseuser", "password": "TestPass123"}))
             .await;
 
         let resp = server
             .post("/api/v1/auth/login")
-            .json(&json!({"username": "reuseuser", "password": "pass123"}))
+            .json(&json!({"username": "reuseuser", "password": "TestPass123"}))
             .await;
 
         let body: Value = resp.json();
@@ -440,12 +440,12 @@ mod tests {
 
         server
             .post("/api/v1/auth/register")
-            .json(&json!({"username": "logoutuser", "password": "pass123"}))
+            .json(&json!({"username": "logoutuser", "password": "TestPass123"}))
             .await;
 
         let resp = server
             .post("/api/v1/auth/login")
-            .json(&json!({"username": "logoutuser", "password": "pass123"}))
+            .json(&json!({"username": "logoutuser", "password": "TestPass123"}))
             .await;
 
         let body: Value = resp.json();
@@ -526,7 +526,7 @@ mod tests {
         // Now login should require TOTP
         let resp = server
             .post("/api/v1/auth/login")
-            .json(&json!({"username": "admin", "password": "testpass123"}))
+            .json(&json!({"username": "admin", "password": "TestPass123"}))
             .await;
 
         let body: Value = resp.json();

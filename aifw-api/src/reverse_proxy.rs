@@ -1200,17 +1200,17 @@ pub async fn validate_config(
         .await
         .map_err(|_| internal())?;
 
-    let tmp_path = "/tmp/trafficcop-validate.yaml";
-    tokio::fs::write(tmp_path, &yaml)
+    let tmp_path = format!("/tmp/trafficcop-validate-{}.yaml", uuid::Uuid::new_v4());
+    tokio::fs::write(&tmp_path, &yaml)
         .await
         .map_err(|_| internal())?;
 
     let output = Command::new("trafficcop")
-        .args(["--validate", "--configFile", tmp_path])
+        .args(["--validate", "--configFile", &tmp_path])
         .output()
         .await;
 
-    let _ = tokio::fs::remove_file(tmp_path).await;
+    let _ = tokio::fs::remove_file(&tmp_path).await;
 
     match output {
         Ok(o) => {

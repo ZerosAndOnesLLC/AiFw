@@ -258,9 +258,27 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 // User operations
 // ============================================================
 
+/// Validate password meets minimum security requirements.
+pub fn validate_password(password: &str) -> Result<(), StatusCode> {
+    if password.len() < 8 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !password.chars().any(|c| c.is_uppercase()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !password.chars().any(|c| c.is_lowercase()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(())
+}
+
 pub async fn create_user(pool: &SqlitePool, req: &CreateUserRequest) -> Result<User, StatusCode> {
+    validate_password(&req.password)?;
     let pw_hash = hash_password(&req.password)?;
-    let role = req.role.as_deref().unwrap_or("admin").to_string();
+    let role = req.role.as_deref().unwrap_or("viewer").to_string();
     let user = User {
         id: Uuid::new_v4(),
         username: req.username.clone(),
@@ -314,6 +332,7 @@ pub async fn update_user(pool: &SqlitePool, user_id: &str, req: &UpdateUserReque
         user.username = username.clone();
     }
     if let Some(ref password) = req.password {
+        validate_password(password)?;
         user.password_hash = hash_password(password)?;
     }
     if let Some(ref role) = req.role {
@@ -380,6 +399,14 @@ pub async fn list_user_audit_log(pool: &SqlitePool, limit: i64) -> Result<Vec<Us
     Ok(rows.into_iter().map(|(id, user_id, actor_id, action, details, ip_addr, created_at)| UserAuditEntry {
         id, user_id, actor_id, action, details, ip_addr, created_at,
     }).collect())
+}
+
+pub async fn user_count(pool: &SqlitePool) -> Result<i64, StatusCode> {
+    let (count,) = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM users")
+        .fetch_one(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(count)
 }
 
 pub async fn get_user_by_username(pool: &SqlitePool, username: &str) -> Result<Option<User>, StatusCode> {
@@ -520,9 +547,12 @@ pub async fn create_api_key(pool: &SqlitePool, user_id: Uuid, name: &str) -> Res
 }
 
 pub async fn verify_api_key(pool: &SqlitePool, key: &str) -> Result<String, StatusCode> {
+    // Use prefix for fast lookup, then verify hash only on prefix-matched keys
+    let prefix = if key.len() >= 12 { &key[..12] } else { key };
     let rows = sqlx::query_as::<_, (String, String)>(
-        "SELECT ak.key_hash, u.id FROM api_keys ak JOIN users u ON ak.user_id = u.id",
+        "SELECT ak.key_hash, u.id FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.prefix = ?1",
     )
+    .bind(prefix)
     .fetch_all(pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -588,3 +618,28 @@ pub async fn auth_middleware(
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct AuthUser(pub String);
+
+/// Middleware that requires the authenticated user to have the "admin" role.
+/// Must be applied AFTER auth_middleware so AuthUser is present.
+pub async fn require_admin(
+    State(state): State<crate::AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let user_id = request
+        .extensions()
+        .get::<AuthUser>()
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .0
+        .clone();
+
+    let user = get_user_by_id(&state.pool, &user_id)
+        .await?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if user.role != "admin" {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(next.run(request).await)
+}
