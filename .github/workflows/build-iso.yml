@@ -97,6 +97,12 @@ jobs:
             cargo build --release
             cd /home/runner/work/AiFw/AiFw
 
+            echo "=== Building rTIME ==="
+            git clone https://github.com/ZerosAndOnesLLC/rTIME.git /tmp/rTIME
+            cd /tmp/rTIME
+            cargo build --release
+            cd /home/runner/work/AiFw/AiFw
+
             echo "=== Preparing build inputs ==="
             # Copy release binaries to where build-iso.sh expects them
             mkdir -p freebsd/release
@@ -107,6 +113,7 @@ jobs:
             cp /tmp/rDHCP/target/release/rdhcpd freebsd/release/rdhcpd
             cp /tmp/rDNS/target/release/rdns freebsd/release/rdns
             cp /tmp/rDNS/target/release/rdns-control freebsd/release/rdns-control
+            [ -f /tmp/rTIME/target/release/rtime ] && cp /tmp/rTIME/target/release/rtime freebsd/release/rtime
 
             echo "=== Building update tarball ==="
             VERSION="${{ steps.version.outputs.version }}"

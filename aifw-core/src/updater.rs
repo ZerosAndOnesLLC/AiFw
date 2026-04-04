@@ -239,7 +239,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
 
     // Ensure required directories exist (new services may need them)
     for dir in &[
-        "/usr/local/etc/aifw", "/usr/local/etc/aifw/anchors",
+        "/usr/local/etc/aifw", "/usr/local/etc/aifw/anchors", "/usr/local/share/aifw",
         "/var/db/aifw", "/var/log/aifw",
         "/var/log/trafficcop", "/var/db/rdhcpd/leases", "/var/log/rdhcpd",
         "/usr/local/etc/rdhcpd", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz",
