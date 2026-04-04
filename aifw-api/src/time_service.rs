@@ -313,9 +313,9 @@ pub async fn delete_source(
 
 async fn run_service(action: &str) -> Json<MessageResponse> {
     if action == "start" || action == "restart" {
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rtime_enable=YES"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "rtime_enable=YES"]).output().await;
     }
-    let output = Command::new("sudo").args(["/usr/sbin/service", "rtime", action]).output().await;
+    let output = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rtime", action]).output().await;
     match output {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout).to_string();
@@ -334,7 +334,7 @@ async fn run_service(action: &str) -> Json<MessageResponse> {
 pub async fn time_status(
     State(state): State<AppState>,
 ) -> Result<Json<TimeStatus>, StatusCode> {
-    let running = Command::new("sudo").args(["/usr/sbin/service", "rtime", "status"]).output().await
+    let running = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rtime", "status"]).output().await
         .map(|o| o.status.success()).unwrap_or(false);
 
     let version = if running { "rTime (running)".to_string() } else { "rTime (stopped)".to_string() };
@@ -387,17 +387,17 @@ pub async fn apply_config(
 
     tokio::fs::write(RTIME_CONFIG_PATH, &toml).await.map_err(|_| internal())?;
 
-    let _ = Command::new("sudo").args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rtime"]).output().await;
-    let _ = Command::new("sudo").args(["chown", "-R", "aifw:aifw", "/var/log/rtime"]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo").args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rtime"]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo").args(["chown", "-R", "aifw:aifw", "/var/log/rtime"]).output().await;
 
     if config.enabled {
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rtime_enable=YES"]).output().await;
-        let _ = Command::new("sudo").args(["/usr/sbin/service", "rtime", "restart"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "rtime_enable=YES"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rtime", "restart"]).output().await;
 
         Ok(Json(MessageResponse { message: "Time config applied and rTime restarted".to_string() }))
     } else {
-        let _ = Command::new("sudo").args(["/usr/sbin/service", "rtime", "stop"]).output().await;
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rtime_enable=NO"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rtime", "stop"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "rtime_enable=NO"]).output().await;
         Ok(Json(MessageResponse { message: "Time config saved, rTime stopped".to_string() }))
     }
 }
@@ -418,7 +418,7 @@ pub async fn time_logs(
             content = c;
             break;
         }
-        if let Ok(output) = Command::new("sudo").args(["/bin/cat", *path]).output().await {
+        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["/bin/cat", *path]).output().await {
             if output.status.success() {
                 content = String::from_utf8_lossy(&output.stdout).to_string();
                 break;

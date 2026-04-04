@@ -1346,7 +1346,7 @@ pub async fn update_rollback() -> anyhow::Result<()> {
 pub async fn update_os_check() -> anyhow::Result<()> {
     println!("Checking for OS and package updates...");
 
-    let pkg = tokio::process::Command::new("sudo")
+    let pkg = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/pkg", "update"])
         .output()
         .await?;
@@ -1359,7 +1359,7 @@ pub async fn update_os_check() -> anyhow::Result<()> {
         );
     }
 
-    let os = tokio::process::Command::new("sudo")
+    let os = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/freebsd-update", "fetch", "--not-running-from-cron"])
         .output()
         .await?;
@@ -1373,7 +1373,7 @@ pub async fn update_os_check() -> anyhow::Result<()> {
     }
 
     // Show pending
-    let pending = tokio::process::Command::new("sudo")
+    let pending = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/pkg", "upgrade", "-n"])
         .output()
         .await?;
@@ -1394,7 +1394,7 @@ pub async fn update_os_check() -> anyhow::Result<()> {
 pub async fn update_os_install() -> anyhow::Result<()> {
     println!("Installing OS and package updates...");
 
-    let pkg = tokio::process::Command::new("sudo")
+    let pkg = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/pkg", "upgrade", "-y"])
         .output()
         .await?;
@@ -1405,7 +1405,7 @@ pub async fn update_os_install() -> anyhow::Result<()> {
         .count();
     println!("  {} package(s) updated.", count);
 
-    let os = tokio::process::Command::new("sudo")
+    let os = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/freebsd-update", "install"])
         .output()
         .await?;
@@ -1431,7 +1431,7 @@ pub async fn rp_status(db_path: &Path) -> anyhow::Result<()> {
     let pool = db.pool();
 
     // Check service status
-    let output = tokio::process::Command::new("sudo")
+    let output = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["service", "trafficcop", "status"])
         .output()
         .await;
@@ -1464,7 +1464,7 @@ pub async fn rp_status(db_path: &Path) -> anyhow::Result<()> {
 }
 
 pub async fn rp_start() -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("sudo")
+    let output = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["service", "trafficcop", "start"])
         .output()
         .await?;
@@ -1476,7 +1476,7 @@ pub async fn rp_start() -> anyhow::Result<()> {
 }
 
 pub async fn rp_stop() -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("sudo")
+    let output = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["service", "trafficcop", "stop"])
         .output()
         .await?;
@@ -1485,7 +1485,7 @@ pub async fn rp_stop() -> anyhow::Result<()> {
 }
 
 pub async fn rp_restart() -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("sudo")
+    let output = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["service", "trafficcop", "restart"])
         .output()
         .await?;
@@ -1527,7 +1527,7 @@ pub async fn rp_apply(db_path: &Path) -> anyhow::Result<()> {
     let yaml = rp_generate_config(pool).await?;
 
     // Write config via sudo
-    let mut child = tokio::process::Command::new("sudo")
+    let mut child = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["tee", "/usr/local/etc/trafficcop/config.yaml"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -1539,7 +1539,7 @@ pub async fn rp_apply(db_path: &Path) -> anyhow::Result<()> {
     child.wait().await?;
 
     println!("Config written. Restarting service...");
-    let output = tokio::process::Command::new("sudo")
+    let output = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["service", "trafficcop", "restart"])
         .output()
         .await?;

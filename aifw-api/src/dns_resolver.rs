@@ -754,7 +754,7 @@ pub async fn resolver_status(
     let is_rdns = config.backend == "rdns";
 
     let service_name = if is_rdns { "rdns" } else { "local_unbound" };
-    let running = Command::new("sudo").args(["/usr/sbin/service", service_name, "status"]).output().await
+    let running = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", service_name, "status"]).output().await
         .map(|o| o.status.success()).unwrap_or(false);
 
     let version = if is_rdns {
@@ -797,7 +797,7 @@ pub async fn resolver_status(
                 (hits, misses, hits + misses)
             }).unwrap_or((0, 0, 0))
     } else {
-        Command::new("sudo")
+        Command::new("/usr/local/bin/sudo")
             .args(["/usr/local/sbin/unbound-control", "stats_noreset"]).output().await
             .map(|o| {
                 let s = String::from_utf8_lossy(&o.stdout);
@@ -890,7 +890,7 @@ async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json
     tokio::fs::write(tmp_path, &conf).await.map_err(|_| internal())?;
     sudo_copy(tmp_path, "/var/unbound/unbound.conf").await;
     let _ = tokio::fs::remove_file(tmp_path).await;
-    let _ = Command::new("sudo").args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
 
     if config.enabled {
         sysrc("local_unbound_enable=YES").await;
@@ -922,7 +922,7 @@ async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<Me
     sysrc("local_unbound_enable=NO").await;
 
     // Create directories
-    let _ = Command::new("sudo").args(["mkdir", "-p", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz", "/var/run/rdns", "/var/log/rdns"]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo").args(["mkdir", "-p", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz", "/var/run/rdns", "/var/log/rdns"]).output().await;
 
     // Generate and write rDNS config
     let conf = generate_rdns_conf(&state.pool).await;
@@ -1125,17 +1125,17 @@ pub async fn resolver_logs(State(state): State<AppState>) -> Result<Json<ApiResp
 
     let content = if is_rdns {
         // rDNS logs to stderr (captured by daemon) — check syslog
-        let primary = Command::new("sudo").args(["/bin/cat", "/var/log/rdns.log"]).output().await;
+        let primary = Command::new("/usr/local/bin/sudo").args(["/bin/cat", "/var/log/rdns.log"]).output().await;
         match primary {
             Ok(o) if o.status.success() && !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => Command::new("sudo").args(["/bin/cat", "/var/log/messages"]).output().await
+            _ => Command::new("/usr/local/bin/sudo").args(["/bin/cat", "/var/log/messages"]).output().await
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default(),
         }
     } else {
-        let primary = Command::new("sudo").args(["/bin/cat", "/var/log/unbound.log"]).output().await;
+        let primary = Command::new("/usr/local/bin/sudo").args(["/bin/cat", "/var/log/unbound.log"]).output().await;
         match primary {
             Ok(o) if o.status.success() && !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => Command::new("sudo").args(["/bin/cat", "/var/log/messages"]).output().await
+            _ => Command::new("/usr/local/bin/sudo").args(["/bin/cat", "/var/log/messages"]).output().await
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default(),
         }
     };

@@ -174,7 +174,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         let src = bin_src.join(bin);
         if src.exists() {
             let dst = format!("{}/{}", BIN_DIR, bin);
-            let output = Command::new("sudo")
+            let output = Command::new("/usr/local/bin/sudo")
                 .args(["install", "-m", "755", src.to_str().unwrap(), &dst])
                 .output()
                 .await
@@ -193,11 +193,11 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     let ui_src = update_dir.join("ui");
     if ui_src.exists() {
         info!("Installing UI...");
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["rm", "-rf", UI_DIR])
             .output()
             .await;
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["cp", "-a", ui_src.to_str().unwrap(), UI_DIR])
             .output()
             .await;
@@ -206,7 +206,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     // Update version file
     let ver_src = update_dir.join("version");
     if ver_src.exists() {
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["cp", ver_src.to_str().unwrap(), VERSION_FILE])
             .output()
             .await;
@@ -222,25 +222,28 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     ))
 }
 
-/// Restart AiFw services (spawns background process, returns immediately).
+/// Restart AiFw services (spawns background task, returns immediately).
 pub async fn restart_services() {
-    let _ = Command::new("sudo")
-        .args([
-            "sh",
-            "-c",
-            "(sleep 2; service aifw_daemon restart; service aifw_api restart) &",
-        ])
-        .output()
-        .await;
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["/usr/sbin/service", "aifw_daemon", "restart"])
+            .output()
+            .await;
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["/usr/sbin/service", "aifw_api", "restart"])
+            .output()
+            .await;
+    });
 }
 
 /// Restart AiFw services synchronously (blocks until restart completes, use from CLI).
 pub async fn restart_services_sync() {
-    let _ = Command::new("sudo")
+    let _ = Command::new("/usr/local/bin/sudo")
         .args(["service", "aifw_daemon", "restart"])
         .output()
         .await;
-    let _ = Command::new("sudo")
+    let _ = Command::new("/usr/local/bin/sudo")
         .args(["service", "aifw_api", "restart"])
         .output()
         .await;
@@ -266,7 +269,7 @@ pub async fn rollback() -> Result<String, UpdaterError> {
         let src = format!("{}/bin/{}", BACKUP_DIR, bin);
         if std::path::Path::new(&src).exists() {
             let dst = format!("{}/{}", BIN_DIR, bin);
-            let _ = Command::new("sudo")
+            let _ = Command::new("/usr/local/bin/sudo")
                 .args(["install", "-m", "755", &src, &dst])
                 .output()
                 .await;
@@ -276,18 +279,18 @@ pub async fn rollback() -> Result<String, UpdaterError> {
     // Restore UI
     let backup_ui = format!("{}/ui", BACKUP_DIR);
     if std::path::Path::new(&backup_ui).exists() {
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["rm", "-rf", UI_DIR])
             .output()
             .await;
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["cp", "-a", &backup_ui, UI_DIR])
             .output()
             .await;
     }
 
     // Restore version file
-    let _ = Command::new("sudo")
+    let _ = Command::new("/usr/local/bin/sudo")
         .args(["cp", &backup_ver, VERSION_FILE])
         .output()
         .await;
@@ -299,11 +302,11 @@ pub async fn rollback() -> Result<String, UpdaterError> {
 // --- Private helpers ---
 
 async fn backup_current() -> Result<(), UpdaterError> {
-    let _ = Command::new("sudo")
+    let _ = Command::new("/usr/local/bin/sudo")
         .args(["rm", "-rf", BACKUP_DIR])
         .output()
         .await;
-    let _ = Command::new("sudo")
+    let _ = Command::new("/usr/local/bin/sudo")
         .args(["mkdir", "-p", &format!("{}/bin", BACKUP_DIR)])
         .output()
         .await;
@@ -311,7 +314,7 @@ async fn backup_current() -> Result<(), UpdaterError> {
     for bin in BINARIES {
         let src = format!("{}/{}", BIN_DIR, bin);
         if std::path::Path::new(&src).exists() {
-            let _ = Command::new("sudo")
+            let _ = Command::new("/usr/local/bin/sudo")
                 .args(["cp", "-p", &src, &format!("{}/bin/{}", BACKUP_DIR, bin)])
                 .output()
                 .await;
@@ -319,14 +322,14 @@ async fn backup_current() -> Result<(), UpdaterError> {
     }
 
     if std::path::Path::new(UI_DIR).exists() {
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["cp", "-a", UI_DIR, &format!("{}/ui", BACKUP_DIR)])
             .output()
             .await;
     }
 
     if std::path::Path::new(VERSION_FILE).exists() {
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["cp", VERSION_FILE, &format!("{}/version", BACKUP_DIR)])
             .output()
             .await;

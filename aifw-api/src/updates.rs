@@ -134,7 +134,7 @@ pub async fn update_status(
     ).fetch_optional(&state.pool).await.ok().flatten().map(|r| r.0);
 
     // Check for pending pkg updates
-    let pkg_out = Command::new("sudo").args(["/usr/sbin/pkg", "upgrade", "-n"]).output().await
+    let pkg_out = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/pkg", "upgrade", "-n"]).output().await
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
@@ -154,11 +154,11 @@ pub async fn update_status(
         }
     }
 
-    let pending_os = Command::new("sudo").args(["/usr/sbin/freebsd-update", "updatesready"]).output().await
+    let pending_os = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/freebsd-update", "updatesready"]).output().await
         .map(|o| o.status.success()).unwrap_or(false);
 
     let needs_reboot = std::path::Path::new("/var/run/reboot-required").exists()
-        || Command::new("sudo").args(["/usr/sbin/freebsd-update", "updatesready"]).output().await
+        || Command::new("/usr/local/bin/sudo").args(["/usr/sbin/freebsd-update", "updatesready"]).output().await
             .map(|o| o.status.success()).unwrap_or(false);
 
     Ok(Json(UpdateStatus {
@@ -180,7 +180,7 @@ pub async fn check_updates(
     save_config(&state.pool, "last_check", &now).await;
 
     // Check pkg updates
-    let pkg_result = Command::new("sudo").args(["/usr/sbin/pkg", "update"]).output().await;
+    let pkg_result = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/pkg", "update"]).output().await;
     let pkg_msg = match pkg_result {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
@@ -194,7 +194,7 @@ pub async fn check_updates(
     };
 
     // Check OS updates
-    let os_result = Command::new("sudo").args(["/usr/sbin/freebsd-update", "fetch", "--not-running-from-cron"]).output().await;
+    let os_result = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/freebsd-update", "fetch", "--not-running-from-cron"]).output().await;
     let os_msg = match os_result {
         Ok(o) => {
             if o.status.success() { "OS update check complete.".to_string() }
@@ -215,7 +215,7 @@ pub async fn install_updates(
     let mut results = Vec::new();
 
     // Install pkg updates
-    let pkg_result = Command::new("sudo").args(["/usr/sbin/pkg", "upgrade", "-y"]).output().await;
+    let pkg_result = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/pkg", "upgrade", "-y"]).output().await;
     match pkg_result {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
@@ -226,7 +226,7 @@ pub async fn install_updates(
     }
 
     // Install OS updates
-    let os_result = Command::new("sudo").args(["/usr/sbin/freebsd-update", "install"]).output().await;
+    let os_result = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/freebsd-update", "install"]).output().await;
     match os_result {
         Ok(o) => {
             if o.status.success() {
@@ -246,7 +246,7 @@ pub async fn install_updates(
 
 pub async fn reboot_system() -> Result<Json<MessageResponse>, StatusCode> {
     // Schedule reboot in 10 seconds
-    let _ = Command::new("sudo").args(["/sbin/shutdown", "-r", "+10s", "AiFw scheduled reboot for updates"]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/shutdown", "-r", "+10s", "AiFw scheduled reboot for updates"]).output().await;
     Ok(Json(MessageResponse { message: "System rebooting in 10 seconds".to_string() }))
 }
 

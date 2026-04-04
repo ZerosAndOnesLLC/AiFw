@@ -39,10 +39,21 @@ pub async fn get_alias(
     Ok(Json(ApiResponse { data: alias }))
 }
 
+fn validate_alias_name(name: &str) -> Result<(), StatusCode> {
+    if name.is_empty() || name.len() > 31 {
+        return Err(bad_request());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(bad_request());
+    }
+    Ok(())
+}
+
 pub async fn create_alias(
     State(state): State<AppState>,
     Json(req): Json<CreateAliasRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<Alias>>), StatusCode> {
+    validate_alias_name(&req.name)?;
     let alias_type = AliasType::parse(&req.alias_type).ok_or(bad_request())?;
     let now = Utc::now();
     let alias = Alias {
@@ -66,6 +77,7 @@ pub async fn update_alias(
     Json(req): Json<CreateAliasRequest>,
 ) -> Result<Json<ApiResponse<Alias>>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    validate_alias_name(&req.name)?;
     let alias_type = AliasType::parse(&req.alias_type).ok_or(bad_request())?;
     let existing = state.alias_engine.get(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
     let alias = Alias {

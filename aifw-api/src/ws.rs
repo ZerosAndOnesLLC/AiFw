@@ -576,7 +576,7 @@ pub async fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLoc
     let buf = blocked_buffer().clone();
 
     // Bootstrap: load historical entries from /var/log/pflog
-    if let Ok(output) = tokio::process::Command::new("sudo")
+    if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
         .output().await
     {
@@ -599,7 +599,7 @@ pub async fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLoc
     tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, BufReader};
         loop {
-            let child = tokio::process::Command::new("sudo")
+            let child = tokio::process::Command::new("/usr/local/bin/sudo")
                 .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-l", "-i", "pflog0"])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
@@ -666,11 +666,11 @@ async fn collect_services() -> Vec<ServiceStatusPayload> {
     if tick % 10 == 0 {
         let mut svcs = Vec::new();
         for (name, svc_name) in [("rDNS", "rdns"), ("rDHCP", "rdhcpd"), ("rTIME", "rtime"), ("TrafficCop", "trafficcop")] {
-            let running = tokio::process::Command::new("sudo")
+            let running = tokio::process::Command::new("/usr/local/bin/sudo")
                 .args(["/usr/sbin/service", svc_name, "status"])
                 .output().await
                 .map(|o| o.status.success()).unwrap_or(false);
-            let enabled = tokio::process::Command::new("sudo")
+            let enabled = tokio::process::Command::new("/usr/local/bin/sudo")
                 .args(["/usr/sbin/sysrc", "-n", &format!("{svc_name}_enable")])
                 .output().await
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES").unwrap_or(false);

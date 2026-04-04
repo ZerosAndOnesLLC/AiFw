@@ -1014,7 +1014,7 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
 // ============================================================
 
 async fn run_trafficcop_service(action: &str) -> Json<MessageResponse> {
-    let output = Command::new("sudo")
+    let output = Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/service", "trafficcop", action])
         .output()
         .await;
@@ -1038,7 +1038,7 @@ async fn run_trafficcop_service(action: &str) -> Json<MessageResponse> {
 pub async fn rp_status(
     State(state): State<AppState>,
 ) -> Result<Json<ReverseProxyStatus>, StatusCode> {
-    let running = Command::new("sudo")
+    let running = Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/service", "trafficcop", "status"])
         .output()
         .await
@@ -1153,7 +1153,7 @@ pub async fn apply_config(
 
     // Write YAML config via sudo tee
     let config_path = "/usr/local/etc/trafficcop/config.yaml";
-    let mut child = Command::new("sudo")
+    let mut child = Command::new("/usr/local/bin/sudo")
         .args(["tee", config_path])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -1167,11 +1167,11 @@ pub async fn apply_config(
     let _ = child.wait().await;
 
     if global.enabled {
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["/usr/sbin/sysrc", "trafficcop_enable=YES"])
             .output()
             .await;
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["/usr/sbin/service", "trafficcop", "restart"])
             .output()
             .await;
@@ -1179,11 +1179,11 @@ pub async fn apply_config(
             message: "TrafficCop config applied and service restarted".to_string(),
         }))
     } else {
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["/usr/sbin/service", "trafficcop", "stop"])
             .output()
             .await;
-        let _ = Command::new("sudo")
+        let _ = Command::new("/usr/local/bin/sudo")
             .args(["/usr/sbin/sysrc", "trafficcop_enable=NO"])
             .output()
             .await;

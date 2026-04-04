@@ -326,6 +326,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .merge(public_routes)
         .merge(admin_routes)
         .merge(protected_routes)
+        .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())

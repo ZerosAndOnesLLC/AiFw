@@ -233,6 +233,10 @@ pub async fn totp_login(
         .await?
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
+    if !user.enabled {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
     // Verify password first — TOTP is second factor, not replacement
     if !auth::verify_password(&req.password, &user.password_hash) {
         return Err(StatusCode::UNAUTHORIZED);
@@ -654,7 +658,11 @@ pub async fn import_config(
 
     // Import DNS
     if let Some(servers) = config.get("dns_servers").and_then(|v| v.as_array()) {
-        let dns: Vec<String> = servers.iter().filter_map(|s| s.as_str().map(String::from)).collect();
+        let dns: Vec<String> = servers.iter()
+            .filter_map(|s| s.as_str())
+            .filter(|s| s.parse::<std::net::IpAddr>().is_ok())
+            .map(String::from)
+            .collect();
         if !dns.is_empty() {
             let content: String = dns.iter().map(|s| format!("nameserver {s}")).collect::<Vec<_>>().join("\n");
             let _ = tokio::fs::write("/etc/resolv.conf", &content).await;
@@ -808,7 +816,7 @@ pub async fn list_system_rules() -> Result<Json<ApiResponse<Vec<String>>>, Statu
     let mut all_rules = Vec::new();
 
     // Main ruleset
-    if let Ok(output) = tokio::process::Command::new("sudo")
+    if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["pfctl", "-sr"]).output().await {
         let stdout = String::from_utf8_lossy(&output.stdout);
         all_rules.extend(stdout.lines().filter(|l| !l.is_empty()).map(String::from));
@@ -816,7 +824,7 @@ pub async fn list_system_rules() -> Result<Json<ApiResponse<Vec<String>>>, Statu
 
     // AiFw anchor rules
     for anchor in ["aifw", "aifw-nat", "aifw-vpn", "aifw-geoip"] {
-        if let Ok(output) = tokio::process::Command::new("sudo")
+        if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
             .args(["pfctl", "-a", anchor, "-sr"]).output().await {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let anchor_rules: Vec<String> = stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect();
@@ -1260,7 +1268,7 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
 
     // Read from /var/log/pflog binary — this is where pf logs all block/pass with log flag
     // tcpdump -n -e -r /var/log/pflog shows: "rule X(match): block/pass in/out on iface: src > dst"
-    if let Ok(output) = tokio::process::Command::new("sudo")
+    if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
         .output().await
     {
@@ -1703,10 +1711,28 @@ pub async fn list_static_routes(
     Ok(Json(ApiResponse { data: routes }))
 }
 
+fn validate_route_target(s: &str) -> Result<(), StatusCode> {
+    // Accept IP or CIDR (e.g., "10.0.0.0/8", "192.168.1.1", "default")
+    if s == "default" { return Ok(()); }
+    if let Some((ip_str, prefix_str)) = s.split_once('/') {
+        ip_str.parse::<std::net::IpAddr>().map_err(|_| bad_request())?;
+        let prefix: u8 = prefix_str.parse().map_err(|_| bad_request())?;
+        if prefix > 128 { return Err(bad_request()); }
+    } else {
+        s.parse::<std::net::IpAddr>().map_err(|_| bad_request())?;
+    }
+    Ok(())
+}
+
 pub async fn create_static_route(
     State(state): State<AppState>,
     Json(req): Json<CreateRouteRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<StaticRoute>>), StatusCode> {
+    validate_route_target(&req.destination)?;
+    validate_route_target(&req.gateway)?;
+    if let Some(ref iface) = req.interface {
+        aifw_core::validation::validate_interface_name(iface).map_err(|_| bad_request())?;
+    }
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let metric = req.metric.unwrap_or(0);
@@ -1735,6 +1761,11 @@ pub async fn update_static_route(
     Path(id): Path<String>,
     Json(req): Json<CreateRouteRequest>,
 ) -> Result<Json<ApiResponse<StaticRoute>>, StatusCode> {
+    validate_route_target(&req.destination)?;
+    validate_route_target(&req.gateway)?;
+    if let Some(ref iface) = req.interface {
+        aifw_core::validation::validate_interface_name(iface).map_err(|_| bad_request())?;
+    }
     // Get old route to remove from system
     let old = sqlx::query_as::<_, (String, String, Option<String>, bool)>(
         "SELECT destination, gateway, interface, enabled FROM static_routes WHERE id = ?1",

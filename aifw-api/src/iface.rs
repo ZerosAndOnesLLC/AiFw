@@ -403,7 +403,7 @@ pub async fn configure_interface(
                 let _ = sudo_cmd(&["/sbin/ifconfig", &name, "delete"]).await;
                 let _ = sudo_cmd(&["/sbin/dhclient", &name]).await;
                 // Persist
-                let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}=DHCP", name)]).output().await;
+                let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}=DHCP", name)]).output().await;
                 // Remove static defaultrouter if we're switching to DHCP (DHCP will set it)
                 msgs.push("Set to DHCP".to_string());
             }
@@ -418,14 +418,14 @@ pub async fn configure_interface(
                     // FreeBSD ifconfig won't replace — it adds aliases. Must delete first.
                     let current = get_iface_ipv4s(&name).await;
                     for old_ip in &current {
-                        let _ = Command::new("sudo").args(["/sbin/ifconfig", &name, "inet", old_ip, "-alias"]).output().await;
+                        let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &name, "inet", old_ip, "-alias"]).output().await;
                     }
                     // Set the new static IP
-                    let _ = Command::new("sudo").args(["/sbin/ifconfig", &name, "inet", addr]).output().await;
-                    let _ = Command::new("sudo").args(["/sbin/ifconfig", &name, "up"]).output().await;
+                    let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &name, "inet", addr]).output().await;
+                    let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &name, "up"]).output().await;
 
                     // Persist in rc.conf
-                    let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}=inet {}", name, addr)]).output().await;
+                    let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}=inet {}", name, addr)]).output().await;
                     msgs.push(format!("Set static IP {}", addr));
                 }
 
@@ -440,7 +440,7 @@ pub async fn configure_interface(
                         if owns_default {
                             let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
                             let _ = sudo_cmd(&["/sbin/route", "add", "default", gw]).await;
-                            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
+                            let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
                             msgs.push(format!("Gateway set to {}", gw));
                         } else {
                             msgs.push(format!("Gateway {} noted (default route stays on {})",
@@ -453,7 +453,7 @@ pub async fn configure_interface(
                         let (_, cur_gw_iface) = get_default_gateway().await;
                         if cur_gw_iface.as_deref() == Some(&name) {
                             let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
-                            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
+                            let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
                             msgs.push("Default gateway removed".to_string());
                         }
                     }
@@ -462,7 +462,7 @@ pub async fn configure_interface(
             "none" => {
                 let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
                 let _ = sudo_cmd(&["/sbin/ifconfig", &name, "delete"]).await;
-                let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", name)]).output().await;
+                let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", name)]).output().await;
                 msgs.push("Removed IP configuration".to_string());
             }
             _ => {}
@@ -477,7 +477,7 @@ pub async fn configure_interface(
             if owns_default {
                 let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
                 let _ = sudo_cmd(&["/sbin/route", "add", "default", gw]).await;
-                let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
+                let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", &format!("defaultrouter={}", gw)]).output().await;
                 msgs.push(format!("Gateway set to {}", gw));
             } else {
                 msgs.push(format!("Gateway {} noted (default route stays on {})",
@@ -485,7 +485,7 @@ pub async fn configure_interface(
             }
         } else if cur_gw_iface.as_deref() == Some(&name) {
             let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
-            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "-x", "defaultrouter"]).output().await;
             msgs.push("Default gateway removed".to_string());
         }
     }
@@ -591,29 +591,29 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
 
         if *enabled {
             // Create if not exists
-            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "create"]).output().await;
-            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "vlan", &vid.to_string(), "vlandev", parent]).output().await;
-            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "mtu", &mtu.to_string()]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &vlan_name, "create"]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &vlan_name, "vlan", &vid.to_string(), "vlandev", parent]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &vlan_name, "mtu", &mtu.to_string()]).output().await;
 
             if mode == "static" {
                 if let Some(addr) = ip_addr {
-                    let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "inet", addr]).output().await;
+                    let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &vlan_name, "inet", addr]).output().await;
                 }
             } else if mode == "dhcp" {
-                let _ = Command::new("sudo").args(["/sbin/dhclient", &vlan_name]).output().await;
+                let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/dhclient", &vlan_name]).output().await;
             }
-            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "up"]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &vlan_name, "up"]).output().await;
 
             // Persist in rc.conf
-            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("vlans_{}={}", parent, vid)]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", &format!("vlans_{}={}", parent, vid)]).output().await;
             let rc_val = match mode.as_str() {
                 "dhcp" => "DHCP".to_string(),
                 "static" => format!("inet {}", ip_addr.as_deref().unwrap_or("")),
                 _ => "up".to_string(),
             };
-            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}={}", vlan_name, rc_val)]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", &format!("ifconfig_{}={}", vlan_name, rc_val)]).output().await;
         } else {
-            let _ = Command::new("sudo").args(["/sbin/ifconfig", &vlan_name, "down"]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", &vlan_name, "down"]).output().await;
         }
     }
 
@@ -623,8 +623,8 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
     let db_vlan_names: Vec<String> = rows.iter().map(|(vid, ..)| format!("vlan{}", vid)).collect();
     for iface in iface_list.split_whitespace() {
         if iface.starts_with("vlan") && !db_vlan_names.contains(&iface.to_string()) {
-            let _ = Command::new("sudo").args(["/sbin/ifconfig", iface, "destroy"]).output().await;
-            let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", iface)]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/ifconfig", iface, "destroy"]).output().await;
+            let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", iface)]).output().await;
         }
     }
 
@@ -652,6 +652,9 @@ pub async fn create_vlan(
     Json(req): Json<CreateVlanRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<VlanConfig>>), StatusCode> {
     if req.vlan_id < 1 || req.vlan_id > 4094 { return Err(bad_request()); }
+    if !validate_iface_name(&req.parent) {
+        return Err(bad_request());
+    }
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -696,6 +699,10 @@ pub async fn update_vlan(
     Path(id): Path<String>,
     Json(req): Json<CreateVlanRequest>,
 ) -> Result<Json<ApiResponse<VlanConfig>>, StatusCode> {
+    if req.vlan_id < 1 || req.vlan_id > 4094 { return Err(bad_request()); }
+    if !validate_iface_name(&req.parent) {
+        return Err(bad_request());
+    }
     let mode = req.ipv4_mode.unwrap_or_else(|| "none".to_string());
     let mtu = req.mtu.unwrap_or(1500);
     let enabled = req.enabled.unwrap_or(true);

@@ -733,7 +733,7 @@ pub async fn dhcp_status(
 ) -> Result<Json<DhcpStatus>, StatusCode> {
     let config = load_global_config(&state.pool).await;
 
-    let running = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "status"]).output().await
+    let running = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rdhcpd", "status"]).output().await
         .map(|o| o.status.success())
         .unwrap_or(false);
 
@@ -791,9 +791,9 @@ pub async fn dhcp_status(
 async fn run_rdhcp_service(action: &str) -> Json<MessageResponse> {
     // Ensure rdhcpd is enabled in rc.conf before start/restart
     if action == "start" || action == "restart" {
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
     }
-    let output = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", action])
+    let output = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rdhcpd", action])
         .output().await;
     match output {
         Ok(o) => {
@@ -1128,7 +1128,7 @@ pub async fn dhcp_logs(
             break;
         }
         // Fallback to sudo
-        if let Ok(output) = Command::new("sudo").args(["/bin/cat", path]).output().await {
+        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["/bin/cat", path]).output().await {
             if output.status.success() {
                 content = String::from_utf8_lossy(&output.stdout).to_string();
                 break;
@@ -1138,7 +1138,7 @@ pub async fn dhcp_logs(
 
     // Also try journalctl if no log file found
     if content.is_empty() {
-        if let Ok(output) = Command::new("sudo").args(["journalctl", "-u", "rdhcpd", "--no-pager", "-n", &lines_param.to_string()]).output().await {
+        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["journalctl", "-u", "rdhcpd", "--no-pager", "-n", &lines_param.to_string()]).output().await {
             if output.status.success() {
                 content = String::from_utf8_lossy(&output.stdout).to_string();
             }
@@ -1175,13 +1175,13 @@ pub async fn apply_config(
     tokio::fs::write(RDHCP_CONFIG_PATH, &toml_config).await.map_err(|_| internal())?;
 
     // Fix ownership
-    let _ = Command::new("sudo").args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]).output().await;
-    let _ = Command::new("sudo").args(["chown", "-R", "aifw:aifw", RDHCP_LEASE_DB]).output().await;
-    let _ = Command::new("sudo").args(["chown", "-R", "aifw:aifw", "/var/log/rdhcpd"]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo").args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo").args(["chown", "-R", "aifw:aifw", RDHCP_LEASE_DB]).output().await;
+    let _ = Command::new("/usr/local/bin/sudo").args(["chown", "-R", "aifw:aifw", "/var/log/rdhcpd"]).output().await;
 
     if config.enabled {
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
-        let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
 
         // Reload all aifw anchor rules (includes user rules + service rules)
         // This preserves existing firewall rules while adding DHCP pass rules
@@ -1189,8 +1189,8 @@ pub async fn apply_config(
 
         Ok(Json(MessageResponse { message: "DHCP config applied and rDHCP restarted".to_string() }))
     } else {
-        let _ = Command::new("sudo").args(["/usr/sbin/service", "rdhcpd", "stop"]).output().await;
-        let _ = Command::new("sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=NO"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rdhcpd", "stop"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/sysrc", "rdhcpd_enable=NO"]).output().await;
         // Reload anchor to remove DHCP rules
         reload_aifw_anchor(&state).await;
         Ok(Json(MessageResponse { message: "DHCP config saved, rDHCP stopped".to_string() }))

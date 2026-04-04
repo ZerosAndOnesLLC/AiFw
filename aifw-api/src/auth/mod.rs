@@ -582,6 +582,13 @@ pub async fn auth_middleware(
         return Err(StatusCode::UNAUTHORIZED);
     };
 
+    // Check if user is still enabled
+    let user = get_user_by_id(&state.pool, &user_id).await?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if !user.enabled {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
     // Dispatch ApiRequest hook to plugins
     {
         let mgr = state.plugin_manager.read().await;

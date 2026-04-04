@@ -199,13 +199,18 @@ pub async fn rotate_refresh_token(
     .await
     .map_err(|e| format!("db error: {e}"))?;
 
-    // Get username for access token
-    let username = sqlx::query_as::<_, (String,)>("SELECT username FROM users WHERE id = ?1")
-        .bind(&user_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("db error: {e}"))?
-        .0;
+    // Get username and check user is still enabled
+    let (username, enabled) = sqlx::query_as::<_, (String, bool)>(
+        "SELECT username, enabled FROM users WHERE id = ?1",
+    )
+    .bind(&user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("db error: {e}"))?;
+
+    if !enabled {
+        return Err("user account is disabled".to_string());
+    }
 
     let (access_token, access_expires) = create_access_token(&user_id, &username, settings)?;
 
