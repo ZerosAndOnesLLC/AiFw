@@ -609,12 +609,17 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Accept auth from: Authorization header, or ?token= query param (for WebSocket/SSE)
     let auth_header = headers
         .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+        .and_then(|v| v.to_str().ok());
 
-    let user_id = if let Some(token) = auth_header.strip_prefix("Bearer ") {
+    let query_token: Option<String> = request.uri().query()
+        .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
+        .and_then(|p| p.strip_prefix("token="))
+        .map(|t| percent_decode(t));
+
+    let user_id = if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
         let token_data = verify_access_token(token, &state.auth_settings)
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
         // Check token blacklist for revoked access tokens
@@ -622,8 +627,16 @@ pub async fn auth_middleware(
             return Err(StatusCode::UNAUTHORIZED);
         }
         token_data.claims.sub
-    } else if let Some(key) = auth_header.strip_prefix("ApiKey ") {
+    } else if let Some(key) = auth_header.and_then(|h| h.strip_prefix("ApiKey ")) {
         verify_api_key(&state.pool, key).await?
+    } else if let Some(ref token) = query_token {
+        // Fallback: ?token= query param for WebSocket/SSE (browsers can't send headers)
+        let token_data = verify_access_token(token, &state.auth_settings)
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        if is_token_revoked(&state.pool, &token_data.claims.jti).await {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        token_data.claims.sub
     } else {
         return Err(StatusCode::UNAUTHORIZED);
     };
@@ -658,6 +671,25 @@ pub async fn auth_middleware(
 
     request.extensions_mut().insert(AuthUser(user_id));
     Ok(next.run(request).await)
+}
+
+/// Simple percent-decoding for URL query params (no external crate needed).
+fn percent_decode(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""), 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]
