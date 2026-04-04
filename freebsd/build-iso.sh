@@ -127,9 +127,12 @@ rm -rf "$STAGEDIR/tmp/"*
 # --- Overlay AiFw binaries and config ---
 echo "[6/9] Installing AiFw..."
 
-# Binaries (should be pre-built and placed in freebsd/release/)
+# Read component lists from manifest (single source of truth)
+MANIFEST="${SCRIPT_DIR}/manifest.json"
+
+# Binaries (pre-built in freebsd/release/)
 BINDIR="${SCRIPT_DIR}/release"
-for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup trafficcop rdhcpd rdns rdns-control rtime; do
+for bin in $(cat "$MANIFEST" | python3 -c "import sys,json; m=json.load(sys.stdin); [print(b) for b in m['binaries']['local']]; [print(b) for r in m['external_repos'] for b in r['binaries']]" 2>/dev/null || echo "aifw aifw-daemon aifw-api aifw-tui aifw-setup trafficcop rdhcpd rdns rdns-control rtime"); do
     if [ -f "${BINDIR}/${bin}" ]; then
         install -s -m 755 "${BINDIR}/${bin}" "$STAGEDIR/usr/local/sbin/${bin}"
     else
@@ -148,30 +151,15 @@ fi
 OVERLAY_DIR="${SCRIPT_DIR}/overlay"
 if [ -d "$OVERLAY_DIR" ]; then
     cp -a "$OVERLAY_DIR/"* "$STAGEDIR/"
-    # Ensure scripts are executable
     chmod 755 "$STAGEDIR/usr/local/etc/rc.d/"* 2>/dev/null || true
     chmod 755 "$STAGEDIR/usr/local/sbin/aifw-console" 2>/dev/null || true
     chmod 755 "$STAGEDIR/usr/local/sbin/aifw-install" 2>/dev/null || true
 fi
 
-# Create required directories
-mkdir -p "$STAGEDIR/usr/local/etc/aifw"
-mkdir -p "$STAGEDIR/usr/local/etc/aifw/anchors"
-mkdir -p "$STAGEDIR/usr/local/share/aifw"
-mkdir -p "$STAGEDIR/var/db/aifw"
-mkdir -p "$STAGEDIR/var/log/aifw"
-mkdir -p "$STAGEDIR/var/log/trafficcop"
-mkdir -p "$STAGEDIR/var/db/rdhcpd/leases"
-mkdir -p "$STAGEDIR/var/log/rdhcpd"
-mkdir -p "$STAGEDIR/usr/local/etc/rdhcpd"
-mkdir -p "$STAGEDIR/usr/local/etc/rdns/zones"
-mkdir -p "$STAGEDIR/usr/local/etc/rdns/rpz"
-mkdir -p "$STAGEDIR/var/run/rdns"
-mkdir -p "$STAGEDIR/var/log/rdns"
-mkdir -p "$STAGEDIR/usr/local/etc/rtime"
-mkdir -p "$STAGEDIR/usr/local/lib/aifw/plugins"
-mkdir -p "$STAGEDIR/var/run/rtime"
-mkdir -p "$STAGEDIR/var/log/rtime"
+# Create required directories from manifest
+for dir in $(cat "$MANIFEST" | python3 -c "import sys,json; [print(d) for d in json.load(sys.stdin)['directories']]" 2>/dev/null || true); do
+    mkdir -p "$STAGEDIR${dir}"
+done
 
 # --- Configure live environment ---
 echo "[7/9] Configuring live environment..."

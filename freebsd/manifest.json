@@ -1,0 +1,64 @@
+{
+  "_comment": "Single source of truth for all AiFw components. Used by: updater, CI build, ISO builder, deploy script.",
+
+  "binaries": {
+    "_comment": "Binaries built from this repo (cargo build --release)",
+    "local": ["aifw", "aifw-daemon", "aifw-api", "aifw-tui", "aifw-setup"]
+  },
+
+  "external_repos": [
+    {
+      "name": "TrafficCop",
+      "repo": "ZerosAndOnesLLC/TrafficCop",
+      "binaries": ["trafficcop"]
+    },
+    {
+      "name": "rDHCP",
+      "repo": "ZerosAndOnesLLC/rDHCP",
+      "binaries": ["rdhcpd"]
+    },
+    {
+      "name": "rDNS",
+      "repo": "ZerosAndOnesLLC/rDNS",
+      "binaries": ["rdns", "rdns-control"]
+    },
+    {
+      "name": "rTIME",
+      "repo": "ZerosAndOnesLLC/rTIME",
+      "binaries": ["rtime"]
+    }
+  ],
+
+  "rc_scripts": [
+    "aifw_firstboot",
+    "rdhcpd",
+    "rdns",
+    "rtime",
+    "trafficcop"
+  ],
+
+  "sbin_scripts": [
+    "aifw-console",
+    "aifw-install"
+  ],
+
+  "directories": [
+    "/usr/local/etc/aifw",
+    "/usr/local/etc/aifw/anchors",
+    "/usr/local/share/aifw",
+    "/var/db/aifw",
+    "/var/log/aifw",
+    "/var/log/trafficcop",
+    "/var/db/rdhcpd/leases",
+    "/var/log/rdhcpd",
+    "/usr/local/etc/rdhcpd",
+    "/usr/local/etc/rdns/zones",
+    "/usr/local/etc/rdns/rpz",
+    "/var/run/rdns",
+    "/var/log/rdns",
+    "/usr/local/etc/rtime",
+    "/var/run/rtime",
+    "/var/log/rtime",
+    "/usr/local/lib/aifw/plugins"
+  ]
+}

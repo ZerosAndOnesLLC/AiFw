@@ -78,57 +78,41 @@ jobs:
             cd /home/runner/work/AiFw/AiFw
             cargo build --release
 
-            echo "=== Building TrafficCop ==="
-            cd /home/runner/work/AiFw/AiFw
-            git clone https://github.com/ZerosAndOnesLLC/TrafficCop.git /tmp/trafficcop
-            cd /tmp/trafficcop
-            cargo build --release
-            cd /home/runner/work/AiFw/AiFw
-
-            echo "=== Building rDHCP ==="
-            git clone https://github.com/ZerosAndOnesLLC/rDHCP.git /tmp/rDHCP
-            cd /tmp/rDHCP
-            cargo build --release
-            cd /home/runner/work/AiFw/AiFw
-
-            echo "=== Building rDNS ==="
-            git clone https://github.com/ZerosAndOnesLLC/rDNS.git /tmp/rDNS
-            cd /tmp/rDNS
-            cargo build --release
-            cd /home/runner/work/AiFw/AiFw
-
-            echo "=== Building rTIME ==="
-            git clone https://github.com/ZerosAndOnesLLC/rTIME.git /tmp/rTIME
-            cd /tmp/rTIME
-            cargo build --release
-            cd /home/runner/work/AiFw/AiFw
+            # Build external repos from manifest
+            MANIFEST="freebsd/manifest.json"
+            for row in $(jq -c '.external_repos[]' "$MANIFEST"); do
+              NAME=$(echo "$row" | jq -r '.name')
+              REPO=$(echo "$row" | jq -r '.repo')
+              echo "=== Building $NAME ==="
+              git clone "https://github.com/${REPO}.git" "/tmp/${NAME}"
+              cd "/tmp/${NAME}"
+              cargo build --release
+              cd /home/runner/work/AiFw/AiFw
+            done
 
             echo "=== Preparing build inputs ==="
-            # Copy release binaries to where build-iso.sh expects them
             mkdir -p freebsd/release
-            for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
+            # Copy local binaries
+            for bin in $(jq -r '.binaries.local[]' "$MANIFEST"); do
               cp "target/release/${bin}" "freebsd/release/${bin}"
             done
-            cp /tmp/trafficcop/target/release/trafficcop freebsd/release/trafficcop
-            cp /tmp/rDHCP/target/release/rdhcpd freebsd/release/rdhcpd
-            cp /tmp/rDNS/target/release/rdns freebsd/release/rdns
-            cp /tmp/rDNS/target/release/rdns-control freebsd/release/rdns-control
-            [ -f /tmp/rTIME/target/release/rtime ] && cp /tmp/rTIME/target/release/rtime freebsd/release/rtime
+            # Copy external binaries
+            for row in $(jq -c '.external_repos[]' "$MANIFEST"); do
+              NAME=$(echo "$row" | jq -r '.name')
+              for bin in $(echo "$row" | jq -r '.binaries[]'); do
+                [ -f "/tmp/${NAME}/target/release/${bin}" ] && cp "/tmp/${NAME}/target/release/${bin}" "freebsd/release/${bin}"
+              done
+            done
 
             echo "=== Building update tarball ==="
             VERSION="${{ steps.version.outputs.version }}"
             TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
             mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui" "$TARBALL_DIR/rc.d" "$TARBALL_DIR/sbin"
-            for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
-              cp "target/release/${bin}" "$TARBALL_DIR/bin/"
+            # Copy all binaries from freebsd/release/ into tarball
+            for bin in freebsd/release/*; do
+              [ -f "$bin" ] && cp "$bin" "$TARBALL_DIR/bin/"
             done
-            cp /tmp/trafficcop/target/release/trafficcop "$TARBALL_DIR/bin/"
-            cp /tmp/rDHCP/target/release/rdhcpd "$TARBALL_DIR/bin/"
-            cp /tmp/rDNS/target/release/rdns "$TARBALL_DIR/bin/"
-            cp /tmp/rDNS/target/release/rdns-control "$TARBALL_DIR/bin/"
-            [ -f /tmp/rTIME/target/release/rtime ] && cp /tmp/rTIME/target/release/rtime "$TARBALL_DIR/bin/"
             cp -a freebsd/ui-export/* "$TARBALL_DIR/ui/"
-            # Include rc.d service scripts and utility scripts
             cp -a freebsd/overlay/usr/local/etc/rc.d/* "$TARBALL_DIR/rc.d/"
             cp -a freebsd/overlay/usr/local/sbin/* "$TARBALL_DIR/sbin/"
             echo "$VERSION" > "$TARBALL_DIR/version"

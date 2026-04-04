@@ -1,4 +1,7 @@
 //! AiFw self-updater — checks GitHub Releases for new versions and installs updates.
+//!
+//! Component lists are driven by `freebsd/manifest.json` (single source of truth).
+//! The manifest is embedded at compile time so no runtime file dependency.
 
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -10,9 +13,46 @@ const VERSION_FILE: &str = "/usr/local/share/aifw/version";
 const BACKUP_DIR: &str = "/usr/local/share/aifw/backup";
 const BIN_DIR: &str = "/usr/local/sbin";
 const UI_DIR: &str = "/usr/local/share/aifw/ui";
-const BINARIES: &[&str] = &["aifw", "aifw-daemon", "aifw-api", "aifw-tui", "aifw-setup", "trafficcop", "rdhcpd", "rdns", "rdns-control", "rtime"];
-const RC_SCRIPTS: &[&str] = &["aifw_firstboot", "rdhcpd", "rdns", "rtime", "trafficcop"];
-const SBIN_SCRIPTS: &[&str] = &["aifw-console", "aifw-install"];
+
+/// Manifest embedded at compile time from freebsd/manifest.json.
+const MANIFEST_JSON: &str = include_str!("../../freebsd/manifest.json");
+
+#[derive(Deserialize)]
+struct Manifest {
+    binaries: ManifestBinaries,
+    external_repos: Vec<ExternalRepo>,
+    rc_scripts: Vec<String>,
+    sbin_scripts: Vec<String>,
+    directories: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ManifestBinaries {
+    local: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ExternalRepo {
+    binaries: Vec<String>,
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    repo: String,
+}
+
+fn load_manifest() -> Manifest {
+    serde_json::from_str(MANIFEST_JSON).expect("freebsd/manifest.json is invalid")
+}
+
+/// All binary names from manifest (local + external).
+fn all_binaries() -> Vec<String> {
+    let m = load_manifest();
+    let mut bins = m.binaries.local;
+    for repo in &m.external_repos {
+        bins.extend(repo.binaries.iter().cloned());
+    }
+    bins
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdaterError {
@@ -172,7 +212,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     // Install binaries
     info!("Installing binaries...");
     let bin_src = update_dir.join("bin");
-    for bin in BINARIES {
+    for bin in &all_binaries() {
         let src = bin_src.join(bin);
         if src.exists() {
             let dst = format!("{}/{}", BIN_DIR, bin);
@@ -205,11 +245,13 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             .await;
     }
 
+    let manifest = load_manifest();
+
     // Install rc.d scripts (service definitions)
     let rcd_src = update_dir.join("rc.d");
     if rcd_src.exists() {
         info!("Installing rc.d scripts...");
-        for script in RC_SCRIPTS {
+        for script in &manifest.rc_scripts {
             let src = rcd_src.join(script);
             if src.exists() {
                 let dst = format!("/usr/local/etc/rc.d/{}", script);
@@ -225,7 +267,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     let sbin_src = update_dir.join("sbin");
     if sbin_src.exists() {
         info!("Installing utility scripts...");
-        for script in SBIN_SCRIPTS {
+        for script in &manifest.sbin_scripts {
             let src = sbin_src.join(script);
             if src.exists() {
                 let dst = format!("{}/{}", BIN_DIR, script);
@@ -238,14 +280,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     }
 
     // Ensure required directories exist (new services may need them)
-    for dir in &[
-        "/usr/local/etc/aifw", "/usr/local/etc/aifw/anchors", "/usr/local/share/aifw",
-        "/var/db/aifw", "/var/log/aifw",
-        "/var/log/trafficcop", "/var/db/rdhcpd/leases", "/var/log/rdhcpd",
-        "/usr/local/etc/rdhcpd", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz",
-        "/var/run/rdns", "/var/log/rdns", "/usr/local/etc/rtime",
-        "/var/run/rtime", "/var/log/rtime", "/usr/local/lib/aifw/plugins",
-    ] {
+    for dir in &manifest.directories {
         let _ = Command::new("/usr/local/bin/sudo")
             .args(["mkdir", "-p", dir])
             .output()
@@ -314,7 +349,7 @@ pub async fn rollback() -> Result<String, UpdaterError> {
     info!("Rolling back to v{}...", version);
 
     // Restore binaries
-    for bin in BINARIES {
+    for bin in &all_binaries() {
         let src = format!("{}/bin/{}", BACKUP_DIR, bin);
         if std::path::Path::new(&src).exists() {
             let dst = format!("{}/{}", BIN_DIR, bin);
@@ -326,7 +361,8 @@ pub async fn rollback() -> Result<String, UpdaterError> {
     }
 
     // Restore rc.d scripts
-    for script in RC_SCRIPTS {
+    let manifest = load_manifest();
+    for script in &manifest.rc_scripts {
         let src = format!("{}/rc.d/{}", BACKUP_DIR, script);
         if std::path::Path::new(&src).exists() {
             let dst = format!("/usr/local/etc/rc.d/{}", script);
@@ -372,7 +408,7 @@ async fn backup_current() -> Result<(), UpdaterError> {
         .output()
         .await;
 
-    for bin in BINARIES {
+    for bin in &all_binaries() {
         let src = format!("{}/{}", BIN_DIR, bin);
         if std::path::Path::new(&src).exists() {
             let _ = Command::new("/usr/local/bin/sudo")
@@ -383,7 +419,8 @@ async fn backup_current() -> Result<(), UpdaterError> {
     }
 
     // Backup rc.d scripts
-    for script in RC_SCRIPTS {
+    let manifest = load_manifest();
+    for script in &manifest.rc_scripts {
         let src = format!("/usr/local/etc/rc.d/{}", script);
         if std::path::Path::new(&src).exists() {
             let _ = Command::new("/usr/local/bin/sudo")
