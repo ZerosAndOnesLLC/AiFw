@@ -168,8 +168,21 @@ const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$
 
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<auth::LoginRequest>,
 ) -> Result<Json<auth::LoginResponse>, StatusCode> {
+    // Rate limit by IP (X-Forwarded-For behind ALB, fall back to username)
+    let client_ip = headers.get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .unwrap_or(&req.username)
+        .trim()
+        .to_string();
+
+    if state.login_limiter.is_blocked(&client_ip).await {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
     let user = auth::get_user_by_username(&state.pool, &req.username).await?;
 
     // Always run Argon2 to prevent timing-based user enumeration
@@ -189,8 +202,11 @@ pub async fn login(
 
     if !password_valid {
         auth::log_user_audit(&state.pool, &user.id.to_string(), Some(&user.id.to_string()), "login_failed", Some(&req.username)).await;
+        state.login_limiter.record_failure(&client_ip).await;
         return Err(StatusCode::UNAUTHORIZED);
     }
+
+    state.login_limiter.clear(&client_ip).await;
 
     // Check if TOTP is required
     if user.totp_enabled {
@@ -288,11 +304,24 @@ pub async fn refresh_token(
 
 pub async fn logout(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<auth::tokens::LogoutRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
+    // Revoke the refresh token
     auth::tokens::revoke_refresh_token(&state.pool, &req.refresh_token)
         .await
         .map_err(|_| bad_request())?;
+    // Also revoke the current access token if present
+    if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
+        if let Some(token) = auth_header.strip_prefix("Bearer ") {
+            if let Ok(data) = auth::verify_access_token(token, &state.auth_settings) {
+                let exp = chrono::DateTime::from_timestamp(data.claims.exp, 0)
+                    .map(|d| d.to_rfc3339())
+                    .unwrap_or_default();
+                let _ = auth::revoke_access_token(&state.pool, &data.claims.jti, &exp).await;
+            }
+        }
+    }
     Ok(Json(MessageResponse { message: "Logged out".to_string() }))
 }
 
@@ -450,13 +479,17 @@ pub async fn oauth_authorize(
 pub async fn oauth_callback(
     State(_state): State<AppState>,
     Path(_provider_name): Path<String>,
-    axum::extract::Query(_query): axum::extract::Query<auth::oauth::CallbackQuery>,
+    axum::extract::Query(query): axum::extract::Query<auth::oauth::CallbackQuery>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    // In production: exchange code for token, fetch userinfo, create/link user, issue tokens
-    // This requires HTTP client calls to the provider which need reqwest or similar
-    Ok(Json(MessageResponse {
-        message: "OAuth callback received — token exchange requires HTTP client (reqwest)".to_string(),
-    }))
+    // Validate required parameters are present
+    if query.code.is_empty() {
+        return Err(bad_request());
+    }
+    if query.state.is_empty() {
+        return Err(bad_request());
+    }
+    // OAuth token exchange is not yet implemented — return 501
+    Err(StatusCode::NOT_IMPLEMENTED)
 }
 
 /// Public registration — only allowed when no users exist (first-user bootstrap).
@@ -768,6 +801,27 @@ pub async fn list_schedules(
     Ok(Json(ApiResponse { data: schedules }))
 }
 
+fn validate_time_ranges(s: &str) -> bool {
+    // Accepts "HH:MM-HH:MM" or comma-separated ranges
+    for range in s.split(',') {
+        let parts: Vec<&str> = range.trim().split('-').collect();
+        if parts.len() != 2 { return false; }
+        for part in &parts {
+            let hm: Vec<&str> = part.split(':').collect();
+            if hm.len() != 2 { return false; }
+            let h: u8 = match hm[0].parse() { Ok(v) => v, Err(_) => return false };
+            let m: u8 = match hm[1].parse() { Ok(v) => v, Err(_) => return false };
+            if h > 23 || m > 59 { return false; }
+        }
+    }
+    true
+}
+
+fn validate_days_of_week(s: &str) -> bool {
+    const VALID: &[&str] = &["mon","tue","wed","thu","fri","sat","sun"];
+    s.split(',').all(|d| VALID.contains(&d.trim()))
+}
+
 pub async fn create_schedule(
     State(state): State<AppState>,
     Json(req): Json<CreateScheduleRequest>,
@@ -775,7 +829,9 @@ pub async fn create_schedule(
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let time_ranges = req.time_ranges.into_string();
+    if !validate_time_ranges(&time_ranges) { return Err(bad_request()); }
     let dow = req.days_of_week.map(|d| d.into_string()).unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
+    if !validate_days_of_week(&dow) { return Err(bad_request()); }
     let enabled = req.enabled.unwrap_or(true);
     sqlx::query("INSERT INTO schedules (id, name, description, time_ranges, days_of_week, enabled, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)")
         .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&time_ranges).bind(&dow).bind(enabled).bind(&now)
@@ -789,7 +845,9 @@ pub async fn update_schedule(
     Json(req): Json<CreateScheduleRequest>,
 ) -> Result<Json<ApiResponse<Schedule>>, StatusCode> {
     let time_ranges = req.time_ranges.into_string();
+    if !validate_time_ranges(&time_ranges) { return Err(bad_request()); }
     let dow = req.days_of_week.map(|d| d.into_string()).unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
+    if !validate_days_of_week(&dow) { return Err(bad_request()); }
     let enabled = req.enabled.unwrap_or(true);
     let result = sqlx::query("UPDATE schedules SET name=?2, description=?3, time_ranges=?4, days_of_week=?5, enabled=?6 WHERE id=?1")
         .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&time_ranges).bind(&dow).bind(enabled)

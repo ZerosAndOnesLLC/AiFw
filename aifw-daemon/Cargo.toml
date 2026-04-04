@@ -20,3 +20,4 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 clap = { workspace = true }
 anyhow = "1"
+libc = "0.2"

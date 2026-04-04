@@ -89,16 +89,14 @@ impl Plugin for WasmPlugin {
     }
 
     async fn init(&mut self, _config: &PluginConfig, _ctx: &PluginContext) -> Result<(), String> {
-        // In a real implementation, this would:
-        // 1. Load the .wasm file with wasmtime::Engine + Module
-        // 2. Create a Store with fuel/memory limits
-        // 3. Link host functions (add_to_table, log, etc.)
-        // 4. Call the module's plugin_init() export
+        // WASM sandbox is not yet implemented — refuse to load WASM plugins
+        // to prevent running untrusted code without proper isolation.
         if !self.config.wasm_path.as_os_str().is_empty() {
-            tracing::info!(
+            tracing::warn!(
                 wasm = ?self.config.wasm_path,
-                "WASM plugin init (stub — wasmtime not linked)"
+                "WASM plugin loading is disabled — sandbox not implemented"
             );
+            return Err("WASM plugin loading is disabled: sandbox not yet implemented. Only native Rust plugins are supported.".to_string());
         }
         self.state = PluginState::Running;
         Ok(())

@@ -1025,10 +1025,43 @@ pub async fn list_hosts(State(state): State<AppState>) -> Result<Json<ApiRespons
     Ok(Json(ApiResponse { data: hosts }))
 }
 
+fn validate_dns_value(record_type: &str, value: &str) -> Result<(), StatusCode> {
+    match record_type {
+        "A" => { value.parse::<std::net::Ipv4Addr>().map_err(|_| bad_request())?; }
+        "AAAA" => { value.parse::<std::net::Ipv6Addr>().map_err(|_| bad_request())?; }
+        "CNAME" | "NS" | "PTR" => {
+            if !validate_domain(value) { return Err(bad_request()); }
+        }
+        "MX" => {
+            if !validate_domain(value) { return Err(bad_request()); }
+        }
+        "TXT" => {
+            if value.len() > 4096 { return Err(bad_request()); }
+        }
+        _ => { return Err(bad_request()); }
+    }
+    Ok(())
+}
+
+fn validate_acl_action(action: &str) -> bool {
+    ["allow", "deny", "refuse", "allow_snoop"].contains(&action)
+}
+
+fn validate_cidr_network(s: &str) -> bool {
+    if let Some((ip_str, prefix_str)) = s.split_once('/') {
+        ip_str.parse::<std::net::IpAddr>().is_ok()
+            && prefix_str.parse::<u8>().is_ok()
+    } else {
+        s.parse::<std::net::IpAddr>().is_ok()
+    }
+}
+
 pub async fn create_host(State(state): State<AppState>, Json(req): Json<CreateHostOverride>) -> Result<(StatusCode, Json<ApiResponse<HostOverride>>), StatusCode> {
     if !validate_domain(&req.hostname) || !validate_domain(&req.domain) {
         return Err(bad_request());
     }
+    let rt_str = req.record_type.as_deref().unwrap_or("A");
+    validate_dns_value(rt_str, &req.value)?;
     let id = Uuid::new_v4().to_string(); let now = Utc::now().to_rfc3339();
     let rt = req.record_type.unwrap_or_else(|| "A".to_string());
     let enabled = req.enabled.unwrap_or(true);
@@ -1043,7 +1076,9 @@ pub async fn update_host(State(state): State<AppState>, Path(id): Path<String>, 
     if !validate_domain(&req.hostname) || !validate_domain(&req.domain) {
         return Err(bad_request());
     }
-    let rt = req.record_type.unwrap_or_else(|| "A".to_string());
+    let rt = req.record_type.as_deref().unwrap_or("A");
+    validate_dns_value(rt, &req.value)?;
+    let rt = rt.to_string();
     let enabled = req.enabled.unwrap_or(true);
     let r = sqlx::query("UPDATE dns_host_overrides SET hostname=?2, domain=?3, record_type=?4, value=?5, mx_priority=?6, description=?7, enabled=?8 WHERE id=?1")
         .bind(&id).bind(&req.hostname).bind(&req.domain).bind(&rt).bind(&req.value)
@@ -1105,6 +1140,8 @@ pub async fn list_acls(State(state): State<AppState>) -> Result<Json<ApiResponse
 }
 
 pub async fn create_acl(State(state): State<AppState>, Json(req): Json<CreateAccessListEntry>) -> Result<(StatusCode, Json<ApiResponse<AccessListEntry>>), StatusCode> {
+    if !validate_cidr_network(&req.network) { return Err(bad_request()); }
+    if !validate_acl_action(&req.action) { return Err(bad_request()); }
     let id = Uuid::new_v4().to_string(); let now = Utc::now().to_rfc3339();
     sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1,?2,?3,?4,?5)")
         .bind(&id).bind(&req.network).bind(&req.action).bind(req.description.as_deref()).bind(&now)

@@ -37,6 +37,48 @@ use tracing::info;
 
 pub const METRICS_HISTORY_SIZE: usize = 1800; // 30 min at 1/sec
 
+/// Per-IP login attempt tracker for brute-force protection.
+#[derive(Clone, Default)]
+pub struct LoginRateLimiter {
+    attempts: Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
+}
+
+impl LoginRateLimiter {
+    const MAX_ATTEMPTS: u32 = 5;
+    const WINDOW_SECS: i64 = 300; // 5 minutes
+
+    /// Record a failed attempt. Returns true if the IP is now blocked.
+    pub async fn record_failure(&self, ip: &str) -> bool {
+        let now = chrono::Utc::now();
+        let mut map = self.attempts.write().await;
+        let entry = map.entry(ip.to_string()).or_insert((0, now));
+        // Reset window if expired
+        if (now - entry.1).num_seconds() > Self::WINDOW_SECS {
+            *entry = (1, now);
+            return false;
+        }
+        entry.0 += 1;
+        entry.0 >= Self::MAX_ATTEMPTS
+    }
+
+    /// Check if an IP is currently blocked.
+    pub async fn is_blocked(&self, ip: &str) -> bool {
+        let now = chrono::Utc::now();
+        let map = self.attempts.read().await;
+        if let Some((count, since)) = map.get(ip) {
+            if (now - *since).num_seconds() <= Self::WINDOW_SECS && *count >= Self::MAX_ATTEMPTS {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Clear attempts on successful login.
+    pub async fn clear(&self, ip: &str) {
+        self.attempts.write().await.remove(ip);
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
@@ -54,6 +96,7 @@ pub struct AppState {
     pub pending: Arc<RwLock<PendingChanges>>,
     /// Watch channel that fires whenever `pending` changes — drives SSE.
     pub pending_tx: watch::Sender<PendingChanges>,
+    pub login_limiter: LoginRateLimiter,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -79,8 +122,8 @@ struct Args {
     #[arg(long, default_value = "/var/db/aifw/aifw.db")]
     db: PathBuf,
 
-    /// Listen address
-    #[arg(long, default_value = "0.0.0.0:8080")]
+    /// Listen address (use 0.0.0.0:8080 to listen on all interfaces)
+    #[arg(long, default_value = "127.0.0.1:8080")]
     listen: String,
 
     /// JWT secret (auto-generated if not provided)
@@ -447,6 +490,7 @@ async fn create_state_from_db(
         redis: None,
         pending: Arc::new(RwLock::new(PendingChanges::default())),
         pending_tx: watch::channel(PendingChanges::default()).0,
+        login_limiter: LoginRateLimiter::default(),
     })
 }
 

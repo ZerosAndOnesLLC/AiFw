@@ -82,6 +82,27 @@ async fn main() -> anyhow::Result<()> {
         info!(interface = %iface, "attached to interface");
     }
 
+    // Drop privileges to 'aifw' user if running as root
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        if unsafe { libc::getuid() } == 0 {
+            let user = CString::new("aifw").unwrap();
+            let pw = unsafe { libc::getpwnam(user.as_ptr()) };
+            if !pw.is_null() {
+                let uid = unsafe { (*pw).pw_uid };
+                let gid = unsafe { (*pw).pw_gid };
+                unsafe {
+                    libc::setgid(gid);
+                    libc::setuid(uid);
+                }
+                info!(uid, gid, "dropped privileges to aifw user");
+            } else {
+                tracing::warn!("aifw user not found — continuing as root");
+            }
+        }
+    }
+
     info!("daemon ready, waiting for signals");
 
     // Wait for shutdown signal

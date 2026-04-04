@@ -2,7 +2,12 @@ use aifw_pf::PfBackend;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Context provided to plugins for interacting with the firewall
+/// Tables that plugins are allowed to modify (plugin-specific tables only).
+const PLUGIN_ALLOWED_TABLE_PREFIX: &str = "plugin_";
+
+/// Context provided to plugins for interacting with the firewall.
+/// Plugins can only modify pf tables prefixed with "plugin_" to prevent
+/// them from interfering with system tables.
 #[derive(Clone)]
 pub struct PluginContext {
     pf: Arc<dyn PfBackend>,
@@ -18,13 +23,9 @@ impl PluginContext {
         }
     }
 
-    /// Get a reference to the pf backend (for table operations, etc.)
-    pub fn pf(&self) -> &dyn PfBackend {
-        self.pf.as_ref()
-    }
-
-    pub fn pf_arc(&self) -> Arc<dyn PfBackend> {
-        self.pf.clone()
+    /// Check if a table name is allowed for plugin access.
+    fn is_table_allowed(table: &str) -> bool {
+        table.starts_with(PLUGIN_ALLOWED_TABLE_PREFIX)
     }
 
     /// Store a value in the shared plugin store
@@ -37,16 +38,22 @@ impl PluginContext {
         self.store.read().await.get(key).cloned()
     }
 
-    /// Add an IP to a pf table
+    /// Add an IP to a pf table (restricted to plugin_ prefixed tables)
     pub async fn add_to_table(&self, table: &str, ip: std::net::IpAddr) -> Result<(), String> {
+        if !Self::is_table_allowed(table) {
+            return Err(format!("plugins can only modify tables with prefix '{PLUGIN_ALLOWED_TABLE_PREFIX}'"));
+        }
         self.pf
             .add_table_entry(table, ip)
             .await
             .map_err(|e| e.to_string())
     }
 
-    /// Remove an IP from a pf table
+    /// Remove an IP from a pf table (restricted to plugin_ prefixed tables)
     pub async fn remove_from_table(&self, table: &str, ip: std::net::IpAddr) -> Result<(), String> {
+        if !Self::is_table_allowed(table) {
+            return Err(format!("plugins can only modify tables with prefix '{PLUGIN_ALLOWED_TABLE_PREFIX}'"));
+        }
         self.pf
             .remove_table_entry(table, ip)
             .await

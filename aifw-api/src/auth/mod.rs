@@ -251,7 +251,49 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Token blacklist for access token revocation
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS revoked_tokens (
+            jti TEXT PRIMARY KEY,
+            expires_at TEXT NOT NULL
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
+}
+
+/// Revoke an access token by its JTI (unique token ID).
+pub async fn revoke_access_token(pool: &SqlitePool, jti: &str, expires_at: &str) -> Result<(), StatusCode> {
+    sqlx::query("INSERT OR IGNORE INTO revoked_tokens (jti, expires_at) VALUES (?1, ?2)")
+        .bind(jti)
+        .bind(expires_at)
+        .execute(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
+}
+
+/// Check if an access token has been revoked.
+pub async fn is_token_revoked(pool: &SqlitePool, jti: &str) -> bool {
+    sqlx::query_as::<_, (String,)>("SELECT jti FROM revoked_tokens WHERE jti = ?1")
+        .bind(jti)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Clean up expired entries from the blacklist (called periodically).
+#[allow(dead_code)]
+pub async fn cleanup_revoked_tokens(pool: &SqlitePool) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("DELETE FROM revoked_tokens WHERE expires_at < ?1")
+        .bind(&now)
+        .execute(pool)
+        .await;
 }
 
 // ============================================================
@@ -575,6 +617,10 @@ pub async fn auth_middleware(
     let user_id = if let Some(token) = auth_header.strip_prefix("Bearer ") {
         let token_data = verify_access_token(token, &state.auth_settings)
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        // Check token blacklist for revoked access tokens
+        if is_token_revoked(&state.pool, &token_data.claims.jti).await {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
         token_data.claims.sub
     } else if let Some(key) = auth_header.strip_prefix("ApiKey ") {
         verify_api_key(&state.pool, key).await?
