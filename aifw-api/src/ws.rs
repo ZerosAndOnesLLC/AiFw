@@ -117,9 +117,9 @@ pub struct WsQuery {
 }
 
 pub async fn ws_handler(
-    ws: WebSocketUpgrade,
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<WsQuery>,
+    ws: WebSocketUpgrade,
 ) -> Response {
     // Verify JWT token from query param (browsers can't send auth headers on WS)
     if let Some(ref token) = query.token {
