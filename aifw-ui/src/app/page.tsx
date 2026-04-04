@@ -197,7 +197,8 @@ export default function Dashboard() {
 
   // Process history from context on mount / when history changes
   useEffect(() => {
-    if (!ws.historyLoaded || ws.history.length === 0) return;
+    if (!ws.historyLoaded) return;
+    if (ws.history.length === 0) { historyProcessed.current = true; return; }
     // Only reprocess full history once, or when NIC changes
     if (historyProcessed.current && ws.history.length === lastHistoryLen.current) return;
 

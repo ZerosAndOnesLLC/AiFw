@@ -121,17 +121,18 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Send historical data first
+    // Always send historical data first (even if empty) so the frontend sets historyLoaded=true
     {
         let history = state.metrics_history.read().await;
-        if !history.is_empty() {
-            // Send a batch history message
-            let batch = format!(
+        let batch = if history.is_empty() {
+            "{\"type\":\"history\",\"data\":[]}".to_string()
+        } else {
+            format!(
                 "{{\"type\":\"history\",\"data\":[{}]}}",
                 history.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")
-            );
-            let _ = sender.send(Message::Text(batch.into())).await;
-        }
+            )
+        };
+        let _ = sender.send(Message::Text(batch.into())).await;
     }
 
     // Spawn a task to push updates every second
@@ -574,31 +575,32 @@ fn blocked_buffer() -> &'static BlockedBuffer {
 }
 
 /// Call once on API startup to bootstrap from pflog file and start live capture.
-pub async fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw_plugins::PluginManager>>) {
+/// Both bootstrap and live capture run in a background task so the API starts immediately.
+pub fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw_plugins::PluginManager>>) {
     let buf = blocked_buffer().clone();
-
-    // Bootstrap: load historical entries from /var/log/pflog
-    if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
-        .output().await
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut entries: Vec<BlockedPayload> = stdout.lines()
-                .filter_map(|line| parse_pflog_line(line))
-                .collect();
-            // Keep only the most recent entries
-            if entries.len() > PFLOG_MAX_ENTRIES {
-                entries.drain(..entries.len() - PFLOG_MAX_ENTRIES);
-            }
-            *buf.write().await = entries;
-        }
-    }
-
-    // Live capture: persistent tcpdump on pflog0 interface
     let buf2 = buf.clone();
     let pmgr = plugin_mgr.clone();
     tokio::spawn(async move {
+        // Bootstrap: load historical entries from /var/log/pflog (non-blocking)
+        if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
+            .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
+            .output().await
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut entries: Vec<BlockedPayload> = stdout.lines()
+                    .filter_map(|line| parse_pflog_line(line))
+                    .collect();
+                if entries.len() > PFLOG_MAX_ENTRIES {
+                    entries.drain(..entries.len() - PFLOG_MAX_ENTRIES);
+                }
+                let count = entries.len();
+                *buf.write().await = entries;
+                tracing::info!(count, "pflog bootstrap complete");
+            }
+        }
+
+        // Live capture: persistent tcpdump on pflog0 interface
         use tokio::io::{AsyncBufReadExt, BufReader};
         loop {
             let child = tokio::process::Command::new("/usr/local/bin/sudo")

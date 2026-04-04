@@ -617,8 +617,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Start persistent pflog0 live capture for blocked traffic page
-    ws::start_pflog_collector(state.plugin_manager.clone()).await;
+    // Start persistent pflog0 live capture for blocked traffic page (background, non-blocking)
+    ws::start_pflog_collector(state.plugin_manager.clone());
 
     // Start plugin timer hook — fires every 60 seconds for cron-like plugins
     {

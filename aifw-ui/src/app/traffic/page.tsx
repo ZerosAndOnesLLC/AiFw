@@ -115,7 +115,8 @@ export default function TrafficPage() {
 
   // Pre-populate rate histories from WebSocket history (same pattern as dashboard)
   useEffect(() => {
-    if (!ws.historyLoaded || ws.history.length === 0) return;
+    if (!ws.historyLoaded) return;
+    if (ws.history.length === 0) { historyProcessed.current = true; return; }
     if (historyProcessed.current && ws.history.length === lastHistoryLen.current) return;
 
     const rawHistory = ws.history as Record<string, unknown>[];
