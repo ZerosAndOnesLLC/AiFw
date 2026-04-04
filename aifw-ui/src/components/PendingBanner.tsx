@@ -37,7 +37,7 @@ export default function PendingBanner() {
       // EventSource doesn't support custom headers, so use query param for auth
       // The SSE endpoint will also accept the cookie/session if present.
       // For now, fall back to polling if EventSource fails.
-      const es = new EventSource("/api/v1/pending/stream");
+      const es = new EventSource(`/api/v1/pending/stream?token=${encodeURIComponent(token)}`);
       esRef.current = es;
 
       es.onmessage = (event) => {

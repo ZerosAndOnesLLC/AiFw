@@ -184,7 +184,10 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/auth/refresh", post(routes::refresh_token))
         .route("/api/v1/auth/oauth/{provider}/authorize", get(routes::oauth_authorize))
         .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback))
-        .route("/api/v1/auth/register", post(routes::register));
+        .route("/api/v1/auth/register", post(routes::register))
+        // WebSocket and SSE use token query param (browsers can't send auth headers on WS)
+        .route("/api/v1/ws", get(ws::ws_handler))
+        .route("/api/v1/pending/stream", get(routes::pending_stream));
 
     // Admin-only routes (require auth + admin role)
     let admin_routes = Router::new()
@@ -351,8 +354,6 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/vpn/wg/{tid}/peers/{pid}", delete(routes::delete_wg_peer))
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas).post(routes::create_ipsec_sa))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
-        .route("/api/v1/ws", get(ws::ws_handler))
-        .route("/api/v1/pending/stream", get(routes::pending_stream))
         .route("/api/v1/pending", get(routes::get_pending))
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/connections", get(routes::list_connections))

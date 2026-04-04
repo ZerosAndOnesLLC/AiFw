@@ -1243,11 +1243,23 @@ pub async fn get_pending(
     Ok(Json(pending))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct TokenQuery {
+    token: Option<String>,
+}
+
 /// SSE stream that pushes PendingChanges whenever they mutate.
-/// Replaces the 3-second polling loop in the UI.
+/// Uses token query param for auth (browsers can't send headers on EventSource).
 pub async fn pending_stream(
     State(state): State<AppState>,
-) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
+    axum::extract::Query(query): axum::extract::Query<TokenQuery>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    // Verify token from query param
+    if let Some(ref token) = query.token {
+        auth::verify_access_token(token, &state.auth_settings).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    } else {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let mut rx = state.pending_tx.subscribe();
 
     let stream = async_stream::stream! {
@@ -1266,7 +1278,7 @@ pub async fn pending_stream(
         }
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 pub async fn reload(

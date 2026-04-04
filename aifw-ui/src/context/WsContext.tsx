@@ -41,7 +41,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
     if (wsRef.current && wsRef.current.readyState <= 1) return;
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws`);
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws?token=${encodeURIComponent(token)}`);
     wsRef.current = ws;
 
     ws.onopen = () => setConnected(true);

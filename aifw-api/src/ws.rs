@@ -1,6 +1,6 @@
 use axum::{
     extract::{State, WebSocketUpgrade, ws::{Message, WebSocket}},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -111,10 +111,24 @@ struct InterfacePayload {
     packets_out: u64,
 }
 
+#[derive(serde::Deserialize)]
+pub struct WsQuery {
+    token: Option<String>,
+}
+
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<WsQuery>,
 ) -> Response {
+    // Verify JWT token from query param (browsers can't send auth headers on WS)
+    if let Some(ref token) = query.token {
+        if crate::auth::verify_access_token(token, &state.auth_settings).is_err() {
+            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        }
+    } else {
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
