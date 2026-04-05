@@ -94,6 +94,19 @@ const navItems: NavItem[] = [
   },
 
   {
+    label: "Intrusion Detection",
+    icon: "M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z",
+    color: "text-red-400",
+    children: [
+      { href: "/ids", label: "Dashboard" },
+      { href: "/ids/alerts", label: "Alerts" },
+      { href: "/ids/rules", label: "Rules" },
+      { href: "/ids/rulesets", label: "Rulesets" },
+      { href: "/ids/settings", label: "Settings" },
+    ],
+  },
+
+  {
     label: "Extensions",
     icon: "M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4",
     color: "text-indigo-400",

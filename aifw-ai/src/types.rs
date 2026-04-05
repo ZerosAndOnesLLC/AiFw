@@ -13,6 +13,8 @@ pub enum ThreatType {
     C2Beacon,
     DnsTunnel,
     Anomaly,
+    /// IDS/IPS signature match — correlated with behavioral detection
+    SignatureMatch,
 }
 
 impl std::fmt::Display for ThreatType {
@@ -24,6 +26,7 @@ impl std::fmt::Display for ThreatType {
             ThreatType::C2Beacon => write!(f, "c2_beacon"),
             ThreatType::DnsTunnel => write!(f, "dns_tunnel"),
             ThreatType::Anomaly => write!(f, "anomaly"),
+            ThreatType::SignatureMatch => write!(f, "signature_match"),
         }
     }
 }

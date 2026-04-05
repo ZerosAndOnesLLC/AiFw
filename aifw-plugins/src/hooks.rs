@@ -29,6 +29,10 @@ pub enum HookPoint {
     VpnEvent,
     /// Scheduled timer tick (cron-like)
     Timer,
+    /// IDS alert fired (signature match, anomaly, etc.)
+    IdsAlert,
+    /// IPS mode dropped a packet
+    IdsDrop,
 }
 
 impl std::fmt::Display for HookPoint {
@@ -46,6 +50,8 @@ impl std::fmt::Display for HookPoint {
             HookPoint::DhcpLease => write!(f, "dhcp_lease"),
             HookPoint::VpnEvent => write!(f, "vpn_event"),
             HookPoint::Timer => write!(f, "timer"),
+            HookPoint::IdsAlert => write!(f, "ids_alert"),
+            HookPoint::IdsDrop => write!(f, "ids_drop"),
         }
     }
 }
@@ -115,6 +121,19 @@ pub enum HookEventData {
     /// Timer tick
     Tick {
         timestamp: u64,
+    },
+    /// IDS alert event
+    IdsAlertEvent {
+        signature_id: Option<u32>,
+        signature_msg: String,
+        severity: u8,
+        src_ip: IpAddr,
+        dst_ip: IpAddr,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        protocol: String,
+        action: String,
+        rule_source: String,
     },
 }
 

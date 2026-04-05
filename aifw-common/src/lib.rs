@@ -2,6 +2,7 @@ pub mod alias;
 pub mod error;
 pub mod geoip;
 pub mod ha;
+pub mod ids;
 pub mod nat;
 pub mod ratelimit;
 pub mod rule;
@@ -38,4 +39,8 @@ pub use types::{Address, Interface, Port, PortRange};
 pub use vpn::{
     IpsecMode, IpsecProtocol, IpsecSa, IpsecSp, SpDirection, SpLevel, VpnStatus, VpnType,
     WgPeer, WgTunnel,
+};
+pub use ids::{
+    IdsAction, IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleMatch, IdsRuleset, IdsSeverity,
+    IdsStats, IdsSuppression, RuleFormat, RuleSource, SuppressType,
 };

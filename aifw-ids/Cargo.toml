@@ -1,0 +1,40 @@
+[package]
+name = "aifw-ids"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aifw-common = { workspace = true }
+aifw-pf = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+# Packet capture & parsing
+etherparse = "0.18"
+
+# Pattern matching
+aho-corasick = "1"
+regex = "1"
+memchr = "2"
+
+# Protocol parsing
+httparse = "1"
+
+# Rule formats
+serde_yml = "0.0"
+
+# Performance
+crossbeam = "0.8"
+dashmap = "6"
+smallvec = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

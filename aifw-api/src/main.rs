@@ -5,6 +5,7 @@ mod ca;
 mod dhcp;
 mod dns_resolver;
 mod iface;
+mod ids;
 mod plugins;
 mod reverse_proxy;
 mod routes;
@@ -89,6 +90,7 @@ pub struct AppState {
     pub geoip_engine: Arc<GeoIpEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
+    pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
     pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
     pub auth_settings: auth::AuthSettings,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
@@ -217,6 +219,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/plugins/toggle", post(plugins::enable_plugin))
         .route("/api/v1/plugins/{name}/config", get(plugins::get_plugin_config).put(plugins::update_plugin_config))
         .route("/api/v1/plugins/discover", get(plugins::discover_plugins))
+        // IDS management (admin)
+        .route("/api/v1/ids/reload", post(ids::reload))
         // Firewall reload
         .route("/api/v1/reload", post(routes::reload))
         // Service control (start/stop/restart)
@@ -351,6 +355,19 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/vpn/wg/{tid}/peers/{pid}", delete(routes::delete_wg_peer))
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas).post(routes::create_ipsec_sa))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
+        // IDS / IPS
+        .route("/api/v1/ids/config", get(ids::get_config).put(ids::update_config))
+        .route("/api/v1/ids/alerts", get(ids::list_alerts).delete(ids::purge_alerts))
+        .route("/api/v1/ids/alerts/{id}", get(ids::get_alert))
+        .route("/api/v1/ids/alerts/{id}/acknowledge", put(ids::acknowledge_alert))
+        .route("/api/v1/ids/rulesets", get(ids::list_rulesets).post(ids::create_ruleset))
+        .route("/api/v1/ids/rulesets/{id}", put(ids::update_ruleset).delete(ids::delete_ruleset))
+        .route("/api/v1/ids/rules", get(ids::list_rules))
+        .route("/api/v1/ids/rules/{id}", get(ids::get_rule).put(ids::update_rule))
+        .route("/api/v1/ids/rules/search", get(ids::search_rules))
+        .route("/api/v1/ids/suppressions", get(ids::list_suppressions).post(ids::create_suppression))
+        .route("/api/v1/ids/suppressions/{id}", delete(ids::delete_suppression))
+        .route("/api/v1/ids/stats", get(ids::get_stats))
         .route("/api/v1/ws", get(ws::ws_handler))
         .route("/api/v1/pending/stream", get(routes::pending_stream))
         .route("/api/v1/pending", get(routes::get_pending))
@@ -438,6 +455,20 @@ async fn create_state_from_db(
     alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
+    // Initialize IDS engine — always create so API endpoints work,
+    // but the engine itself only starts capture/detection if mode != Disabled
+    aifw_ids::IdsEngine::migrate(&pool).await.map_err(|e| anyhow::anyhow!(e))?;
+    let ids_engine = match aifw_ids::IdsEngine::new(pool.clone(), pf.clone()).await {
+        Ok(engine) => {
+            tracing::info!("IDS engine initialized");
+            Some(Arc::new(engine))
+        }
+        Err(e) => {
+            tracing::warn!("IDS engine failed to initialize: {e}");
+            None
+        }
+    };
+
     // Initialize plugin system
     let plugin_ctx = aifw_plugins::PluginContext::new(pf.clone());
     let mut plugin_mgr = aifw_plugins::PluginManager::new(plugin_ctx);
@@ -484,6 +515,7 @@ async fn create_state_from_db(
         geoip_engine,
         alias_engine,
         conntrack,
+        ids_engine,
         plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
         auth_settings,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(METRICS_HISTORY_SIZE))),
