@@ -14,10 +14,10 @@ function authHeaders(): HeadersInit {
 }
 
 interface IdsStats {
-  mode: string;
   packets_inspected: number;
   alerts_total: number;
   drops_total: number;
+  bytes_per_sec: number;
   active_flows: number;
   packets_per_sec: number;
   uptime_secs: number;
@@ -25,9 +25,14 @@ interface IdsStats {
 
 interface StatsResponse {
   stats: IdsStats;
+  mode: string;
   severity_counts: [string, number][];
   top_signatures: [string, number][];
   top_sources: [string, number][];
+  loaded_rules: number;
+  enabled_rulesets: number;
+  total_rulesets: number;
+  running: boolean;
 }
 
 interface SectionFeedback {
@@ -133,7 +138,17 @@ export default function IdsDashboardPage() {
   const totalSeverity = severityCounts.reduce((s, [, c]) => s + c, 0) || 1;
   const maxSigCount = topSignatures.length > 0 ? topSignatures[0][1] : 1;
   const maxSrcCount = topSources.length > 0 ? topSources[0][1] : 1;
-  const currentMode = stats?.mode || "disabled";
+  const currentMode = data?.mode || "disabled";
+
+  function formatUptime(secs: number): string {
+    if (secs < 60) return `${secs}s`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    if (h < 24) return `${h}h ${m}m`;
+    const d = Math.floor(h / 24);
+    return `${d}d ${h % 24}h ${m}m`;
+  }
 
   if (loading) {
     return (
@@ -192,6 +207,87 @@ export default function IdsDashboardPage() {
                 {mode.toUpperCase()}
               </button>
             ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Engine Info */}
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium">Engine Overview</h3>
+          <div className="flex items-center gap-1.5">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                data?.running ? "bg-green-500 animate-pulse" : "bg-gray-500"
+              }`}
+            />
+            <span className="text-xs text-[var(--text-muted)]">
+              {data?.running ? "Running" : "Stopped"}
+            </span>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div>
+            <span className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">
+              Engine
+            </span>
+            <p className="text-sm font-medium mt-0.5">AiFw IDS/IPS</p>
+            <p className="text-[11px] text-[var(--text-muted)]">
+              Suricata-compatible rule engine with Aho-Corasick prefilter,
+              Sigma &amp; YARA support
+            </p>
+          </div>
+          <div>
+            <span className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">
+              Loaded Rules
+            </span>
+            <p className="text-sm font-mono font-bold mt-0.5">
+              {(data?.loaded_rules ?? 0).toLocaleString()}
+            </p>
+            <p className="text-[11px] text-[var(--text-muted)]">
+              compiled &amp; active
+            </p>
+          </div>
+          <div>
+            <span className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">
+              Rulesets
+            </span>
+            <p className="text-sm font-mono font-bold mt-0.5">
+              {data?.enabled_rulesets ?? 0}{" "}
+              <span className="text-[var(--text-muted)] font-normal">
+                / {data?.total_rulesets ?? 0}
+              </span>
+            </p>
+            <p className="text-[11px] text-[var(--text-muted)]">
+              enabled / total
+            </p>
+          </div>
+          <div>
+            <span className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">
+              Uptime
+            </span>
+            <p className="text-sm font-mono font-bold mt-0.5">
+              {formatUptime(stats?.uptime_secs ?? 0)}
+            </p>
+            <p className="text-[11px] text-[var(--text-muted)]">
+              {(stats?.bytes_per_sec ?? 0) > 0
+                ? `${((stats?.bytes_per_sec ?? 0) / 1024).toFixed(1)} KB/s throughput`
+                : "no traffic"}
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 pt-3 border-t border-[var(--border)]">
+          <div className="flex flex-wrap gap-2">
+            {["Suricata Rules", "Sigma Rules", "YARA Rules", "Content Prefilter", "PCRE Matching", "Flow Tracking", "IP Reputation"].map(
+              (cap) => (
+                <span
+                  key={cap}
+                  className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--bg-primary)] border border-[var(--border)] text-[var(--text-secondary)]"
+                >
+                  {cap}
+                </span>
+              )
+            )}
           </div>
         </div>
       </div>

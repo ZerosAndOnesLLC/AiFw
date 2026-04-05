@@ -285,6 +285,9 @@ pub async fn update_ruleset(
 
     mgr.update_ruleset(&ruleset).await.map_err(|_| internal())?;
 
+    // Recompile rules so the enabled/disabled change takes effect immediately
+    let _ = mgr.compile_rules(engine.rule_db()).await;
+
     Ok(Json(ApiResponse { data: ruleset }))
 }
 
@@ -526,6 +529,13 @@ pub async fn get_stats(
     let top_sigs = output.top_signatures(10).await.unwrap_or_default();
     let top_sources = output.top_sources(10).await.unwrap_or_default();
 
+    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+    let rulesets = mgr.list_rulesets().await.unwrap_or_default();
+    let total_rulesets = rulesets.len() as u32;
+    let enabled_rulesets = rulesets.iter().filter(|r| r.enabled).count() as u32;
+    let loaded_rules = engine.rule_db().rule_count() as u32;
+    let running = engine.is_running();
+
     Ok(Json(ApiResponse {
         data: IdsStatsResponse {
             stats,
@@ -533,6 +543,10 @@ pub async fn get_stats(
             severity_counts,
             top_signatures: top_sigs,
             top_sources,
+            loaded_rules,
+            enabled_rulesets,
+            total_rulesets,
+            running,
         },
     }))
 }
@@ -544,5 +558,9 @@ pub struct IdsStatsResponse {
     pub severity_counts: Vec<(String, i64)>,
     pub top_signatures: Vec<(String, i64)>,
     pub top_sources: Vec<(String, i64)>,
+    pub loaded_rules: u32,
+    pub enabled_rulesets: u32,
+    pub total_rulesets: u32,
+    pub running: bool,
 }
 

@@ -151,7 +151,7 @@ impl RulesetManager {
             binds.push(rs_id.to_string());
         }
         if enabled_only {
-            sql.push_str(" AND enabled = 1");
+            sql.push_str(" AND enabled = 1 AND ruleset_id IN (SELECT id FROM ids_rulesets WHERE enabled = 1)");
         }
         sql.push_str(" ORDER BY sid ASC, created_at ASC");
         sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));

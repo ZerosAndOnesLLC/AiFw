@@ -143,9 +143,10 @@ export default function IdsRulesetsPage() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || body.message || `Toggle failed: ${res.status}`);
       }
+      const action = !ruleset.enabled ? "enabled" : "disabled";
       setFeedback({
         type: "success",
-        message: `${ruleset.name} ${!ruleset.enabled ? "enabled" : "disabled"}`,
+        message: `${ruleset.name} ${action} — rules recompiled`,
       });
       clearFeedback();
       await fetchRulesets();
@@ -308,6 +309,20 @@ export default function IdsRulesetsPage() {
                         className={`inline-flex items-center rounded border font-medium uppercase tracking-wider text-[10px] px-1.5 py-0.5 ${fmtStyle}`}
                       >
                         {ruleset.rule_format}
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1 rounded text-[10px] px-1.5 py-0.5 ${
+                          ruleset.enabled
+                            ? "bg-green-500/10 text-green-400 border border-green-500/30"
+                            : "bg-gray-500/10 text-gray-400 border border-gray-500/30"
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            ruleset.enabled ? "bg-green-500" : "bg-gray-500"
+                          }`}
+                        />
+                        {ruleset.enabled ? "Active" : "Inactive"}
                       </span>
                     </div>
                     <p className="text-[11px] text-[var(--text-muted)] mt-0.5 truncate font-mono">
