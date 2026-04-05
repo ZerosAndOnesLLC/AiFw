@@ -138,8 +138,12 @@ fi
 rm -rf "$SCRIPT_DIR/ui-export"
 cp -a "$PROJECT_ROOT/aifw-ui/out" "$SCRIPT_DIR/ui-export"
 
-# --- Build update tarball ---
-echo "=== [5/8] Building update tarball ==="
+# --- Build ISO + IMG (must run before tarball — build-iso.sh wipes /usr/obj/aifw-iso/) ---
+echo "=== [5/8] Building ISO + IMG ==="
+sh "$SCRIPT_DIR/build-iso.sh" "$VERSION" amd64
+
+# --- Build update tarball (after ISO so build-iso.sh cleanup doesn't delete it) ---
+echo "=== [6/8] Building update tarball ==="
 TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
 rm -rf "$TARBALL_DIR"
 mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui"
@@ -177,12 +181,8 @@ echo "  Update tarball: ${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz"
 ls -lh "${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz"
 cd "$PROJECT_ROOT"
 
-# --- Build ISO + IMG ---
-echo "=== [6/8] Building ISO + IMG ==="
-sh "$SCRIPT_DIR/build-iso.sh" "$VERSION" amd64
-
 # --- Compress ISO + IMG ---
-echo "=== [7/9] Compressing ISO + IMG ==="
+echo "=== [7/8] Compressing ISO + IMG ==="
 OUTPUTDIR="/usr/obj/aifw-iso/output"
 for f in "${OUTPUTDIR}"/aifw-*.iso "${OUTPUTDIR}"/aifw-*.img; do
     if [ -f "$f" ] && [ ! -f "${f}.xz" ]; then
@@ -193,7 +193,7 @@ for f in "${OUTPUTDIR}"/aifw-*.iso "${OUTPUTDIR}"/aifw-*.img; do
 done
 
 # --- Cleanup intermediate files ---
-echo "=== [8/9] Cleaning up intermediate files ==="
+echo "=== [8/8] Cleaning up ==="
 rm -rf "$SCRIPT_DIR/release"
 rm -rf "$SCRIPT_DIR/ui-export"
 # Remove staging dirs but keep output with the final artifacts
@@ -207,7 +207,7 @@ echo "  Removed staged binaries, UI export, and build intermediates"
 
 # --- Done ---
 echo ""
-echo "=== [9/9] Complete ==="
+echo "=== Complete ==="
 echo ""
 ls -lh /usr/obj/aifw-iso/output/
 echo ""
