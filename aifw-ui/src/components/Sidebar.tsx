@@ -271,7 +271,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
                         {isNicLink ? (
                           <span className={`text-[10px] ${active ? "text-[var(--accent)]" : "text-cyan-400"}`}>&#x2B22;</span>
                         ) : (
-                          <span className={`w-1 h-1 rounded-full flex-shrink-0 ${active ? "bg-[var(--accent)]" : "bg-current opacity-30"}`} />
+                          <span className={`w-1 h-1 rounded-full flex-shrink-0 ${active ? "bg-[var(--accent)]" : "bg-current opacity-50"}`} />
                         )}
                         {displayLabel}
                       </Link>

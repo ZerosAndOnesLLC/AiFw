@@ -30,6 +30,8 @@ export default function DnsForwardingPage() {
   const [dotEnabled, setDotEnabled] = useState(false);
   const [dotUpstream, setDotUpstream] = useState<string[]>([]);
   const [newDot, setNewDot] = useState("");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [fullConfig, setFullConfig] = useState<Record<string, any> | null>(null);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -43,6 +45,7 @@ export default function DnsForwardingPage() {
       const res = await fetch("/api/v1/dns/resolver/config", { headers: authHeadersPlain() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const c = await res.json();
+      setFullConfig(c);
       setForwardingEnabled(c.forwarding_enabled ?? false);
       setUseSystemNs(c.use_system_nameservers ?? false);
       setServers(c.forwarding_servers ?? []);
@@ -70,6 +73,7 @@ export default function DnsForwardingPage() {
         method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify({
+          ...fullConfig,
           forwarding_enabled: forwardingEnabled,
           forwarding_servers: servers.filter(s => s.trim()),
           use_system_nameservers: useSystemNs,

@@ -148,8 +148,8 @@ function StackedChart({ data, getValue, lines, maxValue, formatY, title, height 
           ))}
           <clipPath id={`clip-${title.replace(/\s/g,'')}`}><rect x={pad.left} y={pad.top} width={cW} height={cH}/></clipPath>
         </defs>
-        {yLabels.map((t,i)=>(<g key={i}><line x1={pad.left} y1={t.y} x2={SVG_W-pad.right} y2={t.y} stroke="#1e293b"/>
-          <text x={pad.left-3} y={t.y+3} textAnchor="end" fill="#475569" fontSize="8" fontFamily="monospace">{t.label}</text></g>))}
+        {yLabels.map((t,i)=>(<g key={i}><line x1={pad.left} y1={t.y} x2={SVG_W-pad.right} y2={t.y} stroke="#334155"/>
+          <text x={pad.left-3} y={t.y+3} textAnchor="end" fill="#94a3b8" fontSize="8" fontFamily="monospace">{t.label}</text></g>))}
         <g clipPath={`url(#clip-${title.replace(/\s/g,'')})`}>
           {lineData.map(l => (<g key={l.key}>
             <path d={l.area} fill={`url(#g-${l.key})`}/>
