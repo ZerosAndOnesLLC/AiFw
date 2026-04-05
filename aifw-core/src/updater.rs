@@ -212,37 +212,45 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     // Install binaries
     info!("Installing binaries...");
     let bin_src = update_dir.join("bin");
+    let mut installed = 0u32;
     for bin in &all_binaries() {
         let src = bin_src.join(bin);
         if src.exists() {
             let dst = format!("{}/{}", BIN_DIR, bin);
             let output = Command::new("/usr/local/bin/sudo")
-                .args(["install", "-m", "755", src.to_str().unwrap(), &dst])
+                .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
                 .output()
                 .await
                 .map_err(|e| UpdaterError::Install(format!("Failed to install {}: {}", bin, e)))?;
             if !output.status.success() {
-                warn!(
-                    "Failed to install {}: {}",
-                    bin,
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(UpdaterError::Install(format!("Failed to install {}: {}", bin, stderr)));
             }
+            installed += 1;
         }
     }
+    if installed == 0 {
+        return Err(UpdaterError::Install("No binaries found in update tarball".to_string()));
+    }
+    info!(count = installed, "binaries installed");
 
     // Install UI
     let ui_src = update_dir.join("ui");
     if ui_src.exists() {
         info!("Installing UI...");
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["rm", "-rf", UI_DIR])
+            .args(["/bin/rm", "-rf", UI_DIR])
             .output()
             .await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["cp", "-a", ui_src.to_str().unwrap(), UI_DIR])
+        let output = Command::new("/usr/local/bin/sudo")
+            .args(["/bin/cp", "-a", ui_src.to_str().unwrap(), UI_DIR])
             .output()
-            .await;
+            .await
+            .map_err(|e| UpdaterError::Install(format!("Failed to install UI: {}", e)))?;
+        if !output.status.success() {
+            return Err(UpdaterError::Install(format!("Failed to install UI: {}",
+                String::from_utf8_lossy(&output.stderr))));
+        }
     }
 
     let manifest = load_manifest();
@@ -256,7 +264,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             if src.exists() {
                 let dst = format!("/usr/local/etc/rc.d/{}", script);
                 let _ = Command::new("/usr/local/bin/sudo")
-                    .args(["install", "-m", "755", src.to_str().unwrap(), &dst])
+                    .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
                     .output()
                     .await;
             }
@@ -272,7 +280,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             if src.exists() {
                 let dst = format!("{}/{}", BIN_DIR, script);
                 let _ = Command::new("/usr/local/bin/sudo")
-                    .args(["install", "-m", "755", src.to_str().unwrap(), &dst])
+                    .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
                     .output()
                     .await;
             }
@@ -282,7 +290,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     // Ensure required directories exist (new services may need them)
     for dir in &manifest.directories {
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["mkdir", "-p", dir])
+            .args(["/bin/mkdir", "-p", dir])
             .output()
             .await;
     }
@@ -290,10 +298,14 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     // Update version file
     let ver_src = update_dir.join("version");
     if ver_src.exists() {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["cp", ver_src.to_str().unwrap(), VERSION_FILE])
+        let output = Command::new("/usr/local/bin/sudo")
+            .args(["/bin/cp", ver_src.to_str().unwrap(), VERSION_FILE])
             .output()
-            .await;
+            .await
+            .map_err(|e| UpdaterError::Install(format!("Failed to update version file: {}", e)))?;
+        if !output.status.success() {
+            warn!("Failed to update version file: {}", String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     // Cleanup temp dir
@@ -354,7 +366,7 @@ pub async fn rollback() -> Result<String, UpdaterError> {
         if std::path::Path::new(&src).exists() {
             let dst = format!("{}/{}", BIN_DIR, bin);
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["install", "-m", "755", &src, &dst])
+                .args(["/usr/bin/install", "-m", "755", &src, &dst])
                 .output()
                 .await;
         }
@@ -367,7 +379,7 @@ pub async fn rollback() -> Result<String, UpdaterError> {
         if std::path::Path::new(&src).exists() {
             let dst = format!("/usr/local/etc/rc.d/{}", script);
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["install", "-m", "755", &src, &dst])
+                .args(["/usr/bin/install", "-m", "755", &src, &dst])
                 .output()
                 .await;
         }
@@ -377,18 +389,18 @@ pub async fn rollback() -> Result<String, UpdaterError> {
     let backup_ui = format!("{}/ui", BACKUP_DIR);
     if std::path::Path::new(&backup_ui).exists() {
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["rm", "-rf", UI_DIR])
+            .args(["/bin/rm", "-rf", UI_DIR])
             .output()
             .await;
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["cp", "-a", &backup_ui, UI_DIR])
+            .args(["/bin/cp", "-a", &backup_ui, UI_DIR])
             .output()
             .await;
     }
 
     // Restore version file
     let _ = Command::new("/usr/local/bin/sudo")
-        .args(["cp", &backup_ver, VERSION_FILE])
+        .args(["/bin/cp", &backup_ver, VERSION_FILE])
         .output()
         .await;
 
@@ -400,11 +412,11 @@ pub async fn rollback() -> Result<String, UpdaterError> {
 
 async fn backup_current() -> Result<(), UpdaterError> {
     let _ = Command::new("/usr/local/bin/sudo")
-        .args(["rm", "-rf", BACKUP_DIR])
+        .args(["/bin/rm", "-rf", BACKUP_DIR])
         .output()
         .await;
     let _ = Command::new("/usr/local/bin/sudo")
-        .args(["mkdir", "-p", &format!("{}/bin", BACKUP_DIR), &format!("{}/rc.d", BACKUP_DIR)])
+        .args(["/bin/mkdir", "-p", &format!("{}/bin", BACKUP_DIR), &format!("{}/rc.d", BACKUP_DIR)])
         .output()
         .await;
 
@@ -412,7 +424,7 @@ async fn backup_current() -> Result<(), UpdaterError> {
         let src = format!("{}/{}", BIN_DIR, bin);
         if std::path::Path::new(&src).exists() {
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["cp", "-p", &src, &format!("{}/bin/{}", BACKUP_DIR, bin)])
+                .args(["/bin/cp", "-p", &src, &format!("{}/bin/{}", BACKUP_DIR, bin)])
                 .output()
                 .await;
         }
@@ -424,7 +436,7 @@ async fn backup_current() -> Result<(), UpdaterError> {
         let src = format!("/usr/local/etc/rc.d/{}", script);
         if std::path::Path::new(&src).exists() {
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["cp", "-p", &src, &format!("{}/rc.d/{}", BACKUP_DIR, script)])
+                .args(["/bin/cp", "-p", &src, &format!("{}/rc.d/{}", BACKUP_DIR, script)])
                 .output()
                 .await;
         }
@@ -432,14 +444,14 @@ async fn backup_current() -> Result<(), UpdaterError> {
 
     if std::path::Path::new(UI_DIR).exists() {
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["cp", "-a", UI_DIR, &format!("{}/ui", BACKUP_DIR)])
+            .args(["/bin/cp", "-a", UI_DIR, &format!("{}/ui", BACKUP_DIR)])
             .output()
             .await;
     }
 
     if std::path::Path::new(VERSION_FILE).exists() {
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["cp", VERSION_FILE, &format!("{}/version", BACKUP_DIR)])
+            .args(["/bin/cp", VERSION_FILE, &format!("{}/version", BACKUP_DIR)])
             .output()
             .await;
     }
