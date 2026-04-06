@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { PERMISSION_CATEGORIES } from "@/lib/permissions";
 
@@ -12,7 +12,17 @@ interface User {
   totp_enabled: boolean;
   auth_provider: string;
   role: string;
+  role_id?: string;
   enabled: boolean;
+  created_at: string;
+}
+
+interface Role {
+  id: string;
+  name: string;
+  permissions: string[];
+  builtin: boolean;
+  description: string | null;
   created_at: string;
 }
 
@@ -33,51 +43,145 @@ interface Feedback {
 
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
+  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 }
 
 function getCurrentUserId(): string | null {
   const token = localStorage.getItem("aifw_token");
   if (!token) return null;
   try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    return payload.sub || payload.user_id || null;
-  } catch {
-    return null;
-  }
+    let b64 = token.split(".")[1];
+    b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const payload = JSON.parse(atob(b64));
+    return payload.sub || null;
+  } catch { return null; }
 }
 
-function roleBadge(role: string) {
-  const colors: Record<string, string> = {
-    admin: "bg-red-500/20 text-red-400 border-red-500/30",
-    operator: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-    viewer: "bg-gray-500/20 text-gray-400 border-gray-500/30",
-  };
-  const cls = colors[role] || colors.viewer;
-  return (
-    <span className={`px-2 py-0.5 text-xs font-medium rounded-full border ${cls}`}>
-      {role}
-    </span>
-  );
+const roleColors: Record<string, { badge: string; accent: string }> = {
+  admin: { badge: "bg-red-500/20 text-red-400 border-red-500/30", accent: "border-red-500/40" },
+  operator: { badge: "bg-blue-500/20 text-blue-400 border-blue-500/30", accent: "border-blue-500/40" },
+  viewer: { badge: "bg-gray-500/20 text-gray-400 border-gray-500/30", accent: "border-gray-500/40" },
+};
+const customRoleStyle = { badge: "bg-purple-500/20 text-purple-400 border-purple-500/30", accent: "border-purple-500/40" };
+
+function getRoleStyle(name: string, builtin: boolean) {
+  if (builtin) return roleColors[name] || customRoleStyle;
+  return customRoleStyle;
 }
 
 function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
 
+// ── Permission matrix grid ──────────────────────────────────────────
+function PermissionGrid({ permissions, onChange, readonly }: {
+  permissions: Set<string>;
+  onChange?: (perms: Set<string>) => void;
+  readonly?: boolean;
+}) {
+  const togglePerm = (perm: string) => {
+    if (readonly || !onChange) return;
+    const next = new Set(permissions);
+    next.has(perm) ? next.delete(perm) : next.add(perm);
+    onChange(next);
+  };
+
+  const toggleCategory = (cat: typeof PERMISSION_CATEGORIES[number]) => {
+    if (readonly || !onChange) return;
+    const allOn = cat.perms.every(p => permissions.has(p));
+    const next = new Set(permissions);
+    cat.perms.forEach(p => allOn ? next.delete(p) : next.add(p));
+    onChange(next);
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-[var(--border)]">
+            <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase tracking-wider text-[10px] w-40">Category</th>
+            <th className="text-center py-2 px-2 text-[var(--text-muted)] uppercase tracking-wider text-[10px]">Read / View</th>
+            <th className="text-center py-2 px-2 text-[var(--text-muted)] uppercase tracking-wider text-[10px]">Write / Manage</th>
+          </tr>
+        </thead>
+        <tbody>
+          {PERMISSION_CATEGORIES.map(cat => {
+            const readPerm = cat.perms.find(p => p.endsWith(":read") || p.endsWith(":view"));
+            const writePerm = cat.perms.find(p => p.endsWith(":write") || p.endsWith(":install") || p.endsWith(":reboot"));
+            const allOn = cat.perms.every(p => permissions.has(p));
+            const someOn = cat.perms.some(p => permissions.has(p));
+
+            return (
+              <tr key={cat.label} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                <td className="py-2 px-3">
+                  <button
+                    onClick={() => toggleCategory(cat)}
+                    disabled={readonly}
+                    className={`flex items-center gap-2 ${readonly ? "cursor-default" : "cursor-pointer"}`}
+                  >
+                    <div className={`w-2 h-2 rounded-sm flex-shrink-0 ${
+                      allOn ? "bg-green-500" : someOn ? "bg-yellow-500" : "bg-gray-600"
+                    }`} />
+                    <span className="font-medium text-[var(--text-primary)]">{cat.label}</span>
+                  </button>
+                </td>
+                {readPerm ? (
+                  <td className="text-center py-2 px-2">
+                    <button
+                      onClick={() => togglePerm(readPerm)}
+                      disabled={readonly}
+                      className={`inline-flex items-center justify-center w-7 h-7 rounded-md transition-all ${
+                        permissions.has(readPerm)
+                          ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                          : "bg-[var(--bg-primary)] text-gray-600 border border-[var(--border)]"
+                      } ${readonly ? "cursor-default" : "cursor-pointer hover:border-[var(--accent)]"}`}
+                      title={readPerm}
+                    >
+                      {permissions.has(readPerm) ? (
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                      )}
+                    </button>
+                  </td>
+                ) : <td />}
+                {writePerm ? (
+                  <td className="text-center py-2 px-2">
+                    <button
+                      onClick={() => togglePerm(writePerm)}
+                      disabled={readonly}
+                      className={`inline-flex items-center justify-center w-7 h-7 rounded-md transition-all ${
+                        permissions.has(writePerm)
+                          ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
+                          : "bg-[var(--bg-primary)] text-gray-600 border border-[var(--border)]"
+                      } ${readonly ? "cursor-default" : "cursor-pointer hover:border-[var(--accent)]"}`}
+                      title={writePerm}
+                    >
+                      {permissions.has(writePerm) ? (
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                      )}
+                    </button>
+                  </td>
+                ) : <td />}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Main page ───────────────────────────────────────────────────────
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
 
-  // Add user form
+  // Add user
   const [showAddForm, setShowAddForm] = useState(false);
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -92,10 +196,10 @@ export default function UsersPage() {
   const [editEnabled, setEditEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // Delete confirmation
+  // Delete
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Audit log
+  // Audit
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -104,18 +208,28 @@ export default function UsersPage() {
   const [activeTab, setActiveTab] = useState<"users" | "roles">("users");
 
   // Roles
-  const [roles, setRoles] = useState<{ id: string; name: string; permissions: string[]; builtin: boolean; description: string | null }[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [newRoleName, setNewRoleName] = useState("");
   const [newRoleDesc, setNewRoleDesc] = useState("");
   const [newRolePerms, setNewRolePerms] = useState<Set<string>>(new Set());
   const [roleSaving, setRoleSaving] = useState(false);
+  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
+  const [editRolePerms, setEditRolePerms] = useState<Set<string>>(new Set());
+  const [editRoleName, setEditRoleName] = useState("");
+  const [editRoleDesc, setEditRoleDesc] = useState("");
   const [deletingRoleId, setDeletingRoleId] = useState<string | null>(null);
 
   const { permissions: myPerms } = useAuth();
   const canWriteUsers = myPerms.has("users:write");
-
   const currentUserId = getCurrentUserId();
+
+  // User count per role
+  const userCountByRole = useMemo(() => {
+    const counts: Record<string, number> = {};
+    users.forEach(u => { counts[u.role] = (counts[u.role] || 0) + 1; });
+    return counts;
+  }, [users]);
 
   const setFeedbackWithTimeout = useCallback((fb: Feedback) => {
     setFeedback(fb);
@@ -165,633 +279,372 @@ export default function UsersPage() {
     fetchRoles();
   }, [fetchUsers, fetchRoles]);
 
-  // Add user
+  // ── User handlers ──
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername.trim() || !newPassword.trim()) return;
     setAdding(true);
     try {
       const res = await fetch(`${API}/api/v1/auth/users`, {
-        method: "POST",
-        headers: authHeaders(),
+        method: "POST", headers: authHeaders(),
         body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
-      }
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || b.message || `HTTP ${res.status}`); }
       setFeedbackWithTimeout({ type: "success", message: `User "${newUsername.trim()}" created.` });
-      setNewUsername("");
-      setNewPassword("");
-      setNewRole("viewer");
-      setShowAddForm(false);
+      setNewUsername(""); setNewPassword(""); setNewRole("viewer"); setShowAddForm(false);
       await fetchUsers();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setFeedbackWithTimeout({ type: "error", message: `Failed to create user: ${msg}` });
-    } finally {
-      setAdding(false);
-    }
+      setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` });
+    } finally { setAdding(false); }
   };
 
-  // Start editing
-  const startEdit = (user: User) => {
-    setEditingId(user.id);
-    setEditUsername(user.username);
-    setEditPassword("");
-    setEditRole(user.role);
-    setEditEnabled(user.enabled);
-  };
+  const startEdit = (u: User) => { setEditingId(u.id); setEditUsername(u.username); setEditPassword(""); setEditRole(u.role); setEditEnabled(u.enabled); };
+  const cancelEdit = () => setEditingId(null);
 
-  const cancelEdit = () => {
-    setEditingId(null);
-  };
-
-  // Save edit
   const handleSaveEdit = async () => {
     if (!editingId || !editUsername.trim()) return;
     setSaving(true);
     try {
-      const body: Record<string, unknown> = {
-        username: editUsername.trim(),
-        role: editRole,
-        enabled: editEnabled,
-      };
-      if (editPassword.trim()) {
-        body.password = editPassword;
-      }
-      const res = await fetch(`${API}/api/v1/auth/users/${editingId}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || data.message || `HTTP ${res.status}`);
-      }
-      setFeedbackWithTimeout({ type: "success", message: "User updated." });
-      setEditingId(null);
-      await fetchUsers();
+      const body: Record<string, unknown> = { username: editUsername.trim(), role: editRole, enabled: editEnabled };
+      if (editPassword.trim()) body.password = editPassword;
+      const res = await fetch(`${API}/api/v1/auth/users/${editingId}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(body) });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || d.message || `HTTP ${res.status}`); }
+      setFeedbackWithTimeout({ type: "success", message: "User updated." }); setEditingId(null); await fetchUsers();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setFeedbackWithTimeout({ type: "error", message: `Failed to update user: ${msg}` });
-    } finally {
-      setSaving(false);
-    }
+      setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` });
+    } finally { setSaving(false); }
   };
 
-  // Toggle enabled
-  const handleToggleEnabled = async (user: User) => {
+  const handleToggleEnabled = async (u: User) => {
     try {
-      const res = await fetch(`${API}/api/v1/auth/users/${user.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ enabled: !user.enabled }),
+      const res = await fetch(`${API}/api/v1/auth/users/${u.id}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify({ enabled: !u.enabled }) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setFeedbackWithTimeout({ type: "success", message: `${u.username} ${!u.enabled ? "enabled" : "disabled"}.` }); await fetchUsers();
+    } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
+  };
+
+  const handleDelete = async (u: User) => {
+    try {
+      const res = await fetch(`${API}/api/v1/auth/users/${u.id}`, { method: "DELETE", headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setFeedbackWithTimeout({ type: "success", message: `User "${u.username}" deleted.` }); setDeletingId(null); await fetchUsers();
+    } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
+  };
+
+  // ── Role handlers ──
+  const handleCreateRole = async () => {
+    if (!newRoleName.trim()) return;
+    setRoleSaving(true);
+    try {
+      const res = await fetch(`${API}/api/v1/auth/roles`, {
+        method: "POST", headers: authHeaders(),
+        body: JSON.stringify({ name: newRoleName.trim(), permissions: Array.from(newRolePerms), description: newRoleDesc.trim() || null }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setFeedbackWithTimeout({
-        type: "success",
-        message: `User "${user.username}" ${!user.enabled ? "enabled" : "disabled"}.`,
-      });
-      await fetchUsers();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setFeedbackWithTimeout({ type: "error", message: `Failed to toggle user: ${msg}` });
-    }
+      setFeedbackWithTimeout({ type: "success", message: `Role "${newRoleName.trim()}" created` });
+      setShowRoleForm(false); setNewRoleName(""); setNewRoleDesc(""); setNewRolePerms(new Set()); await fetchRoles();
+    } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
+    finally { setRoleSaving(false); }
   };
 
-  // Delete user
-  const handleDelete = async (user: User) => {
+  const startEditRole = (r: Role) => {
+    setEditingRoleId(r.id); setEditRoleName(r.name); setEditRoleDesc(r.description || ""); setEditRolePerms(new Set(r.permissions));
+  };
+
+  const handleSaveRole = async () => {
+    if (!editingRoleId) return;
+    setRoleSaving(true);
     try {
-      const res = await fetch(`${API}/api/v1/auth/users/${user.id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
+      const res = await fetch(`${API}/api/v1/auth/roles/${editingRoleId}`, {
+        method: "PUT", headers: authHeaders(),
+        body: JSON.stringify({ name: editRoleName.trim() || undefined, permissions: Array.from(editRolePerms), description: editRoleDesc.trim() || null }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setFeedbackWithTimeout({ type: "success", message: `User "${user.username}" deleted.` });
-      setDeletingId(null);
-      await fetchUsers();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      setFeedbackWithTimeout({ type: "error", message: `Failed to delete user: ${msg}` });
-    }
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.message || `HTTP ${res.status}`); }
+      setFeedbackWithTimeout({ type: "success", message: "Role updated" }); setEditingRoleId(null); await fetchRoles();
+    } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
+    finally { setRoleSaving(false); }
   };
 
-  // Toggle audit panel
+  const handleDeleteRole = async (r: Role) => {
+    if (!confirm(`Delete role "${r.name}"? Users assigned to this role will need to be reassigned.`)) return;
+    setDeletingRoleId(r.id);
+    try {
+      const res = await fetch(`${API}/api/v1/auth/roles/${r.id}`, { method: "DELETE", headers: authHeaders() });
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.message || `HTTP ${res.status}`); }
+      setFeedbackWithTimeout({ type: "success", message: `Role "${r.name}" deleted` }); await fetchRoles();
+    } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
+    finally { setDeletingRoleId(null); }
+  };
+
   const toggleAudit = () => {
     const next = !auditOpen;
     setAuditOpen(next);
-    if (next && auditEntries.length === 0) {
-      fetchAudit();
-    }
+    if (next && auditEntries.length === 0) fetchAudit();
   };
 
-  const inputCls =
-    "w-full px-3 py-2 text-sm bg-gray-900 border border-gray-700 rounded-md text-white placeholder-gray-500 focus:outline-none focus:border-blue-500";
-  const labelCls = "text-xs text-gray-400 uppercase tracking-wider block mb-1";
-  const sectionCls = "bg-gray-800 border border-gray-700 rounded-lg p-5";
-  const btnPrimary =
-    "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
-  const btnDanger =
-    "px-3 py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30 rounded-md text-sm transition-colors";
-  const btnSecondary =
-    "px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-md text-sm transition-colors";
+  const inputCls = "w-full px-3 py-2 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded-md text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]";
+  const labelCls = "text-[10px] text-[var(--text-muted)] uppercase tracking-wider block mb-1";
+  const sectionCls = "bg-[var(--bg-card)] border border-[var(--border)] rounded-lg";
+  const btnPrimary = "px-4 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+  const btnDanger = "px-3 py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30 rounded-md text-xs transition-colors";
+  const btnSecondary = "px-3 py-1.5 bg-[var(--bg-primary)] hover:bg-[var(--bg-card-hover)] text-[var(--text-secondary)] border border-[var(--border)] rounded-md text-xs transition-colors";
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-5">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">User Management</h1>
-          <p className="text-sm text-gray-400">Manage users, roles, and permissions</p>
+          <h1 className="text-2xl font-bold">Users & Roles</h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            {users.length} user{users.length !== 1 ? "s" : ""} across {roles.length} role{roles.length !== 1 ? "s" : ""}
+          </p>
         </div>
-        {activeTab === "users" && canWriteUsers && (
-          <button
-            onClick={() => setShowAddForm(!showAddForm)}
-            className={btnPrimary}
-          >
-            {showAddForm ? "Cancel" : "+ Add User"}
-          </button>
-        )}
-        {activeTab === "roles" && canWriteUsers && (
-          <button
-            onClick={() => { setShowRoleForm(!showRoleForm); setNewRoleName(""); setNewRoleDesc(""); setNewRolePerms(new Set()); }}
-            className={btnPrimary}
-          >
-            {showRoleForm ? "Cancel" : "+ Create Role"}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {activeTab === "users" && canWriteUsers && (
+            <button onClick={() => setShowAddForm(!showAddForm)} className={btnPrimary}>
+              {showAddForm ? "Cancel" : "+ Add User"}
+            </button>
+          )}
+          {activeTab === "roles" && canWriteUsers && (
+            <button onClick={() => { setShowRoleForm(!showRoleForm); setNewRoleName(""); setNewRoleDesc(""); setNewRolePerms(new Set()); }} className={btnPrimary}>
+              {showRoleForm ? "Cancel" : "+ Create Role"}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-[var(--bg-primary)] rounded-lg p-1 border border-[var(--border)] w-fit">
-        {(["users", "roles"] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-1.5 text-xs font-medium rounded-md transition-all capitalize ${
-              activeTab === tab
-                ? "bg-[var(--accent)] text-white"
-                : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+      <div className="flex gap-1 bg-[var(--bg-card)] rounded-lg p-1 border border-[var(--border)] w-fit">
+        {(["users", "roles"] as const).map(tab => (
+          <button key={tab} onClick={() => setActiveTab(tab)}
+            className={`px-5 py-2 text-sm font-medium rounded-md transition-all ${
+              activeTab === tab ? "bg-[var(--accent)] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card-hover)]"
             }`}
           >
-            {tab}
+            {tab === "users" ? `Users (${users.length})` : `Roles (${roles.length})`}
           </button>
         ))}
       </div>
 
-      {/* Feedback banner (shared) */}
+      {/* Feedback */}
       {feedback && (
-        <div
-          className={`p-3 text-sm rounded-md border ${
-            feedback.type === "error"
-              ? "text-red-400 bg-red-500/10 border-red-500/20"
-              : "text-green-400 bg-green-500/10 border-green-500/20"
-          }`}
-        >
+        <div className={`p-3 text-sm rounded-md border ${feedback.type === "error" ? "text-red-400 bg-red-500/10 border-red-500/20" : "text-green-400 bg-green-500/10 border-green-500/20"}`}>
           {feedback.message}
         </div>
       )}
 
+      {/* ═══════════════ USERS TAB ═══════════════ */}
       {activeTab === "users" && (<>
-      {/* Add user form */}
-      {showAddForm && (
-        <section className={sectionCls}>
-          <h2 className="font-medium text-white mb-4">New User</h2>
-          <form onSubmit={handleAddUser} className="space-y-4">
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className={labelCls}>Username</label>
-                <input
-                  type="text"
-                  value={newUsername}
-                  onChange={(e) => setNewUsername(e.target.value)}
-                  placeholder="Username"
-                  className={inputCls}
-                  required
-                  autoFocus
-                />
+        {showAddForm && (
+          <div className={`${sectionCls} p-5`}>
+            <h2 className="text-sm font-medium mb-4">New User</h2>
+            <form onSubmit={handleAddUser} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div><label className={labelCls}>Username</label><input type="text" value={newUsername} onChange={e => setNewUsername(e.target.value)} placeholder="Username" className={inputCls} required autoFocus /></div>
+                <div><label className={labelCls}>Password</label><input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Password" className={inputCls} required /></div>
+                <div><label className={labelCls}>Role</label>
+                  <select value={newRole} onChange={e => setNewRole(e.target.value)} className={inputCls}>
+                    {roles.map(r => <option key={r.id} value={r.name}>{r.name}{!r.builtin ? " (custom)" : ""}</option>)}
+                  </select>
+                </div>
               </div>
-              <div>
-                <label className={labelCls}>Password</label>
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Password"
-                  className={inputCls}
-                  required
-                />
-              </div>
-              <div>
-                <label className={labelCls}>Role</label>
-                <select
-                  value={newRole}
-                  onChange={(e) => setNewRole(e.target.value)}
-                  className={inputCls}
-                >
-                  {roles.map((r) => (
-                    <option key={r.id} value={r.name}>{r.name}{r.builtin ? "" : " (custom)"}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div className="flex justify-end">
-              <button type="submit" disabled={adding} className={btnPrimary}>
-                {adding ? "Creating..." : "Create User"}
-              </button>
-            </div>
-          </form>
-        </section>
-      )}
-
-      {/* Users table */}
-      <section className={sectionCls + " p-0 overflow-hidden"}>
-        {loading ? (
-          <div className="p-8 text-center text-gray-400">Loading users...</div>
-        ) : users.length === 0 ? (
-          <div className="p-8 text-center text-gray-400">No users found.</div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-700 text-left text-xs text-gray-400 uppercase tracking-wider">
-                <th className="px-5 py-3">Username</th>
-                <th className="px-5 py-3">Role</th>
-                <th className="px-5 py-3">MFA</th>
-                <th className="px-5 py-3">Provider</th>
-                <th className="px-5 py-3">Enabled</th>
-                <th className="px-5 py-3">Created</th>
-                <th className="px-5 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((user) => (
-                <tr key={user.id} className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors">
-                  {editingId === user.id ? (
-                    /* Inline edit row */
-                    <>
-                      <td className="px-5 py-3">
-                        <input
-                          type="text"
-                          value={editUsername}
-                          onChange={(e) => setEditUsername(e.target.value)}
-                          className="w-full px-2 py-1 text-sm bg-gray-900 border border-gray-600 rounded text-white focus:outline-none focus:border-blue-500"
-                        />
-                      </td>
-                      <td className="px-5 py-3">
-                        <select
-                          value={editRole}
-                          onChange={(e) => setEditRole(e.target.value)}
-                          className="px-2 py-1 text-sm bg-gray-900 border border-gray-600 rounded text-white focus:outline-none focus:border-blue-500"
-                        >
-                          {roles.map((r) => (
-                            <option key={r.id} value={r.name}>{r.name}{r.builtin ? "" : " (custom)"}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-5 py-3 text-gray-400">
-                        {user.totp_enabled ? "On" : "Off"}
-                      </td>
-                      <td className="px-5 py-3">
-                        <input
-                          type="password"
-                          value={editPassword}
-                          onChange={(e) => setEditPassword(e.target.value)}
-                          placeholder="(unchanged)"
-                          className="w-full px-2 py-1 text-sm bg-gray-900 border border-gray-600 rounded text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
-                        />
-                      </td>
-                      <td className="px-5 py-3">
-                        <button
-                          onClick={() => setEditEnabled(!editEnabled)}
-                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                            editEnabled ? "bg-green-600" : "bg-gray-600"
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                              editEnabled ? "translate-x-4" : "translate-x-0.5"
-                            }`}
-                          />
-                        </button>
-                      </td>
-                      <td className="px-5 py-3 text-gray-400 text-xs">
-                        {formatDate(user.created_at)}
-                      </td>
-                      <td className="px-5 py-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={handleSaveEdit}
-                            disabled={saving}
-                            className="px-3 py-1.5 bg-green-600/20 hover:bg-green-600/40 text-green-400 border border-green-500/30 rounded-md text-sm transition-colors disabled:opacity-50"
-                          >
-                            {saving ? "Saving..." : "Save"}
-                          </button>
-                          <button onClick={cancelEdit} className={btnSecondary}>
-                            Cancel
-                          </button>
-                        </div>
-                      </td>
-                    </>
-                  ) : (
-                    /* Display row */
-                    <>
-                      <td className="px-5 py-3 font-medium text-white">{user.username}</td>
-                      <td className="px-5 py-3">{roleBadge(user.role)}</td>
-                      <td className="px-5 py-3">
-                        {user.totp_enabled ? (
-                          <span className="text-green-400 text-xs font-medium">Enabled</span>
-                        ) : (
-                          <span className="text-gray-500 text-xs">Disabled</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3 text-gray-400">{user.auth_provider}</td>
-                      <td className="px-5 py-3">
-                        <button
-                          onClick={() => handleToggleEnabled(user)}
-                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                            user.enabled ? "bg-green-600" : "bg-gray-600"
-                          }`}
-                          title={user.enabled ? "Disable user" : "Enable user"}
-                        >
-                          <span
-                            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                              user.enabled ? "translate-x-4" : "translate-x-0.5"
-                            }`}
-                          />
-                        </button>
-                      </td>
-                      <td className="px-5 py-3 text-gray-400 text-xs">{formatDate(user.created_at)}</td>
-                      <td className="px-5 py-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button onClick={() => startEdit(user)} className={btnSecondary}>
-                            Edit
-                          </button>
-                          {currentUserId === user.id ? (
-                            <span className="px-3 py-1.5 text-gray-600 text-sm cursor-not-allowed" title="Cannot delete yourself">
-                              Delete
-                            </span>
-                          ) : deletingId === user.id ? (
-                            <div className="flex items-center gap-1">
-                              <button onClick={() => handleDelete(user)} className={btnDanger}>
-                                Confirm
-                              </button>
-                              <button onClick={() => setDeletingId(null)} className={btnSecondary}>
-                                No
-                              </button>
-                            </div>
-                          ) : (
-                            <button onClick={() => setDeletingId(user.id)} className={btnDanger}>
-                              Delete
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-
-      {/* Audit Log */}
-      <section className={sectionCls}>
-        <button
-          onClick={toggleAudit}
-          className="w-full flex items-center justify-between text-left"
-        >
-          <h2 className="font-medium text-white">Audit Log</h2>
-          <svg
-            className={`w-5 h-5 text-gray-400 transition-transform ${auditOpen ? "rotate-180" : ""}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-
-        {auditOpen && (
-          <div className="mt-4">
-            {auditLoading ? (
-              <p className="text-sm text-gray-400">Loading audit log...</p>
-            ) : auditEntries.length === 0 ? (
-              <p className="text-sm text-gray-400">No audit entries found.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-700 text-left text-xs text-gray-400 uppercase tracking-wider">
-                      <th className="px-4 py-2">Time</th>
-                      <th className="px-4 py-2">Action</th>
-                      <th className="px-4 py-2">Actor</th>
-                      <th className="px-4 py-2">Target User</th>
-                      <th className="px-4 py-2">IP Address</th>
-                      <th className="px-4 py-2">Details</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {auditEntries.map((entry) => {
-                      const actionColors: Record<string, string> = {
-                        login_success: "text-green-400",
-                        login_failed: "text-red-400",
-                        user_created: "text-blue-400",
-                        user_updated: "text-yellow-400",
-                        user_deleted: "text-red-400",
-                      };
-                      const color = actionColors[entry.action] || "text-gray-400";
-                      return (
-                        <tr key={entry.id} className="border-b border-gray-700/50">
-                          <td className="px-4 py-2 text-gray-400 text-xs whitespace-nowrap">
-                            {formatDate(entry.created_at)}
-                          </td>
-                          <td className={`px-4 py-2 font-mono text-xs ${color}`}>
-                            {entry.action}
-                          </td>
-                          <td className="px-4 py-2 text-gray-300 text-xs font-mono">
-                            {entry.actor_id}
-                          </td>
-                          <td className="px-4 py-2 text-gray-400 text-xs font-mono">
-                            {entry.user_id || "-"}
-                          </td>
-                          <td className="px-4 py-2 text-gray-400 text-xs font-mono">
-                            {entry.ip_addr || "-"}
-                          </td>
-                          <td className="px-4 py-2 text-gray-500 text-xs max-w-xs truncate">
-                            {entry.details || "-"}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+              <div className="flex justify-end"><button type="submit" disabled={adding} className={btnPrimary}>{adding ? "Creating..." : "Create User"}</button></div>
+            </form>
           </div>
         )}
-      </section>
+
+        {/* Users table */}
+        <div className={`${sectionCls} overflow-hidden`}>
+          {loading ? <div className="p-8 text-center text-[var(--text-muted)]">Loading...</div>
+          : users.length === 0 ? <div className="p-8 text-center text-[var(--text-muted)]">No users.</div>
+          : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[var(--border)] text-left text-[10px] text-[var(--text-muted)] uppercase tracking-wider">
+                  <th className="px-4 py-3">User</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">MFA</th>
+                  <th className="px-4 py-3">Provider</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map(user => {
+                  const style = getRoleStyle(user.role, roles.find(r => r.name === user.role)?.builtin ?? true);
+                  const isEditing = editingId === user.id;
+                  return (
+                    <tr key={user.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                      {isEditing ? (<>
+                        <td className="px-4 py-3"><input type="text" value={editUsername} onChange={e => setEditUsername(e.target.value)} className="w-full px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]" /></td>
+                        <td className="px-4 py-3">
+                          <select value={editRole} onChange={e => setEditRole(e.target.value)} className="px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]">
+                            {roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-4 py-3 text-[var(--text-muted)] text-xs">{user.totp_enabled ? "On" : "Off"}</td>
+                        <td className="px-4 py-3"><input type="password" value={editPassword} onChange={e => setEditPassword(e.target.value)} placeholder="(unchanged)" className="w-full px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]" /></td>
+                        <td className="px-4 py-3">
+                          <button onClick={() => setEditEnabled(!editEnabled)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${editEnabled ? "bg-green-600" : "bg-gray-600"}`}>
+                            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${editEnabled ? "translate-x-4" : "translate-x-0.5"}`} />
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 text-[var(--text-muted)] text-xs">{formatDate(user.created_at)}</td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button onClick={handleSaveEdit} disabled={saving} className="px-3 py-1.5 bg-green-600/20 hover:bg-green-600/40 text-green-400 border border-green-500/30 rounded-md text-xs transition-colors disabled:opacity-50">{saving ? "..." : "Save"}</button>
+                            <button onClick={cancelEdit} className={btnSecondary}>Cancel</button>
+                          </div>
+                        </td>
+                      </>) : (<>
+                        <td className="px-4 py-3 font-medium">{user.username}{user.id === currentUserId && <span className="ml-1.5 text-[10px] text-[var(--accent)]">(you)</span>}</td>
+                        <td className="px-4 py-3"><span className={`px-2 py-0.5 text-[10px] font-medium rounded-full border ${style.badge}`}>{user.role}</span></td>
+                        <td className="px-4 py-3">{user.totp_enabled ? <span className="text-green-400 text-xs">Enabled</span> : <span className="text-[var(--text-muted)] text-xs">Off</span>}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)] text-xs">{user.auth_provider}</td>
+                        <td className="px-4 py-3">
+                          <button onClick={() => handleToggleEnabled(user)} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${user.enabled ? "bg-green-600" : "bg-gray-600"}`} title={user.enabled ? "Disable" : "Enable"}>
+                            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${user.enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 text-[var(--text-muted)] text-xs">{formatDate(user.created_at)}</td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            {canWriteUsers && <button onClick={() => startEdit(user)} className={btnSecondary}>Edit</button>}
+                            {canWriteUsers && (currentUserId === user.id
+                              ? <span className="px-3 py-1.5 text-[var(--text-muted)] text-xs cursor-not-allowed">Delete</span>
+                              : deletingId === user.id
+                                ? <><button onClick={() => handleDelete(user)} className={btnDanger}>Confirm</button><button onClick={() => setDeletingId(null)} className={btnSecondary}>No</button></>
+                                : <button onClick={() => setDeletingId(user.id)} className={btnDanger}>Delete</button>
+                            )}
+                          </div>
+                        </td>
+                      </>)}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Audit Log */}
+        <div className={sectionCls}>
+          <button onClick={toggleAudit} className="w-full flex items-center justify-between px-5 py-4">
+            <h2 className="text-sm font-medium">Audit Log</h2>
+            <svg className={`w-4 h-4 text-[var(--text-muted)] transition-transform ${auditOpen ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+          </button>
+          {auditOpen && (
+            <div className="border-t border-[var(--border)]">
+              {auditLoading ? <p className="px-5 py-4 text-sm text-[var(--text-muted)]">Loading...</p>
+              : auditEntries.length === 0 ? <p className="px-5 py-4 text-sm text-[var(--text-muted)]">No entries.</p>
+              : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead><tr className="border-b border-[var(--border)] text-left text-[10px] text-[var(--text-muted)] uppercase tracking-wider">
+                      <th className="px-4 py-2">Time</th><th className="px-4 py-2">Action</th><th className="px-4 py-2">Actor</th><th className="px-4 py-2">Target</th><th className="px-4 py-2">IP</th><th className="px-4 py-2">Details</th>
+                    </tr></thead>
+                    <tbody>{auditEntries.map(e => {
+                      const c: Record<string, string> = { login_success: "text-green-400", login_failed: "text-red-400", user_created: "text-blue-400", user_updated: "text-yellow-400", user_deleted: "text-red-400" };
+                      return (<tr key={e.id} className="border-b border-[var(--border)]">
+                        <td className="px-4 py-2 text-[var(--text-muted)] whitespace-nowrap">{formatDate(e.created_at)}</td>
+                        <td className={`px-4 py-2 font-mono ${c[e.action] || "text-[var(--text-muted)]"}`}>{e.action}</td>
+                        <td className="px-4 py-2 font-mono text-[var(--text-secondary)]">{e.actor_id?.slice(0, 8)}...</td>
+                        <td className="px-4 py-2 font-mono text-[var(--text-muted)]">{e.user_id?.slice(0, 8) || "-"}</td>
+                        <td className="px-4 py-2 font-mono text-[var(--text-muted)]">{e.ip_addr || "-"}</td>
+                        <td className="px-4 py-2 text-[var(--text-muted)] max-w-xs truncate">{e.details || "-"}</td>
+                      </tr>);
+                    })}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </>)}
 
-      {/* Roles Tab */}
+      {/* ═══════════════ ROLES TAB ═══════════════ */}
       {activeTab === "roles" && (<>
         {/* Create Role Form */}
         {showRoleForm && canWriteUsers && (
-          <section className={sectionCls}>
-            <h2 className="font-medium text-white mb-4">Create Custom Role</h2>
+          <div className={`${sectionCls} p-5`}>
+            <h2 className="text-sm font-medium mb-4">Create Custom Role</h2>
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className={labelCls}>Role Name</label>
-                  <input
-                    type="text"
-                    value={newRoleName}
-                    onChange={(e) => setNewRoleName(e.target.value)}
-                    placeholder="e.g. network-engineer"
-                    className={inputCls}
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>Description</label>
-                  <input
-                    type="text"
-                    value={newRoleDesc}
-                    onChange={(e) => setNewRoleDesc(e.target.value)}
-                    placeholder="Optional description"
-                    className={inputCls}
-                  />
-                </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div><label className={labelCls}>Name</label><input type="text" value={newRoleName} onChange={e => setNewRoleName(e.target.value)} placeholder="e.g. network-engineer" className={inputCls} autoFocus /></div>
+                <div><label className={labelCls}>Description</label><input type="text" value={newRoleDesc} onChange={e => setNewRoleDesc(e.target.value)} placeholder="What can this role do?" className={inputCls} /></div>
               </div>
-
               <div>
-                <label className={labelCls}>Permissions</label>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
-                  {PERMISSION_CATEGORIES.map((cat) => (
-                    <div key={cat.label} className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-md p-3">
-                      <p className="text-xs font-medium text-[var(--text-primary)] mb-2">{cat.label}</p>
-                      <div className="space-y-1">
-                        {cat.perms.map((perm) => (
-                          <label key={perm} className="flex items-center gap-2 text-xs cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={newRolePerms.has(perm)}
-                              onChange={(e) => {
-                                const next = new Set(newRolePerms);
-                                e.target.checked ? next.add(perm) : next.delete(perm);
-                                setNewRolePerms(next);
-                              }}
-                              className="rounded border-[var(--border)]"
-                            />
-                            <span className="text-[var(--text-secondary)] font-mono">{perm}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
+                <div className="flex items-center justify-between mb-2">
+                  <label className={labelCls}>Permissions</label>
+                  <div className="flex gap-2">
+                    <button onClick={() => { const all = new Set<string>(); PERMISSION_CATEGORIES.forEach(c => c.perms.forEach(p => all.add(p))); setNewRolePerms(all); }} className="text-[10px] text-[var(--accent)] hover:underline">Select All</button>
+                    <button onClick={() => setNewRolePerms(new Set())} className="text-[10px] text-[var(--text-muted)] hover:underline">Clear All</button>
+                  </div>
                 </div>
+                <PermissionGrid permissions={newRolePerms} onChange={setNewRolePerms} />
               </div>
-
-              <div className="flex justify-end">
-                <button
-                  onClick={async () => {
-                    if (!newRoleName.trim()) return;
-                    setRoleSaving(true);
-                    try {
-                      const res = await fetch(`${API}/api/v1/auth/roles`, {
-                        method: "POST",
-                        headers: authHeaders(),
-                        body: JSON.stringify({
-                          name: newRoleName.trim(),
-                          permissions: Array.from(newRolePerms),
-                          description: newRoleDesc.trim() || null,
-                        }),
-                      });
-                      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                      setFeedbackWithTimeout({ type: "success", message: `Role "${newRoleName.trim()}" created` });
-                      setShowRoleForm(false);
-                      setNewRoleName("");
-                      setNewRoleDesc("");
-                      setNewRolePerms(new Set());
-                      await fetchRoles();
-                    } catch (err: unknown) {
-                      const msg = err instanceof Error ? err.message : "Unknown error";
-                      setFeedbackWithTimeout({ type: "error", message: `Failed to create role: ${msg}` });
-                    } finally {
-                      setRoleSaving(false);
-                    }
-                  }}
-                  disabled={roleSaving || !newRoleName.trim()}
-                  className={btnPrimary}
-                >
-                  {roleSaving ? "Creating..." : "Create Role"}
-                </button>
+              <div className="flex items-center justify-between pt-2 border-t border-[var(--border)]">
+                <span className="text-xs text-[var(--text-muted)]">{newRolePerms.size} permission{newRolePerms.size !== 1 ? "s" : ""} selected</span>
+                <button onClick={handleCreateRole} disabled={roleSaving || !newRoleName.trim()} className={btnPrimary}>{roleSaving ? "Creating..." : "Create Role"}</button>
               </div>
             </div>
-          </section>
+          </div>
         )}
 
-        {/* Roles List */}
+        {/* Roles Grid */}
         <div className="space-y-4">
-          {roles.map((role) => (
-            <section key={role.id} className={sectionCls}>
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-medium text-white">{role.name}</h3>
-                    {role.builtin && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/20 text-gray-400 border border-gray-500/30">built-in</span>
-                    )}
-                    {roleBadge(role.name)}
+          {roles.map(role => {
+            const style = getRoleStyle(role.name, role.builtin);
+            const userCount = userCountByRole[role.name] || 0;
+            const isEditing = editingRoleId === role.id;
+            const permSet = isEditing ? editRolePerms : new Set(role.permissions);
+
+            return (
+              <div key={role.id} className={`${sectionCls} overflow-hidden border-l-2 ${style.accent}`}>
+                {/* Role header */}
+                <div className="px-5 py-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        {isEditing && !role.builtin ? (
+                          <input type="text" value={editRoleName} onChange={e => setEditRoleName(e.target.value)} className="px-2 py-0.5 text-sm font-semibold bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] w-40" />
+                        ) : (
+                          <h3 className="text-sm font-semibold">{role.name}</h3>
+                        )}
+                        <span className={`px-2 py-0.5 text-[10px] font-medium rounded-full border ${style.badge}`}>
+                          {role.builtin ? "built-in" : "custom"}
+                        </span>
+                        <span className="text-[10px] text-[var(--text-muted)]">
+                          {userCount} user{userCount !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                      {isEditing && !role.builtin ? (
+                        <input type="text" value={editRoleDesc} onChange={e => setEditRoleDesc(e.target.value)} placeholder="Description" className="mt-1 px-2 py-0.5 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] w-64" />
+                      ) : role.description ? (
+                        <p className="text-xs text-[var(--text-muted)] mt-0.5">{role.description}</p>
+                      ) : null}
+                    </div>
                   </div>
-                  {role.description && (
-                    <p className="text-xs text-gray-400 mt-0.5">{role.description}</p>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {isEditing ? (<>
+                      <button onClick={handleSaveRole} disabled={roleSaving} className="px-3 py-1.5 bg-green-600/20 hover:bg-green-600/40 text-green-400 border border-green-500/30 rounded-md text-xs transition-colors disabled:opacity-50">{roleSaving ? "..." : "Save"}</button>
+                      <button onClick={() => setEditingRoleId(null)} className={btnSecondary}>Cancel</button>
+                    </>) : canWriteUsers && !role.builtin ? (<>
+                      <button onClick={() => startEditRole(role)} className={btnSecondary}>Edit</button>
+                      <button onClick={() => handleDeleteRole(role)} disabled={deletingRoleId === role.id} className={btnDanger}>{deletingRoleId === role.id ? "..." : "Delete"}</button>
+                    </>) : null}
+                    <div className="text-xs font-mono text-[var(--text-muted)] ml-2">{role.permissions.length} perms</div>
+                  </div>
                 </div>
-                {!role.builtin && canWriteUsers && (
-                  <button
-                    onClick={async () => {
-                      if (!confirm(`Delete role "${role.name}"?`)) return;
-                      setDeletingRoleId(role.id);
-                      try {
-                        const res = await fetch(`${API}/api/v1/auth/roles/${role.id}`, {
-                          method: "DELETE",
-                          headers: authHeaders(),
-                        });
-                        if (!res.ok) {
-                          const body = await res.json().catch(() => ({}));
-                          throw new Error(body.message || `HTTP ${res.status}`);
-                        }
-                        setFeedbackWithTimeout({ type: "success", message: `Role "${role.name}" deleted` });
-                        await fetchRoles();
-                      } catch (err: unknown) {
-                        const msg = err instanceof Error ? err.message : "Unknown error";
-                        setFeedbackWithTimeout({ type: "error", message: `Delete failed: ${msg}` });
-                      } finally {
-                        setDeletingRoleId(null);
-                      }
-                    }}
-                    disabled={deletingRoleId === role.id}
-                    className="text-xs text-gray-400 hover:text-red-400 transition-colors"
-                  >
-                    {deletingRoleId === role.id ? "Deleting..." : "Delete"}
-                  </button>
-                )}
+
+                {/* Permission matrix */}
+                <div className="border-t border-[var(--border)]">
+                  <PermissionGrid
+                    permissions={permSet}
+                    onChange={isEditing ? setEditRolePerms : undefined}
+                    readonly={!isEditing}
+                  />
+                </div>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {role.permissions.map((perm) => (
-                  <span
-                    key={perm}
-                    className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--bg-primary)] border border-[var(--border)] text-[var(--text-secondary)] font-mono"
-                  >
-                    {perm}
-                  </span>
-                ))}
-                {role.permissions.length === 0 && (
-                  <span className="text-xs text-gray-500">No permissions</span>
-                )}
-              </div>
-            </section>
-          ))}
+            );
+          })}
         </div>
       </>)}
     </div>
