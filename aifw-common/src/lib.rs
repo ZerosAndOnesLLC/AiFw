@@ -1,4 +1,5 @@
 pub mod alias;
+pub mod permission;
 pub mod error;
 pub mod geoip;
 pub mod ha;
@@ -40,6 +41,7 @@ pub use vpn::{
     IpsecMode, IpsecProtocol, IpsecSa, IpsecSp, SpDirection, SpLevel, VpnStatus, VpnType,
     WgPeer, WgTunnel,
 };
+pub use permission::{Permission, PermissionSet, ALL_PERMISSIONS, builtin_role_permissions};
 pub use ids::{
     IdsAction, IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleMatch, IdsRuleset, IdsSeverity,
     IdsStats, IdsSuppression, RuleFormat, RuleSource, SuppressType,

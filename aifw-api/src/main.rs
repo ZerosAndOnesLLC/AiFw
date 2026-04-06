@@ -190,204 +190,414 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback))
         .route("/api/v1/auth/register", post(routes::register));
 
-    // Admin-only routes (require auth + admin role)
-    let admin_routes = Router::new()
-        .route("/api/v1/auth/users", get(routes::list_users).post(routes::create_user))
-        .route("/api/v1/auth/users/{id}", get(routes::get_user).put(routes::update_user).delete(routes::delete_user_handler))
-        .route("/api/v1/auth/audit", get(routes::list_user_audit))
-        .route("/api/v1/auth/api-keys", post(routes::create_api_key))
-        .route("/api/v1/auth/settings", get(routes::get_auth_settings).put(routes::update_auth_settings))
-        .route("/api/v1/auth/oauth/providers", get(routes::list_oauth_providers).post(routes::create_oauth_provider))
-        .route("/api/v1/auth/oauth/providers/{id}", delete(routes::delete_oauth_provider))
-        .route("/api/v1/config/import", post(routes::import_config))
-        .route("/api/v1/config/restore", post(backup::restore_version))
-        .route("/api/v1/config/import-opnsense", post(backup::import_opnsense))
-        .route("/api/v1/updates/install", post(updates::install_updates))
-        .route("/api/v1/updates/reboot", post(updates::reboot_system))
-        .route("/api/v1/updates/aifw/install", post(updates::aifw_install_update))
-        .route("/api/v1/updates/aifw/rollback", post(updates::aifw_rollback))
-        .route("/api/v1/settings/tls", get(routes::get_tls_settings).put(routes::update_tls_settings))
-        .route("/api/v1/settings/valkey", get(routes::get_valkey_settings).put(routes::update_valkey_settings))
-        .route("/api/v1/settings/dashboard-history", get(routes::get_dashboard_history_settings).put(routes::update_dashboard_history_settings))
-        // CA key downloads — admin-only (private key material)
-        .route("/api/v1/ca", get(ca::get_ca_info).post(ca::generate_ca))
-        .route("/api/v1/ca/certs/{id}/key.pem", get(ca::download_cert_key))
-        .route("/api/v1/ca/certs/{id}/revoke", post(ca::revoke_cert))
-        // Config export/save/restore
-        .route("/api/v1/config/export", get(routes::export_config))
-        .route("/api/v1/config/save", post(backup::save_version))
-        .route("/api/v1/config/commit-confirm", post(backup::commit_confirm_start))
-        .route("/api/v1/config/commit-confirm/confirm", post(backup::commit_confirm_accept))
-        // Plugin management
-        .route("/api/v1/plugins/toggle", post(plugins::enable_plugin))
-        .route("/api/v1/plugins/{name}/config", get(plugins::get_plugin_config).put(plugins::update_plugin_config))
-        .route("/api/v1/plugins/discover", get(plugins::discover_plugins))
-        // IDS management (admin)
-        .route("/api/v1/ids/reload", post(ids::reload))
-        // Firewall reload
-        .route("/api/v1/reload", post(routes::reload))
-        // Service control (start/stop/restart)
-        .route("/api/v1/dns/resolver/apply", post(dns_resolver::apply_resolver))
-        .route("/api/v1/dns/resolver/start", post(dns_resolver::resolver_start))
-        .route("/api/v1/dns/resolver/stop", post(dns_resolver::resolver_stop))
-        .route("/api/v1/dns/resolver/restart", post(dns_resolver::resolver_restart))
-        .route("/api/v1/time/start", post(time_service::time_start))
-        .route("/api/v1/time/stop", post(time_service::time_stop))
-        .route("/api/v1/time/restart", post(time_service::time_restart))
-        .route("/api/v1/time/apply", post(time_service::apply_config))
-        .route("/api/v1/reverse-proxy/start", post(reverse_proxy::rp_start))
-        .route("/api/v1/reverse-proxy/stop", post(reverse_proxy::rp_stop))
-        .route("/api/v1/reverse-proxy/restart", post(reverse_proxy::rp_restart))
-        .route("/api/v1/reverse-proxy/apply", post(reverse_proxy::apply_config))
-        .layer(middleware::from_fn_with_state(state.clone(), auth::require_admin))
-        .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
+    use aifw_common::Permission;
 
-    // Protected routes (require auth, any role)
-    let protected_routes = Router::new()
-        .route("/api/v1/ca/cert.pem", get(ca::get_ca_cert_pem))
-        .route("/api/v1/ca/crl", get(ca::get_crl))
-        .route("/api/v1/ca/certs", get(ca::list_certs).post(ca::issue_cert))
-        .route("/api/v1/ca/certs/{id}", get(ca::get_cert).delete(ca::delete_cert))
-        .route("/api/v1/ca/certs/{id}/cert.pem", get(ca::download_cert))
-        .route("/api/v1/dhcp/status", get(dhcp::dhcp_status))
-        .route("/api/v1/dhcp/start", post(dhcp::dhcp_start))
-        .route("/api/v1/dhcp/stop", post(dhcp::dhcp_stop))
-        .route("/api/v1/dhcp/restart", post(dhcp::dhcp_restart))
-        .route("/api/v1/dhcp/v4/config", get(dhcp::get_config).put(dhcp::update_config))
-        .route("/api/v1/dhcp/v4/subnets", get(dhcp::list_subnets).post(dhcp::create_subnet))
-        .route("/api/v1/dhcp/v4/subnets/{id}", put(dhcp::update_subnet).delete(dhcp::delete_subnet))
-        .route("/api/v1/dhcp/v4/reservations", get(dhcp::list_reservations).post(dhcp::create_reservation))
-        .route("/api/v1/dhcp/v4/reservations/{id}", put(dhcp::update_reservation).delete(dhcp::delete_reservation))
-        .route("/api/v1/dhcp/v4/leases", get(dhcp::list_leases))
-        .route("/api/v1/dhcp/v4/leases/{ip}", delete(dhcp::release_lease))
-        .route("/api/v1/dhcp/v4/apply", post(dhcp::apply_config))
-        .route("/api/v1/dhcp/ddns", get(dhcp::get_ddns_config).put(dhcp::update_ddns_config))
-        .route("/api/v1/dhcp/ha/config", get(dhcp::get_ha_config).put(dhcp::update_ha_config))
-        .route("/api/v1/dhcp/ha/status", get(dhcp::get_ha_status))
-        .route("/api/v1/dhcp/pool-stats", get(dhcp::get_pool_stats))
-        .route("/api/v1/dhcp/metrics", get(dhcp::get_metrics))
-        .route("/api/v1/dhcp/logs", get(dhcp::dhcp_logs))
-        .route("/api/v1/dns/resolver/status", get(dns_resolver::resolver_status))
-        .route("/api/v1/dns/resolver/config", get(dns_resolver::get_config_handler).put(dns_resolver::update_config_handler))
-        .route("/api/v1/dns/resolver/hosts", get(dns_resolver::list_hosts).post(dns_resolver::create_host))
-        .route("/api/v1/dns/resolver/hosts/{id}", put(dns_resolver::update_host).delete(dns_resolver::delete_host))
-        .route("/api/v1/dns/resolver/domains", get(dns_resolver::list_domains).post(dns_resolver::create_domain))
-        .route("/api/v1/dns/resolver/domains/{id}", put(dns_resolver::update_domain).delete(dns_resolver::delete_domain))
-        .route("/api/v1/dns/resolver/acls", get(dns_resolver::list_acls).post(dns_resolver::create_acl))
-        .route("/api/v1/dns/resolver/acls/{id}", delete(dns_resolver::delete_acl))
-        .route("/api/v1/dns/resolver/logs", get(dns_resolver::resolver_logs))
-        .route("/api/v1/updates/status", get(updates::update_status))
-        .route("/api/v1/updates/check", post(updates::check_updates))
-        .route("/api/v1/updates/schedule", get(updates::get_schedule).put(updates::update_schedule))
-        .route("/api/v1/updates/history", get(updates::update_history))
-        .route("/api/v1/updates/aifw/status", get(updates::aifw_update_status))
-        .route("/api/v1/updates/aifw/check", post(updates::aifw_check_update))
-        // Reverse Proxy (TrafficCop)
-        .route("/api/v1/reverse-proxy/status", get(reverse_proxy::rp_status))
-        .route("/api/v1/reverse-proxy/config", get(reverse_proxy::get_config).put(reverse_proxy::update_config))
-        .route("/api/v1/reverse-proxy/validate", post(reverse_proxy::validate_config))
-        .route("/api/v1/reverse-proxy/logs", get(reverse_proxy::rp_logs))
-        .route("/api/v1/reverse-proxy/entrypoints", get(reverse_proxy::list_entrypoints).post(reverse_proxy::create_entrypoint))
-        .route("/api/v1/reverse-proxy/entrypoints/{id}", put(reverse_proxy::update_entrypoint).delete(reverse_proxy::delete_entrypoint))
-        .route("/api/v1/reverse-proxy/http/routers", get(reverse_proxy::list_http_routers).post(reverse_proxy::create_http_router))
-        .route("/api/v1/reverse-proxy/http/routers/{id}", put(reverse_proxy::update_http_router).delete(reverse_proxy::delete_http_router))
-        .route("/api/v1/reverse-proxy/http/services", get(reverse_proxy::list_http_services).post(reverse_proxy::create_http_service))
-        .route("/api/v1/reverse-proxy/http/services/{id}", put(reverse_proxy::update_http_service).delete(reverse_proxy::delete_http_service))
-        .route("/api/v1/reverse-proxy/http/middlewares", get(reverse_proxy::list_http_middlewares).post(reverse_proxy::create_http_middleware))
-        .route("/api/v1/reverse-proxy/http/middlewares/{id}", put(reverse_proxy::update_http_middleware).delete(reverse_proxy::delete_http_middleware))
-        .route("/api/v1/reverse-proxy/tcp/routers", get(reverse_proxy::list_tcp_routers).post(reverse_proxy::create_tcp_router))
-        .route("/api/v1/reverse-proxy/tcp/routers/{id}", put(reverse_proxy::update_tcp_router).delete(reverse_proxy::delete_tcp_router))
-        .route("/api/v1/reverse-proxy/tcp/services", get(reverse_proxy::list_tcp_services).post(reverse_proxy::create_tcp_service))
-        .route("/api/v1/reverse-proxy/tcp/services/{id}", put(reverse_proxy::update_tcp_service).delete(reverse_proxy::delete_tcp_service))
-        .route("/api/v1/reverse-proxy/udp/routers", get(reverse_proxy::list_udp_routers).post(reverse_proxy::create_udp_router))
-        .route("/api/v1/reverse-proxy/udp/routers/{id}", put(reverse_proxy::update_udp_router).delete(reverse_proxy::delete_udp_router))
-        .route("/api/v1/reverse-proxy/udp/services", get(reverse_proxy::list_udp_services).post(reverse_proxy::create_udp_service))
-        .route("/api/v1/reverse-proxy/udp/services/{id}", put(reverse_proxy::update_udp_service).delete(reverse_proxy::delete_udp_service))
-        .route("/api/v1/reverse-proxy/tls/certs", get(reverse_proxy::list_tls_certs).post(reverse_proxy::create_tls_cert))
-        .route("/api/v1/reverse-proxy/tls/certs/{id}", put(reverse_proxy::update_tls_cert).delete(reverse_proxy::delete_tls_cert))
-        .route("/api/v1/reverse-proxy/tls/options", get(reverse_proxy::list_tls_options).post(reverse_proxy::create_tls_option))
-        .route("/api/v1/reverse-proxy/tls/options/{id}", put(reverse_proxy::update_tls_option).delete(reverse_proxy::delete_tls_option))
-        .route("/api/v1/reverse-proxy/cert-resolvers", get(reverse_proxy::list_cert_resolvers).post(reverse_proxy::create_cert_resolver))
-        .route("/api/v1/reverse-proxy/cert-resolvers/{id}", put(reverse_proxy::update_cert_resolver).delete(reverse_proxy::delete_cert_resolver))
-        // Time Service (rTIME)
-        .route("/api/v1/time/status", get(time_service::time_status))
-        .route("/api/v1/time/config", get(time_service::get_config).put(time_service::update_config))
-        .route("/api/v1/time/sources", get(time_service::list_sources).post(time_service::create_source))
-        .route("/api/v1/time/sources/{id}", put(time_service::update_source).delete(time_service::delete_source))
-        .route("/api/v1/time/logs", get(time_service::time_logs))
-        // Plugins
-        .route("/api/v1/plugins", get(plugins::list_plugins))
-        .route("/api/v1/plugins/{name}/logs", get(plugins::get_plugin_logs))
-        .route("/api/v1/config/history", get(backup::config_history))
-        .route("/api/v1/config/version", get(backup::get_version))
-        .route("/api/v1/config/diff", get(backup::diff_versions))
-        .route("/api/v1/config/check", get(backup::check_config))
-        .route("/api/v1/config/preview-opnsense", post(backup::preview_opnsense))
-        .route("/api/v1/config/commit-confirm/status", get(backup::commit_confirm_status))
-        .route("/api/v1/schedules", get(routes::list_schedules).post(routes::create_schedule))
-        .route("/api/v1/schedules/{id}", put(routes::update_schedule).delete(routes::delete_schedule))
-        .route("/api/v1/rules/system", get(routes::list_system_rules))
-        .route("/api/v1/rules", get(routes::list_rules).post(routes::create_rule))
-        .route("/api/v1/rules/{id}", get(routes::get_rule).put(routes::update_rule).delete(routes::delete_rule))
-        .route("/api/v1/rules/block-logging", post(routes::toggle_block_logging))
-        .route("/api/v1/nat", get(routes::list_nat_rules).post(routes::create_nat_rule))
-        .route("/api/v1/nat/pf-output", get(routes::get_nat_pf_output))
-        .route("/api/v1/nat/{id}", put(routes::update_nat_rule).delete(routes::delete_nat_rule))
-        .route("/api/v1/rules/reorder", put(routes::reorder_rules))
-        .route("/api/v1/nat/reorder", put(routes::reorder_nat_rules))
-        .route("/api/v1/dns", get(routes::get_dns).put(routes::update_dns))
-        .route("/api/v1/routes", get(routes::list_static_routes).post(routes::create_static_route))
-        .route("/api/v1/routes/{id}", put(routes::update_static_route).delete(routes::delete_static_route))
-        .route("/api/v1/routes/system", get(routes::get_system_routes))
-        .route("/api/v1/interfaces", get(routes::list_interfaces))
-        .route("/api/v1/interfaces/detailed", get(iface::list_interfaces_detailed))
-        .route("/api/v1/interfaces/roles", get(iface::list_interface_roles))
-        .route("/api/v1/interfaces/{name}/role", put(iface::set_interface_role).delete(iface::delete_interface_role))
-        .route("/api/v1/interfaces/config/{name}", put(iface::configure_interface))
-        .route("/api/v1/vlans", get(iface::list_vlans).post(iface::create_vlan))
-        .route("/api/v1/vlans/{id}", put(iface::update_vlan).delete(iface::delete_vlan))
-        .route("/api/v1/interfaces/{name}/stats", get(routes::get_interface_stats))
-        .route("/api/v1/aliases", get(aliases::list_aliases).post(aliases::create_alias))
-        .route("/api/v1/aliases/{id}", get(aliases::get_alias).put(aliases::update_alias).delete(aliases::delete_alias))
-        .route("/api/v1/geoip", get(routes::list_geoip_rules).post(routes::create_geoip_rule))
-        .route("/api/v1/geoip/{id}", put(routes::update_geoip_rule).delete(routes::delete_geoip_rule))
-        .route("/api/v1/geoip/lookup/{ip}", get(routes::geoip_lookup))
-        .route("/api/v1/vpn/wg", get(routes::list_wg_tunnels).post(routes::create_wg_tunnel))
-        .route("/api/v1/vpn/wg/{id}", put(routes::update_wg_tunnel).delete(routes::delete_wg_tunnel))
-        .route("/api/v1/vpn/wg/{id}/peers", get(routes::list_wg_peers).post(routes::create_wg_peer))
-        .route("/api/v1/vpn/wg/{tid}/peers/{pid}", delete(routes::delete_wg_peer))
-        .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas).post(routes::create_ipsec_sa))
-        .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
-        // IDS / IPS
-        .route("/api/v1/ids/config", get(ids::get_config).put(ids::update_config))
-        .route("/api/v1/ids/alerts", get(ids::list_alerts).delete(ids::purge_alerts))
-        .route("/api/v1/ids/alerts/{id}", get(ids::get_alert))
-        .route("/api/v1/ids/alerts/{id}/acknowledge", put(ids::acknowledge_alert))
-        .route("/api/v1/ids/rulesets", get(ids::list_rulesets).post(ids::create_ruleset))
-        .route("/api/v1/ids/rulesets/{id}", put(ids::update_ruleset).delete(ids::delete_ruleset))
-        .route("/api/v1/ids/rules", get(ids::list_rules))
-        .route("/api/v1/ids/rules/{id}", get(ids::get_rule).put(ids::update_rule))
-        .route("/api/v1/ids/rules/search", get(ids::search_rules))
-        .route("/api/v1/ids/suppressions", get(ids::list_suppressions).post(ids::create_suppression))
-        .route("/api/v1/ids/suppressions/{id}", delete(ids::delete_suppression))
-        .route("/api/v1/ids/stats", get(ids::get_stats))
-        .route("/api/v1/ws", get(ws::ws_handler))
-        .route("/api/v1/pending/stream", get(routes::pending_stream))
-        .route("/api/v1/pending", get(routes::get_pending))
-        .route("/api/v1/status", get(routes::status))
-        .route("/api/v1/connections", get(routes::list_connections))
-        .route("/api/v1/blocked", get(routes::list_blocked_traffic))
-        .route("/api/v1/metrics", get(routes::metrics))
-        .route("/api/v1/logs", get(routes::list_logs))
+    // Auth layer — applied once on the outer protected router
+    let auth_layer = middleware::from_fn_with_state(state.clone(), auth::auth_middleware);
+
+    // Self-service routes (auth only, no permission needed)
+    let self_service = Router::new()
         .route("/api/v1/auth/logout", post(routes::logout))
         .route("/api/v1/auth/totp/setup", post(routes::totp_setup))
         .route("/api/v1/auth/totp/verify", post(routes::totp_verify))
         .route("/api/v1/auth/totp/disable", post(routes::totp_disable))
-        .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
+        .route("/api/v1/auth/me", get(routes::get_current_user));
+
+    // --- Permission-scoped route groups ---
+    // Each group enforces a specific permission via perm_check! middleware.
+    // Read routes use GET; write routes use POST/PUT/DELETE.
+
+    // dashboard:view
+    let dashboard_view = Router::new()
+        .route("/api/v1/status", get(routes::status))
+        .route("/api/v1/metrics", get(routes::metrics))
+        .route("/api/v1/ws", get(ws::ws_handler))
+        .route("/api/v1/pending/stream", get(routes::pending_stream))
+        .route("/api/v1/pending", get(routes::get_pending))
+        .layer(middleware::from_fn(perm_check!(Permission::DashboardView)));
+
+    // rules:read
+    let rules_read = Router::new()
+        .route("/api/v1/rules", get(routes::list_rules))
+        .route("/api/v1/rules/{id}", get(routes::get_rule))
+        .route("/api/v1/rules/system", get(routes::list_system_rules))
+        .route("/api/v1/schedules", get(routes::list_schedules))
+        .layer(middleware::from_fn(perm_check!(Permission::RulesRead)));
+
+    // rules:write
+    let rules_write = Router::new()
+        .route("/api/v1/rules", post(routes::create_rule))
+        .route("/api/v1/rules/{id}", put(routes::update_rule).delete(routes::delete_rule))
+        .route("/api/v1/rules/reorder", put(routes::reorder_rules))
+        .route("/api/v1/rules/block-logging", post(routes::toggle_block_logging))
+        .route("/api/v1/reload", post(routes::reload))
+        .route("/api/v1/schedules", post(routes::create_schedule))
+        .route("/api/v1/schedules/{id}", put(routes::update_schedule).delete(routes::delete_schedule))
+        .layer(middleware::from_fn(perm_check!(Permission::RulesWrite)));
+
+    // nat:read
+    let nat_read = Router::new()
+        .route("/api/v1/nat", get(routes::list_nat_rules))
+        .route("/api/v1/nat/pf-output", get(routes::get_nat_pf_output))
+        .layer(middleware::from_fn(perm_check!(Permission::NatRead)));
+
+    // nat:write
+    let nat_write = Router::new()
+        .route("/api/v1/nat", post(routes::create_nat_rule))
+        .route("/api/v1/nat/{id}", put(routes::update_nat_rule).delete(routes::delete_nat_rule))
+        .route("/api/v1/nat/reorder", put(routes::reorder_nat_rules))
+        .layer(middleware::from_fn(perm_check!(Permission::NatWrite)));
+
+    // vpn:read
+    let vpn_read = Router::new()
+        .route("/api/v1/vpn/wg", get(routes::list_wg_tunnels))
+        .route("/api/v1/vpn/wg/{id}/peers", get(routes::list_wg_peers))
+        .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas))
+        .layer(middleware::from_fn(perm_check!(Permission::VpnRead)));
+
+    // vpn:write
+    let vpn_write = Router::new()
+        .route("/api/v1/vpn/wg", post(routes::create_wg_tunnel))
+        .route("/api/v1/vpn/wg/{id}", put(routes::update_wg_tunnel).delete(routes::delete_wg_tunnel))
+        .route("/api/v1/vpn/wg/{id}/peers", post(routes::create_wg_peer))
+        .route("/api/v1/vpn/wg/{tid}/peers/{pid}", delete(routes::delete_wg_peer))
+        .route("/api/v1/vpn/ipsec", post(routes::create_ipsec_sa))
+        .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
+        .layer(middleware::from_fn(perm_check!(Permission::VpnWrite)));
+
+    // geoip:read
+    let geoip_read = Router::new()
+        .route("/api/v1/geoip", get(routes::list_geoip_rules))
+        .route("/api/v1/geoip/lookup/{ip}", get(routes::geoip_lookup))
+        .layer(middleware::from_fn(perm_check!(Permission::GeoipRead)));
+
+    // geoip:write
+    let geoip_write = Router::new()
+        .route("/api/v1/geoip", post(routes::create_geoip_rule))
+        .route("/api/v1/geoip/{id}", put(routes::update_geoip_rule).delete(routes::delete_geoip_rule))
+        .layer(middleware::from_fn(perm_check!(Permission::GeoipWrite)));
+
+    // ids:read
+    let ids_read = Router::new()
+        .route("/api/v1/ids/config", get(ids::get_config))
+        .route("/api/v1/ids/alerts", get(ids::list_alerts))
+        .route("/api/v1/ids/alerts/{id}", get(ids::get_alert))
+        .route("/api/v1/ids/rulesets", get(ids::list_rulesets))
+        .route("/api/v1/ids/rules", get(ids::list_rules))
+        .route("/api/v1/ids/rules/{id}", get(ids::get_rule))
+        .route("/api/v1/ids/rules/search", get(ids::search_rules))
+        .route("/api/v1/ids/suppressions", get(ids::list_suppressions))
+        .route("/api/v1/ids/stats", get(ids::get_stats))
+        .layer(middleware::from_fn(perm_check!(Permission::IdsRead)));
+
+    // ids:write
+    let ids_write = Router::new()
+        .route("/api/v1/ids/config", put(ids::update_config))
+        .route("/api/v1/ids/alerts", delete(ids::purge_alerts))
+        .route("/api/v1/ids/alerts/{id}/acknowledge", put(ids::acknowledge_alert))
+        .route("/api/v1/ids/rulesets", post(ids::create_ruleset))
+        .route("/api/v1/ids/rulesets/{id}", put(ids::update_ruleset).delete(ids::delete_ruleset))
+        .route("/api/v1/ids/rules/{id}", put(ids::update_rule))
+        .route("/api/v1/ids/suppressions", post(ids::create_suppression))
+        .route("/api/v1/ids/suppressions/{id}", delete(ids::delete_suppression))
+        .route("/api/v1/ids/reload", post(ids::reload))
+        .layer(middleware::from_fn(perm_check!(Permission::IdsWrite)));
+
+    // dns:read
+    let dns_read = Router::new()
+        .route("/api/v1/dns", get(routes::get_dns))
+        .route("/api/v1/dns/resolver/status", get(dns_resolver::resolver_status))
+        .route("/api/v1/dns/resolver/config", get(dns_resolver::get_config_handler))
+        .route("/api/v1/dns/resolver/hosts", get(dns_resolver::list_hosts))
+        .route("/api/v1/dns/resolver/domains", get(dns_resolver::list_domains))
+        .route("/api/v1/dns/resolver/acls", get(dns_resolver::list_acls))
+        .route("/api/v1/dns/resolver/logs", get(dns_resolver::resolver_logs))
+        .layer(middleware::from_fn(perm_check!(Permission::DnsRead)));
+
+    // dns:write
+    let dns_write = Router::new()
+        .route("/api/v1/dns", put(routes::update_dns))
+        .route("/api/v1/dns/resolver/config", put(dns_resolver::update_config_handler))
+        .route("/api/v1/dns/resolver/hosts", post(dns_resolver::create_host))
+        .route("/api/v1/dns/resolver/hosts/{id}", put(dns_resolver::update_host).delete(dns_resolver::delete_host))
+        .route("/api/v1/dns/resolver/domains", post(dns_resolver::create_domain))
+        .route("/api/v1/dns/resolver/domains/{id}", put(dns_resolver::update_domain).delete(dns_resolver::delete_domain))
+        .route("/api/v1/dns/resolver/acls", post(dns_resolver::create_acl))
+        .route("/api/v1/dns/resolver/acls/{id}", delete(dns_resolver::delete_acl))
+        .route("/api/v1/dns/resolver/apply", post(dns_resolver::apply_resolver))
+        .route("/api/v1/dns/resolver/start", post(dns_resolver::resolver_start))
+        .route("/api/v1/dns/resolver/stop", post(dns_resolver::resolver_stop))
+        .route("/api/v1/dns/resolver/restart", post(dns_resolver::resolver_restart))
+        .layer(middleware::from_fn(perm_check!(Permission::DnsWrite)));
+
+    // dhcp:read
+    let dhcp_read = Router::new()
+        .route("/api/v1/dhcp/status", get(dhcp::dhcp_status))
+        .route("/api/v1/dhcp/v4/config", get(dhcp::get_config))
+        .route("/api/v1/dhcp/v4/subnets", get(dhcp::list_subnets))
+        .route("/api/v1/dhcp/v4/reservations", get(dhcp::list_reservations))
+        .route("/api/v1/dhcp/v4/leases", get(dhcp::list_leases))
+        .route("/api/v1/dhcp/ddns", get(dhcp::get_ddns_config))
+        .route("/api/v1/dhcp/ha/config", get(dhcp::get_ha_config))
+        .route("/api/v1/dhcp/ha/status", get(dhcp::get_ha_status))
+        .route("/api/v1/dhcp/pool-stats", get(dhcp::get_pool_stats))
+        .route("/api/v1/dhcp/metrics", get(dhcp::get_metrics))
+        .route("/api/v1/dhcp/logs", get(dhcp::dhcp_logs))
+        .layer(middleware::from_fn(perm_check!(Permission::DhcpRead)));
+
+    // dhcp:write
+    let dhcp_write = Router::new()
+        .route("/api/v1/dhcp/start", post(dhcp::dhcp_start))
+        .route("/api/v1/dhcp/stop", post(dhcp::dhcp_stop))
+        .route("/api/v1/dhcp/restart", post(dhcp::dhcp_restart))
+        .route("/api/v1/dhcp/v4/config", put(dhcp::update_config))
+        .route("/api/v1/dhcp/v4/subnets", post(dhcp::create_subnet))
+        .route("/api/v1/dhcp/v4/subnets/{id}", put(dhcp::update_subnet).delete(dhcp::delete_subnet))
+        .route("/api/v1/dhcp/v4/reservations", post(dhcp::create_reservation))
+        .route("/api/v1/dhcp/v4/reservations/{id}", put(dhcp::update_reservation).delete(dhcp::delete_reservation))
+        .route("/api/v1/dhcp/v4/leases/{ip}", delete(dhcp::release_lease))
+        .route("/api/v1/dhcp/v4/apply", post(dhcp::apply_config))
+        .route("/api/v1/dhcp/ddns", put(dhcp::update_ddns_config))
+        .route("/api/v1/dhcp/ha/config", put(dhcp::update_ha_config))
+        .layer(middleware::from_fn(perm_check!(Permission::DhcpWrite)));
+
+    // aliases:read
+    let aliases_read = Router::new()
+        .route("/api/v1/aliases", get(aliases::list_aliases))
+        .route("/api/v1/aliases/{id}", get(aliases::get_alias))
+        .layer(middleware::from_fn(perm_check!(Permission::AliasesRead)));
+
+    // aliases:write
+    let aliases_write = Router::new()
+        .route("/api/v1/aliases", post(aliases::create_alias))
+        .route("/api/v1/aliases/{id}", put(aliases::update_alias).delete(aliases::delete_alias))
+        .layer(middleware::from_fn(perm_check!(Permission::AliasesWrite)));
+
+    // interfaces:read
+    let ifaces_read = Router::new()
+        .route("/api/v1/interfaces", get(routes::list_interfaces))
+        .route("/api/v1/interfaces/detailed", get(iface::list_interfaces_detailed))
+        .route("/api/v1/interfaces/roles", get(iface::list_interface_roles))
+        .route("/api/v1/interfaces/{name}/stats", get(routes::get_interface_stats))
+        .route("/api/v1/vlans", get(iface::list_vlans))
+        .route("/api/v1/routes", get(routes::list_static_routes))
+        .route("/api/v1/routes/system", get(routes::get_system_routes))
+        .layer(middleware::from_fn(perm_check!(Permission::InterfacesRead)));
+
+    // interfaces:write
+    let ifaces_write = Router::new()
+        .route("/api/v1/interfaces/{name}/role", put(iface::set_interface_role).delete(iface::delete_interface_role))
+        .route("/api/v1/interfaces/config/{name}", put(iface::configure_interface))
+        .route("/api/v1/vlans", post(iface::create_vlan))
+        .route("/api/v1/vlans/{id}", put(iface::update_vlan).delete(iface::delete_vlan))
+        .route("/api/v1/routes", post(routes::create_static_route))
+        .route("/api/v1/routes/{id}", put(routes::update_static_route).delete(routes::delete_static_route))
+        .layer(middleware::from_fn(perm_check!(Permission::InterfacesWrite)));
+
+    // connections:view
+    let connections_view = Router::new()
+        .route("/api/v1/connections", get(routes::list_connections))
+        .route("/api/v1/blocked", get(routes::list_blocked_traffic))
+        .layer(middleware::from_fn(perm_check!(Permission::ConnectionsView)));
+
+    // logs:view
+    let logs_view = Router::new()
+        .route("/api/v1/logs", get(routes::list_logs))
+        .layer(middleware::from_fn(perm_check!(Permission::LogsView)));
+
+    // users:read
+    let users_read = Router::new()
+        .route("/api/v1/auth/users", get(routes::list_users))
+        .route("/api/v1/auth/users/{id}", get(routes::get_user))
+        .route("/api/v1/auth/audit", get(routes::list_user_audit))
+        .route("/api/v1/auth/roles", get(routes::list_roles))
+        .route("/api/v1/auth/permissions", get(routes::list_permissions))
+        .layer(middleware::from_fn(perm_check!(Permission::UsersRead)));
+
+    // users:write
+    let users_write = Router::new()
+        .route("/api/v1/auth/users", post(routes::create_user))
+        .route("/api/v1/auth/users/{id}", put(routes::update_user).delete(routes::delete_user_handler))
+        .route("/api/v1/auth/api-keys", post(routes::create_api_key))
+        .route("/api/v1/auth/roles", post(routes::create_role))
+        .route("/api/v1/auth/roles/{id}", put(routes::update_role).delete(routes::delete_role))
+        .layer(middleware::from_fn(perm_check!(Permission::UsersWrite)));
+
+    // settings:read
+    let settings_read = Router::new()
+        .route("/api/v1/auth/settings", get(routes::get_auth_settings))
+        .route("/api/v1/auth/oauth/providers", get(routes::list_oauth_providers))
+        .route("/api/v1/settings/tls", get(routes::get_tls_settings))
+        .route("/api/v1/settings/valkey", get(routes::get_valkey_settings))
+        .route("/api/v1/settings/dashboard-history", get(routes::get_dashboard_history_settings))
+        .route("/api/v1/ca", get(ca::get_ca_info))
+        .route("/api/v1/ca/cert.pem", get(ca::get_ca_cert_pem))
+        .route("/api/v1/ca/crl", get(ca::get_crl))
+        .route("/api/v1/ca/certs", get(ca::list_certs))
+        .route("/api/v1/ca/certs/{id}", get(ca::get_cert))
+        .route("/api/v1/ca/certs/{id}/cert.pem", get(ca::download_cert))
+        .route("/api/v1/time/status", get(time_service::time_status))
+        .route("/api/v1/time/config", get(time_service::get_config))
+        .route("/api/v1/time/sources", get(time_service::list_sources))
+        .route("/api/v1/time/logs", get(time_service::time_logs))
+        .layer(middleware::from_fn(perm_check!(Permission::SettingsRead)));
+
+    // settings:write
+    let settings_write = Router::new()
+        .route("/api/v1/auth/settings", put(routes::update_auth_settings))
+        .route("/api/v1/auth/oauth/providers", post(routes::create_oauth_provider))
+        .route("/api/v1/auth/oauth/providers/{id}", delete(routes::delete_oauth_provider))
+        .route("/api/v1/settings/tls", put(routes::update_tls_settings))
+        .route("/api/v1/settings/valkey", put(routes::update_valkey_settings))
+        .route("/api/v1/settings/dashboard-history", put(routes::update_dashboard_history_settings))
+        .route("/api/v1/ca", post(ca::generate_ca))
+        .route("/api/v1/ca/certs", post(ca::issue_cert))
+        .route("/api/v1/ca/certs/{id}", delete(ca::delete_cert))
+        .route("/api/v1/ca/certs/{id}/key.pem", get(ca::download_cert_key))
+        .route("/api/v1/ca/certs/{id}/revoke", post(ca::revoke_cert))
+        .route("/api/v1/time/config", put(time_service::update_config))
+        .route("/api/v1/time/sources", post(time_service::create_source))
+        .route("/api/v1/time/sources/{id}", put(time_service::update_source).delete(time_service::delete_source))
+        .route("/api/v1/time/start", post(time_service::time_start))
+        .route("/api/v1/time/stop", post(time_service::time_stop))
+        .route("/api/v1/time/restart", post(time_service::time_restart))
+        .route("/api/v1/time/apply", post(time_service::apply_config))
+        .layer(middleware::from_fn(perm_check!(Permission::SettingsWrite)));
+
+    // plugins:read
+    let plugins_read = Router::new()
+        .route("/api/v1/plugins", get(plugins::list_plugins))
+        .route("/api/v1/plugins/{name}/logs", get(plugins::get_plugin_logs))
+        .route("/api/v1/plugins/{name}/config", get(plugins::get_plugin_config))
+        .route("/api/v1/plugins/discover", get(plugins::discover_plugins))
+        .layer(middleware::from_fn(perm_check!(Permission::PluginsRead)));
+
+    // plugins:write
+    let plugins_write = Router::new()
+        .route("/api/v1/plugins/toggle", post(plugins::enable_plugin))
+        .route("/api/v1/plugins/{name}/config", put(plugins::update_plugin_config))
+        .layer(middleware::from_fn(perm_check!(Permission::PluginsWrite)));
+
+    // updates:read
+    let updates_read = Router::new()
+        .route("/api/v1/updates/status", get(updates::update_status))
+        .route("/api/v1/updates/check", post(updates::check_updates))
+        .route("/api/v1/updates/schedule", get(updates::get_schedule))
+        .route("/api/v1/updates/history", get(updates::update_history))
+        .route("/api/v1/updates/aifw/status", get(updates::aifw_update_status))
+        .route("/api/v1/updates/aifw/check", post(updates::aifw_check_update))
+        .layer(middleware::from_fn(perm_check!(Permission::UpdatesRead)));
+
+    // updates:install
+    let updates_install = Router::new()
+        .route("/api/v1/updates/install", post(updates::install_updates))
+        .route("/api/v1/updates/schedule", put(updates::update_schedule))
+        .route("/api/v1/updates/aifw/install", post(updates::aifw_install_update))
+        .route("/api/v1/updates/aifw/rollback", post(updates::aifw_rollback))
+        .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
+
+    // backup:read
+    let backup_read = Router::new()
+        .route("/api/v1/config/history", get(backup::config_history))
+        .route("/api/v1/config/version", get(backup::get_version))
+        .route("/api/v1/config/diff", get(backup::diff_versions))
+        .route("/api/v1/config/check", get(backup::check_config))
+        .route("/api/v1/config/export", get(routes::export_config))
+        .route("/api/v1/config/preview-opnsense", post(backup::preview_opnsense))
+        .route("/api/v1/config/commit-confirm/status", get(backup::commit_confirm_status))
+        .layer(middleware::from_fn(perm_check!(Permission::BackupRead)));
+
+    // backup:write
+    let backup_write = Router::new()
+        .route("/api/v1/config/import", post(routes::import_config))
+        .route("/api/v1/config/restore", post(backup::restore_version))
+        .route("/api/v1/config/import-opnsense", post(backup::import_opnsense))
+        .route("/api/v1/config/save", post(backup::save_version))
+        .route("/api/v1/config/commit-confirm", post(backup::commit_confirm_start))
+        .route("/api/v1/config/commit-confirm/confirm", post(backup::commit_confirm_accept))
+        .layer(middleware::from_fn(perm_check!(Permission::BackupWrite)));
+
+    // system:reboot
+    let system_reboot = Router::new()
+        .route("/api/v1/updates/reboot", post(updates::reboot_system))
+        .layer(middleware::from_fn(perm_check!(Permission::SystemReboot)));
+
+    // proxy:read
+    let proxy_read = Router::new()
+        .route("/api/v1/reverse-proxy/status", get(reverse_proxy::rp_status))
+        .route("/api/v1/reverse-proxy/config", get(reverse_proxy::get_config))
+        .route("/api/v1/reverse-proxy/logs", get(reverse_proxy::rp_logs))
+        .route("/api/v1/reverse-proxy/entrypoints", get(reverse_proxy::list_entrypoints))
+        .route("/api/v1/reverse-proxy/http/routers", get(reverse_proxy::list_http_routers))
+        .route("/api/v1/reverse-proxy/http/services", get(reverse_proxy::list_http_services))
+        .route("/api/v1/reverse-proxy/http/middlewares", get(reverse_proxy::list_http_middlewares))
+        .route("/api/v1/reverse-proxy/tcp/routers", get(reverse_proxy::list_tcp_routers))
+        .route("/api/v1/reverse-proxy/tcp/services", get(reverse_proxy::list_tcp_services))
+        .route("/api/v1/reverse-proxy/udp/routers", get(reverse_proxy::list_udp_routers))
+        .route("/api/v1/reverse-proxy/udp/services", get(reverse_proxy::list_udp_services))
+        .route("/api/v1/reverse-proxy/tls/certs", get(reverse_proxy::list_tls_certs))
+        .route("/api/v1/reverse-proxy/tls/options", get(reverse_proxy::list_tls_options))
+        .route("/api/v1/reverse-proxy/cert-resolvers", get(reverse_proxy::list_cert_resolvers))
+        .layer(middleware::from_fn(perm_check!(Permission::ProxyRead)));
+
+    // proxy:write
+    let proxy_write = Router::new()
+        .route("/api/v1/reverse-proxy/config", put(reverse_proxy::update_config))
+        .route("/api/v1/reverse-proxy/validate", post(reverse_proxy::validate_config))
+        .route("/api/v1/reverse-proxy/entrypoints", post(reverse_proxy::create_entrypoint))
+        .route("/api/v1/reverse-proxy/entrypoints/{id}", put(reverse_proxy::update_entrypoint).delete(reverse_proxy::delete_entrypoint))
+        .route("/api/v1/reverse-proxy/http/routers", post(reverse_proxy::create_http_router))
+        .route("/api/v1/reverse-proxy/http/routers/{id}", put(reverse_proxy::update_http_router).delete(reverse_proxy::delete_http_router))
+        .route("/api/v1/reverse-proxy/http/services", post(reverse_proxy::create_http_service))
+        .route("/api/v1/reverse-proxy/http/services/{id}", put(reverse_proxy::update_http_service).delete(reverse_proxy::delete_http_service))
+        .route("/api/v1/reverse-proxy/http/middlewares", post(reverse_proxy::create_http_middleware))
+        .route("/api/v1/reverse-proxy/http/middlewares/{id}", put(reverse_proxy::update_http_middleware).delete(reverse_proxy::delete_http_middleware))
+        .route("/api/v1/reverse-proxy/tcp/routers", post(reverse_proxy::create_tcp_router))
+        .route("/api/v1/reverse-proxy/tcp/routers/{id}", put(reverse_proxy::update_tcp_router).delete(reverse_proxy::delete_tcp_router))
+        .route("/api/v1/reverse-proxy/tcp/services", post(reverse_proxy::create_tcp_service))
+        .route("/api/v1/reverse-proxy/tcp/services/{id}", put(reverse_proxy::update_tcp_service).delete(reverse_proxy::delete_tcp_service))
+        .route("/api/v1/reverse-proxy/udp/routers", post(reverse_proxy::create_udp_router))
+        .route("/api/v1/reverse-proxy/udp/routers/{id}", put(reverse_proxy::update_udp_router).delete(reverse_proxy::delete_udp_router))
+        .route("/api/v1/reverse-proxy/udp/services", post(reverse_proxy::create_udp_service))
+        .route("/api/v1/reverse-proxy/udp/services/{id}", put(reverse_proxy::update_udp_service).delete(reverse_proxy::delete_udp_service))
+        .route("/api/v1/reverse-proxy/tls/certs", post(reverse_proxy::create_tls_cert))
+        .route("/api/v1/reverse-proxy/tls/certs/{id}", put(reverse_proxy::update_tls_cert).delete(reverse_proxy::delete_tls_cert))
+        .route("/api/v1/reverse-proxy/tls/options", post(reverse_proxy::create_tls_option))
+        .route("/api/v1/reverse-proxy/tls/options/{id}", put(reverse_proxy::update_tls_option).delete(reverse_proxy::delete_tls_option))
+        .route("/api/v1/reverse-proxy/cert-resolvers", post(reverse_proxy::create_cert_resolver))
+        .route("/api/v1/reverse-proxy/cert-resolvers/{id}", put(reverse_proxy::update_cert_resolver).delete(reverse_proxy::delete_cert_resolver))
+        .route("/api/v1/reverse-proxy/start", post(reverse_proxy::rp_start))
+        .route("/api/v1/reverse-proxy/stop", post(reverse_proxy::rp_stop))
+        .route("/api/v1/reverse-proxy/restart", post(reverse_proxy::rp_restart))
+        .route("/api/v1/reverse-proxy/apply", post(reverse_proxy::apply_config))
+        .layer(middleware::from_fn(perm_check!(Permission::ProxyWrite)));
+
+    // Merge all permission-scoped groups into one protected router with auth
+    let protected_routes = Router::new()
+        .merge(self_service)
+        .merge(dashboard_view)
+        .merge(rules_read).merge(rules_write)
+        .merge(nat_read).merge(nat_write)
+        .merge(vpn_read).merge(vpn_write)
+        .merge(geoip_read).merge(geoip_write)
+        .merge(ids_read).merge(ids_write)
+        .merge(dns_read).merge(dns_write)
+        .merge(dhcp_read).merge(dhcp_write)
+        .merge(aliases_read).merge(aliases_write)
+        .merge(ifaces_read).merge(ifaces_write)
+        .merge(connections_view)
+        .merge(logs_view)
+        .merge(users_read).merge(users_write)
+        .merge(settings_read).merge(settings_write)
+        .merge(plugins_read).merge(plugins_write)
+        .merge(updates_read).merge(updates_install)
+        .merge(backup_read).merge(backup_write)
+        .merge(system_reboot)
+        .merge(proxy_read).merge(proxy_write)
+        .layer(auth_layer);
 
     let mut app = Router::new()
         .merge(public_routes)
-        .merge(admin_routes)
         .merge(protected_routes)
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
         .layer(

@@ -18,6 +18,10 @@ pub struct Claims {
     pub exp: i64,
     pub iat: i64,
     pub jti: String, // unique token ID
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perm: Option<u64>, // permission bitmask
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>, // role name for display
 }
 
 #[derive(Debug, Serialize)]
@@ -32,6 +36,8 @@ pub struct TokenPair {
 pub fn create_access_token(
     user_id: &str,
     username: &str,
+    permissions: u64,
+    role_name: &str,
     settings: &AuthSettings,
 ) -> Result<(String, String), String> {
     let now = Utc::now();
@@ -44,6 +50,8 @@ pub fn create_access_token(
         exp: exp.timestamp(),
         iat: now.timestamp(),
         jti: jti.clone(),
+        perm: Some(permissions),
+        role: Some(role_name.to_string()),
     };
 
     let token = encode(
@@ -105,9 +113,11 @@ pub async fn issue_token_pair(
     pool: &SqlitePool,
     user_id: &str,
     username: &str,
+    permissions: u64,
+    role_name: &str,
     settings: &AuthSettings,
 ) -> Result<TokenPair, String> {
-    let (access_token, access_expires) = create_access_token(user_id, username, settings)?;
+    let (access_token, access_expires) = create_access_token(user_id, username, permissions, role_name, settings)?;
     let (refresh_token, refresh_expires) = create_refresh_token(pool, user_id, settings).await?;
 
     Ok(TokenPair {
@@ -199,9 +209,9 @@ pub async fn rotate_refresh_token(
     .await
     .map_err(|e| format!("db error: {e}"))?;
 
-    // Get username and check user is still enabled
-    let (username, enabled) = sqlx::query_as::<_, (String, bool)>(
-        "SELECT username, enabled FROM users WHERE id = ?1",
+    // Get username, enabled, and role for permission resolution
+    let (username, enabled, role, role_id) = sqlx::query_as::<_, (String, bool, String, Option<String>)>(
+        "SELECT username, enabled, role, role_id FROM users WHERE id = ?1",
     )
     .bind(&user_id)
     .fetch_one(pool)
@@ -212,7 +222,10 @@ pub async fn rotate_refresh_token(
         return Err("user account is disabled".to_string());
     }
 
-    let (access_token, access_expires) = create_access_token(&user_id, &username, settings)?;
+    // Resolve permissions from role
+    let (perm_bits, role_name) = resolve_token_permissions(pool, &role, role_id.as_deref()).await?;
+
+    let (access_token, access_expires) = create_access_token(&user_id, &username, perm_bits, &role_name, settings)?;
 
     Ok(TokenPair {
         access_token,
@@ -244,6 +257,39 @@ pub async fn revoke_refresh_token(pool: &SqlitePool, token: &str) -> Result<(), 
     }
 
     Err("refresh token not found".to_string())
+}
+
+// ============================================================
+// Permission resolution for token issuance
+// ============================================================
+
+/// Resolve permission bitmask and role name for embedding in JWT.
+/// Tries role_id (new system) first, falls back to legacy role string.
+pub async fn resolve_token_permissions(
+    pool: &SqlitePool,
+    legacy_role: &str,
+    role_id: Option<&str>,
+) -> Result<(u64, String), String> {
+    use aifw_common::permission::{PermissionSet, builtin_role_permissions};
+
+    // Try new role_id system first
+    if let Some(rid) = role_id {
+        let row = sqlx::query_as::<_, (i64, String)>(
+            "SELECT permissions, name FROM roles WHERE id = ?1",
+        )
+        .bind(rid)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("db error: {e}"))?;
+
+        if let Some((bits, name)) = row {
+            return Ok((bits as u64, name));
+        }
+    }
+
+    // Fallback to legacy role string
+    let perms = PermissionSet::from_permissions(&builtin_role_permissions(legacy_role));
+    Ok((perms.to_bits(), legacy_role.to_string()))
 }
 
 // ============================================================

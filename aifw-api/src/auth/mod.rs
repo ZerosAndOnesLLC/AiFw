@@ -34,6 +34,7 @@ pub struct User {
     pub totp_secret: Option<String>,
     pub auth_provider: String,
     pub role: String,
+    pub role_id: Option<String>,
     pub enabled: bool,
     pub created_at: String,
 }
@@ -261,6 +262,66 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // --- RBAC: roles table ---
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS roles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            permissions INTEGER NOT NULL DEFAULT 0,
+            builtin INTEGER NOT NULL DEFAULT 0,
+            description TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Seed built-in roles (idempotent)
+    {
+        use aifw_common::permission::{PermissionSet, builtin_role_permissions};
+        let admin_bits = PermissionSet::from_permissions(&builtin_role_permissions("admin")).to_bits() as i64;
+        let operator_bits = PermissionSet::from_permissions(&builtin_role_permissions("operator")).to_bits() as i64;
+        let viewer_bits = PermissionSet::from_permissions(&builtin_role_permissions("viewer")).to_bits() as i64;
+
+        sqlx::query(
+            "INSERT OR IGNORE INTO roles (id, name, permissions, builtin, description) VALUES (?1, ?2, ?3, 1, ?4)"
+        )
+        .bind("builtin-admin").bind("admin").bind(admin_bits).bind("Full system access")
+        .execute(pool).await?;
+
+        sqlx::query(
+            "INSERT OR IGNORE INTO roles (id, name, permissions, builtin, description) VALUES (?1, ?2, ?3, 1, ?4)"
+        )
+        .bind("builtin-operator").bind("operator").bind(operator_bits).bind("Operational access without system administration")
+        .execute(pool).await?;
+
+        sqlx::query(
+            "INSERT OR IGNORE INTO roles (id, name, permissions, builtin, description) VALUES (?1, ?2, ?3, 1, ?4)"
+        )
+        .bind("builtin-viewer").bind("viewer").bind(viewer_bits).bind("Read-only access")
+        .execute(pool).await?;
+
+        // Update built-in role permissions in case new permissions were added
+        sqlx::query("UPDATE roles SET permissions = ?1 WHERE id = 'builtin-admin'")
+            .bind(admin_bits).execute(pool).await?;
+        sqlx::query("UPDATE roles SET permissions = ?1 WHERE id = 'builtin-operator'")
+            .bind(operator_bits).execute(pool).await?;
+        sqlx::query("UPDATE roles SET permissions = ?1 WHERE id = 'builtin-viewer'")
+            .bind(viewer_bits).execute(pool).await?;
+    }
+
+    // Add role_id column to users (references roles table)
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN role_id TEXT")
+        .execute(pool).await;
+
+    // Backfill role_id from legacy role string
+    sqlx::query("UPDATE users SET role_id = 'builtin-admin' WHERE role = 'admin' AND role_id IS NULL")
+        .execute(pool).await?;
+    sqlx::query("UPDATE users SET role_id = 'builtin-operator' WHERE role = 'operator' AND role_id IS NULL")
+        .execute(pool).await?;
+    sqlx::query("UPDATE users SET role_id = 'builtin-viewer' WHERE role = 'viewer' AND role_id IS NULL")
+        .execute(pool).await?;
+
     Ok(())
 }
 
@@ -321,6 +382,12 @@ pub async fn create_user(pool: &SqlitePool, req: &CreateUserRequest) -> Result<U
     validate_password(&req.password)?;
     let pw_hash = hash_password(&req.password)?;
     let role = req.role.as_deref().unwrap_or("viewer").to_string();
+    let role_id = match role.as_str() {
+        "admin" => Some("builtin-admin".to_string()),
+        "operator" => Some("builtin-operator".to_string()),
+        "viewer" => Some("builtin-viewer".to_string()),
+        _ => None,
+    };
     let user = User {
         id: Uuid::new_v4(),
         username: req.username.clone(),
@@ -329,12 +396,13 @@ pub async fn create_user(pool: &SqlitePool, req: &CreateUserRequest) -> Result<U
         totp_secret: None,
         auth_provider: "local".to_string(),
         role,
+        role_id: role_id.clone(),
         enabled: true,
         created_at: Utc::now().to_rfc3339(),
     };
 
     sqlx::query(
-        "INSERT INTO users (id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, enabled, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO users (id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, role_id, enabled, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )
     .bind(user.id.to_string())
     .bind(&user.username)
@@ -343,6 +411,7 @@ pub async fn create_user(pool: &SqlitePool, req: &CreateUserRequest) -> Result<U
     .bind(user.totp_secret.as_deref())
     .bind(&user.auth_provider)
     .bind(&user.role)
+    .bind(user.role_id.as_deref())
     .bind(user.enabled)
     .bind(&user.created_at)
     .execute(pool)
@@ -353,17 +422,17 @@ pub async fn create_user(pool: &SqlitePool, req: &CreateUserRequest) -> Result<U
 }
 
 pub async fn list_users(pool: &SqlitePool) -> Result<Vec<User>, StatusCode> {
-    let rows = sqlx::query_as::<_, (String, String, String, bool, Option<String>, String, String, bool, String)>(
-        "SELECT id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, enabled, created_at FROM users ORDER BY created_at ASC",
+    let rows = sqlx::query_as::<_, (String, String, String, bool, Option<String>, String, String, Option<String>, bool, String)>(
+        "SELECT id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, role_id, enabled, created_at FROM users ORDER BY created_at ASC",
     )
     .fetch_all(pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(rows.into_iter().map(|(id, username, pw, totp_on, totp_sec, provider, role, enabled, ca)| User {
+    Ok(rows.into_iter().map(|(id, username, pw, totp_on, totp_sec, provider, role, role_id, enabled, ca)| User {
         id: Uuid::parse_str(&id).unwrap_or_default(),
         username, password_hash: pw, totp_enabled: totp_on, totp_secret: totp_sec,
-        auth_provider: provider, role, enabled, created_at: ca,
+        auth_provider: provider, role, role_id, enabled, created_at: ca,
     }).collect())
 }
 
@@ -379,18 +448,35 @@ pub async fn update_user(pool: &SqlitePool, user_id: &str, req: &UpdateUserReque
     }
     if let Some(ref role) = req.role {
         user.role = role.clone();
+        // Map built-in role names to role_id; custom role_id can be set directly
+        user.role_id = match role.as_str() {
+            "admin" => Some("builtin-admin".to_string()),
+            "operator" => Some("builtin-operator".to_string()),
+            "viewer" => Some("builtin-viewer".to_string()),
+            _ => {
+                // Check if it's a custom role_id
+                let exists = sqlx::query_as::<_, (String,)>("SELECT id FROM roles WHERE id = ?1 OR name = ?1")
+                    .bind(role)
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten();
+                exists.map(|(id,)| id)
+            }
+        };
     }
     if let Some(enabled) = req.enabled {
         user.enabled = enabled;
     }
 
     sqlx::query(
-        "UPDATE users SET username = ?2, password_hash = ?3, role = ?4, enabled = ?5 WHERE id = ?1",
+        "UPDATE users SET username = ?2, password_hash = ?3, role = ?4, role_id = ?5, enabled = ?6 WHERE id = ?1",
     )
     .bind(user_id)
     .bind(&user.username)
     .bind(&user.password_hash)
     .bind(&user.role)
+    .bind(user.role_id.as_deref())
     .bind(user.enabled)
     .execute(pool)
     .await
@@ -444,34 +530,34 @@ pub async fn list_user_audit_log(pool: &SqlitePool, limit: i64) -> Result<Vec<Us
 }
 
 pub async fn get_user_by_username(pool: &SqlitePool, username: &str) -> Result<Option<User>, StatusCode> {
-    let row = sqlx::query_as::<_, (String, String, String, bool, Option<String>, String, String, bool, String)>(
-        "SELECT id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, enabled, created_at FROM users WHERE username = ?1",
+    let row = sqlx::query_as::<_, (String, String, String, bool, Option<String>, String, String, Option<String>, bool, String)>(
+        "SELECT id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, role_id, enabled, created_at FROM users WHERE username = ?1",
     )
     .bind(username)
     .fetch_optional(pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(row.map(|(id, username, pw, totp_on, totp_sec, provider, role, enabled, ca)| User {
+    Ok(row.map(|(id, username, pw, totp_on, totp_sec, provider, role, role_id, enabled, ca)| User {
         id: Uuid::parse_str(&id).unwrap_or_default(),
         username, password_hash: pw, totp_enabled: totp_on, totp_secret: totp_sec,
-        auth_provider: provider, role, enabled, created_at: ca,
+        auth_provider: provider, role, role_id, enabled, created_at: ca,
     }))
 }
 
 pub async fn get_user_by_id(pool: &SqlitePool, user_id: &str) -> Result<Option<User>, StatusCode> {
-    let row = sqlx::query_as::<_, (String, String, String, bool, Option<String>, String, String, bool, String)>(
-        "SELECT id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, enabled, created_at FROM users WHERE id = ?1",
+    let row = sqlx::query_as::<_, (String, String, String, bool, Option<String>, String, String, Option<String>, bool, String)>(
+        "SELECT id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, role_id, enabled, created_at FROM users WHERE id = ?1",
     )
     .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(row.map(|(id, username, pw, totp_on, totp_sec, provider, role, enabled, ca)| User {
+    Ok(row.map(|(id, username, pw, totp_on, totp_sec, provider, role, role_id, enabled, ca)| User {
         id: Uuid::parse_str(&id).unwrap_or_default(),
         username, password_hash: pw, totp_enabled: totp_on, totp_secret: totp_sec,
-        auth_provider: provider, role, enabled, created_at: ca,
+        auth_provider: provider, role, role_id, enabled, created_at: ca,
     }))
 }
 
@@ -609,6 +695,8 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    use aifw_common::permission::PermissionSet;
+
     // Accept auth from: Authorization header, or ?token= query param (for WebSocket/SSE)
     let auth_header = headers
         .get("authorization")
@@ -619,24 +707,24 @@ pub async fn auth_middleware(
         .and_then(|p| p.strip_prefix("token="))
         .map(|t| percent_decode(t));
 
-    let user_id = if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
+    // Resolve (user_id, perm_from_token, role_from_token) from the credential
+    let (user_id, jwt_perm, jwt_role) = if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
         let token_data = verify_access_token(token, &state.auth_settings)
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
-        // Check token blacklist for revoked access tokens
         if is_token_revoked(&state.pool, &token_data.claims.jti).await {
             return Err(StatusCode::UNAUTHORIZED);
         }
-        token_data.claims.sub
+        (token_data.claims.sub, token_data.claims.perm, token_data.claims.role)
     } else if let Some(key) = auth_header.and_then(|h| h.strip_prefix("ApiKey ")) {
-        verify_api_key(&state.pool, key).await?
+        let uid = verify_api_key(&state.pool, key).await?;
+        (uid, None, None) // API keys don't carry JWT claims — will do DB lookup
     } else if let Some(ref token) = query_token {
-        // Fallback: ?token= query param for WebSocket/SSE (browsers can't send headers)
         let token_data = verify_access_token(token, &state.auth_settings)
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
         if is_token_revoked(&state.pool, &token_data.claims.jti).await {
             return Err(StatusCode::UNAUTHORIZED);
         }
-        token_data.claims.sub
+        (token_data.claims.sub, token_data.claims.perm, token_data.claims.role)
     } else {
         return Err(StatusCode::UNAUTHORIZED);
     };
@@ -647,6 +735,18 @@ pub async fn auth_middleware(
     if !user.enabled {
         return Err(StatusCode::UNAUTHORIZED);
     }
+
+    // Resolve permissions: from JWT if present, otherwise DB lookup
+    let (perm_set, role_name) = match jwt_perm {
+        Some(bits) => (PermissionSet::from_bits(bits), jwt_role.unwrap_or_else(|| user.role.clone())),
+        None => {
+            // Legacy token or API key — resolve from DB
+            let (bits, name) = tokens::resolve_token_permissions(
+                &state.pool, &user.role, user.role_id.as_deref()
+            ).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            (PermissionSet::from_bits(bits), name)
+        }
+    };
 
     // Dispatch ApiRequest hook to plugins
     {
@@ -669,7 +769,12 @@ pub async fn auth_middleware(
         }
     }
 
-    request.extensions_mut().insert(AuthUser(user_id));
+    request.extensions_mut().insert(AuthUser {
+        user_id,
+        username: user.username.clone(),
+        permissions: perm_set,
+        role: role_name,
+    });
     Ok(next.run(request).await)
 }
 
@@ -694,27 +799,64 @@ fn percent_decode(s: &str) -> String {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub struct AuthUser(pub String);
+pub struct AuthUser {
+    pub user_id: String,
+    pub username: String,
+    pub permissions: aifw_common::PermissionSet,
+    pub role: String,
+}
 
-/// Middleware that requires the authenticated user to have the "admin" role.
-/// Must be applied AFTER auth_middleware so AuthUser is present.
-pub async fn require_admin(
-    State(state): State<crate::AppState>,
+/// Permission check middleware. Reads `AuthUser` from request extensions
+/// (set by auth_middleware) and checks if the user has the required permission.
+#[allow(dead_code)]
+pub async fn require_perm(
+    perm: aifw_common::Permission,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let user_id = request
+    let auth_user = request
         .extensions()
         .get::<AuthUser>()
-        .ok_or(StatusCode::UNAUTHORIZED)?
-        .0
-        .clone();
-
-    let user = get_user_by_id(&state.pool, &user_id)
-        .await?
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if user.role != "admin" {
+    if !auth_user.permissions.has(perm) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(next.run(request).await)
+}
+
+/// Macro to create a permission-check middleware closure for use with `from_fn`.
+#[macro_export]
+macro_rules! perm_check {
+    ($perm:expr) => {
+        |request: axum::extract::Request, next: axum::middleware::Next| async move {
+            let auth_user = request
+                .extensions()
+                .get::<$crate::auth::AuthUser>()
+                .ok_or(axum::http::StatusCode::UNAUTHORIZED)?;
+            if !auth_user.permissions.has($perm) {
+                return Err(axum::http::StatusCode::FORBIDDEN);
+            }
+            Ok::<_, axum::http::StatusCode>(next.run(request).await)
+        }
+    };
+}
+
+/// Legacy alias — checks users:write permission (admin-level).
+/// Kept for backward compatibility; new code should use perm_check! directly.
+#[allow(dead_code)]
+pub async fn require_admin(
+    State(_state): State<crate::AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth_user = request
+        .extensions()
+        .get::<AuthUser>()
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !auth_user.permissions.has(aifw_common::Permission::UsersWrite) {
         return Err(StatusCode::FORBIDDEN);
     }
 
