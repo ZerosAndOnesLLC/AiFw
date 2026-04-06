@@ -1,6 +1,7 @@
 use aifw_common::ids::{IdsRule, IdsRuleset, IdsSeverity, RuleFormat, RuleSource};
 use chrono::Utc;
 use sqlx::SqlitePool;
+use tokio::process::Command;
 use uuid::Uuid;
 
 use super::RuleDatabase;
@@ -131,6 +132,84 @@ impl RulesetManager {
         .await?;
 
         Ok(())
+    }
+
+    /// Download rules from a ruleset's source_url, parse, and store them.
+    /// Returns the number of rules stored.
+    pub async fn download_and_store_rules(&self, ruleset: &IdsRuleset) -> Result<usize> {
+        let url = ruleset.source_url.as_deref().ok_or_else(|| {
+            crate::IdsError::Config("Ruleset has no source URL".into())
+        })?;
+
+        tracing::info!(url, ruleset = %ruleset.name, "downloading ruleset");
+
+        // Download to temp file using fetch (FreeBSD) or curl
+        let tmp = format!("/tmp/aifw-ids-{}.rules", ruleset.id);
+        let downloaded = if let Ok(o) = Command::new("fetch")
+            .args(["-qo", &tmp, url])
+            .output().await
+        {
+            o.status.success()
+        } else {
+            false
+        };
+
+        if !downloaded {
+            let output = Command::new("curl")
+                .args(["-sL", "-o", &tmp, url])
+                .output().await
+                .map_err(|e| crate::IdsError::Config(format!("download failed: {e}")))?;
+            if !output.status.success() {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return Err(crate::IdsError::Config(format!(
+                    "download failed: {}", String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+        }
+
+        // Read and parse
+        let content = tokio::fs::read_to_string(&tmp).await
+            .map_err(|e| crate::IdsError::Io(e))?;
+        let _ = tokio::fs::remove_file(&tmp).await;
+
+        // Parse each line as a Suricata rule
+        let mut rules = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            // Extract SID and msg from the rule text
+            let sid = extract_sid(trimmed);
+            let msg = extract_msg(trimmed);
+            let severity = if trimmed.contains("priority:1") { IdsSeverity::CRITICAL }
+                else if trimmed.contains("priority:2") { IdsSeverity::HIGH }
+                else if trimmed.contains("priority:3") { IdsSeverity::MEDIUM }
+                else { IdsSeverity::INFO };
+
+            rules.push(IdsRule {
+                id: Uuid::new_v4(),
+                ruleset_id: ruleset.id,
+                sid,
+                rule_text: trimmed.to_string(),
+                msg,
+                severity,
+                enabled: true,
+                action_override: None,
+                hit_count: 0,
+                last_hit: None,
+                created_at: Utc::now(),
+            });
+        }
+
+        let count = rules.len();
+        tracing::info!(count, ruleset = %ruleset.name, "parsed rules from download");
+
+        if count > 0 {
+            self.store_rules(ruleset.id, &rules).await?;
+        }
+
+        Ok(count)
     }
 
     /// List rules for a specific ruleset.
@@ -286,6 +365,22 @@ impl RulesetManager {
             None => RuleSource::Custom,
         }
     }
+}
+
+fn extract_sid(rule: &str) -> Option<u32> {
+    rule.find("sid:")
+        .and_then(|pos| {
+            let rest = &rule[pos + 4..];
+            rest.split(';').next()?.trim().parse().ok()
+        })
+}
+
+fn extract_msg(rule: &str) -> Option<String> {
+    rule.find("msg:\"")
+        .and_then(|pos| {
+            let rest = &rule[pos + 5..];
+            rest.find('"').map(|end| rest[..end].to_string())
+        })
 }
 
 #[cfg(test)]

@@ -143,10 +143,16 @@ export default function IdsRulesetsPage() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || body.message || `Toggle failed: ${res.status}`);
       }
+      const data = await res.json().catch(() => ({}));
+      const updated = data?.data;
       const action = !ruleset.enabled ? "enabled" : "disabled";
+      const ruleCount = updated?.rule_count ?? ruleset.rule_count;
+      const downloaded = !ruleset.enabled && ruleset.rule_count === 0 && ruleCount > 0;
       setFeedback({
         type: "success",
-        message: `${ruleset.name} ${action} — rules recompiled`,
+        message: downloaded
+          ? `${ruleset.name} enabled — ${ruleCount.toLocaleString()} rules downloaded and compiled`
+          : `${ruleset.name} ${action} — rules recompiled`,
       });
       clearFeedback();
       await fetchRulesets();

@@ -285,6 +285,24 @@ pub async fn update_ruleset(
 
     mgr.update_ruleset(&ruleset).await.map_err(|_| internal())?;
 
+    // If enabling a ruleset with no rules and a source URL, download them first
+    if ruleset.enabled && ruleset.rule_count == 0 && ruleset.source_url.is_some() {
+        match mgr.download_and_store_rules(&ruleset).await {
+            Ok(count) => {
+                tracing::info!(count, ruleset = %ruleset.name, "rules downloaded and stored");
+                // Reload the ruleset to get updated rule_count
+                if let Ok(rulesets) = mgr.list_rulesets().await {
+                    if let Some(updated) = rulesets.into_iter().find(|r| r.id == uuid) {
+                        ruleset = updated;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, ruleset = %ruleset.name, "failed to download rules");
+            }
+        }
+    }
+
     // Recompile rules so the enabled/disabled change takes effect immediately
     let _ = mgr.compile_rules(engine.rule_db()).await;
 
