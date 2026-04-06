@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
+import { useAuth } from "@/context/AuthContext";
 
-interface NavChild { href: string; label: string; }
+interface NavChild { href: string; label: string; permission?: string; }
 interface NavItem {
   href?: string;
   label: string;
@@ -21,13 +22,13 @@ const navItems: NavItem[] = [
     icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
     color: "text-amber-400",
     children: [
-      { href: "/", label: "Dashboard" },
-      { href: "/traffic", label: "Traffic" },
-      { href: "/nat/flows", label: "NAT Flows" },
-      { href: "/connections", label: "Connections" },
-      { href: "/blocked", label: "Blocked Traffic" },
-      { href: "/threats", label: "Threats" },
-      { href: "/logs", label: "Logs" },
+      { href: "/", label: "Dashboard", permission: "dashboard:view" },
+      { href: "/traffic", label: "Traffic", permission: "dashboard:view" },
+      { href: "/nat/flows", label: "NAT Flows", permission: "nat:read" },
+      { href: "/connections", label: "Connections", permission: "connections:view" },
+      { href: "/blocked", label: "Blocked Traffic", permission: "connections:view" },
+      { href: "/threats", label: "Threats", permission: "ids:read" },
+      { href: "/logs", label: "Logs", permission: "logs:view" },
     ],
   },
 
@@ -36,12 +37,12 @@ const navItems: NavItem[] = [
     icon: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z",
     color: "text-blue-400",
     children: [
-      { href: "/rules", label: "All Rules" },
-      { href: "/aliases", label: "Aliases" },
-      { href: "/rules/schedules", label: "Schedules" },
-      { href: "/nat/port-forward", label: "Port Forward" },
-      { href: "/nat/outbound", label: "Outbound NAT" },
-      { href: "/geoip", label: "Geo-IP" },
+      { href: "/rules", label: "All Rules", permission: "rules:read" },
+      { href: "/aliases", label: "Aliases", permission: "aliases:read" },
+      { href: "/rules/schedules", label: "Schedules", permission: "rules:read" },
+      { href: "/nat/port-forward", label: "Port Forward", permission: "nat:read" },
+      { href: "/nat/outbound", label: "Outbound NAT", permission: "nat:read" },
+      { href: "/geoip", label: "Geo-IP", permission: "geoip:read" },
     ],
     dynamicChildren: true,
   },
@@ -51,10 +52,10 @@ const navItems: NavItem[] = [
     icon: "M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9",
     color: "text-emerald-400",
     children: [
-      { href: "/interfaces", label: "Interfaces" },
-      { href: "/vlans", label: "VLANs" },
-      { href: "/routes", label: "Routes" },
-      { href: "/vpn", label: "VPN" },
+      { href: "/interfaces", label: "Interfaces", permission: "interfaces:read" },
+      { href: "/vlans", label: "VLANs", permission: "interfaces:read" },
+      { href: "/routes", label: "Routes", permission: "interfaces:read" },
+      { href: "/vpn", label: "VPN", permission: "vpn:read" },
     ],
   },
 
@@ -63,33 +64,33 @@ const navItems: NavItem[] = [
     icon: "M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2",
     color: "text-purple-400",
     children: [
-      { href: "/ca", label: "Certificates" },
-      { href: "/dns", label: "DNS Resolver" },
-      { href: "/dns/hosts", label: "  Host Overrides" },
-      { href: "/dns/forwarding", label: "  Query Forwarding" },
-      { href: "/dns/domains", label: "  Domain Overrides" },
-      { href: "/dns/acls", label: "  Access Lists" },
-      { href: "/dns/logs", label: "  Query Log" },
-      { href: "/dhcp", label: "DHCP Server" },
-      { href: "/dhcp/subnets", label: "  Subnets" },
-      { href: "/dhcp/reservations", label: "  Reservations" },
-      { href: "/dhcp/leases", label: "  Leases" },
-      { href: "/dhcp/ddns", label: "  Dynamic DNS" },
-      { href: "/dhcp/ha", label: "  High Availability" },
-      { href: "/dhcp/metrics", label: "  Pool Metrics" },
-      { href: "/dhcp/logs", label: "  Logs" },
-      { href: "/cluster", label: "Cluster / HA" },
-      { href: "/reverse-proxy", label: "Reverse Proxy" },
-      { href: "/reverse-proxy/entrypoints", label: "  Entrypoints" },
-      { href: "/reverse-proxy/http/routers", label: "  HTTP Routers" },
-      { href: "/reverse-proxy/http/services", label: "  HTTP Services" },
-      { href: "/reverse-proxy/http/middlewares", label: "  Middlewares" },
-      { href: "/reverse-proxy/tcp", label: "  TCP" },
-      { href: "/reverse-proxy/udp", label: "  UDP" },
-      { href: "/reverse-proxy/tls", label: "  TLS / Certificates" },
-      { href: "/reverse-proxy/logs", label: "  Logs" },
-      { href: "/time", label: "Time (NTP/PTP)" },
-      { href: "/time/logs", label: "  Logs" },
+      { href: "/ca", label: "Certificates", permission: "settings:read" },
+      { href: "/dns", label: "DNS Resolver", permission: "dns:read" },
+      { href: "/dns/hosts", label: "  Host Overrides", permission: "dns:read" },
+      { href: "/dns/forwarding", label: "  Query Forwarding", permission: "dns:read" },
+      { href: "/dns/domains", label: "  Domain Overrides", permission: "dns:read" },
+      { href: "/dns/acls", label: "  Access Lists", permission: "dns:read" },
+      { href: "/dns/logs", label: "  Query Log", permission: "dns:read" },
+      { href: "/dhcp", label: "DHCP Server", permission: "dhcp:read" },
+      { href: "/dhcp/subnets", label: "  Subnets", permission: "dhcp:read" },
+      { href: "/dhcp/reservations", label: "  Reservations", permission: "dhcp:read" },
+      { href: "/dhcp/leases", label: "  Leases", permission: "dhcp:read" },
+      { href: "/dhcp/ddns", label: "  Dynamic DNS", permission: "dhcp:read" },
+      { href: "/dhcp/ha", label: "  High Availability", permission: "dhcp:read" },
+      { href: "/dhcp/metrics", label: "  Pool Metrics", permission: "dhcp:read" },
+      { href: "/dhcp/logs", label: "  Logs", permission: "dhcp:read" },
+      { href: "/cluster", label: "Cluster / HA", permission: "settings:read" },
+      { href: "/reverse-proxy", label: "Reverse Proxy", permission: "proxy:read" },
+      { href: "/reverse-proxy/entrypoints", label: "  Entrypoints", permission: "proxy:read" },
+      { href: "/reverse-proxy/http/routers", label: "  HTTP Routers", permission: "proxy:read" },
+      { href: "/reverse-proxy/http/services", label: "  HTTP Services", permission: "proxy:read" },
+      { href: "/reverse-proxy/http/middlewares", label: "  Middlewares", permission: "proxy:read" },
+      { href: "/reverse-proxy/tcp", label: "  TCP", permission: "proxy:read" },
+      { href: "/reverse-proxy/udp", label: "  UDP", permission: "proxy:read" },
+      { href: "/reverse-proxy/tls", label: "  TLS / Certificates", permission: "proxy:read" },
+      { href: "/reverse-proxy/logs", label: "  Logs", permission: "proxy:read" },
+      { href: "/time", label: "Time (NTP/PTP)", permission: "settings:read" },
+      { href: "/time/logs", label: "  Logs", permission: "settings:read" },
     ],
   },
 
@@ -98,11 +99,11 @@ const navItems: NavItem[] = [
     icon: "M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z",
     color: "text-red-400",
     children: [
-      { href: "/ids", label: "Dashboard" },
-      { href: "/ids/alerts", label: "Alerts" },
-      { href: "/ids/rules", label: "Rules" },
-      { href: "/ids/rulesets", label: "Rulesets" },
-      { href: "/ids/settings", label: "Settings" },
+      { href: "/ids", label: "Dashboard", permission: "ids:read" },
+      { href: "/ids/alerts", label: "Alerts", permission: "ids:read" },
+      { href: "/ids/rules", label: "Rules", permission: "ids:read" },
+      { href: "/ids/rulesets", label: "Rulesets", permission: "ids:read" },
+      { href: "/ids/settings", label: "Settings", permission: "ids:read" },
     ],
   },
 
@@ -111,7 +112,7 @@ const navItems: NavItem[] = [
     icon: "M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4",
     color: "text-indigo-400",
     children: [
-      { href: "/plugins", label: "Plugins" },
+      { href: "/plugins", label: "Plugins", permission: "plugins:read" },
     ],
   },
 
@@ -120,17 +121,18 @@ const navItems: NavItem[] = [
     icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z",
     color: "text-gray-400",
     children: [
-      { href: "/updates", label: "Updates" },
-      { href: "/users", label: "Users" },
-      { href: "/backup", label: "Backup & Restore" },
-      { href: "/settings", label: "Settings" },
-      { href: "/reboot", label: "Reboot" },
+      { href: "/updates", label: "Updates", permission: "updates:read" },
+      { href: "/users", label: "Users", permission: "users:read" },
+      { href: "/backup", label: "Backup & Restore", permission: "backup:read" },
+      { href: "/settings", label: "Settings", permission: "settings:read" },
+      { href: "/reboot", label: "Reboot", permission: "system:reboot" },
     ],
   },
 ];
 
 export default function Sidebar({ onClose, width }: { onClose?: () => void; width?: number }) {
   const pathname = usePathname();
+  const { permissions } = useAuth();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     Monitoring: true,
     Firewall: true,
@@ -161,10 +163,16 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
 
   const getChildren = (item: NavItem): NavChild[] => {
     if (!item.children) return [];
-    if (!item.dynamicChildren) return item.children;
+
+    // Filter by permission — hide items user can't access
+    const filtered = item.children.filter(
+      (c) => !c.permission || permissions.has(c.permission)
+    );
+
+    if (!item.dynamicChildren) return filtered;
 
     const result: NavChild[] = [];
-    for (const child of item.children) {
+    for (const child of filtered) {
       result.push(child);
       if (child.href === "/rules" && interfaces.length > 0) {
         for (const iface of interfaces) {
@@ -231,6 +239,8 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
           // Section group
           const isOpen = expanded[item.label] ?? false;
           const children = getChildren(item);
+          // Hide entire section if all children are filtered out by permissions
+          if (children.length === 0) return null;
           const childActive = hasActiveChild(children);
 
           return (

@@ -6,6 +6,7 @@ import AuthGuard from "./AuthGuard";
 import Sidebar from "./Sidebar";
 import PendingBanner from "./PendingBanner";
 import { WsProvider } from "@/context/WsContext";
+import { AuthProvider } from "@/context/AuthContext";
 
 const PUBLIC_PATHS = ["/login", "/login/"];
 const MIN_WIDTH = 180;
@@ -82,6 +83,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {isPublic ? (
         children
       ) : (
+        <AuthProvider>
         <WsProvider>
           <div className="flex min-h-screen">
             {/* Mobile overlay */}
@@ -131,6 +133,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </main>
           </div>
         </WsProvider>
+        </AuthProvider>
       )}
     </AuthGuard>
   );

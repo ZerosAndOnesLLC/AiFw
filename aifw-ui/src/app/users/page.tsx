@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "@/context/AuthContext";
+import { PERMISSION_CATEGORIES } from "@/lib/permissions";
 
 const API = "";
 
@@ -98,6 +100,21 @@ export default function UsersPage() {
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
 
+  // Tabs
+  const [activeTab, setActiveTab] = useState<"users" | "roles">("users");
+
+  // Roles
+  const [roles, setRoles] = useState<{ id: string; name: string; permissions: string[]; builtin: boolean; description: string | null }[]>([]);
+  const [showRoleForm, setShowRoleForm] = useState(false);
+  const [newRoleName, setNewRoleName] = useState("");
+  const [newRoleDesc, setNewRoleDesc] = useState("");
+  const [newRolePerms, setNewRolePerms] = useState<Set<string>>(new Set());
+  const [roleSaving, setRoleSaving] = useState(false);
+  const [deletingRoleId, setDeletingRoleId] = useState<string | null>(null);
+
+  const { permissions: myPerms } = useAuth();
+  const canWriteUsers = myPerms.has("users:write");
+
   const currentUserId = getCurrentUserId();
 
   const setFeedbackWithTimeout = useCallback((fb: Feedback) => {
@@ -134,9 +151,19 @@ export default function UsersPage() {
     }
   }, [setFeedbackWithTimeout]);
 
+  const fetchRoles = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/v1/auth/roles`, { headers: authHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      setRoles(data.roles || []);
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     fetchUsers();
-  }, [fetchUsers]);
+    fetchRoles();
+  }, [fetchUsers, fetchRoles]);
 
   // Add user
   const handleAddUser = async (e: React.FormEvent) => {
@@ -275,17 +302,44 @@ export default function UsersPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">User Management</h1>
-          <p className="text-sm text-gray-400">Manage users, roles, and view audit logs</p>
+          <p className="text-sm text-gray-400">Manage users, roles, and permissions</p>
         </div>
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className={btnPrimary}
-        >
-          {showAddForm ? "Cancel" : "+ Add User"}
-        </button>
+        {activeTab === "users" && canWriteUsers && (
+          <button
+            onClick={() => setShowAddForm(!showAddForm)}
+            className={btnPrimary}
+          >
+            {showAddForm ? "Cancel" : "+ Add User"}
+          </button>
+        )}
+        {activeTab === "roles" && canWriteUsers && (
+          <button
+            onClick={() => { setShowRoleForm(!showRoleForm); setNewRoleName(""); setNewRoleDesc(""); setNewRolePerms(new Set()); }}
+            className={btnPrimary}
+          >
+            {showRoleForm ? "Cancel" : "+ Create Role"}
+          </button>
+        )}
       </div>
 
-      {/* Feedback banner */}
+      {/* Tabs */}
+      <div className="flex gap-1 bg-[var(--bg-primary)] rounded-lg p-1 border border-[var(--border)] w-fit">
+        {(["users", "roles"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-1.5 text-xs font-medium rounded-md transition-all capitalize ${
+              activeTab === tab
+                ? "bg-[var(--accent)] text-white"
+                : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      {/* Feedback banner (shared) */}
       {feedback && (
         <div
           className={`p-3 text-sm rounded-md border ${
@@ -298,6 +352,7 @@ export default function UsersPage() {
         </div>
       )}
 
+      {activeTab === "users" && (<>
       {/* Add user form */}
       {showAddForm && (
         <section className={sectionCls}>
@@ -334,9 +389,9 @@ export default function UsersPage() {
                   onChange={(e) => setNewRole(e.target.value)}
                   className={inputCls}
                 >
-                  <option value="admin">Admin</option>
-                  <option value="operator">Operator</option>
-                  <option value="viewer">Viewer</option>
+                  {roles.map((r) => (
+                    <option key={r.id} value={r.name}>{r.name}{r.builtin ? "" : " (custom)"}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -388,9 +443,9 @@ export default function UsersPage() {
                           onChange={(e) => setEditRole(e.target.value)}
                           className="px-2 py-1 text-sm bg-gray-900 border border-gray-600 rounded text-white focus:outline-none focus:border-blue-500"
                         >
-                          <option value="admin">Admin</option>
-                          <option value="operator">Operator</option>
-                          <option value="viewer">Viewer</option>
+                          {roles.map((r) => (
+                            <option key={r.id} value={r.name}>{r.name}{r.builtin ? "" : " (custom)"}</option>
+                          ))}
                         </select>
                       </td>
                       <td className="px-5 py-3 text-gray-400">
@@ -576,6 +631,169 @@ export default function UsersPage() {
           </div>
         )}
       </section>
+      </>)}
+
+      {/* Roles Tab */}
+      {activeTab === "roles" && (<>
+        {/* Create Role Form */}
+        {showRoleForm && canWriteUsers && (
+          <section className={sectionCls}>
+            <h2 className="font-medium text-white mb-4">Create Custom Role</h2>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls}>Role Name</label>
+                  <input
+                    type="text"
+                    value={newRoleName}
+                    onChange={(e) => setNewRoleName(e.target.value)}
+                    placeholder="e.g. network-engineer"
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Description</label>
+                  <input
+                    type="text"
+                    value={newRoleDesc}
+                    onChange={(e) => setNewRoleDesc(e.target.value)}
+                    placeholder="Optional description"
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className={labelCls}>Permissions</label>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
+                  {PERMISSION_CATEGORIES.map((cat) => (
+                    <div key={cat.label} className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-md p-3">
+                      <p className="text-xs font-medium text-[var(--text-primary)] mb-2">{cat.label}</p>
+                      <div className="space-y-1">
+                        {cat.perms.map((perm) => (
+                          <label key={perm} className="flex items-center gap-2 text-xs cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={newRolePerms.has(perm)}
+                              onChange={(e) => {
+                                const next = new Set(newRolePerms);
+                                e.target.checked ? next.add(perm) : next.delete(perm);
+                                setNewRolePerms(next);
+                              }}
+                              className="rounded border-[var(--border)]"
+                            />
+                            <span className="text-[var(--text-secondary)] font-mono">{perm}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={async () => {
+                    if (!newRoleName.trim()) return;
+                    setRoleSaving(true);
+                    try {
+                      const res = await fetch(`${API}/api/v1/auth/roles`, {
+                        method: "POST",
+                        headers: authHeaders(),
+                        body: JSON.stringify({
+                          name: newRoleName.trim(),
+                          permissions: Array.from(newRolePerms),
+                          description: newRoleDesc.trim() || null,
+                        }),
+                      });
+                      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                      setFeedbackWithTimeout({ type: "success", message: `Role "${newRoleName.trim()}" created` });
+                      setShowRoleForm(false);
+                      setNewRoleName("");
+                      setNewRoleDesc("");
+                      setNewRolePerms(new Set());
+                      await fetchRoles();
+                    } catch (err: unknown) {
+                      const msg = err instanceof Error ? err.message : "Unknown error";
+                      setFeedbackWithTimeout({ type: "error", message: `Failed to create role: ${msg}` });
+                    } finally {
+                      setRoleSaving(false);
+                    }
+                  }}
+                  disabled={roleSaving || !newRoleName.trim()}
+                  className={btnPrimary}
+                >
+                  {roleSaving ? "Creating..." : "Create Role"}
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Roles List */}
+        <div className="space-y-4">
+          {roles.map((role) => (
+            <section key={role.id} className={sectionCls}>
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-medium text-white">{role.name}</h3>
+                    {role.builtin && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/20 text-gray-400 border border-gray-500/30">built-in</span>
+                    )}
+                    {roleBadge(role.name)}
+                  </div>
+                  {role.description && (
+                    <p className="text-xs text-gray-400 mt-0.5">{role.description}</p>
+                  )}
+                </div>
+                {!role.builtin && canWriteUsers && (
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`Delete role "${role.name}"?`)) return;
+                      setDeletingRoleId(role.id);
+                      try {
+                        const res = await fetch(`${API}/api/v1/auth/roles/${role.id}`, {
+                          method: "DELETE",
+                          headers: authHeaders(),
+                        });
+                        if (!res.ok) {
+                          const body = await res.json().catch(() => ({}));
+                          throw new Error(body.message || `HTTP ${res.status}`);
+                        }
+                        setFeedbackWithTimeout({ type: "success", message: `Role "${role.name}" deleted` });
+                        await fetchRoles();
+                      } catch (err: unknown) {
+                        const msg = err instanceof Error ? err.message : "Unknown error";
+                        setFeedbackWithTimeout({ type: "error", message: `Delete failed: ${msg}` });
+                      } finally {
+                        setDeletingRoleId(null);
+                      }
+                    }}
+                    disabled={deletingRoleId === role.id}
+                    className="text-xs text-gray-400 hover:text-red-400 transition-colors"
+                  >
+                    {deletingRoleId === role.id ? "Deleting..." : "Delete"}
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {role.permissions.map((perm) => (
+                  <span
+                    key={perm}
+                    className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--bg-primary)] border border-[var(--border)] text-[var(--text-secondary)] font-mono"
+                  >
+                    {perm}
+                  </span>
+                ))}
+                {role.permissions.length === 0 && (
+                  <span className="text-xs text-gray-500">No permissions</span>
+                )}
+              </div>
+            </section>
+          ))}
+        </div>
+      </>)}
     </div>
   );
 }
