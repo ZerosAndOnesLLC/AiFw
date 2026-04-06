@@ -297,11 +297,17 @@ export default function Dashboard() {
     [ifaces]
   );
 
+  const blocked = (ws.blocked || []) as unknown as { timestamp: string; action: string; direction: string; interface: string; protocol: string; src_addr: string; src_port: number; dst_addr: string; dst_port: number }[];
+
   const topTalkers = connections.reduce<{ip:string;bytes:number;conns:number}[]>((a,c) => {
     const e=a.find(t=>t.ip===c.src_addr),tot=c.bytes_in+c.bytes_out;
     if(e){e.bytes+=tot;e.conns++}else a.push({ip:c.src_addr,bytes:tot,conns:1});return a;
   },[]).sort((a,b)=>b.bytes-a.bytes).slice(0,5);
   const mtb = topTalkers[0]?.bytes||1;
+
+  const healthColors = { critical: "border-red-500/50 bg-red-500/5", warning: "border-yellow-500/50 bg-yellow-500/5", healthy: "border-green-500/30 bg-green-500/5" } as const;
+  const healthDot = { critical: "bg-red-500", warning: "bg-yellow-500", healthy: "bg-green-500" } as const;
+  const healthTextCls = { critical: "text-red-400", warning: "text-yellow-400", healthy: "text-green-400" } as const;
 
   if (!status) return (
     <div className="flex items-center justify-center h-64">
@@ -312,127 +318,217 @@ export default function Dashboard() {
     </div>
   );
 
+  // Compute overall health (after null check)
+  const cpu = system?.cpu_usage ?? 0;
+  const mem = system?.memory_pct ?? 0;
+  const disk = system?.disks?.[0]?.pct ?? 0;
+  const svcDown = services.filter(s => s.enabled && !s.running).length;
+  const healthLevel: "critical" | "warning" | "healthy" = (!status.pf_running || svcDown > 0) ? "critical"
+    : (cpu > 90 || mem > 90 || disk > 95) ? "critical"
+    : (cpu > 70 || mem > 70 || disk > 80) ? "warning"
+    : "healthy";
+  const healthLabel = healthLevel === "critical" ? "Attention Required" : healthLevel === "warning" ? "Degraded" : "All Systems Operational";
+
   return (
-    <div className="space-y-3">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">{system?.hostname || "Dashboard"}</h1>
-          <p className="text-sm text-[var(--text-muted)]">{system?.os_version} · Up {formatUptime(system?.uptime_secs ?? 0)}</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`}/>
-            <span className="text-xs text-[var(--text-muted)]">{ws.connected ? "Live" : "..."}</span>
-          </div>
-          {interfaceList.length > 0 && (
-            <select value={selectedNic} onChange={(e) => pickNic(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500">
-              {interfaceList.map((i) => <option key={i.name} value={i.name}>{i.name}</option>)}
-            </select>
-          )}
-          <div className={`px-2 py-1 rounded text-xs font-medium ${status.pf_running ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-            pf {status.pf_running ? "Active" : "Inactive"}
-          </div>
-        </div>
-      </div>
-
-      {/* Summary Stats Row */}
-      <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
-        {[
-          { l:`CPU (${system?.cpu_cores ?? "?"}c)`, v:`${(system?.cpu_usage??0).toFixed(0)}%`, c: (system?.cpu_usage??0) > 80 ? "#ef4444" : "#3b82f6" },
-          { l:"Memory", v:`${(system?.memory_pct??0).toFixed(0)}%`, c: (system?.memory_pct??0) > 80 ? "#ef4444" : "#8b5cf6" },
-          { l:"Disk", v:`${(system?.disks?.[0]?.pct??0).toFixed(0)}%`, c: (system?.disks?.[0]?.pct??0) > 90 ? "#ef4444" : "#06b6d4" },
-          { l:"In", v:formatBps(rateIn), c:"#22c55e" },
-          { l:"Out", v:formatBps(rateOut), c:"#3b82f6" },
-          { l:"States", v:formatNumber(status.pf_states), c:"#06b6d4" },
-          { l:"Rules", v:`${status.pf_rules}`, c:"#f59e0b" },
-          { l:"Conns", v:`${connections.length}`, c:"#f97316" },
-        ].map(s => (
-          <div key={s.l} className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-center">
-            <div className="text-[9px] text-[var(--text-muted)] uppercase">{s.l}</div>
-            <div className="text-sm font-bold" style={{color:s.c}}>{s.v}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Service Health — only enabled services */}
-      {services.filter(s => s.enabled).length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          {services.filter(s => s.enabled).map(svc => (
-            <div key={svc.name} className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-3 py-2 flex items-center justify-between">
-              <span className="text-xs font-medium">{svc.name}</span>
-              <span className={`text-[10px] px-2 py-0.5 rounded-full ${svc.running ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-                {svc.running ? "Running" : "Stopped"}
-              </span>
+    <div className="space-y-4">
+      {/* Header + Health Banner */}
+      <div className={`rounded-lg border p-4 ${healthColors[healthLevel]}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`w-3 h-3 rounded-full ${healthDot[healthLevel]} ${healthLevel === "healthy" ? "animate-pulse" : ""}`} />
+            <div>
+              <h1 className="text-xl font-bold">{system?.hostname || "AiFw"}</h1>
+              <p className="text-xs text-[var(--text-muted)]">{system?.os_version} · Up {formatUptime(system?.uptime_secs ?? 0)}</p>
             </div>
-          ))}
-        </div>
-      )}
-
-      {/* Stacked Graphs — all share hoverIdx for time-aligned tooltip */}
-      <StackedChart data={history} title="CPU" height={90} hoverIdx={hoverIdx} onHover={setHoverIdx}
-        lines={[{key:"cpu",color:"#3b82f6",label:"CPU"}]}
-        getValue={(d,k) => k==="cpu" ? d.cpu : 0}
-        maxValue={100} formatY={v => `${v.toFixed(0)}%`}
-      />
-      <StackedChart data={history} title="Memory" height={90} hoverIdx={hoverIdx} onHover={setHoverIdx}
-        lines={[{key:"mem",color:"#8b5cf6",label:"Memory"}]}
-        getValue={(d,k) => k==="mem" ? d.memPct : 0}
-        maxValue={100} formatY={v => `${v.toFixed(0)}%`}
-      />
-      <StackedChart data={history} title="Disk I/O" height={90} hoverIdx={hoverIdx} onHover={setHoverIdx}
-        lines={[{key:"read",color:"#22c55e",label:"Read"},{key:"write",color:"#f97316",label:"Write"}]}
-        getValue={(d,k) => k==="read" ? d.diskReadKbps : d.diskWriteKbps}
-        formatY={v => v >= 1024 ? `${(v/1024).toFixed(0)} MB/s` : `${v.toFixed(0)} KB/s`}
-      />
-      <StackedChart data={history} title="Network" height={110} hoverIdx={hoverIdx} onHover={setHoverIdx}
-        lines={[{key:"in",color:"#22c55e",label:"In"},{key:"out",color:"#3b82f6",label:"Out"}]}
-        getValue={(d,k) => k==="in" ? d.bpsIn : d.bpsOut}
-        formatY={formatBps}
-      />
-
-      {/* System Info Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        {/* Memory */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase mb-2">Memory</h3>
-          <div className="space-y-1.5 text-xs">
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Used</span><span>{formatBytes(system?.memory_used??0)} / {formatBytes(system?.memory_total??0)}</span></div>
-            <div className="w-full h-1.5 bg-gray-700 rounded-full"><div className="h-full rounded-full transition-all" style={{width:`${system?.memory_pct??0}%`,backgroundColor:(system?.memory_pct??0)>80?"#ef4444":"#8b5cf6"}}/></div>
+            <span className={`text-xs font-medium ${healthTextCls[healthLevel]}`}>{healthLabel}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
+              <span className="text-xs text-[var(--text-muted)]">{ws.connected ? "Live" : "..."}</span>
+            </div>
+            {interfaceList.length > 0 && (
+              <select value={selectedNic} onChange={(e) => pickNic(e.target.value)}
+                className="bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]">
+                {interfaceList.map((i) => <option key={i.name} value={i.name}>{i.name}</option>)}
+              </select>
+            )}
+            <div className={`px-2 py-1 rounded text-xs font-medium ${status.pf_running ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+              pf {status.pf_running ? "Active" : "Inactive"}
+            </div>
           </div>
         </div>
-        {/* Disk / Mounts */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase mb-2">Disk</h3>
-          <div className="space-y-1.5 text-xs">
-            {system?.disks?.map(d => (
-              <div key={d.mount}>
-                <div className="flex justify-between"><span className="text-[var(--text-muted)] font-mono">{d.mount}</span><span>{d.pct.toFixed(0)}% ({formatBytes(d.used)})</span></div>
-                <div className="w-full h-1 bg-gray-700 rounded-full mt-0.5"><div className="h-full rounded-full transition-all" style={{width:`${d.pct}%`,backgroundColor:d.pct>80?"#ef4444":"#06b6d4"}}/></div>
+      </div>
+
+      {/* Stats Grid — 3 groups */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* System Resources */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">System</h3>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            {[
+              { l: `CPU (${system?.cpu_cores ?? "?"}c)`, v: `${cpu.toFixed(0)}%`, c: cpu > 80 ? "#ef4444" : "#3b82f6", pct: cpu },
+              { l: "Memory", v: `${mem.toFixed(0)}%`, c: mem > 80 ? "#ef4444" : "#8b5cf6", pct: mem },
+              { l: "Disk", v: `${disk.toFixed(0)}%`, c: disk > 90 ? "#ef4444" : "#06b6d4", pct: disk },
+            ].map(s => (
+              <div key={s.l}>
+                <div className="text-[9px] text-[var(--text-muted)] uppercase">{s.l}</div>
+                <div className="text-lg font-bold mt-0.5" style={{ color: s.c }}>{s.v}</div>
+                <div className="w-full h-1 bg-gray-700 rounded-full mt-1">
+                  <div className="h-full rounded-full transition-all" style={{ width: `${s.pct}%`, backgroundColor: s.c }} />
+                </div>
               </div>
             ))}
           </div>
         </div>
-        {/* Network */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase mb-2">Network</h3>
-          <div className="space-y-1 text-xs">
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">GW</span><span className="font-mono text-[10px]">{system?.default_gateway||"—"}</span></div>
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">DNS</span><span className="font-mono text-[10px]">{system?.dns_servers?.join(", ")||"—"}</span></div>
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">In / Out</span><span>{formatBytes(status.bytes_in)} / {formatBytes(status.bytes_out)}</span></div>
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Packets</span><span>{formatNumber(status.packets_in+status.packets_out)} ({system?.route_count??0} routes)</span></div>
+
+        {/* Network Throughput */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">Throughput</h3>
+          <div className="grid grid-cols-2 gap-3 text-center">
+            <div>
+              <div className="text-[9px] text-[var(--text-muted)] uppercase">Inbound</div>
+              <div className="text-lg font-bold text-green-400 mt-0.5">{formatBps(rateIn)}</div>
+              <div className="text-[10px] text-[var(--text-muted)] mt-0.5">{formatBytes(status.bytes_in)} total</div>
+            </div>
+            <div>
+              <div className="text-[9px] text-[var(--text-muted)] uppercase">Outbound</div>
+              <div className="text-lg font-bold text-blue-400 mt-0.5">{formatBps(rateOut)}</div>
+              <div className="text-[10px] text-[var(--text-muted)] mt-0.5">{formatBytes(status.bytes_out)} total</div>
+            </div>
           </div>
         </div>
+
+        {/* Firewall Stats */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">Firewall</h3>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">PF States</span><span className="font-mono font-bold text-cyan-400">{formatNumber(status.pf_states)}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">PF Rules</span><span className="font-mono font-bold text-yellow-400">{status.pf_rules}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">AiFw Rules</span><span className="font-mono font-bold text-blue-400">{status.aifw_active_rules}/{status.aifw_rules}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">NAT Rules</span><span className="font-mono font-bold text-purple-400">{status.nat_rules}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Connections</span><span className="font-mono font-bold text-orange-400">{connections.length}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Blocked</span><span className="font-mono font-bold text-red-400">{blocked.length}</span></div>
+          </div>
+        </div>
+      </div>
+
+      {/* Services */}
+      {services.length > 0 && (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">Services</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+            {services.map(svc => (
+              <div key={svc.name} className={`flex items-center gap-2 px-3 py-2 rounded-md border ${
+                !svc.enabled ? "border-[var(--border)] opacity-50"
+                  : svc.running ? "border-green-500/20 bg-green-500/5"
+                  : "border-red-500/20 bg-red-500/5"
+              }`}>
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                  !svc.enabled ? "bg-gray-500" : svc.running ? "bg-green-500" : "bg-red-500"
+                }`} />
+                <span className="text-xs font-medium truncate">{svc.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Charts — 2x2 grid on desktop */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <StackedChart data={history} title="CPU" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+          lines={[{ key: "cpu", color: "#3b82f6", label: "CPU" }]}
+          getValue={(d, k) => k === "cpu" ? d.cpu : 0}
+          maxValue={100} formatY={v => `${v.toFixed(0)}%`}
+        />
+        <StackedChart data={history} title="Memory" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+          lines={[{ key: "mem", color: "#8b5cf6", label: "Memory" }]}
+          getValue={(d, k) => k === "mem" ? d.memPct : 0}
+          maxValue={100} formatY={v => `${v.toFixed(0)}%`}
+        />
+        <StackedChart data={history} title="Disk I/O" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+          lines={[{ key: "read", color: "#22c55e", label: "Read" }, { key: "write", color: "#f97316", label: "Write" }]}
+          getValue={(d, k) => k === "read" ? d.diskReadKbps : d.diskWriteKbps}
+          formatY={v => v >= 1024 ? `${(v / 1024).toFixed(0)} MB/s` : `${v.toFixed(0)} KB/s`}
+        />
+        <StackedChart data={history} title="Network" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+          lines={[{ key: "in", color: "#22c55e", label: "In" }, { key: "out", color: "#3b82f6", label: "Out" }]}
+          getValue={(d, k) => k === "in" ? d.bpsIn : d.bpsOut}
+          formatY={formatBps}
+        />
+      </div>
+
+      {/* Bottom grid — 3 columns */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* System Details */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">System Details</h3>
+          <div className="space-y-2 text-xs">
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Memory</span><span>{formatBytes(system?.memory_used ?? 0)} / {formatBytes(system?.memory_total ?? 0)}</span></div>
+            <div className="w-full h-1 bg-gray-700 rounded-full"><div className="h-full rounded-full transition-all" style={{ width: `${mem}%`, backgroundColor: mem > 80 ? "#ef4444" : "#8b5cf6" }} /></div>
+            {system?.disks?.map(d => (
+              <div key={d.mount}>
+                <div className="flex justify-between"><span className="text-[var(--text-muted)] font-mono">{d.mount}</span><span>{d.pct.toFixed(0)}% ({formatBytes(d.used)})</span></div>
+                <div className="w-full h-1 bg-gray-700 rounded-full mt-0.5"><div className="h-full rounded-full transition-all" style={{ width: `${d.pct}%`, backgroundColor: d.pct > 80 ? "#ef4444" : "#06b6d4" }} /></div>
+              </div>
+            ))}
+            <div className="pt-1 border-t border-[var(--border)] mt-2 space-y-1">
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Gateway</span><span className="font-mono text-[10px]">{system?.default_gateway || "---"}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">DNS</span><span className="font-mono text-[10px]">{system?.dns_servers?.join(", ") || "---"}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Routes</span><span>{system?.route_count ?? 0}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Packets</span><span>{formatNumber(status.packets_in + status.packets_out)}</span></div>
+            </div>
+          </div>
+        </div>
+
         {/* Top Talkers */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase mb-2">Top Talkers</h3>
-          {topTalkers.length===0 ? <div className="text-xs text-[var(--text-muted)]">No connections</div> : (
-            <div className="space-y-1.5">
-              {topTalkers.map(t => (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">Top Talkers</h3>
+          {topTalkers.length === 0 ? (
+            <div className="text-xs text-[var(--text-muted)] text-center py-4">No active connections</div>
+          ) : (
+            <div className="space-y-2.5">
+              {topTalkers.map((t, i) => (
                 <div key={t.ip}>
-                  <div className="flex justify-between text-xs"><span className="font-mono text-[10px]">{t.ip}</span><span className="text-[var(--text-muted)]">{formatBytes(t.bytes)}</span></div>
-                  <div className="w-full h-1 bg-gray-700 rounded-full mt-0.5"><div className="h-full rounded-full bg-cyan-500 transition-all" style={{width:`${(t.bytes/mtb)*100}%`}}/></div>
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-[var(--text-muted)] w-3">{i + 1}.</span>
+                      <span className="font-mono text-[11px]">{t.ip}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[var(--text-muted)]">{t.conns} conn{t.conns !== 1 ? "s" : ""}</span>
+                      <span className="font-mono text-cyan-400">{formatBytes(t.bytes)}</span>
+                    </div>
+                  </div>
+                  <div className="w-full h-1 bg-gray-700 rounded-full mt-1">
+                    <div className="h-full rounded-full bg-cyan-500 transition-all" style={{ width: `${(t.bytes / mtb) * 100}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Recent Blocked */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Recent Blocked</h3>
+            <span className="text-[10px] font-mono text-red-400">{blocked.length} entries</span>
+          </div>
+          {blocked.length === 0 ? (
+            <div className="text-xs text-[var(--text-muted)] text-center py-4">No blocked traffic</div>
+          ) : (
+            <div className="space-y-1.5 max-h-40 overflow-y-auto">
+              {blocked.slice(-10).reverse().map((b, i) => (
+                <div key={i} className="flex items-center justify-between text-[11px] py-1 px-2 rounded bg-[var(--bg-primary)]">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-red-400 uppercase text-[9px] font-bold w-8 flex-shrink-0">{b.action}</span>
+                    <span className="font-mono truncate">{b.src_addr}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+                    <span className="text-[var(--text-muted)]">{b.protocol || "---"}</span>
+                    <span className="font-mono text-[10px]">:{b.dst_port || "---"}</span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -442,24 +538,35 @@ export default function Dashboard() {
 
       {/* Connections Table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-        <div className="px-3 py-2 border-b border-[var(--border)]"><h3 className="text-xs font-medium">Connections ({connections.length})</h3></div>
-        <div className="overflow-y-auto max-h-48">
-          {connections.length===0 ? <div className="text-center py-6 text-[var(--text-muted)] text-sm">No connections</div> : (
+        <div className="px-4 py-2.5 border-b border-[var(--border)] flex items-center justify-between">
+          <h3 className="text-xs font-medium">Active Connections</h3>
+          <span className="text-[10px] text-[var(--text-muted)]">{connections.length} total</span>
+        </div>
+        <div className="overflow-y-auto max-h-56">
+          {connections.length === 0 ? (
+            <div className="text-center py-8 text-[var(--text-muted)] text-sm">No active connections</div>
+          ) : (
             <table className="w-full text-[11px]">
-              <thead><tr className="border-b border-[var(--border)]">
-                <th className="text-left py-1.5 px-2 text-[var(--text-muted)] uppercase text-[9px]">Proto</th>
-                <th className="text-left py-1.5 px-2 text-[var(--text-muted)] uppercase text-[9px]">Source</th>
-                <th className="text-left py-1.5 px-2 text-[var(--text-muted)] uppercase text-[9px]">Destination</th>
-                <th className="text-left py-1.5 px-2 text-[var(--text-muted)] uppercase text-[9px]">State</th>
-              </tr></thead>
-              <tbody>{connections.slice(0,15).map((c,i) => (
-                <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)]">
-                  <td className="py-1 px-2 uppercase text-cyan-400">{c.protocol}</td>
-                  <td className="py-1 px-2 font-mono">{c.src_addr}:{c.src_port}</td>
-                  <td className="py-1 px-2 font-mono">{c.dst_addr}:{c.dst_port}</td>
-                  <td className="py-1 px-2 text-[var(--text-secondary)]">{c.state.split(":")[0]}</td>
+              <thead>
+                <tr className="border-b border-[var(--border)]">
+                  <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">Proto</th>
+                  <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">Source</th>
+                  <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">Destination</th>
+                  <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">State</th>
+                  <th className="text-right py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">In/Out</th>
                 </tr>
-              ))}</tbody>
+              </thead>
+              <tbody>
+                {connections.slice(0, 20).map((c, i) => (
+                  <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                    <td className="py-1.5 px-3 uppercase text-cyan-400 font-medium">{c.protocol}</td>
+                    <td className="py-1.5 px-3 font-mono">{c.src_addr}:{c.src_port}</td>
+                    <td className="py-1.5 px-3 font-mono">{c.dst_addr}:{c.dst_port}</td>
+                    <td className="py-1.5 px-3 text-[var(--text-secondary)]">{c.state.split(":")[0]}</td>
+                    <td className="py-1.5 px-3 text-right font-mono text-[10px] text-[var(--text-muted)]">{formatBytes(c.bytes_in)} / {formatBytes(c.bytes_out)}</td>
+                  </tr>
+                ))}
+              </tbody>
             </table>
           )}
         </div>
