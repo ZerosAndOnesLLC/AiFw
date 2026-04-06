@@ -80,6 +80,8 @@ export default function UpdatesPage() {
   const [aifwChecking, setAifwChecking] = useState(false);
   const [aifwInstalling, setAifwInstalling] = useState(false);
   const [aifwRollingBack, setAifwRollingBack] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [restartCountdown, setRestartCountdown] = useState(0);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -234,13 +236,51 @@ export default function UpdatesPage() {
     try {
       const res = await fetch("/api/v1/updates/aifw/install", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      showFeedback("success", data.message || "AiFw updated");
-      fetchAifwStatus();
-      fetchHistory();
+      await res.json();
+
+      // Install succeeded — API will restart in ~2s. Show countdown overlay.
+      setAifwInstalling(false);
+      setRestarting(true);
+      setRestartCountdown(20);
+
+      // Countdown timer
+      const countdownInterval = setInterval(() => {
+        setRestartCountdown((prev) => {
+          if (prev <= 1) { clearInterval(countdownInterval); return 0; }
+          return prev - 1;
+        });
+      }, 1000);
+
+      // Poll API until it comes back, then refresh the page
+      const pollStart = Date.now();
+      const maxWait = 30000; // 30s max
+      const poll = async () => {
+        while (Date.now() - pollStart < maxWait) {
+          await new Promise((r) => setTimeout(r, 2000));
+          try {
+            const probe = await fetch("/api/v1/status", {
+              headers: authHeaders(),
+              signal: AbortSignal.timeout(3000),
+            });
+            if (probe.ok) {
+              clearInterval(countdownInterval);
+              // Small delay so user sees "Ready" before refresh
+              setRestartCountdown(0);
+              await new Promise((r) => setTimeout(r, 500));
+              window.location.reload();
+              return;
+            }
+          } catch {
+            // API not back yet — keep polling
+          }
+        }
+        // Timeout — refresh anyway, new version is running
+        clearInterval(countdownInterval);
+        window.location.reload();
+      };
+      poll();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to install AiFw update");
-    } finally {
       setAifwInstalling(false);
     }
   };
@@ -250,13 +290,43 @@ export default function UpdatesPage() {
     try {
       const res = await fetch("/api/v1/updates/aifw/rollback", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      showFeedback("success", data.message || "AiFw rolled back");
-      fetchAifwStatus();
-      fetchHistory();
+      await res.json();
+
+      setAifwRollingBack(false);
+      setRestarting(true);
+      setRestartCountdown(20);
+
+      const countdownInterval = setInterval(() => {
+        setRestartCountdown((prev) => {
+          if (prev <= 1) { clearInterval(countdownInterval); return 0; }
+          return prev - 1;
+        });
+      }, 1000);
+
+      const pollStart = Date.now();
+      const poll = async () => {
+        while (Date.now() - pollStart < 30000) {
+          await new Promise((r) => setTimeout(r, 2000));
+          try {
+            const probe = await fetch("/api/v1/status", {
+              headers: authHeaders(),
+              signal: AbortSignal.timeout(3000),
+            });
+            if (probe.ok) {
+              clearInterval(countdownInterval);
+              setRestartCountdown(0);
+              await new Promise((r) => setTimeout(r, 500));
+              window.location.reload();
+              return;
+            }
+          } catch { /* keep polling */ }
+        }
+        clearInterval(countdownInterval);
+        window.location.reload();
+      };
+      poll();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to rollback AiFw");
-    } finally {
       setAifwRollingBack(false);
     }
   };
@@ -281,6 +351,37 @@ export default function UpdatesPage() {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Restart overlay — blocks the page during service restart
+  if (restarting) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-primary)]/95 backdrop-blur-sm">
+        <div className="text-center space-y-6 max-w-md px-6">
+          <div className="w-16 h-16 mx-auto border-4 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+          <div>
+            <h2 className="text-xl font-bold text-[var(--text-primary)]">
+              {restartCountdown > 0 ? "Upgrading..." : "Almost ready..."}
+            </h2>
+            <p className="text-sm text-[var(--text-muted)] mt-2">
+              Services are restarting with the new version.
+              {restartCountdown > 0 && (
+                <> This may take up to <span className="font-mono font-bold text-[var(--accent)]">{restartCountdown}s</span></>
+              )}
+            </p>
+          </div>
+          <div className="w-full h-1.5 bg-[var(--bg-card)] rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[var(--accent)] rounded-full transition-all duration-1000 ease-linear"
+              style={{ width: `${Math.max(5, ((20 - restartCountdown) / 20) * 100)}%` }}
+            />
+          </div>
+          <p className="text-xs text-[var(--text-muted)]">
+            The page will automatically refresh when the API is back online.
+          </p>
+        </div>
       </div>
     );
   }
