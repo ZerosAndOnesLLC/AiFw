@@ -36,7 +36,8 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-pub const METRICS_HISTORY_SIZE: usize = 1800; // 30 min at 1/sec
+/// Default dashboard history: 30 minutes at 1 update/sec
+pub const METRICS_HISTORY_SIZE_DEFAULT: usize = 1800;
 
 /// Per-IP login attempt tracker for brute-force protection.
 #[derive(Clone, Default)]
@@ -94,6 +95,7 @@ pub struct AppState {
     pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
     pub auth_settings: auth::AuthSettings,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
+    pub metrics_history_max: Arc<std::sync::atomic::AtomicUsize>,
     pub redis: Option<redis::aio::ConnectionManager>,
     pub pending: Arc<RwLock<PendingChanges>>,
     /// Watch channel that fires whenever `pending` changes — drives SSE.
@@ -206,6 +208,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/updates/aifw/rollback", post(updates::aifw_rollback))
         .route("/api/v1/settings/tls", get(routes::get_tls_settings).put(routes::update_tls_settings))
         .route("/api/v1/settings/valkey", get(routes::get_valkey_settings).put(routes::update_valkey_settings))
+        .route("/api/v1/settings/dashboard-history", get(routes::get_dashboard_history_settings).put(routes::update_dashboard_history_settings))
         // CA key downloads — admin-only (private key material)
         .route("/api/v1/ca", get(ca::get_ca_info).post(ca::generate_ca))
         .route("/api/v1/ca/certs/{id}/key.pem", get(ca::download_cert_key))
@@ -506,6 +509,17 @@ async fn create_state_from_db(
 
     tracing::info!(plugins = plugin_mgr.count(), running = plugin_mgr.running_count(), "plugin system initialized");
 
+    // Load configurable dashboard history size from DB (default 30 min = 1800 entries)
+    let history_max = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM auth_config WHERE key = 'dashboard_history_seconds'"
+    )
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.0.parse::<usize>().ok())
+    .unwrap_or(METRICS_HISTORY_SIZE_DEFAULT);
+
     Ok(AppState {
         pool,
         pf,
@@ -518,7 +532,8 @@ async fn create_state_from_db(
         ids_engine,
         plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
         auth_settings,
-        metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(METRICS_HISTORY_SIZE))),
+        metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
+        metrics_history_max: Arc::new(std::sync::atomic::AtomicUsize::new(history_max)),
         redis: None,
         pending: Arc::new(RwLock::new(PendingChanges::default())),
         pending_tx: watch::channel(PendingChanges::default()).0,
@@ -619,10 +634,11 @@ async fn main() -> anyhow::Result<()> {
             Ok(inner) => match inner {
                 Ok(mut conn) => {
                     info!("Connected to Valkey for metrics persistence");
+                    let max = state.metrics_history_max.load(std::sync::atomic::Ordering::Relaxed) as i64;
                     let history: Vec<String> = redis::cmd("LRANGE")
                         .arg("aifw:metrics:history")
                         .arg(0i64)
-                        .arg(METRICS_HISTORY_SIZE as i64 - 1)
+                        .arg(max - 1)
                         .query_async(&mut conn)
                         .await
                         .unwrap_or_default();

@@ -2103,6 +2103,51 @@ pub async fn update_valkey_settings(
     })))
 }
 
+// --- Dashboard History Settings ---
+
+pub async fn get_dashboard_history_settings(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let current = state.metrics_history_max.load(std::sync::atomic::Ordering::Relaxed);
+    let buf_len = state.metrics_history.read().await.len();
+    // Each slim history entry is ~2 KB
+    let estimated_ram_mb = (current as f64 * 2.0) / 1024.0;
+
+    Ok(Json(serde_json::json!({
+        "history_seconds": current,
+        "current_entries": buf_len,
+        "estimated_ram_mb": (estimated_ram_mb * 10.0).round() / 10.0,
+    })))
+}
+
+pub async fn update_dashboard_history_settings(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let seconds = req.get("history_seconds")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Clamp: min 5 minutes (300), max 7 days (604800)
+    let clamped = seconds.clamp(300, 604_800);
+
+    let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dashboard_history_seconds', ?1)")
+        .bind(clamped.to_string())
+        .execute(&state.pool)
+        .await;
+
+    // Apply immediately — update the atomic so WS loop picks it up next tick
+    state.metrics_history_max.store(clamped, std::sync::atomic::Ordering::Relaxed);
+
+    let estimated_ram_mb = (clamped as f64 * 2.0) / 1024.0;
+    Ok(Json(serde_json::json!({
+        "message": "Dashboard history updated",
+        "history_seconds": clamped,
+        "estimated_ram_mb": (estimated_ram_mb * 10.0).round() / 10.0,
+    })))
+}
+
 // --- TLS Policy Settings ---
 
 pub async fn get_tls_settings(

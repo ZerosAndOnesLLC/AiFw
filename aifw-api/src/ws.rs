@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::time::Duration;
 use tokio::time::interval;
 
-use crate::{AppState, METRICS_HISTORY_SIZE};
+use crate::AppState;
 use aifw_common::RuleStatus;
 
 #[derive(Serialize)]
@@ -156,9 +156,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             match build_update(&push_state).await {
                 Ok((live_msg, history_msg)) => {
                     // Store slim version in server-side ring buffer (no blocked/connections)
+                    let max = push_state.metrics_history_max.load(std::sync::atomic::Ordering::Relaxed);
                     {
                         let mut buf = push_state.metrics_history.write().await;
-                        if buf.len() >= METRICS_HISTORY_SIZE {
+                        while buf.len() >= max {
                             buf.pop_front();
                         }
                         buf.push_back(history_msg.clone());
@@ -169,7 +170,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         let mut conn = redis.clone();
                         let _: Result<(), _> = redis::pipe()
                             .cmd("LPUSH").arg("aifw:metrics:history").arg(&history_msg)
-                            .cmd("LTRIM").arg("aifw:metrics:history").arg(0i64).arg(METRICS_HISTORY_SIZE as i64 - 1)
+                            .cmd("LTRIM").arg("aifw:metrics:history").arg(0i64).arg(max as i64 - 1)
                             .query_async(&mut conn)
                             .await;
                     }

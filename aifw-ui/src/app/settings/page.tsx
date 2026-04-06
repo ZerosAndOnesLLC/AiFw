@@ -87,6 +87,14 @@ export default function SettingsPage() {
   const [valkeyLoading, setValkeyLoading] = useState(true);
   const [valkeyStatus, setValkeyStatus] = useState<string>("unknown");
 
+  // --- Dashboard History ---
+  const [historyMinutes, setHistoryMinutes] = useState(30);
+  const [historyEntries, setHistoryEntries] = useState(0);
+  const [historyRamMb, setHistoryRamMb] = useState(0);
+  const [historyFeedback, setHistoryFeedback] = useState<SectionFeedback | null>(null);
+  const [historySaving, setHistorySaving] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
+
   // Auto-clear feedback after 4 seconds
   const setFeedbackWithTimeout = useCallback(
     (setter: (v: SectionFeedback | null) => void, fb: SectionFeedback) => {
@@ -148,6 +156,22 @@ export default function SettingsPage() {
         // endpoint may not exist yet
       } finally {
         setValkeyLoading(false);
+      }
+    })();
+
+    // Fetch Dashboard History settings
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/settings/dashboard-history`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.history_seconds) setHistoryMinutes(Math.round(data.history_seconds / 60));
+        if (data.current_entries !== undefined) setHistoryEntries(data.current_entries);
+        if (data.estimated_ram_mb !== undefined) setHistoryRamMb(data.estimated_ram_mb);
+      } catch {
+        // endpoint may not exist yet
+      } finally {
+        setHistoryLoading(false);
       }
     })();
 
@@ -276,6 +300,29 @@ export default function SettingsPage() {
       setFeedbackWithTimeout(setAuthFeedback, { type: "error", message: `Save failed: ${msg}` });
     } finally {
       setAuthSaving(false);
+    }
+  };
+
+  const saveHistory = async () => {
+    setHistorySaving(true);
+    setHistoryFeedback(null);
+    try {
+      const seconds = Math.max(5, historyMinutes) * 60;
+      const res = await authFetch(`${API}/api/v1/settings/dashboard-history`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ history_seconds: seconds }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.estimated_ram_mb !== undefined) setHistoryRamMb(data.estimated_ram_mb);
+      if (data.history_seconds) setHistoryMinutes(Math.round(data.history_seconds / 60));
+      setFeedbackWithTimeout(setHistoryFeedback, { type: "success", message: "Dashboard history updated. Takes effect immediately." });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setFeedbackWithTimeout(setHistoryFeedback, { type: "error", message: `Save failed: ${msg}` });
+    } finally {
+      setHistorySaving(false);
     }
   };
 
@@ -467,6 +514,72 @@ export default function SettingsPage() {
           <div className="flex justify-end">
             <button onClick={saveMetrics} disabled={metricsSaving} className={saveBtnCls}>
               {metricsSaving ? "Saving..." : "Save Metrics"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* Dashboard History */}
+      <section className={sectionCls}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-medium">Dashboard History</h2>
+          <span className="text-xs text-[var(--text-muted)] font-mono">
+            {historyEntries.toLocaleString()} entries buffered
+          </span>
+        </div>
+        <FeedbackBanner feedback={historyFeedback} />
+        <div className="space-y-4 mt-2">
+          {historyLoading ? (
+            <p className="text-sm text-[var(--text-muted)]">Loading...</p>
+          ) : (
+            <>
+              <div>
+                <label className={labelCls}>History Duration (minutes)</label>
+                <input
+                  type="number"
+                  value={historyMinutes}
+                  onChange={(e) => setHistoryMinutes(Math.max(5, Number(e.target.value)))}
+                  className={inputCls}
+                  min={5}
+                  max={10080}
+                />
+                <p className="text-xs text-[var(--text-muted)] mt-1">
+                  How many minutes of dashboard metrics to keep in memory for WebSocket clients.
+                  Default: 30 min. Max: 10,080 (7 days).
+                </p>
+              </div>
+              <div className="flex items-center gap-4 p-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-md">
+                <div className="flex-1 grid grid-cols-3 gap-4 text-xs">
+                  <div>
+                    <span className="text-[var(--text-muted)] uppercase tracking-wider">Duration</span>
+                    <p className="font-mono mt-0.5">
+                      {historyMinutes < 60
+                        ? `${historyMinutes} min`
+                        : historyMinutes < 1440
+                        ? `${(historyMinutes / 60).toFixed(1)} hours`
+                        : `${(historyMinutes / 1440).toFixed(1)} days`}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[var(--text-muted)] uppercase tracking-wider">Entries</span>
+                    <p className="font-mono mt-0.5">{(historyMinutes * 60).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <span className="text-[var(--text-muted)] uppercase tracking-wider">Est. RAM</span>
+                    <p className="font-mono mt-0.5">
+                      {((historyMinutes * 60 * 2) / 1024) < 1
+                        ? `${Math.round(historyMinutes * 60 * 2)} KB`
+                        : `${((historyMinutes * 60 * 2) / 1024).toFixed(1)} MB`}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          <div className="flex justify-end">
+            <button onClick={saveHistory} disabled={historySaving || historyLoading} className={saveBtnCls}>
+              {historySaving ? "Saving..." : "Save History"}
             </button>
           </div>
         </div>
