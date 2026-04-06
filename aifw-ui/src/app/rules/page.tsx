@@ -777,7 +777,7 @@ export default function RulesPage() {
                       </select>
                     </div>
                     {form.src_type === "address" && (
-                      <div className="grid grid-cols-3 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div className="col-span-2">
                           <label className={labelClass}>IP Address</label>
                           <input
@@ -850,7 +850,7 @@ export default function RulesPage() {
                       </select>
                     </div>
                     {form.dst_type === "address" && (
-                      <div className="grid grid-cols-3 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div className="col-span-2">
                           <label className={labelClass}>IP Address</label>
                           <input

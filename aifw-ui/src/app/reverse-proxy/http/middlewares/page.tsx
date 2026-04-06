@@ -449,7 +449,7 @@ export default function HttpMiddlewaresPage() {
       case "rateLimit":
         return (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className={labelCls}>Average (req/period)</label>
                 <input
@@ -469,7 +469,7 @@ export default function HttpMiddlewaresPage() {
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className={labelCls}>Period</label>
                 <input
@@ -635,7 +635,7 @@ export default function HttpMiddlewaresPage() {
                 <option value="ES256">ES256</option>
               </select>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className={labelCls}>Header Name</label>
                 <input
@@ -946,7 +946,7 @@ export default function HttpMiddlewaresPage() {
       /* ── Reliability ───────────────────────────────────────── */
       case "retry":
         return (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className={labelCls}>Attempts</label>
               <input
@@ -982,7 +982,7 @@ export default function HttpMiddlewaresPage() {
                 className={inputCls}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className={labelCls}>Check Period</label>
                 <input
@@ -1004,7 +1004,7 @@ export default function HttpMiddlewaresPage() {
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className={labelCls}>Recovery Duration</label>
                 <input
@@ -1031,7 +1031,7 @@ export default function HttpMiddlewaresPage() {
       /* ── Buffering ─────────────────────────────────────────── */
       case "buffering":
         return (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className={labelCls}>Max Request Body (bytes)</label>
               <input

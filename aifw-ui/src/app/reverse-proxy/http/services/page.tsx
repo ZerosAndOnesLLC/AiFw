@@ -306,7 +306,7 @@ function LoadBalancerForm({ config, setConfig }: { config: LbConfig; setConfig: 
 
       {/* Sticky Sessions */}
       <CollapsibleSection title="Sticky Sessions">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <label className={labelCls}>Cookie Name</label>
             <input
@@ -364,7 +364,7 @@ function LoadBalancerForm({ config, setConfig }: { config: LbConfig; setConfig: 
 
       {/* Health Check */}
       <CollapsibleSection title="Health Check">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <label className={labelCls}>Path</label>
             <input
@@ -585,7 +585,7 @@ function FailoverForm({ config, setConfig }: { config: FailoverConfig; setConfig
 
       <div>
         <label className={`${labelCls} mt-2`}>Health Check</label>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <label className={labelCls}>Path</label>
             <input

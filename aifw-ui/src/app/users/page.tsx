@@ -458,7 +458,8 @@ export default function UsersPage() {
           {loading ? <div className="p-8 text-center text-[var(--text-muted)]">Loading...</div>
           : users.length === 0 ? <div className="p-8 text-center text-[var(--text-muted)]">No users.</div>
           : (
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[700px]">
               <thead>
                 <tr className="border-b border-[var(--border)] text-left text-[10px] text-[var(--text-muted)] uppercase tracking-wider">
                   <th className="px-4 py-3">User</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">MFA</th>
@@ -521,6 +522,7 @@ export default function UsersPage() {
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
@@ -599,12 +601,12 @@ export default function UsersPage() {
             return (
               <div key={role.id} className={`${sectionCls} overflow-hidden border-l-2 ${style.accent}`}>
                 {/* Role header */}
-                <div className="px-5 py-4 flex items-center justify-between">
+                <div className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <div>
                       <div className="flex items-center gap-2">
                         {isEditing && !role.builtin ? (
-                          <input type="text" value={editRoleName} onChange={e => setEditRoleName(e.target.value)} className="px-2 py-0.5 text-sm font-semibold bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] w-40" />
+                          <input type="text" value={editRoleName} onChange={e => setEditRoleName(e.target.value)} className="px-2 py-0.5 text-sm font-semibold bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] w-full md:w-40" />
                         ) : (
                           <h3 className="text-sm font-semibold">{role.name}</h3>
                         )}
@@ -616,7 +618,7 @@ export default function UsersPage() {
                         </span>
                       </div>
                       {isEditing && !role.builtin ? (
-                        <input type="text" value={editRoleDesc} onChange={e => setEditRoleDesc(e.target.value)} placeholder="Description" className="mt-1 px-2 py-0.5 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] w-64" />
+                        <input type="text" value={editRoleDesc} onChange={e => setEditRoleDesc(e.target.value)} placeholder="Description" className="mt-1 px-2 py-0.5 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] w-full md:w-64" />
                       ) : role.description ? (
                         <p className="text-xs text-[var(--text-muted)] mt-0.5">{role.description}</p>
                       ) : null}

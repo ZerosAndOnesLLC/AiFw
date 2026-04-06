@@ -332,8 +332,8 @@ export default function Dashboard() {
   return (
     <div className="space-y-4">
       {/* Header + Health Banner */}
-      <div className={`rounded-lg border p-4 ${healthColors[healthLevel]}`}>
-        <div className="flex items-center justify-between">
+      <div className={`rounded-lg border p-3 sm:p-4 ${healthColors[healthLevel]}`}>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className={`w-3 h-3 rounded-full ${healthDot[healthLevel]} ${healthLevel === "healthy" ? "animate-pulse" : ""}`} />
             <div>
@@ -365,7 +365,7 @@ export default function Dashboard() {
         {/* System Resources */}
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
           <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">System</h3>
-          <div className="grid grid-cols-3 gap-3 text-center">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-center">
             {[
               { l: `CPU (${system?.cpu_cores ?? "?"}c)`, v: `${cpu.toFixed(0)}%`, c: cpu > 80 ? "#ef4444" : "#3b82f6", pct: cpu },
               { l: "Memory", v: `${mem.toFixed(0)}%`, c: mem > 80 ? "#ef4444" : "#8b5cf6", pct: mem },
@@ -385,7 +385,7 @@ export default function Dashboard() {
         {/* Network Throughput */}
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
           <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">Throughput</h3>
-          <div className="grid grid-cols-2 gap-3 text-center">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-center">
             <div>
               <div className="text-[9px] text-[var(--text-muted)] uppercase">Inbound</div>
               <div className="text-lg font-bold text-green-400 mt-0.5">{formatBps(rateIn)}</div>
@@ -402,7 +402,7 @@ export default function Dashboard() {
         {/* Firewall Stats */}
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
           <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">Firewall</h3>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs">
             <div className="flex justify-between"><span className="text-[var(--text-muted)]">PF States</span><span className="font-mono font-bold text-cyan-400">{formatNumber(status.pf_states)}</span></div>
             <div className="flex justify-between"><span className="text-[var(--text-muted)]">PF Rules</span><span className="font-mono font-bold text-yellow-400">{status.pf_rules}</span></div>
             <div className="flex justify-between"><span className="text-[var(--text-muted)]">AiFw Rules</span><span className="font-mono font-bold text-blue-400">{status.aifw_active_rules}/{status.aifw_rules}</span></div>
@@ -542,11 +542,11 @@ export default function Dashboard() {
           <h3 className="text-xs font-medium">Active Connections</h3>
           <span className="text-[10px] text-[var(--text-muted)]">{connections.length} total</span>
         </div>
-        <div className="overflow-y-auto max-h-56">
+        <div className="overflow-x-auto overflow-y-auto max-h-56">
           {connections.length === 0 ? (
             <div className="text-center py-8 text-[var(--text-muted)] text-sm">No active connections</div>
           ) : (
-            <table className="w-full text-[11px]">
+            <table className="w-full text-[11px] min-w-[600px]">
               <thead>
                 <tr className="border-b border-[var(--border)]">
                   <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">Proto</th>

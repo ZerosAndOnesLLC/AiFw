@@ -356,7 +356,7 @@ export default function DnsHostsPage() {
             </h3>
 
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs text-[var(--text-muted)] mb-1">Hostname</label>
                   <input

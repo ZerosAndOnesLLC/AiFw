@@ -397,7 +397,7 @@ export default function DhcpSubnetsPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs text-[var(--text-muted)] mb-1">Pool Start</label>
                   <input
@@ -431,7 +431,7 @@ export default function DhcpSubnetsPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs text-[var(--text-muted)] mb-1">
                     DNS Servers (override, comma-separated)
@@ -487,7 +487,7 @@ export default function DhcpSubnetsPage() {
               {/* Lease Timing */}
               <div className="space-y-3">
                 <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Lease Timing</p>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs text-[var(--text-muted)] mb-1">
                       Lease Time (seconds)
@@ -509,7 +509,7 @@ export default function DhcpSubnetsPage() {
                     <p className="text-[10px] text-gray-500 mt-0.5">Maximum lease a client can request</p>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs text-[var(--text-muted)] mb-1">
                       Renewal Time / T1 (seconds)
@@ -532,7 +532,7 @@ export default function DhcpSubnetsPage() {
                   </div>
                 </div>
                 {form.subnet_type !== "address" && (
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs text-[var(--text-muted)] mb-1">
                         Preferred Time (DHCPv6, seconds)

@@ -535,7 +535,7 @@ export default function BackupPage() {
                             </button>
                           ))}
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           <div>
                             <div className="text-xs text-[var(--text-muted)] mb-1">v{diffV1}</div>
                             <pre className="bg-[var(--bg-card)] border border-[var(--border)] rounded p-3 text-xs font-mono overflow-auto max-h-80 text-red-300">

@@ -194,7 +194,7 @@ export default function ProfilePage() {
       {/* Account Info */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6">
         <h2 className="text-lg font-semibold mb-4">Account</h2>
-        <div className="grid grid-cols-2 gap-4 text-sm">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div>
             <span className="text-[var(--text-muted)] text-xs uppercase tracking-wider">Username</span>
             <p className="font-mono mt-1">{user?.username}</p>
@@ -290,7 +290,7 @@ export default function ProfilePage() {
               <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
                 <p className="text-sm font-semibold text-yellow-400 mb-2">Save your recovery codes</p>
                 <p className="text-xs text-[var(--text-secondary)] mb-3">These are shown only once. Store them somewhere safe.</p>
-                <div className="grid grid-cols-2 gap-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
                   {recoveryCodes.map((code, i) => (
                     <code key={i} className="text-xs font-mono text-yellow-300 bg-gray-900 px-2 py-1 rounded">{code}</code>
                   ))}

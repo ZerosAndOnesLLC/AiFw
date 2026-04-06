@@ -130,7 +130,7 @@ export default function DhcpMetricsPage() {
                   style={{ width: `${Math.min(s.utilization, 100)}%` }}
                 />
               </div>
-              <div className="grid grid-cols-3 text-center text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 text-center text-xs">
                 <div>
                   <span className="block text-[var(--text-muted)]">Total</span>
                   <span className="text-[var(--text-primary)] font-semibold">{s.total.toLocaleString()}</span>

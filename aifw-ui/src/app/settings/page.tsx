@@ -497,7 +497,7 @@ export default function SettingsPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className={labelCls}>Collection Interval (sec)</label>
               <input
@@ -599,7 +599,7 @@ export default function SettingsPage() {
 
               {/* Summary */}
               <div className="flex items-center gap-4 p-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-md">
-                <div className="flex-1 grid grid-cols-3 gap-4 text-xs">
+                <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                   <div>
                     <span className="text-[var(--text-muted)] uppercase tracking-wider">Duration</span>
                     <p className="font-mono mt-0.5">
@@ -661,7 +661,7 @@ export default function SettingsPage() {
         </div>
         <FeedbackBanner feedback={apiFeedback} />
         <div className="space-y-4 mt-2">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className={labelCls}>Listen Port</label>
               <input
@@ -760,7 +760,7 @@ export default function SettingsPage() {
             <p className="text-sm text-[var(--text-muted)]">Loading auth settings...</p>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className={labelCls}>Session Timeout (minutes)</label>
                   <input
@@ -786,7 +786,7 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className={labelCls}>Max Login Attempts</label>
                   <input
@@ -875,7 +875,7 @@ export default function SettingsPage() {
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className={labelCls}>Valkey URL</label>
                   <input

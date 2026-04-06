@@ -350,7 +350,7 @@ export default function IdsRulesetsPage() {
                 </div>
 
                 {/* Stats */}
-                <div className="grid grid-cols-3 gap-3 text-xs mb-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs mb-3">
                   <div>
                     <span className="text-[var(--text-muted)]">Rules</span>
                     <p className="font-mono text-sm font-bold text-[var(--text-primary)] mt-0.5">
