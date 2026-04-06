@@ -132,12 +132,17 @@ const navItems: NavItem[] = [
 
 export default function Sidebar({ onClose, width }: { onClose?: () => void; width?: number }) {
   const pathname = usePathname();
-  const { permissions } = useAuth();
+  const { permissions, isLoading: authLoading } = useAuth();
+  // If auth hasn't loaded yet or user has no permissions in JWT (legacy token),
+  // show all nav items instead of hiding everything
+  const permLoaded = !authLoading && permissions.size > 0;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     Monitoring: true,
     Firewall: true,
     Network: true,
     Services: false,
+    "Intrusion Detection": true,
+    Extensions: false,
     System: false,
   });
   const [interfaces, setInterfaces] = useState<{ name: string; role?: string }[]>([]);
@@ -164,10 +169,11 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
   const getChildren = (item: NavItem): NavChild[] => {
     if (!item.children) return [];
 
-    // Filter by permission — hide items user can't access
-    const filtered = item.children.filter(
-      (c) => !c.permission || permissions.has(c.permission)
-    );
+    // Filter by permission — hide items user can't access.
+    // If permissions haven't loaded yet, show everything.
+    const filtered = !permLoaded
+      ? item.children
+      : item.children.filter((c) => !c.permission || permissions.has(c.permission));
 
     if (!item.dynamicChildren) return filtered;
 
