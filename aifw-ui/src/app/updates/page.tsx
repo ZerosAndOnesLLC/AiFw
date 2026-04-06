@@ -241,7 +241,7 @@ export default function UpdatesPage() {
       // Install succeeded — API will restart in ~2s. Show countdown overlay.
       setAifwInstalling(false);
       setRestarting(true);
-      setRestartCountdown(20);
+      setRestartCountdown(15);
 
       // Countdown timer
       const countdownInterval = setInterval(() => {
@@ -251,12 +251,15 @@ export default function UpdatesPage() {
         });
       }, 1000);
 
-      // Poll API until it comes back, then refresh the page
+      // Phase 1: Wait for the old API to go down (it restarts after ~2s delay).
+      // We must NOT poll during this window or we'll hit the old process.
+      await new Promise((r) => setTimeout(r, 8000));
+
+      // Phase 2: Poll until the NEW API is up, then refresh.
       const pollStart = Date.now();
-      const maxWait = 30000; // 30s max
+      const maxWait = 25000;
       const poll = async () => {
         while (Date.now() - pollStart < maxWait) {
-          await new Promise((r) => setTimeout(r, 2000));
           try {
             const probe = await fetch("/api/v1/status", {
               headers: authHeaders(),
@@ -264,7 +267,6 @@ export default function UpdatesPage() {
             });
             if (probe.ok) {
               clearInterval(countdownInterval);
-              // Small delay so user sees "Ready" before refresh
               setRestartCountdown(0);
               await new Promise((r) => setTimeout(r, 500));
               window.location.reload();
@@ -273,8 +275,9 @@ export default function UpdatesPage() {
           } catch {
             // API not back yet — keep polling
           }
+          await new Promise((r) => setTimeout(r, 2000));
         }
-        // Timeout — refresh anyway, new version is running
+        // Timeout — refresh anyway
         clearInterval(countdownInterval);
         window.location.reload();
       };
@@ -294,7 +297,7 @@ export default function UpdatesPage() {
 
       setAifwRollingBack(false);
       setRestarting(true);
-      setRestartCountdown(20);
+      setRestartCountdown(15);
 
       const countdownInterval = setInterval(() => {
         setRestartCountdown((prev) => {
@@ -303,10 +306,12 @@ export default function UpdatesPage() {
         });
       }, 1000);
 
+      // Wait for old API to go down before polling
+      await new Promise((r) => setTimeout(r, 8000));
+
       const pollStart = Date.now();
       const poll = async () => {
-        while (Date.now() - pollStart < 30000) {
-          await new Promise((r) => setTimeout(r, 2000));
+        while (Date.now() - pollStart < 25000) {
           try {
             const probe = await fetch("/api/v1/status", {
               headers: authHeaders(),
@@ -320,6 +325,7 @@ export default function UpdatesPage() {
               return;
             }
           } catch { /* keep polling */ }
+          await new Promise((r) => setTimeout(r, 2000));
         }
         clearInterval(countdownInterval);
         window.location.reload();
@@ -375,7 +381,7 @@ export default function UpdatesPage() {
           <div className="w-full h-1.5 bg-[var(--bg-card)] rounded-full overflow-hidden">
             <div
               className="h-full bg-[var(--accent)] rounded-full transition-all duration-1000 ease-linear"
-              style={{ width: `${Math.max(5, ((20 - restartCountdown) / 20) * 100)}%` }}
+              style={{ width: `${Math.max(5, ((15 - restartCountdown) / 15) * 100)}%` }}
             />
           </div>
           <p className="text-xs text-[var(--text-muted)]">
