@@ -88,9 +88,11 @@ export default function SettingsPage() {
   const [valkeyStatus, setValkeyStatus] = useState<string>("unknown");
 
   // --- Dashboard History ---
+  const [historyMode, setHistoryMode] = useState<"duration" | "ram">("duration");
   const [historyMinutes, setHistoryMinutes] = useState(30);
+  const [historyRamMb, setHistoryRamMb] = useState(512);
   const [historyEntries, setHistoryEntries] = useState(0);
-  const [historyRamMb, setHistoryRamMb] = useState(0);
+  const [historyEstRamMb, setHistoryEstRamMb] = useState(0);
   const [historyFeedback, setHistoryFeedback] = useState<SectionFeedback | null>(null);
   const [historySaving, setHistorySaving] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -165,9 +167,11 @@ export default function SettingsPage() {
         const res = await authFetch(`${API}/api/v1/settings/dashboard-history`, { headers: authHeaders() });
         if (!res.ok) return;
         const data = await res.json();
+        if (data.mode === "duration" || data.mode === "ram") setHistoryMode(data.mode);
         if (data.history_seconds) setHistoryMinutes(Math.round(data.history_seconds / 60));
         if (data.current_entries !== undefined) setHistoryEntries(data.current_entries);
-        if (data.estimated_ram_mb !== undefined) setHistoryRamMb(data.estimated_ram_mb);
+        if (data.estimated_ram_mb !== undefined) setHistoryEstRamMb(data.estimated_ram_mb);
+        if (data.ram_limit_mb) setHistoryRamMb(data.ram_limit_mb);
       } catch {
         // endpoint may not exist yet
       } finally {
@@ -307,15 +311,18 @@ export default function SettingsPage() {
     setHistorySaving(true);
     setHistoryFeedback(null);
     try {
-      const seconds = Math.max(5, historyMinutes) * 60;
+      const body =
+        historyMode === "ram"
+          ? { mode: "ram", ram_limit_mb: historyRamMb }
+          : { mode: "duration", history_seconds: Math.max(5, historyMinutes) * 60 };
       const res = await authFetch(`${API}/api/v1/settings/dashboard-history`, {
         method: "PUT",
         headers: authHeaders(),
-        body: JSON.stringify({ history_seconds: seconds }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      if (data.estimated_ram_mb !== undefined) setHistoryRamMb(data.estimated_ram_mb);
+      if (data.estimated_ram_mb !== undefined) setHistoryEstRamMb(data.estimated_ram_mb);
       if (data.history_seconds) setHistoryMinutes(Math.round(data.history_seconds / 60));
       setFeedbackWithTimeout(setHistoryFeedback, { type: "success", message: "Dashboard history updated. Takes effect immediately." });
     } catch (err: unknown) {
@@ -533,43 +540,105 @@ export default function SettingsPage() {
             <p className="text-sm text-[var(--text-muted)]">Loading...</p>
           ) : (
             <>
+              {/* Mode toggle */}
               <div>
-                <label className={labelCls}>History Duration (minutes)</label>
-                <input
-                  type="number"
-                  value={historyMinutes}
-                  onChange={(e) => setHistoryMinutes(Math.max(5, Number(e.target.value)))}
-                  className={inputCls}
-                  min={5}
-                  max={10080}
-                />
-                <p className="text-xs text-[var(--text-muted)] mt-1">
-                  How many minutes of dashboard metrics to keep in memory for WebSocket clients.
-                  Default: 30 min. Max: 10,080 (7 days).
-                </p>
+                <label className={labelCls}>Limit by</label>
+                <div className="flex gap-1 bg-[var(--bg-primary)] rounded-lg p-1 border border-[var(--border)] w-fit">
+                  {(["duration", "ram"] as const).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setHistoryMode(m)}
+                      className={`px-4 py-1.5 text-xs font-medium rounded-md transition-all ${
+                        historyMode === m
+                          ? "bg-[var(--accent)] text-white"
+                          : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                      }`}
+                    >
+                      {m === "duration" ? "Duration" : "RAM Budget"}
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              {/* Duration input */}
+              {historyMode === "duration" && (
+                <div>
+                  <label className={labelCls}>History Duration (minutes)</label>
+                  <input
+                    type="number"
+                    value={historyMinutes}
+                    onChange={(e) => setHistoryMinutes(Math.max(5, Number(e.target.value)))}
+                    className={inputCls}
+                    min={5}
+                    max={43200}
+                  />
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                    How many minutes of dashboard metrics to keep. Default: 30 min. Max: 43,200 (30 days).
+                  </p>
+                </div>
+              )}
+
+              {/* RAM budget input */}
+              {historyMode === "ram" && (
+                <div>
+                  <label className={labelCls}>RAM Budget (MB)</label>
+                  <input
+                    type="number"
+                    value={historyRamMb}
+                    onChange={(e) => setHistoryRamMb(Math.max(1, Number(e.target.value)))}
+                    className={inputCls}
+                    min={1}
+                    max={8192}
+                  />
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                    Maximum RAM to use for dashboard history. The system calculates how much history fits.
+                    Each entry is ~2 KB. Example: 1024 MB = ~6 days of history.
+                  </p>
+                </div>
+              )}
+
+              {/* Summary */}
               <div className="flex items-center gap-4 p-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-md">
                 <div className="flex-1 grid grid-cols-3 gap-4 text-xs">
                   <div>
                     <span className="text-[var(--text-muted)] uppercase tracking-wider">Duration</span>
                     <p className="font-mono mt-0.5">
-                      {historyMinutes < 60
-                        ? `${historyMinutes} min`
-                        : historyMinutes < 1440
-                        ? `${(historyMinutes / 60).toFixed(1)} hours`
-                        : `${(historyMinutes / 1440).toFixed(1)} days`}
+                      {(() => {
+                        const mins = historyMode === "ram"
+                          ? Math.round((historyRamMb * 1024 * 1024) / 2048 / 60)
+                          : historyMinutes;
+                        return mins < 60
+                          ? `${mins} min`
+                          : mins < 1440
+                          ? `${(mins / 60).toFixed(1)} hours`
+                          : `${(mins / 1440).toFixed(1)} days`;
+                      })()}
                     </p>
                   </div>
                   <div>
                     <span className="text-[var(--text-muted)] uppercase tracking-wider">Entries</span>
-                    <p className="font-mono mt-0.5">{(historyMinutes * 60).toLocaleString()}</p>
+                    <p className="font-mono mt-0.5">
+                      {(() => {
+                        const entries = historyMode === "ram"
+                          ? Math.round((historyRamMb * 1024 * 1024) / 2048)
+                          : historyMinutes * 60;
+                        return entries.toLocaleString();
+                      })()}
+                    </p>
                   </div>
                   <div>
                     <span className="text-[var(--text-muted)] uppercase tracking-wider">Est. RAM</span>
                     <p className="font-mono mt-0.5">
-                      {((historyMinutes * 60 * 2) / 1024) < 1
-                        ? `${Math.round(historyMinutes * 60 * 2)} KB`
-                        : `${((historyMinutes * 60 * 2) / 1024).toFixed(1)} MB`}
+                      {(() => {
+                        const mb = historyMode === "ram"
+                          ? historyRamMb
+                          : (historyMinutes * 60 * 2) / 1024;
+                        return mb < 1
+                          ? `${Math.round(mb * 1024)} KB`
+                          : mb >= 1024
+                          ? `${(mb / 1024).toFixed(2)} GB`
+                          : `${mb.toFixed(1)} MB`;
+                      })()}
                     </p>
                   </div>
                 </div>
