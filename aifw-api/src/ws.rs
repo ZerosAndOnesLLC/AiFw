@@ -42,7 +42,7 @@ struct BlockedPayload {
     dst_port: u16,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct SystemPayload {
     cpu_usage: f64,
     cpu_cores: u32,
@@ -59,7 +59,7 @@ struct SystemPayload {
     route_count: usize,
 }
 
-#[derive(Serialize, Default)]
+#[derive(Serialize, Clone, Default)]
 struct DiskIoPayload {
     reads_per_sec: f64,
     writes_per_sec: f64,
@@ -67,7 +67,7 @@ struct DiskIoPayload {
     write_kbps: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct DiskPayload {
     mount: String,
     filesystem: String,
@@ -76,7 +76,7 @@ struct DiskPayload {
     pct: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct StatusPayload {
     pf_running: bool,
     pf_states: u64,
@@ -102,13 +102,25 @@ struct ConnectionPayload {
     bytes_out: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct InterfacePayload {
     name: String,
     bytes_in: u64,
     bytes_out: u64,
     packets_in: u64,
     packets_out: u64,
+}
+
+/// Slim version stored in metrics_history — excludes blocked/connections to avoid
+/// unbounded memory growth (10k blocked × 1800 history = multi-GB leak).
+#[derive(Serialize)]
+struct WsHistoryEntry {
+    #[serde(rename = "type")]
+    msg_type: &'static str,
+    status: StatusPayload,
+    system: SystemPayload,
+    interfaces: Vec<InterfacePayload>,
+    services: Vec<ServiceStatusPayload>,
 }
 
 pub async fn ws_handler(
@@ -142,27 +154,28 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         loop {
             tick.tick().await;
             match build_update(&push_state).await {
-                Ok(msg) => {
-                    // Store in server-side ring buffer
+                Ok((live_msg, history_msg)) => {
+                    // Store slim version in server-side ring buffer (no blocked/connections)
                     {
                         let mut buf = push_state.metrics_history.write().await;
                         if buf.len() >= METRICS_HISTORY_SIZE {
                             buf.pop_front();
                         }
-                        buf.push_back(msg.clone());
+                        buf.push_back(history_msg.clone());
                     }
 
-                    // Persist to Valkey if available
+                    // Persist slim version to Valkey if available
                     if let Some(ref redis) = push_state.redis {
                         let mut conn = redis.clone();
                         let _: Result<(), _> = redis::pipe()
-                            .cmd("LPUSH").arg("aifw:metrics:history").arg(&msg)
+                            .cmd("LPUSH").arg("aifw:metrics:history").arg(&history_msg)
                             .cmd("LTRIM").arg("aifw:metrics:history").arg(0i64).arg(METRICS_HISTORY_SIZE as i64 - 1)
                             .query_async(&mut conn)
                             .await;
                     }
 
-                    if sender.send(Message::Text(msg.into())).await.is_err() {
+                    // Send full version (with blocked + connections) to live client
+                    if sender.send(Message::Text(live_msg.into())).await.is_err() {
                         break;
                     }
                 }
@@ -190,7 +203,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 }
 
-async fn build_update(state: &AppState) -> Result<String, String> {
+async fn build_update(state: &AppState) -> Result<(String, String), String> {
     let stats = state.pf.get_stats().await.map_err(|e| e.to_string())?;
     let rules = state.rule_engine.list_rules().await.map_err(|e| e.to_string())?;
     let active = rules.iter().filter(|r| r.status == RuleStatus::Active).count();
@@ -305,34 +318,48 @@ async fn build_update(state: &AppState) -> Result<String, String> {
         }
     }
 
-    // Collect blocked traffic from pflog (cached, refreshed every 5 ticks)
-    let blocked = collect_blocked().await;
+    // Collect recent blocked traffic from pflog (last 50 entries, not all 10k)
+    let blocked = collect_blocked_recent().await;
 
     // Collect service status (lightweight — just check PIDs)
     let services = collect_services().await;
 
+    let status = StatusPayload {
+        pf_running: stats.running,
+        pf_states: stats.states_count,
+        pf_rules: stats.rules_count,
+        aifw_rules: rules.len(),
+        aifw_active_rules: active,
+        nat_rules: nat_rules.len(),
+        packets_in: stats.packets_in,
+        packets_out: stats.packets_out,
+        bytes_in: stats.bytes_in,
+        bytes_out: stats.bytes_out,
+    };
+
+    // Slim history entry (~2-3 KB) — excludes blocked/connections to prevent memory growth
+    let history_entry = WsHistoryEntry {
+        msg_type: "status_update",
+        status: status.clone(),
+        system: system.clone(),
+        interfaces: interfaces.clone(),
+        services: services.clone(),
+    };
+    let history_msg = serde_json::to_string(&history_entry).map_err(|e| e.to_string())?;
+
+    // Full live update (~20 KB) — includes recent blocked + connections for live clients
     let update = WsStatusUpdate {
         msg_type: "status_update",
         system,
         blocked,
         services,
-        status: StatusPayload {
-            pf_running: stats.running,
-            pf_states: stats.states_count,
-            pf_rules: stats.rules_count,
-            aifw_rules: rules.len(),
-            aifw_active_rules: active,
-            nat_rules: nat_rules.len(),
-            packets_in: stats.packets_in,
-            packets_out: stats.packets_out,
-            bytes_in: stats.bytes_in,
-            bytes_out: stats.bytes_out,
-        },
+        status,
         connections,
         interfaces,
     };
+    let live_msg = serde_json::to_string(&update).map_err(|e| e.to_string())?;
 
-    serde_json::to_string(&update).map_err(|e| e.to_string())
+    Ok((live_msg, history_msg))
 }
 
 async fn collect_system_metrics() -> SystemPayload {
@@ -651,9 +678,15 @@ pub fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw
     });
 }
 
-async fn collect_blocked() -> Vec<BlockedPayload> {
+/// Return only the most recent 50 blocked entries for WS updates.
+/// The full 10k buffer remains available for the REST API.
+const WS_BLOCKED_LIMIT: usize = 50;
+
+async fn collect_blocked_recent() -> Vec<BlockedPayload> {
     let buf = blocked_buffer();
-    buf.read().await.clone()
+    let all = buf.read().await;
+    let skip = all.len().saturating_sub(WS_BLOCKED_LIMIT);
+    all[skip..].to_vec()
 }
 
 async fn collect_services() -> Vec<ServiceStatusPayload> {
