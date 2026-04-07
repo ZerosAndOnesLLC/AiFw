@@ -13,21 +13,60 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 ## Screenshots
 
 <p align="center">
-  <img src="screenshots/dashboard.png" alt="Dashboard" width="48%">
-  <img src="screenshots/rules.png" alt="Firewall Rules" width="48%">
+  <img src="screenshots/01-dashboard.png" alt="Dashboard with health status, metrics, charts" width="48%">
+  <img src="screenshots/03-rules.png" alt="Firewall Rules" width="48%">
 </p>
 <p align="center">
-  <img src="screenshots/blocked.png" alt="Blocked Traffic" width="48%">
-  <img src="screenshots/traffic.png" alt="Traffic Analytics" width="48%">
+  <img src="screenshots/07-ids-dashboard.png" alt="IDS/IPS Dashboard" width="48%">
+  <img src="screenshots/05-blocked.png" alt="Blocked Traffic" width="48%">
 </p>
 <p align="center">
-  <img src="screenshots/dhcp.png" alt="DHCP Server" width="48%">
-  <img src="screenshots/dns.png" alt="DNS Resolver" width="48%">
+  <img src="screenshots/09-dns.png" alt="DNS Resolver" width="48%">
+  <img src="screenshots/10-dhcp.png" alt="DHCP Server" width="48%">
 </p>
 <p align="center">
-  <img src="screenshots/time.png" alt="NTP/PTP Time Service" width="48%">
-  <img src="screenshots/interfaces.png" alt="Interfaces" width="48%">
+  <img src="screenshots/18-roles.png" alt="Role-Based Access Control" width="48%">
+  <img src="screenshots/15-reverse-proxy.png" alt="Reverse Proxy" width="48%">
 </p>
+<p align="center">
+  <img src="screenshots/16-time.png" alt="NTP/PTP Time Service" width="48%">
+  <img src="screenshots/12-interfaces.png" alt="Network Interfaces" width="48%">
+</p>
+
+### Live Demos
+
+<p align="center">
+  <img src="screenshots/vid-01-dashboard-live.gif" alt="Dashboard live metrics" width="48%">
+  <img src="screenshots/vid-05-ids-overview.gif" alt="IDS overview" width="48%">
+</p>
+
+<details>
+<summary>All 20 screenshots</summary>
+
+| # | Page | Screenshot |
+|---|------|-----------|
+| 1 | Dashboard | <img src="screenshots/01-dashboard.png" width="300"> |
+| 2 | Traffic Analytics | <img src="screenshots/02-traffic.png" width="300"> |
+| 3 | Firewall Rules | <img src="screenshots/03-rules.png" width="300"> |
+| 4 | NAT / Port Forward | <img src="screenshots/04-nat.png" width="300"> |
+| 5 | Blocked Traffic | <img src="screenshots/05-blocked.png" width="300"> |
+| 6 | Live Connections | <img src="screenshots/06-connections.png" width="300"> |
+| 7 | IDS Dashboard | <img src="screenshots/07-ids-dashboard.png" width="300"> |
+| 8 | IDS Rulesets | <img src="screenshots/08-ids-rulesets.png" width="300"> |
+| 9 | DNS Resolver | <img src="screenshots/09-dns.png" width="300"> |
+| 10 | DHCP Server | <img src="screenshots/10-dhcp.png" width="300"> |
+| 11 | DHCP Subnets | <img src="screenshots/11-dhcp-subnets.png" width="300"> |
+| 12 | Interfaces | <img src="screenshots/12-interfaces.png" width="300"> |
+| 13 | VPN (WireGuard/IPsec) | <img src="screenshots/13-vpn.png" width="300"> |
+| 14 | Geo-IP Filtering | <img src="screenshots/14-geoip.png" width="300"> |
+| 15 | Reverse Proxy | <img src="screenshots/15-reverse-proxy.png" width="300"> |
+| 16 | Time Service (NTP) | <img src="screenshots/16-time.png" width="300"> |
+| 17 | User Management | <img src="screenshots/17-users.png" width="300"> |
+| 18 | Roles & Permissions | <img src="screenshots/18-roles.png" width="300"> |
+| 19 | Settings | <img src="screenshots/19-settings.png" width="300"> |
+| 20 | System Updates | <img src="screenshots/20-updates.png" width="300"> |
+
+</details>
 
 ## Features
 
