@@ -179,41 +179,94 @@ export default function IdsDashboardPage() {
 
       <FeedbackBanner feedback={feedback} />
 
-      {/* Mode Toggle */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-medium">Engine Mode</h3>
-            <p className="text-xs text-[var(--text-muted)] mt-0.5">
-              {currentMode === "disabled"
-                ? "Engine is stopped. Select IDS or IPS to start."
+      {/* Engine Control — prominent start/stop */}
+      <div className={`rounded-lg border-2 p-5 ${
+        currentMode === "disabled"
+          ? "border-gray-500/30 bg-gray-500/5"
+          : currentMode === "ids"
+          ? "border-blue-500/30 bg-blue-500/5"
+          : "border-red-500/30 bg-red-500/5"
+      }`}>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+              currentMode === "disabled"
+                ? "bg-gray-600"
                 : currentMode === "ids"
-                ? "Monitoring mode — detecting and alerting on threats"
-                : "Blocking mode — actively dropping malicious traffic"}
-            </p>
+                ? "bg-blue-600"
+                : "bg-red-600"
+            }`}>
+              {currentMode === "disabled" ? (
+                <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5.636 5.636a9 9 0 1012.728 0M12 3v9" />
+                </svg>
+              ) : (
+                <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                </svg>
+              )}
+            </div>
+            <div>
+              <h3 className="text-base font-semibold">
+                {currentMode === "disabled"
+                  ? "Engine Stopped"
+                  : currentMode === "ids"
+                  ? "IDS Running — Monitor Mode"
+                  : "IPS Running — Active Blocking"}
+              </h3>
+              <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                {currentMode === "disabled"
+                  ? "The intrusion detection engine is not running. Start it to begin monitoring network traffic."
+                  : currentMode === "ids"
+                  ? "Analyzing traffic and generating alerts. Threats are detected but not blocked."
+                  : "Analyzing traffic and actively blocking threats. Malicious packets are dropped."}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-1 bg-[var(--bg-primary)] rounded-lg p-1 border border-[var(--border)]">
-            {modeOptions.map((mode) => {
-              const labels: Record<string, string> = { disabled: "OFF", ids: "IDS (Monitor)", ips: "IPS (Block)" };
-              return (
-              <button
-                key={mode}
-                onClick={() => handleModeChange(mode)}
-                disabled={modeChanging || currentMode === mode}
-                className={`px-4 py-1.5 text-xs font-medium rounded-md transition-all ${
-                  currentMode === mode
-                    ? mode === "disabled"
-                      ? "bg-gray-600 text-white"
-                      : mode === "ids"
-                      ? "bg-blue-600 text-white"
-                      : "bg-red-600 text-white"
-                    : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                } disabled:opacity-50`}
-              >
-                {labels[mode]}
-              </button>
-              );
-            })}
+
+          <div className="flex items-center gap-2">
+            {currentMode === "disabled" ? (
+              <>
+                <button
+                  onClick={() => handleModeChange("ids")}
+                  disabled={modeChanging}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" /></svg>
+                  {modeChanging ? "Starting..." : "Start IDS"}
+                </button>
+                <button
+                  onClick={() => handleModeChange("ips")}
+                  disabled={modeChanging}
+                  className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
+                  {modeChanging ? "Starting..." : "Start IPS"}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => handleModeChange(currentMode === "ids" ? "ips" : "ids")}
+                  disabled={modeChanging}
+                  className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 border ${
+                    currentMode === "ids"
+                      ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
+                      : "border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
+                  }`}
+                >
+                  {currentMode === "ids" ? "Switch to IPS" : "Switch to IDS"}
+                </button>
+                <button
+                  onClick={() => handleModeChange("disabled")}
+                  disabled={modeChanging}
+                  className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" /></svg>
+                  {modeChanging ? "Stopping..." : "Stop"}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
