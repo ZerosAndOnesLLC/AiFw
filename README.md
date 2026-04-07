@@ -2,7 +2,9 @@
 
 High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML threat detection. All features free and open source.
 
-> **AI is optional.** AiFw is a full-featured firewall, router, DHCP server, DNS resolver, and NTP server that works without any AI features enabled. The AI/ML threat detection module is an opt-in add-on for users who want automated port scan, DDoS, brute force, and C2 beacon detection. You can run AiFw purely as a traditional firewall — no AI, no cloud, no telemetry.
+> **AI is not required.** AiFw is a full-featured firewall, router, DHCP server, DNS resolver, IDS/IPS, reverse proxy, and NTP server that works perfectly without any AI features enabled. You get stateful packet filtering, NAT, VPN, Geo-IP blocking, Suricata-compatible intrusion detection, traffic shaping, and a complete web UI — all without AI. There is no cloud dependency and no telemetry.
+
+> **AI/ML features are a work in progress.** The `aifw-ai` crate contains experimental detectors for port scans, DDoS, brute force, C2 beacons, and DNS tunneling. These are not yet production-ready and are disabled by default. The AI module is an opt-in add-on that will be developed further in future releases. The Threats page in the UI reflects the current WIP status of this module.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![FreeBSD](https://img.shields.io/badge/FreeBSD-15.0-red.svg)](https://www.freebsd.org/)
@@ -33,7 +35,7 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 - **NAT** — SNAT, DNAT/RDR, masquerade, binat, NAT64/NAT46
 - **Connection tracking** — real-time state table monitoring, top talkers, protocol breakdown
 - **Rate limiting & traffic shaping** — CoDel/HFSC/PriQ queues, per-IP overload tables, SYN flood protection
-- **AI/ML threat detection** *(optional)* — port scan, DDoS, brute force, C2 beacon, DNS tunnel detection with auto-response
+- **AI/ML threat detection** *(optional, WIP)* — experimental port scan, DDoS, brute force, C2 beacon, DNS tunnel detection with auto-response (disabled by default, not yet production-ready)
 - **VPN integration** — WireGuard tunnels + peers, IPsec SAs with pf rule generation
 - **Geo-IP filtering** — country-based block/allow with GeoLite2 CSV, CIDR aggregation
 - **TLS inspection** — JA3/JA3S fingerprinting, SNI filtering, cert validation, version enforcement
@@ -53,7 +55,7 @@ AiFw/
 ├── aifw-core/          # Engines: rules, NAT, VPN, TLS, geo-IP, HA, shaping, audit
 ├── aifw-conntrack/     # Connection tracking, pflog parsing, stats
 ├── aifw-plugins/       # Plugin framework (native + WASM) + 3 example plugins
-├── aifw-ai/            # ML threat detection (5 detectors) + auto-response
+├── aifw-ai/            # ML threat detection (5 detectors) + auto-response [WIP]
 ├── aifw-metrics/       # RRD ring buffer metrics engine
 ├── aifw-api/           # Axum REST API server (JWT + API key auth)
 ├── aifw-tui/           # ratatui terminal UI
@@ -152,7 +154,7 @@ NextJS application with 11 pages:
 - **Traffic** — bandwidth, PPS, bytes with time range selector (5m–30d)
 - **Rules / NAT** — full CRUD with inline forms
 - **Connections** — auto-refreshing live state table
-- **Threats** — AI detection timeline, severity scoring, auto-response history
+- **Threats** — AI detection timeline, severity scoring, auto-response history *(WIP — AI module is experimental)*
 - **Geo-IP** — country rules, IP lookup
 - **VPN** — WireGuard tunnels + peers, IPsec SAs
 - **Cluster** — CARP VIPs, pfsync, node health, health checks
@@ -182,4 +184,4 @@ npm run dev          # Start dev server on :3000
 
 ## License
 
-Apache-2.0 — all features free and open source.
+MIT — all features free and open source.
