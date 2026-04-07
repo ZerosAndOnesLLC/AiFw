@@ -2290,6 +2290,155 @@ pub async fn update_ai_settings(
     Ok(Json(serde_json::json!({ "message": "AI settings saved" })))
 }
 
+// --- AI Provider Model List & Connection Test ---
+
+pub async fn test_ai_provider(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let provider = req.get("provider").and_then(|v| v.as_str()).ok_or(bad_request())?;
+    let pool = &state.pool;
+
+    // Load provider config
+    async fn get_val(pool: &sqlx::SqlitePool, key: &str) -> String {
+        sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = ?1")
+            .bind(key).fetch_optional(pool).await.ok().flatten().map(|r| r.0).unwrap_or_default()
+    }
+
+    let api_key = get_val(pool, &format!("ai_{provider}_api_key")).await;
+    let endpoint = get_val(pool, &format!("ai_{provider}_endpoint")).await;
+    let model = get_val(pool, &format!("ai_{provider}_model")).await;
+
+    // Allow request overrides for testing before saving
+    let endpoint = req.get("endpoint").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or(endpoint);
+    let api_key = req.get("api_key").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or(api_key);
+
+    if endpoint.is_empty() {
+        return Ok(Json(serde_json::json!({ "success": false, "error": "No endpoint configured" })));
+    }
+
+    // Build the models URL based on provider type
+    let (models_url, auth_header) = match provider {
+        "openai" | "lm_studio" => {
+            let url = format!("{}/models", endpoint.trim_end_matches('/'));
+            let auth = if api_key.is_empty() { String::new() } else { format!("Bearer {api_key}") };
+            (url, auth)
+        }
+        "claude" => {
+            // Anthropic doesn't have a /models endpoint — just test with a minimal message
+            let url = format!("{}/v1/messages", endpoint.trim_end_matches('/'));
+            let auth = api_key.clone();
+            (url, auth)
+        }
+        "ollama" => {
+            let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+            (url, String::new())
+        }
+        _ => return Err(bad_request()),
+    };
+
+    // Use curl to test connectivity (no reqwest dependency)
+    let mut args: Vec<String> = vec!["-sk", "--connect-timeout", "5", "-o", "/dev/null", "-w", "%{http_code}"]
+        .into_iter().map(String::from).collect();
+    if !auth_header.is_empty() {
+        if provider == "claude" {
+            args.extend(["-H".to_string(), format!("x-api-key: {auth_header}"), "-H".to_string(), "anthropic-version: 2023-06-01".to_string()]);
+        } else {
+            args.extend(["-H".to_string(), format!("Authorization: {auth_header}")]);
+        }
+    }
+    args.push(models_url.clone());
+
+    let output = tokio::process::Command::new("curl")
+        .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        .output().await
+        .map_err(|_| internal())?;
+
+    let status_code = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let success = status_code.starts_with('2');
+
+    Ok(Json(serde_json::json!({
+        "success": success,
+        "status_code": status_code,
+        "endpoint": endpoint,
+        "model": model,
+    })))
+}
+
+pub async fn list_ai_models(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let provider = q.get("provider").ok_or(bad_request())?;
+    let pool = &state.pool;
+
+    async fn get_val(pool: &sqlx::SqlitePool, key: &str) -> String {
+        sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = ?1")
+            .bind(key).fetch_optional(pool).await.ok().flatten().map(|r| r.0).unwrap_or_default()
+    }
+
+    let api_key = get_val(pool, &format!("ai_{provider}_api_key")).await;
+    let endpoint = get_val(pool, &format!("ai_{provider}_endpoint")).await;
+
+    if endpoint.is_empty() {
+        return Ok(Json(serde_json::json!({ "models": [], "error": "No endpoint configured" })));
+    }
+
+    let (url, auth_args): (String, Vec<String>) = match provider.as_str() {
+        "openai" | "lm_studio" => {
+            let url = format!("{}/models", endpoint.trim_end_matches('/'));
+            let mut a = vec![];
+            if !api_key.is_empty() {
+                a.push("-H".to_string());
+                a.push(format!("Authorization: Bearer {api_key}"));
+            }
+            (url, a)
+        }
+        "ollama" => {
+            let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+            (url, vec![])
+        }
+        "claude" => {
+            // Anthropic doesn't expose a models list API — return known models
+            return Ok(Json(serde_json::json!({
+                "models": [
+                    "claude-sonnet-4-20250514",
+                    "claude-opus-4-20250514",
+                    "claude-haiku-4-20250414",
+                    "claude-3-5-sonnet-20241022",
+                    "claude-3-5-haiku-20241022"
+                ]
+            })));
+        }
+        _ => return Err(bad_request()),
+    };
+
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args(["-sk", "--connect-timeout", "5"]);
+    for arg in &auth_args {
+        cmd.arg(arg);
+    }
+    cmd.arg(&url);
+
+    let output = cmd.output().await.map_err(|_| internal())?;
+    let body = String::from_utf8_lossy(&output.stdout);
+
+    // Parse response — OpenAI returns { data: [{id: "model-name"}, ...] }, Ollama returns { models: [{name: "model"}, ...] }
+    let models: Vec<String> = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+            data.iter().filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())).collect()
+        } else if let Some(models) = json.get("models").and_then(|d| d.as_array()) {
+            models.iter().filter_map(|m| m.get("name").and_then(|v| v.as_str()).map(|s| s.to_string())).collect()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+
+    Ok(Json(serde_json::json!({ "models": models })))
+}
+
 // --- TLS Policy Settings ---
 
 pub async fn get_tls_settings(

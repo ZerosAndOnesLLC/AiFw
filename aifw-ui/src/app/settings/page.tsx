@@ -108,6 +108,10 @@ export default function SettingsPage() {
   const [aiEditKey, setAiEditKey] = useState("");
   const [aiEditEndpoint, setAiEditEndpoint] = useState("");
   const [aiEditModel, setAiEditModel] = useState("");
+  const [aiModels, setAiModels] = useState<string[]>([]);
+  const [aiModelsLoading, setAiModelsLoading] = useState(false);
+  const [aiTesting, setAiTesting] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<{ success: boolean; status_code: string } | null>(null);
 
   // Auto-clear feedback after 4 seconds
   const setFeedbackWithTimeout = useCallback(
@@ -396,6 +400,40 @@ export default function SettingsPage() {
       setFeedbackWithTimeout(setAiFeedback, { type: "success", message: enabled ? "AI analysis enabled." : "AI analysis disabled." });
     } catch { /* ignore */ }
     finally { setAiSaving(false); }
+  };
+
+  const fetchAiModels = async (provider: string) => {
+    setAiModelsLoading(true);
+    setAiModels([]);
+    try {
+      const res = await authFetch(`${API}/api/v1/settings/ai/models?provider=${provider}`, { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setAiModels(data.models || []);
+      }
+    } catch { /* ignore */ }
+    finally { setAiModelsLoading(false); }
+  };
+
+  const testAiConnection = async (provider: string) => {
+    setAiTesting(true);
+    setAiTestResult(null);
+    try {
+      const body: Record<string, string> = { provider };
+      if (aiEditEndpoint) body.endpoint = aiEditEndpoint;
+      if (aiEditKey) body.api_key = aiEditKey;
+      const res = await authFetch(`${API}/api/v1/settings/ai/test`, {
+        method: "POST", headers: authHeaders(), body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAiTestResult({ success: data.success, status_code: data.status_code });
+      } else {
+        setAiTestResult({ success: false, status_code: "error" });
+      }
+    } catch {
+      setAiTestResult({ success: false, status_code: "error" });
+    } finally { setAiTesting(false); }
   };
 
   const saveValkey = async () => {
@@ -1076,6 +1114,8 @@ export default function SettingsPage() {
                               setAiEditKey("");
                               setAiEditEndpoint(cfg?.endpoint || prov.defaultEndpoint);
                               setAiEditModel(cfg?.model || prov.defaultModel);
+                              setAiModels([]);
+                              setAiTestResult(null);
                             }
                           }}
                           className="text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
@@ -1119,17 +1159,51 @@ export default function SettingsPage() {
                             />
                           </div>
                           <div>
-                            <label className={labelCls}>Model</label>
-                            <input
-                              type="text"
-                              value={aiEditModel}
-                              onChange={e => setAiEditModel(e.target.value)}
-                              placeholder={prov.defaultModel || "model name"}
-                              className={inputCls}
-                            />
+                            <div className="flex items-center justify-between mb-1">
+                              <label className={labelCls}>Model</label>
+                              <button
+                                onClick={() => fetchAiModels(prov.key)}
+                                disabled={aiModelsLoading}
+                                className="text-[10px] text-[var(--accent)] hover:underline disabled:opacity-50"
+                              >
+                                {aiModelsLoading ? "Loading..." : "Fetch Models"}
+                              </button>
+                            </div>
+                            {aiModels.length > 0 ? (
+                              <select
+                                value={aiEditModel}
+                                onChange={e => setAiEditModel(e.target.value)}
+                                className={inputCls}
+                              >
+                                <option value="">Select a model...</option>
+                                {aiModels.map(m => <option key={m} value={m}>{m}</option>)}
+                              </select>
+                            ) : (
+                              <input
+                                type="text"
+                                value={aiEditModel}
+                                onChange={e => setAiEditModel(e.target.value)}
+                                placeholder={prov.defaultModel || "model name"}
+                                className={inputCls}
+                              />
+                            )}
                           </div>
                         </div>
-                        <div className="flex justify-end">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => testAiConnection(prov.key)}
+                              disabled={aiTesting}
+                              className="px-3 py-2 text-xs font-medium rounded-md border border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50"
+                            >
+                              {aiTesting ? "Testing..." : "Test Connection"}
+                            </button>
+                            {aiTestResult && (
+                              <span className={`text-xs font-medium ${aiTestResult.success ? "text-green-400" : "text-red-400"}`}>
+                                {aiTestResult.success ? "Connected" : `Failed (${aiTestResult.status_code})`}
+                              </span>
+                            )}
+                          </div>
                           <button
                             onClick={() => saveAiProvider(prov.key)}
                             disabled={aiSaving}
