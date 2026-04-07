@@ -208,6 +208,12 @@ impl IdsEngine {
         .execute(pool)
         .await?;
 
+        // Alert classification and analyst notes (added for threat investigation workflow)
+        let _ = sqlx::query("ALTER TABLE ids_alerts ADD COLUMN classification TEXT NOT NULL DEFAULT 'unreviewed'")
+            .execute(pool).await;
+        let _ = sqlx::query("ALTER TABLE ids_alerts ADD COLUMN analyst_notes TEXT")
+            .execute(pool).await;
+
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ids_alerts_ts ON ids_alerts(timestamp)")
             .execute(pool)
             .await?;

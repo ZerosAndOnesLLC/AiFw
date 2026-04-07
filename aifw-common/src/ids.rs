@@ -173,6 +173,15 @@ pub struct IdsAlert {
     pub payload_excerpt: Option<String>,
     pub metadata: Option<HashMap<String, String>>,
     pub acknowledged: bool,
+    /// Classification: unreviewed, confirmed, false_positive, investigating
+    #[serde(default = "default_classification")]
+    pub classification: String,
+    /// Free-form analyst notes
+    pub analyst_notes: Option<String>,
+}
+
+fn default_classification() -> String {
+    "unreviewed".to_string()
 }
 
 impl IdsAlert {
@@ -202,6 +211,8 @@ impl IdsAlert {
             payload_excerpt: None,
             metadata: None,
             acknowledged: false,
+            classification: "unreviewed".to_string(),
+            analyst_notes: None,
         }
     }
 }

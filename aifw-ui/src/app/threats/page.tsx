@@ -21,38 +21,74 @@ interface IdsAlert {
   dst_port: number | null;
   protocol: string;
   action: string;
-  acknowledged: boolean;
+  rule_source: string;
   payload_excerpt?: string;
+  metadata?: Record<string, string>;
+  acknowledged: boolean;
+  classification: string;
+  analyst_notes?: string;
 }
 
-function severityLabel(sev: number): string {
-  if (sev === 1) return "critical";
-  if (sev === 2) return "high";
-  if (sev === 3) return "medium";
-  return "info";
-}
+const SEV_META: Record<number, { label: string; color: string; bg: string; border: string; desc: string }> = {
+  1: { label: "Critical", color: "text-red-400", bg: "bg-red-500/15", border: "border-red-500/30", desc: "Immediate threat requiring action" },
+  2: { label: "High", color: "text-orange-400", bg: "bg-orange-500/15", border: "border-orange-500/30", desc: "Significant threat — investigate promptly" },
+  3: { label: "Medium", color: "text-yellow-400", bg: "bg-yellow-500/15", border: "border-yellow-500/30", desc: "Suspicious activity — review when possible" },
+  4: { label: "Info", color: "text-blue-400", bg: "bg-blue-500/15", border: "border-blue-500/30", desc: "Informational — policy match or low confidence" },
+};
 
-function severityColor(sev: number): { text: string; bg: string; border: string } {
-  if (sev === 1) return { text: "text-red-400", bg: "bg-red-500/15", border: "border-red-500/30" };
-  if (sev === 2) return { text: "text-orange-400", bg: "bg-orange-500/15", border: "border-orange-500/30" };
-  if (sev === 3) return { text: "text-yellow-400", bg: "bg-yellow-500/15", border: "border-yellow-500/30" };
-  return { text: "text-blue-400", bg: "bg-blue-500/15", border: "border-blue-500/30" };
-}
+const CLASS_META: Record<string, { label: string; icon: string; color: string; bg: string; border: string }> = {
+  unreviewed: { label: "Unreviewed", icon: "?", color: "text-gray-400", bg: "bg-gray-500/10", border: "border-gray-500/30" },
+  confirmed: { label: "Confirmed Threat", icon: "!", color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30" },
+  false_positive: { label: "False Positive", icon: "x", color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/30" },
+  investigating: { label: "Investigating", icon: "~", color: "text-yellow-400", bg: "bg-yellow-500/10", border: "border-yellow-500/30" },
+};
 
 function formatTime(iso: string): string {
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function formatRelative(iso: string): string {
+  try {
+    const diff = Date.now() - new Date(iso).getTime();
+    if (diff < 60000) return "just now";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    return `${Math.floor(diff / 86400000)}d ago`;
+  } catch { return iso; }
+}
+
+// Explain what this signature likely means in plain English
+function explainSignature(msg: string, action: string, protocol: string): string {
+  const m = msg.toLowerCase();
+  if (m.includes("trojan")) return "A rule matched traffic patterns associated with trojan malware. This could indicate a compromised host communicating with a command and control server.";
+  if (m.includes("malware")) return "Traffic matched a known malware signature. The source or destination host may be infected.";
+  if (m.includes("exploit")) return "An exploit attempt was detected. An attacker may be trying to take advantage of a known vulnerability.";
+  if (m.includes("scan") || m.includes("recon")) return "Reconnaissance or port scanning activity detected. Someone is probing your network to map services.";
+  if (m.includes("dos") || m.includes("ddos")) return "Denial of service patterns detected. This could be an attempt to overwhelm your network or a specific service.";
+  if (m.includes("brute") || m.includes("credential")) return "Brute force or credential stuffing attempt detected. Someone is trying to guess passwords.";
+  if (m.includes("dns") && (m.includes("tunnel") || m.includes("exfil"))) return "DNS tunneling or data exfiltration attempt. Data may be being smuggled out through DNS queries.";
+  if (m.includes("c2") || m.includes("command and control") || m.includes("beacon")) return "Command and control beacon detected. A compromised host may be checking in with an attacker.";
+  if (m.includes("policy") || m.includes("info")) return "This is a policy-based or informational alert. It matched a rule that flags specific traffic patterns for visibility.";
+  if (m.includes("shellcode")) return "Shellcode detected in network traffic. This often indicates an active exploitation attempt.";
+  if (m.includes("overflow")) return "Buffer overflow attempt detected. An attacker may be trying to execute arbitrary code by overflowing a memory buffer.";
+  if (m.includes("sql") && m.includes("inject")) return "SQL injection attempt detected in network traffic targeting a web application or database.";
+  if (m.includes("xss") || m.includes("cross-site")) return "Cross-site scripting (XSS) attempt detected targeting a web application.";
+  return `The IDS engine matched this ${protocol.toUpperCase()} traffic against a ${action === "drop" ? "blocking" : "detection"} rule. Review the signature details and source/destination to determine if this is legitimate or malicious.`;
 }
 
 export default function ThreatsPage() {
   const [alerts, setAlerts] = useState<IdsAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "critical" | "high" | "medium" | "info">("all");
-  const [acknowledging, setAcknowledging] = useState<string | null>(null);
+  const [filter, setFilter] = useState<string>("all");
+  const [classFilter, setClassFilter] = useState<string>("all");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState("");
+  const [classifying, setClassifying] = useState<string | null>(null);
 
   const fetchAlerts = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/ids/alerts?limit=200`, { headers: authHeaders() });
+      const res = await fetch(`${API}/api/v1/ids/alerts?limit=500`, { headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setAlerts(json.data || []);
@@ -66,22 +102,40 @@ export default function ThreatsPage() {
 
   useEffect(() => {
     fetchAlerts();
-    const interval = setInterval(fetchAlerts, 10_000);
+    const interval = setInterval(fetchAlerts, 15_000);
     return () => clearInterval(interval);
   }, [fetchAlerts]);
 
-  const handleAcknowledge = async (id: string) => {
-    setAcknowledging(id);
+  const handleClassify = async (id: string, classification: string) => {
+    setClassifying(id);
     try {
-      await fetch(`${API}/api/v1/ids/alerts/${id}/acknowledge`, {
+      await fetch(`${API}/api/v1/ids/alerts/${id}/classify`, {
         method: "PUT", headers: authHeaders(),
+        body: JSON.stringify({ classification, notes: noteText || null }),
       });
+      setNoteText("");
       await fetchAlerts();
     } catch { /* ignore */ }
-    finally { setAcknowledging(null); }
+    finally { setClassifying(null); }
   };
 
-  const filtered = filter === "all" ? alerts : alerts.filter(a => severityLabel(a.severity) === filter);
+  const toggleExpand = (id: string) => {
+    if (expandedId === id) {
+      setExpandedId(null);
+      setNoteText("");
+    } else {
+      setExpandedId(id);
+      const alert = alerts.find(a => a.id === id);
+      setNoteText(alert?.analyst_notes || "");
+    }
+  };
+
+  // Apply filters
+  const filtered = alerts.filter(a => {
+    if (filter !== "all" && SEV_META[a.severity]?.label.toLowerCase() !== filter) return false;
+    if (classFilter !== "all" && a.classification !== classFilter) return false;
+    return true;
+  });
 
   const counts = {
     total: alerts.length,
@@ -89,7 +143,10 @@ export default function ThreatsPage() {
     high: alerts.filter(a => a.severity === 2).length,
     medium: alerts.filter(a => a.severity === 3).length,
     info: alerts.filter(a => a.severity >= 4).length,
-    unacked: alerts.filter(a => !a.acknowledged).length,
+    unreviewed: alerts.filter(a => a.classification === "unreviewed").length,
+    confirmed: alerts.filter(a => a.classification === "confirmed").length,
+    false_positive: alerts.filter(a => a.classification === "false_positive").length,
+    investigating: alerts.filter(a => a.classification === "investigating").length,
   };
 
   if (loading) {
@@ -106,151 +163,246 @@ export default function ThreatsPage() {
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Threats</h1>
-          <p className="text-sm text-[var(--text-muted)]">
-            IDS/IPS alerts and threat detections — auto-refreshes every 10s
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          <span className="text-xs text-[var(--text-muted)]">Live</span>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold">Threat Investigation</h1>
+        <p className="text-sm text-[var(--text-muted)]">
+          IDS/IPS alerts from Suricata-compatible rule matching — review, classify, and track findings
+        </p>
       </div>
 
       {/* WIP Banner */}
-      <div className="bg-yellow-500/5 border border-yellow-500/30 rounded-lg p-4">
-        <div className="flex items-start gap-3">
-          <div className="text-yellow-400 mt-0.5 flex-shrink-0">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-yellow-400">Work in Progress</p>
-            <p className="text-xs text-[var(--text-muted)] mt-1">
-              The AI/ML threat detection module is experimental and disabled by default.
-              This page shows IDS/IPS alerts from Suricata-compatible rule matching.
-              AI-based detectors (port scan, DDoS, brute force, C2 beacon, DNS tunnel) will be added in future releases.
-              AiFw works as a full-featured firewall without AI enabled.
-            </p>
-          </div>
+      <div className="bg-yellow-500/5 border border-yellow-500/30 rounded-lg px-4 py-3">
+        <div className="flex items-center gap-2">
+          <svg className="w-4 h-4 text-yellow-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+          <p className="text-xs text-[var(--text-muted)]">
+            <span className="text-yellow-400 font-medium">AI-assisted analysis coming soon.</span> Currently showing IDS/IPS rule-based detections. AI detectors for behavioral analysis are in development.
+          </p>
         </div>
       </div>
 
       {error && (
         <div className="p-3 text-sm rounded-md border text-red-400 bg-red-500/10 border-red-500/20">
-          {error}
-          <button onClick={() => { setLoading(true); fetchAlerts(); }}
-            className="ml-3 underline text-xs">Retry</button>
+          {error} <button onClick={() => { setLoading(true); fetchAlerts(); }} className="ml-3 underline text-xs">Retry</button>
         </div>
       )}
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        {[
-          { label: "Total", count: counts.total, color: "text-[var(--text-primary)]", border: "border-[var(--border)]" },
-          { label: "Critical", count: counts.critical, color: "text-red-400", border: "border-red-500/30" },
-          { label: "High", count: counts.high, color: "text-orange-400", border: "border-orange-500/30" },
-          { label: "Medium", count: counts.medium, color: "text-yellow-400", border: "border-yellow-500/30" },
-          { label: "Info", count: counts.info, color: "text-blue-400", border: "border-blue-500/30" },
-          { label: "Unacked", count: counts.unacked, color: "text-purple-400", border: "border-purple-500/30" },
-        ].map(c => (
-          <div key={c.label} className={`bg-[var(--bg-card)] border ${c.border} rounded-lg p-3 text-center`}>
-            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{c.label}</div>
-            <div className={`text-xl font-bold mt-1 ${c.color}`}>{c.count}</div>
+      {/* Summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3 text-center">
+          <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Total</div>
+          <div className="text-xl font-bold mt-1">{counts.total}</div>
+        </div>
+        <div className="bg-[var(--bg-card)] border border-red-500/20 rounded-lg p-3 text-center">
+          <div className="text-[10px] text-red-400 uppercase tracking-wider">Critical / High</div>
+          <div className="text-xl font-bold mt-1 text-red-400">{counts.critical + counts.high}</div>
+        </div>
+        <div className="bg-[var(--bg-card)] border border-gray-500/20 rounded-lg p-3 text-center">
+          <div className="text-[10px] text-gray-400 uppercase tracking-wider">Unreviewed</div>
+          <div className="text-xl font-bold mt-1 text-gray-400">{counts.unreviewed}</div>
+        </div>
+        <div className="bg-[var(--bg-card)] border border-red-500/20 rounded-lg p-3 text-center">
+          <div className="text-[10px] text-red-400 uppercase tracking-wider">Confirmed</div>
+          <div className="text-xl font-bold mt-1 text-red-400">{counts.confirmed}</div>
+        </div>
+        <div className="bg-[var(--bg-card)] border border-green-500/20 rounded-lg p-3 text-center">
+          <div className="text-[10px] text-green-400 uppercase tracking-wider">False Positives</div>
+          <div className="text-xl font-bold mt-1 text-green-400">{counts.false_positive}</div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div>
+          <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mr-2">Severity</span>
+          <div className="inline-flex gap-1 bg-[var(--bg-card)] rounded-lg p-1 border border-[var(--border)]">
+            {["all", "critical", "high", "medium", "info"].map(f => (
+              <button key={f} onClick={() => setFilter(f)}
+                className={`px-3 py-1 text-[11px] font-medium rounded-md transition-all capitalize ${
+                  filter === f ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                }`}>{f}</button>
+            ))}
           </div>
-        ))}
+        </div>
+        <div>
+          <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mr-2">Status</span>
+          <div className="inline-flex gap-1 bg-[var(--bg-card)] rounded-lg p-1 border border-[var(--border)]">
+            {["all", "unreviewed", "confirmed", "false_positive", "investigating"].map(f => (
+              <button key={f} onClick={() => setClassFilter(f)}
+                className={`px-3 py-1 text-[11px] font-medium rounded-md transition-all ${
+                  classFilter === f ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                }`}>{CLASS_META[f]?.label || "All"}</button>
+            ))}
+          </div>
+        </div>
       </div>
 
-      {/* Filter tabs */}
-      <div className="flex gap-1 bg-[var(--bg-card)] rounded-lg p-1 border border-[var(--border)] w-fit">
-        {(["all", "critical", "high", "medium", "info"] as const).map(f => (
-          <button key={f} onClick={() => setFilter(f)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all capitalize ${
-              filter === f ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-            }`}>
-            {f === "all" ? `All (${counts.total})` : f}
-          </button>
-        ))}
-      </div>
-
-      {/* Alerts table */}
+      {/* Alerts */}
       {filtered.length === 0 ? (
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-12 text-center">
           <div className="text-4xl mb-4 text-green-500">&#x2714;</div>
-          <p className="text-lg font-medium">No {filter === "all" ? "" : filter + " "}threats detected</p>
+          <p className="text-lg font-medium">No {filter !== "all" || classFilter !== "all" ? "matching " : ""}threats detected</p>
           <p className="text-sm text-[var(--text-muted)] mt-2">
             {alerts.length === 0
-              ? "Enable IDS/IPS and configure rulesets to start detecting threats."
-              : "No alerts match the current filter."}
+              ? "Enable IDS/IPS and configure rulesets (Intrusion Detection > Rulesets) to start detecting threats."
+              : "No alerts match the current filters. Try adjusting severity or status."}
           </p>
         </div>
       ) : (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[800px]">
-              <thead>
-                <tr className="border-b border-[var(--border)]">
-                  {["Time", "Severity", "Signature", "Source", "Destination", "Proto", "Action", ""].map(h => (
-                    <th key={h} className="text-left py-2.5 px-3 text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(alert => {
-                  const sev = severityColor(alert.severity);
-                  return (
-                    <tr key={alert.id} className={`border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors ${alert.acknowledged ? "opacity-50" : ""}`}>
-                      <td className="py-2 px-3 text-xs text-[var(--text-muted)] font-mono whitespace-nowrap">
-                        {formatTime(alert.timestamp)}
-                      </td>
-                      <td className="py-2 px-3">
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium uppercase tracking-wider ${sev.text} ${sev.bg} ${sev.border}`}>
-                          {severityLabel(alert.severity)}
-                        </span>
-                      </td>
-                      <td className="py-2 px-3 text-xs max-w-xs">
-                        <div className="font-medium truncate">{alert.signature_msg}</div>
-                        {alert.signature_id && (
-                          <div className="text-[10px] text-[var(--text-muted)] font-mono">SID:{alert.signature_id}</div>
-                        )}
-                      </td>
-                      <td className="py-2 px-3 text-xs font-mono text-[var(--text-secondary)]">
-                        {alert.src_ip}{alert.src_port ? `:${alert.src_port}` : ""}
-                      </td>
-                      <td className="py-2 px-3 text-xs font-mono text-[var(--text-secondary)]">
-                        {alert.dst_ip}{alert.dst_port ? `:${alert.dst_port}` : ""}
-                      </td>
-                      <td className="py-2 px-3 text-xs uppercase text-cyan-400">{alert.protocol}</td>
-                      <td className="py-2 px-3 text-xs">
-                        <span className={alert.action === "drop" || alert.action === "reject" ? "text-red-400 font-medium" : "text-yellow-400"}>
-                          {alert.action}
-                        </span>
-                      </td>
-                      <td className="py-2 px-3 text-right">
-                        {!alert.acknowledged && (
+        <div className="space-y-2">
+          {filtered.map(alert => {
+            const sev = SEV_META[alert.severity] || SEV_META[4];
+            const cls = CLASS_META[alert.classification] || CLASS_META.unreviewed;
+            const isExpanded = expandedId === alert.id;
+
+            return (
+              <div key={alert.id} className={`bg-[var(--bg-card)] border rounded-lg overflow-hidden transition-all ${
+                alert.classification === "confirmed" ? "border-red-500/30" :
+                alert.classification === "false_positive" ? "border-green-500/20 opacity-60" :
+                alert.classification === "investigating" ? "border-yellow-500/30" :
+                "border-[var(--border)]"
+              }`}>
+                {/* Alert row — always visible */}
+                <button onClick={() => toggleExpand(alert.id)} className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-[var(--bg-card-hover)] transition-colors">
+                  {/* Severity dot */}
+                  <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${sev.bg.replace('/15', '')} ${
+                    alert.severity === 1 ? "bg-red-500" : alert.severity === 2 ? "bg-orange-500" : alert.severity === 3 ? "bg-yellow-500" : "bg-blue-500"
+                  }`} />
+
+                  {/* Main content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium truncate">{alert.signature_msg}</span>
+                      {alert.signature_id && <span className="text-[10px] font-mono text-[var(--text-muted)]">SID:{alert.signature_id}</span>}
+                    </div>
+                    <div className="flex items-center gap-3 mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      <span className="font-mono">{alert.src_ip}{alert.src_port ? `:${alert.src_port}` : ""}</span>
+                      <span>&#8594;</span>
+                      <span className="font-mono">{alert.dst_ip}{alert.dst_port ? `:${alert.dst_port}` : ""}</span>
+                      <span className="uppercase text-cyan-400">{alert.protocol}</span>
+                      <span>{formatRelative(alert.timestamp)}</span>
+                    </div>
+                  </div>
+
+                  {/* Status badges */}
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium uppercase tracking-wider ${sev.color} ${sev.bg} ${sev.border}`}>
+                      {sev.label}
+                    </span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${cls.color} ${cls.bg} ${cls.border}`}>
+                      {cls.label}
+                    </span>
+                    {alert.action === "drop" || alert.action === "reject" ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded border font-medium text-red-400 bg-red-500/10 border-red-500/30">BLOCKED</span>
+                    ) : null}
+                  </div>
+
+                  {/* Expand chevron */}
+                  <svg className={`w-4 h-4 text-[var(--text-muted)] flex-shrink-0 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {/* Expanded details */}
+                {isExpanded && (
+                  <div className="border-t border-[var(--border)] px-4 py-4 space-y-4">
+                    {/* What does this mean? */}
+                    <div className="bg-[var(--bg-primary)] rounded-lg p-4">
+                      <h4 className="text-xs font-medium text-[var(--text-primary)] mb-1.5">What does this mean?</h4>
+                      <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                        {explainSignature(alert.signature_msg, alert.action, alert.protocol)}
+                      </p>
+                    </div>
+
+                    {/* Details grid */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2 text-xs">
+                        <h4 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Connection Details</h4>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Source</span><span className="font-mono">{alert.src_ip}{alert.src_port ? `:${alert.src_port}` : ""}</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Destination</span><span className="font-mono">{alert.dst_ip}{alert.dst_port ? `:${alert.dst_port}` : ""}</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Protocol</span><span className="uppercase">{alert.protocol}</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Action Taken</span><span className={alert.action === "drop" || alert.action === "reject" ? "text-red-400 font-medium" : "text-yellow-400"}>{alert.action}</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Timestamp</span><span>{formatTime(alert.timestamp)}</span></div>
+                      </div>
+                      <div className="space-y-2 text-xs">
+                        <h4 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Rule Details</h4>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Signature</span><span className="text-right max-w-[200px] truncate">{alert.signature_msg}</span></div>
+                        {alert.signature_id && <div className="flex justify-between"><span className="text-[var(--text-muted)]">SID</span><span className="font-mono">{alert.signature_id}</span></div>}
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Rule Source</span><span>{alert.rule_source}</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Severity</span><span className={sev.color}>{sev.label} — {sev.desc}</span></div>
+                      </div>
+                    </div>
+
+                    {/* Payload excerpt */}
+                    {alert.payload_excerpt && (
+                      <div>
+                        <h4 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-1">Payload Excerpt</h4>
+                        <pre className="text-[11px] font-mono bg-[var(--bg-primary)] rounded-md p-3 overflow-x-auto text-[var(--text-secondary)] whitespace-pre-wrap break-all">
+                          {alert.payload_excerpt}
+                        </pre>
+                      </div>
+                    )}
+
+                    {/* Classification + Notes */}
+                    <div className="border-t border-[var(--border)] pt-4">
+                      <h4 className="text-xs font-medium mb-3">Classify This Alert</h4>
+
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        {(["confirmed", "false_positive", "investigating", "unreviewed"] as const).map(c => {
+                          const meta = CLASS_META[c];
+                          const isActive = alert.classification === c;
+                          return (
+                            <button key={c} onClick={() => handleClassify(alert.id, c)}
+                              disabled={classifying === alert.id}
+                              className={`px-3 py-2 rounded-md text-xs font-medium border transition-all disabled:opacity-50 ${
+                                isActive
+                                  ? `${meta.bg} ${meta.color} ${meta.border} ring-1 ring-current`
+                                  : `bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)] hover:${meta.border} hover:${meta.color}`
+                              }`}>
+                              {meta.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider block mb-1">Analyst Notes</label>
+                        <div className="flex gap-2">
+                          <textarea
+                            value={noteText}
+                            onChange={e => setNoteText(e.target.value)}
+                            placeholder="Add notes about your investigation, findings, or why this is a false positive..."
+                            rows={2}
+                            className="flex-1 bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] resize-none"
+                          />
                           <button
-                            onClick={() => handleAcknowledge(alert.id)}
-                            disabled={acknowledging === alert.id}
-                            className="text-[10px] px-2 py-1 rounded bg-[var(--bg-primary)] border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] transition-colors disabled:opacity-50"
+                            onClick={() => handleClassify(alert.id, alert.classification || "investigating")}
+                            disabled={classifying === alert.id || !noteText.trim()}
+                            className="px-3 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 self-end"
                           >
-                            {acknowledging === alert.id ? "..." : "Ack"}
+                            Save Note
                           </button>
+                        </div>
+                        {alert.analyst_notes && noteText !== alert.analyst_notes && (
+                          <div className="mt-2 p-2 bg-[var(--bg-primary)] rounded-md">
+                            <span className="text-[10px] text-[var(--text-muted)]">Previous note: </span>
+                            <span className="text-xs text-[var(--text-secondary)]">{alert.analyst_notes}</span>
+                          </div>
                         )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
       <div className="text-xs text-[var(--text-muted)] text-center">
-        Showing {filtered.length} of {alerts.length} alerts
+        Showing {filtered.length} of {alerts.length} alerts — auto-refreshes every 15s
       </div>
     </div>
   );

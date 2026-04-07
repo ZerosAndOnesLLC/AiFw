@@ -176,6 +176,31 @@ pub async fn acknowledge_alert(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ClassifyAlertRequest {
+    pub classification: String,
+    pub notes: Option<String>,
+}
+
+pub async fn classify_alert(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ClassifyAlertRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let engine = state.ids_engine.as_ref().ok_or(internal())?;
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let valid = ["unreviewed", "confirmed", "false_positive", "investigating"];
+    if !valid.contains(&req.classification.as_str()) {
+        return Err(bad_request());
+    }
+    let output = aifw_ids::output::sqlite::SqliteOutput::new(engine.pool().clone());
+    output.classify(uuid, &req.classification, req.notes.as_deref())
+        .await.map_err(|_| internal())?;
+    Ok(Json(MessageResponse {
+        message: format!("alert classified as {}", req.classification),
+    }))
+}
+
 pub async fn purge_alerts(
     State(state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {

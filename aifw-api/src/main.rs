@@ -295,6 +295,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/ids/config", put(ids::update_config))
         .route("/api/v1/ids/alerts", delete(ids::purge_alerts))
         .route("/api/v1/ids/alerts/{id}/acknowledge", put(ids::acknowledge_alert))
+        .route("/api/v1/ids/alerts/{id}/classify", put(ids::classify_alert))
         .route("/api/v1/ids/rulesets", post(ids::create_ruleset))
         .route("/api/v1/ids/rulesets/{id}", put(ids::update_ruleset).delete(ids::delete_ruleset))
         .route("/api/v1/ids/rules/{id}", put(ids::update_rule))
