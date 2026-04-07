@@ -7,7 +7,7 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 > **AI/ML features are a work in progress.** The `aifw-ai` crate contains experimental detectors for port scans, DDoS, brute force, C2 beacons, and DNS tunneling. These are not yet production-ready and are disabled by default. The AI module is an opt-in add-on that will be developed further in future releases. The Threats page in the UI reflects the current WIP status of this module.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![FreeBSD](https://img.shields.io/badge/FreeBSD-15.0-red.svg)](https://www.freebsd.org/)
+[![FreeBSD](https://img.shields.io/badge/FreeBSD-15.x-red.svg)](https://www.freebsd.org/)
 [![Rust](https://img.shields.io/badge/Rust-2024-orange.svg)](https://www.rust-lang.org/)
 
 ## Screenshots
@@ -35,10 +35,13 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 
 ### Live Demos
 
-<p align="center">
-  <img src="screenshots/vid-01-dashboard-live.gif" alt="Dashboard live metrics" width="48%">
-  <img src="screenshots/vid-05-ids-overview.gif" alt="IDS overview" width="48%">
-</p>
+| Demo | Preview |
+|------|---------|
+| Dashboard — live metrics, charts, health status | ![Dashboard](screenshots/vid-01-dashboard-live.gif) |
+| Firewall Rules — browsing rule table | ![Rules](screenshots/vid-02-rules-browse.gif) |
+| Blocked Traffic — real-time feed | ![Blocked](screenshots/vid-03-blocked-live.gif) |
+| Connections — live state table | ![Connections](screenshots/vid-04-connections-live.gif) |
+| IDS/IPS — engine overview and stats | ![IDS](screenshots/vid-05-ids-overview.gif) |
 
 <details>
 <summary>All 20 screenshots</summary>
@@ -216,7 +219,7 @@ npm run dev          # Start dev server on :3000
 
 ## Target Environment
 
-- **OS**: FreeBSD 14+
+- **OS**: FreeBSD 15.x
 - **Kernel**: GENERIC with pf enabled
 - **Required**: `/dev/pf` accessible (root or dedicated group)
 - **pf**: `pf_enable="YES"` in `/etc/rc.conf`
