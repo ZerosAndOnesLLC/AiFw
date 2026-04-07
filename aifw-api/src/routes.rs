@@ -2200,6 +2200,96 @@ pub async fn update_dashboard_history_settings(
     })))
 }
 
+// --- AI Provider Settings ---
+
+pub async fn get_ai_settings(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    async fn get_val(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
+        sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = ?1")
+            .bind(key).fetch_optional(pool).await.ok().flatten().map(|r| r.0)
+    }
+
+    let pool = &state.pool;
+    let providers = ["openai", "claude", "lm_studio", "ollama"];
+    let mut configs = Vec::new();
+
+    for p in &providers {
+        let enabled = get_val(pool, &format!("ai_{p}_enabled")).await.map(|v| v == "true").unwrap_or(false);
+        let api_key = get_val(pool, &format!("ai_{p}_api_key")).await.unwrap_or_default();
+        let endpoint = get_val(pool, &format!("ai_{p}_endpoint")).await.unwrap_or_default();
+        let model = get_val(pool, &format!("ai_{p}_model")).await.unwrap_or_default();
+
+        configs.push(serde_json::json!({
+            "provider": p,
+            "enabled": enabled,
+            "api_key_set": !api_key.is_empty(),
+            "endpoint": endpoint,
+            "model": model,
+        }));
+    }
+
+    let global_enabled = get_val(pool, "ai_enabled").await.map(|v| v == "true").unwrap_or(false);
+    let active_provider = get_val(pool, "ai_active_provider").await.unwrap_or_default();
+
+    Ok(Json(serde_json::json!({
+        "enabled": global_enabled,
+        "active_provider": active_provider,
+        "providers": configs,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAiSettingsRequest {
+    pub enabled: Option<bool>,
+    pub active_provider: Option<String>,
+    pub provider: Option<String>,
+    pub api_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub provider_enabled: Option<bool>,
+}
+
+pub async fn update_ai_settings(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateAiSettingsRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    async fn save_val(pool: &sqlx::SqlitePool, key: &str, val: &str) {
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)")
+            .bind(key).bind(val).execute(pool).await;
+    }
+
+    let pool = &state.pool;
+
+    if let Some(enabled) = req.enabled {
+        save_val(pool, "ai_enabled", if enabled { "true" } else { "false" }).await;
+    }
+    if let Some(ref active) = req.active_provider {
+        save_val(pool, "ai_active_provider", active).await;
+    }
+
+    if let Some(ref provider) = req.provider {
+        let valid = ["openai", "claude", "lm_studio", "ollama"];
+        if !valid.contains(&provider.as_str()) {
+            return Err(bad_request());
+        }
+        if let Some(ref key) = req.api_key {
+            save_val(pool, &format!("ai_{provider}_api_key"), key).await;
+        }
+        if let Some(ref endpoint) = req.endpoint {
+            save_val(pool, &format!("ai_{provider}_endpoint"), endpoint).await;
+        }
+        if let Some(ref model) = req.model {
+            save_val(pool, &format!("ai_{provider}_model"), model).await;
+        }
+        if let Some(enabled) = req.provider_enabled {
+            save_val(pool, &format!("ai_{provider}_enabled"), if enabled { "true" } else { "false" }).await;
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "message": "AI settings saved" })))
+}
+
 // --- TLS Policy Settings ---
 
 pub async fn get_tls_settings(
