@@ -251,15 +251,28 @@ export default function UpdatesPage() {
         });
       }, 1000);
 
-      // Phase 1: Wait for the old API to go down (it restarts after ~2s delay).
-      // We must NOT poll during this window or we'll hit the old process.
-      await new Promise((r) => setTimeout(r, 8000));
+      // Phase 1: Wait for the old API to actually go DOWN.
+      // Poll until we get a connection error, meaning the old process died.
+      let apiWentDown = false;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        try {
+          await fetch("/api/v1/status", { signal: AbortSignal.timeout(2000) });
+          // Still responding — old process alive, keep waiting
+        } catch {
+          apiWentDown = true;
+          break;
+        }
+      }
+      // If it never went down (unlikely), force a minimum wait
+      if (!apiWentDown) await new Promise((r) => setTimeout(r, 5000));
 
       // Phase 2: Poll until the NEW API is up, then refresh.
       const pollStart = Date.now();
-      const maxWait = 25000;
+      const maxWait = 30000;
       const poll = async () => {
         while (Date.now() - pollStart < maxWait) {
+          await new Promise((r) => setTimeout(r, 2000));
           try {
             const probe = await fetch("/api/v1/status", {
               headers: authHeaders(),
@@ -275,7 +288,6 @@ export default function UpdatesPage() {
           } catch {
             // API not back yet — keep polling
           }
-          await new Promise((r) => setTimeout(r, 2000));
         }
         // Timeout — refresh anyway
         clearInterval(countdownInterval);
@@ -306,12 +318,19 @@ export default function UpdatesPage() {
         });
       }, 1000);
 
-      // Wait for old API to go down before polling
-      await new Promise((r) => setTimeout(r, 8000));
+      // Wait for old API to actually go down
+      let apiDown = false;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        try { await fetch("/api/v1/status", { signal: AbortSignal.timeout(2000) }); }
+        catch { apiDown = true; break; }
+      }
+      if (!apiDown) await new Promise((r) => setTimeout(r, 5000));
 
       const pollStart = Date.now();
       const poll = async () => {
-        while (Date.now() - pollStart < 25000) {
+        while (Date.now() - pollStart < 30000) {
+          await new Promise((r) => setTimeout(r, 2000));
           try {
             const probe = await fetch("/api/v1/status", {
               headers: authHeaders(),
@@ -325,7 +344,6 @@ export default function UpdatesPage() {
               return;
             }
           } catch { /* keep polling */ }
-          await new Promise((r) => setTimeout(r, 2000));
         }
         clearInterval(countdownInterval);
         window.location.reload();

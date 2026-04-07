@@ -181,15 +181,21 @@ export default function IdsDashboardPage() {
 
       {/* Mode Toggle */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-medium">Engine Mode</h3>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">
-              IDS monitors and alerts, IPS actively blocks threats
+              {currentMode === "disabled"
+                ? "Engine is stopped. Select IDS or IPS to start."
+                : currentMode === "ids"
+                ? "Monitoring mode — detecting and alerting on threats"
+                : "Blocking mode — actively dropping malicious traffic"}
             </p>
           </div>
           <div className="flex items-center gap-1 bg-[var(--bg-primary)] rounded-lg p-1 border border-[var(--border)]">
-            {modeOptions.map((mode) => (
+            {modeOptions.map((mode) => {
+              const labels: Record<string, string> = { disabled: "OFF", ids: "IDS (Monitor)", ips: "IPS (Block)" };
+              return (
               <button
                 key={mode}
                 onClick={() => handleModeChange(mode)}
@@ -204,9 +210,10 @@ export default function IdsDashboardPage() {
                     : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 } disabled:opacity-50`}
               >
-                {mode.toUpperCase()}
+                {labels[mode]}
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

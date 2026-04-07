@@ -96,16 +96,20 @@ impl RulesetManager {
     }
 
     /// Store parsed rules for a ruleset.
+    /// Uses a single transaction for performance (47K+ rules in seconds, not minutes).
     pub async fn store_rules(&self, ruleset_id: Uuid, rules: &[IdsRule]) -> Result<()> {
         let rs_id = ruleset_id.to_string();
+
+        // Use a transaction — without this, each INSERT does a separate fsync
+        let mut tx = self.pool.begin().await?;
 
         // Delete existing rules for this ruleset
         sqlx::query("DELETE FROM ids_rules WHERE ruleset_id = ?")
             .bind(&rs_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
-        // Batch insert
+        // Batch insert inside transaction
         for rule in rules {
             sqlx::query(
                 "INSERT INTO ids_rules (id, ruleset_id, sid, rule_text, msg, severity, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))"
@@ -117,7 +121,7 @@ impl RulesetManager {
             .bind(&rule.msg)
             .bind(rule.severity.0 as i64)
             .bind(rule.enabled)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         }
 
@@ -128,8 +132,10 @@ impl RulesetManager {
         .bind(rules.len() as i64)
         .bind(Utc::now().to_rfc3339())
         .bind(&rs_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
