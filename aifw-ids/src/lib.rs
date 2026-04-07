@@ -235,18 +235,35 @@ impl IdsEngine {
         .execute(pool)
         .await?;
 
-        // Seed default rulesets (INSERT OR IGNORE — only runs on first migration)
+        // Seed default rulesets with deterministic UUIDs
+        // (migrate old plain-string IDs from earlier versions)
+        let et_uuid = "a0000000-0000-0000-0000-000000000001";
+        let abuse_uuid = "a0000000-0000-0000-0000-000000000002";
+
+        // Migrate old non-UUID IDs to proper UUIDs (idempotent)
+        sqlx::query("UPDATE ids_rulesets SET id = ?1 WHERE id = 'et-open-default'")
+            .bind(et_uuid).execute(pool).await?;
+        sqlx::query("UPDATE ids_rulesets SET id = ?1 WHERE id = 'abuse-ch-default'")
+            .bind(abuse_uuid).execute(pool).await?;
+        // Also migrate any rules that referenced the old IDs
+        sqlx::query("UPDATE ids_rules SET ruleset_id = ?1 WHERE ruleset_id = 'et-open-default'")
+            .bind(et_uuid).execute(pool).await?;
+        sqlx::query("UPDATE ids_rules SET ruleset_id = ?1 WHERE ruleset_id = 'abuse-ch-default'")
+            .bind(abuse_uuid).execute(pool).await?;
+
         sqlx::query(
             r#"INSERT OR IGNORE INTO ids_rulesets (id, name, source_url, rule_format, enabled, auto_update, update_interval_hours)
-               VALUES ('et-open-default', 'ET Open (Emerging Threats)', 'https://rules.emergingthreats.net/open/suricata-7.0/emerging-all.rules', 'suricata', 0, 1, 24)"#,
+               VALUES (?1, 'ET Open (Emerging Threats)', 'https://rules.emergingthreats.net/open/suricata-7.0/emerging-all.rules', 'suricata', 0, 1, 24)"#,
         )
+        .bind(et_uuid)
         .execute(pool)
         .await?;
 
         sqlx::query(
             r#"INSERT OR IGNORE INTO ids_rulesets (id, name, source_url, rule_format, enabled, auto_update, update_interval_hours)
-               VALUES ('abuse-ch-default', 'Abuse.ch SSLBL', 'https://sslbl.abuse.ch/blacklist/sslblacklist.rules', 'suricata', 0, 1, 24)"#,
+               VALUES (?1, 'Abuse.ch SSLBL', 'https://sslbl.abuse.ch/blacklist/sslblacklist.rules', 'suricata', 0, 1, 24)"#,
         )
+        .bind(abuse_uuid)
         .execute(pool)
         .await?;
 
