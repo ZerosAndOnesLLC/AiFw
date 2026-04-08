@@ -1,4 +1,4 @@
-use crate::config::{DefaultPolicy, SetupConfig, WanMode};
+use crate::config::{DefaultPolicy, SetupConfig, SshAuthMethod, WanMode};
 use crate::console;
 use crate::hwdetect::SystemProfile;
 use crate::tuning::{self, TuningItem};
@@ -101,7 +101,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     console::info("This will configure your firewall, create an admin account,");
     console::info("and set up multi-factor authentication.");
     println!();
-    console::info("All features are free and open source (Apache-2.0).");
+    console::info("All features are free and open source (MIT).");
     println!();
 
     if reconfigure {
@@ -112,12 +112,67 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
 
     // ── Step 1: Root Password ─────────────────────────────────
-    console::header("Step 1/11 — Root Password");
-    console::info("Set the system root password for console and SSH access.");
+    console::header("Step 1/12 — Root Password");
+    console::info("Set the system root password for console access.");
     set_root_password();
 
-    // ── Step 2: Hostname ─────────────────────────────────────
-    console::header("Step 2/11 — Hostname");
+    // ── Step 2: SSH Access ───────────────────────────────────
+    console::header("Step 2/12 — SSH Access");
+    console::info("SSH key authentication is recommended. Password auth is less secure.");
+    println!();
+
+    let ssh_method_idx = console::select(
+        "SSH authentication method",
+        &[
+            "SSH Key only (recommended)",
+            "Password authentication (not recommended)",
+        ],
+        0,
+    );
+    config.ssh_auth_method = if ssh_method_idx == 1 { SshAuthMethod::Password } else { SshAuthMethod::KeyOnly };
+
+    if config.ssh_auth_method == SshAuthMethod::KeyOnly {
+        console::info("You can import SSH keys from your GitHub account.");
+        let github_user = console::prompt("GitHub username (leave empty to skip)", "");
+        if !github_user.is_empty() {
+            console::info(&format!("Fetching keys from github.com/{github_user}..."));
+            match fetch_github_keys(&github_user) {
+                Ok(keys) if !keys.is_empty() => {
+                    console::success(&format!("Found {} SSH key(s) for {github_user}.", keys.len()));
+                    config.ssh_github_user = Some(github_user);
+                    config.ssh_authorized_keys = keys;
+                }
+                Ok(_) => {
+                    console::warn("No SSH keys found for that GitHub user.");
+                    console::info("You can add keys manually later via the web UI or /root/.ssh/authorized_keys.");
+                }
+                Err(e) => {
+                    console::warn(&format!("Could not fetch keys: {e}"));
+                    console::info("You can add keys manually later.");
+                }
+            }
+        }
+
+        if config.ssh_authorized_keys.is_empty() {
+            console::info("You can paste an SSH public key now (or press Enter to skip).");
+            let key = console::prompt("SSH public key", "");
+            if !key.is_empty() && (key.starts_with("ssh-") || key.starts_with("ecdsa-") || key.starts_with("sk-")) {
+                config.ssh_authorized_keys.push(key);
+                console::success("Key added.");
+            } else if !key.is_empty() {
+                console::warn("Doesn't look like a valid SSH public key. Skipped.");
+            }
+        }
+
+        if config.ssh_authorized_keys.is_empty() {
+            console::warn("No SSH keys configured. You will need to add keys manually before SSH key auth works.");
+            console::info("Temporarily enabling password auth as fallback.");
+            config.ssh_auth_method = SshAuthMethod::Password;
+        }
+    }
+
+    // ── Step 3: Hostname ─────────────────────────────────────
+    console::header("Step 3/12 — Hostname");
     config.hostname = console::prompt("Hostname", &config.hostname);
 
     // ── Step 3: System Detection & Tuning ──────────────────
@@ -125,7 +180,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     let tuning_items = tuning::run_tuning_wizard(&profile);
 
     // ── Step 3: Network Interfaces ───────────────────────────
-    console::header("Step 4/11 — Network Interfaces");
+    console::header("Step 5/12 — Network Interfaces");
     let interfaces = detect_interfaces();
 
     if interfaces.is_empty() {
@@ -174,7 +229,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
 
     // ── Step 4: WAN Configuration ────────────────────────────
-    console::header("Step 5/11 — WAN Configuration");
+    console::header("Step 6/12 — WAN Configuration");
     let wan_mode_idx = console::select(
         "WAN IP configuration",
         &["DHCP (automatic)", "Static IP", "PPPoE"],
@@ -207,7 +262,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     // ── Step 5: LAN Configuration ────────────────────────────
     if config.lan_interface.is_some() {
-        console::header("Step 6/11 — LAN Configuration");
+        console::header("Step 7/12 — LAN Configuration");
         loop {
             let ip = console::prompt("LAN IP address", "192.168.1.1/24");
             if console::validate_cidr(&ip) {
@@ -222,7 +277,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             console::success("DHCP server will be enabled on LAN.");
         }
     } else {
-        console::header("Step 6/11 — LAN Configuration");
+        console::header("Step 7/12 — LAN Configuration");
         if config.nat_enabled {
             console::info("No LAN interface configured. NAT disabled.");
         } else {
@@ -231,7 +286,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
 
     // ── Step 6: Admin Account ────────────────────────────────
-    console::header("Step 7/11 — Admin Account");
+    console::header("Step 8/12 — Admin Account");
     console::info("Create the administrator account.");
     console::info("Password must be 8+ characters with uppercase, lowercase, and number.");
     println!();
@@ -256,19 +311,19 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     // MFA is configured via the web UI after first login
 
     // ── Step 7: API / UI Access ──────────────────────────────
-    console::header("Step 8/11 — API & Web UI");
+    console::header("Step 9/12 — API & Web UI");
     config.api_listen = console::prompt("API listen address", &config.api_listen);
     let port_str = console::prompt("API port", &config.api_port.to_string());
     config.api_port = port_str.parse().unwrap_or(8080);
     config.ui_enabled = console::confirm("Enable web UI?", true);
 
     // ── Step 9: DNS ──────────────────────────────────────────
-    console::header("Step 9/11 — DNS Servers");
+    console::header("Step 10/12 — DNS Servers");
     let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8");
     config.dns_servers = dns.split(',').map(|s| s.trim().to_string()).collect();
 
     // ── Step 10: Firewall Policy ─────────────────────────────
-    console::header("Step 10/11 — Default Firewall Policy");
+    console::header("Step 11/12 — Default Firewall Policy");
     let policy_idx = console::select(
         "Default firewall policy",
         &[
@@ -285,7 +340,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     };
 
     // ── Summary ──────────────────────────────────────────────
-    console::header("Step 11/11 — Summary");
+    console::header("Step 12/12 — Summary");
     console::info(&format!("Hostname:       {}", config.hostname));
     console::info(&format!("WAN:            {} ({})", config.wan_interface, config.wan_mode));
     if let Some(ref ip) = config.wan_ip {
@@ -299,6 +354,12 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         if let Some(ref ip) = config.lan_ip {
             console::info(&format!("  IP:           {ip}"));
         }
+    }
+    console::info(&format!("SSH:            {}", config.ssh_auth_method));
+    if let Some(ref gh) = config.ssh_github_user {
+        console::info(&format!("  GitHub keys:  {gh} ({} key(s))", config.ssh_authorized_keys.len()));
+    } else if !config.ssh_authorized_keys.is_empty() {
+        console::info(&format!("  Keys:         {} manual key(s)", config.ssh_authorized_keys.len()));
     }
     console::info(&format!("Admin:          {}", config.admin_username));
     console::info(&format!("MFA:            {}", if config.totp_enabled { "enabled" } else { "disabled" }));
@@ -319,6 +380,35 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         console::info("Setup cancelled.");
         None
     }
+}
+
+/// Fetch SSH public keys from a GitHub user's profile.
+fn fetch_github_keys(username: &str) -> Result<Vec<String>, String> {
+    let url = format!("https://github.com/{username}.keys");
+
+    // Try fetch (FreeBSD) then curl
+    let output = std::process::Command::new("fetch")
+        .args(["-qo", "-", &url])
+        .output()
+        .or_else(|_| {
+            std::process::Command::new("curl")
+                .args(["-sL", &url])
+                .output()
+        })
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err("Failed to fetch keys (HTTP error)".to_string());
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let keys: Vec<String> = body
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| l.starts_with("ssh-") || l.starts_with("ecdsa-") || l.starts_with("sk-"))
+        .collect();
+
+    Ok(keys)
 }
 
 fn hash_password(password: &str) -> String {

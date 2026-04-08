@@ -143,6 +143,11 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n";
     generate_tls_cert()?;
     console::success("TLS certificate generated");
 
+    // 5d. Configure SSH
+    console::info("Configuring SSH...");
+    configure_ssh(config)?;
+    console::success("SSH configured");
+
     // 6. Write tuning files
     let enabled_tunings = tuning_items.iter().filter(|t| t.enabled).count();
     if enabled_tunings > 0 {
@@ -374,6 +379,85 @@ fn generate_tls_cert() -> Result<(), String> {
         let _ = std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o640));
         let _ = std::process::Command::new("chown").args(["root:aifw", key_path]).output();
         let _ = std::process::Command::new("chown").args(["root:aifw", cert_path]).output();
+    }
+
+    Ok(())
+}
+
+/// Configure SSH: authorized_keys, sshd_config, enable sshd
+fn configure_ssh(config: &SetupConfig) -> Result<(), String> {
+    use crate::config::SshAuthMethod;
+
+    // Write authorized_keys if we have keys
+    if !config.ssh_authorized_keys.is_empty() {
+        let ssh_dir = "/root/.ssh";
+        std::fs::create_dir_all(ssh_dir)
+            .map_err(|e| format!("failed to create {ssh_dir}: {e}"))?;
+
+        let keys_content = config.ssh_authorized_keys.join("\n") + "\n";
+        std::fs::write(format!("{ssh_dir}/authorized_keys"), &keys_content)
+            .map_err(|e| format!("failed to write authorized_keys: {e}"))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(ssh_dir, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::set_permissions(
+                format!("{ssh_dir}/authorized_keys"),
+                std::fs::Permissions::from_mode(0o600),
+            );
+        }
+    }
+
+    // Configure sshd_config
+    let sshd_config = match config.ssh_auth_method {
+        SshAuthMethod::KeyOnly => {
+            "# AiFw SSH configuration — key authentication only\n\
+             PermitRootLogin prohibit-password\n\
+             PubkeyAuthentication yes\n\
+             PasswordAuthentication no\n\
+             ChallengeResponseAuthentication no\n\
+             KbdInteractiveAuthentication no\n\
+             UsePAM no\n\
+             AuthorizedKeysFile .ssh/authorized_keys\n\
+             X11Forwarding no\n\
+             PrintMotd yes\n\
+             Subsystem sftp /usr/libexec/sftp-server\n"
+        }
+        SshAuthMethod::Password => {
+            "# AiFw SSH configuration — password authentication (not recommended)\n\
+             PermitRootLogin yes\n\
+             PubkeyAuthentication yes\n\
+             PasswordAuthentication yes\n\
+             ChallengeResponseAuthentication no\n\
+             KbdInteractiveAuthentication no\n\
+             UsePAM no\n\
+             AuthorizedKeysFile .ssh/authorized_keys\n\
+             X11Forwarding no\n\
+             PrintMotd yes\n\
+             Subsystem sftp /usr/libexec/sftp-server\n"
+        }
+    };
+
+    #[cfg(target_os = "freebsd")]
+    {
+        std::fs::write("/etc/ssh/sshd_config", sshd_config)
+            .map_err(|e| format!("failed to write sshd_config: {e}"))?;
+
+        // Enable sshd at boot
+        let _ = std::process::Command::new("sysrc")
+            .args(["sshd_enable=YES"])
+            .output();
+
+        // Restart sshd to apply config
+        let _ = std::process::Command::new("service")
+            .args(["sshd", "restart"])
+            .output();
+    }
+
+    #[cfg(not(target_os = "freebsd"))]
+    {
+        let _ = sshd_config; // suppress unused warning on non-FreeBSD
     }
 
     Ok(())

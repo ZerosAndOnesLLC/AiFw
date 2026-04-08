@@ -35,9 +35,32 @@ pub struct SetupConfig {
     pub default_policy: DefaultPolicy,
     pub nat_enabled: bool,
 
+    // SSH
+    pub ssh_auth_method: SshAuthMethod,
+    pub ssh_github_user: Option<String>,
+    pub ssh_authorized_keys: Vec<String>,
+
     // Paths
     pub db_path: String,
     pub config_dir: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SshAuthMethod {
+    /// SSH key authentication only (recommended)
+    KeyOnly,
+    /// Password authentication (not recommended)
+    Password,
+}
+
+impl std::fmt::Display for SshAuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SshAuthMethod::KeyOnly => write!(f, "SSH Key (recommended)"),
+            SshAuthMethod::Password => write!(f, "Password (not recommended)"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -101,6 +124,9 @@ impl Default for SetupConfig {
             dhcp_enabled: false,
             default_policy: DefaultPolicy::Standard,
             nat_enabled: false,
+            ssh_auth_method: SshAuthMethod::KeyOnly,
+            ssh_github_user: None,
+            ssh_authorized_keys: Vec::new(),
             db_path: "/var/db/aifw/aifw.db".to_string(),
             config_dir: "/usr/local/etc/aifw".to_string(),
         }
