@@ -99,6 +99,28 @@ pub async fn update_config(
 
     engine.save_config(&config).await.map_err(|_| internal())?;
 
+    // Start or stop the engine based on mode change
+    if let Some(ref mode) = req.mode {
+        match mode.as_str() {
+            "ids" | "ips" => {
+                if !engine.is_running() {
+                    // Compile rules and start
+                    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+                    let _ = mgr.compile_rules(engine.rule_db()).await;
+                    let _ = engine.start().await;
+                    tracing::info!(mode = mode.as_str(), "IDS engine started");
+                }
+            }
+            "disabled" => {
+                if engine.is_running() {
+                    engine.stop().await;
+                    tracing::info!("IDS engine stopped");
+                }
+            }
+            _ => {}
+        }
+    }
+
     Ok(Json(ApiResponse { data: config }))
 }
 

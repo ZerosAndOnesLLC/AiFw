@@ -679,7 +679,21 @@ async fn create_state_from_db(
     let ids_engine = match aifw_ids::IdsEngine::new(pool.clone(), pf.clone()).await {
         Ok(engine) => {
             tracing::info!("IDS engine initialized");
-            Some(Arc::new(engine))
+            let arc = Arc::new(engine);
+            // Auto-start if mode != disabled, and compile rules
+            if let Ok(cfg) = arc.load_config().await {
+                if cfg.mode != aifw_common::ids::IdsMode::Disabled {
+                    let mgr = aifw_ids::rules::manager::RulesetManager::new(arc.pool().clone());
+                    match mgr.compile_rules(arc.rule_db()).await {
+                        Ok(count) => tracing::info!(count, "IDS rules compiled on startup"),
+                        Err(e) => tracing::warn!("IDS rule compilation failed: {e}"),
+                    }
+                    if let Err(e) = arc.start().await {
+                        tracing::warn!("IDS engine failed to start: {e}");
+                    }
+                }
+            }
+            Some(arc)
         }
         Err(e) => {
             tracing::warn!("IDS engine failed to initialize: {e}");
