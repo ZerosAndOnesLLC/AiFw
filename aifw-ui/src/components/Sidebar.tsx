@@ -138,10 +138,10 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
   const permLoaded = !authLoading && permissions.size > 0;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     Monitoring: true,
-    Firewall: true,
-    Network: true,
+    Firewall: false,
+    Network: false,
     Services: false,
-    "Intrusion Detection": true,
+    "Intrusion Detection": false,
     Extensions: false,
     System: false,
   });
