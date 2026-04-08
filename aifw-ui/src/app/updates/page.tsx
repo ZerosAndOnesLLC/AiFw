@@ -241,7 +241,7 @@ export default function UpdatesPage() {
       // Install succeeded — API will restart in ~2s. Show countdown overlay.
       setAifwInstalling(false);
       setRestarting(true);
-      setRestartCountdown(15);
+      setRestartCountdown(120);
 
       // Countdown timer
       const countdownInterval = setInterval(() => {
@@ -254,7 +254,7 @@ export default function UpdatesPage() {
       // Phase 1: Wait for the old API to actually go DOWN.
       // Poll until we get a connection error, meaning the old process died.
       let apiWentDown = false;
-      for (let i = 0; i < 15; i++) {
+      for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         try {
           await fetch("/api/v1/status", { signal: AbortSignal.timeout(2000) });
@@ -269,7 +269,7 @@ export default function UpdatesPage() {
 
       // Phase 2: Poll until the NEW API is up, then refresh.
       const pollStart = Date.now();
-      const maxWait = 30000;
+      const maxWait = 120000;
       const poll = async () => {
         while (Date.now() - pollStart < maxWait) {
           await new Promise((r) => setTimeout(r, 2000));
@@ -309,7 +309,7 @@ export default function UpdatesPage() {
 
       setAifwRollingBack(false);
       setRestarting(true);
-      setRestartCountdown(15);
+      setRestartCountdown(120);
 
       const countdownInterval = setInterval(() => {
         setRestartCountdown((prev) => {
@@ -320,7 +320,7 @@ export default function UpdatesPage() {
 
       // Wait for old API to actually go down
       let apiDown = false;
-      for (let i = 0; i < 15; i++) {
+      for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         try { await fetch("/api/v1/status", { signal: AbortSignal.timeout(2000) }); }
         catch { apiDown = true; break; }
@@ -329,7 +329,7 @@ export default function UpdatesPage() {
 
       const pollStart = Date.now();
       const poll = async () => {
-        while (Date.now() - pollStart < 30000) {
+        while (Date.now() - pollStart < 120000) {
           await new Promise((r) => setTimeout(r, 2000));
           try {
             const probe = await fetch("/api/v1/status", {
@@ -392,14 +392,14 @@ export default function UpdatesPage() {
             <p className="text-sm text-[var(--text-muted)] mt-2">
               Services are restarting with the new version.
               {restartCountdown > 0 && (
-                <> This may take up to <span className="font-mono font-bold text-[var(--accent)]">{restartCountdown}s</span></>
+                <> This may take up to 2 minutes. <span className="font-mono font-bold text-[var(--accent)]">{restartCountdown}s</span> remaining</>
               )}
             </p>
           </div>
           <div className="w-full h-1.5 bg-[var(--bg-card)] rounded-full overflow-hidden">
             <div
               className="h-full bg-[var(--accent)] rounded-full transition-all duration-1000 ease-linear"
-              style={{ width: `${Math.max(5, ((15 - restartCountdown) / 15) * 100)}%` }}
+              style={{ width: `${Math.max(5, ((120 - restartCountdown) / 120) * 100)}%` }}
             />
           </div>
           <p className="text-xs text-[var(--text-muted)]">

@@ -515,11 +515,14 @@ fn capture_pflog_worker(
                 };
 
                 // tcpdump -x output: packet header line starts with timestamp,
-                // hex lines start with 0x offset (e.g., "  0x0000:  4500 ...")
-                if line.starts_with("  0x") {
-                    // Accumulate hex data
-                    let hex = line.split(':').nth(1).unwrap_or("").trim();
-                    current_packet_hex.push_str(&hex.replace(' ', ""));
+                // hex lines start with tab + 0x offset (e.g., "\t0x0000:  4500 ...")
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("0x") {
+                    // Accumulate hex data — format: "0x0000:  4500 00c9 ..."
+                    // Split on first colon to skip the offset, then strip spaces
+                    if let Some(hex_part) = trimmed.split_once(':').map(|(_, h)| h.trim()) {
+                        current_packet_hex.push_str(&hex_part.replace(' ', ""));
+                    }
                 } else if !current_packet_hex.is_empty() {
                     // New packet header — process the accumulated packet
                     process_hex_packet(
