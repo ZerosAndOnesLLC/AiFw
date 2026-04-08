@@ -100,7 +100,7 @@ pub fn prompt_password(label: &str) -> String {
 pub fn prompt_password_confirm(label: &str) -> String {
     loop {
         let pw1 = prompt_password(label);
-        let pw2 = prompt_password("  Confirm password");
+        let pw2 = prompt_password("Confirm password");
 
         if pw1 == pw2 {
             return pw1;
@@ -173,7 +173,9 @@ pub fn validate_cidr(cidr: &str) -> bool {
             return false;
         }
         if let Ok(p) = prefix.parse::<u8>() {
-            return p <= 128;
+            let is_v6 = ip.contains(':');
+            let max = if is_v6 { 128 } else { 32 };
+            return p <= max;
         }
     }
     false

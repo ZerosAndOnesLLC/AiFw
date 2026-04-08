@@ -31,25 +31,32 @@ fn detect_interfaces() -> Vec<String> {
             .collect();
     }
 
-    // Ultimate fallback
     vec!["em0".to_string(), "em1".to_string()]
 }
 
-/// Set the system root password via chpasswd/pw
+/// Set the system root password via pw (FreeBSD)
 fn set_root_password() {
-    loop {
+    let max_attempts = 5;
+    for attempt in 1..=max_attempts {
         let pass1 = console::prompt_password("New root password");
         if pass1.len() < 8 {
             console::error("Password must be at least 8 characters.");
+            if attempt == max_attempts {
+                console::warn("Max attempts reached. Skipping root password — set it manually later.");
+                return;
+            }
             continue;
         }
         let pass2 = console::prompt_password("Confirm root password");
         if pass1 != pass2 {
             console::error("Passwords do not match. Try again.");
+            if attempt == max_attempts {
+                console::warn("Max attempts reached. Skipping root password.");
+                return;
+            }
             continue;
         }
 
-        // Use pw on FreeBSD, chpasswd on Linux (dev)
         #[cfg(target_os = "freebsd")]
         {
             use std::process::{Command, Stdio};
@@ -71,7 +78,8 @@ fn set_root_password() {
                         return;
                     }
                     _ => {
-                        console::error("Failed to set root password.");
+                        console::error("Failed to set root password via 'pw'. You may need to set it manually.");
+                        return;
                     }
                 }
             }
@@ -79,7 +87,7 @@ fn set_root_password() {
 
         #[cfg(not(target_os = "freebsd"))]
         {
-            console::success("Root password set (simulated — not on FreeBSD).");
+            console::success("Root password set (simulated).");
             return;
         }
     }
@@ -91,17 +99,41 @@ pub struct WizardResult {
     pub tuning: Vec<TuningItem>,
 }
 
+/// Print the AiFw splash screen
+fn splash_screen() {
+    println!();
+    println!("  \x1b[1;34m╔══════════════════════════════════════════════════╗\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m      \x1b[1;36m█████╗ ██╗\x1b[0m\x1b[1;37m███████╗██╗    ██╗\x1b[0m            \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m██╔══██╗██║\x1b[0m\x1b[1;37m██╔════╝██║    ██║\x1b[0m            \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m███████║██║\x1b[0m\x1b[1;37m█████╗  ██║ █╗ ██║\x1b[0m            \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m██╔══██║██║\x1b[0m\x1b[1;37m██╔══╝  ██║███╗██║\x1b[0m            \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m██║  ██║██║\x1b[0m\x1b[1;37m██║     ╚███╔███╔╝\x1b[0m            \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m╚═╝  ╚═╝╚═╝\x1b[0m\x1b[1;37m╚═╝      ╚══╝╚══╝\x1b[0m             \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;37mAI-Powered Firewall for FreeBSD\x1b[0m               \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m     \x1b[0;90mBuilt in Rust  •  MIT License\x1b[0m                 \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m     \x1b[0;90mgithub.com/ZerosAndOnesLLC/AiFw\x1b[0m                \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m");
+    println!("  \x1b[1;34m╚══════════════════════════════════════════════════╝\x1b[0m");
+    println!();
+}
+
+const TOTAL_STEPS: u32 = 11;
+
+fn step(n: u32, title: &str) {
+    console::header(&format!("Step {n}/{TOTAL_STEPS} — {title}"));
+}
+
 /// Run the full setup wizard
 pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     let mut config = SetupConfig::default();
 
-    // ── Step 1: Welcome ──────────────────────────────────────
-    console::header("AiFw — AI-Powered Firewall for FreeBSD");
+    // ── Splash Screen ───────────────────────────────────────
+    splash_screen();
     console::info("Welcome to the AiFw initial setup wizard.");
-    console::info("This will configure your firewall, create an admin account,");
-    console::info("and set up multi-factor authentication.");
-    println!();
-    console::info("All features are free and open source (MIT).");
+    console::info("This will configure networking, SSH, firewall rules,");
+    console::info("and create your administrator account.");
     println!();
 
     if reconfigure {
@@ -111,13 +143,13 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         }
     }
 
-    // ── Step 1: Root Password ─────────────────────────────────
-    console::header("Step 1/12 — Root Password");
+    // ── Step 1: Root Password ────────────────────────────────
+    step(1, "Root Password");
     console::info("Set the system root password for console access.");
     set_root_password();
 
     // ── Step 2: SSH Access ───────────────────────────────────
-    console::header("Step 2/12 — SSH Access");
+    step(2, "SSH Access");
     console::info("SSH key authentication is recommended. Password auth is less secure.");
     println!();
 
@@ -144,7 +176,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
                 }
                 Ok(_) => {
                     console::warn("No SSH keys found for that GitHub user.");
-                    console::info("You can add keys manually later via the web UI or /root/.ssh/authorized_keys.");
+                    console::info("You can add keys manually later via /root/.ssh/authorized_keys.");
                 }
                 Err(e) => {
                     console::warn(&format!("Could not fetch keys: {e}"));
@@ -165,22 +197,33 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         }
 
         if config.ssh_authorized_keys.is_empty() {
-            console::warn("No SSH keys configured. You will need to add keys manually before SSH key auth works.");
-            console::info("Temporarily enabling password auth as fallback.");
+            console::warn("No SSH keys configured. Enabling password auth as fallback.");
             config.ssh_auth_method = SshAuthMethod::Password;
         }
     }
 
     // ── Step 3: Hostname ─────────────────────────────────────
-    console::header("Step 3/12 — Hostname");
-    config.hostname = console::prompt("Hostname", &config.hostname);
+    step(3, "Hostname");
+    loop {
+        config.hostname = console::prompt("Hostname", &config.hostname);
+        // Basic RFC 1123 validation
+        if config.hostname.is_empty() || config.hostname.len() > 63
+            || !config.hostname.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+            || config.hostname.starts_with('-')
+        {
+            console::warn("Invalid hostname. Use letters, numbers, hyphens, and dots (max 63 chars).");
+            config.hostname = "aifw".to_string();
+            continue;
+        }
+        break;
+    }
 
-    // ── Step 3: System Detection & Tuning ──────────────────
+    // ── Step 4: System Tuning (auto-detected) ────────────────
     let profile = SystemProfile::detect();
     let tuning_items = tuning::run_tuning_wizard(&profile);
 
-    // ── Step 3: Network Interfaces ───────────────────────────
-    console::header("Step 5/12 — Network Interfaces");
+    // ── Step 5: Network Interfaces ───────────────────────────
+    step(5, "Network Interfaces");
     let interfaces = detect_interfaces();
 
     if interfaces.is_empty() {
@@ -195,17 +238,14 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         println!();
 
         if interfaces.len() == 1 {
-            // Single NIC mode
             config.wan_interface = interfaces[0].clone();
             console::success(&format!("Single interface detected: {}", config.wan_interface));
             println!();
             console::warn("Single NIC mode — NAT is not available.");
-            console::info("NAT requires a WAN and LAN interface (minimum 2 NICs).");
             console::info("The firewall will operate in filtering mode only.");
             println!();
             config.nat_enabled = false;
         } else {
-            // Multi-NIC mode
             let iface_refs: Vec<&str> = interfaces.iter().map(|s| s.as_str()).collect();
             let wan_idx = console::select("Select WAN interface", &iface_refs, 0);
             config.wan_interface = interfaces[wan_idx].clone();
@@ -222,22 +262,21 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
                 config.nat_enabled = true;
                 console::success("NAT will be enabled between WAN and LAN.");
             } else {
-                console::info("No LAN interface configured — NAT disabled.");
+                console::info("No LAN interface — NAT disabled.");
                 config.nat_enabled = false;
             }
         }
     }
 
-    // ── Step 4: WAN Configuration ────────────────────────────
-    console::header("Step 6/12 — WAN Configuration");
+    // ── Step 6: WAN Configuration ────────────────────────────
+    step(6, "WAN Configuration");
     let wan_mode_idx = console::select(
         "WAN IP configuration",
-        &["DHCP (automatic)", "Static IP", "PPPoE"],
+        &["DHCP (automatic)", "Static IP"],
         0,
     );
     config.wan_mode = match wan_mode_idx {
         1 => WanMode::Static,
-        2 => WanMode::Pppoe,
         _ => WanMode::Dhcp,
     };
 
@@ -260,9 +299,9 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         }
     }
 
-    // ── Step 5: LAN Configuration ────────────────────────────
+    // ── Step 7: LAN Configuration ────────────────────────────
     if config.lan_interface.is_some() {
-        console::header("Step 7/12 — LAN Configuration");
+        step(7, "LAN Configuration");
         loop {
             let ip = console::prompt("LAN IP address", "192.168.1.1/24");
             if console::validate_cidr(&ip) {
@@ -271,34 +310,36 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             }
             console::warn("Invalid IP/prefix format.");
         }
-        // Ask about DHCP server on LAN
         if console::confirm("Enable DHCP server on the LAN interface?", true) {
             config.dhcp_enabled = true;
             console::success("DHCP server will be enabled on LAN.");
         }
-    } else {
-        console::header("Step 7/12 — LAN Configuration");
-        if config.nat_enabled {
-            console::info("No LAN interface configured. NAT disabled.");
-        } else {
-            console::info("Single NIC mode — skipping LAN configuration.");
-        }
     }
 
-    // ── Step 6: Admin Account ────────────────────────────────
-    console::header("Step 8/12 — Admin Account");
-    console::info("Create the administrator account.");
-    console::info("Password must be 8+ characters with uppercase, lowercase, and number.");
+    // ── Step 8: Admin Account ────────────────────────────────
+    step(8, "Admin Account");
+    console::info("Create the administrator account for the web UI.");
+    console::info("Password requires 8+ characters: uppercase, lowercase, and number.");
     println!();
 
-    config.admin_username = console::prompt("Admin username", "admin");
+    loop {
+        config.admin_username = console::prompt("Admin username", "admin");
+        if config.admin_username.is_empty() || config.admin_username.contains(' ') || config.admin_username.len() > 32 {
+            console::warn("Username must be 1-32 characters with no spaces.");
+            continue;
+        }
+        break;
+    }
 
     loop {
         let password = console::prompt_password_confirm("Password");
         match console::validate_password(&password) {
             Ok(()) => {
-                // Hash the password
                 config.admin_password_hash = hash_password(&password);
+                if config.admin_password_hash.is_empty() {
+                    console::error("Password hashing failed. Try again.");
+                    continue;
+                }
                 console::success("Password set.");
                 break;
             }
@@ -308,22 +349,34 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         }
     }
 
-    // MFA is configured via the web UI after first login
-
-    // ── Step 7: API / UI Access ──────────────────────────────
-    console::header("Step 9/12 — API & Web UI");
+    // ── Step 9: API & Web UI ─────────────────────────────────
+    step(9, "API & Web UI");
     config.api_listen = console::prompt("API listen address", &config.api_listen);
-    let port_str = console::prompt("API port", &config.api_port.to_string());
-    config.api_port = port_str.parse().unwrap_or(8080);
+    loop {
+        let port_str = console::prompt("API port", &config.api_port.to_string());
+        match port_str.parse::<u16>() {
+            Ok(p) if p > 0 => { config.api_port = p; break; }
+            _ => { console::warn("Invalid port number. Enter 1-65535."); }
+        }
+    }
     config.ui_enabled = console::confirm("Enable web UI?", true);
 
-    // ── Step 9: DNS ──────────────────────────────────────────
-    console::header("Step 10/12 — DNS Servers");
-    let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8");
-    config.dns_servers = dns.split(',').map(|s| s.trim().to_string()).collect();
+    // ── Step 10: DNS Servers ─────────────────────────────────
+    step(10, "DNS Servers");
+    loop {
+        let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8");
+        let servers: Vec<String> = dns.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let all_valid = servers.iter().all(|s| console::validate_ip(s));
+        if servers.is_empty() || !all_valid {
+            console::warn("Enter valid IP addresses separated by commas.");
+            continue;
+        }
+        config.dns_servers = servers;
+        break;
+    }
 
-    // ── Step 10: Firewall Policy ─────────────────────────────
-    console::header("Step 11/12 — Default Firewall Policy");
+    // ── Step 11: Firewall Policy ─────────────────────────────
+    step(11, "Default Firewall Policy");
     let policy_idx = console::select(
         "Default firewall policy",
         &[
@@ -340,38 +393,37 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     };
 
     // ── Summary ──────────────────────────────────────────────
-    console::header("Step 12/12 — Summary");
-    console::info(&format!("Hostname:       {}", config.hostname));
-    console::info(&format!("WAN:            {} ({})", config.wan_interface, config.wan_mode));
+    console::header("Configuration Summary");
+    println!();
+    console::info(&format!("  Hostname:       {}", config.hostname));
+    console::info(&format!("  WAN:            {} ({})", config.wan_interface, config.wan_mode));
     if let Some(ref ip) = config.wan_ip {
-        console::info(&format!("  IP:           {ip}"));
+        console::info(&format!("    IP:           {ip}"));
     }
     if let Some(ref gw) = config.wan_gateway {
-        console::info(&format!("  Gateway:      {gw}"));
+        console::info(&format!("    Gateway:      {gw}"));
     }
     if let Some(ref iface) = config.lan_interface {
-        console::info(&format!("LAN:            {iface}"));
+        console::info(&format!("  LAN:            {iface}"));
         if let Some(ref ip) = config.lan_ip {
-            console::info(&format!("  IP:           {ip}"));
+            console::info(&format!("    IP:           {ip}"));
         }
     }
-    console::info(&format!("SSH:            {}", config.ssh_auth_method));
+    console::info(&format!("  SSH:            {}", config.ssh_auth_method));
     if let Some(ref gh) = config.ssh_github_user {
-        console::info(&format!("  GitHub keys:  {gh} ({} key(s))", config.ssh_authorized_keys.len()));
+        console::info(&format!("    GitHub keys:  {gh} ({} key(s))", config.ssh_authorized_keys.len()));
     } else if !config.ssh_authorized_keys.is_empty() {
-        console::info(&format!("  Keys:         {} manual key(s)", config.ssh_authorized_keys.len()));
+        console::info(&format!("    Keys:         {} manual key(s)", config.ssh_authorized_keys.len()));
     }
-    console::info(&format!("Admin:          {}", config.admin_username));
-    console::info(&format!("MFA:            {}", if config.totp_enabled { "enabled" } else { "disabled" }));
-    console::info(&format!("API:            {}:{}", config.api_listen, config.api_port));
-    console::info(&format!("Web UI:         {}", if config.ui_enabled { "enabled" } else { "disabled" }));
-    console::info(&format!("NAT:            {}", if config.nat_enabled { "enabled" } else { "disabled (single NIC)" }));
-    console::info(&format!("DHCP Server:    {}", if config.dhcp_enabled { "enabled (LAN)" } else { "disabled" }));
-    console::info(&format!("DNS:            {}", config.dns_servers.join(", ")));
-    console::info(&format!("Policy:         {}", config.default_policy));
-    console::info(&format!("Database:       {}", config.db_path));
+    console::info(&format!("  Admin:          {}", config.admin_username));
+    console::info(&format!("  API:            {}:{}", config.api_listen, config.api_port));
+    console::info(&format!("  Web UI:         {}", if config.ui_enabled { "enabled" } else { "disabled" }));
+    console::info(&format!("  NAT:            {}", if config.nat_enabled { "enabled" } else { "disabled" }));
+    console::info(&format!("  DHCP:           {}", if config.dhcp_enabled { "enabled (LAN)" } else { "disabled" }));
+    console::info(&format!("  DNS:            {}", config.dns_servers.join(", ")));
+    console::info(&format!("  Policy:         {}", config.default_policy));
     let tuning_enabled = tuning_items.iter().filter(|t| t.enabled).count();
-    console::info(&format!("Tuning:         {} optimizations", tuning_enabled));
+    console::info(&format!("  Tuning:         {} optimizations", tuning_enabled));
     println!();
 
     if console::confirm("Apply this configuration?", true) {
@@ -386,7 +438,6 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 fn fetch_github_keys(username: &str) -> Result<Vec<String>, String> {
     let url = format!("https://github.com/{username}.keys");
 
-    // Try fetch (FreeBSD) then curl
     let output = std::process::Command::new("fetch")
         .args(["-qo", "-", &url])
         .output()

@@ -263,10 +263,19 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n";
     console::header("Setup Complete");
     console::success(&format!("AiFw is configured on {}", config.hostname));
     console::info("");
-    console::info(&format!("  Web UI:   https://{}:{}/", config.api_listen, config.api_port));
-    console::info(&format!("  API:      https://{}:{}/api/v1/", config.api_listen, config.api_port));
+    // Show a usable URL — if listening on 0.0.0.0, show the WAN/LAN IP or hostname
+    let display_host = if config.api_listen == "0.0.0.0" || config.api_listen == "::" {
+        config.wan_ip.as_ref()
+            .and_then(|ip| ip.split('/').next().map(String::from))
+            .or(config.lan_ip.as_ref().and_then(|ip| ip.split('/').next().map(String::from)))
+            .unwrap_or_else(|| config.hostname.clone())
+    } else {
+        config.api_listen.clone()
+    };
+    console::info(&format!("  Web UI:   https://{}:{}/", display_host, config.api_port));
+    console::info(&format!("  API:      https://{}:{}/api/v1/", display_host, config.api_port));
     console::info(&format!("  Admin:    {}", config.admin_username));
-    console::info(&format!("  MFA:      {}", if config.totp_enabled { "enabled" } else { "disabled" }));
+    console::info(&format!("  SSH:      {}", config.ssh_auth_method));
     console::info("");
 
     Ok(())

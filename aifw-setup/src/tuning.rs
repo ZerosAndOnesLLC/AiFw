@@ -269,7 +269,7 @@ pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
 pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
     let mut items = generate_recommendations(profile);
 
-    console::header("Step 2/11 — System Detection & Performance Tuning");
+    console::header("Step 4/11 — System Detection & Performance Tuning");
 
     // Show detected hardware
     console::info("Detected hardware:");
