@@ -201,7 +201,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
       {/* Logo — links to About page */}
       <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
         <Link href="/about" className="flex items-center hover:opacity-80 transition-opacity">
-          <img src="/logo-sidebar.png" alt="AiFw" className="h-8" />
+          <img src="/logo-sidebar.png" alt="AiFw" className="h-12" />
         </Link>
         {onClose && (
           <button onClick={onClose} className="lg:hidden text-[var(--text-muted)] hover:text-[var(--text-primary)]">

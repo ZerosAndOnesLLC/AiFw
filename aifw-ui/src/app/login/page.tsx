@@ -66,7 +66,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <img src="/AiFw-1.png" alt="AiFw" className="h-24 mx-auto mb-2" />
+          <img src="/AiFw-1.png" alt="AiFw" className="h-48 mx-auto mb-2" />
         </div>
 
         {!totpRequired ? (
