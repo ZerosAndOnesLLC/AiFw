@@ -324,9 +324,15 @@ impl IdsEngine {
 
         // Determine which interfaces to capture on
         let capture_ifaces = if interfaces.is_empty() {
-            // Default: capture on all non-loopback interfaces via pflog0
-            // pflog0 sees all pf-processed traffic (blocked + logged)
-            vec!["pflog0".to_string()]
+            // Default: detect all non-loopback/non-pflog interfaces and capture on them.
+            // pflog0 only sees blocked/logged pf traffic — we need the real interfaces
+            // to inspect all passing traffic.
+            let mut ifaces = detect_network_interfaces();
+            if ifaces.is_empty() {
+                // Fallback to pflog0 if we can't detect interfaces
+                ifaces.push("pflog0".to_string());
+            }
+            ifaces
         } else {
             interfaces
         };
@@ -339,11 +345,11 @@ impl IdsEngine {
             let iface_name = iface.clone();
 
             std::thread::spawn(move || {
-                if iface == "pflog0" {
-                    capture_pflog_worker(&iface, &detection, &alert_tx, &counters, &running, is_ips);
-                } else {
-                    capture_interface_worker(&iface, &detection, &alert_tx, &counters, &running, is_ips);
-                }
+                // Use tcpdump-based capture for all interfaces — it handles
+                // permissions via sudo and works reliably on FreeBSD.
+                // The BPF capture backend can be used for high-performance
+                // scenarios but requires root access to /dev/bpf.
+                capture_pflog_worker(&iface, &detection, &alert_tx, &counters, &running, is_ips);
             });
             info!(interface = %iface_name, "capture worker started");
         }
@@ -467,6 +473,39 @@ impl IdsEngine {
     }
 }
 
+/// Detect network interfaces for packet capture.
+fn detect_network_interfaces() -> Vec<String> {
+    #[cfg(target_os = "freebsd")]
+    {
+        if let Ok(output) = std::process::Command::new("ifconfig").arg("-l").output() {
+            let list = String::from_utf8_lossy(&output.stdout);
+            return list
+                .split_whitespace()
+                .filter(|iface| {
+                    !iface.starts_with("lo")
+                        && !iface.starts_with("pflog")
+                        && !iface.starts_with("pfsync")
+                        && !iface.starts_with("enc")
+                })
+                .map(String::from)
+                .collect();
+        }
+    }
+
+    #[cfg(not(target_os = "freebsd"))]
+    {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            return entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n != "lo")
+                .collect();
+        }
+    }
+
+    Vec::new()
+}
+
 /// Capture worker for pflog0 — uses tcpdump to read packets, then feeds
 /// raw packet data through the decode → detect → alert pipeline.
 fn capture_pflog_worker(
@@ -484,11 +523,20 @@ fn capture_pflog_worker(
 
     while running.load(Ordering::Relaxed) {
         // Use tcpdump to read raw packets from pflog0 and output packet hex
-        let child = Command::new("tcpdump")
-            .args(["-n", "-e", "-l", "-x", "-s", "1500", "-i", iface])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
+        // Use sudo for non-pflog interfaces (aifw user needs root for raw capture)
+        let child = if iface == "pflog0" {
+            Command::new("tcpdump")
+                .args(["-n", "-e", "-l", "-x", "-s", "1500", "-i", iface])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+        } else {
+            Command::new("/usr/local/bin/sudo")
+                .args(["/usr/sbin/tcpdump", "-n", "-e", "-l", "-x", "-s", "1500", "-i", iface])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+        };
 
         let mut child = match child {
             Ok(c) => c,

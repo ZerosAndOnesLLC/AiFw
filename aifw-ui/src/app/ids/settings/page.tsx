@@ -16,6 +16,7 @@ interface IdsConfig {
   mode: string;
   home_net: string[];
   external_net: string[];
+  interfaces: string[];
   alert_retention_days: number;
   eve_log_enabled: boolean;
   eve_log_path: string;
@@ -57,6 +58,7 @@ export default function IdsSettingsPage() {
     mode: "disabled",
     home_net: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
     external_net: ["!$HOME_NET"],
+    interfaces: [],
     alert_retention_days: 30,
     eve_log_enabled: false,
     eve_log_path: "/var/log/aifw/eve.json",
@@ -72,6 +74,9 @@ export default function IdsSettingsPage() {
   // CIDR add input
   const [newCidr, setNewCidr] = useState("");
 
+  // Available system interfaces
+  const [availableIfaces, setAvailableIfaces] = useState<string[]>([]);
+
   const clearFeedback = useCallback(() => {
     setTimeout(() => setFeedback(null), 4000);
   }, []);
@@ -86,6 +91,7 @@ export default function IdsSettingsPage() {
         mode: d.mode || "disabled",
         home_net: d.home_net || ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
         external_net: d.external_net || ["!$HOME_NET"],
+        interfaces: d.interfaces || [],
         alert_retention_days: d.alert_retention_days ?? 30,
         eve_log_enabled: d.eve_log_enabled ?? false,
         eve_log_path: d.eve_log_path || "/var/log/aifw/eve.json",
@@ -105,6 +111,18 @@ export default function IdsSettingsPage() {
 
   useEffect(() => {
     fetchConfig();
+    // Fetch available system interfaces
+    (async () => {
+      try {
+        const res = await fetch(`${API}/api/v1/interfaces`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        const ifaces: string[] = (data.data || [])
+          .map((i: { name: string }) => i.name)
+          .filter((n: string) => !n.startsWith("lo") && !n.startsWith("pflog"));
+        setAvailableIfaces(ifaces);
+      } catch { /* ignore */ }
+    })();
   }, [fetchConfig]);
 
   async function handleSave() {
@@ -275,6 +293,57 @@ export default function IdsSettingsPage() {
               className="w-full md:w-64 bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm font-mono text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] transition-colors"
             />
           </div>
+        </div>
+      </div>
+
+      {/* Interface Bindings */}
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
+        <h3 className="text-sm font-medium mb-1">Capture Interfaces</h3>
+        <p className="text-xs text-[var(--text-muted)] mb-3">
+          Select which network interfaces the IDS engine inspects. Leave empty to auto-detect all interfaces.
+        </p>
+        <div className="space-y-2">
+          {availableIfaces.length === 0 ? (
+            <p className="text-xs text-[var(--text-muted)]">No interfaces detected. The engine will auto-detect on startup.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+              {availableIfaces.map((iface) => {
+                const selected = config.interfaces.includes(iface);
+                return (
+                  <button
+                    key={iface}
+                    onClick={() => {
+                      const next = selected
+                        ? config.interfaces.filter((i) => i !== iface)
+                        : [...config.interfaces, iface];
+                      setConfig({ ...config, interfaces: next });
+                    }}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-md border text-sm font-mono transition-all ${
+                      selected
+                        ? "border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]"
+                        : "border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]"
+                    }`}
+                  >
+                    <div className={`w-3 h-3 rounded-sm border-2 flex items-center justify-center ${
+                      selected ? "border-[var(--accent)] bg-[var(--accent)]" : "border-[var(--text-muted)]"
+                    }`}>
+                      {selected && (
+                        <svg className="w-2 h-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={4}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                    {iface}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-[11px] text-[var(--text-muted)] mt-2">
+            {config.interfaces.length === 0
+              ? "Auto-detect: the engine will capture on all physical interfaces."
+              : `Selected: ${config.interfaces.join(", ")}. Only these interfaces will be monitored.`}
+          </p>
         </div>
       </div>
 
