@@ -31,6 +31,9 @@ httparse = "1"
 # Rule formats
 serde_yml = "0.0"
 
+# System interfaces (BPF capture on FreeBSD)
+libc = "0.2"
+
 # Performance
 crossbeam = "0.8"
 dashmap = "6"

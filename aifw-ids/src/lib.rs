@@ -345,11 +345,7 @@ impl IdsEngine {
             let iface_name = iface.clone();
 
             std::thread::spawn(move || {
-                // Use tcpdump-based capture for all interfaces — it handles
-                // permissions via sudo and works reliably on FreeBSD.
-                // The BPF capture backend can be used for high-performance
-                // scenarios but requires root access to /dev/bpf.
-                capture_pflog_worker(&iface, &detection, &alert_tx, &counters, &running, is_ips);
+                capture_interface_worker(&iface, &detection, &alert_tx, &counters, &running, is_ips);
             });
             info!(interface = %iface_name, "capture worker started");
         }
@@ -506,148 +502,8 @@ fn detect_network_interfaces() -> Vec<String> {
     Vec::new()
 }
 
-/// Capture worker for pflog0 — uses tcpdump to read packets, then feeds
-/// raw packet data through the decode → detect → alert pipeline.
-fn capture_pflog_worker(
-    iface: &str,
-    detection: &std::sync::Arc<detect::DetectionEngine>,
-    alert_tx: &channel::Sender<IdsAlert>,
-    counters: &std::sync::Arc<EngineCounters>,
-    running: &std::sync::Arc<AtomicBool>,
-    _is_ips: bool,
-) {
-    use std::io::{BufRead, BufReader};
-    use std::process::{Command, Stdio};
-
-    info!(interface = %iface, "pflog capture worker starting");
-
-    while running.load(Ordering::Relaxed) {
-        // Use tcpdump to read raw packets from pflog0 and output packet hex
-        // Use sudo for non-pflog interfaces (aifw user needs root for raw capture)
-        let child = if iface == "pflog0" {
-            Command::new("tcpdump")
-                .args(["-n", "-e", "-l", "-x", "-s", "1500", "-i", iface])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-        } else {
-            Command::new("/usr/local/bin/sudo")
-                .args(["/usr/sbin/tcpdump", "-n", "-e", "-l", "-x", "-s", "1500", "-i", iface])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-        };
-
-        let mut child = match child {
-            Ok(c) => c,
-            Err(e) => {
-                error!(interface = %iface, error = %e, "failed to start tcpdump");
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                continue;
-            }
-        };
-
-        if let Some(stdout) = child.stdout.take() {
-            let reader = BufReader::new(stdout);
-            let mut current_packet_hex = String::new();
-            let mut packet_info = String::new();
-
-            for line in reader.lines() {
-                if !running.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => continue,
-                };
-
-                // tcpdump -x output: packet header line starts with timestamp,
-                // hex lines start with tab + 0x offset (e.g., "\t0x0000:  4500 ...")
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("0x") {
-                    // Accumulate hex data — format: "0x0000:  4500 00c9 ..."
-                    // Split on first colon to skip the offset, then strip spaces
-                    if let Some(hex_part) = trimmed.split_once(':').map(|(_, h)| h.trim()) {
-                        current_packet_hex.push_str(&hex_part.replace(' ', ""));
-                    }
-                } else if !current_packet_hex.is_empty() {
-                    // New packet header — process the accumulated packet
-                    process_hex_packet(
-                        &current_packet_hex, &packet_info,
-                        detection, alert_tx, counters,
-                    );
-                    current_packet_hex.clear();
-                    packet_info = line;
-                } else {
-                    packet_info = line;
-                }
-            }
-
-            // Process last packet
-            if !current_packet_hex.is_empty() {
-                process_hex_packet(
-                    &current_packet_hex, &packet_info,
-                    detection, alert_tx, counters,
-                );
-            }
-        }
-
-        let _ = child.kill();
-        let _ = child.wait();
-
-        if running.load(Ordering::Relaxed) {
-            warn!(interface = %iface, "tcpdump exited, restarting in 2s");
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-    }
-}
-
-/// Process a hex-encoded packet through the detection pipeline
-fn process_hex_packet(
-    hex: &str,
-    _info: &str,
-    detection: &std::sync::Arc<detect::DetectionEngine>,
-    alert_tx: &channel::Sender<IdsAlert>,
-    counters: &std::sync::Arc<EngineCounters>,
-) {
-    // Decode hex string to bytes
-    let bytes: Vec<u8> = (0..hex.len())
-        .step_by(2)
-        .filter_map(|i| {
-            if i + 2 <= hex.len() {
-                u8::from_str_radix(&hex[i..i + 2], 16).ok()
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if bytes.len() < 20 {
-        return; // Too short to be a valid IP packet
-    }
-
-    counters.packets_inspected.fetch_add(1, Ordering::Relaxed);
-    counters.bytes_total.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-
-    // Decode the raw packet
-    let timestamp_us = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as i64;
-
-    if let Some(decoded) = decode::decode_packet(&bytes, timestamp_us) {
-        // Run through detection engine
-        let alerts = detection.detect(&decoded);
-        for alert in alerts {
-            if let Err(e) = alert_tx.try_send(alert) {
-                tracing::debug!("alert channel full: {e}");
-            }
-        }
-    }
-}
-
-/// Capture worker for regular interfaces — uses the capture backend directly.
+/// Capture worker — uses BPF on FreeBSD, pcap mock on Linux.
+/// Reads raw packets directly from the kernel with zero shell overhead.
 fn capture_interface_worker(
     iface: &str,
     detection: &std::sync::Arc<detect::DetectionEngine>,
@@ -656,37 +512,43 @@ fn capture_interface_worker(
     running: &std::sync::Arc<AtomicBool>,
     _is_ips: bool,
 ) {
-    use capture::{CaptureBackend, CaptureConfig};
+    use capture::CaptureConfig;
 
-    info!(interface = %iface, "capture worker starting");
-
-    let config = CaptureConfig::default();
-    let mut cap = match capture::create_capture(iface, &config) {
-        Ok(c) => c,
-        Err(e) => {
-            error!(interface = %iface, error = %e, "failed to open capture");
-            return;
-        }
-    };
+    info!(interface = %iface, "BPF capture worker starting");
 
     while running.load(Ordering::Relaxed) {
-        if let Some(pkt) = cap.next_packet() {
-            counters.packets_inspected.fetch_add(1, Ordering::Relaxed);
-            counters.bytes_total.fetch_add(pkt.data.len() as u64, Ordering::Relaxed);
+        let config = CaptureConfig::default();
+        let mut cap = match capture::create_capture(iface, &config) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(interface = %iface, error = %e, "failed to open BPF capture, retrying in 5s");
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                continue;
+            }
+        };
 
-            if let Some(decoded) = decode::decode_packet(&pkt.data, pkt.timestamp_us) {
-                let alerts = detection.detect(&decoded);
-                for alert in alerts {
-                    if let Err(e) = alert_tx.try_send(alert) {
-                        tracing::debug!("alert channel full: {e}");
+        info!(interface = %iface, "BPF capture active");
+
+        while running.load(Ordering::Relaxed) {
+            if let Some(pkt) = cap.next_packet() {
+                counters.packets_inspected.fetch_add(1, Ordering::Relaxed);
+                counters.bytes_total.fetch_add(pkt.data.len() as u64, Ordering::Relaxed);
+
+                if let Some(decoded) = decode::decode_packet(&pkt.data, pkt.timestamp_us) {
+                    let alerts = detection.detect(&decoded);
+                    for alert in alerts {
+                        if let Err(e) = alert_tx.try_send(alert) {
+                            tracing::debug!("alert channel full: {e}");
+                        }
                     }
                 }
             }
         }
+
+        cap.close();
     }
 
-    cap.close();
-    info!(interface = %iface, "capture worker stopped");
+    info!(interface = %iface, "BPF capture worker stopped");
 }
 
 #[cfg(test)]
