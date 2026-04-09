@@ -125,6 +125,7 @@ echo ""
 # --- Build UI ---
 echo "[3/5] Building UI..."
 cd aifw-ui
+npm config delete python 2>/dev/null || true
 npm ci --silent 2>&1 | tail -1
 npm run build 2>&1 | tail -3
 cd "$REPO_DIR"

@@ -51,6 +51,7 @@ echo ""
 # --- Build Web UI static export ---
 echo "=== [2/6] Building Web UI static export ==="
 cd "$PROJECT_ROOT/aifw-ui"
+npm config delete python 2>/dev/null || true
 npm ci
 npm run build
 cd "$PROJECT_ROOT"
