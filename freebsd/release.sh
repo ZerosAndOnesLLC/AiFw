@@ -156,6 +156,8 @@ fi
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "Release ${TAG} exists, uploading assets..."
     gh release upload "$TAG" $ASSETS --clobber
+    # Ensure it's not stuck as a draft
+    gh release edit "$TAG" --draft=false --title "AiFw v${VERSION}" --notes "$BODY" 2>/dev/null || true
 else
     gh release create "$TAG" \
         $ASSETS \
