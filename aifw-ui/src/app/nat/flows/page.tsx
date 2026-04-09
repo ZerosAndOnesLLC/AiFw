@@ -174,11 +174,13 @@ export default function NatFlowsPage() {
                   const ifaceHostCount = Math.max(1, Math.ceil(lanHosts.length / lanIfaces.length));
                   return (
                     <div key={iface.name} className="flex flex-col items-center">
-                      {/* Pipe from FW */}
-                      <VPipe rateIn={r.in} rateOut={r.out} height={40} />
+                      {/* Pipe from FW to LAN — swap in/out:
+                          interface "out" = data going down to LAN clients (green/inbound from their perspective)
+                          interface "in"  = data going up from LAN clients (blue/outbound from their perspective) */}
+                      <VPipe rateIn={r.out} rateOut={r.in} height={40} />
                       <div className="flex gap-2 mt-0.5 text-[9px]">
-                        <span className="text-emerald-400">{formatBps(r.in)}</span>
-                        <span className="text-blue-400">{formatBps(r.out)}</span>
+                        <span className="text-emerald-400">{formatBps(r.out)}</span>
+                        <span className="text-blue-400">{formatBps(r.in)}</span>
                       </div>
 
                       {/* Interface badge */}
@@ -189,7 +191,7 @@ export default function NatFlowsPage() {
 
                       {/* Pipe to hosts */}
                       <div className="mt-0.5">
-                        <VPipe rateIn={r.in} rateOut={r.out} height={30} />
+                        <VPipe rateIn={r.out} rateOut={r.in} height={30} />
                       </div>
 
                       {/* Host bubbles */}
