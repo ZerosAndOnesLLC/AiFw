@@ -869,7 +869,8 @@ pub async fn update_config(
     save_config_key(&state.pool, "log_format", &config.log_format).await;
     save_config_key(&state.pool, "api_port", &config.api_port.to_string()).await;
     save_config_key(&state.pool, "workers", &config.workers.to_string()).await;
-    Ok(Json(MessageResponse { message: "DHCP config updated".to_string() }))
+    auto_apply(&state).await;
+    Ok(Json(MessageResponse { message: "DHCP config updated and applied".to_string() }))
 }
 
 // --- DDNS config ---
@@ -985,6 +986,7 @@ pub async fn create_subnet(
         subnet_type: subnet_type.to_string(), delegated_length: req.delegated_length,
         enabled, description: req.description, created_at: now,
     };
+    auto_apply(&state).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: subnet })))
 }
 
@@ -1005,6 +1007,7 @@ pub async fn update_subnet(
         .execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
     let now = Utc::now().to_rfc3339();
+    auto_apply(&state).await;
     Ok(Json(ApiResponse { data: DhcpSubnet {
         id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end,
         gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name,
@@ -1022,6 +1025,7 @@ pub async fn delete_subnet(
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let result = sqlx::query("DELETE FROM dhcp_subnets WHERE id=?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    auto_apply(&state).await;
     Ok(Json(MessageResponse { message: format!("Subnet {} deleted", id) }))
 }
 
@@ -1043,6 +1047,7 @@ pub async fn create_reservation(
         .bind(&id).bind(req.subnet_id.as_deref()).bind(&req.mac_address).bind(&req.ip_address)
         .bind(req.hostname.as_deref()).bind(req.client_id.as_deref()).bind(req.description.as_deref()).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
+    auto_apply(&state).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: DhcpReservation { id, subnet_id: req.subnet_id, mac_address: req.mac_address, ip_address: req.ip_address, hostname: req.hostname, client_id: req.client_id, description: req.description, created_at: now } })))
 }
 
@@ -1057,6 +1062,7 @@ pub async fn update_reservation(
         .execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
     let now = Utc::now().to_rfc3339();
+    auto_apply(&state).await;
     Ok(Json(ApiResponse { data: DhcpReservation { id, subnet_id: req.subnet_id, mac_address: req.mac_address, ip_address: req.ip_address, hostname: req.hostname, client_id: req.client_id, description: req.description, created_at: now } }))
 }
 
@@ -1066,6 +1072,7 @@ pub async fn delete_reservation(
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let result = sqlx::query("DELETE FROM dhcp_reservations WHERE id=?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    auto_apply(&state).await;
     Ok(Json(MessageResponse { message: format!("Reservation {} deleted", id) }))
 }
 
@@ -1194,6 +1201,21 @@ pub async fn apply_config(
         // Reload anchor to remove DHCP rules
         reload_aifw_anchor(&state).await;
         Ok(Json(MessageResponse { message: "DHCP config saved, rDHCP stopped".to_string() }))
+    }
+}
+
+/// Auto-apply DHCP config after any change (subnet/reservation CRUD).
+/// Regenerates the rDHCP config file and restarts the service.
+async fn auto_apply(state: &AppState) {
+    let config = load_global_config(&state.pool).await;
+    if !config.enabled { return; }
+
+    let toml_config = generate_rdhcp_config(&state.pool).await;
+    let _ = tokio::fs::create_dir_all("/usr/local/etc/rdhcpd").await;
+    if tokio::fs::write(RDHCP_CONFIG_PATH, &toml_config).await.is_ok() {
+        let _ = Command::new("/usr/local/bin/sudo").args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]).output().await;
+        let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
+        tracing::info!("DHCP config auto-applied");
     }
 }
 
