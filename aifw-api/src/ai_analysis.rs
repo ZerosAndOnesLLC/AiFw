@@ -104,8 +104,10 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
 
         match response {
             Ok(ai_response) => {
-                // 6. Parse the response
+                // 6. Parse the response (strip thinking tags, extract JSON)
                 let (classification, reason) = parse_ai_response(&ai_response);
+                // Store clean reason (not the full thinking chain)
+                let clean_reason = if reason.len() > 300 { format!("{}...", &reason[..297]) } else { reason.clone() };
 
                 // 7. Apply classification to this alert and all alerts with same signature
                 if sig_id > 0 {
@@ -113,7 +115,7 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
                         "UPDATE ids_alerts SET classification = ?, analyst_notes = ?, ai_analyzed = 1, acknowledged = 1 WHERE signature_id = ? AND classification = 'unreviewed'"
                     )
                     .bind(&classification)
-                    .bind(&format!("AI ({provider}): {reason}"))
+                    .bind(&format!("AI ({provider}): {clean_reason}"))
                     .bind(sig_id)
                     .execute(pool).await;
                     analyzed_sigs.insert(sig_id);
@@ -122,7 +124,7 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
                         "UPDATE ids_alerts SET classification = ?, analyst_notes = ?, ai_analyzed = 1, acknowledged = 1 WHERE id = ?"
                     )
                     .bind(&classification)
-                    .bind(&format!("AI ({provider}): {reason}"))
+                    .bind(&format!("AI ({provider}): {clean_reason}"))
                     .bind(alert_id)
                     .execute(pool).await;
                 }
@@ -184,7 +186,7 @@ async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: 
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 200,
+                "max_tokens": 4096,
             });
             (url, body)
         }
@@ -192,7 +194,7 @@ async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: 
             let url = format!("{}/v1/messages", endpoint.trim_end_matches('/'));
             let body = serde_json::json!({
                 "model": model,
-                "max_tokens": 200,
+                "max_tokens": 4096,
                 "messages": [{"role": "user", "content": prompt}],
             });
             (url, body)
@@ -214,7 +216,7 @@ async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: 
     let mut args = vec![
         "-sk".to_string(),
         "--connect-timeout".to_string(), "30".to_string(),
-        "-m".to_string(), "60".to_string(),
+        "-m".to_string(), "300".to_string(),
         "-X".to_string(), "POST".to_string(),
         "-H".to_string(), "Content-Type: application/json".to_string(),
     ];
@@ -280,8 +282,15 @@ async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: 
 
 /// Parse the AI response to extract classification and reason.
 fn parse_ai_response(response: &str) -> (String, String) {
+    // Strip <think>...</think> blocks from thinking models
+    let without_think = if let Some(end) = response.find("</think>") {
+        response[end + 8..].trim()
+    } else {
+        response.trim()
+    };
+
     // Try to parse as JSON
-    let cleaned = response.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+    let cleaned = without_think.trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
 
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(cleaned) {
         let classification = json.get("classification")
