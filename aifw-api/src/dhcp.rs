@@ -1252,12 +1252,19 @@ async fn ensure_dhcp_pf_rules(config: &DhcpGlobalConfig) {
         config.interfaces.join(" "),
     );
 
-    // Place before the first anchor so DHCP quick rules are evaluated
-    // before any anchor block rules can drop the packets.
-    let new_content = if content.contains("anchor \"aifw\"") {
+    // Place before the filter anchors so DHCP quick rules are evaluated
+    // before any anchor "block quick" rules can drop the packets.
+    let new_content = if content.contains("# AiFw filter anchors") {
         content.replace(
+            "# AiFw filter anchors",
+            &format!("{dhcp_rules}# AiFw filter anchors"),
+        )
+    } else if content.contains("anchor \"aifw\"") {
+        // No comment marker — insert before the first anchor line
+        content.replacen(
             "anchor \"aifw\"",
             &format!("{dhcp_rules}anchor \"aifw\""),
+            1,
         )
     } else {
         content.replace(
