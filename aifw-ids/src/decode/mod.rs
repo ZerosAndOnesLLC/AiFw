@@ -85,9 +85,10 @@ impl TcpFlags {
 /// - VLAN-tagged frames (802.1Q)
 /// - Raw IP packets (no Ethernet header)
 pub fn decode_packet(data: &[u8], timestamp_us: i64) -> Option<DecodedPacket> {
-    // Try Ethernet framing first, fall back to raw IP
-    let result = etherparse::SlicedPacket::from_ethernet(data)
-        .or_else(|_| etherparse::SlicedPacket::from_ip(data));
+    // Try raw IP first (tcpdump -x outputs IP headers, not Ethernet),
+    // fall back to Ethernet framing for direct BPF capture.
+    let result = etherparse::SlicedPacket::from_ip(data)
+        .or_else(|_| etherparse::SlicedPacket::from_ethernet(data));
 
     let sliced = result.ok()?;
 
