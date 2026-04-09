@@ -6,9 +6,7 @@ const nextConfig: NextConfig = {
   output: "export",
   trailingSlash: true,
   images: { unoptimized: true },
-  turbopack: {
-    root: dirname(fileURLToPath(import.meta.url)),
-  },
+  outputFileTracingRoot: dirname(fileURLToPath(import.meta.url)),
 };
 
 export default nextConfig;
