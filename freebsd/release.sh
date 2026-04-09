@@ -169,6 +169,29 @@ if [ -n "$XZ_IMG" ]; then
     echo "Cleaned up temp files in /tmp"
 fi
 
+# --- Cleanup old releases (keep most recent N) ---
+MAX_RELEASES=20
+echo ""
+echo "Checking for old releases to clean up (keeping ${MAX_RELEASES})..."
+RELEASE_COUNT=$(gh release list --limit 1000 --json tagName -q 'length')
+if [ "$RELEASE_COUNT" -gt "$MAX_RELEASES" ]; then
+    DELETE_COUNT=$((RELEASE_COUNT - MAX_RELEASES))
+    echo "Found ${RELEASE_COUNT} releases, deleting oldest ${DELETE_COUNT}..."
+    gh release list --limit 1000 --json tagName -q '.[].tagName' | tail -n "$DELETE_COUNT" | while read -r OLD_TAG; do
+        echo "  Deleting release ${OLD_TAG}..."
+        gh release delete "$OLD_TAG" --yes --cleanup-tag 2>/dev/null || true
+    done
+    echo "Cleanup complete. ${MAX_RELEASES} releases retained."
+else
+    echo "Only ${RELEASE_COUNT} releases, no cleanup needed."
+fi
+
+# --- Cleanup old build artifacts ---
+echo "Cleaning build output directory..."
+find "$OUTPUTDIR" -name "aifw-*" -not -name "*${VERSION}*" -type f -delete 2>/dev/null
+CLEANED=$(find "$OUTPUTDIR" -name "aifw-*" -not -name "*${VERSION}*" -type f 2>/dev/null | wc -l | tr -d ' ')
+echo "Build artifacts cleaned (kept v${VERSION} only)"
+
 echo ""
 echo "============================================"
 echo "  Release complete!"
