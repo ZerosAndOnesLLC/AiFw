@@ -1,6 +1,6 @@
 {
   "name": "aifw-ui",
-  "version": "5.27.0",
+  "version": "5.27.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -9,21 +9,21 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "lucide-react": "^1.7.0",
     "next": "^15.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "recharts": "^2.15.0",
-    "lucide-react": "^0.500.0"
+    "recharts": "^2.15.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "@types/node": "^22.0.0",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^25.5.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "tailwindcss": "^4.0.0",
-    "@tailwindcss/postcss": "^4.0.0",
-    "postcss": "^8.5.0",
     "eslint": "^9.0.0",
-    "eslint-config-next": "^15.3.0"
+    "eslint-config-next": "^15.3.0",
+    "postcss": "^8.5.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0"
   }
 }
