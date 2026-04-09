@@ -1256,7 +1256,20 @@ async fn ensure_dhcp_pf_rules(config: &DhcpGlobalConfig) {
         &format!("{dhcp_rules}block in log all"),
     );
 
-    if let Ok(()) = tokio::fs::write(pf_path, &new_content).await {
+    // Write via sudo tee (aifw user can't write root-owned pf.conf)
+    let mut child = Command::new("/usr/local/bin/sudo")
+        .args(["tee", pf_path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn();
+
+    if let Ok(ref mut c) = child {
+        if let Some(ref mut stdin) = c.stdin {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(new_content.as_bytes()).await;
+        }
+        let _ = c.wait().await;
+
         // Reload pf with the updated config
         let _ = Command::new("/usr/local/bin/sudo")
             .args(["/sbin/pfctl", "-f", pf_path])
