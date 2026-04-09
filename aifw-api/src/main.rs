@@ -897,6 +897,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Apply all enabled static routes from DB (survives reboot)
+    routes::apply_all_routes(&state.pool).await;
+
     // Start persistent pflog0 live capture for blocked traffic page (background, non-blocking)
     ws::start_pflog_collector(state.plugin_manager.clone());
 

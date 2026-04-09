@@ -1892,19 +1892,71 @@ pub async fn delete_static_route(
 }
 
 async fn apply_route_to_system(destination: &str, gateway: &str, interface: Option<&str>) {
-    let mut cmd = tokio::process::Command::new("route");
-    cmd.args(["add", destination, gateway]);
+    let mut args = vec!["/sbin/route", "add", destination, gateway];
     if let Some(iface) = interface {
-        cmd.args(["-interface", iface]);
+        args.push("-interface");
+        args.push(iface);
     }
-    let _ = cmd.output().await;
+    let output = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(&args)
+        .output()
+        .await;
+    match output {
+        Ok(o) if o.status.success() => {
+            tracing::info!(destination, gateway, "route added");
+        }
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            tracing::warn!(destination, gateway, error = %err, "route add failed");
+        }
+        Err(e) => {
+            tracing::warn!(destination, gateway, error = %e, "route command failed");
+        }
+    }
 }
 
 async fn remove_route_from_system(destination: &str, gateway: &str) {
-    let _ = tokio::process::Command::new("route")
-        .args(["delete", destination, gateway])
+    let output = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["/sbin/route", "delete", destination, gateway])
         .output()
         .await;
+    match output {
+        Ok(o) if o.status.success() => {
+            tracing::info!(destination, gateway, "route removed");
+        }
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            tracing::debug!(destination, gateway, error = %err, "route delete failed (may not exist)");
+        }
+        Err(e) => {
+            tracing::warn!(destination, gateway, error = %e, "route command failed");
+        }
+    }
+}
+
+/// Apply all enabled static routes from the database. Called on API startup.
+pub async fn apply_all_routes(pool: &sqlx::SqlitePool) {
+    let routes: Vec<(String, String, Option<String>)> = match sqlx::query_as(
+        "SELECT destination, gateway, interface FROM static_routes WHERE enabled = 1 ORDER BY metric ASC"
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load static routes for startup");
+            return;
+        }
+    };
+
+    if routes.is_empty() {
+        return;
+    }
+
+    tracing::info!(count = routes.len(), "applying static routes on startup");
+    for (dest, gw, iface) in &routes {
+        apply_route_to_system(dest, gw, iface.as_deref()).await;
+    }
 }
 
 // --- System routing table ---
