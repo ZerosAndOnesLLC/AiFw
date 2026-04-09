@@ -14,15 +14,18 @@ const BIOCPROMISC: libc::c_ulong = 0x20004269; // _IO('B', 105)
 const BIOCSRTIMEOUT: libc::c_ulong = 0x8010426D; // _IOW('B', 109, struct timeval)
 const BIOCGBLEN: libc::c_ulong = 0x40044266; // _IOR('B', 102, u_int)
 
-/// BPF packet header (prepended to each packet in the buffer)
+/// BPF packet header (prepended to each packet in the buffer).
+/// On 64-bit FreeBSD, bh_tstamp is struct timeval = 16 bytes (two longs).
+/// Total header size is 32 bytes on 64-bit, 20 bytes on 32-bit.
 #[repr(C)]
 struct BpfHeader {
-    bh_tstamp_sec: u32,
-    bh_tstamp_usec: u32,
+    bh_tstamp_sec: libc::c_long,   // 8 bytes on 64-bit
+    bh_tstamp_usec: libc::c_long,  // 8 bytes on 64-bit
     bh_caplen: u32,
     bh_datalen: u32,
     bh_hdrlen: u16,
     _padding: u16,
+    _padding2: u32, // alignment to 32 bytes on 64-bit
 }
 
 /// ifreq struct for BIOCSETIF
@@ -171,7 +174,7 @@ impl CaptureBackend for BpfCapture {
             return None;
         }
 
-        let timestamp_us = (hdr.bh_tstamp_sec as i64) * 1_000_000 + (hdr.bh_tstamp_usec as i64);
+        let timestamp_us = hdr.bh_tstamp_sec as i64 * 1_000_000 + hdr.bh_tstamp_usec as i64;
 
         // BPF on Ethernet interfaces includes the Ethernet header.
         // Skip the 14-byte Ethernet header to get raw IP.
@@ -188,9 +191,9 @@ impl CaptureBackend for BpfCapture {
             orig_len,
         };
 
-        // Advance to next packet (BPF aligns to 4-byte boundaries)
+        // Advance to next packet — BPF_WORDALIGN is 8 bytes on 64-bit FreeBSD
         let total = hdrlen + caplen;
-        let aligned = (total + 3) & !3; // BPF_WORDALIGN
+        let aligned = (total + 7) & !7; // BPF_WORDALIGN (8-byte on 64-bit)
         self.buf_pos += aligned;
 
         self.stats.packets_received += 1;
