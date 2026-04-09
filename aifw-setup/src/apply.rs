@@ -1100,6 +1100,15 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push("anchor \"aifw-ha\"".to_string());
     lines.push(String::new());
 
+    // DHCP pass rules — must come before block rule so broadcast traffic isn't dropped
+    if config.dhcp_enabled {
+        let lan = config.lan_interface.as_deref().unwrap_or("$lan_if");
+        lines.push("# DHCP server — allow broadcast requests and replies".to_string());
+        lines.push(format!("pass in quick on {lan} proto udp from 0.0.0.0 port 68 to 255.255.255.255 port 67 label \"dhcp-discover\""));
+        lines.push(format!("pass out quick on {lan} proto udp from any port 67 to any port 68 label \"dhcp-reply\""));
+        lines.push(String::new());
+    }
+
     // Default policy
     lines.push("# Default policy".to_string());
     match config.default_policy {

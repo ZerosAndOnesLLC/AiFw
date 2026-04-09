@@ -1209,7 +1209,8 @@ pub async fn apply_config(
 }
 
 /// Auto-apply DHCP config after any change (subnet/reservation CRUD).
-/// Regenerates the rDHCP config file and restarts the service.
+/// Regenerates the rDHCP config file, restarts the service, and ensures
+/// pf allows DHCP broadcast traffic.
 async fn auto_apply(state: &AppState) {
     let config = load_global_config(&state.pool).await;
     if !config.enabled { return; }
@@ -1220,6 +1221,48 @@ async fn auto_apply(state: &AppState) {
         let _ = Command::new("/usr/local/bin/sudo").args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]).output().await;
         let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", "rdhcpd", "restart"]).output().await;
         tracing::info!("DHCP config auto-applied");
+    }
+
+    // Ensure pf allows DHCP broadcast traffic on configured interfaces.
+    // DHCP discovers come from 0.0.0.0:68 → 255.255.255.255:67 which
+    // doesn't match LAN subnet rules and gets dropped by "block in log all".
+    ensure_dhcp_pf_rules(&config).await;
+}
+
+/// Add DHCP pass rules to the main pf.conf if not already present.
+async fn ensure_dhcp_pf_rules(config: &DhcpGlobalConfig) {
+    let pf_path = "/usr/local/etc/aifw/pf.conf.aifw";
+    let content = match tokio::fs::read_to_string(pf_path).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Check if DHCP rules already exist
+    if content.contains("port 67") {
+        return;
+    }
+
+    // Insert DHCP pass rules before "block in log all"
+    let dhcp_rules = format!(
+        "# DHCP server — allow broadcast requests and replies\n\
+         pass in quick on {{ {} }} proto udp from 0.0.0.0 port 68 to 255.255.255.255 port 67 label \"dhcp-discover\"\n\
+         pass out quick on {{ {} }} proto udp from any port 67 to any port 68 label \"dhcp-reply\"\n\n",
+        config.interfaces.join(" "),
+        config.interfaces.join(" "),
+    );
+
+    let new_content = content.replace(
+        "block in log all",
+        &format!("{dhcp_rules}block in log all"),
+    );
+
+    if let Ok(()) = tokio::fs::write(pf_path, &new_content).await {
+        // Reload pf with the updated config
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["/sbin/pfctl", "-f", pf_path])
+            .output()
+            .await;
+        tracing::info!("DHCP pf rules added");
     }
 }
 
