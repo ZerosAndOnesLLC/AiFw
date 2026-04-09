@@ -1,3 +1,4 @@
+mod ai_analysis;
 mod aliases;
 mod auth;
 mod backup;
@@ -288,6 +289,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/ids/rules/search", get(ids::search_rules))
         .route("/api/v1/ids/suppressions", get(ids::list_suppressions))
         .route("/api/v1/ids/stats", get(ids::get_stats))
+        .route("/api/v1/ai/audit-log", get(ai_analysis::get_audit_log))
         .layer(middleware::from_fn(perm_check!(Permission::IdsRead)));
 
     // ids:write
@@ -302,6 +304,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/ids/suppressions", post(ids::create_suppression))
         .route("/api/v1/ids/suppressions/{id}", delete(ids::delete_suppression))
         .route("/api/v1/ids/reload", post(ids::reload))
+        .route("/api/v1/ai/analyze", post(ai_analysis::trigger_analysis))
         .layer(middleware::from_fn(perm_check!(Permission::IdsWrite)));
 
     // dns:read
@@ -915,6 +918,24 @@ async fn main() -> anyhow::Result<()> {
                         },
                     };
                     let _ = mgr.dispatch(&event).await;
+                }
+            }
+        });
+    }
+
+    // Start AI analysis background task — reviews unclassified critical/high alerts every 5 minutes
+    {
+        let pool = state.pool.clone();
+        tokio::spawn(async move {
+            // Wait 60s after startup before first run
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                match ai_analysis::run_analysis(&pool).await {
+                    Ok(0) => {} // No alerts to classify
+                    Ok(n) => tracing::info!(count = n, "AI classified alerts"),
+                    Err(e) => tracing::debug!(error = %e, "AI analysis skipped"),
                 }
             }
         });

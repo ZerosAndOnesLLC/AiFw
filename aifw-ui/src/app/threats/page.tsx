@@ -85,6 +85,9 @@ export default function ThreatsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [noteText, setNoteText] = useState("");
   const [classifying, setClassifying] = useState<string | null>(null);
+  const [aiRunning, setAiRunning] = useState(false);
+  const [aiLog, setAiLog] = useState<{ id: string; signature_msg: string; provider: string; model: string; response: string; classification: string | null; duration_ms: number | null; created_at: string }[]>([]);
+  const [showAiLog, setShowAiLog] = useState(false);
 
   const fetchAlerts = useCallback(async () => {
     try {
@@ -105,6 +108,28 @@ export default function ThreatsPage() {
     const interval = setInterval(fetchAlerts, 15_000);
     return () => clearInterval(interval);
   }, [fetchAlerts]);
+
+  const runAiAnalysis = async () => {
+    setAiRunning(true);
+    try {
+      const res = await fetch(`${API}/api/v1/ai/analyze`, { method: "POST", headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.classified > 0) await fetchAlerts();
+      }
+    } catch { /* ignore */ }
+    finally { setAiRunning(false); }
+  };
+
+  const fetchAiLog = async () => {
+    try {
+      const res = await fetch(`${API}/api/v1/ai/audit-log?limit=30`, { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setAiLog(data.entries || []);
+      }
+    } catch { /* ignore */ }
+  };
 
   const handleClassify = async (id: string, classification: string) => {
     setClassifying(id);
@@ -163,11 +188,31 @@ export default function ThreatsPage() {
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold">Threat Investigation</h1>
-        <p className="text-sm text-[var(--text-muted)]">
-          IDS/IPS alerts from Suricata-compatible rule matching — review, classify, and track findings
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Threat Investigation</h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            IDS/IPS alerts — review, classify, and track findings
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={runAiAnalysis}
+            disabled={aiRunning}
+            className="px-4 py-2 text-xs font-medium rounded-md bg-purple-600 hover:bg-purple-500 text-white transition-colors disabled:opacity-50 flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
+            {aiRunning ? "Analyzing..." : "AI Analyze"}
+          </button>
+          <button
+            onClick={() => { setShowAiLog(!showAiLog); if (!showAiLog) fetchAiLog(); }}
+            className={`px-3 py-2 text-xs font-medium rounded-md border transition-colors ${
+              showAiLog ? "border-purple-500/30 text-purple-400 bg-purple-500/10" : "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            }`}
+          >
+            AI Log
+          </button>
+        </div>
       </div>
 
       {/* WIP Banner */}
@@ -181,6 +226,51 @@ export default function ThreatsPage() {
           </p>
         </div>
       </div>
+
+      {/* AI Audit Log */}
+      {showAiLog && (
+        <div className="bg-[var(--bg-card)] border border-purple-500/20 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
+              AI Analysis Log
+            </h3>
+            <span className="text-[10px] text-[var(--text-muted)]">{aiLog.length} entries</span>
+          </div>
+          {aiLog.length === 0 ? (
+            <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">
+              No AI analysis has been run yet. Click &quot;AI Analyze&quot; to review unclassified critical/high alerts.
+            </div>
+          ) : (
+            <div className="divide-y divide-[var(--border)] max-h-96 overflow-y-auto">
+              {aiLog.map(entry => (
+                <div key={entry.id} className="px-4 py-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium">{entry.signature_msg}</span>
+                      {entry.classification && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${
+                          entry.classification === "false_positive" ? "text-green-400 bg-green-500/10 border-green-500/30"
+                          : entry.classification === "confirmed" ? "text-red-400 bg-red-500/10 border-red-500/30"
+                          : "text-yellow-400 bg-yellow-500/10 border-yellow-500/30"
+                        }`}>{entry.classification}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+                      <span>{entry.provider}/{entry.model}</span>
+                      {entry.duration_ms && <span>{entry.duration_ms}ms</span>}
+                      <span>{new Date(entry.created_at).toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-[var(--text-secondary)] bg-[var(--bg-primary)] rounded px-2 py-1.5 whitespace-pre-wrap">
+                    {entry.response}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="p-3 text-sm rounded-md border text-red-400 bg-red-500/10 border-red-500/20">

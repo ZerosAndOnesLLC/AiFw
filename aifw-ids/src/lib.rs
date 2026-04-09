@@ -214,6 +214,29 @@ impl IdsEngine {
         let _ = sqlx::query("ALTER TABLE ids_alerts ADD COLUMN analyst_notes TEXT")
             .execute(pool).await;
 
+        // AI analysis audit log
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS ai_audit_log (
+                id TEXT PRIMARY KEY,
+                alert_id TEXT,
+                signature_id INTEGER,
+                signature_msg TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                response TEXT NOT NULL,
+                classification TEXT,
+                tokens_used INTEGER,
+                duration_ms INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"#,
+        ).execute(pool).await?;
+
+        // Track which signature_ids have already been analyzed by AI
+        // to avoid duplicate queries for the same rule
+        let _ = sqlx::query("ALTER TABLE ids_alerts ADD COLUMN ai_analyzed INTEGER NOT NULL DEFAULT 0")
+            .execute(pool).await;
+
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ids_alerts_ts ON ids_alerts(timestamp)")
             .execute(pool)
             .await?;
