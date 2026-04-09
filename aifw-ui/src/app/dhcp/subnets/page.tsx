@@ -386,15 +386,45 @@ export default function DhcpSubnetsPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-xs text-[var(--text-muted)] mb-1">
-                  Network (CIDR)
+                  Network
                 </label>
-                <input
-                  type="text"
-                  value={form.network}
-                  onChange={(e) => setForm((p) => ({ ...p, network: e.target.value }))}
-                  placeholder="e.g. 192.168.1.0/24"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={form.network.includes("/") ? form.network.split("/")[0] : form.network}
+                    onChange={(e) => {
+                      const ip = e.target.value.replace(/[^0-9.]/g, "");
+                      const prefix = form.network.includes("/") ? form.network.split("/")[1] : "24";
+                      setForm((p) => ({ ...p, network: ip ? `${ip}/${prefix}` : "" }));
+                    }}
+                    placeholder="e.g. 192.168.1.0"
+                    className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  />
+                  <select
+                    value={form.network.includes("/") ? form.network.split("/")[1] : "24"}
+                    onChange={(e) => {
+                      const ip = form.network.includes("/") ? form.network.split("/")[0] : form.network;
+                      setForm((p) => ({ ...p, network: `${ip}/${e.target.value}` }));
+                    }}
+                    className="w-24 px-2 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="8">/8</option>
+                    <option value="12">/12</option>
+                    <option value="16">/16</option>
+                    <option value="20">/20</option>
+                    <option value="21">/21</option>
+                    <option value="22">/22</option>
+                    <option value="23">/23</option>
+                    <option value="24">/24</option>
+                    <option value="25">/25</option>
+                    <option value="26">/26</option>
+                    <option value="27">/27</option>
+                    <option value="28">/28</option>
+                    <option value="29">/29</option>
+                    <option value="30">/30</option>
+                  </select>
+                </div>
+                <p className="text-[10px] text-gray-500 mt-0.5 font-mono">{form.network || "—"}</p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -403,9 +433,9 @@ export default function DhcpSubnetsPage() {
                   <input
                     type="text"
                     value={form.pool_start}
-                    onChange={(e) => setForm((p) => ({ ...p, pool_start: e.target.value }))}
+                    onChange={(e) => setForm((p) => ({ ...p, pool_start: e.target.value.replace(/[^0-9.]/g, "") }))}
                     placeholder="e.g. 192.168.1.100"
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
                   />
                 </div>
                 <div>
@@ -413,9 +443,9 @@ export default function DhcpSubnetsPage() {
                   <input
                     type="text"
                     value={form.pool_end}
-                    onChange={(e) => setForm((p) => ({ ...p, pool_end: e.target.value }))}
+                    onChange={(e) => setForm((p) => ({ ...p, pool_end: e.target.value.replace(/[^0-9.]/g, "") }))}
                     placeholder="e.g. 192.168.1.200"
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
                   />
                 </div>
               </div>
@@ -425,24 +455,25 @@ export default function DhcpSubnetsPage() {
                 <input
                   type="text"
                   value={form.gateway}
-                  onChange={(e) => setForm((p) => ({ ...p, gateway: e.target.value }))}
+                  onChange={(e) => setForm((p) => ({ ...p, gateway: e.target.value.replace(/[^0-9.]/g, "") }))}
                   placeholder="e.g. 192.168.1.1"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs text-[var(--text-muted)] mb-1">
-                    DNS Servers (override, comma-separated)
+                    DNS Servers (comma-separated)
                   </label>
                   <input
                     type="text"
                     value={form.dns_servers}
                     onChange={(e) => setForm((p) => ({ ...p, dns_servers: e.target.value }))}
-                    placeholder="Optional override"
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    placeholder="e.g. 1.1.1.1, 8.8.8.8"
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
                   />
+                  <p className="text-[10px] text-gray-500 mt-0.5">Leave empty to use global DNS settings</p>
                 </div>
                 <div>
                   <label className="block text-xs text-[var(--text-muted)] mb-1">

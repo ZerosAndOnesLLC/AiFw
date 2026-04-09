@@ -96,7 +96,7 @@ pub struct CreateSubnetRequest {
     pub pool_start: String,
     pub pool_end: String,
     pub gateway: String,
-    pub dns_servers: Option<String>,
+    pub dns_servers: Option<Vec<String>>,
     pub domain_name: Option<String>,
     pub lease_time: Option<u32>,
     pub max_lease_time: Option<u32>,
@@ -969,17 +969,19 @@ pub async fn create_subnet(
     let now = Utc::now().to_rfc3339();
     let enabled = req.enabled.unwrap_or(true);
     let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
+    let dns_str = req.dns_servers.as_ref().map(|v| v.join(","));
     sqlx::query("INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, subnet_type, delegated_length, enabled, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)")
         .bind(&id).bind(&req.network).bind(&req.pool_start).bind(&req.pool_end).bind(&req.gateway)
-        .bind(req.dns_servers.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
+        .bind(dns_str.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
         .bind(req.max_lease_time.map(|v| v as i64)).bind(req.renewal_time.map(|v| v as i64))
         .bind(req.rebinding_time.map(|v| v as i64)).bind(req.preferred_time.map(|v| v as i64))
         .bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
         .bind(enabled).bind(req.description.as_deref()).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
+    let dns_display = req.dns_servers.as_ref().map(|v| v.join(","));
     let subnet = DhcpSubnet {
         id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end,
-        gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name,
+        gateway: req.gateway, dns_servers: dns_display, domain_name: req.domain_name,
         lease_time: req.lease_time, max_lease_time: req.max_lease_time,
         renewal_time: req.renewal_time, rebinding_time: req.rebinding_time,
         preferred_time: req.preferred_time,
@@ -997,9 +999,10 @@ pub async fn update_subnet(
 ) -> Result<Json<ApiResponse<DhcpSubnet>>, StatusCode> {
     let enabled = req.enabled.unwrap_or(true);
     let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
+    let dns_str = req.dns_servers.as_ref().map(|v| v.join(","));
     let result = sqlx::query("UPDATE dhcp_subnets SET network=?2, pool_start=?3, pool_end=?4, gateway=?5, dns_servers=?6, domain_name=?7, lease_time=?8, max_lease_time=?9, renewal_time=?10, rebinding_time=?11, preferred_time=?12, subnet_type=?13, delegated_length=?14, enabled=?15, description=?16 WHERE id=?1")
         .bind(&id).bind(&req.network).bind(&req.pool_start).bind(&req.pool_end).bind(&req.gateway)
-        .bind(req.dns_servers.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
+        .bind(dns_str.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
         .bind(req.max_lease_time.map(|v| v as i64)).bind(req.renewal_time.map(|v| v as i64))
         .bind(req.rebinding_time.map(|v| v as i64)).bind(req.preferred_time.map(|v| v as i64))
         .bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
@@ -1008,9 +1011,10 @@ pub async fn update_subnet(
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
     let now = Utc::now().to_rfc3339();
     auto_apply(&state).await;
+    let dns_display = req.dns_servers.as_ref().map(|v| v.join(","));
     Ok(Json(ApiResponse { data: DhcpSubnet {
         id, network: req.network, pool_start: req.pool_start, pool_end: req.pool_end,
-        gateway: req.gateway, dns_servers: req.dns_servers, domain_name: req.domain_name,
+        gateway: req.gateway, dns_servers: dns_display, domain_name: req.domain_name,
         lease_time: req.lease_time, max_lease_time: req.max_lease_time,
         renewal_time: req.renewal_time, rebinding_time: req.rebinding_time,
         preferred_time: req.preferred_time,
