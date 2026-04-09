@@ -1242,7 +1242,8 @@ async fn ensure_dhcp_pf_rules(config: &DhcpGlobalConfig) {
         return;
     }
 
-    // Insert DHCP pass rules before "block in log all"
+    // Insert DHCP pass rules BEFORE the anchors — anchors contain "block quick"
+    // rules that would match before any rules that come after the anchors.
     let dhcp_rules = format!(
         "# DHCP server — allow broadcast requests and replies\n\
          pass in quick on {{ {} }} proto udp from 0.0.0.0 port 68 to 255.255.255.255 port 67 label \"dhcp-discover\"\n\
@@ -1251,10 +1252,19 @@ async fn ensure_dhcp_pf_rules(config: &DhcpGlobalConfig) {
         config.interfaces.join(" "),
     );
 
-    let new_content = content.replace(
-        "block in log all",
-        &format!("{dhcp_rules}block in log all"),
-    );
+    // Place before the first anchor so DHCP quick rules are evaluated
+    // before any anchor block rules can drop the packets.
+    let new_content = if content.contains("anchor \"aifw\"") {
+        content.replace(
+            "anchor \"aifw\"",
+            &format!("{dhcp_rules}anchor \"aifw\""),
+        )
+    } else {
+        content.replace(
+            "block in log all",
+            &format!("{dhcp_rules}block in log all"),
+        )
+    };
 
     // Write via sudo tee (aifw user can't write root-owned pf.conf)
     let mut child = Command::new("/usr/local/bin/sudo")
