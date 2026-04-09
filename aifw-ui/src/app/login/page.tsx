@@ -66,11 +66,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="w-16 h-16 rounded-2xl bg-[var(--accent)] flex items-center justify-center font-bold text-white text-2xl mx-auto mb-4">
-            AI
-          </div>
-          <h1 className="text-2xl font-bold">AiFw</h1>
-          <p className="text-sm text-[var(--text-muted)]">AI-Powered Firewall for FreeBSD</p>
+          <img src="/AiFw-1.png" alt="AiFw" className="h-24 mx-auto mb-2" />
         </div>
 
         {!totpRequired ? (

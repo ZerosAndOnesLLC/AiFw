@@ -200,16 +200,8 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
     <aside className="h-screen bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col" style={{ width: width || 232 }}>
       {/* Logo — links to About page */}
       <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
-        <Link href="/about" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-            </svg>
-          </div>
-          <div>
-            <h1 className="font-bold text-sm text-[var(--text-primary)] tracking-tight">AiFw</h1>
-            <p className="text-[10px] text-[var(--text-muted)]">AI-Powered Firewall</p>
-          </div>
+        <Link href="/about" className="flex items-center hover:opacity-80 transition-opacity">
+          <img src="/logo-sidebar.png" alt="AiFw" className="h-8" />
         </Link>
         {onClose && (
           <button onClick={onClose} className="lg:hidden text-[var(--text-muted)] hover:text-[var(--text-primary)]">

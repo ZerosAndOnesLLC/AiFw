@@ -5,6 +5,10 @@ import AppShell from "@/components/AppShell";
 export const metadata: Metadata = {
   title: "AiFw — AI-Powered Firewall",
   description: "FreeBSD firewall management interface",
+  icons: {
+    icon: "/favicon.png",
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

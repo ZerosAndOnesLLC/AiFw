@@ -121,10 +121,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
                   </svg>
                 </button>
-                <div className="flex items-center gap-2">
-                  <div className="w-6 h-6 rounded bg-[var(--accent)] flex items-center justify-center font-bold text-white text-[10px]">AI</div>
-                  <span className="font-semibold text-sm">AiFw</span>
-                </div>
+                <img src="/logo-sidebar.png" alt="AiFw" className="h-6" />
               </div>
               <PendingBanner />
               <div className="p-4 lg:p-6 overflow-auto">
