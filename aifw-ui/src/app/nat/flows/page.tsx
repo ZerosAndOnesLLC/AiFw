@@ -12,50 +12,73 @@ function formatBps(b: number): string {
   if (b >= 1e3) return `${(b/1e3).toFixed(1)} Kbps`; return `${b.toFixed(0)} bps`;
 }
 
+function isPrivateIp(ip: string): boolean {
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4) return false;
+  if (parts[0] === 10) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  return false;
+}
+
 type Conn = { src_addr: string; dst_addr: string; src_port: number; dst_port: number; protocol: string; bytes_in: number; bytes_out: number; state: string };
 type Iface = { name: string; bytes_in: number; bytes_out: number; role?: string };
-
-/** Vertical pipe: left=inbound(green), right=outbound(blue), width scales with throughput */
-function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: number; height?: number }) {
-  const total = rateIn + rateOut;
-  // Width: 6px min, logarithmic scale up to 56px
-  const width = Math.max(6, Math.min(56, total > 0 ? 6 + Math.log10(Math.max(total, 1)) * 6 : 6));
-  const inFrac = total > 0 ? rateIn / total : 0.5;
-  const inW = Math.max(2, width * inFrac);
-  const outW = Math.max(2, width * (1 - inFrac));
-  // Opacity: brighter when more traffic
-  const intensity = Math.min(1, total > 0 ? 0.3 + Math.log10(Math.max(total, 1)) / 10 : 0.2);
-
-  return (
-    <div className="flex justify-center" style={{ height }}>
-      {/* Inbound (green) — left half, flows downward */}
-      <div className="relative overflow-hidden rounded-l-sm" style={{ width: `${inW}px`, height: "100%" }}>
-        <div className="absolute inset-0" style={{ backgroundColor: `rgba(34,197,94,${intensity * 0.3})` }} />
-        {rateIn > 0 && (
-          <div className="absolute inset-0" style={{
-            background: `repeating-linear-gradient(180deg, transparent, transparent 6px, rgba(34,197,94,${intensity}) 6px, rgba(34,197,94,${intensity}) 12px)`,
-            animation: "flowDown 0.6s linear infinite",
-          }} />
-        )}
-      </div>
-      {/* Outbound (blue) — right half, flows upward */}
-      <div className="relative overflow-hidden rounded-r-sm" style={{ width: `${outW}px`, height: "100%" }}>
-        <div className="absolute inset-0" style={{ backgroundColor: `rgba(59,130,246,${intensity * 0.3})` }} />
-        {rateOut > 0 && (
-          <div className="absolute inset-0" style={{
-            background: `repeating-linear-gradient(0deg, transparent, transparent 6px, rgba(59,130,246,${intensity}) 6px, rgba(59,130,246,${intensity}) 12px)`,
-            animation: "flowUp 0.6s linear infinite",
-          }} />
-        )}
-      </div>
-    </div>
-  );
-}
 
 function getSubnet24(ip: string): string {
   const parts = ip.split(".");
   if (parts.length !== 4) return ip;
   return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+}
+
+/** Animated vertical pipe: green=in, blue=out, width/brightness scales with throughput */
+function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: number; height?: number }) {
+  const total = rateIn + rateOut;
+  const width = Math.max(6, Math.min(56, total > 0 ? 6 + Math.log10(Math.max(total, 1)) * 6 : 6));
+  const inFrac = total > 0 ? rateIn / total : 0.5;
+  const inW = Math.max(2, width * inFrac);
+  const outW = Math.max(2, width * (1 - inFrac));
+  const intensity = Math.min(1, total > 0 ? 0.3 + Math.log10(Math.max(total, 1)) / 10 : 0.2);
+  return (
+    <div className="flex justify-center" style={{ height }}>
+      <div className="relative overflow-hidden rounded-l-sm" style={{ width: `${inW}px`, height: "100%" }}>
+        <div className="absolute inset-0" style={{ backgroundColor: `rgba(34,197,94,${intensity * 0.3})` }} />
+        {rateIn > 0 && <div className="absolute inset-0" style={{ background: `repeating-linear-gradient(180deg, transparent, transparent 6px, rgba(34,197,94,${intensity}) 6px, rgba(34,197,94,${intensity}) 12px)`, animation: "flowDown 0.6s linear infinite" }} />}
+      </div>
+      <div className="relative overflow-hidden rounded-r-sm" style={{ width: `${outW}px`, height: "100%" }}>
+        <div className="absolute inset-0" style={{ backgroundColor: `rgba(59,130,246,${intensity * 0.3})` }} />
+        {rateOut > 0 && <div className="absolute inset-0" style={{ background: `repeating-linear-gradient(0deg, transparent, transparent 6px, rgba(59,130,246,${intensity}) 6px, rgba(59,130,246,${intensity}) 12px)`, animation: "flowUp 0.6s linear infinite" }} />}
+      </div>
+    </div>
+  );
+}
+
+/** SVG animated pipe path — traffic flows along a curved path */
+function SvgPipe({ path, rateIn, rateOut, id }: { path: string; rateIn: number; rateOut: number; id: string }) {
+  const total = rateIn + rateOut;
+  const intensity = Math.min(0.9, total > 0 ? 0.15 + Math.log10(Math.max(total, 1)) / 12 : 0.08);
+  const width = Math.max(3, Math.min(16, total > 0 ? 3 + Math.log10(Math.max(total, 1)) * 1.5 : 3));
+  return (
+    <g>
+      {/* Glow */}
+      <path d={path} fill="none" stroke="rgba(34,197,94,0.08)" strokeWidth={width + 8} strokeLinecap="round" />
+      {/* Base pipe */}
+      <path d={path} fill="none" stroke={`rgba(100,116,139,${intensity * 0.5})`} strokeWidth={width} strokeLinecap="round" />
+      {/* Inbound flow (green) — animated dashes flowing forward */}
+      {rateIn > 0 && (
+        <path d={path} fill="none" stroke={`rgba(34,197,94,${intensity})`} strokeWidth={width * 0.5}
+          strokeDasharray="6 8" strokeLinecap="round">
+          <animate attributeName="stroke-dashoffset" from="0" to="-14" dur="0.5s" repeatCount="indefinite" />
+        </path>
+      )}
+      {/* Outbound flow (blue) — animated dashes flowing backward */}
+      {rateOut > 0 && (
+        <path d={path} fill="none" stroke={`rgba(59,130,246,${intensity})`} strokeWidth={width * 0.5}
+          strokeDasharray="6 8" strokeLinecap="round" strokeDashoffset={width}>
+          <animate attributeName="stroke-dashoffset" from="14" to="0" dur="0.5s" repeatCount="indefinite" />
+        </path>
+      )}
+    </g>
+  );
 }
 
 export default function NatFlowsPage() {
@@ -87,19 +110,20 @@ export default function NatFlowsPage() {
     if (Object.keys(newRates).length > 0) setRates(newRates);
   }, [ws.status, ifaces]);
 
+  // Only include private (LAN) IPs as hosts
   const lanHosts = useMemo(() => {
     const hosts: Record<string, { ip: string; bytes: number; conns: number; protocols: Set<string> }> = {};
     for (const c of connections) {
       const ip = c.src_addr;
+      if (!isPrivateIp(ip)) continue;
       if (!hosts[ip]) hosts[ip] = { ip, bytes: 0, conns: 0, protocols: new Set() };
       hosts[ip].bytes += (c.bytes_in || 0) + (c.bytes_out || 0);
       hosts[ip].conns++;
       hosts[ip].protocols.add(c.protocol);
     }
-    return Object.values(hosts).sort((a, b) => b.bytes - a.bytes).slice(0, 20);
+    return Object.values(hosts).sort((a, b) => b.bytes - a.bytes).slice(0, 30);
   }, [connections]);
 
-  // Group hosts by /24 subnet
   const lanSubnets = useMemo(() => {
     const subnets: Record<string, { subnet: string; bytes: number; conns: number; hosts: typeof lanHosts }> = {};
     for (const h of lanHosts) {
@@ -114,8 +138,8 @@ export default function NatFlowsPage() {
 
   const displayItems = groupBySubnet ? lanSubnets : lanHosts.map(h => ({ subnet: h.ip, bytes: h.bytes, conns: h.conns, hosts: [h] }));
   const maxItemBytes = displayItems[0]?.bytes || 1;
-
   const maxHostBytes = lanHosts[0]?.bytes || 1;
+
   const selectedConns = selectedHost
     ? connections.filter(c => {
         if (groupBySubnet && selectedHost.endsWith("/24")) {
@@ -125,7 +149,30 @@ export default function NatFlowsPage() {
         return c.src_addr === selectedHost || c.dst_addr === selectedHost;
       })
     : [];
+
   const wanRate = rates[wanIface?.name || ""] || { in: 0, out: 0 };
+  // Aggregate LAN rate from all LAN interfaces
+  const lanRate = lanIfaces.reduce((acc, i) => {
+    const r = rates[i.name] || { in: 0, out: 0 };
+    return { in: acc.in + r.in, out: acc.out + r.out };
+  }, { in: 0, out: 0 });
+
+  // Compute per-subnet rates (proportional by bytes)
+  const totalLanBytes = lanSubnets.reduce((s, sn) => s + sn.bytes, 0) || 1;
+  const subnetRates = (items: typeof displayItems) => items.map(sn => {
+    const frac = sn.bytes / totalLanBytes;
+    return { in: lanRate.out * frac, out: lanRate.in * frac }; // swap: LAN iface "out" = data going to clients
+  });
+  const sRates = subnetRates(displayItems);
+
+  // SVG topology layout
+  const svgW = 800;
+  const fwY = 0; // firewall bottom edge in SVG coordinates
+  const subnetY = 120; // top of subnet cards
+  const subnetCardW = 160;
+  const subnetGap = 16;
+  const totalSubnetsW = displayItems.length * subnetCardW + (displayItems.length - 1) * subnetGap;
+  const startX = Math.max(0, (svgW - totalSubnetsW) / 2);
 
   return (
     <div className="space-y-4">
@@ -137,7 +184,7 @@ export default function NatFlowsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">NAT Traffic Flows</h1>
-          <p className="text-sm text-[var(--text-muted)]">Live vertical topology — traffic flows top to bottom</p>
+          <p className="text-sm text-[var(--text-muted)]">Live network topology — traffic flows top to bottom</p>
         </div>
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2 text-xs cursor-pointer">
@@ -157,10 +204,10 @@ export default function NatFlowsPage() {
       </div>
 
       {/* ═══ Vertical Topology ═══ */}
-      <div className="bg-gray-800 border border-gray-700 rounded-lg p-6">
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6">
         <div className="flex flex-col items-center">
 
-          {/* ☁ Internet */}
+          {/* Internet */}
           <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center shadow-xl shadow-blue-500/20 border-2 border-blue-400/30">
             <svg className="w-9 h-9 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9" />
@@ -170,7 +217,7 @@ export default function NatFlowsPage() {
 
           {/* WAN pipe */}
           <div className="my-1 flex flex-col items-center">
-            <VPipe rateIn={wanRate.in} rateOut={wanRate.out} height={50} />
+            <VPipe rateIn={wanRate.in} rateOut={wanRate.out} height={40} />
             <div className="flex gap-3 mt-0.5 text-[9px]">
               <span className="text-emerald-400">{formatBps(wanRate.in)}</span>
               <span className="text-blue-400">{formatBps(wanRate.out)}</span>
@@ -183,109 +230,120 @@ export default function NatFlowsPage() {
             <span className="text-[10px] text-blue-300/60 ml-1.5">WAN</span>
           </div>
 
-          {/* Short pipe to firewall */}
-          <div className="my-0.5">
-            <VPipe rateIn={wanRate.in} rateOut={wanRate.out} height={20} />
-          </div>
+          {/* Pipe to firewall */}
+          <VPipe rateIn={wanRate.in} rateOut={wanRate.out} height={16} />
 
-          {/* 🛡 Firewall */}
-          <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-amber-500/20 to-red-500/15 border-2 border-amber-500/30 flex flex-col items-center justify-center shadow-lg shadow-amber-500/10">
-            <svg className="w-8 h-8 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          {/* Firewall */}
+          <div className="w-28 h-28 rounded-2xl bg-gradient-to-br from-amber-500/20 to-red-500/15 border-2 border-amber-500/30 flex flex-col items-center justify-center shadow-lg shadow-amber-500/10">
+            <svg className="w-9 h-9 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
             </svg>
             <p className="text-[10px] font-bold text-amber-400 mt-0.5">AiFw</p>
+            <p className="text-[8px] text-gray-500">{connections.length} states</p>
           </div>
-          <p className="text-[10px] text-gray-500 mt-1">{connections.length} active states</p>
 
-          {/* Fan-out pipes to LAN interfaces */}
-          <div className="mt-2 w-full">
-            {lanIfaces.length === 0 ? (
-              <div className="text-center text-gray-600 text-xs py-4">No LAN interfaces detected</div>
-            ) : (
-              <div className={`grid gap-4 ${lanIfaces.length === 1 ? "grid-cols-1 max-w-xs mx-auto" : lanIfaces.length <= 3 ? `grid-cols-${lanIfaces.length}` : "grid-cols-2 md:grid-cols-3 lg:grid-cols-4"}`}
-                style={{ gridTemplateColumns: `repeat(${Math.min(lanIfaces.length, 5)}, minmax(0, 1fr))` }}>
-                {lanIfaces.map(iface => {
-                  const r = rates[iface.name] || { in: 0, out: 0 };
-                  // Find hosts connected via this interface (simplified: show proportional hosts)
-                  const ifaceHostCount = Math.max(1, Math.ceil(lanHosts.length / lanIfaces.length));
-                  return (
-                    <div key={iface.name} className="flex flex-col items-center">
-                      {/* Pipe from FW to LAN — swap in/out:
-                          interface "out" = data going down to LAN clients (green/inbound from their perspective)
-                          interface "in"  = data going up from LAN clients (blue/outbound from their perspective) */}
-                      <VPipe rateIn={r.out} rateOut={r.in} height={40} />
-                      <div className="flex gap-2 mt-0.5 text-[9px]">
-                        <span className="text-emerald-400">{formatBps(r.out)}</span>
-                        <span className="text-blue-400">{formatBps(r.in)}</span>
-                      </div>
+          {/* Pipe from firewall to LAN */}
+          <VPipe rateIn={lanRate.out} rateOut={lanRate.in} height={16} />
 
-                      {/* Interface badge */}
-                      <div className="mt-1 px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-center">
-                        <span className="text-xs font-bold text-emerald-400">{iface.name}</span>
-                        <span className="text-[10px] text-emerald-300/60 ml-1">{iface.role || "LAN"}</span>
-                      </div>
-
-                      {/* Pipe to subnets/hosts */}
-                      <div className="mt-0.5">
-                        <VPipe rateIn={r.out} rateOut={r.in} height={20} />
-                      </div>
-
-                      {/* Subnet groups or host bubbles */}
-                      <div className="mt-1 w-full">
-                        {groupBySubnet ? (
-                          <div className="flex flex-wrap justify-center gap-2">
-                            {lanSubnets.map(sn => (
-                              <button key={sn.subnet}
-                                onClick={() => setSelectedHost(selectedHost === sn.subnet ? null : sn.subnet)}
-                                className={`flex flex-col items-center px-2 py-1.5 rounded-lg border transition-colors ${
-                                  selectedHost === sn.subnet
-                                    ? "bg-cyan-500/15 border-cyan-500/40"
-                                    : "bg-gray-700/30 border-gray-600/30 hover:border-gray-500"
-                                }`}>
-                                <span className={`text-[9px] font-mono font-bold ${selectedHost === sn.subnet ? "text-cyan-400" : "text-gray-300"}`}>
-                                  {sn.subnet}
-                                </span>
-                                <span className="text-[8px] text-gray-500">{sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {formatBytes(sn.bytes)}</span>
-                              </button>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="flex flex-wrap justify-center gap-1 max-w-[200px] mx-auto">
-                            {lanHosts.slice(0, 6).map(h => (
-                              <button key={h.ip} onClick={() => setSelectedHost(selectedHost === h.ip ? null : h.ip)}
-                                className={`px-1.5 py-0.5 rounded-full text-[8px] font-mono transition-colors border ${
-                                  selectedHost === h.ip
-                                    ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
-                                    : "bg-gray-700/50 border-gray-600/50 text-gray-400 hover:text-white hover:border-gray-500"
-                                }`}>
-                                {h.ip.split('.').slice(-2).join('.')}
-                              </button>
-                            ))}
-                            {lanHosts.length > 6 && <span className="text-[8px] text-gray-600 px-1">+{lanHosts.length - 6}</span>}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+          {/* LAN interface badges */}
+          <div className="flex items-center gap-2">
+            {lanIfaces.map(iface => (
+              <div key={iface.name} className="px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-center">
+                <span className="text-xs font-bold text-emerald-400">{iface.name}</span>
+                <span className="text-[10px] text-emerald-300/60 ml-1">{iface.role || "LAN"}</span>
               </div>
-            )}
+            ))}
           </div>
+
+          {/* SVG fan-out pipes to subnets */}
+          {displayItems.length > 0 && (
+            <div className="w-full mt-1 overflow-x-auto">
+              <div className="min-w-fit mx-auto" style={{ width: Math.max(svgW, totalSubnetsW + 40) }}>
+                <svg
+                  viewBox={`0 0 ${Math.max(svgW, totalSubnetsW + 40)} ${subnetY + 10}`}
+                  className="w-full"
+                  preserveAspectRatio="xMidYMid meet"
+                  style={{ height: subnetY + 10 }}
+                >
+                  {displayItems.map((sn, idx) => {
+                    const cx = Math.max(svgW, totalSubnetsW + 40) / 2;
+                    const cardX = startX + idx * (subnetCardW + subnetGap) + subnetCardW / 2;
+                    // Adjust startX based on actual SVG width
+                    const actualW = Math.max(svgW, totalSubnetsW + 40);
+                    const actualStartX = (actualW - totalSubnetsW) / 2;
+                    const ax = actualStartX + idx * (subnetCardW + subnetGap) + subnetCardW / 2;
+                    // Cubic bezier: start at center top, curve down to subnet position
+                    const path = `M ${cx},${fwY} C ${cx},${subnetY * 0.4} ${ax},${subnetY * 0.5} ${ax},${subnetY}`;
+                    return (
+                      <SvgPipe key={sn.subnet} id={`pipe-${idx}`} path={path}
+                        rateIn={sRates[idx]?.in || 0} rateOut={sRates[idx]?.out || 0} />
+                    );
+                  })}
+                </svg>
+
+                {/* Subnet cards positioned below SVG */}
+                <div className="flex justify-center gap-4 flex-wrap" style={{ marginTop: -4 }}>
+                  {displayItems.map((sn, idx) => {
+                    const sr = sRates[idx] || { in: 0, out: 0 };
+                    const isSelected = selectedHost === sn.subnet;
+                    return (
+                      <button key={sn.subnet}
+                        onClick={() => setSelectedHost(isSelected ? null : sn.subnet)}
+                        className={`flex flex-col items-center p-3 rounded-xl border-2 transition-all duration-200 min-w-[140px] max-w-[180px] ${
+                          isSelected
+                            ? "bg-cyan-500/10 border-cyan-500/50 shadow-lg shadow-cyan-500/10"
+                            : "bg-[var(--bg-primary)] border-[var(--border)] hover:border-gray-500 hover:bg-gray-700/30"
+                        }`}
+                      >
+                        {/* Subnet icon */}
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-1.5 ${
+                          isSelected ? "bg-cyan-500/20" : "bg-gray-700/50"
+                        }`}>
+                          <svg className={`w-4 h-4 ${isSelected ? "text-cyan-400" : "text-gray-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
+                          </svg>
+                        </div>
+                        <span className={`text-[11px] font-mono font-bold ${isSelected ? "text-cyan-400" : "text-white"}`}>
+                          {sn.subnet}
+                        </span>
+                        <div className="flex gap-2 mt-1 text-[9px]">
+                          <span className="text-emerald-400">{formatBps(sr.in)}</span>
+                          <span className="text-blue-400">{formatBps(sr.out)}</span>
+                        </div>
+                        <span className="text-[9px] text-gray-500 mt-0.5">
+                          {sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {sn.conns} conn
+                        </span>
+                        <span className="text-[9px] text-gray-500">{formatBytes(sn.bytes)}</span>
+                        {/* Mini traffic bar */}
+                        <div className="w-full h-1 bg-gray-700 rounded-full mt-1.5 overflow-hidden">
+                          <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all"
+                            style={{ width: `${Math.max(2, (sn.bytes / maxItemBytes) * 100)}%` }} />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+          {displayItems.length === 0 && (
+            <div className="text-center text-gray-600 text-xs py-6 mt-2">No active LAN hosts</div>
+          )}
         </div>
       </div>
 
       {/* Host / Subnet Details */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
             <h3 className="text-sm font-medium">{groupBySubnet ? "Subnets" : "Active Hosts"}</h3>
             <span className="text-[10px] text-gray-500">{groupBySubnet ? `${lanSubnets.length} subnet${lanSubnets.length !== 1 ? "s" : ""} · ${lanHosts.length} hosts` : `${lanHosts.length} hosts`}</span>
           </div>
-          <div className="max-h-80 overflow-y-auto divide-y divide-gray-700/50">
+          <div className="max-h-80 overflow-y-auto divide-y divide-[var(--border)]">
             {groupBySubnet ? (
               lanSubnets.map(sn => (
                 <button key={sn.subnet} onClick={() => setSelectedHost(selectedHost === sn.subnet ? null : sn.subnet)}
-                  className={`w-full px-4 py-2 text-left hover:bg-gray-700/30 transition-colors ${selectedHost === sn.subnet ? "bg-blue-500/10 border-l-2 border-blue-500" : ""}`}>
+                  className={`w-full px-4 py-2.5 text-left hover:bg-gray-700/30 transition-colors ${selectedHost === sn.subnet ? "bg-cyan-500/5 border-l-2 border-cyan-500" : ""}`}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-mono text-xs text-white">{sn.subnet}</span>
                     <span className="text-[10px] text-gray-400">{sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {sn.conns} conn · {formatBytes(sn.bytes)}</span>
@@ -294,10 +352,10 @@ export default function NatFlowsPage() {
                     <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all" style={{ width: `${(sn.bytes / maxItemBytes) * 100}%` }} />
                   </div>
                   {selectedHost === sn.subnet && (
-                    <div className="mt-1.5 flex flex-wrap gap-1">
+                    <div className="mt-2 flex flex-wrap gap-1">
                       {sn.hosts.map(h => (
                         <span key={h.ip} className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">
-                          {h.ip.split(".")[3]} — {formatBytes(h.bytes)}
+                          .{h.ip.split(".")[3]} — {formatBytes(h.bytes)}
                         </span>
                       ))}
                     </div>
@@ -307,7 +365,7 @@ export default function NatFlowsPage() {
             ) : (
               lanHosts.map(host => (
                 <button key={host.ip} onClick={() => setSelectedHost(selectedHost === host.ip ? null : host.ip)}
-                  className={`w-full px-4 py-2 text-left hover:bg-gray-700/30 transition-colors ${selectedHost === host.ip ? "bg-blue-500/10 border-l-2 border-blue-500" : ""}`}>
+                  className={`w-full px-4 py-2.5 text-left hover:bg-gray-700/30 transition-colors ${selectedHost === host.ip ? "bg-cyan-500/5 border-l-2 border-cyan-500" : ""}`}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-mono text-xs text-white">{host.ip}</span>
                     <span className="text-[10px] text-gray-400">{host.conns} conn · {formatBytes(host.bytes)}</span>
@@ -322,12 +380,12 @@ export default function NatFlowsPage() {
           </div>
         </div>
 
-        <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-700">
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-[var(--border)]">
             <h3 className="text-sm font-medium">{selectedHost ? `Connections — ${selectedHost}` : "Select a host"}</h3>
           </div>
           {selectedHost ? (
-            <div className="max-h-80 overflow-y-auto divide-y divide-gray-700/50">
+            <div className="max-h-80 overflow-y-auto divide-y divide-[var(--border)]">
               {selectedConns.map((c, i) => (
                 <div key={i} className="px-4 py-2 text-xs">
                   <div className="flex items-center gap-2">
@@ -349,7 +407,7 @@ export default function NatFlowsPage() {
               {selectedConns.length === 0 && <div className="text-center py-6 text-gray-500 text-sm">No connections</div>}
             </div>
           ) : (
-            <div className="text-center py-10 text-gray-500 text-sm">Click a host in the topology or list to view connections</div>
+            <div className="text-center py-10 text-gray-500 text-sm">Click a subnet in the topology or list to view connections</div>
           )}
         </div>
       </div>
