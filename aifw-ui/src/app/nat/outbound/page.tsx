@@ -131,6 +131,11 @@ export default function OutboundNatPage() {
     setShowForm(true);
   };
 
+  const handleClone = (rule: NatRule) => {
+    handleEdit(rule);
+    setEditingId(null);
+  };
+
   const handleSubmit = async () => {
     if (form.trans_mode === "address" && !form.translation_addr.trim()) return;
     if (form.src_mode === "network" && !form.src_addr.trim()) return;
@@ -525,6 +530,15 @@ export default function OutboundNatPage() {
                       </td>
                       <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleClone(rule)}
+                            className="p-1.5 text-gray-400 hover:text-purple-400 transition-colors rounded hover:bg-gray-700"
+                            title="Clone rule"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
+                            </svg>
+                          </button>
                           <button
                             onClick={() => handleDelete(rule)}
                             className="p-1.5 text-gray-400 hover:text-red-400 transition-colors rounded hover:bg-gray-700"
