@@ -658,7 +658,7 @@ async fn create_state_from_db(
     auth::migrate(&pool).await?;
 
     let rule_engine = Arc::new(RuleEngine::new(db, pf.clone()));
-    let nat_engine = Arc::new(NatEngine::new(pool.clone(), pf.clone()));
+    let nat_engine = Arc::new(NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string()));
     nat_engine.migrate().await?;
     let vpn_engine = Arc::new(VpnEngine::new(pool.clone(), pf.clone()));
     vpn_engine.migrate().await?;
