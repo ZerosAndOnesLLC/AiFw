@@ -253,6 +253,22 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         }
     }
 
+    // Ensure required packages are installed (older installs may be missing curl)
+    for pkg in &["curl"] {
+        let check = Command::new("pkg")
+            .args(["info", "-q", pkg])
+            .output()
+            .await;
+        let installed = check.map(|o| o.status.success()).unwrap_or(false);
+        if !installed {
+            info!(package = pkg, "Installing missing dependency");
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["pkg", "install", "-y", pkg])
+                .output()
+                .await;
+        }
+    }
+
     let manifest = load_manifest();
 
     // Install rc.d scripts (service definitions)

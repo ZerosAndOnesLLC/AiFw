@@ -37,7 +37,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # --- Ensure dependencies ---
-for pkg in sudo unbound; do
+for pkg in sudo unbound curl; do
     if ! pkg info -q "$pkg" 2>/dev/null; then
         echo "Installing $pkg..."
         pkg install -y "$pkg"

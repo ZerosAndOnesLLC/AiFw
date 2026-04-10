@@ -2400,6 +2400,81 @@ pub async fn update_ai_settings(
     Ok(Json(serde_json::json!({ "message": "AI settings saved" })))
 }
 
+// --- AI HTTP helpers (curl with fetch fallback for FreeBSD) ---
+
+async fn http_get_status(url: &str, auth: &str, provider: &str) -> Result<(String, bool), String> {
+    // Try curl first, fall back to fetch (FreeBSD built-in)
+    let result = if let Ok(output) = build_curl_status(url, auth, provider).await {
+        output
+    } else if let Ok(output) = build_fetch_status(url).await {
+        output
+    } else {
+        return Err("No HTTP client available".to_string());
+    };
+    Ok(result)
+}
+
+async fn build_curl_status(url: &str, auth: &str, provider: &str) -> Result<(String, bool), String> {
+    let mut args: Vec<String> = vec!["-sk", "--connect-timeout", "5", "-o", "/dev/null", "-w", "%{http_code}"]
+        .into_iter().map(String::from).collect();
+    if !auth.is_empty() {
+        if provider == "claude" {
+            args.extend(["-H".to_string(), format!("x-api-key: {auth}"), "-H".to_string(), "anthropic-version: 2023-06-01".to_string()]);
+        } else {
+            args.extend(["-H".to_string(), format!("Authorization: {auth}")]);
+        }
+    }
+    args.push(url.to_string());
+    let output = tokio::process::Command::new("curl")
+        .args(&args).output().await.map_err(|e| e.to_string())?;
+    if !output.status.success() && output.stdout.is_empty() {
+        return Err("curl failed".to_string());
+    }
+    let code = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let ok = code.starts_with('2');
+    Ok((code, ok))
+}
+
+async fn build_fetch_status(url: &str) -> Result<(String, bool), String> {
+    // FreeBSD fetch: -o /dev/null returns 0 on success
+    let output = tokio::process::Command::new("/usr/bin/fetch")
+        .args(["-T", "5", "-o", "/dev/null", url])
+        .output().await.map_err(|e| e.to_string())?;
+    let ok = output.status.success();
+    Ok((if ok { "200".to_string() } else { "000".to_string() }, ok))
+}
+
+async fn http_get_body(url: &str, auth: &str, provider: &str) -> Result<String, String> {
+    // Try curl first
+    if let Ok(body) = build_curl_body(url, auth, provider).await {
+        return Ok(body);
+    }
+    // Fallback to fetch
+    let output = tokio::process::Command::new("/usr/bin/fetch")
+        .args(["-T", "5", "-qo", "-", url])
+        .output().await.map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn build_curl_body(url: &str, auth: &str, provider: &str) -> Result<String, String> {
+    let mut args: Vec<String> = vec!["-sk", "--connect-timeout", "5"]
+        .into_iter().map(String::from).collect();
+    if !auth.is_empty() {
+        if provider == "claude" {
+            args.extend(["-H".to_string(), format!("x-api-key: {auth}"), "-H".to_string(), "anthropic-version: 2023-06-01".to_string()]);
+        } else {
+            args.extend(["-H".to_string(), format!("Authorization: {auth}")]);
+        }
+    }
+    args.push(url.to_string());
+    let output = tokio::process::Command::new("curl")
+        .args(&args).output().await.map_err(|e| e.to_string())?;
+    if !output.status.success() && output.stdout.is_empty() {
+        return Err("curl not available".to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 // --- AI Provider Model List & Connection Test ---
 
 pub async fn test_ai_provider(
@@ -2447,25 +2522,11 @@ pub async fn test_ai_provider(
         _ => return Err(bad_request()),
     };
 
-    // Use curl to test connectivity (no reqwest dependency)
-    let mut args: Vec<String> = vec!["-sk", "--connect-timeout", "5", "-o", "/dev/null", "-w", "%{http_code}"]
-        .into_iter().map(String::from).collect();
-    if !auth_header.is_empty() {
-        if provider == "claude" {
-            args.extend(["-H".to_string(), format!("x-api-key: {auth_header}"), "-H".to_string(), "anthropic-version: 2023-06-01".to_string()]);
-        } else {
-            args.extend(["-H".to_string(), format!("Authorization: {auth_header}")]);
-        }
-    }
-    args.push(models_url.clone());
-
-    let output = tokio::process::Command::new("curl")
-        .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-        .output().await
-        .map_err(|_| internal())?;
-
-    let status_code = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let success = status_code.starts_with('2');
+    // Test connectivity — try curl, fall back to fetch (FreeBSD built-in)
+    let (status_code, success) = match http_get_status(&models_url, &auth_header, provider).await {
+        Ok((code, ok)) => (code, ok),
+        Err(_) => return Err(internal()),
+    };
 
     Ok(Json(serde_json::json!({
         "success": success,
@@ -2523,15 +2584,8 @@ pub async fn list_ai_models(
         _ => return Err(bad_request()),
     };
 
-    let mut cmd = tokio::process::Command::new("curl");
-    cmd.args(["-sk", "--connect-timeout", "5"]);
-    for arg in &auth_args {
-        cmd.arg(arg);
-    }
-    cmd.arg(&url);
-
-    let output = cmd.output().await.map_err(|_| internal())?;
-    let body = String::from_utf8_lossy(&output.stdout);
+    let auth = if auth_args.len() >= 2 { auth_args[1].clone() } else { String::new() };
+    let body = http_get_body(&url, &auth, provider.as_str()).await.unwrap_or_default();
 
     // Parse response — OpenAI returns { data: [{id: "model-name"}, ...] }, Ollama returns { models: [{name: "model"}, ...] }
     let models: Vec<String> = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
