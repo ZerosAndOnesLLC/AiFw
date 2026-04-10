@@ -1761,6 +1761,32 @@ pub async fn update_wg_peer(
     Ok(Json(ApiResponse { data: peer }))
 }
 
+/// Get the WAN IP address for use as WireGuard endpoint in client configs.
+async fn get_wan_ip(state: &AppState) -> Option<String> {
+    // Find the WAN interface name from interface_roles
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT interface_name FROM interface_roles WHERE role = 'WAN' LIMIT 1"
+    ).fetch_optional(&state.pool).await.ok()?;
+    let wan_iface = row?.0;
+    // Get the IP from ifconfig output
+    let output = tokio::process::Command::new("ifconfig")
+        .arg(&wan_iface)
+        .output()
+        .await
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Parse "inet X.X.X.X" from ifconfig output
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("inet ") {
+            if let Some(ip) = rest.split_whitespace().next() {
+                return Some(ip.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub async fn get_peer_config(
     State(state): State<AppState>,
     Path((tid, pid)): Path<(String, String)>,
@@ -1769,10 +1795,14 @@ pub async fn get_peer_config(
     let peer_id = Uuid::parse_str(&pid).map_err(|_| bad_request())?;
     let tunnel = state.vpn_engine.get_wg_tunnel(tunnel_id).await.map_err(|_| StatusCode::NOT_FOUND)?;
     let peer = state.vpn_engine.get_wg_peer(peer_id).await.map_err(|_| StatusCode::NOT_FOUND)?;
-    let server_addr = tunnel.address.to_string();
-    let server_endpoint = server_addr.split('/').next().unwrap_or(&server_addr);
-    let full_tunnel = peer.to_client_config(&tunnel, server_endpoint, false);
-    let split_tunnel = peer.to_client_config(&tunnel, server_endpoint, true);
+    // Use the WAN IP as the server endpoint (not the tunnel's internal VPN address)
+    let server_endpoint = get_wan_ip(&state).await.unwrap_or_else(|| {
+        // Fallback: strip CIDR from tunnel address
+        let addr = tunnel.address.to_string();
+        addr.split('/').next().unwrap_or(&addr).to_string()
+    });
+    let full_tunnel = peer.to_client_config(&tunnel, &server_endpoint, false);
+    let split_tunnel = peer.to_client_config(&tunnel, &server_endpoint, true);
     Ok(Json(serde_json::json!({
         "full_tunnel": full_tunnel,
         "split_tunnel": split_tunnel,
