@@ -1761,16 +1761,19 @@ pub async fn update_wg_peer(
 pub async fn get_peer_config(
     State(state): State<AppState>,
     Path((tid, pid)): Path<(String, String)>,
-) -> Result<Json<ApiResponse<String>>, StatusCode> {
+) -> Result<Json<serde_json::Value>, StatusCode> {
     let tunnel_id = Uuid::parse_str(&tid).map_err(|_| bad_request())?;
     let peer_id = Uuid::parse_str(&pid).map_err(|_| bad_request())?;
     let tunnel = state.vpn_engine.get_wg_tunnel(tunnel_id).await.map_err(|_| StatusCode::NOT_FOUND)?;
     let peer = state.vpn_engine.get_wg_peer(peer_id).await.map_err(|_| StatusCode::NOT_FOUND)?;
-    // Use the firewall's address as the server endpoint (strip CIDR prefix)
     let server_addr = tunnel.address.to_string();
     let server_endpoint = server_addr.split('/').next().unwrap_or(&server_addr);
-    let config = peer.to_client_config(&tunnel, server_endpoint);
-    Ok(Json(ApiResponse { data: config }))
+    let full_tunnel = peer.to_client_config(&tunnel, server_endpoint, false);
+    let split_tunnel = peer.to_client_config(&tunnel, server_endpoint, true);
+    Ok(Json(serde_json::json!({
+        "full_tunnel": full_tunnel,
+        "split_tunnel": split_tunnel,
+    })))
 }
 
 pub async fn delete_wg_peer(

@@ -121,7 +121,9 @@ impl WgPeer {
     /// Generate a WireGuard client .conf file for this peer.
     /// `tunnel` is the server-side tunnel this peer belongs to.
     /// `server_endpoint` is the firewall's public IP or hostname.
-    pub fn to_client_config(&self, tunnel: &WgTunnel, server_endpoint: &str) -> String {
+    /// `split_tunnel` — if true, only routes the tunnel subnet through the VPN (split VPN).
+    ///                   if false, routes all traffic through the VPN (full tunnel).
+    pub fn to_client_config(&self, tunnel: &WgTunnel, server_endpoint: &str, split_tunnel: bool) -> String {
         let mut conf = String::from("[Interface]\n");
         if let Some(ref pk) = self.client_private_key {
             conf.push_str(&format!("PrivateKey = {pk}\n"));
@@ -148,7 +150,13 @@ impl WgPeer {
             "Endpoint = {server_endpoint}:{}\n",
             tunnel.listen_port
         ));
-        conf.push_str("AllowedIPs = 0.0.0.0/0, ::/0\n");
+        if split_tunnel {
+            // Only route the tunnel's subnet through the VPN
+            conf.push_str(&format!("AllowedIPs = {}\n", tunnel.address));
+        } else {
+            // Route all traffic through the VPN
+            conf.push_str("AllowedIPs = 0.0.0.0/0, ::/0\n");
+        }
         if let Some(ka) = self.persistent_keepalive {
             conf.push_str(&format!("PersistentKeepalive = {ka}\n"));
         }

@@ -204,7 +204,8 @@ export default function VpnPage() {
   const [ipsecSubmitting, setIpsecSubmitting] = useState(false);
 
   /* ── Config modal ── */
-  const [configModal, setConfigModal] = useState<{ peerName: string; config: string } | null>(null);
+  const [configModal, setConfigModal] = useState<{ peerName: string; fullTunnel: string; splitTunnel: string } | null>(null);
+  const [configTab, setConfigTab] = useState<"full" | "split">("full");
   const [configCopied, setConfigCopied] = useState(false);
 
   /* ── Shared ── */
@@ -369,8 +370,9 @@ export default function VpnPage() {
 
   const handleShowConfig = async (tunnelId: string, peer: WgPeer) => {
     try {
-      const res = await apiFetch<{ data: string }>(`/api/v1/vpn/wg/${tunnelId}/peers/${peer.id}/config`);
-      setConfigModal({ peerName: peer.name || peer.public_key.slice(0, 12), config: res.data });
+      const res = await apiFetch<{ full_tunnel: string; split_tunnel: string }>(`/api/v1/vpn/wg/${tunnelId}/peers/${peer.id}/config`);
+      setConfigModal({ peerName: peer.name || peer.public_key.slice(0, 12), fullTunnel: res.full_tunnel, splitTunnel: res.split_tunnel });
+      setConfigTab("full");
       setConfigCopied(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to get peer config");
@@ -379,7 +381,8 @@ export default function VpnPage() {
 
   const handleCopyConfig = () => {
     if (configModal) {
-      navigator.clipboard.writeText(configModal.config);
+      const text = configTab === "full" ? configModal.fullTunnel : configModal.splitTunnel;
+      navigator.clipboard.writeText(text);
       setConfigCopied(true);
       setTimeout(() => setConfigCopied(false), 2000);
     }
@@ -1066,11 +1069,32 @@ export default function VpnPage() {
               </div>
             </div>
             <div className="p-6">
+              {/* Full / Split tabs */}
+              <div className="flex gap-2 mb-3">
+                <button onClick={() => { setConfigTab("full"); setConfigCopied(false); }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                    configTab === "full"
+                      ? "bg-blue-600/20 border-blue-500/40 text-blue-400"
+                      : "bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-500"
+                  }`}>
+                  Full Tunnel
+                </button>
+                <button onClick={() => { setConfigTab("split"); setConfigCopied(false); }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                    configTab === "split"
+                      ? "bg-purple-600/20 border-purple-500/40 text-purple-400"
+                      : "bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-500"
+                  }`}>
+                  Split Tunnel
+                </button>
+              </div>
               <p className="text-xs text-gray-400 mb-3">
-                Paste this into your WireGuard client app or save as a .conf file.
+                {configTab === "full"
+                  ? "Routes ALL traffic through the VPN. Your IP will appear as the firewall\u2019s WAN address."
+                  : "Only routes traffic destined for the VPN subnet. Internet traffic uses your normal connection."}
               </p>
               <pre className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-sm font-mono text-green-400 whitespace-pre-wrap select-all overflow-x-auto">
-                {configModal.config}
+                {configTab === "full" ? configModal.fullTunnel : configModal.splitTunnel}
               </pre>
             </div>
           </div>
