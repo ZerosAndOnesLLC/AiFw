@@ -939,6 +939,18 @@ async fn main() -> anyhow::Result<()> {
     // Ensure rdr-anchor exists in pf.conf (required for DNAT/port forwarding)
     ensure_rdr_anchor().await;
 
+    // Apply firewall filter rules and NAT rules from DB on startup
+    if let Err(e) = state.rule_engine.apply_rules().await {
+        tracing::warn!("Failed to apply filter rules on startup: {e}");
+    } else {
+        tracing::info!("Filter rules applied on startup");
+    }
+    if let Err(e) = state.nat_engine.apply_rules().await {
+        tracing::warn!("Failed to apply NAT rules on startup: {e}");
+    } else {
+        tracing::info!("NAT rules applied on startup");
+    }
+
     // Start persistent pflog0 live capture for blocked traffic page (background, non-blocking)
     ws::start_pflog_collector(state.plugin_manager.clone());
 
