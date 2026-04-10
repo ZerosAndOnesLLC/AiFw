@@ -19,7 +19,13 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-const MAX_POINTS = 300;
+const MAX_POINTS = 1800;
+const TIMEFRAMES = [
+  { key: "1m", label: "1m", points: 60 },
+  { key: "5m", label: "5m", points: 300 },
+  { key: "15m", label: "15m", points: 900 },
+  { key: "30m", label: "30m", points: 1800 },
+] as const;
 const portNames: Record<number, string> = {
   20:"ftp-data",21:"ftp",22:"ssh",23:"telnet",25:"smtp",53:"dns",67:"dhcp",68:"dhcp",
   80:"http",110:"pop3",123:"ntp",143:"imap",161:"snmp",443:"https",445:"smb",465:"smtps",
@@ -37,14 +43,15 @@ const IFACE_COLORS: Record<number, { stroke: string; fill: string; label: string
   5: { stroke: "#06b6d4", fill: "#06b6d4", label: "cyan" },
 };
 
-function TrafficChart({ data, height = 180, color = "#22c55e" }: { data: RatePoint[]; height?: number; color?: string }) {
+function TrafficChart({ data, height = 180, color = "#22c55e", maxPts }: { data: RatePoint[]; height?: number; color?: string; maxPts?: number }) {
+  const chartMax = maxPts ?? MAX_POINTS;
   if (data.length < 3) return (
     <div className="flex items-center justify-center text-[var(--text-muted)] text-sm" style={{height}}>
       <div className="text-center"><div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"/>Collecting...</div>
     </div>
   );
   const w=900,h2=height,pad={top:8,right:8,bottom:4,left:55};
-  const cW=w-pad.left-pad.right,cH=h2-pad.top-pad.bottom,ppx=cW/MAX_POINTS;
+  const cW=w-pad.left-pad.right,cH=h2-pad.top-pad.bottom,ppx=cW/chartMax;
   const maxV=Math.max(...data.map(d=>Math.max(d.bpsIn,d.bpsOut)),1000);
   const sY=(v:number)=>pad.top+cH-(v/maxV)*cH;
   const sX=pad.left+cW-data.length*ppx;
@@ -81,6 +88,12 @@ type IfaceData = { name: string; bytes_in: number; bytes_out: number; packets_in
 
 export default function TrafficPage() {
   const ws = useWs();
+  const [timeframe, setTimeframe] = useState(() =>
+    typeof window !== "undefined" ? localStorage.getItem("aifw_traffic_tf") || "5m" : "5m"
+  );
+  const pickTimeframe = (tf: string) => { setTimeframe(tf); localStorage.setItem("aifw_traffic_tf", tf); };
+  const tfPoints = TIMEFRAMES.find(t => t.key === timeframe)?.points ?? 300;
+
   const [selectedNics, setSelectedNics] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     const saved = localStorage.getItem("aifw_traffic_nics");
@@ -233,6 +246,18 @@ export default function TrafficPage() {
           <p className="text-sm text-[var(--text-muted)]">Per-interface bandwidth monitoring</p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            {TIMEFRAMES.map(tf => (
+              <button key={tf.key} onClick={() => pickTimeframe(tf.key)}
+                className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors ${
+                  timeframe === tf.key
+                    ? "bg-blue-600/20 border border-blue-500/40 text-blue-400"
+                    : "bg-[var(--bg-card)] border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--text-muted)]"
+                }`}>
+                {tf.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-1.5">
             <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
             <span className="text-xs text-[var(--text-muted)]">{ws.connected ? "Live" : "..."}</span>
@@ -299,7 +324,7 @@ export default function TrafficPage() {
                 <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] bg-blue-500 rounded-full inline-block" /> Out</span>
               </div>
             </div>
-            <TrafficChart data={rateHistories[nicName] || []} height={160} color={c.stroke} />
+            <TrafficChart data={(rateHistories[nicName] || []).slice(-tfPoints)} height={160} color={c.stroke} maxPts={tfPoints} />
             {iface && (
               <div className="flex gap-4 mt-2 text-[10px] text-[var(--text-muted)]">
                 <span>Total In: {formatBytes(iface.bytes_in)} ({formatNumber(iface.packets_in)} pkts)</span>

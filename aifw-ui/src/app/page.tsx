@@ -52,16 +52,24 @@ function formatUptime(s: number): string {
   if(d>0) return `${d}d ${h}h`; if(h>0) return `${h}h ${m}m`; return `${m}m`;
 }
 
-const MAX_PTS = 300;
+const MAX_PTS = 1800;
 const SVG_W = 900;
+const TIMEFRAMES = [
+  { key: "1m", label: "1m", points: 60 },
+  { key: "5m", label: "5m", points: 300 },
+  { key: "15m", label: "15m", points: 900 },
+  { key: "30m", label: "30m", points: 1800 },
+] as const;
 
 interface ChartLine { key: string; color: string; label: string; }
 
-function StackedChart({ data, getValue, lines, maxValue, formatY, title, height = 100, hoverIdx, onHover }: {
+function StackedChart({ data, getValue, lines, maxValue, formatY, title, height = 100, hoverIdx, onHover, maxPts }: {
   data: HistoryPoint[]; getValue: (d: HistoryPoint, key: string) => number;
   lines: ChartLine[]; maxValue?: number; formatY: (v: number) => string;
   title: string; height?: number; hoverIdx: number | null; onHover: (idx: number | null) => void;
+  maxPts?: number;
 }) {
+  const chartMax = maxPts ?? MAX_PTS;
   const svgRef = useRef<SVGSVGElement>(null);
   if (data.length < 3) return (
     <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-2">
@@ -79,7 +87,7 @@ function StackedChart({ data, getValue, lines, maxValue, formatY, title, height 
 
   const h = height, pad = { top: 4, right: 4, bottom: 2, left: 44 };
   const cW = SVG_W-pad.left-pad.right, cH = h-pad.top-pad.bottom;
-  const ppx = cW/MAX_PTS;
+  const ppx = cW/chartMax;
   const allVals = data.flatMap(d => lines.map(l => getValue(d, l.key)));
   const maxV = maxValue ?? Math.max(...allVals, 1);
   const sY = (v: number) => pad.top+cH-(v/maxV)*cH;
@@ -179,6 +187,9 @@ export default function Dashboard() {
   const [rateIn, setRateIn] = useState(0);
   const [rateOut, setRateOut] = useState(0);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const [timeframe, setTimeframe] = useState(() =>
+    typeof window !== "undefined" ? localStorage.getItem("aifw_dashboard_tf") || "5m" : "5m"
+  );
   const [selectedNic, setSelectedNic] = useState(() =>
     typeof window !== "undefined" ? localStorage.getItem("aifw_dashboard_nic") || "" : ""
   );
@@ -194,6 +205,13 @@ export default function Dashboard() {
     selectedNicRef.current = name;
     localStorage.setItem("aifw_dashboard_nic", name);
   };
+
+  const pickTimeframe = (tf: string) => {
+    setTimeframe(tf);
+    localStorage.setItem("aifw_dashboard_tf", tf);
+  };
+
+  const tfPoints = TIMEFRAMES.find(t => t.key === timeframe)?.points ?? 300;
 
   // Process history from context on mount / when history changes
   useEffect(() => {
@@ -434,24 +452,39 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Charts — 2x2 grid on desktop */}
+      {/* Charts — timeframe picker + 2x2 grid */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Performance</h3>
+        <div className="flex items-center gap-1">
+          {TIMEFRAMES.map(tf => (
+            <button key={tf.key} onClick={() => pickTimeframe(tf.key)}
+              className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors ${
+                timeframe === tf.key
+                  ? "bg-blue-600/20 border border-blue-500/40 text-blue-400"
+                  : "bg-[var(--bg-card)] border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--text-muted)]"
+              }`}>
+              {tf.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <StackedChart data={history} title="CPU" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="CPU" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "cpu", color: "#3b82f6", label: "CPU" }]}
           getValue={(d, k) => k === "cpu" ? d.cpu : 0}
           maxValue={100} formatY={v => `${v.toFixed(0)}%`}
         />
-        <StackedChart data={history} title="Memory" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Memory" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "mem", color: "#8b5cf6", label: "Memory" }]}
           getValue={(d, k) => k === "mem" ? d.memPct : 0}
           maxValue={100} formatY={v => `${v.toFixed(0)}%`}
         />
-        <StackedChart data={history} title="Disk I/O" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Disk I/O" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "read", color: "#22c55e", label: "Read" }, { key: "write", color: "#f97316", label: "Write" }]}
           getValue={(d, k) => k === "read" ? d.diskReadKbps : d.diskWriteKbps}
           formatY={v => v >= 1024 ? `${(v / 1024).toFixed(0)} MB/s` : `${v.toFixed(0)} KB/s`}
         />
-        <StackedChart data={history} title="Network" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Network" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "in", color: "#22c55e", label: "In" }, { key: "out", color: "#3b82f6", label: "Out" }]}
           getValue={(d, k) => k === "in" ? d.bpsIn : d.bpsOut}
           formatY={formatBps}
