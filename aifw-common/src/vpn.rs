@@ -441,25 +441,71 @@ impl std::fmt::Display for VpnType {
 // Key generation helpers (mock for non-FreeBSD)
 // ============================================================
 
-/// Generate a WireGuard keypair.
-/// On non-FreeBSD this returns placeholder base64 strings.
-/// On FreeBSD, this would shell out to `wg genkey` / `wg pubkey`.
+/// Generate a WireGuard keypair (32 random bytes each, base64 encoded).
+/// On FreeBSD with wireguard-tools, uses `wg genkey` + `wg pubkey` for real Curve25519 keys.
+/// Elsewhere, generates random 32-byte keys (valid format but not cryptographically derived).
 pub fn generate_wg_keypair() -> (String, String) {
-    // Generate deterministic-looking but unique placeholder keys
-    let id = Uuid::new_v4();
-    let bytes = id.as_bytes();
-    let private = base64_encode(bytes);
-    // "Public key" derived by reversing bytes (placeholder)
-    let mut pub_bytes = *bytes;
-    pub_bytes.reverse();
-    let public = base64_encode(&pub_bytes);
-    (private, public)
+    // Try wg genkey first (FreeBSD with wireguard-tools installed)
+    if let Ok(output) = std::process::Command::new("wg").arg("genkey").output() {
+        if output.status.success() {
+            let privkey = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if privkey.len() >= 40 {
+                // Derive public key from private key
+                if let Ok(pub_output) = std::process::Command::new("wg")
+                    .arg("pubkey")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .and_then(|mut child| {
+                        use std::io::Write;
+                        if let Some(ref mut stdin) = child.stdin {
+                            let _ = stdin.write_all(privkey.as_bytes());
+                        }
+                        child.wait_with_output()
+                    })
+                {
+                    if pub_output.status.success() {
+                        let pubkey = String::from_utf8_lossy(&pub_output.stdout).trim().to_string();
+                        if pubkey.len() >= 40 {
+                            return (privkey, pubkey);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: generate 32 random bytes for each key
+    let mut private_bytes = [0u8; 32];
+    let mut public_bytes = [0u8; 32];
+    let id1 = Uuid::new_v4();
+    let id2 = Uuid::new_v4();
+    private_bytes[..16].copy_from_slice(id1.as_bytes());
+    private_bytes[16..].copy_from_slice(id2.as_bytes());
+    let id3 = Uuid::new_v4();
+    let id4 = Uuid::new_v4();
+    public_bytes[..16].copy_from_slice(id3.as_bytes());
+    public_bytes[16..].copy_from_slice(id4.as_bytes());
+    (base64_encode(&private_bytes), base64_encode(&public_bytes))
 }
 
-/// Generate a WireGuard preshared key
+/// Generate a WireGuard preshared key (32 random bytes, base64 encoded)
 pub fn generate_wg_psk() -> String {
-    let id = Uuid::new_v4();
-    base64_encode(id.as_bytes())
+    // Try wg genpsk first
+    if let Ok(output) = std::process::Command::new("wg").arg("genpsk").output() {
+        if output.status.success() {
+            let psk = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if psk.len() >= 40 {
+                return psk;
+            }
+        }
+    }
+    let mut bytes = [0u8; 32];
+    let id1 = Uuid::new_v4();
+    let id2 = Uuid::new_v4();
+    bytes[..16].copy_from_slice(id1.as_bytes());
+    bytes[16..].copy_from_slice(id2.as_bytes());
+    base64_encode(&bytes)
 }
 
 fn base64_encode(data: &[u8]) -> String {
