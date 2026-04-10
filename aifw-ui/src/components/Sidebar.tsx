@@ -199,9 +199,9 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
   return (
     <aside className="h-screen bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col" style={{ width: width || 232 }}>
       {/* Logo — links to About page */}
-      <div className="border-b border-[var(--border)] flex items-center justify-between bg-gradient-to-b from-black via-black/90 to-transparent">
-        <Link href="/about" className="flex-1 flex items-center justify-center py-4 px-3 hover:opacity-90 transition-opacity">
-          <img src="/logo-sidebar.png" alt="AiFw" className="w-full px-2" />
+      <div className="border-b border-[var(--border)] flex items-center justify-between bg-black">
+        <Link href="/about" className="flex-1 flex items-center justify-center py-2 hover:opacity-90 transition-opacity">
+          <img src="/logo-sidebar.png" alt="AiFw" className="w-full" />
         </Link>
         {onClose && (
           <button onClick={onClose} className="lg:hidden text-[var(--text-muted)] hover:text-[var(--text-primary)]">
