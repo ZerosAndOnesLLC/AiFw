@@ -253,6 +253,18 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         }
     }
 
+    // Ensure wg is in sudoers for aifw user (older installs may be missing it)
+    {
+        let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
+        if let Ok(content) = tokio::fs::read_to_string(sudoers_path).await {
+            if !content.contains("/usr/bin/wg") {
+                let patched = format!("{content}aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *\n");
+                let _ = tokio::fs::write(sudoers_path, patched).await;
+                info!("Added wg to sudoers for aifw user");
+            }
+        }
+    }
+
     // Ensure required packages are installed (older installs may be missing curl)
     for pkg in &["curl"] {
         let check = Command::new("pkg")

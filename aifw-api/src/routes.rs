@@ -1638,7 +1638,13 @@ pub async fn create_wg_tunnel(
     Json(req): Json<CreateWgTunnelRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<WgTunnel>>), StatusCode> {
     let address = Address::parse(&req.address).map_err(|_| bad_request())?;
-    let iface_name = format!("wg{}", req.listen_port); // derive interface name from port
+    // FreeBSD requires short interface names: wg0, wg1, etc. (not wg51820)
+    let existing = state.vpn_engine.list_wg_tunnels().await.unwrap_or_default();
+    let used_indices: std::collections::HashSet<u32> = existing.iter()
+        .filter_map(|t| t.interface.0.strip_prefix("wg").and_then(|n| n.parse().ok()))
+        .collect();
+    let next_idx = (0u32..).find(|i| !used_indices.contains(i)).unwrap_or(0);
+    let iface_name = format!("wg{next_idx}");
     let mut tunnel = WgTunnel::new(req.name, Interface(iface_name), req.listen_port, address);
     if let Some(ref pk) = req.private_key {
         tunnel.private_key = pk.clone();

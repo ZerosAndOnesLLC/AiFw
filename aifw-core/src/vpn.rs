@@ -112,6 +112,16 @@ impl VpnEngine {
             return Err(AifwError::Validation("listen port required".to_string()));
         }
 
+        // Check for duplicate port across all tunnels
+        let existing = self.list_wg_tunnels().await?;
+        for t in &existing {
+            if t.id != tunnel.id && t.listen_port == tunnel.listen_port {
+                return Err(AifwError::Validation(format!(
+                    "Port {} is already used by tunnel '{}'", tunnel.listen_port, t.name
+                )));
+            }
+        }
+
         sqlx::query(
             r#"
             INSERT INTO wg_tunnels (id, name, interface, private_key, public_key, listen_port,
@@ -184,6 +194,22 @@ impl VpnEngine {
         }
         // Verify tunnel exists
         let _ = self.get_wg_tunnel(peer.tunnel_id).await?;
+
+        // Check for duplicate IPs — no two peers in the same tunnel can share an IP
+        let existing_peers = self.list_wg_peers(peer.tunnel_id).await?;
+        let new_ips: std::collections::HashSet<String> = peer.allowed_ips.iter()
+            .map(|a| a.to_string().split('/').next().unwrap_or("").to_string())
+            .collect();
+        for ep in &existing_peers {
+            for eip in &ep.allowed_ips {
+                let eip_str = eip.to_string().split('/').next().unwrap_or("").to_string();
+                if new_ips.contains(&eip_str) {
+                    return Err(AifwError::Validation(format!(
+                        "IP {} is already assigned to peer '{}'", eip_str, ep.name
+                    )));
+                }
+            }
+        }
 
         let allowed_ips: Vec<String> = peer.allowed_ips.iter().map(|a| a.to_string()).collect();
 
