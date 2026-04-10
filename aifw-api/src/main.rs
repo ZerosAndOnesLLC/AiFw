@@ -818,6 +818,41 @@ fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> a
     Ok(())
 }
 
+/// Ensure rdr-anchor "aifw-nat" exists in pf.conf (needed for DNAT port forwarding).
+/// Older installs only had nat-anchor; without rdr-anchor, rdr rules in the anchor are never evaluated.
+async fn ensure_rdr_anchor() {
+    let pf_path = "/usr/local/etc/aifw/pf.conf.aifw";
+    let Ok(content) = tokio::fs::read_to_string(pf_path).await else { return };
+    if content.contains("rdr-anchor \"aifw-nat\"") {
+        return; // already present
+    }
+    if !content.contains("nat-anchor \"aifw-nat\"") {
+        return; // no nat-anchor either, not an AiFw-managed pf.conf
+    }
+    let patched = content.replace(
+        "nat-anchor \"aifw-nat\"",
+        "nat-anchor \"aifw-nat\"\nrdr-anchor \"aifw-nat\"",
+    );
+    if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["tee", pf_path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+    {
+        if let Some(ref mut stdin) = child.stdin {
+            let _ = tokio::io::AsyncWriteExt::write_all(stdin, patched.as_bytes()).await;
+        }
+        drop(child.stdin.take());
+        let _ = child.wait().await;
+        // Reload pf with the patched config
+        let _ = tokio::process::Command::new("/usr/local/bin/sudo")
+            .args(["/sbin/pfctl", "-f", pf_path])
+            .output()
+            .await;
+        info!("Added rdr-anchor \"aifw-nat\" to pf.conf and reloaded");
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -900,6 +935,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Apply all enabled static routes from DB (survives reboot)
     routes::apply_all_routes(&state.pool).await;
+
+    // Ensure rdr-anchor exists in pf.conf (required for DNAT/port forwarding)
+    ensure_rdr_anchor().await;
 
     // Start persistent pflog0 live capture for blocked traffic page (background, non-blocking)
     ws::start_pflog_collector(state.plugin_manager.clone());

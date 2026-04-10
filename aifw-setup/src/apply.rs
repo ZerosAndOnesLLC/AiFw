@@ -1088,6 +1088,7 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push("# AiFw NAT anchors".to_string());
     lines.push("nat-anchor \"aifw\"".to_string());
     lines.push("nat-anchor \"aifw-nat\"".to_string());
+    lines.push("rdr-anchor \"aifw-nat\"".to_string());
     lines.push("nat-anchor \"aifw-vpn\"".to_string());
     lines.push(String::new());
     // DHCP pass rules — must come BEFORE anchors because anchors contain
