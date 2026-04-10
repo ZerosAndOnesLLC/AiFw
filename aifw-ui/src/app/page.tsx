@@ -187,6 +187,11 @@ export default function Dashboard() {
   const [rateIn, setRateIn] = useState(0);
   const [rateOut, setRateOut] = useState(0);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const [blockedCount, setBlockedCount] = useState(() => {
+    if (typeof window === "undefined") return 10;
+    const saved = localStorage.getItem("aifw_blocked_count");
+    return saved ? parseInt(saved, 10) : 10;
+  });
   const [timeframe, setTimeframe] = useState(() =>
     typeof window !== "undefined" ? localStorage.getItem("aifw_dashboard_tf") || "5m" : "5m"
   );
@@ -546,13 +551,22 @@ export default function Dashboard() {
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Recent Blocked</h3>
-            <span className="text-[10px] font-mono text-red-400">{blocked.length} entries</span>
+            <div className="flex items-center gap-2">
+              <select
+                value={blockedCount}
+                onChange={(e) => { const v = parseInt(e.target.value, 10); setBlockedCount(v); localStorage.setItem("aifw_blocked_count", String(v)); }}
+                className="bg-[var(--bg-primary)] border border-[var(--border)] rounded px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] focus:outline-none"
+              >
+                {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <span className="text-[10px] font-mono text-red-400">{blocked.length} total</span>
+            </div>
           </div>
           {blocked.length === 0 ? (
             <div className="text-xs text-[var(--text-muted)] text-center py-4">No blocked traffic</div>
           ) : (
-            <div className="space-y-1.5 max-h-40 overflow-y-auto">
-              {blocked.slice(-10).reverse().map((b, i) => (
+            <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              {blocked.slice(-blockedCount).reverse().map((b, i) => (
                 <div key={i} className="flex items-center justify-between text-[11px] py-1 px-2 rounded bg-[var(--bg-primary)]">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-red-400 uppercase text-[9px] font-bold w-8 flex-shrink-0">{b.action}</span>
