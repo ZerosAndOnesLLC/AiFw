@@ -21,6 +21,7 @@ impl SqliteOutput {
         src_ip: Option<&str>,
         signature_id: Option<u32>,
         acknowledged: Option<bool>,
+        classification: Option<&str>,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<IdsAlert>> {
@@ -42,6 +43,15 @@ impl SqliteOutput {
         if let Some(ack) = acknowledged {
             conditions.push("acknowledged = ?");
             bind_values.push(if ack { "1" } else { "0" }.to_string());
+        }
+        if let Some(cls) = classification {
+            if cls == "reviewed" {
+                // Special filter: any classification that is NOT unreviewed
+                conditions.push("classification != 'unreviewed'");
+            } else {
+                conditions.push("classification = ?");
+                bind_values.push(cls.to_string());
+            }
         }
 
         let where_clause = if conditions.is_empty() {
@@ -275,7 +285,7 @@ mod tests {
         let alert = test_alert();
         output.emit(&alert).await.unwrap();
 
-        let alerts = output.query_alerts(None, None, None, None, 100, 0).await.unwrap();
+        let alerts = output.query_alerts(None, None, None, None, None, 100, 0).await.unwrap();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].signature_msg, "Test alert");
     }

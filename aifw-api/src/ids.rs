@@ -146,6 +146,7 @@ pub struct AlertsQuery {
     pub src_ip: Option<String>,
     pub signature_id: Option<u32>,
     pub acknowledged: Option<bool>,
+    pub classification: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }
@@ -162,6 +163,7 @@ pub async fn list_alerts(
             q.src_ip.as_deref(),
             q.signature_id,
             q.acknowledged,
+            q.classification.as_deref(),
             q.limit.unwrap_or(50),
             q.offset.unwrap_or(0),
         )

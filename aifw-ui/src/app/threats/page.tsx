@@ -91,10 +91,18 @@ export default function ThreatsPage() {
 
   const fetchAlerts = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/ids/alerts?limit=500`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      setAlerts(json.data || []);
+      // Fetch latest alerts + AI-reviewed alerts (may overlap, deduplicate by id)
+      const [latestRes, reviewedRes] = await Promise.all([
+        fetch(`${API}/api/v1/ids/alerts?limit=200`, { headers: authHeaders() }),
+        fetch(`${API}/api/v1/ids/alerts?limit=300&classification=reviewed`, { headers: authHeaders() }),
+      ]);
+      const latest = latestRes.ok ? (await latestRes.json()).data || [] : [];
+      const reviewed = reviewedRes.ok ? (await reviewedRes.json()).data || [] : [];
+      // Merge and deduplicate
+      const byId = new Map<string, IdsAlert>();
+      for (const a of [...reviewed, ...latest]) byId.set(a.id, a);
+      const merged = [...byId.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+      setAlerts(merged);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
