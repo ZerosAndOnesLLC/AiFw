@@ -1623,6 +1623,7 @@ pub struct CreateWgTunnelRequest {
     pub private_key: Option<String>,
     pub dns: Option<String>,
     pub mtu: Option<u16>,
+    pub listen_interface: Option<String>,
 }
 
 pub async fn list_wg_tunnels(
@@ -1644,6 +1645,7 @@ pub async fn create_wg_tunnel(
     }
     tunnel.dns = req.dns;
     tunnel.mtu = req.mtu;
+    tunnel.listen_interface = req.listen_interface;
     let tunnel = state.vpn_engine.add_wg_tunnel(tunnel).await.map_err(|_| bad_request())?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: tunnel })))
 }
@@ -1660,6 +1662,7 @@ pub async fn update_wg_tunnel(
     tunnel.address = Address::parse(&req.address).map_err(|_| bad_request())?;
     tunnel.dns = req.dns;
     tunnel.mtu = req.mtu;
+    tunnel.listen_interface = req.listen_interface;
     tunnel.updated_at = chrono::Utc::now();
     // Re-insert (delete + add) since we don't have a dedicated update query
     state.vpn_engine.delete_wg_tunnel(uuid).await.map_err(|_| internal())?;

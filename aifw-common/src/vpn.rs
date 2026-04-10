@@ -18,6 +18,8 @@ pub struct WgTunnel {
     pub address: Address,
     pub dns: Option<String>,
     pub mtu: Option<u16>,
+    /// Physical interface to listen on (e.g. "vtnet0"). None = listen on all.
+    pub listen_interface: Option<String>,
     pub status: VpnStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -37,6 +39,7 @@ impl WgTunnel {
             address,
             dns: None,
             mtu: None,
+            listen_interface: None,
             status: VpnStatus::Down,
             created_at: now,
             updated_at: now,
@@ -60,13 +63,18 @@ impl WgTunnel {
 
     /// Generate pf rules to allow WireGuard traffic
     pub fn to_pf_rules(&self) -> Vec<String> {
+        // If listen_interface is set, bind the UDP rule to that interface
+        let on_iface = match &self.listen_interface {
+            Some(iface) if !iface.is_empty() && iface != "any" => format!(" on {iface}"),
+            _ => String::new(),
+        };
         vec![
-            // Allow WireGuard UDP port
+            // Allow WireGuard UDP port (optionally on specific interface)
             format!(
-                "pass in quick proto udp to any port {} keep state label \"wg-{}\"",
+                "pass in quick{on_iface} proto udp to any port {} keep state label \"wg-{}\"",
                 self.listen_port, self.name
             ),
-            // Allow all traffic on the WireGuard interface
+            // Allow all traffic on the WireGuard tunnel interface
             format!(
                 "pass quick on {} keep state label \"wg-{}-tunnel\"",
                 self.interface, self.name

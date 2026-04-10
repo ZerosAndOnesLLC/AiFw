@@ -70,6 +70,11 @@ impl VpnEngine {
             .execute(&self.pool)
             .await;
 
+        // Add listen_interface column to tunnels if missing
+        let _ = sqlx::query("ALTER TABLE wg_tunnels ADD COLUMN listen_interface TEXT")
+            .execute(&self.pool)
+            .await;
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS ipsec_sas (
@@ -109,8 +114,8 @@ impl VpnEngine {
         sqlx::query(
             r#"
             INSERT INTO wg_tunnels (id, name, interface, private_key, public_key, listen_port,
-                address, dns, mtu, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                address, dns, mtu, listen_interface, status, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             "#,
         )
         .bind(tunnel.id.to_string())
@@ -122,6 +127,7 @@ impl VpnEngine {
         .bind(tunnel.address.to_string())
         .bind(tunnel.dns.as_deref())
         .bind(tunnel.mtu.map(|m| m as i64))
+        .bind(tunnel.listen_interface.as_deref())
         .bind(tunnel.status.to_string())
         .bind(tunnel.created_at.to_rfc3339())
         .bind(tunnel.updated_at.to_rfc3339())
@@ -359,6 +365,7 @@ struct WgTunnelRow {
     address: String,
     dns: Option<String>,
     mtu: Option<i64>,
+    listen_interface: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -376,6 +383,7 @@ impl WgTunnelRow {
             address: Address::parse(&self.address)?,
             dns: self.dns,
             mtu: self.mtu.map(|m| m as u16),
+            listen_interface: self.listen_interface,
             status: parse_vpn_status(&self.status),
             created_at: parse_dt(&self.created_at)?,
             updated_at: parse_dt(&self.updated_at)?,

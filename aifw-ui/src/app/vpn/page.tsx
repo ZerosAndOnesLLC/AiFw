@@ -12,6 +12,9 @@ interface WgTunnel {
   address: string;
   private_key: string;
   public_key: string;
+  dns: string | null;
+  mtu: number | null;
+  listen_interface: string | null;
   status: string;
   created_at: string;
 }
@@ -68,6 +71,9 @@ const defaultWgForm = {
   listen_port: "",
   address: "",
   private_key: "",
+  dns: "",
+  mtu: "",
+  listen_interface: "any",
 };
 
 const defaultPeerForm = {
@@ -208,6 +214,9 @@ export default function VpnPage() {
   const [configTab, setConfigTab] = useState<"full" | "split">("full");
   const [configCopied, setConfigCopied] = useState(false);
 
+  /* ── Interfaces (for listen binding dropdown) ── */
+  const [interfaces, setInterfaces] = useState<{ name: string; role?: string }[]>([]);
+
   /* ── Shared ── */
   const [error, setError] = useState<string | null>(null);
 
@@ -247,6 +256,9 @@ export default function VpnPage() {
   useEffect(() => {
     fetchTunnels();
     fetchIpsec();
+    apiFetch<{ data: { name: string; role?: string }[] }>("/api/v1/interfaces")
+      .then(res => setInterfaces(res.data || []))
+      .catch(() => {});
   }, [fetchTunnels, fetchIpsec]);
 
   /* ────────────────────────── WireGuard CRUD ────────────────────────── */
@@ -275,6 +287,11 @@ export default function VpnPage() {
       };
       if (wgForm.private_key.trim()) {
         body.private_key = wgForm.private_key.trim();
+      }
+      if (wgForm.dns.trim()) body.dns = wgForm.dns.trim();
+      if (wgForm.mtu.trim()) body.mtu = parseInt(wgForm.mtu, 10);
+      if (wgForm.listen_interface && wgForm.listen_interface !== "any") {
+        body.listen_interface = wgForm.listen_interface;
       }
 
       if (editingWgId) {
@@ -305,6 +322,9 @@ export default function VpnPage() {
       listen_port: String(tunnel.listen_port),
       address: tunnel.address,
       private_key: "",
+      dns: tunnel.dns || "",
+      mtu: tunnel.mtu ? String(tunnel.mtu) : "",
+      listen_interface: tunnel.listen_interface || "any",
     });
     setEditingWgId(tunnel.id);
     setShowWgForm(true);
@@ -556,6 +576,43 @@ export default function VpnPage() {
                       value={wgForm.address}
                       onChange={(e) => setWgForm((f) => ({ ...f, address: e.target.value }))}
                       placeholder="10.0.0.1/24"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Listen Interface</label>
+                    <select
+                      value={wgForm.listen_interface}
+                      onChange={(e) => setWgForm((f) => ({ ...f, listen_interface: e.target.value }))}
+                      className={selectCls}
+                    >
+                      <option value="any">Any (all interfaces)</option>
+                      {interfaces.map((iface) => (
+                        <option key={iface.name} value={iface.name}>
+                          {iface.name}{iface.role ? ` (${iface.role})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                  <div>
+                    <label className={labelCls}>DNS Servers</label>
+                    <input
+                      type="text"
+                      value={wgForm.dns}
+                      onChange={(e) => setWgForm((f) => ({ ...f, dns: e.target.value }))}
+                      placeholder="1.1.1.1, 8.8.8.8"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>MTU</label>
+                    <input
+                      type="number"
+                      value={wgForm.mtu}
+                      onChange={(e) => setWgForm((f) => ({ ...f, mtu: e.target.value }))}
+                      placeholder="1420 (default)"
                       className={inputCls}
                     />
                   </div>
