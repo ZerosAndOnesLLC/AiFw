@@ -52,9 +52,16 @@ function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: numb
   );
 }
 
+function getSubnet24(ip: string): string {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return ip;
+  return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+}
+
 export default function NatFlowsPage() {
   const ws = useWs();
   const [selectedHost, setSelectedHost] = useState<string | null>(null);
+  const [groupBySubnet, setGroupBySubnet] = useState(true);
   const prevBytes = useRef<Record<string, { in: number; out: number }>>({});
   const [rates, setRates] = useState<Record<string, { in: number; out: number }>>({});
 
@@ -92,8 +99,32 @@ export default function NatFlowsPage() {
     return Object.values(hosts).sort((a, b) => b.bytes - a.bytes).slice(0, 20);
   }, [connections]);
 
+  // Group hosts by /24 subnet
+  const lanSubnets = useMemo(() => {
+    const subnets: Record<string, { subnet: string; bytes: number; conns: number; hosts: typeof lanHosts }> = {};
+    for (const h of lanHosts) {
+      const subnet = getSubnet24(h.ip);
+      if (!subnets[subnet]) subnets[subnet] = { subnet, bytes: 0, conns: 0, hosts: [] };
+      subnets[subnet].bytes += h.bytes;
+      subnets[subnet].conns += h.conns;
+      subnets[subnet].hosts.push(h);
+    }
+    return Object.values(subnets).sort((a, b) => b.bytes - a.bytes);
+  }, [lanHosts]);
+
+  const displayItems = groupBySubnet ? lanSubnets : lanHosts.map(h => ({ subnet: h.ip, bytes: h.bytes, conns: h.conns, hosts: [h] }));
+  const maxItemBytes = displayItems[0]?.bytes || 1;
+
   const maxHostBytes = lanHosts[0]?.bytes || 1;
-  const selectedConns = selectedHost ? connections.filter(c => c.src_addr === selectedHost || c.dst_addr === selectedHost) : [];
+  const selectedConns = selectedHost
+    ? connections.filter(c => {
+        if (groupBySubnet && selectedHost.endsWith("/24")) {
+          const prefix = selectedHost.replace(".0/24", ".");
+          return c.src_addr.startsWith(prefix) || c.dst_addr.startsWith(prefix);
+        }
+        return c.src_addr === selectedHost || c.dst_addr === selectedHost;
+      })
+    : [];
   const wanRate = rates[wanIface?.name || ""] || { in: 0, out: 0 };
 
   return (
@@ -108,7 +139,12 @@ export default function NatFlowsPage() {
           <h1 className="text-2xl font-bold">NAT Traffic Flows</h1>
           <p className="text-sm text-[var(--text-muted)]">Live vertical topology — traffic flows top to bottom</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 text-xs cursor-pointer">
+            <input type="checkbox" checked={groupBySubnet} onChange={e => { setGroupBySubnet(e.target.checked); setSelectedHost(null); }}
+              className="rounded border-gray-600" />
+            <span className="text-[var(--text-secondary)]">Group by /24</span>
+          </label>
           <div className="flex items-center gap-3 text-[10px]">
             <span className="flex items-center gap-1"><span className="w-2 h-3 bg-emerald-500/50 rounded-sm inline-block" /> In</span>
             <span className="flex items-center gap-1"><span className="w-2 h-3 bg-blue-500/50 rounded-sm inline-block" /> Out</span>
@@ -189,24 +225,45 @@ export default function NatFlowsPage() {
                         <span className="text-[10px] text-emerald-300/60 ml-1">{iface.role || "LAN"}</span>
                       </div>
 
-                      {/* Pipe to hosts */}
+                      {/* Pipe to subnets/hosts */}
                       <div className="mt-0.5">
-                        <VPipe rateIn={r.out} rateOut={r.in} height={30} />
+                        <VPipe rateIn={r.out} rateOut={r.in} height={20} />
                       </div>
 
-                      {/* Host bubbles */}
-                      <div className="mt-1 flex flex-wrap justify-center gap-1 max-w-[160px]">
-                        {lanHosts.slice(0, 4).map(h => (
-                          <button key={h.ip} onClick={() => setSelectedHost(selectedHost === h.ip ? null : h.ip)}
-                            className={`px-1.5 py-0.5 rounded-full text-[8px] font-mono transition-colors border ${
-                              selectedHost === h.ip
-                                ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
-                                : "bg-gray-700/50 border-gray-600/50 text-gray-400 hover:text-white hover:border-gray-500"
-                            }`}>
-                            {h.ip.split('.').slice(-2).join('.')}
-                          </button>
-                        ))}
-                        {lanHosts.length > 4 && <span className="text-[8px] text-gray-600 px-1">+{lanHosts.length - 4}</span>}
+                      {/* Subnet groups or host bubbles */}
+                      <div className="mt-1 w-full">
+                        {groupBySubnet ? (
+                          <div className="flex flex-wrap justify-center gap-2">
+                            {lanSubnets.map(sn => (
+                              <button key={sn.subnet}
+                                onClick={() => setSelectedHost(selectedHost === sn.subnet ? null : sn.subnet)}
+                                className={`flex flex-col items-center px-2 py-1.5 rounded-lg border transition-colors ${
+                                  selectedHost === sn.subnet
+                                    ? "bg-cyan-500/15 border-cyan-500/40"
+                                    : "bg-gray-700/30 border-gray-600/30 hover:border-gray-500"
+                                }`}>
+                                <span className={`text-[9px] font-mono font-bold ${selectedHost === sn.subnet ? "text-cyan-400" : "text-gray-300"}`}>
+                                  {sn.subnet}
+                                </span>
+                                <span className="text-[8px] text-gray-500">{sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {formatBytes(sn.bytes)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap justify-center gap-1 max-w-[200px] mx-auto">
+                            {lanHosts.slice(0, 6).map(h => (
+                              <button key={h.ip} onClick={() => setSelectedHost(selectedHost === h.ip ? null : h.ip)}
+                                className={`px-1.5 py-0.5 rounded-full text-[8px] font-mono transition-colors border ${
+                                  selectedHost === h.ip
+                                    ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
+                                    : "bg-gray-700/50 border-gray-600/50 text-gray-400 hover:text-white hover:border-gray-500"
+                                }`}>
+                                {h.ip.split('.').slice(-2).join('.')}
+                              </button>
+                            ))}
+                            {lanHosts.length > 6 && <span className="text-[8px] text-gray-600 px-1">+{lanHosts.length - 6}</span>}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -217,26 +274,50 @@ export default function NatFlowsPage() {
         </div>
       </div>
 
-      {/* Host Details */}
+      {/* Host / Subnet Details */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-            <h3 className="text-sm font-medium">Active Hosts</h3>
-            <span className="text-[10px] text-gray-500">{lanHosts.length} hosts</span>
+            <h3 className="text-sm font-medium">{groupBySubnet ? "Subnets" : "Active Hosts"}</h3>
+            <span className="text-[10px] text-gray-500">{groupBySubnet ? `${lanSubnets.length} subnet${lanSubnets.length !== 1 ? "s" : ""} · ${lanHosts.length} hosts` : `${lanHosts.length} hosts`}</span>
           </div>
           <div className="max-h-80 overflow-y-auto divide-y divide-gray-700/50">
-            {lanHosts.map(host => (
-              <button key={host.ip} onClick={() => setSelectedHost(selectedHost === host.ip ? null : host.ip)}
-                className={`w-full px-4 py-2 text-left hover:bg-gray-700/30 transition-colors ${selectedHost === host.ip ? "bg-blue-500/10 border-l-2 border-blue-500" : ""}`}>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-mono text-xs text-white">{host.ip}</span>
-                  <span className="text-[10px] text-gray-400">{host.conns} conn · {formatBytes(host.bytes)}</span>
-                </div>
-                <div className="w-full h-1 bg-gray-700 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all" style={{ width: `${(host.bytes / maxHostBytes) * 100}%` }} />
-                </div>
-              </button>
-            ))}
+            {groupBySubnet ? (
+              lanSubnets.map(sn => (
+                <button key={sn.subnet} onClick={() => setSelectedHost(selectedHost === sn.subnet ? null : sn.subnet)}
+                  className={`w-full px-4 py-2 text-left hover:bg-gray-700/30 transition-colors ${selectedHost === sn.subnet ? "bg-blue-500/10 border-l-2 border-blue-500" : ""}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-mono text-xs text-white">{sn.subnet}</span>
+                    <span className="text-[10px] text-gray-400">{sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {sn.conns} conn · {formatBytes(sn.bytes)}</span>
+                  </div>
+                  <div className="w-full h-1 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all" style={{ width: `${(sn.bytes / maxItemBytes) * 100}%` }} />
+                  </div>
+                  {selectedHost === sn.subnet && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {sn.hosts.map(h => (
+                        <span key={h.ip} className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">
+                          {h.ip.split(".")[3]} — {formatBytes(h.bytes)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </button>
+              ))
+            ) : (
+              lanHosts.map(host => (
+                <button key={host.ip} onClick={() => setSelectedHost(selectedHost === host.ip ? null : host.ip)}
+                  className={`w-full px-4 py-2 text-left hover:bg-gray-700/30 transition-colors ${selectedHost === host.ip ? "bg-blue-500/10 border-l-2 border-blue-500" : ""}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-mono text-xs text-white">{host.ip}</span>
+                    <span className="text-[10px] text-gray-400">{host.conns} conn · {formatBytes(host.bytes)}</span>
+                  </div>
+                  <div className="w-full h-1 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all" style={{ width: `${(host.bytes / maxHostBytes) * 100}%` }} />
+                  </div>
+                </button>
+              ))
+            )}
             {lanHosts.length === 0 && <div className="text-center py-6 text-gray-500 text-sm">No active hosts</div>}
           </div>
         </div>
