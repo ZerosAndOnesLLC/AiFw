@@ -389,7 +389,7 @@ impl VpnEngine {
 
         // Configure WireGuard private key and listen port
         let output = Command::new("/usr/local/bin/sudo")
-            .args(["wg", "set", iface, "private-key", &key_path,
+            .args(["/usr/bin/wg", "set", iface, "private-key", &key_path,
                    "listen-port", &tunnel.listen_port.to_string()])
             .output().await
             .map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
@@ -438,7 +438,7 @@ impl VpnEngine {
     async fn apply_peer_to_interface(&self, iface: &str, peer: &WgPeer) -> Result<()> {
         let allowed: Vec<String> = peer.allowed_ips.iter().map(|a| a.to_string()).collect();
         let mut args = vec![
-            "wg".to_string(), "set".to_string(), iface.to_string(),
+            "/usr/bin/wg".to_string(), "set".to_string(), iface.to_string(),
             "peer".to_string(), peer.public_key.clone(),
             "allowed-ips".to_string(), allowed.join(","),
         ];
@@ -488,7 +488,7 @@ impl VpnEngine {
         let iface = &tunnel.interface.0;
 
         let output = Command::new("/usr/local/bin/sudo")
-            .args(["wg", "show", iface, "dump"])
+            .args(["/usr/bin/wg", "show", iface, "dump"])
             .output().await
             .map_err(|e| AifwError::Pf(format!("wg show failed: {e}")))?;
 
