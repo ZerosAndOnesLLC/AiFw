@@ -6,6 +6,7 @@ use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use std::sync::Arc;
+use tokio::process::Command;
 use uuid::Uuid;
 
 pub struct VpnEngine {
@@ -319,6 +320,241 @@ impl VpnEngine {
         }
         tracing::info!(%id, "IPsec SA deleted");
         Ok(())
+    }
+
+    // ============================================================
+    // WireGuard tunnel lifecycle (FreeBSD)
+    // ============================================================
+
+    /// Bring up a WireGuard tunnel: create interface, set key, add peers, update status.
+    pub async fn start_tunnel(&self, id: Uuid) -> Result<()> {
+        let tunnel = self.get_wg_tunnel(id).await?;
+        let iface = &tunnel.interface.0;
+
+        // Write private key to temp file (wg set reads from file, not stdin)
+        let key_path = format!("/tmp/wg-{}.key", tunnel.id);
+        tokio::fs::write(&key_path, &tunnel.private_key).await
+            .map_err(|e| AifwError::Pf(format!("Failed to write key file: {e}")))?;
+        // Restrict permissions
+        let _ = Command::new("chmod").args(["600", &key_path]).output().await;
+
+        // Create the WireGuard interface
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["ifconfig", iface, "destroy"]).output().await; // clean up if exists
+        let output = Command::new("/usr/local/bin/sudo")
+            .args(["ifconfig", iface, "create"]).output().await
+            .map_err(|e| AifwError::Pf(format!("ifconfig create failed: {e}")))?;
+        if !output.status.success() {
+            let _ = tokio::fs::remove_file(&key_path).await;
+            return Err(AifwError::Pf(format!("ifconfig {} create failed: {}",
+                iface, String::from_utf8_lossy(&output.stderr))));
+        }
+
+        // Set address and bring up
+        let addr = tunnel.address.to_string();
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["ifconfig", iface, "inet", &addr, "up"]).output().await;
+
+        // Set MTU if specified
+        if let Some(mtu) = tunnel.mtu {
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["ifconfig", iface, "mtu", &mtu.to_string()]).output().await;
+        }
+
+        // Configure WireGuard private key and listen port
+        let output = Command::new("/usr/local/bin/sudo")
+            .args(["wg", "set", iface, "private-key", &key_path,
+                   "listen-port", &tunnel.listen_port.to_string()])
+            .output().await
+            .map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
+        let _ = tokio::fs::remove_file(&key_path).await;
+        if !output.status.success() {
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["ifconfig", iface, "destroy"]).output().await;
+            return Err(AifwError::Pf(format!("wg set failed: {}",
+                String::from_utf8_lossy(&output.stderr))));
+        }
+
+        // Add all peers
+        let peers = self.list_wg_peers(id).await?;
+        for peer in &peers {
+            self.apply_peer_to_interface(iface, peer).await?;
+        }
+
+        // Update status in DB
+        let _ = sqlx::query("UPDATE wg_tunnels SET status = 'up', updated_at = ?1 WHERE id = ?2")
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool).await;
+
+        tracing::info!(%id, iface, "WireGuard tunnel started");
+        Ok(())
+    }
+
+    /// Stop a WireGuard tunnel: destroy the interface.
+    pub async fn stop_tunnel(&self, id: Uuid) -> Result<()> {
+        let tunnel = self.get_wg_tunnel(id).await?;
+        let iface = &tunnel.interface.0;
+
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["ifconfig", iface, "destroy"]).output().await;
+
+        let _ = sqlx::query("UPDATE wg_tunnels SET status = 'down', updated_at = ?1 WHERE id = ?2")
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool).await;
+
+        tracing::info!(%id, iface, "WireGuard tunnel stopped");
+        Ok(())
+    }
+
+    /// Apply a single peer to a running WireGuard interface via `wg set`.
+    async fn apply_peer_to_interface(&self, iface: &str, peer: &WgPeer) -> Result<()> {
+        let allowed: Vec<String> = peer.allowed_ips.iter().map(|a| a.to_string()).collect();
+        let mut args = vec![
+            "wg".to_string(), "set".to_string(), iface.to_string(),
+            "peer".to_string(), peer.public_key.clone(),
+            "allowed-ips".to_string(), allowed.join(","),
+        ];
+        if let Some(ref endpoint) = peer.endpoint {
+            if !endpoint.is_empty() {
+                args.push("endpoint".to_string());
+                args.push(endpoint.clone());
+            }
+        }
+        if let Some(ka) = peer.persistent_keepalive {
+            args.push("persistent-keepalive".to_string());
+            args.push(ka.to_string());
+        }
+        // PSK requires a temp file
+        if let Some(ref psk) = peer.preshared_key {
+            let psk_path = format!("/tmp/wg-psk-{}.key", peer.id);
+            tokio::fs::write(&psk_path, psk).await
+                .map_err(|e| AifwError::Pf(format!("Failed to write PSK: {e}")))?;
+            let _ = Command::new("chmod").args(["600", &psk_path]).output().await;
+            args.push("preshared-key".to_string());
+            args.push(psk_path.clone());
+            let output = Command::new("/usr/local/bin/sudo")
+                .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                .output().await
+                .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
+            let _ = tokio::fs::remove_file(&psk_path).await;
+            if !output.status.success() {
+                return Err(AifwError::Pf(format!("wg set peer failed: {}",
+                    String::from_utf8_lossy(&output.stderr))));
+            }
+        } else {
+            let output = Command::new("/usr/local/bin/sudo")
+                .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                .output().await
+                .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
+            if !output.status.success() {
+                return Err(AifwError::Pf(format!("wg set peer failed: {}",
+                    String::from_utf8_lossy(&output.stderr))));
+            }
+        }
+        Ok(())
+    }
+
+    /// Get live tunnel status from `wg show`.
+    pub async fn tunnel_status(&self, id: Uuid) -> Result<serde_json::Value> {
+        let tunnel = self.get_wg_tunnel(id).await?;
+        let iface = &tunnel.interface.0;
+
+        let output = Command::new("/usr/local/bin/sudo")
+            .args(["wg", "show", iface, "dump"])
+            .output().await
+            .map_err(|e| AifwError::Pf(format!("wg show failed: {e}")))?;
+
+        if !output.status.success() {
+            return Ok(serde_json::json!({
+                "running": false,
+                "interface": iface,
+                "peers": [],
+            }));
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut peers = Vec::new();
+        let mut lines = text.lines();
+        // First line is the interface info: private-key, public-key, listen-port, fwmark
+        let _iface_line = lines.next();
+
+        // Remaining lines are peers: public-key, preshared-key, endpoint, allowed-ips, latest-handshake, transfer-rx, transfer-tx, persistent-keepalive
+        for line in lines {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() >= 7 {
+                let handshake_ts: i64 = cols[4].parse().unwrap_or(0);
+                let handshake_ago = if handshake_ts > 0 {
+                    Utc::now().timestamp() - handshake_ts
+                } else { -1 };
+                peers.push(serde_json::json!({
+                    "public_key": cols[0],
+                    "endpoint": if cols[2] == "(none)" { serde_json::Value::Null } else { serde_json::Value::String(cols[2].to_string()) },
+                    "allowed_ips": cols[3],
+                    "latest_handshake_secs_ago": handshake_ago,
+                    "transfer_rx": cols[5].parse::<u64>().unwrap_or(0),
+                    "transfer_tx": cols[6].parse::<u64>().unwrap_or(0),
+                    "persistent_keepalive": if cols.len() > 7 && cols[7] != "off" { cols[7].parse::<u16>().ok() } else { None::<u16> },
+                }));
+            }
+        }
+
+        Ok(serde_json::json!({
+            "running": true,
+            "interface": iface,
+            "listen_port": tunnel.listen_port,
+            "public_key": tunnel.public_key,
+            "peer_count": peers.len(),
+            "peers": peers,
+        }))
+    }
+
+    /// Start all tunnels that have status "up" in the DB (for boot recovery).
+    pub async fn start_active_tunnels(&self) -> Result<u32> {
+        let tunnels = self.list_wg_tunnels().await?;
+        let mut started = 0u32;
+        for t in &tunnels {
+            if t.status == VpnStatus::Up {
+                if let Err(e) = self.start_tunnel(t.id).await {
+                    tracing::warn!(id = %t.id, name = %t.name, error = %e, "Failed to restart tunnel");
+                } else {
+                    started += 1;
+                }
+            }
+        }
+        Ok(started)
+    }
+
+    /// Compute the next available IP in a tunnel's subnet for auto-assigning to a new peer.
+    pub async fn next_peer_ip(&self, tunnel_id: Uuid) -> Result<String> {
+        let tunnel = self.get_wg_tunnel(tunnel_id).await?;
+        let addr_str = tunnel.address.to_string();
+        // Parse "10.10.0.1/24" → base "10.10.0", server_last = 1
+        let parts: Vec<&str> = addr_str.split('/').collect();
+        let ip_str = parts[0];
+        let octets: Vec<u8> = ip_str.split('.').filter_map(|o| o.parse().ok()).collect();
+        if octets.len() != 4 {
+            return Err(AifwError::Validation("Invalid tunnel address".to_string()));
+        }
+
+        // Collect existing peer IPs
+        let peers = self.list_wg_peers(tunnel_id).await?;
+        let used: std::collections::HashSet<String> = peers.iter()
+            .flat_map(|p| p.allowed_ips.iter().map(|a| {
+                a.to_string().split('/').next().unwrap_or("").to_string()
+            }))
+            .collect();
+
+        // Find next free IP in the /24 (or smaller) range
+        let base = [octets[0], octets[1], octets[2]];
+        for last in 2u8..=254 {
+            let candidate = format!("{}.{}.{}.{}", base[0], base[1], base[2], last);
+            if candidate != ip_str && !used.contains(&candidate) {
+                return Ok(format!("{candidate}/32"));
+            }
+        }
+        Err(AifwError::Validation("No free IPs in tunnel subnet".to_string()))
     }
 
     // ============================================================

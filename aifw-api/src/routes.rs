@@ -1675,8 +1675,51 @@ pub async fn delete_wg_tunnel(
     Path(id): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    // Stop tunnel if running before deleting
+    let _ = state.vpn_engine.stop_tunnel(uuid).await;
     state.vpn_engine.delete_wg_tunnel(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(MessageResponse { message: format!("WG tunnel {id} deleted") }))
+}
+
+pub async fn start_wg_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    state.vpn_engine.start_tunnel(uuid).await.map_err(|e| {
+        tracing::error!("Failed to start tunnel: {e}");
+        internal()
+    })?;
+    // Apply VPN pf rules so the tunnel's traffic is allowed
+    let _ = state.vpn_engine.apply_vpn_rules().await;
+    Ok(Json(MessageResponse { message: "Tunnel started".to_string() }))
+}
+
+pub async fn stop_wg_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    state.vpn_engine.stop_tunnel(uuid).await.map_err(|_| internal())?;
+    Ok(Json(MessageResponse { message: "Tunnel stopped".to_string() }))
+}
+
+pub async fn wg_tunnel_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let status = state.vpn_engine.tunnel_status(uuid).await.map_err(|_| internal())?;
+    Ok(Json(status))
+}
+
+pub async fn next_wg_peer_ip(
+    State(state): State<AppState>,
+    Path(tunnel_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let tid = Uuid::parse_str(&tunnel_id).map_err(|_| bad_request())?;
+    let ip = state.vpn_engine.next_peer_ip(tid).await.map_err(|_| internal())?;
+    Ok(Json(serde_json::json!({ "next_ip": ip })))
 }
 
 // --- VPN: WireGuard Peers ---
@@ -1716,7 +1759,13 @@ pub async fn create_wg_peer(
     Json(req): Json<CreateWgPeerRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<WgPeer>>), StatusCode> {
     let tid = Uuid::parse_str(&tunnel_id).map_err(|_| bad_request())?;
-    let allowed_ips: Vec<Address> = req.allowed_ips
+    // Auto-assign IP if allowed_ips is empty or "auto"
+    let ips_str = if req.allowed_ips.trim().is_empty() || req.allowed_ips.trim() == "auto" {
+        state.vpn_engine.next_peer_ip(tid).await.map_err(|_| bad_request())?
+    } else {
+        req.allowed_ips.clone()
+    };
+    let allowed_ips: Vec<Address> = ips_str
         .split(',')
         .map(|s| Address::parse(s.trim()))
         .collect::<aifw_common::Result<Vec<_>>>()

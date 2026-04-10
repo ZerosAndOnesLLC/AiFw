@@ -352,6 +352,35 @@ export default function VpnPage() {
     setShowWgForm(false);
   };
 
+  const handleStartTunnel = async (id: string) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/v1/vpn/wg/${id}/start`, { method: "POST" });
+      await fetchTunnels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start tunnel");
+    }
+  };
+
+  const handleStopTunnel = async (id: string) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/v1/vpn/wg/${id}/stop`, { method: "POST" });
+      await fetchTunnels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to stop tunnel");
+    }
+  };
+
+  const handleAutoAssignIp = async (tunnelId: string) => {
+    try {
+      const res = await apiFetch<{ next_ip: string }>(`/api/v1/vpn/wg/${tunnelId}/peers/next-ip`);
+      setPeerForm((f) => ({ ...f, allowed_ips: res.next_ip }));
+    } catch {
+      setError("No free IPs in tunnel subnet");
+    }
+  };
+
   /* ────────────────────────── Peer CRUD ────────────────────────── */
 
   const handlePeerSubmit = async (tunnelId: string) => {
@@ -677,6 +706,15 @@ export default function VpnPage() {
                             <StatusBadge status={tunnel.status} />
                           </button>
                           <div className="flex items-center gap-1">
+                            {tunnel.status === "up" ? (
+                              <button onClick={() => handleStopTunnel(tunnel.id)}
+                                className="px-2.5 py-1 text-[10px] font-medium rounded bg-red-600 hover:bg-red-700 text-white transition-colors"
+                                title="Stop tunnel">Stop</button>
+                            ) : (
+                              <button onClick={() => handleStartTunnel(tunnel.id)}
+                                className="px-2.5 py-1 text-[10px] font-medium rounded bg-green-600 hover:bg-green-700 text-white transition-colors"
+                                title="Start tunnel">Start</button>
+                            )}
                             <EditButton onClick={() => handleEditWg(tunnel)} title="Edit tunnel" />
                             <DeleteButton onClick={() => handleDeleteWg(tunnel.id)} title="Delete tunnel" />
                           </div>
@@ -742,14 +780,19 @@ export default function VpnPage() {
                                   />
                                 </div>
                                 <div>
-                                  <label className={labelCls}>Allowed IPs (client address)</label>
-                                  <input
-                                    type="text"
-                                    value={peerForm.allowed_ips}
-                                    onChange={(e) => setPeerForm((f) => ({ ...f, allowed_ips: e.target.value }))}
-                                    placeholder="10.0.0.2/32"
-                                    className={inputCls}
-                                  />
+                                  <label className={labelCls}>Client IP</label>
+                                  <div className="flex gap-1">
+                                    <input
+                                      type="text"
+                                      value={peerForm.allowed_ips}
+                                      onChange={(e) => setPeerForm((f) => ({ ...f, allowed_ips: e.target.value }))}
+                                      placeholder="10.10.0.2/32"
+                                      className={inputCls}
+                                    />
+                                    <button type="button" onClick={() => handleAutoAssignIp(tunnel.id)}
+                                      className="px-2 py-1 text-[10px] font-medium rounded bg-purple-600 hover:bg-purple-700 text-white whitespace-nowrap transition-colors"
+                                      title="Auto-assign next free IP">Auto</button>
+                                  </div>
                                 </div>
                                 <div>
                                   <label className={labelCls}>Keepalive (sec)</label>

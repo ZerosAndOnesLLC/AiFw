@@ -253,7 +253,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
     let vpn_read = Router::new()
         .route("/api/v1/vpn/wg", get(routes::list_wg_tunnels))
         .route("/api/v1/vpn/wg/{id}/peers", get(routes::list_wg_peers))
+        .route("/api/v1/vpn/wg/{id}/peers/next-ip", get(routes::next_wg_peer_ip))
         .route("/api/v1/vpn/wg/{tid}/peers/{pid}/config", get(routes::get_peer_config))
+        .route("/api/v1/vpn/wg/{id}/status", get(routes::wg_tunnel_status))
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas))
         .layer(middleware::from_fn(perm_check!(Permission::VpnRead)));
 
@@ -261,6 +263,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
     let vpn_write = Router::new()
         .route("/api/v1/vpn/wg", post(routes::create_wg_tunnel))
         .route("/api/v1/vpn/wg/{id}", put(routes::update_wg_tunnel).delete(routes::delete_wg_tunnel))
+        .route("/api/v1/vpn/wg/{id}/start", post(routes::start_wg_tunnel))
+        .route("/api/v1/vpn/wg/{id}/stop", post(routes::stop_wg_tunnel))
         .route("/api/v1/vpn/wg/{id}/peers", post(routes::create_wg_peer))
         .route("/api/v1/vpn/wg/{tid}/peers/{pid}", put(routes::update_wg_peer).delete(routes::delete_wg_peer))
         .route("/api/v1/vpn/ipsec", post(routes::create_ipsec_sa))
@@ -949,6 +953,18 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("Failed to apply NAT rules on startup: {e}");
     } else {
         tracing::info!("NAT rules applied on startup");
+    }
+
+    // Apply VPN pf rules and restart active tunnels
+    if let Err(e) = state.vpn_engine.apply_vpn_rules().await {
+        tracing::warn!("Failed to apply VPN pf rules on startup: {e}");
+    } else {
+        tracing::info!("VPN pf rules applied on startup");
+    }
+    match state.vpn_engine.start_active_tunnels().await {
+        Ok(n) if n > 0 => tracing::info!(count = n, "WireGuard tunnels restarted on startup"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Failed to restart WireGuard tunnels: {e}"),
     }
 
     // Start persistent pflog0 live capture for blocked traffic page (background, non-blocking)
