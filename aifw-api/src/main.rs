@@ -253,6 +253,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
     let vpn_read = Router::new()
         .route("/api/v1/vpn/wg", get(routes::list_wg_tunnels))
         .route("/api/v1/vpn/wg/{id}/peers", get(routes::list_wg_peers))
+        .route("/api/v1/vpn/wg/{tid}/peers/{pid}/config", get(routes::get_peer_config))
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas))
         .layer(middleware::from_fn(perm_check!(Permission::VpnRead)));
 
@@ -261,7 +262,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/vpn/wg", post(routes::create_wg_tunnel))
         .route("/api/v1/vpn/wg/{id}", put(routes::update_wg_tunnel).delete(routes::delete_wg_tunnel))
         .route("/api/v1/vpn/wg/{id}/peers", post(routes::create_wg_peer))
-        .route("/api/v1/vpn/wg/{tid}/peers/{pid}", delete(routes::delete_wg_peer))
+        .route("/api/v1/vpn/wg/{tid}/peers/{pid}", put(routes::update_wg_peer).delete(routes::delete_wg_peer))
         .route("/api/v1/vpn/ipsec", post(routes::create_ipsec_sa))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
         .layer(middleware::from_fn(perm_check!(Permission::VpnWrite)));

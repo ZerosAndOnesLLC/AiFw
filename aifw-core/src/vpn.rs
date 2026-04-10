@@ -65,6 +65,11 @@ impl VpnEngine {
         .execute(&self.pool)
         .await?;
 
+        // Add client_private_key column if missing (idempotent migration)
+        let _ = sqlx::query("ALTER TABLE wg_peers ADD COLUMN client_private_key TEXT")
+            .execute(&self.pool)
+            .await;
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS ipsec_sas (
@@ -177,9 +182,9 @@ impl VpnEngine {
 
         sqlx::query(
             r#"
-            INSERT INTO wg_peers (id, tunnel_id, name, public_key, preshared_key, endpoint,
-                allowed_ips, persistent_keepalive, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            INSERT INTO wg_peers (id, tunnel_id, name, public_key, preshared_key, client_private_key,
+                endpoint, allowed_ips, persistent_keepalive, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
         )
         .bind(peer.id.to_string())
@@ -187,6 +192,7 @@ impl VpnEngine {
         .bind(&peer.name)
         .bind(&peer.public_key)
         .bind(peer.preshared_key.as_deref())
+        .bind(peer.client_private_key.as_deref())
         .bind(peer.endpoint.as_deref())
         .bind(allowed_ips.join(","))
         .bind(peer.persistent_keepalive.map(|k| k as i64))
@@ -207,6 +213,39 @@ impl VpnEngine {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(|r| r.into_peer()).collect()
+    }
+
+    pub async fn get_wg_peer(&self, id: Uuid) -> Result<WgPeer> {
+        let row = sqlx::query_as::<_, WgPeerRow>("SELECT * FROM wg_peers WHERE id = ?1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AifwError::NotFound(format!("WG peer {id} not found")))?;
+        row.into_peer()
+    }
+
+    pub async fn update_wg_peer(&self, peer: &WgPeer) -> Result<()> {
+        let allowed_ips: Vec<String> = peer.allowed_ips.iter().map(|a| a.to_string()).collect();
+        sqlx::query(
+            r#"
+            UPDATE wg_peers SET name = ?1, public_key = ?2, preshared_key = ?3,
+                client_private_key = ?4, endpoint = ?5, allowed_ips = ?6,
+                persistent_keepalive = ?7, updated_at = ?8
+            WHERE id = ?9
+            "#,
+        )
+        .bind(&peer.name)
+        .bind(&peer.public_key)
+        .bind(peer.preshared_key.as_deref())
+        .bind(peer.client_private_key.as_deref())
+        .bind(peer.endpoint.as_deref())
+        .bind(allowed_ips.join(","))
+        .bind(peer.persistent_keepalive.map(|k| k as i64))
+        .bind(Utc::now().to_rfc3339())
+        .bind(peer.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn delete_wg_peer(&self, id: Uuid) -> Result<()> {
@@ -351,6 +390,7 @@ struct WgPeerRow {
     name: String,
     public_key: String,
     preshared_key: Option<String>,
+    client_private_key: Option<String>,
     endpoint: Option<String>,
     allowed_ips: String,
     persistent_keepalive: Option<i64>,
@@ -374,6 +414,7 @@ impl WgPeerRow {
             name: self.name,
             public_key: self.public_key,
             preshared_key: self.preshared_key,
+            client_private_key: self.client_private_key,
             endpoint: self.endpoint,
             allowed_ips,
             persistent_keepalive: self.persistent_keepalive.map(|k| k as u16),

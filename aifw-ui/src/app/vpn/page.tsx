@@ -19,10 +19,13 @@ interface WgTunnel {
 interface WgPeer {
   id: string;
   tunnel_id: string;
+  name: string;
   public_key: string;
+  preshared_key: string | null;
+  client_private_key: string | null;
   endpoint: string | null;
   allowed_ips: string;
-  keepalive: number | null;
+  persistent_keepalive: number | null;
   created_at: string;
 }
 
@@ -68,7 +71,10 @@ const defaultWgForm = {
 };
 
 const defaultPeerForm = {
+  name: "",
   public_key: "",
+  preshared_key: "",
+  auto_generate_key: true,
   endpoint: "",
   allowed_ips: "",
   keepalive: "",
@@ -196,6 +202,10 @@ export default function VpnPage() {
   const [showIpsecForm, setShowIpsecForm] = useState(false);
   const [ipsecForm, setIpsecForm] = useState(defaultIpsecForm);
   const [ipsecSubmitting, setIpsecSubmitting] = useState(false);
+
+  /* ── Config modal ── */
+  const [configModal, setConfigModal] = useState<{ peerName: string; config: string } | null>(null);
+  const [configCopied, setConfigCopied] = useState(false);
 
   /* ── Shared ── */
   const [error, setError] = useState<string | null>(null);
@@ -325,16 +335,24 @@ export default function VpnPage() {
 
   const handlePeerSubmit = async (tunnelId: string) => {
     if (peerSubmitting) return;
-    if (!peerForm.public_key.trim() || !peerForm.allowed_ips.trim()) return;
+    if (!peerForm.auto_generate_key && !peerForm.public_key.trim()) return;
+    if (!peerForm.allowed_ips.trim()) return;
     setPeerSubmitting(true);
     setError(null);
     try {
       const body: Record<string, unknown> = {
-        public_key: peerForm.public_key.trim(),
+        name: peerForm.name.trim() || null,
+        auto_generate_key: peerForm.auto_generate_key,
         allowed_ips: peerForm.allowed_ips.trim(),
         endpoint: peerForm.endpoint.trim() || null,
         keepalive: peerForm.keepalive ? parseInt(peerForm.keepalive, 10) : null,
       };
+      if (!peerForm.auto_generate_key) {
+        body.public_key = peerForm.public_key.trim();
+      }
+      if (peerForm.preshared_key.trim()) {
+        body.preshared_key = peerForm.preshared_key.trim();
+      }
       await apiFetch(`/api/v1/vpn/wg/${tunnelId}/peers`, {
         method: "POST",
         body: JSON.stringify(body),
@@ -346,6 +364,24 @@ export default function VpnPage() {
       setError(err instanceof Error ? err.message : "Failed to add peer");
     } finally {
       setPeerSubmitting(false);
+    }
+  };
+
+  const handleShowConfig = async (tunnelId: string, peer: WgPeer) => {
+    try {
+      const res = await apiFetch<{ data: string }>(`/api/v1/vpn/wg/${tunnelId}/peers/${peer.id}/config`);
+      setConfigModal({ peerName: peer.name || peer.public_key.slice(0, 12), config: res.data });
+      setConfigCopied(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to get peer config");
+    }
+  };
+
+  const handleCopyConfig = () => {
+    if (configModal) {
+      navigator.clipboard.writeText(configModal.config);
+      setConfigCopied(true);
+      setTimeout(() => setConfigCopied(false), 2000);
     }
   };
 
@@ -634,29 +670,19 @@ export default function VpnPage() {
                           {/* Add peer form */}
                           {showPeerForm === tunnel.id && (
                             <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 mb-3">
-                              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                                 <div>
-                                  <label className={labelCls}>Public Key</label>
+                                  <label className={labelCls}>Name</label>
                                   <input
                                     type="text"
-                                    value={peerForm.public_key}
-                                    onChange={(e) => setPeerForm((f) => ({ ...f, public_key: e.target.value }))}
-                                    placeholder="Peer public key"
+                                    value={peerForm.name}
+                                    onChange={(e) => setPeerForm((f) => ({ ...f, name: e.target.value }))}
+                                    placeholder="e.g. laptop, phone"
                                     className={inputCls}
                                   />
                                 </div>
                                 <div>
-                                  <label className={labelCls}>Endpoint</label>
-                                  <input
-                                    type="text"
-                                    value={peerForm.endpoint}
-                                    onChange={(e) => setPeerForm((f) => ({ ...f, endpoint: e.target.value }))}
-                                    placeholder="1.2.3.4:51820 (optional)"
-                                    className={inputCls}
-                                  />
-                                </div>
-                                <div>
-                                  <label className={labelCls}>Allowed IPs</label>
+                                  <label className={labelCls}>Allowed IPs (client address)</label>
                                   <input
                                     type="text"
                                     value={peerForm.allowed_ips}
@@ -671,15 +697,55 @@ export default function VpnPage() {
                                     type="number"
                                     value={peerForm.keepalive}
                                     onChange={(e) => setPeerForm((f) => ({ ...f, keepalive: e.target.value }))}
-                                    placeholder="25 (optional)"
+                                    placeholder="25"
                                     className={inputCls}
                                   />
                                 </div>
                               </div>
+                              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
+                                <div className="flex items-end pb-0.5">
+                                  <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-300">
+                                    <input
+                                      type="checkbox"
+                                      checked={peerForm.auto_generate_key}
+                                      onChange={(e) => setPeerForm((f) => ({ ...f, auto_generate_key: e.target.checked }))}
+                                      className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                                    />
+                                    Auto-generate keypair
+                                  </label>
+                                </div>
+                                {!peerForm.auto_generate_key && (
+                                  <div>
+                                    <label className={labelCls}>Public Key</label>
+                                    <input
+                                      type="text"
+                                      value={peerForm.public_key}
+                                      onChange={(e) => setPeerForm((f) => ({ ...f, public_key: e.target.value }))}
+                                      placeholder="Peer public key"
+                                      className={inputCls}
+                                    />
+                                  </div>
+                                )}
+                                <div>
+                                  <label className={labelCls}>Endpoint (optional)</label>
+                                  <input
+                                    type="text"
+                                    value={peerForm.endpoint}
+                                    onChange={(e) => setPeerForm((f) => ({ ...f, endpoint: e.target.value }))}
+                                    placeholder="1.2.3.4:51820"
+                                    className={inputCls}
+                                  />
+                                </div>
+                              </div>
+                              {peerForm.auto_generate_key && (
+                                <p className="text-[10px] text-green-400 mt-2">
+                                  A keypair will be generated automatically. After creating the peer, click the Config button to get a ready-to-use .conf file.
+                                </p>
+                              )}
                               <div className="flex gap-2 mt-3">
                                 <button
                                   onClick={() => handlePeerSubmit(tunnel.id)}
-                                  disabled={peerSubmitting || !peerForm.public_key.trim() || !peerForm.allowed_ips.trim()}
+                                  disabled={peerSubmitting || (!peerForm.auto_generate_key && !peerForm.public_key.trim()) || !peerForm.allowed_ips.trim()}
                                   className={btnPrimary}
                                 >
                                   {peerSubmitting ? "Adding..." : "Add Peer"}
@@ -706,40 +772,57 @@ export default function VpnPage() {
                                 <thead>
                                   <tr className="border-b border-gray-700/50">
                                     <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
-                                      Public Key
+                                      Name
                                     </th>
                                     <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
-                                      Endpoint
+                                      Public Key
                                     </th>
                                     <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
                                       Allowed IPs
                                     </th>
                                     <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
+                                      Endpoint
+                                    </th>
+                                    <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
                                       Keepalive
                                     </th>
-                                    <th className="w-10" />
+                                    <th className="w-20" />
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {peers.map((peer) => (
                                     <tr key={peer.id} className="border-b border-gray-700/30 hover:bg-gray-800/50">
-                                      <td className="py-2 px-2 font-mono text-gray-300 truncate max-w-[200px]">
-                                        {peer.public_key}
+                                      <td className="py-2 px-2 text-white font-medium">
+                                        {peer.name || "-"}
                                       </td>
-                                      <td className="py-2 px-2 font-mono text-gray-400">
-                                        {peer.endpoint || "-"}
+                                      <td className="py-2 px-2 font-mono text-gray-300 truncate max-w-[160px]">
+                                        {peer.public_key.slice(0, 16)}...
                                       </td>
                                       <td className="py-2 px-2 font-mono text-gray-300">
                                         {peer.allowed_ips}
                                       </td>
+                                      <td className="py-2 px-2 font-mono text-gray-400">
+                                        {peer.endpoint || "-"}
+                                      </td>
                                       <td className="py-2 px-2 text-gray-400">
-                                        {peer.keepalive != null ? `${peer.keepalive}s` : "off"}
+                                        {peer.persistent_keepalive != null ? `${peer.persistent_keepalive}s` : "off"}
                                       </td>
                                       <td className="py-2 px-1">
-                                        <DeleteButton
-                                          onClick={() => handleDeletePeer(tunnel.id, peer.id)}
-                                          title="Delete peer"
-                                        />
+                                        <div className="flex items-center gap-0.5">
+                                          <button
+                                            onClick={() => handleShowConfig(tunnel.id, peer)}
+                                            className="p-1.5 text-gray-500 hover:text-green-400 transition-colors rounded hover:bg-gray-700"
+                                            title="Show client config"
+                                          >
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                                            </svg>
+                                          </button>
+                                          <DeleteButton
+                                            onClick={() => handleDeletePeer(tunnel.id, peer.id)}
+                                            title="Delete peer"
+                                          />
+                                        </div>
                                       </td>
                                     </tr>
                                   ))}
@@ -944,6 +1027,55 @@ export default function VpnPage() {
           </div>
         )}
       </div>
+
+      {/* ═══════════════ Config Modal ═══════════════ */}
+      {configModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setConfigModal(null)} />
+          <div className="relative w-full max-w-2xl bg-gray-800 border border-gray-700 rounded-xl shadow-2xl m-4">
+            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">
+                Client Config — {configModal.peerName}
+              </h3>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCopyConfig}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    configCopied
+                      ? "bg-green-600 text-white"
+                      : "bg-blue-600 hover:bg-blue-700 text-white"
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    {configCopied ? (
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    ) : (
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" />
+                    )}
+                  </svg>
+                  {configCopied ? "Copied!" : "Copy"}
+                </button>
+                <button
+                  onClick={() => setConfigModal(null)}
+                  className="p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-gray-700"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div className="p-6">
+              <p className="text-xs text-gray-400 mb-3">
+                Paste this into your WireGuard client app or save as a .conf file.
+              </p>
+              <pre className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-sm font-mono text-green-400 whitespace-pre-wrap select-all overflow-x-auto">
+                {configModal.config}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

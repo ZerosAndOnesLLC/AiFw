@@ -1681,10 +1681,21 @@ pub async fn delete_wg_tunnel(
 #[derive(Debug, Deserialize)]
 pub struct CreateWgPeerRequest {
     pub name: Option<String>,
-    pub public_key: String,
+    pub public_key: Option<String>,
+    pub preshared_key: Option<String>,
+    pub auto_generate_key: Option<bool>,
     pub endpoint: Option<String>,
     pub allowed_ips: String,
     pub keepalive: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateWgPeerRequest {
+    pub name: Option<String>,
+    pub endpoint: Option<String>,
+    pub allowed_ips: Option<String>,
+    pub keepalive: Option<u16>,
+    pub preshared_key: Option<String>,
 }
 
 pub async fn list_wg_peers(
@@ -1707,12 +1718,59 @@ pub async fn create_wg_peer(
         .map(|s| Address::parse(s.trim()))
         .collect::<aifw_common::Result<Vec<_>>>()
         .map_err(|_| bad_request())?;
-    let mut peer = WgPeer::new(tid, req.name.unwrap_or_default(), req.public_key);
+
+    let auto_gen = req.auto_generate_key.unwrap_or(false);
+    let mut peer = if auto_gen {
+        WgPeer::new_with_generated_key(tid, req.name.unwrap_or_default())
+    } else {
+        let pk = req.public_key.unwrap_or_default();
+        if pk.is_empty() {
+            return Err(bad_request());
+        }
+        WgPeer::new(tid, req.name.unwrap_or_default(), pk)
+    };
     peer.allowed_ips = allowed_ips;
     peer.endpoint = req.endpoint;
     peer.persistent_keepalive = req.keepalive;
+    peer.preshared_key = req.preshared_key;
     let peer = state.vpn_engine.add_wg_peer(peer).await.map_err(|_| bad_request())?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: peer })))
+}
+
+pub async fn update_wg_peer(
+    State(state): State<AppState>,
+    Path((_tid, pid)): Path<(String, String)>,
+    Json(req): Json<UpdateWgPeerRequest>,
+) -> Result<Json<ApiResponse<WgPeer>>, StatusCode> {
+    let uuid = Uuid::parse_str(&pid).map_err(|_| bad_request())?;
+    let mut peer = state.vpn_engine.get_wg_peer(uuid).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    if let Some(name) = req.name { peer.name = name; }
+    if let Some(ep) = req.endpoint { peer.endpoint = if ep.is_empty() { None } else { Some(ep) }; }
+    if let Some(ref ips) = req.allowed_ips {
+        peer.allowed_ips = ips.split(',')
+            .map(|s| Address::parse(s.trim()))
+            .collect::<aifw_common::Result<Vec<_>>>()
+            .map_err(|_| bad_request())?;
+    }
+    if let Some(ka) = req.keepalive { peer.persistent_keepalive = if ka == 0 { None } else { Some(ka) }; }
+    if let Some(psk) = req.preshared_key { peer.preshared_key = if psk.is_empty() { None } else { Some(psk) }; }
+    state.vpn_engine.update_wg_peer(&peer).await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: peer }))
+}
+
+pub async fn get_peer_config(
+    State(state): State<AppState>,
+    Path((tid, pid)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    let tunnel_id = Uuid::parse_str(&tid).map_err(|_| bad_request())?;
+    let peer_id = Uuid::parse_str(&pid).map_err(|_| bad_request())?;
+    let tunnel = state.vpn_engine.get_wg_tunnel(tunnel_id).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    let peer = state.vpn_engine.get_wg_peer(peer_id).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    // Use the firewall's address as the server endpoint (strip CIDR prefix)
+    let server_addr = tunnel.address.to_string();
+    let server_endpoint = server_addr.split('/').next().unwrap_or(&server_addr);
+    let config = peer.to_client_config(&tunnel, server_endpoint);
+    Ok(Json(ApiResponse { data: config }))
 }
 
 pub async fn delete_wg_peer(
