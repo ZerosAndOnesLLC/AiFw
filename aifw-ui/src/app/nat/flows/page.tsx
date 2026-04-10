@@ -117,8 +117,8 @@ export default function NatFlowsPage() {
       if (!isPrivateIp(c.src_addr)) continue;
       const sn = getSubnet24(c.src_addr);
       if (!subnets[sn]) subnets[sn] = { in: 0, out: 0 };
-      subnets[sn].in += c.bytes_in || 0;   // bytes coming in to this client = downstream
-      subnets[sn].out += c.bytes_out || 0;  // bytes going out from this client = upstream
+      subnets[sn].in += c.bytes_out || 0;   // bytes FROM dst (server→client) = downstream to client
+      subnets[sn].out += c.bytes_in || 0;   // bytes FROM src (client→server) = upstream from client
     }
     const prev = prevSubnetBytes.current;
     const newRates: Record<string, { in: number; out: number }> = {};
