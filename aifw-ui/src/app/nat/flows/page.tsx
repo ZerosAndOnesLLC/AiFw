@@ -84,6 +84,8 @@ export default function NatFlowsPage() {
   const [groupBySubnet, setGroupBySubnet] = useState(true);
   const prevBytes = useRef<Record<string, { in: number; out: number }>>({});
   const [rates, setRates] = useState<Record<string, { in: number; out: number }>>({});
+  const prevSubnetBytes = useRef<Record<string, { in: number; out: number }>>({});
+  const [subnetLiveRates, setSubnetLiveRates] = useState<Record<string, { in: number; out: number }>>({});
 
   const ifaces = ws.interfaces as Iface[];
   const connections = ws.connections as Conn[];
@@ -106,6 +108,31 @@ export default function NatFlowsPage() {
     prevBytes.current = Object.fromEntries(ifaces.map(i => [i.name, { in: i.bytes_in, out: i.bytes_out }]));
     if (Object.keys(newRates).length > 0) setRates(newRates);
   }, [ws.status, ifaces]);
+
+  // Compute per-subnet live rates from connection byte totals
+  useEffect(() => {
+    if (!connections.length) return;
+    const subnets: Record<string, { in: number; out: number }> = {};
+    for (const c of connections) {
+      if (!isPrivateIp(c.src_addr)) continue;
+      const sn = getSubnet24(c.src_addr);
+      if (!subnets[sn]) subnets[sn] = { in: 0, out: 0 };
+      subnets[sn].in += c.bytes_in || 0;   // bytes coming in to this client = downstream
+      subnets[sn].out += c.bytes_out || 0;  // bytes going out from this client = upstream
+    }
+    const prev = prevSubnetBytes.current;
+    const newRates: Record<string, { in: number; out: number }> = {};
+    for (const [sn, cur] of Object.entries(subnets)) {
+      if (prev[sn]) {
+        newRates[sn] = {
+          in: Math.max(0, (cur.in - prev[sn].in) * 8),
+          out: Math.max(0, (cur.out - prev[sn].out) * 8),
+        };
+      }
+    }
+    prevSubnetBytes.current = subnets;
+    if (Object.keys(newRates).length > 0) setSubnetLiveRates(newRates);
+  }, [ws.status, connections]);
 
   // Only include private (LAN) IPs as hosts
   const lanHosts = useMemo(() => {
@@ -154,13 +181,15 @@ export default function NatFlowsPage() {
     return { in: acc.in + r.in, out: acc.out + r.out };
   }, { in: 0, out: 0 });
 
-  // Compute per-subnet rates (proportional by bytes)
-  const totalLanBytes = lanSubnets.reduce((s, sn) => s + sn.bytes, 0) || 1;
-  const subnetRates = (items: typeof displayItems) => items.map(sn => {
-    const frac = sn.bytes / totalLanBytes;
-    return { in: lanRate.out * frac, out: lanRate.in * frac }; // swap: LAN iface "out" = data going to clients
+  // Per-subnet rates from connection byte deltas (accurate per-subnet)
+  const sRates = displayItems.map(sn => {
+    if (groupBySubnet) {
+      // Sum live rates for all subnets that roll up to this group
+      return subnetLiveRates[sn.subnet] || { in: 0, out: 0 };
+    }
+    // Individual host mode — use the host's subnet rate as approximation
+    return subnetLiveRates[getSubnet24(sn.subnet)] || { in: 0, out: 0 };
   });
-  const sRates = subnetRates(displayItems);
 
   // SVG topology layout
   const svgW = 800;
