@@ -2546,9 +2546,19 @@ pub async fn update_dns(
         .collect::<Vec<_>>()
         .join("\n");
 
-    tokio::fs::write("/etc/resolv.conf", &content)
-        .await
+    // Write via sudo tee — aifw user can't write root-owned /etc/resolv.conf
+    let mut child = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["tee", "/etc/resolv.conf"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
         .map_err(|_| internal())?;
+
+    if let Some(ref mut stdin) = child.stdin {
+        use tokio::io::AsyncWriteExt;
+        stdin.write_all(content.as_bytes()).await.map_err(|_| internal())?;
+    }
+    child.wait().await.map_err(|_| internal())?;
 
     Ok(Json(MessageResponse {
         message: "DNS configuration updated".to_string(),
