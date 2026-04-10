@@ -117,16 +117,39 @@ impl NatRule {
         }
     }
 
-    /// Generate the pf NAT rule syntax
-    pub fn to_pf_rule(&self) -> String {
+    /// Generate the pf NAT rule syntax (may return multiple rules for DNAT + reflection)
+    pub fn to_pf_rules(&self) -> Vec<String> {
         match self.nat_type {
-            NatType::Snat => self.to_pf_nat(),
-            NatType::Dnat => self.to_pf_rdr(),
-            NatType::Masquerade => self.to_pf_masquerade(),
-            NatType::Binat => self.to_pf_binat(),
-            NatType::Nat64 => self.to_pf_nat64(),
-            NatType::Nat46 => self.to_pf_nat46(),
+            NatType::Snat => vec![self.to_pf_nat()],
+            NatType::Dnat => {
+                let mut rules = vec![self.to_pf_rdr()];
+                // NAT reflection: SNAT forwarded traffic so replies route back through the firewall.
+                // Without this, the redirect target may reply directly to the client (asymmetric routing),
+                // causing pf to drop the return packets because they don't match any state.
+                rules.push(self.to_pf_rdr_reflection());
+                rules
+            }
+            NatType::Masquerade => vec![self.to_pf_masquerade()],
+            NatType::Binat => vec![self.to_pf_binat()],
+            NatType::Nat64 => vec![self.to_pf_nat64()],
+            NatType::Nat46 => vec![self.to_pf_nat46()],
         }
+    }
+
+    /// Legacy single-rule accessor (for callers that expect one string)
+    pub fn to_pf_rule(&self) -> String {
+        self.to_pf_rules().join("\n")
+    }
+
+    /// NAT reflection companion for rdr rules.
+    /// `nat on <iface> [proto <proto>] from any to <redirect_addr> [port <port>] -> (<iface>)`
+    /// Ensures return traffic from the redirect target routes back through the firewall.
+    fn to_pf_rdr_reflection(&self) -> String {
+        let mut parts = vec![format!("nat on {}", self.interface)];
+        self.push_proto(&mut parts);
+        parts.push(format!("from any to {}", self.redirect));
+        parts.push(format!("-> ({})", self.interface));
+        parts.join(" ")
     }
 
     /// `nat on <iface> [proto <proto>] from <src> to <dst> -> <redirect>`

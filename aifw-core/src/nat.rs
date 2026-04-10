@@ -190,7 +190,7 @@ impl NatEngine {
     /// Generate pf NAT rules and load them into the anchor
     pub async fn apply_rules(&self) -> Result<()> {
         let rules = self.list_active_rules().await?;
-        let pf_rules: Vec<String> = rules.iter().map(|r| r.to_pf_rule()).collect();
+        let pf_rules: Vec<String> = rules.iter().flat_map(|r| r.to_pf_rules()).collect();
 
         tracing::info!(
             anchor = %self.anchor,
