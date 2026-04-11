@@ -103,8 +103,11 @@ export default function NatFlowsPage() {
   const ifaces = ws.interfaces as Iface[];
   const connections = ws.connections as Conn[];
 
-  const wanIface = ifaces.find(i => i.role === "WAN") || ifaces[0];
-  const lanIfaces = ifaces.filter(i => i.name !== wanIface?.name);
+  const wanIfaces = ifaces.filter(i => i.role === "WAN");
+  // If no role assigned yet, treat the first interface as WAN
+  if (wanIfaces.length === 0 && ifaces.length > 0) wanIfaces.push(ifaces[0]);
+  const wanNames = new Set(wanIfaces.map(i => i.name));
+  const lanIfaces = ifaces.filter(i => !wanNames.has(i.name));
 
   useEffect(() => {
     if (!ifaces.length) return;
@@ -187,9 +190,8 @@ export default function NatFlowsPage() {
       })
     : [];
 
-  const wanRate = rates[wanIface?.name || ""] || { in: 0, out: 0 };
-  // Aggregate LAN rate from all LAN interfaces
-  const lanRate = lanIfaces.reduce((acc, i) => {
+  // Aggregate WAN rate across all WAN interfaces
+  const wanRate = wanIfaces.reduce((acc, i) => {
     const r = rates[i.name] || { in: 0, out: 0 };
     return { in: acc.in + r.in, out: acc.out + r.out };
   }, { in: 0, out: 0 });
@@ -283,23 +285,27 @@ export default function NatFlowsPage() {
           </div>
           <p className="text-xs font-medium text-white mt-1.5">Internet</p>
 
-          {/* WAN pipe */}
-          <div className="my-1 flex flex-col items-center">
-            <VPipe rateIn={wanRate.in} rateOut={wanRate.out} height={40} />
-            <div className="flex gap-3 mt-0.5 text-[9px]">
-              <span className="text-emerald-400">{formatBps(wanRate.in)}</span>
-              <span className="text-blue-400">{formatBps(wanRate.out)}</span>
-            </div>
+          {/* WAN interfaces — each gets its own pipe from Internet to AiFw */}
+          <div className="flex justify-center gap-6 my-1">
+            {wanIfaces.map(wan => {
+              const wr = rates[wan.name] || { in: 0, out: 0 };
+              return (
+                <div key={wan.name} className="flex flex-col items-center">
+                  <VPipe rateIn={wr.in} rateOut={wr.out} height={32} />
+                  <div className="px-3 py-1 rounded-lg bg-blue-500/15 border border-blue-500/30 text-center">
+                    <span className="text-xs font-bold text-blue-400">{wan.name}</span>
+                    <span className="text-[10px] text-blue-300/60 ml-1">WAN</span>
+                    {wan.address && <span className="text-[9px] text-gray-500 ml-1">{wan.address}</span>}
+                  </div>
+                  <div className="flex gap-2 mt-0.5 text-[9px]">
+                    <span className="text-emerald-400">{formatBps(wr.in)}</span>
+                    <span className="text-blue-400">{formatBps(wr.out)}</span>
+                  </div>
+                  <VPipe rateIn={wr.in} rateOut={wr.out} height={16} />
+                </div>
+              );
+            })}
           </div>
-
-          {/* WAN interface badge */}
-          <div className="px-4 py-1.5 rounded-lg bg-blue-500/15 border border-blue-500/30 text-center">
-            <span className="text-xs font-bold text-blue-400">{wanIface?.name || "?"}</span>
-            <span className="text-[10px] text-blue-300/60 ml-1.5">WAN</span>
-          </div>
-
-          {/* Pipe to firewall */}
-          <VPipe rateIn={wanRate.in} rateOut={wanRate.out} height={16} />
 
           {/* Firewall */}
           <div className="w-28 h-28 rounded-2xl bg-gradient-to-br from-amber-500/20 to-red-500/15 border-2 border-amber-500/30 flex flex-col items-center justify-center shadow-lg shadow-amber-500/10">
