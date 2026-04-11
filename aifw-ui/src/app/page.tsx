@@ -519,22 +519,22 @@ export default function Dashboard() {
         </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="CPU" height={150} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="CPU" height={225} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "cpu", color: "#3b82f6", label: "CPU" }]}
           getValue={(d, k) => k === "cpu" ? d.cpu : 0}
           maxValue={100} formatY={v => `${v.toFixed(0)}%`}
         />
-        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Memory" height={150} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Memory" height={225} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "mem", color: "#8b5cf6", label: "Memory" }]}
           getValue={(d, k) => k === "mem" ? d.memPct : 0}
           maxValue={100} formatY={v => `${v.toFixed(0)}%`}
         />
-        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Disk I/O" height={150} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Disk I/O" height={225} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "read", color: "#22c55e", label: "Read" }, { key: "write", color: "#f97316", label: "Write" }]}
           getValue={(d, k) => k === "read" ? d.diskReadKbps : d.diskWriteKbps}
           formatY={v => v >= 1024 ? `${(v / 1024).toFixed(0)} MB/s` : `${v.toFixed(0)} KB/s`}
         />
-        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Network" height={150} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Network" height={225} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "in", color: "#22c55e", label: "In" }, { key: "out", color: "#3b82f6", label: "Out" }]}
           getValue={(d, k) => k === "in" ? d.bpsIn : d.bpsOut}
           formatY={formatBps}
