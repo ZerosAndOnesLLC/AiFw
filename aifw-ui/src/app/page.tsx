@@ -192,6 +192,11 @@ export default function Dashboard() {
 
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [modal, setModal] = useState<"system" | "talkers" | "blocked" | null>(null);
+  const [svcStatus, setSvcStatus] = useState<{
+    dns: { running: boolean; version: string; total_hosts: number; total_domains: number; total_acls: number; queries_total: number; cache_hits: number; cache_misses: number } | null;
+    dhcp: { running: boolean; version: string; total_subnets: number; active_leases: number; total_reservations: number } | null;
+    time: { running: boolean; version: string; sources_count: number } | null;
+  }>({ dns: null, dhcp: null, time: null });
   const [rateIn, setRateIn] = useState(0);
   const [rateOut, setRateOut] = useState(0);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -327,6 +332,28 @@ export default function Dashboard() {
     ifaces.map(i => ({ name: i.name })),
     [ifaces]
   );
+
+  // Fetch DNS/DHCP/Time status on mount + every 30s
+  useEffect(() => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+    if (!token) return;
+    const headers = { Authorization: `Bearer ${token}` };
+    const fetchSvc = async () => {
+      const [dnsRes, dhcpRes, timeRes] = await Promise.allSettled([
+        fetch("/api/v1/dns/resolver/status", { headers }).then(r => r.ok ? r.json() : null),
+        fetch("/api/v1/dhcp/status", { headers }).then(r => r.ok ? r.json() : null),
+        fetch("/api/v1/time/status", { headers }).then(r => r.ok ? r.json() : null),
+      ]);
+      setSvcStatus({
+        dns: dnsRes.status === "fulfilled" ? dnsRes.value : null,
+        dhcp: dhcpRes.status === "fulfilled" ? dhcpRes.value : null,
+        time: timeRes.status === "fulfilled" ? timeRes.value : null,
+      });
+    };
+    fetchSvc();
+    const iv = setInterval(fetchSvc, 30000);
+    return () => clearInterval(iv);
+  }, []);
 
   const blocked = (ws.blocked || []) as unknown as { timestamp: string; action: string; direction: string; interface: string; protocol: string; src_addr: string; src_port: number; dst_addr: string; dst_port: number }[];
 
@@ -584,57 +611,72 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* IDS Recent Alerts (if available) */}
-      {ids && ids.recent_alerts.length > 0 && (
+      {/* Service Overview — DNS, DHCP, Time */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {/* DNS */}
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-2">Latest IDS Alerts</h3>
-          <div className="space-y-1">
-            {ids.recent_alerts.slice(0, 5).map((a, i) => (
-              <div key={i} className="flex items-center gap-2 text-[11px] py-1 px-2 rounded bg-[var(--bg-primary)]">
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                  a.severity <= 1 ? "bg-red-500" : a.severity <= 2 ? "bg-orange-500" : a.severity <= 3 ? "bg-yellow-500" : "bg-blue-500"
-                }`} />
-                <span className="truncate flex-1">{a.signature_msg}</span>
-                <span className="font-mono text-[10px] text-[var(--text-muted)] flex-shrink-0">{a.src_ip}</span>
-                <span className="text-[10px] text-[var(--text-muted)] flex-shrink-0 uppercase">{a.protocol}</span>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] text-[var(--text-muted)] uppercase font-medium">DNS Resolver</span>
+            {svcStatus.dns !== null && (
+              <div className="flex items-center gap-1">
+                <div className={`w-1.5 h-1.5 rounded-full ${svcStatus.dns.running ? "bg-green-500" : "bg-red-500"}`} />
+                <span className="text-[10px] text-[var(--text-muted)]">{svcStatus.dns.running ? "Running" : "Stopped"}</span>
               </div>
-            ))}
+            )}
           </div>
-        </div>
-      )}
-
-      {/* Connections Table */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-[var(--border)] flex items-center justify-between">
-          <h3 className="text-xs font-medium">Active Connections</h3>
-          <span className="text-[10px] text-[var(--text-muted)]">{connections.length} total</span>
-        </div>
-        <div className="overflow-x-auto overflow-y-auto max-h-56">
-          {connections.length === 0 ? (
-            <div className="text-center py-8 text-[var(--text-muted)] text-sm">No active connections</div>
+          {svcStatus.dns ? (
+            <div className="space-y-1 text-[11px]">
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Backend</span><span className="font-mono">{svcStatus.dns.version || "---"}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Queries</span><span className="font-mono text-green-400">{formatNumber(svcStatus.dns.queries_total ?? 0)}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Cache Hit/Miss</span><span className="font-mono"><span className="text-cyan-400">{formatNumber(svcStatus.dns.cache_hits ?? 0)}</span> / <span className="text-yellow-400">{formatNumber(svcStatus.dns.cache_misses ?? 0)}</span></span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Hosts / Domains</span><span className="font-mono">{svcStatus.dns.total_hosts ?? 0} / {svcStatus.dns.total_domains ?? 0}</span></div>
+            </div>
           ) : (
-            <table className="w-full text-[11px] min-w-[600px]">
-              <thead>
-                <tr className="border-b border-[var(--border)]">
-                  <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">Proto</th>
-                  <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">Source</th>
-                  <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">Destination</th>
-                  <th className="text-left py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">State</th>
-                  <th className="text-right py-2 px-3 text-[var(--text-muted)] uppercase text-[9px] tracking-wider">In/Out</th>
-                </tr>
-              </thead>
-              <tbody>
-                {connections.slice(0, 20).map((c, i) => (
-                  <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
-                    <td className="py-1.5 px-3 uppercase text-cyan-400 font-medium">{c.protocol}</td>
-                    <td className="py-1.5 px-3 font-mono">{c.src_addr}:{c.src_port}</td>
-                    <td className="py-1.5 px-3 font-mono">{c.dst_addr}:{c.dst_port}</td>
-                    <td className="py-1.5 px-3 text-[var(--text-secondary)]">{c.state.split(":")[0]}</td>
-                    <td className="py-1.5 px-3 text-right font-mono text-[10px] text-[var(--text-muted)]">{formatBytes(c.bytes_in)} / {formatBytes(c.bytes_out)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="text-[11px] text-[var(--text-muted)]">Loading...</div>
+          )}
+        </div>
+
+        {/* DHCP */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] text-[var(--text-muted)] uppercase font-medium">DHCP Server</span>
+            {svcStatus.dhcp !== null && (
+              <div className="flex items-center gap-1">
+                <div className={`w-1.5 h-1.5 rounded-full ${svcStatus.dhcp.running ? "bg-green-500" : "bg-red-500"}`} />
+                <span className="text-[10px] text-[var(--text-muted)]">{svcStatus.dhcp.running ? "Running" : "Stopped"}</span>
+              </div>
+            )}
+          </div>
+          {svcStatus.dhcp ? (
+            <div className="space-y-1 text-[11px]">
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Version</span><span className="font-mono">{svcStatus.dhcp.version || "---"}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Subnets</span><span className="font-mono text-cyan-400">{svcStatus.dhcp.total_subnets ?? 0}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Active Leases</span><span className="font-mono text-green-400">{svcStatus.dhcp.active_leases ?? 0}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Reservations</span><span className="font-mono text-purple-400">{svcStatus.dhcp.total_reservations ?? 0}</span></div>
+            </div>
+          ) : (
+            <div className="text-[11px] text-[var(--text-muted)]">Loading...</div>
+          )}
+        </div>
+
+        {/* Time */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] text-[var(--text-muted)] uppercase font-medium">Time Sync</span>
+            {svcStatus.time !== null && (
+              <div className="flex items-center gap-1">
+                <div className={`w-1.5 h-1.5 rounded-full ${svcStatus.time.running ? "bg-green-500" : "bg-red-500"}`} />
+                <span className="text-[10px] text-[var(--text-muted)]">{svcStatus.time.running ? "Synced" : "Stopped"}</span>
+              </div>
+            )}
+          </div>
+          {svcStatus.time ? (
+            <div className="space-y-1 text-[11px]">
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Backend</span><span className="font-mono">{svcStatus.time.version || "---"}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Sources</span><span className="font-mono text-cyan-400">{svcStatus.time.sources_count ?? 0}</span></div>
+            </div>
+          ) : (
+            <div className="text-[11px] text-[var(--text-muted)]">Loading...</div>
           )}
         </div>
       </div>
