@@ -52,35 +52,31 @@ function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: numb
   );
 }
 
-/** SVG animated pipe — green(in) dashes flow down, blue(out) dashes flow up.
- *  In and out are rendered on separate offset paths so both are always visible. */
-function SvgPipe({ path, rateIn, rateOut }: { path: string; rateIn: number; rateOut: number; id: string }) {
+/** SVG animated pipe — green(in) + blue(out) as two parallel Bezier paths side-by-side.
+ *  Each direction gets its own curve offset horizontally so both are always visible. */
+function SvgPipe({ pathIn, pathOut, rateIn, rateOut }: { pathIn: string; pathOut: string; rateIn: number; rateOut: number; id: string }) {
   const total = rateIn + rateOut;
-  const width = Math.max(6, Math.min(14, total > 0 ? 4 + Math.log10(Math.max(total, 1)) * 1.2 : 6));
-  const halfStroke = width * 0.4;
-  const offset = Math.max(2, width * 0.3); // horizontal separation between in/out
+  const width = Math.max(8, Math.min(16, total > 0 ? 6 + Math.log10(Math.max(total, 1)) * 1.2 : 8));
+  const strokeW = width * 0.35;
   const inA = Math.min(0.85, rateIn > 0 ? 0.35 + Math.log10(Math.max(rateIn, 1)) / 8 : 0);
   const outA = Math.min(0.85, rateOut > 0 ? 0.35 + Math.log10(Math.max(rateOut, 1)) / 8 : 0);
   return (
     <g>
-      {/* Soft glow */}
-      <path d={path} fill="none" stroke="rgba(100,200,150,0.04)" strokeWidth={width + 12} strokeLinecap="round" />
-      {/* Pipe background */}
-      <path d={path} fill="none" stroke="rgba(51,65,85,0.5)" strokeWidth={width} strokeLinecap="round" />
-      {/* Inbound (green) — shifted left, dashes animate downward */}
-      <g transform={`translate(${-offset / 2}, 0)`}>
-        <path d={path} fill="none" stroke={`rgba(34,197,94,${Math.max(0.2, inA)})`}
-          strokeWidth={halfStroke} strokeDasharray="5 7" strokeLinecap="round">
-          {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
-        </path>
-      </g>
-      {/* Outbound (blue) — shifted right, dashes animate upward */}
-      <g transform={`translate(${offset / 2}, 0)`}>
-        <path d={path} fill="none" stroke={`rgba(59,130,246,${Math.max(0.2, outA)})`}
-          strokeWidth={halfStroke} strokeDasharray="5 7" strokeLinecap="round">
-          {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="12" to="0" dur="0.5s" repeatCount="indefinite" />}
-        </path>
-      </g>
+      {/* Soft glow on inbound path */}
+      <path d={pathIn} fill="none" stroke="rgba(100,200,150,0.03)" strokeWidth={width + 8} strokeLinecap="round" />
+      {/* Pipe backgrounds */}
+      <path d={pathIn} fill="none" stroke="rgba(51,65,85,0.4)" strokeWidth={strokeW + 2} strokeLinecap="round" />
+      <path d={pathOut} fill="none" stroke="rgba(51,65,85,0.4)" strokeWidth={strokeW + 2} strokeLinecap="round" />
+      {/* Inbound (green) — dashes flow downward */}
+      <path d={pathIn} fill="none" stroke={`rgba(34,197,94,${Math.max(0.2, inA)})`}
+        strokeWidth={strokeW} strokeDasharray="5 7" strokeLinecap="round">
+        {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
+      </path>
+      {/* Outbound (blue) — dashes flow upward */}
+      <path d={pathOut} fill="none" stroke={`rgba(59,130,246,${Math.max(0.2, outA)})`}
+        strokeWidth={strokeW} strokeDasharray="5 7" strokeLinecap="round">
+        {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="12" to="0" dur="0.5s" repeatCount="indefinite" />}
+      </path>
     </g>
   );
 }
@@ -300,15 +296,16 @@ export default function NatFlowsPage() {
                 >
                   {displayItems.map((sn, idx) => {
                     const cx = Math.max(svgW, totalSubnetsW + 40) / 2;
-                    const cardX = startX + idx * (subnetCardW + subnetGap) + subnetCardW / 2;
                     // Adjust startX based on actual SVG width
                     const actualW = Math.max(svgW, totalSubnetsW + 40);
                     const actualStartX = (actualW - totalSubnetsW) / 2;
                     const ax = actualStartX + idx * (subnetCardW + subnetGap) + subnetCardW / 2;
-                    // Cubic bezier: start at center top, curve down to subnet position
-                    const path = `M ${cx},${fwY} C ${cx},${subnetY * 0.4} ${ax},${subnetY * 0.5} ${ax},${subnetY}`;
+                    // Two parallel Bezier curves offset horizontally (gap=4px)
+                    const gap = 4;
+                    const pathIn  = `M ${cx - gap},${fwY} C ${cx - gap},${subnetY * 0.4} ${ax - gap},${subnetY * 0.5} ${ax - gap},${subnetY}`;
+                    const pathOut = `M ${cx + gap},${fwY} C ${cx + gap},${subnetY * 0.4} ${ax + gap},${subnetY * 0.5} ${ax + gap},${subnetY}`;
                     return (
-                      <SvgPipe key={sn.subnet} id={`pipe-${idx}`} path={path}
+                      <SvgPipe key={sn.subnet} id={`pipe-${idx}`} pathIn={pathIn} pathOut={pathOut}
                         rateIn={sRates[idx]?.in || 0} rateOut={sRates[idx]?.out || 0} />
                     );
                   })}
