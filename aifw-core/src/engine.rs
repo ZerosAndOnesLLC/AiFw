@@ -14,6 +14,9 @@ pub struct RuleEngine {
     pf: Arc<dyn PfBackend>,
     audit: AuditLog,
     anchor: String,
+    /// Extra rules injected by other engines (e.g. VPN pass rules) that must
+    /// appear in the aifw anchor before the default block rule.
+    extra_rules: tokio::sync::RwLock<Vec<String>>,
 }
 
 impl RuleEngine {
@@ -24,6 +27,7 @@ impl RuleEngine {
             pf,
             audit,
             anchor: DEFAULT_ANCHOR.to_string(),
+            extra_rules: tokio::sync::RwLock::new(Vec::new()),
         }
     }
 
@@ -83,14 +87,34 @@ impl RuleEngine {
         Ok(())
     }
 
-    /// Generate pf rules from active rules and load them into the pf anchor
+    /// Set extra rules (e.g. VPN WAN pass rules) to be injected into the anchor
+    /// before the default block rule on the next `apply_rules` call.
+    pub async fn set_extra_rules(&self, rules: Vec<String>) {
+        *self.extra_rules.write().await = rules;
+    }
+
+    /// Generate pf rules from active rules and load them into the pf anchor.
+    /// Extra rules (from VPN, etc.) are inserted just before any block rule
+    /// so they aren't shadowed by a `block quick` default.
     pub async fn apply_rules(&self) -> Result<()> {
         let rules = self.db.list_active_rules().await?;
-        let pf_rules: Vec<String> = rules
+        let mut pf_rules: Vec<String> = rules
             .iter()
             .filter(|r| r.status == RuleStatus::Active)
             .map(|r| r.to_pf_rule(&self.anchor))
             .collect();
+
+        // Inject extra rules (VPN pass rules, etc.) before the first block rule
+        let extras = self.extra_rules.read().await;
+        if !extras.is_empty() {
+            if let Some(pos) = pf_rules.iter().position(|r| r.starts_with("block ")) {
+                for (i, extra) in extras.iter().enumerate() {
+                    pf_rules.insert(pos + i, extra.clone());
+                }
+            } else {
+                pf_rules.extend(extras.iter().cloned());
+            }
+        }
 
         tracing::info!(
             anchor = %self.anchor,

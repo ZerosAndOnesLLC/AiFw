@@ -985,7 +985,17 @@ async fn main() -> anyhow::Result<()> {
     // Ensure rdr-anchor exists in pf.conf (required for DNAT/port forwarding)
     ensure_rdr_anchor().await;
 
-    // Apply firewall filter rules and NAT rules from DB on startup
+    // Collect VPN pass rules and inject into rule engine so they appear
+    // before the default block in the aifw anchor
+    match state.vpn_engine.collect_vpn_rules().await {
+        Ok(vpn_rules) => {
+            state.rule_engine.set_extra_rules(vpn_rules).await;
+            tracing::info!("VPN pass rules injected into rule engine");
+        }
+        Err(e) => tracing::warn!("Failed to collect VPN rules: {e}"),
+    }
+
+    // Apply firewall filter rules (includes VPN pass rules) and NAT rules
     if let Err(e) = state.rule_engine.apply_rules().await {
         tracing::warn!("Failed to apply filter rules on startup: {e}");
     } else {
@@ -997,7 +1007,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("NAT rules applied on startup");
     }
 
-    // Apply VPN pf rules and restart active tunnels
+    // Also load VPN rules into their own anchor (for NAT, etc.)
     if let Err(e) = state.vpn_engine.apply_vpn_rules().await {
         tracing::warn!("Failed to apply VPN pf rules on startup: {e}");
     } else {

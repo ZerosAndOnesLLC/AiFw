@@ -587,20 +587,22 @@ impl VpnEngine {
     // Apply VPN pf rules
     // ============================================================
 
-    pub async fn apply_vpn_rules(&self) -> Result<()> {
+    /// Collect all VPN pf rules without loading them.
+    pub async fn collect_vpn_rules(&self) -> Result<Vec<String>> {
         let mut pf_rules = Vec::new();
-
-        // WireGuard rules
         let tunnels = self.list_wg_tunnels().await?;
         for t in &tunnels {
             pf_rules.extend(t.to_pf_rules());
         }
-
-        // IPsec rules
         let sas = self.list_ipsec_sas().await?;
         for sa in &sas {
             pf_rules.extend(sa.to_pf_rules());
         }
+        Ok(pf_rules)
+    }
+
+    pub async fn apply_vpn_rules(&self) -> Result<()> {
+        let pf_rules = self.collect_vpn_rules().await?;
 
         tracing::info!(count = pf_rules.len(), "applying VPN pf rules");
         self.pf

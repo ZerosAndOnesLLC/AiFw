@@ -12,6 +12,9 @@ const RDHCP_CONFIG_PATH: &str = "/usr/local/etc/rdhcpd/config.toml";
 /// Reload all aifw anchor rules — user firewall rules + service pass rules.
 /// This is the safe way for services to update pf without clobbering other rules.
 async fn reload_aifw_anchor(state: &AppState) {
+    if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
+        state.rule_engine.set_extra_rules(vpn_rules).await;
+    }
     let _ = state.rule_engine.apply_rules().await;
     let _ = state.nat_engine.apply_rules().await;
 }

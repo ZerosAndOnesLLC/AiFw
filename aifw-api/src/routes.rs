@@ -1312,6 +1312,10 @@ pub async fn reload(
         tracing::error!("Failed to sync aliases: {e}");
         errors.push(format!("aliases: {e}"));
     }
+    // Re-inject VPN rules before applying filter rules
+    if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
+        state.rule_engine.set_extra_rules(vpn_rules).await;
+    }
     if let Err(e) = state.rule_engine.apply_rules().await {
         tracing::error!("Failed to apply filter rules: {e}");
         errors.push(format!("filter: {e}"));
@@ -1708,8 +1712,12 @@ pub async fn start_wg_tunnel(
         tracing::error!("Failed to start tunnel: {e}");
         internal()
     })?;
-    // Apply VPN pf rules so the tunnel's traffic is allowed
+    // Apply VPN pf rules and re-inject into the aifw anchor
     let _ = state.vpn_engine.apply_vpn_rules().await;
+    if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
+        state.rule_engine.set_extra_rules(vpn_rules).await;
+        let _ = state.rule_engine.apply_rules().await;
+    }
     Ok(Json(MessageResponse { message: "Tunnel started".to_string() }))
 }
 
