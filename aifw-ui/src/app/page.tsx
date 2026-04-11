@@ -33,6 +33,12 @@ interface InterfaceEntry {
   packets_in: number;
   packets_out: number;
 }
+interface IdsData {
+  running: boolean; mode: string; loaded_rules: number;
+  alerts_total: number; drops_total: number; packets_inspected: number;
+  packets_per_sec: number; bytes_per_sec: number; active_flows: number;
+  recent_alerts: { severity: number; signature_msg: string; src_ip: string; dst_ip: string; protocol: string; timestamp: string }[];
+}
 
 function formatBytes(b: number): string {
   if (b >= 1e12) return `${(b/1e12).toFixed(2)} TB`; if (b >= 1e9) return `${(b/1e9).toFixed(1)} GB`;
@@ -182,8 +188,10 @@ export default function Dashboard() {
   const connections = (ws.connections || []) as unknown as Connection[];
   const ifaces = (ws.interfaces || []) as unknown as InterfaceEntry[];
   const services = (ws.services || []) as unknown as { name: string; running: boolean; enabled: boolean }[];
+  const ids = ws.ids as IdsData | null;
 
   const [history, setHistory] = useState<HistoryPoint[]>([]);
+  const [modal, setModal] = useState<"system" | "talkers" | "blocked" | null>(null);
   const [rateIn, setRateIn] = useState(0);
   const [rateOut, setRateOut] = useState(0);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -484,114 +492,116 @@ export default function Dashboard() {
         </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="CPU" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="CPU" height={150} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "cpu", color: "#3b82f6", label: "CPU" }]}
           getValue={(d, k) => k === "cpu" ? d.cpu : 0}
           maxValue={100} formatY={v => `${v.toFixed(0)}%`}
         />
-        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Memory" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Memory" height={150} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "mem", color: "#8b5cf6", label: "Memory" }]}
           getValue={(d, k) => k === "mem" ? d.memPct : 0}
           maxValue={100} formatY={v => `${v.toFixed(0)}%`}
         />
-        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Disk I/O" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Disk I/O" height={150} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "read", color: "#22c55e", label: "Read" }, { key: "write", color: "#f97316", label: "Write" }]}
           getValue={(d, k) => k === "read" ? d.diskReadKbps : d.diskWriteKbps}
           formatY={v => v >= 1024 ? `${(v / 1024).toFixed(0)} MB/s` : `${v.toFixed(0)} KB/s`}
         />
-        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Network" height={100} hoverIdx={hoverIdx} onHover={setHoverIdx}
+        <StackedChart data={history.slice(-tfPoints)} maxPts={tfPoints} title="Network" height={150} hoverIdx={hoverIdx} onHover={setHoverIdx}
           lines={[{ key: "in", color: "#22c55e", label: "In" }, { key: "out", color: "#3b82f6", label: "Out" }]}
           getValue={(d, k) => k === "in" ? d.bpsIn : d.bpsOut}
           formatY={formatBps}
         />
       </div>
 
-      {/* Bottom grid — 3 columns */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* System Details */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">System Details</h3>
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Memory</span><span>{formatBytes(system?.memory_used ?? 0)} / {formatBytes(system?.memory_total ?? 0)}</span></div>
-            <div className="w-full h-1 bg-gray-700 rounded-full"><div className="h-full rounded-full transition-all" style={{ width: `${mem}%`, backgroundColor: mem > 80 ? "#ef4444" : "#8b5cf6" }} /></div>
-            {system?.disks?.map(d => (
-              <div key={d.mount}>
-                <div className="flex justify-between"><span className="text-[var(--text-muted)] font-mono">{d.mount}</span><span>{d.pct.toFixed(0)}% ({formatBytes(d.used)})</span></div>
-                <div className="w-full h-1 bg-gray-700 rounded-full mt-0.5"><div className="h-full rounded-full transition-all" style={{ width: `${d.pct}%`, backgroundColor: d.pct > 80 ? "#ef4444" : "#06b6d4" }} /></div>
+      {/* Compact summary row — click to expand modals */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <button onClick={() => setModal("system")} className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3 text-left hover:border-[var(--text-muted)] transition-colors">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] text-[var(--text-muted)] uppercase font-medium">System</span>
+            <svg className="w-3.5 h-3.5 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span style={{ color: cpu > 80 ? "#ef4444" : "#3b82f6" }}>{cpu.toFixed(0)}% CPU</span>
+            <span className="text-[var(--border)]">|</span>
+            <span style={{ color: mem > 80 ? "#ef4444" : "#8b5cf6" }}>{mem.toFixed(0)}% Mem</span>
+            <span className="text-[var(--border)]">|</span>
+            <span style={{ color: disk > 90 ? "#ef4444" : "#06b6d4" }}>{disk.toFixed(0)}% Disk</span>
+          </div>
+        </button>
+
+        <button onClick={() => setModal("talkers")} className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3 text-left hover:border-[var(--text-muted)] transition-colors">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] text-[var(--text-muted)] uppercase font-medium">Top Talkers</span>
+            <svg className="w-3.5 h-3.5 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+          </div>
+          <div className="text-xs">
+            {topTalkers.length === 0
+              ? <span className="text-[var(--text-muted)]">No active hosts</span>
+              : <><span className="font-mono text-cyan-400">{topTalkers[0].ip}</span><span className="text-[var(--text-muted)] ml-1.5">+ {topTalkers.length - 1} more</span></>
+            }
+          </div>
+        </button>
+
+        <button onClick={() => setModal("blocked")} className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3 text-left hover:border-[var(--text-muted)] transition-colors">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] text-[var(--text-muted)] uppercase font-medium">Blocked</span>
+            <svg className="w-3.5 h-3.5 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+          </div>
+          <div className="text-xs">
+            <span className="font-mono font-bold text-red-400">{blocked.length}</span>
+            <span className="text-[var(--text-muted)] ml-1.5">
+              {blocked.length > 0 ? `latest: ${(blocked[blocked.length - 1] as { src_addr?: string })?.src_addr ?? "---"}` : "none"}
+            </span>
+          </div>
+        </button>
+
+        {/* IDS Overview */}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] text-[var(--text-muted)] uppercase font-medium">IDS/IPS</span>
+            {ids ? (
+              <div className="flex items-center gap-1.5">
+                <div className={`w-1.5 h-1.5 rounded-full ${ids.running ? "bg-green-500" : "bg-gray-600"}`} />
+                <span className={`text-[10px] font-medium ${
+                  ids.mode === "ids" ? "text-blue-400" : ids.mode === "ips" ? "text-amber-400" : "text-gray-500"
+                }`}>{ids.mode.toUpperCase()}</span>
               </div>
-            ))}
-            <div className="pt-1 border-t border-[var(--border)] mt-2 space-y-1">
-              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Gateway</span><span className="font-mono text-[10px]">{system?.default_gateway || "---"}</span></div>
-              <div className="flex justify-between"><span className="text-[var(--text-muted)]">DNS</span><span className="font-mono text-[10px]">{system?.dns_servers?.join(", ") || "---"}</span></div>
-              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Routes</span><span>{system?.route_count ?? 0}</span></div>
-              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Packets</span><span>{formatNumber(status.packets_in + status.packets_out)}</span></div>
-            </div>
+            ) : (
+              <span className="text-[10px] text-gray-600">N/A</span>
+            )}
           </div>
-        </div>
-
-        {/* Top Talkers */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">Top Talkers</h3>
-          {topTalkers.length === 0 ? (
-            <div className="text-xs text-[var(--text-muted)] text-center py-4">No active connections</div>
+          {ids ? (
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Alerts</span><span className="font-mono text-red-400">{formatNumber(ids.alerts_total)}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Pkts/s</span><span className="font-mono text-cyan-400">{ids.packets_per_sec.toFixed(0)}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Drops</span><span className="font-mono text-yellow-400">{formatNumber(ids.drops_total)}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Rules</span><span className="font-mono text-blue-400">{ids.loaded_rules}</span></div>
+            </div>
           ) : (
-            <div className="space-y-2.5">
-              {topTalkers.map((t, i) => (
-                <div key={t.ip}>
-                  <div className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-[var(--text-muted)] w-3">{i + 1}.</span>
-                      <span className="font-mono text-[11px]">{t.ip}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[var(--text-muted)]">{t.conns} conn{t.conns !== 1 ? "s" : ""}</span>
-                      <span className="font-mono text-cyan-400">{formatBytes(t.bytes)}</span>
-                    </div>
-                  </div>
-                  <div className="w-full h-1 bg-gray-700 rounded-full mt-1">
-                    <div className="h-full rounded-full bg-cyan-500 transition-all" style={{ width: `${(t.bytes / mtb) * 100}%` }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Recent Blocked */}
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Recent Blocked</h3>
-            <div className="flex items-center gap-2">
-              <select
-                value={blockedCount}
-                onChange={(e) => { const v = parseInt(e.target.value, 10); setBlockedCount(v); localStorage.setItem("aifw_blocked_count", String(v)); }}
-                className="bg-[var(--bg-primary)] border border-[var(--border)] rounded px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] focus:outline-none"
-              >
-                {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-              <span className="text-[10px] font-mono text-red-400">{blocked.length} total</span>
-            </div>
-          </div>
-          {blocked.length === 0 ? (
-            <div className="text-xs text-[var(--text-muted)] text-center py-4">No blocked traffic</div>
-          ) : (
-            <div className="space-y-1.5 max-h-64 overflow-y-auto">
-              {blocked.slice(-blockedCount).reverse().map((b, i) => (
-                <div key={i} className="flex items-center justify-between text-[11px] py-1 px-2 rounded bg-[var(--bg-primary)]">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-red-400 uppercase text-[9px] font-bold w-8 flex-shrink-0">{b.action}</span>
-                    <span className="font-mono truncate">{b.src_addr}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
-                    <span className="text-[var(--text-muted)]">{b.protocol || "---"}</span>
-                    <span className="font-mono text-[10px]">:{b.dst_port || "---"}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <div className="text-xs text-[var(--text-muted)]">Disabled</div>
           )}
         </div>
       </div>
+
+      {/* IDS Recent Alerts (if available) */}
+      {ids && ids.recent_alerts.length > 0 && (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-2">Latest IDS Alerts</h3>
+          <div className="space-y-1">
+            {ids.recent_alerts.slice(0, 5).map((a, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px] py-1 px-2 rounded bg-[var(--bg-primary)]">
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                  a.severity <= 1 ? "bg-red-500" : a.severity <= 2 ? "bg-orange-500" : a.severity <= 3 ? "bg-yellow-500" : "bg-blue-500"
+                }`} />
+                <span className="truncate flex-1">{a.signature_msg}</span>
+                <span className="font-mono text-[10px] text-[var(--text-muted)] flex-shrink-0">{a.src_ip}</span>
+                <span className="text-[10px] text-[var(--text-muted)] flex-shrink-0 uppercase">{a.protocol}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Connections Table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
@@ -628,6 +638,98 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Modals */}
+      {modal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setModal(null)}>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl max-w-lg w-full mx-4 max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+              <h2 className="text-sm font-bold">
+                {modal === "system" ? "System Details" : modal === "talkers" ? "Top Talkers" : "Recent Blocked"}
+              </h2>
+              <button onClick={() => setModal(null)} className="text-[var(--text-muted)] hover:text-white transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto max-h-[calc(80vh-52px)]">
+              {modal === "system" && (
+                <div className="space-y-3 text-xs">
+                  <div className="flex justify-between"><span className="text-[var(--text-muted)]">Memory</span><span>{formatBytes(system?.memory_used ?? 0)} / {formatBytes(system?.memory_total ?? 0)} ({mem.toFixed(0)}%)</span></div>
+                  <div className="w-full h-1.5 bg-gray-700 rounded-full"><div className="h-full rounded-full transition-all" style={{ width: `${mem}%`, backgroundColor: mem > 80 ? "#ef4444" : "#8b5cf6" }} /></div>
+                  {system?.disks?.map(d => (
+                    <div key={d.mount}>
+                      <div className="flex justify-between"><span className="text-[var(--text-muted)] font-mono">{d.mount}</span><span>{d.pct.toFixed(0)}% ({formatBytes(d.used)} / {formatBytes(d.total)})</span></div>
+                      <div className="w-full h-1.5 bg-gray-700 rounded-full mt-1"><div className="h-full rounded-full transition-all" style={{ width: `${d.pct}%`, backgroundColor: d.pct > 80 ? "#ef4444" : "#06b6d4" }} /></div>
+                    </div>
+                  ))}
+                  <div className="pt-2 border-t border-[var(--border)] space-y-2">
+                    <div className="flex justify-between"><span className="text-[var(--text-muted)]">Hostname</span><span className="font-mono">{system?.hostname || "---"}</span></div>
+                    <div className="flex justify-between"><span className="text-[var(--text-muted)]">OS</span><span className="font-mono text-[10px]">{system?.os_version || "---"}</span></div>
+                    <div className="flex justify-between"><span className="text-[var(--text-muted)]">Uptime</span><span>{formatUptime(system?.uptime_secs ?? 0)}</span></div>
+                    <div className="flex justify-between"><span className="text-[var(--text-muted)]">Gateway</span><span className="font-mono">{system?.default_gateway || "---"}</span></div>
+                    <div className="flex justify-between"><span className="text-[var(--text-muted)]">DNS</span><span className="font-mono text-[10px]">{system?.dns_servers?.join(", ") || "---"}</span></div>
+                    <div className="flex justify-between"><span className="text-[var(--text-muted)]">Routes</span><span>{system?.route_count ?? 0}</span></div>
+                    <div className="flex justify-between"><span className="text-[var(--text-muted)]">Packets</span><span>{formatNumber(status.packets_in + status.packets_out)}</span></div>
+                    <div className="flex justify-between"><span className="text-[var(--text-muted)]">Disk I/O</span><span>R: {(system?.disk_io?.read_kbps ?? 0).toFixed(0)} KB/s · W: {(system?.disk_io?.write_kbps ?? 0).toFixed(0)} KB/s</span></div>
+                  </div>
+                </div>
+              )}
+              {modal === "talkers" && (
+                topTalkers.length === 0
+                  ? <div className="text-center text-[var(--text-muted)] py-4">No active connections</div>
+                  : <div className="space-y-3">
+                      {topTalkers.map((t, i) => (
+                        <div key={t.ip}>
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[var(--text-muted)] w-4">{i + 1}.</span>
+                              <span className="font-mono">{t.ip}</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <span className="text-[var(--text-muted)]">{t.conns} conn{t.conns !== 1 ? "s" : ""}</span>
+                              <span className="font-mono text-cyan-400">{formatBytes(t.bytes)}</span>
+                            </div>
+                          </div>
+                          <div className="w-full h-1.5 bg-gray-700 rounded-full mt-1">
+                            <div className="h-full rounded-full bg-cyan-500 transition-all" style={{ width: `${(t.bytes / mtb) * 100}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+              )}
+              {modal === "blocked" && (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs text-[var(--text-muted)]">{blocked.length} total blocked</span>
+                    <select value={blockedCount}
+                      onChange={(e) => { const v = parseInt(e.target.value, 10); setBlockedCount(v); localStorage.setItem("aifw_blocked_count", String(v)); }}
+                      className="bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text-muted)] focus:outline-none">
+                      {[10, 25, 50, 100].map(n => <option key={n} value={n}>Last {n}</option>)}
+                    </select>
+                  </div>
+                  {blocked.length === 0
+                    ? <div className="text-center text-[var(--text-muted)] py-4">No blocked traffic</div>
+                    : <div className="space-y-1.5">
+                        {blocked.slice(-blockedCount).reverse().map((b, i) => (
+                          <div key={i} className="flex items-center justify-between text-[11px] py-1.5 px-3 rounded bg-[var(--bg-primary)]">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-red-400 uppercase text-[9px] font-bold w-10 flex-shrink-0">{b.action}</span>
+                              <span className="font-mono truncate">{b.src_addr}</span>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                              <span className="text-[var(--text-muted)]">{b.protocol || "---"}</span>
+                              <span className="font-mono text-[10px]">:{b.dst_port || "---"}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                  }
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -52,28 +52,35 @@ function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: numb
   );
 }
 
-/** SVG animated pipe — green(in) dashes flow down, blue(out) dashes flow up */
+/** SVG animated pipe — green(in) dashes flow down, blue(out) dashes flow up.
+ *  In and out are rendered on separate offset paths so both are always visible. */
 function SvgPipe({ path, rateIn, rateOut }: { path: string; rateIn: number; rateOut: number; id: string }) {
   const total = rateIn + rateOut;
-  const width = Math.max(4, Math.min(14, total > 0 ? 4 + Math.log10(Math.max(total, 1)) * 1.2 : 4));
-  const inA = Math.min(0.85, rateIn > 0 ? 0.3 + Math.log10(Math.max(rateIn, 1)) / 10 : 0);
-  const outA = Math.min(0.85, rateOut > 0 ? 0.3 + Math.log10(Math.max(rateOut, 1)) / 10 : 0);
+  const width = Math.max(6, Math.min(14, total > 0 ? 4 + Math.log10(Math.max(total, 1)) * 1.2 : 6));
+  const halfStroke = width * 0.4;
+  const offset = Math.max(2, width * 0.3); // horizontal separation between in/out
+  const inA = Math.min(0.85, rateIn > 0 ? 0.35 + Math.log10(Math.max(rateIn, 1)) / 8 : 0);
+  const outA = Math.min(0.85, rateOut > 0 ? 0.35 + Math.log10(Math.max(rateOut, 1)) / 8 : 0);
   return (
     <g>
       {/* Soft glow */}
       <path d={path} fill="none" stroke="rgba(100,200,150,0.04)" strokeWidth={width + 12} strokeLinecap="round" />
       {/* Pipe background */}
       <path d={path} fill="none" stroke="rgba(51,65,85,0.5)" strokeWidth={width} strokeLinecap="round" />
-      {/* Inbound (green) — dashes animate downward */}
-      <path d={path} fill="none" stroke={`rgba(34,197,94,${Math.max(0.08, inA)})`}
-        strokeWidth={width * 0.45} strokeDasharray="5 7" strokeLinecap="round">
-        {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
-      </path>
-      {/* Outbound (blue) — dashes animate upward, offset so they interleave */}
-      <path d={path} fill="none" stroke={`rgba(59,130,246,${Math.max(0.08, outA)})`}
-        strokeWidth={width * 0.45} strokeDasharray="5 7" strokeDashoffset="6" strokeLinecap="round">
-        {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="18" to="6" dur="0.5s" repeatCount="indefinite" />}
-      </path>
+      {/* Inbound (green) — shifted left, dashes animate downward */}
+      <g transform={`translate(${-offset / 2}, 0)`}>
+        <path d={path} fill="none" stroke={`rgba(34,197,94,${Math.max(0.2, inA)})`}
+          strokeWidth={halfStroke} strokeDasharray="5 7" strokeLinecap="round">
+          {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
+        </path>
+      </g>
+      {/* Outbound (blue) — shifted right, dashes animate upward */}
+      <g transform={`translate(${offset / 2}, 0)`}>
+        <path d={path} fill="none" stroke={`rgba(59,130,246,${Math.max(0.2, outA)})`}
+          strokeWidth={halfStroke} strokeDasharray="5 7" strokeLinecap="round">
+          {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="12" to="0" dur="0.5s" repeatCount="indefinite" />}
+        </path>
+      </g>
     </g>
   );
 }

@@ -22,6 +22,8 @@ struct WsStatusUpdate {
     services: Vec<ServiceStatusPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vpn: Option<Vec<VpnTunnelStatus>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ids: Option<IdsStatusPayload>,
 }
 
 #[derive(Serialize, Clone)]
@@ -40,6 +42,30 @@ struct VpnPeerStatus {
     latest_handshake_secs_ago: i64,
     transfer_rx: u64,
     transfer_tx: u64,
+}
+
+#[derive(Serialize, Clone)]
+struct IdsStatusPayload {
+    running: bool,
+    mode: String,
+    loaded_rules: u32,
+    alerts_total: u64,
+    drops_total: u64,
+    packets_inspected: u64,
+    packets_per_sec: f64,
+    bytes_per_sec: f64,
+    active_flows: u64,
+    recent_alerts: Vec<IdsAlertSummary>,
+}
+
+#[derive(Serialize, Clone)]
+struct IdsAlertSummary {
+    severity: u8,
+    signature_msg: String,
+    src_ip: String,
+    dst_ip: String,
+    protocol: String,
+    timestamp: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -141,6 +167,19 @@ struct WsHistoryEntry {
     system: SystemPayload,
     interfaces: Vec<InterfacePayload>,
     services: Vec<ServiceStatusPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ids: Option<IdsHistoryPayload>,
+}
+
+/// Slim IDS counters for history (no alerts list).
+#[derive(Serialize, Clone)]
+struct IdsHistoryPayload {
+    alerts_total: u64,
+    drops_total: u64,
+    packets_inspected: u64,
+    packets_per_sec: f64,
+    active_flows: u64,
+    running: bool,
 }
 
 pub async fn ws_handler(
@@ -358,26 +397,12 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         bytes_out: stats.bytes_out,
     };
 
-    // Slim history entry (~2-3 KB) — excludes blocked/connections to prevent memory growth
-    let history_entry = WsHistoryEntry {
-        msg_type: "status_update",
-        status: status.clone(),
-        system: system.clone(),
-        interfaces: interfaces.clone(),
-        services: services.clone(),
-    };
-    let history_msg = serde_json::to_string(&history_entry).map_err(|e| e.to_string())?;
-
     // VPN status — refresh every 10 ticks (~10s) to avoid running wg show every second
     static VPN_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     static VPN_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Vec<VpnTunnelStatus>>> = tokio::sync::OnceCell::const_new();
     let vpn_cache = VPN_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(Vec::new()) }).await;
     let tick = VPN_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let vpn = if tick % 10 == 0 {
-        if let Some(ref engine) = state.ids_engine {
-            // Use vpn_engine instead
-            let _ = engine; // just to avoid unused warning
-        }
         let tunnels = state.vpn_engine.list_wg_tunnels().await.unwrap_or_default();
         let mut vpn_status = Vec::new();
         for t in &tunnels {
@@ -414,6 +439,70 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         if cached.is_empty() { None } else { Some(cached.clone()) }
     };
 
+    // IDS status — refresh every 5 ticks (~5s) to avoid querying alerts every second
+    static IDS_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Option<IdsStatusPayload>>> = tokio::sync::OnceCell::const_new();
+    let ids_cache = IDS_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(None) }).await;
+    let ids = if tick % 5 == 0 {
+        let payload = if let Some(ref engine) = state.ids_engine {
+            let stats = engine.stats();
+            let mode = engine.load_config().await
+                .map(|c| c.mode.to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            let running = engine.is_running();
+            let loaded_rules = engine.rule_db().rule_count() as u32;
+            let recent = state.alert_buffer
+                .query(None, None, None, None, None, 5, 0)
+                .await;
+            let recent_alerts: Vec<IdsAlertSummary> = recent.into_iter().map(|a| IdsAlertSummary {
+                severity: a.severity.0,
+                signature_msg: a.signature_msg.clone(),
+                src_ip: a.src_ip.to_string(),
+                dst_ip: a.dst_ip.to_string(),
+                protocol: a.protocol.clone(),
+                timestamp: a.timestamp.to_rfc3339(),
+            }).collect();
+            Some(IdsStatusPayload {
+                running,
+                mode,
+                loaded_rules,
+                alerts_total: stats.alerts_total,
+                drops_total: stats.drops_total,
+                packets_inspected: stats.packets_inspected,
+                packets_per_sec: stats.packets_per_sec,
+                bytes_per_sec: stats.bytes_per_sec,
+                active_flows: stats.active_flows,
+                recent_alerts,
+            })
+        } else {
+            None
+        };
+        *ids_cache.write().await = payload.clone();
+        payload
+    } else {
+        ids_cache.read().await.clone()
+    };
+
+    // Slim IDS counters for history
+    let ids_history = ids.as_ref().map(|i| IdsHistoryPayload {
+        alerts_total: i.alerts_total,
+        drops_total: i.drops_total,
+        packets_inspected: i.packets_inspected,
+        packets_per_sec: i.packets_per_sec,
+        active_flows: i.active_flows,
+        running: i.running,
+    });
+
+    // Slim history entry (~2-3 KB) — excludes blocked/connections to prevent memory growth
+    let history_entry = WsHistoryEntry {
+        msg_type: "status_update",
+        status: status.clone(),
+        system: system.clone(),
+        interfaces: interfaces.clone(),
+        services: services.clone(),
+        ids: ids_history,
+    };
+    let history_msg = serde_json::to_string(&history_entry).map_err(|e| e.to_string())?;
+
     // Full live update — includes recent blocked + connections for live clients
     let update = WsStatusUpdate {
         msg_type: "status_update",
@@ -424,6 +513,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         connections,
         interfaces,
         vpn,
+        ids,
     };
     let live_msg = serde_json::to_string(&update).map_err(|e| e.to_string())?;
 
