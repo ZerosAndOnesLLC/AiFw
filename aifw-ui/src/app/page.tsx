@@ -385,11 +385,15 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {/* Services inline */}
-            {services.filter(s => s.enabled).map(svc => (
+            {services.map(svc => (
               <div key={svc.name} className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ${
-                svc.running ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
+                !svc.enabled ? "bg-gray-700/30 text-gray-500"
+                : svc.running ? "bg-green-500/15 text-green-400"
+                : "bg-red-500/15 text-red-400"
               }`}>
-                <div className={`w-1.5 h-1.5 rounded-full ${svc.running ? "bg-green-500" : "bg-red-500"}`} />
+                <div className={`w-1.5 h-1.5 rounded-full ${
+                  !svc.enabled ? "bg-gray-600" : svc.running ? "bg-green-500" : "bg-red-500"
+                }`} />
                 {svc.name}
               </div>
             ))}
@@ -463,17 +467,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Services — disabled services shown below header */}
-      {services.filter(s => !s.enabled).length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {services.filter(s => !s.enabled).map(svc => (
-            <div key={svc.name} className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-gray-500 bg-gray-800/50 border border-gray-700/30">
-              <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />
-              {svc.name} (disabled)
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Charts — timeframe picker + 2x2 grid */}
       <div className="flex items-center justify-between">
