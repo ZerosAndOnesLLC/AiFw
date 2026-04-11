@@ -155,20 +155,17 @@ pub async fn list_alerts(
     State(state): State<AppState>,
     Query(q): Query<AlertsQuery>,
 ) -> Result<Json<ApiResponse<Vec<IdsAlert>>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
-    let output = aifw_ids::output::sqlite::SqliteOutput::new(engine.pool().clone());
-    let alerts = output
-        .query_alerts(
+    let alerts = state.alert_buffer
+        .query(
             q.severity,
             q.src_ip.as_deref(),
             q.signature_id,
             q.acknowledged,
             q.classification.as_deref(),
-            q.limit.unwrap_or(50),
-            q.offset.unwrap_or(0),
+            q.limit.unwrap_or(50) as usize,
+            q.offset.unwrap_or(0) as usize,
         )
-        .await
-        .map_err(|_| internal())?;
+        .await;
     Ok(Json(ApiResponse { data: alerts }))
 }
 
@@ -176,14 +173,8 @@ pub async fn get_alert(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<IdsAlert>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let output = aifw_ids::output::sqlite::SqliteOutput::new(engine.pool().clone());
-    let alert = output
-        .get_alert(uuid)
-        .await
-        .map_err(|_| internal())?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let alert = state.alert_buffer.get(uuid).await.ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(ApiResponse { data: alert }))
 }
 
@@ -191,10 +182,8 @@ pub async fn acknowledge_alert(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let output = aifw_ids::output::sqlite::SqliteOutput::new(engine.pool().clone());
-    output.acknowledge(uuid).await.map_err(|_| internal())?;
+    state.alert_buffer.acknowledge(uuid).await;
     Ok(Json(MessageResponse {
         message: "alert acknowledged".into(),
     }))
@@ -211,33 +200,33 @@ pub async fn classify_alert(
     Path(id): Path<String>,
     Json(req): Json<ClassifyAlertRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     let valid = ["unreviewed", "confirmed", "false_positive", "investigating"];
     if !valid.contains(&req.classification.as_str()) {
         return Err(bad_request());
     }
-    let output = aifw_ids::output::sqlite::SqliteOutput::new(engine.pool().clone());
-    output.classify(uuid, &req.classification, req.notes.as_deref())
-        .await.map_err(|_| internal())?;
+    state.alert_buffer.classify(uuid, &req.classification, req.notes.as_deref()).await;
     Ok(Json(MessageResponse {
         message: format!("alert classified as {}", req.classification),
     }))
 }
 
 pub async fn purge_alerts(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
-    let config = engine.load_config().await.map_err(|_| internal())?;
-    let output = aifw_ids::output::sqlite::SqliteOutput::new(engine.pool().clone());
-    let deleted = output
-        .purge_old(config.alert_retention_days)
-        .await
-        .map_err(|_| internal())?;
+    // Alerts are now in-memory with auto-eviction — manual purge trims to current limits
+    _state.alert_buffer.trim().await;
+    let stats = _state.alert_buffer.stats().await;
     Ok(Json(MessageResponse {
-        message: format!("{deleted} alerts purged"),
+        message: format!("{} alerts remaining after trim", stats.count),
     }))
+}
+
+pub async fn alert_buffer_stats(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let stats = state.alert_buffer.stats().await;
+    Ok(Json(stats.to_json()))
 }
 
 // ============ Rulesets ============

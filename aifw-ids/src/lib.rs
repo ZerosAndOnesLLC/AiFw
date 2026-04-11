@@ -76,6 +76,15 @@ impl IdsEngine {
     /// When mode is `Disabled`, uses minimal allocations (small flow table, no channel).
     /// Full resources are allocated only when IDS/IPS mode is active.
     pub async fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Result<Self> {
+        Self::with_alert_buffer(pool, pf, None).await
+    }
+
+    /// Create with an optional in-memory alert buffer (replaces SQLite for alert storage).
+    pub async fn with_alert_buffer(
+        pool: SqlitePool,
+        pf: Arc<dyn PfBackend>,
+        alert_buffer: Option<Arc<crate::output::memory::AlertBuffer>>,
+    ) -> Result<Self> {
         Self::migrate(&pool).await?;
 
         let config = Arc::new(RuntimeConfig::load(&pool).await?);
@@ -93,7 +102,11 @@ impl IdsEngine {
         let flow_table = Arc::new(FlowTable::new(flow_table_size));
         let detection = Arc::new(DetectionEngine::new(rule_db.clone(), flow_table.clone()));
         let action = Arc::new(ActionEngine::new(pf.clone(), config.clone()));
-        let alert_pipeline = Arc::new(AlertPipeline::new(pool.clone()));
+        let alert_pipeline = Arc::new(if let Some(buf) = alert_buffer {
+            AlertPipeline::with_memory(buf)
+        } else {
+            AlertPipeline::new(pool.clone())
+        });
 
         let (alert_tx, alert_rx) = channel::bounded(channel_cap);
 

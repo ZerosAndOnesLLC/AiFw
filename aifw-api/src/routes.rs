@@ -2362,8 +2362,8 @@ pub async fn update_dashboard_history_settings(
             let ram_mb = req.get("ram_limit_mb")
                 .and_then(|v| v.as_f64())
                 .ok_or(StatusCode::BAD_REQUEST)?;
-            // Clamp: 1 MB to 8 GB
-            let ram_mb = ram_mb.clamp(1.0, 8192.0);
+            // Clamp: 1 MB to 256 MB
+            let ram_mb = ram_mb.clamp(1.0, 256.0);
             let entries = ((ram_mb * 1024.0 * 1024.0) / HISTORY_ENTRY_BYTES as f64) as usize;
             let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dashboard_history_ram_mb', ?1)")
                 .bind(ram_mb.to_string())
@@ -2392,12 +2392,58 @@ pub async fn update_dashboard_history_settings(
 
     state.metrics_history_max.store(clamped, std::sync::atomic::Ordering::Relaxed);
 
+    // Trim the in-memory buffer immediately if reduced
+    {
+        let mut buf = state.metrics_history.write().await;
+        while buf.len() > clamped {
+            buf.pop_front();
+        }
+    }
+
     let estimated_ram_mb = (clamped as f64 * HISTORY_ENTRY_BYTES as f64) / (1024.0 * 1024.0);
     Ok(Json(serde_json::json!({
         "message": "Dashboard history updated",
         "history_seconds": clamped,
         "estimated_ram_mb": (estimated_ram_mb * 10.0).round() / 10.0,
         "mode": mode,
+    })))
+}
+
+// --- IDS Alert Buffer Settings ---
+
+pub async fn get_ids_alert_settings(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let stats = state.alert_buffer.stats().await;
+    let (max_mb, max_age) = state.alert_buffer.limits();
+    Ok(Json(serde_json::json!({
+        "max_mb": max_mb,
+        "max_age_secs": max_age,
+        "stats": stats.to_json(),
+    })))
+}
+
+pub async fn update_ids_alert_settings(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if let Some(mb) = req.get("max_mb").and_then(|v| v.as_u64()) {
+        let mb = (mb as usize).clamp(8, 512);
+        state.alert_buffer.set_max_mb(mb);
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('ids_alert_max_mb', ?1)")
+            .bind(mb.to_string()).execute(&state.pool).await;
+    }
+    if let Some(secs) = req.get("max_age_secs").and_then(|v| v.as_u64()) {
+        let secs = (secs as usize).clamp(3600, 604800); // 1h to 7 days
+        state.alert_buffer.set_max_age_secs(secs);
+        let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('ids_alert_max_age_secs', ?1)")
+            .bind(secs.to_string()).execute(&state.pool).await;
+    }
+    state.alert_buffer.trim().await;
+    let stats = state.alert_buffer.stats().await;
+    Ok(Json(serde_json::json!({
+        "message": "IDS alert settings updated",
+        "stats": stats.to_json(),
     })))
 }
 

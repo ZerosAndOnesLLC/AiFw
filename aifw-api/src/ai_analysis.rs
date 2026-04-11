@@ -9,7 +9,7 @@ use crate::AppState;
 
 /// Run AI analysis on unreviewed critical/high alerts.
 /// Called periodically by a background task or manually via API.
-pub async fn run_analysis(pool: &SqlitePool) -> Result<u32, String> {
+pub async fn run_analysis(pool: &SqlitePool, alert_buf: Option<&aifw_ids::output::memory::AlertBuffer>) -> Result<u32, String> {
     // 1. Check if AI is enabled and get active provider
     let enabled = get_config(pool, "ai_enabled").await.map(|v| v == "true").unwrap_or(false);
     if !enabled {
@@ -29,45 +29,36 @@ pub async fn run_analysis(pool: &SqlitePool) -> Result<u32, String> {
         return Err("AI provider endpoint not configured".into());
     }
 
-    // 2. Get unreviewed critical/high alerts that haven't been AI-analyzed yet.
-    //    Group by signature_id to avoid asking about the same rule multiple times.
-    let alerts: Vec<(String, Option<i64>, String, i64, String, Option<i64>, String, Option<i64>, String, Option<String>, Option<String>)> = sqlx::query_as(
-        r#"SELECT id, signature_id, signature_msg, severity, src_ip, src_port, dst_ip, dst_port, protocol, payload_excerpt,
-           (SELECT group_concat(key || '=' || value, '; ') FROM json_each(metadata) WHERE metadata IS NOT NULL) as meta_str
-           FROM ids_alerts
-           WHERE classification = 'unreviewed' AND ai_analyzed = 0 AND severity <= 2
-           ORDER BY severity ASC, timestamp DESC
-           LIMIT 20"#,
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("query failed: {e}"))?;
+    // 2. Get unreviewed critical/high alerts from the in-memory buffer
+    let raw_alerts = if let Some(buf) = alert_buf {
+        buf.query(Some(2), None, None, None, Some("unreviewed"), 20, 0).await
+    } else {
+        // Fallback to SQLite if no buffer (shouldn't happen in production)
+        return Ok(0);
+    };
 
-    if alerts.is_empty() {
+    if raw_alerts.is_empty() {
         return Ok(0);
     }
 
     // 3. Group by signature_id to deduplicate
-    let mut analyzed_sigs: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut analyzed_sigs: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut classified = 0u32;
 
-    for alert in &alerts {
-        let alert_id = &alert.0;
-        let sig_id = alert.1.unwrap_or(0);
-        let sig_msg = &alert.2;
-        let severity = alert.3;
-        let src_ip = &alert.4;
-        let src_port = alert.5.map(|p| p.to_string()).unwrap_or_default();
-        let dst_ip = &alert.6;
-        let dst_port = alert.7.map(|p| p.to_string()).unwrap_or_default();
-        let protocol = &alert.8;
-        let payload = alert.9.as_deref().unwrap_or("(none)");
+    for alert_obj in &raw_alerts {
+        let alert_id = &alert_obj.id.to_string();
+        let sig_id = alert_obj.signature_id.unwrap_or(0);
+        let sig_msg = &alert_obj.signature_msg;
+        let severity = alert_obj.severity.0 as i64;
+        let src_ip = &alert_obj.src_ip.to_string();
+        let src_port = alert_obj.src_port.map(|p| p.to_string()).unwrap_or_default();
+        let dst_ip = &alert_obj.dst_ip.to_string();
+        let dst_port = alert_obj.dst_port.map(|p| p.to_string()).unwrap_or_default();
+        let protocol = &alert_obj.protocol;
+        let payload = alert_obj.payload_excerpt.as_deref().unwrap_or("(none)");
 
         // Skip if we already analyzed this signature in this batch
         if sig_id > 0 && analyzed_sigs.contains(&sig_id) {
-            // Apply the same classification as the first alert with this sig
-            let _ = sqlx::query("UPDATE ids_alerts SET ai_analyzed = 1 WHERE id = ?")
-                .bind(alert_id).execute(pool).await;
             continue;
         }
 
@@ -110,23 +101,16 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
                 let clean_reason = if reason.len() > 300 { format!("{}...", &reason[..297]) } else { reason.clone() };
 
                 // 7. Apply classification to this alert and all alerts with same signature
-                if sig_id > 0 {
-                    let _ = sqlx::query(
-                        "UPDATE ids_alerts SET classification = ?, analyst_notes = ?, ai_analyzed = 1, acknowledged = 1 WHERE signature_id = ? AND classification = 'unreviewed'"
-                    )
-                    .bind(&classification)
-                    .bind(&format!("AI ({provider}): {clean_reason}"))
-                    .bind(sig_id)
-                    .execute(pool).await;
-                    analyzed_sigs.insert(sig_id);
-                } else {
-                    let _ = sqlx::query(
-                        "UPDATE ids_alerts SET classification = ?, analyst_notes = ?, ai_analyzed = 1, acknowledged = 1 WHERE id = ?"
-                    )
-                    .bind(&classification)
-                    .bind(&format!("AI ({provider}): {clean_reason}"))
-                    .bind(alert_id)
-                    .execute(pool).await;
+                let notes_str = format!("AI ({provider}): {clean_reason}");
+                if let Some(buf) = alert_buf {
+                    if sig_id > 0 {
+                        buf.classify_by_signature(sig_id, &classification, &notes_str).await;
+                        analyzed_sigs.insert(sig_id);
+                    } else {
+                        if let Ok(uuid) = Uuid::parse_str(alert_id) {
+                            buf.classify(uuid, &classification, Some(&notes_str)).await;
+                        }
+                    }
                 }
 
                 // 8. Log to audit
@@ -151,9 +135,6 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
             }
             Err(e) => {
                 tracing::warn!(sig_id, error = %e, "AI analysis failed");
-                // Mark as analyzed to avoid retrying immediately
-                let _ = sqlx::query("UPDATE ids_alerts SET ai_analyzed = 1 WHERE id = ?")
-                    .bind(alert_id).execute(pool).await;
 
                 // Log the failure
                 let log_id = Uuid::new_v4().to_string();
@@ -340,7 +321,7 @@ async fn get_config(pool: &SqlitePool, key: &str) -> Option<String> {
 pub async fn trigger_analysis(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    match run_analysis(&state.pool).await {
+    match run_analysis(&state.pool, Some(&state.alert_buffer)).await {
         Ok(count) => Ok(Json(serde_json::json!({
             "message": format!("{count} alerts classified by AI"),
             "classified": count,

@@ -93,6 +93,7 @@ pub struct AppState {
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
+    pub alert_buffer: Arc<aifw_ids::output::memory::AlertBuffer>,
     pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
     pub auth_settings: auth::AuthSettings,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
@@ -294,6 +295,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/ids/rules/search", get(ids::search_rules))
         .route("/api/v1/ids/suppressions", get(ids::list_suppressions))
         .route("/api/v1/ids/stats", get(ids::get_stats))
+        .route("/api/v1/ids/alerts/buffer-stats", get(ids::alert_buffer_stats))
         .route("/api/v1/ai/audit-log", get(ai_analysis::get_audit_log))
         .layer(middleware::from_fn(perm_check!(Permission::IdsRead)));
 
@@ -439,6 +441,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/settings/tls", get(routes::get_tls_settings))
         .route("/api/v1/settings/valkey", get(routes::get_valkey_settings))
         .route("/api/v1/settings/dashboard-history", get(routes::get_dashboard_history_settings))
+        .route("/api/v1/settings/ids-alerts", get(routes::get_ids_alert_settings))
         .route("/api/v1/settings/ai", get(routes::get_ai_settings))
         .route("/api/v1/settings/ai/models", get(routes::list_ai_models))
         .route("/api/v1/ca", get(ca::get_ca_info))
@@ -461,6 +464,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/settings/tls", put(routes::update_tls_settings))
         .route("/api/v1/settings/valkey", put(routes::update_valkey_settings))
         .route("/api/v1/settings/dashboard-history", put(routes::update_dashboard_history_settings))
+        .route("/api/v1/settings/ids-alerts", put(routes::update_ids_alert_settings))
         .route("/api/v1/settings/ai", put(routes::update_ai_settings))
         .route("/api/v1/settings/ai/test", post(routes::test_ai_provider))
         .route("/api/v1/ca", post(ca::generate_ca))
@@ -683,8 +687,19 @@ async fn create_state_from_db(
 
     // Initialize IDS engine — always create so API endpoints work,
     // but the engine itself only starts capture/detection if mode != Disabled
+    // Initialize IDS alert buffer (in-memory, replaces SQLite for alert storage)
+    let ids_max_mb: usize = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_mb'"
+    ).fetch_optional(&pool).await.ok().flatten()
+    .and_then(|r| r.0.parse().ok()).unwrap_or(64);
+    let ids_max_age: usize = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_age_secs'"
+    ).fetch_optional(&pool).await.ok().flatten()
+    .and_then(|r| r.0.parse().ok()).unwrap_or(86400);
+    let alert_buffer = Arc::new(aifw_ids::output::memory::AlertBuffer::new(ids_max_mb, ids_max_age));
+
     aifw_ids::IdsEngine::migrate(&pool).await.map_err(|e| anyhow::anyhow!(e))?;
-    let ids_engine = match aifw_ids::IdsEngine::new(pool.clone(), pf.clone()).await {
+    let ids_engine = match aifw_ids::IdsEngine::with_alert_buffer(pool.clone(), pf.clone(), Some(alert_buffer.clone())).await {
         Ok(engine) => {
             tracing::info!("IDS engine initialized");
             let arc = Arc::new(engine);
@@ -767,6 +782,7 @@ async fn create_state_from_db(
         alias_engine,
         conntrack,
         ids_engine,
+        alert_buffer,
         plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
         auth_settings,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
@@ -996,13 +1012,14 @@ async fn main() -> anyhow::Result<()> {
     // Start AI analysis background task — reviews unclassified critical/high alerts every 5 minutes
     {
         let pool = state.pool.clone();
+        let abuf = state.alert_buffer.clone();
         tokio::spawn(async move {
             // Wait 60s after startup before first run
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
             loop {
                 interval.tick().await;
-                match ai_analysis::run_analysis(&pool).await {
+                match ai_analysis::run_analysis(&pool, Some(&abuf)).await {
                     Ok(0) => {} // No alerts to classify
                     Ok(n) => tracing::info!(count = n, "AI classified alerts"),
                     Err(e) => tracing::debug!(error = %e, "AI analysis skipped"),
