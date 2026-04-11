@@ -442,6 +442,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/settings/valkey", get(routes::get_valkey_settings))
         .route("/api/v1/settings/dashboard-history", get(routes::get_dashboard_history_settings))
         .route("/api/v1/settings/ids-alerts", get(routes::get_ids_alert_settings))
+        .route("/api/v1/settings/{section}", get(routes::get_generic_settings))
         .route("/api/v1/settings/ai", get(routes::get_ai_settings))
         .route("/api/v1/settings/ai/models", get(routes::list_ai_models))
         .route("/api/v1/ca", get(ca::get_ca_info))
@@ -465,6 +466,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/settings/valkey", put(routes::update_valkey_settings))
         .route("/api/v1/settings/dashboard-history", put(routes::update_dashboard_history_settings))
         .route("/api/v1/settings/ids-alerts", put(routes::update_ids_alert_settings))
+        .route("/api/v1/settings/{section}", put(routes::update_generic_settings))
         .route("/api/v1/settings/ai", put(routes::update_ai_settings))
         .route("/api/v1/settings/ai/test", post(routes::test_ai_provider))
         .route("/api/v1/ca", post(ca::generate_ca))
@@ -955,6 +957,30 @@ async fn main() -> anyhow::Result<()> {
 
     // Apply all enabled static routes from DB (survives reboot)
     routes::apply_all_routes(&state.pool).await;
+
+    // Restore DNS servers from DB to /etc/resolv.conf (survives DHCP renewal)
+    if let Ok(Some((dns_json,))) = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM auth_config WHERE key = 'dns_servers'"
+    ).fetch_optional(&state.pool).await {
+        if let Ok(servers) = serde_json::from_str::<Vec<String>>(&dns_json) {
+            if !servers.is_empty() {
+                let content: String = servers.iter().map(|s| format!("nameserver {s}")).collect::<Vec<_>>().join("\n");
+                if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
+                    .args(["tee", "/etc/resolv.conf"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                {
+                    if let Some(ref mut stdin) = child.stdin {
+                        let _ = tokio::io::AsyncWriteExt::write_all(stdin, content.as_bytes()).await;
+                    }
+                    drop(child.stdin.take());
+                    let _ = child.wait().await;
+                    info!("DNS servers restored from DB: {}", servers.join(", "));
+                }
+            }
+        }
+    }
 
     // Ensure rdr-anchor exists in pf.conf (required for DNAT/port forwarding)
     ensure_rdr_anchor().await;

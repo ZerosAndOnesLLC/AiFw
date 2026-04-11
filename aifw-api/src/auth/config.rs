@@ -16,6 +16,14 @@ pub struct AuthSettings {
     pub require_totp_for_oauth: bool,
     /// Auto-create local user on first OAuth2 login
     pub auto_create_oauth_users: bool,
+    /// Max failed login attempts before lockout
+    pub max_login_attempts: u32,
+    /// Lockout duration in seconds
+    pub lockout_duration_secs: u32,
+    /// Allow self-registration
+    pub allow_registration: bool,
+    /// Minimum password length
+    pub password_min_length: u32,
 }
 
 impl Default for AuthSettings {
@@ -33,6 +41,10 @@ impl Default for AuthSettings {
             require_totp: false,
             require_totp_for_oauth: false,
             auto_create_oauth_users: true,
+            max_login_attempts: 5,
+            lockout_duration_secs: 300,
+            allow_registration: false,
+            password_min_length: 8,
         }
     }
 }
@@ -61,6 +73,10 @@ impl AuthSettings {
                 "require_totp" => settings.require_totp = value == "true",
                 "require_totp_for_oauth" => settings.require_totp_for_oauth = value == "true",
                 "auto_create_oauth_users" => settings.auto_create_oauth_users = value == "true",
+                "max_login_attempts" => settings.max_login_attempts = value.parse().unwrap_or(5),
+                "lockout_duration_secs" => settings.lockout_duration_secs = value.parse().unwrap_or(300),
+                "allow_registration" => settings.allow_registration = value == "true",
+                "password_min_length" => settings.password_min_length = value.parse().unwrap_or(8),
                 _ => {}
             }
         }
@@ -89,4 +105,8 @@ pub struct UpdateAuthSettingsRequest {
     pub require_totp: Option<bool>,
     pub require_totp_for_oauth: Option<bool>,
     pub auto_create_oauth_users: Option<bool>,
+    pub max_login_attempts: Option<u32>,
+    pub lockout_duration_secs: Option<u32>,
+    pub allow_registration: Option<bool>,
+    pub password_min_length: Option<u32>,
 }

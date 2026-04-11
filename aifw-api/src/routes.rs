@@ -426,6 +426,18 @@ pub async fn update_auth_settings(
     if let Some(v) = req.auto_create_oauth_users {
         auth::config::AuthSettings::save_setting(&state.pool, "auto_create_oauth_users", &v.to_string()).await.map_err(|_| internal())?;
     }
+    if let Some(v) = req.max_login_attempts {
+        auth::config::AuthSettings::save_setting(&state.pool, "max_login_attempts", &v.to_string()).await.map_err(|_| internal())?;
+    }
+    if let Some(v) = req.lockout_duration_secs {
+        auth::config::AuthSettings::save_setting(&state.pool, "lockout_duration_secs", &v.to_string()).await.map_err(|_| internal())?;
+    }
+    if let Some(v) = req.allow_registration {
+        auth::config::AuthSettings::save_setting(&state.pool, "allow_registration", &v.to_string()).await.map_err(|_| internal())?;
+    }
+    if let Some(v) = req.password_min_length {
+        auth::config::AuthSettings::save_setting(&state.pool, "password_min_length", &v.to_string()).await.map_err(|_| internal())?;
+    }
     Ok(Json(MessageResponse { message: "Settings updated".to_string() }))
 }
 
@@ -2409,6 +2421,49 @@ pub async fn update_dashboard_history_settings(
     })))
 }
 
+// --- Generic Settings (metrics, api server) ---
+// These persist key-value pairs to auth_config for settings that are display-only
+// or applied on next restart.
+
+pub async fn get_generic_settings(
+    State(state): State<AppState>,
+    axum::extract::Path(section): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let prefix = format!("{section}_");
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM auth_config WHERE key LIKE ?1"
+    ).bind(format!("{prefix}%")).fetch_all(&state.pool).await.map_err(|_| internal())?;
+    let mut map = serde_json::Map::new();
+    for (k, v) in rows {
+        let short_key = k.strip_prefix(&prefix).unwrap_or(&k);
+        map.insert(short_key.to_string(), serde_json::Value::String(v));
+    }
+    Ok(Json(serde_json::Value::Object(map)))
+}
+
+pub async fn update_generic_settings(
+    State(state): State<AppState>,
+    axum::extract::Path(section): axum::extract::Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let valid_sections = ["metrics", "api_server"];
+    if !valid_sections.contains(&section.as_str()) {
+        return Err(bad_request());
+    }
+    if let Some(obj) = req.as_object() {
+        for (k, v) in obj {
+            let db_key = format!("{section}_{k}");
+            let val = match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)")
+                .bind(&db_key).bind(&val).execute(&state.pool).await;
+        }
+    }
+    Ok(Json(MessageResponse { message: format!("{section} settings saved") }))
+}
+
 // --- IDS Alert Buffer Settings ---
 
 pub async fn get_ids_alert_settings(
@@ -2779,6 +2834,7 @@ pub async fn update_tls_settings(
 }
 
 pub async fn update_dns(
+    State(state): State<AppState>,
     Json(req): Json<DnsConfigRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     // Validate all entries are valid IPs
@@ -2787,6 +2843,11 @@ pub async fn update_dns(
             return Err(bad_request());
         }
     }
+
+    // Persist to DB so settings survive DHCP renewal / network changes
+    let dns_json = serde_json::to_string(&req.servers).unwrap_or_default();
+    let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dns_servers', ?1)")
+        .bind(&dns_json).execute(&state.pool).await;
 
     let content: String = req
         .servers

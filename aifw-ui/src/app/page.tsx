@@ -345,12 +345,25 @@ export default function Dashboard() {
   const cpu = system?.cpu_usage ?? 0;
   const mem = system?.memory_pct ?? 0;
   const disk = system?.disks?.[0]?.pct ?? 0;
-  const svcDown = services.filter(s => s.enabled && !s.running).length;
-  const healthLevel: "critical" | "warning" | "healthy" = (!status.pf_running || svcDown > 0) ? "critical"
-    : (cpu > 90 || mem > 90 || disk > 95) ? "critical"
+  const svcDown = services.filter(s => s.enabled && !s.running);
+  const healthReasons: string[] = [];
+  if (!status.pf_running) healthReasons.push("pf not running");
+  if (svcDown.length > 0) healthReasons.push(`${svcDown.map(s => s.name).join(", ")} down`);
+  if (cpu > 90) healthReasons.push(`CPU ${cpu.toFixed(0)}%`);
+  if (mem > 90) healthReasons.push(`Memory ${mem.toFixed(0)}%`);
+  if (disk > 95) healthReasons.push(`Disk ${disk.toFixed(0)}%`);
+  const healthLevel: "critical" | "warning" | "healthy" =
+    (!status.pf_running || svcDown.length > 0 || cpu > 90 || mem > 90 || disk > 95) ? "critical"
     : (cpu > 70 || mem > 70 || disk > 80) ? "warning"
     : "healthy";
-  const healthLabel = healthLevel === "critical" ? "Attention Required" : healthLevel === "warning" ? "Degraded" : "All Systems Operational";
+  if (healthLevel === "warning") {
+    if (cpu > 70) healthReasons.push(`CPU ${cpu.toFixed(0)}%`);
+    if (mem > 70) healthReasons.push(`Memory ${mem.toFixed(0)}%`);
+    if (disk > 80) healthReasons.push(`Disk ${disk.toFixed(0)}%`);
+  }
+  const healthLabel = healthLevel === "critical" ? "Attention Required"
+    : healthLevel === "warning" ? "Degraded"
+    : "All Systems Operational";
 
   return (
     <div className="space-y-4">
@@ -363,13 +376,23 @@ export default function Dashboard() {
               <h1 className="text-xl font-bold">{system?.hostname || "AiFw"}</h1>
               <p className="text-xs text-[var(--text-muted)]">{system?.os_version} · Up {formatUptime(system?.uptime_secs ?? 0)}</p>
             </div>
-            <span className={`text-xs font-medium ${healthTextCls[healthLevel]}`}>{healthLabel}</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
-              <span className="text-xs text-[var(--text-muted)]">{ws.connected ? "Live" : "..."}</span>
+            <div>
+              <span className={`text-xs font-medium ${healthTextCls[healthLevel]}`}>{healthLabel}</span>
+              {healthReasons.length > 0 && (
+                <p className={`text-[10px] ${healthTextCls[healthLevel]} opacity-80`}>{healthReasons.join(" · ")}</p>
+              )}
             </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Services inline */}
+            {services.filter(s => s.enabled).map(svc => (
+              <div key={svc.name} className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ${
+                svc.running ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
+              }`}>
+                <div className={`w-1.5 h-1.5 rounded-full ${svc.running ? "bg-green-500" : "bg-red-500"}`} />
+                {svc.name}
+              </div>
+            ))}
             {interfaceList.length > 0 && (
               <select value={selectedNic} onChange={(e) => pickNic(e.target.value)}
                 className="bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]">
@@ -378,6 +401,10 @@ export default function Dashboard() {
             )}
             <div className={`px-2 py-1 rounded text-xs font-medium ${status.pf_running ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
               pf {status.pf_running ? "Active" : "Inactive"}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
+              <span className="text-xs text-[var(--text-muted)]">{ws.connected ? "Live" : "..."}</span>
             </div>
           </div>
         </div>
@@ -436,24 +463,15 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Services */}
-      {services.length > 0 && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-          <h3 className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wider mb-3">Services</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
-            {services.map(svc => (
-              <div key={svc.name} className={`flex items-center gap-2 px-3 py-2 rounded-md border ${
-                !svc.enabled ? "border-[var(--border)] opacity-50"
-                  : svc.running ? "border-green-500/20 bg-green-500/5"
-                  : "border-red-500/20 bg-red-500/5"
-              }`}>
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                  !svc.enabled ? "bg-gray-500" : svc.running ? "bg-green-500" : "bg-red-500"
-                }`} />
-                <span className="text-xs font-medium truncate">{svc.name}</span>
-              </div>
-            ))}
-          </div>
+      {/* Services — disabled services shown below header */}
+      {services.filter(s => !s.enabled).length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {services.filter(s => !s.enabled).map(svc => (
+            <div key={svc.name} className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-gray-500 bg-gray-800/50 border border-gray-700/30">
+              <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+              {svc.name} (disabled)
+            </div>
+          ))}
         </div>
       )}
 
