@@ -151,6 +151,12 @@ struct ConnectionPayload {
 #[derive(Serialize, Clone)]
 struct InterfacePayload {
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subnet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
     bytes_in: u64,
     bytes_out: u64,
     packets_in: u64,
@@ -340,7 +346,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     // --- System metrics ---
     let system = collect_system_metrics().await;
 
-    // Get per-interface byte counters via netstat -I
+    // Get per-interface byte counters via netstat -I and addresses via ifconfig
     let mut interfaces = Vec::new();
     let ifconfig_out = tokio::process::Command::new("ifconfig")
         .arg("-l")
@@ -350,10 +356,60 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
+    // Load interface roles (cached every 30 ticks)
+    static IFACE_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static ROLE_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<std::collections::HashMap<String, String>>> = tokio::sync::OnceCell::const_new();
+    let role_cache = ROLE_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(std::collections::HashMap::new()) }).await;
+    let iface_tick = IFACE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if iface_tick % 30 == 0 {
+        let roles: Vec<(String, String)> = sqlx::query_as("SELECT interface_name, role FROM interface_roles")
+            .fetch_all(&state.pool).await.unwrap_or_default();
+        *role_cache.write().await = roles.into_iter().collect();
+    }
+    let roles = role_cache.read().await;
+
     for iface_name in ifconfig_out.split_whitespace() {
         if iface_name.starts_with("lo") || iface_name.starts_with("pflog") || iface_name.starts_with("enc") || iface_name.starts_with("pfsync") {
             continue;
         }
+
+        // Get address + subnet via ifconfig <iface>
+        let (address, subnet) = if let Ok(ifc) = tokio::process::Command::new("ifconfig")
+            .arg(iface_name)
+            .output()
+            .await
+        {
+            let out = String::from_utf8_lossy(&ifc.stdout);
+            let mut addr = None;
+            let mut sn = None;
+            for line in out.lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("inet ") {
+                    // "inet 10.0.0.1 netmask 0xffffff00 broadcast 10.0.0.255"
+                    let parts: Vec<&str> = rest.split_whitespace().collect();
+                    if !parts.is_empty() {
+                        addr = Some(parts[0].to_string());
+                        // Convert hex netmask to CIDR subnet
+                        if let Some(mask_hex) = parts.iter().position(|&p| p == "netmask").and_then(|i| parts.get(i + 1)) {
+                            if let Ok(mask) = u32::from_str_radix(mask_hex.trim_start_matches("0x"), 16) {
+                                let cidr = mask.count_ones();
+                                let ip: u32 = parts[0].split('.').filter_map(|o| o.parse::<u32>().ok())
+                                    .enumerate().fold(0u32, |acc, (i, o)| acc | (o << (24 - i * 8)));
+                                let net = ip & mask;
+                                sn = Some(format!("{}.{}.{}.{}/{}", net >> 24, (net >> 16) & 0xff, (net >> 8) & 0xff, net & 0xff, cidr));
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            (addr, sn)
+        } else {
+            (None, None)
+        };
+
+        let role = roles.get(iface_name).cloned();
+
         if let Ok(output) = tokio::process::Command::new("netstat")
             .args(["-I", iface_name, "-b", "-n"])
             .output()
@@ -367,6 +423,9 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                 if parts.len() >= 11 && parts[0] == iface_name {
                     interfaces.push(InterfacePayload {
                         name: iface_name.to_string(),
+                        address: address.clone(),
+                        subnet: subnet.clone(),
+                        role,
                         packets_in: parts[4].parse().unwrap_or(0),
                         bytes_in: parts[7].parse().unwrap_or(0),
                         packets_out: parts[8].parse().unwrap_or(0),

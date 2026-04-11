@@ -22,7 +22,7 @@ function isPrivateIp(ip: string): boolean {
 }
 
 type Conn = { src_addr: string; dst_addr: string; src_port: number; dst_port: number; protocol: string; bytes_in: number; bytes_out: number; state: string };
-type Iface = { name: string; bytes_in: number; bytes_out: number; role?: string };
+type Iface = { name: string; bytes_in: number; bytes_out: number; role?: string; address?: string; subnet?: string };
 
 function getSubnet24(ip: string): string {
   const parts = ip.split(".");
@@ -194,6 +194,35 @@ export default function NatFlowsPage() {
     return subnetLiveRates[getSubnet24(sn.subnet)] || { in: 0, out: 0 };
   });
 
+  // Map subnets to their parent LAN interface by matching subnet prefix
+  const ifaceSubnets = useMemo(() => {
+    const map: Record<string, typeof displayItems> = {};
+    for (const iface of lanIfaces) {
+      map[iface.name] = [];
+    }
+    for (const item of displayItems) {
+      // Match subnet to interface by checking if the subnet falls within the interface's subnet
+      const itemPrefix = item.subnet.split(".").slice(0, 3).join(".");
+      let matched = false;
+      for (const iface of lanIfaces) {
+        if (iface.subnet) {
+          const ifPrefix = iface.subnet.split(".").slice(0, 3).join(".");
+          if (itemPrefix === ifPrefix) {
+            map[iface.name].push(item);
+            matched = true;
+            break;
+          }
+        }
+      }
+      if (!matched) {
+        // Fall back: assign to first LAN interface with items, or first LAN iface
+        const fallback = lanIfaces[0]?.name;
+        if (fallback && map[fallback]) map[fallback].push(item);
+      }
+    }
+    return map;
+  }, [displayItems, lanIfaces]);
+
   // SVG topology layout
   const svgW = 800;
   const fwY = 0; // firewall bottom edge in SVG coordinates
@@ -271,93 +300,95 @@ export default function NatFlowsPage() {
             <p className="text-[8px] text-gray-500">{connections.length} states</p>
           </div>
 
-          {/* Pipe from firewall to LAN */}
-          <VPipe rateIn={lanRate.out} rateOut={lanRate.in} height={16} />
+          {/* Per-interface columns: each LAN/WG interface gets its own pipe + fan-out */}
+          <div className="flex justify-center gap-8 mt-1 flex-wrap">
+            {lanIfaces.map(iface => {
+              const ifRate = rates[iface.name] || { in: 0, out: 0 };
+              const items = ifaceSubnets[iface.name] || [];
+              const isWg = iface.name.startsWith("wg");
+              const ifSubnetsW = items.length * subnetCardW + Math.max(0, items.length - 1) * subnetGap;
+              const ifSvgW = Math.max(300, ifSubnetsW + 40);
+              return (
+                <div key={iface.name} className="flex flex-col items-center">
+                  {/* Pipe from firewall */}
+                  <VPipe rateIn={ifRate.out} rateOut={ifRate.in} height={16} />
 
-          {/* LAN interface badges */}
-          <div className="flex items-center gap-2">
-            {lanIfaces.map(iface => (
-              <div key={iface.name} className="px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-center">
-                <span className="text-xs font-bold text-emerald-400">{iface.name}</span>
-                <span className="text-[10px] text-emerald-300/60 ml-1">{iface.role || "LAN"}</span>
-              </div>
-            ))}
-          </div>
+                  {/* Interface badge */}
+                  <div className={`px-3 py-1.5 rounded-lg border text-center ${
+                    isWg ? "bg-purple-500/15 border-purple-500/30" : "bg-emerald-500/15 border-emerald-500/30"
+                  }`}>
+                    <span className={`text-xs font-bold ${isWg ? "text-purple-400" : "text-emerald-400"}`}>{iface.name}</span>
+                    <span className={`text-[10px] ml-1 ${isWg ? "text-purple-300/60" : "text-emerald-300/60"}`}>{iface.role || (isWg ? "VPN" : "LAN")}</span>
+                    {iface.subnet && <span className="text-[9px] text-gray-500 ml-1.5">{iface.subnet}</span>}
+                  </div>
 
-          {/* SVG fan-out pipes to subnets */}
-          {displayItems.length > 0 && (
-            <div className="w-full mt-1 overflow-x-auto">
-              <div className="min-w-fit mx-auto" style={{ width: Math.max(svgW, totalSubnetsW + 40) }}>
-                <svg
-                  viewBox={`0 0 ${Math.max(svgW, totalSubnetsW + 40)} ${subnetY + 10}`}
-                  className="w-full"
-                  preserveAspectRatio="xMidYMid meet"
-                  style={{ height: subnetY + 10 }}
-                >
-                  {displayItems.map((sn, idx) => {
-                    const cx = Math.max(svgW, totalSubnetsW + 40) / 2;
-                    // Adjust startX based on actual SVG width
-                    const actualW = Math.max(svgW, totalSubnetsW + 40);
-                    const actualStartX = (actualW - totalSubnetsW) / 2;
-                    const ax = actualStartX + idx * (subnetCardW + subnetGap) + subnetCardW / 2;
-                    // Two parallel Bezier curves offset horizontally (gap=4px)
-                    const gap = 4;
-                    const pathIn  = `M ${cx - gap},${fwY} C ${cx - gap},${subnetY * 0.4} ${ax - gap},${subnetY * 0.5} ${ax - gap},${subnetY}`;
-                    const pathOut = `M ${cx + gap},${fwY} C ${cx + gap},${subnetY * 0.4} ${ax + gap},${subnetY * 0.5} ${ax + gap},${subnetY}`;
-                    return (
-                      <SvgPipe key={sn.subnet} id={`pipe-${idx}`} pathIn={pathIn} pathOut={pathOut}
-                        rateIn={sRates[idx]?.in || 0} rateOut={sRates[idx]?.out || 0} />
-                    );
-                  })}
-                </svg>
-
-                {/* Subnet cards positioned below SVG */}
-                <div className="flex justify-center gap-4 flex-wrap" style={{ marginTop: -4 }}>
-                  {displayItems.map((sn, idx) => {
-                    const sr = sRates[idx] || { in: 0, out: 0 };
-                    const isSelected = selectedHost === sn.subnet;
-                    return (
-                      <button key={sn.subnet}
-                        onClick={() => setSelectedHost(isSelected ? null : sn.subnet)}
-                        className={`flex flex-col items-center p-3 rounded-xl border-2 transition-all duration-200 min-w-[140px] max-w-[180px] ${
-                          isSelected
-                            ? "bg-cyan-500/10 border-cyan-500/50 shadow-lg shadow-cyan-500/10"
-                            : "bg-[var(--bg-primary)] border-[var(--border)] hover:border-gray-500 hover:bg-gray-700/30"
-                        }`}
-                      >
-                        {/* Subnet icon */}
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-1.5 ${
-                          isSelected ? "bg-cyan-500/20" : "bg-gray-700/50"
-                        }`}>
-                          <svg className={`w-4 h-4 ${isSelected ? "text-cyan-400" : "text-gray-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
-                          </svg>
+                  {/* Fan-out to subnets */}
+                  {items.length > 0 ? (
+                    <div className="mt-1">
+                      <div style={{ width: ifSvgW }}>
+                        <svg viewBox={`0 0 ${ifSvgW} ${subnetY + 10}`} className="w-full"
+                          preserveAspectRatio="xMidYMid meet" style={{ height: subnetY + 10 }}>
+                          {items.map((sn, idx) => {
+                            const cx = ifSvgW / 2;
+                            const ifStartX = (ifSvgW - ifSubnetsW) / 2;
+                            const ax = ifStartX + idx * (subnetCardW + subnetGap) + subnetCardW / 2;
+                            const gap = 4;
+                            const pathIn  = `M ${cx - gap},${fwY} C ${cx - gap},${subnetY * 0.4} ${ax - gap},${subnetY * 0.5} ${ax - gap},${subnetY}`;
+                            const pathOut = `M ${cx + gap},${fwY} C ${cx + gap},${subnetY * 0.4} ${ax + gap},${subnetY * 0.5} ${ax + gap},${subnetY}`;
+                            const sr = (groupBySubnet ? subnetLiveRates[sn.subnet] : subnetLiveRates[getSubnet24(sn.subnet)]) || { in: 0, out: 0 };
+                            return (
+                              <SvgPipe key={sn.subnet} id={`pipe-${iface.name}-${idx}`} pathIn={pathIn} pathOut={pathOut}
+                                rateIn={sr.in} rateOut={sr.out} />
+                            );
+                          })}
+                        </svg>
+                        <div className="flex justify-center gap-4 flex-wrap" style={{ marginTop: -4 }}>
+                          {items.map(sn => {
+                            const sr = (groupBySubnet ? subnetLiveRates[sn.subnet] : subnetLiveRates[getSubnet24(sn.subnet)]) || { in: 0, out: 0 };
+                            const isSelected = selectedHost === sn.subnet;
+                            return (
+                              <button key={sn.subnet}
+                                onClick={() => setSelectedHost(isSelected ? null : sn.subnet)}
+                                className={`flex flex-col items-center p-3 rounded-xl border-2 transition-all duration-200 min-w-[140px] max-w-[180px] ${
+                                  isSelected
+                                    ? "bg-cyan-500/10 border-cyan-500/50 shadow-lg shadow-cyan-500/10"
+                                    : "bg-[var(--bg-primary)] border-[var(--border)] hover:border-gray-500 hover:bg-gray-700/30"
+                                }`}
+                              >
+                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-1.5 ${isSelected ? "bg-cyan-500/20" : "bg-gray-700/50"}`}>
+                                  <svg className={`w-4 h-4 ${isSelected ? "text-cyan-400" : "text-gray-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                                    {isWg
+                                      ? <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                                      : <path strokeLinecap="round" strokeLinejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
+                                    }
+                                  </svg>
+                                </div>
+                                <span className={`text-[11px] font-mono font-bold ${isSelected ? "text-cyan-400" : "text-white"}`}>{sn.subnet}</span>
+                                <div className="flex gap-2 mt-1 text-[9px]">
+                                  <span className="text-emerald-400">{formatBps(sr.in)}</span>
+                                  <span className="text-blue-400">{formatBps(sr.out)}</span>
+                                </div>
+                                <span className="text-[9px] text-gray-500 mt-0.5">{sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {sn.conns} conn</span>
+                                <span className="text-[9px] text-gray-500">{formatBytes(sn.bytes)}</span>
+                                <div className="w-full h-1 bg-gray-700 rounded-full mt-1.5 overflow-hidden">
+                                  <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all"
+                                    style={{ width: `${Math.max(2, (sn.bytes / maxItemBytes) * 100)}%` }} />
+                                </div>
+                              </button>
+                            );
+                          })}
                         </div>
-                        <span className={`text-[11px] font-mono font-bold ${isSelected ? "text-cyan-400" : "text-white"}`}>
-                          {sn.subnet}
-                        </span>
-                        <div className="flex gap-2 mt-1 text-[9px]">
-                          <span className="text-emerald-400">{formatBps(sr.in)}</span>
-                          <span className="text-blue-400">{formatBps(sr.out)}</span>
-                        </div>
-                        <span className="text-[9px] text-gray-500 mt-0.5">
-                          {sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {sn.conns} conn
-                        </span>
-                        <span className="text-[9px] text-gray-500">{formatBytes(sn.bytes)}</span>
-                        {/* Mini traffic bar */}
-                        <div className="w-full h-1 bg-gray-700 rounded-full mt-1.5 overflow-hidden">
-                          <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all"
-                            style={{ width: `${Math.max(2, (sn.bytes / maxItemBytes) * 100)}%` }} />
-                        </div>
-                      </button>
-                    );
-                  })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-gray-600 mt-3">No active hosts</div>
+                  )}
                 </div>
-              </div>
-            </div>
-          )}
-          {displayItems.length === 0 && (
-            <div className="text-center text-gray-600 text-xs py-6 mt-2">No active LAN hosts</div>
+              );
+            })}
+          </div>
+          {lanIfaces.length === 0 && (
+            <div className="text-center text-gray-600 text-xs py-6 mt-2">No LAN interfaces</div>
           )}
         </div>
       </div>
