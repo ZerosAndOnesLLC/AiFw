@@ -74,9 +74,9 @@ impl WgTunnel {
                 "pass in quick{on_iface} proto udp to any port {} keep state label \"wg-{}\"",
                 self.listen_port, self.name
             ),
-            // Allow all traffic on the WireGuard tunnel interface
+            // Allow all traffic on the WireGuard tunnel interface (flags any = ICMP/UDP too)
             format!(
-                "pass quick on {} keep state label \"wg-{}-tunnel\"",
+                "pass quick on {} flags any keep state label \"wg-{}-tunnel\"",
                 self.interface, self.name
             ),
         ]
