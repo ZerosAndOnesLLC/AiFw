@@ -1054,6 +1054,19 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Periodic SQLite WAL checkpoint (every 5 minutes) to prevent WAL file bloat
+    {
+        let pool = state.pool.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                    .execute(&pool).await;
+            }
+        });
+    }
+
     let app = build_router(state, args.ui_dir.as_deref(), &args.cors_origins);
 
     if args.no_tls {
