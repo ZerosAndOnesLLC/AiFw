@@ -20,6 +20,26 @@ struct WsStatusUpdate {
     interfaces: Vec<InterfacePayload>,
     blocked: Vec<BlockedPayload>,
     services: Vec<ServiceStatusPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vpn: Option<Vec<VpnTunnelStatus>>,
+}
+
+#[derive(Serialize, Clone)]
+struct VpnTunnelStatus {
+    id: String,
+    name: String,
+    interface_name: String,
+    running: bool,
+    peers: Vec<VpnPeerStatus>,
+}
+
+#[derive(Serialize, Clone)]
+struct VpnPeerStatus {
+    public_key: String,
+    endpoint: Option<String>,
+    latest_handshake_secs_ago: i64,
+    transfer_rx: u64,
+    transfer_tx: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -348,7 +368,53 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     };
     let history_msg = serde_json::to_string(&history_entry).map_err(|e| e.to_string())?;
 
-    // Full live update (~20 KB) — includes recent blocked + connections for live clients
+    // VPN status — refresh every 10 ticks (~10s) to avoid running wg show every second
+    static VPN_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static VPN_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Vec<VpnTunnelStatus>>> = tokio::sync::OnceCell::const_new();
+    let vpn_cache = VPN_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(Vec::new()) }).await;
+    let tick = VPN_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let vpn = if tick % 10 == 0 {
+        if let Some(ref engine) = state.ids_engine {
+            // Use vpn_engine instead
+            let _ = engine; // just to avoid unused warning
+        }
+        let tunnels = state.vpn_engine.list_wg_tunnels().await.unwrap_or_default();
+        let mut vpn_status = Vec::new();
+        for t in &tunnels {
+            if t.status == aifw_common::VpnStatus::Up {
+                if let Ok(st) = state.vpn_engine.tunnel_status(t.id).await {
+                    let peers: Vec<VpnPeerStatus> = st.get("peers").and_then(|p| p.as_array()).map(|arr| {
+                        arr.iter().filter_map(|p| Some(VpnPeerStatus {
+                            public_key: p.get("public_key")?.as_str()?.to_string(),
+                            endpoint: p.get("endpoint").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            latest_handshake_secs_ago: p.get("latest_handshake_secs_ago")?.as_i64()?,
+                            transfer_rx: p.get("transfer_rx")?.as_u64()?,
+                            transfer_tx: p.get("transfer_tx")?.as_u64()?,
+                        })).collect()
+                    }).unwrap_or_default();
+                    vpn_status.push(VpnTunnelStatus {
+                        id: t.id.to_string(),
+                        name: t.name.clone(),
+                        interface_name: t.interface.0.clone(),
+                        running: true,
+                        peers,
+                    });
+                }
+            } else {
+                vpn_status.push(VpnTunnelStatus {
+                    id: t.id.to_string(), name: t.name.clone(), interface_name: t.interface.0.clone(),
+                    running: false, peers: vec![],
+                });
+            }
+        }
+        *vpn_cache.write().await = vpn_status.clone();
+        Some(vpn_status)
+    } else {
+        let cached = vpn_cache.read().await;
+        if cached.is_empty() { None } else { Some(cached.clone()) }
+    };
+
+    // Full live update — includes recent blocked + connections for live clients
     let update = WsStatusUpdate {
         msg_type: "status_update",
         system,
@@ -357,6 +423,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         status,
         connections,
         interfaces,
+        vpn,
     };
     let live_msg = serde_json::to_string(&update).map_err(|e| e.to_string())?;
 

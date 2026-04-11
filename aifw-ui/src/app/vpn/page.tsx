@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useWs } from "@/context/WsContext";
 
 /* ────────────────────────── Types ────────────────────────── */
 
@@ -46,6 +47,18 @@ interface IpsecSa {
 }
 
 /* ────────────────────────── Helpers ────────────────────────── */
+
+function fmtBytes(b: number): string {
+  if (b >= 1e9) return `${(b/1e9).toFixed(1)} GB`; if (b >= 1e6) return `${(b/1e6).toFixed(1)} MB`;
+  if (b >= 1e3) return `${(b/1e3).toFixed(1)} KB`; return `${b} B`;
+}
+
+function fmtDuration(secs: number): string {
+  if (secs < 0) return "never";
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs/60)}m ago`;
+  return `${Math.floor(secs/3600)}h ${Math.floor((secs%3600)/60)}m ago`;
+}
 
 function authHeaders(): Record<string, string> {
   const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
@@ -208,6 +221,10 @@ export default function VpnPage() {
   const [showIpsecForm, setShowIpsecForm] = useState(false);
   const [ipsecForm, setIpsecForm] = useState(defaultIpsecForm);
   const [ipsecSubmitting, setIpsecSubmitting] = useState(false);
+
+  /* ── Tunnel live status from WebSocket ── */
+  const ws = useWs();
+  const vpnStatus = (ws as unknown as { vpn?: { id: string; name: string; running: boolean; peers: { public_key: string; endpoint: string | null; latest_handshake_secs_ago: number; transfer_rx: number; transfer_tx: number }[] }[] }).vpn;
 
   /* ── Config modal ── */
   const [configModal, setConfigModal] = useState<{ peerName: string; fullTunnel: string; splitTunnel: string } | null>(null);
@@ -887,7 +904,10 @@ export default function VpnPage() {
                                       Endpoint
                                     </th>
                                     <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
-                                      Keepalive
+                                      Handshake
+                                    </th>
+                                    <th className="text-left py-2 px-2 text-[10px] font-medium text-gray-500 uppercase tracking-wider">
+                                      Transfer
                                     </th>
                                     <th className="w-20" />
                                   </tr>
@@ -907,9 +927,34 @@ export default function VpnPage() {
                                       <td className="py-2 px-2 font-mono text-gray-400">
                                         {peer.endpoint || "-"}
                                       </td>
-                                      <td className="py-2 px-2 text-gray-400">
-                                        {peer.persistent_keepalive != null ? `${peer.persistent_keepalive}s` : "off"}
-                                      </td>
+                                      {(() => {
+                                        const ts = vpnStatus?.find(v => v.id === tunnel.id);
+                                        const ps = ts?.peers?.find(p => p.public_key === peer.public_key);
+                                        return (
+                                          <>
+                                            <td className="py-2 px-2 text-gray-400">
+                                              {ps ? (
+                                                <span className={ps.latest_handshake_secs_ago >= 0 && ps.latest_handshake_secs_ago < 180 ? "text-green-400" : "text-gray-500"}>
+                                                  {fmtDuration(ps.latest_handshake_secs_ago)}
+                                                </span>
+                                              ) : (
+                                                <span className="text-gray-600">—</span>
+                                              )}
+                                            </td>
+                                            <td className="py-2 px-2 text-gray-400">
+                                              {ps ? (
+                                                <span className="text-[10px] font-mono">
+                                                  <span className="text-green-400">{fmtBytes(ps.transfer_rx)}</span>
+                                                  {" / "}
+                                                  <span className="text-blue-400">{fmtBytes(ps.transfer_tx)}</span>
+                                                </span>
+                                              ) : (
+                                                <span className="text-gray-600">—</span>
+                                              )}
+                                            </td>
+                                          </>
+                                        );
+                                      })()}
                                       <td className="py-2 px-1">
                                         <div className="flex items-center gap-0.5">
                                           <button
