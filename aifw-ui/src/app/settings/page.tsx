@@ -97,6 +97,13 @@ export default function SettingsPage() {
   const [historySaving, setHistorySaving] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
 
+  // --- IDS Alert Buffer ---
+  const [idsMaxMb, setIdsMaxMb] = useState(64);
+  const [idsMaxAge, setIdsMaxAge] = useState(86400);
+  const [idsStats, setIdsStats] = useState<{ count: number; estimated_mb: number; max_mb: number; usage_pct: number; oldest: string | null; newest: string | null; by_classification: { classification: string; count: number }[] } | null>(null);
+  const [idsFeedback, setIdsFeedback] = useState<SectionFeedback | null>(null);
+  const [idsSaving, setIdsSaving] = useState(false);
+
   // --- AI Providers ---
   const [aiEnabled, setAiEnabled] = useState(false);
   const [aiActiveProvider, setAiActiveProvider] = useState("");
@@ -193,6 +200,18 @@ export default function SettingsPage() {
       } finally {
         setHistoryLoading(false);
       }
+    })();
+
+    // Fetch IDS Alert Buffer settings
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/settings/ids-alerts`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.max_mb) setIdsMaxMb(data.max_mb);
+        if (data.max_age_secs) setIdsMaxAge(data.max_age_secs);
+        if (data.stats) setIdsStats(data.stats);
+      } catch { /* endpoint may not exist */ }
     })();
 
     // Fetch AI provider settings
@@ -334,6 +353,24 @@ export default function SettingsPage() {
     } finally {
       setAuthSaving(false);
     }
+  };
+
+  const saveIdsAlerts = async () => {
+    setIdsSaving(true);
+    setIdsFeedback(null);
+    try {
+      const res = await authFetch(`${API}/api/v1/settings/ids-alerts`, {
+        method: "PUT", headers: authHeaders(),
+        body: JSON.stringify({ max_mb: idsMaxMb, max_age_secs: idsMaxAge }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.stats) setIdsStats(data.stats);
+      setFeedbackWithTimeout(setIdsFeedback, { type: "success", message: "IDS alert settings saved." });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setFeedbackWithTimeout(setIdsFeedback, { type: "error", message: `Save failed: ${msg}` });
+    } finally { setIdsSaving(false); }
   };
 
   const saveHistory = async () => {
@@ -1019,6 +1056,76 @@ export default function SettingsPage() {
               {valkeySaving ? "Saving..." : "Save Valkey"}
             </button>
           </div>
+        </div>
+      </section>
+
+      {/* IDS Alert Buffer */}
+      <section className={sectionCls}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="font-medium">IDS Alert Storage</h2>
+            <p className="text-xs text-[var(--text-muted)]">In-memory alert buffer — no disk I/O</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls}>Max Memory (MB)</label>
+            <input type="number" value={idsMaxMb}
+              onChange={e => setIdsMaxMb(Math.max(8, Math.min(512, parseInt(e.target.value) || 64)))}
+              className={inputCls} min={8} max={512} />
+            <p className="text-[10px] text-[var(--text-muted)] mt-1">8–512 MB. Each alert ≈ 512 bytes.</p>
+          </div>
+          <div>
+            <label className={labelCls}>Max Age (hours)</label>
+            <input type="number" value={Math.round(idsMaxAge / 3600)}
+              onChange={e => setIdsMaxAge(Math.max(1, Math.min(168, parseInt(e.target.value) || 24)) * 3600)}
+              className={inputCls} min={1} max={168} />
+            <p className="text-[10px] text-[var(--text-muted)] mt-1">1–168 hours (7 days). Older alerts auto-evicted.</p>
+          </div>
+        </div>
+        {idsStats && (
+          <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+            <div className="bg-[var(--bg-primary)] rounded-lg p-3">
+              <div className="text-[10px] text-[var(--text-muted)] uppercase">Alerts</div>
+              <div className="text-lg font-bold text-cyan-400">{idsStats.count.toLocaleString()}</div>
+            </div>
+            <div className="bg-[var(--bg-primary)] rounded-lg p-3">
+              <div className="text-[10px] text-[var(--text-muted)] uppercase">Memory</div>
+              <div className="text-lg font-bold text-blue-400">{idsStats.estimated_mb.toFixed(1)} MB</div>
+            </div>
+            <div className="bg-[var(--bg-primary)] rounded-lg p-3">
+              <div className="text-[10px] text-[var(--text-muted)] uppercase">Usage</div>
+              <div className="text-lg font-bold" style={{ color: idsStats.usage_pct > 80 ? "#ef4444" : "#22c55e" }}>
+                {idsStats.usage_pct.toFixed(0)}%
+              </div>
+              <div className="w-full h-1 bg-gray-700 rounded-full mt-1">
+                <div className="h-full rounded-full transition-all" style={{ width: `${idsStats.usage_pct}%`, backgroundColor: idsStats.usage_pct > 80 ? "#ef4444" : "#22c55e" }} />
+              </div>
+            </div>
+            <div className="bg-[var(--bg-primary)] rounded-lg p-3">
+              <div className="text-[10px] text-[var(--text-muted)] uppercase">Classifications</div>
+              <div className="flex flex-wrap gap-1 mt-1 justify-center">
+                {(idsStats.by_classification || []).map((c: { classification: string; count: number }) => (
+                  <span key={c.classification} className={`text-[9px] px-1.5 py-0.5 rounded ${
+                    c.classification === "confirmed" ? "bg-red-500/15 text-red-400" :
+                    c.classification === "false_positive" ? "bg-green-500/15 text-green-400" :
+                    c.classification === "investigating" ? "bg-yellow-500/15 text-yellow-400" :
+                    "bg-gray-700 text-gray-400"
+                  }`}>{c.classification}: {c.count}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="flex items-center gap-3 mt-4">
+          <button onClick={saveIdsAlerts} disabled={idsSaving} className="px-4 py-2 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 transition-colors">
+            {idsSaving ? "Saving..." : "Save"}
+          </button>
+          {idsFeedback && (
+            <span className={idsFeedback.type === "success" ? "text-green-400 text-xs" : "text-red-400 text-xs"}>
+              {idsFeedback.message}
+            </span>
+          )}
         </div>
       </section>
 
