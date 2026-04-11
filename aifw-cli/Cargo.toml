@@ -19,7 +19,7 @@ tracing-subscriber = { workspace = true }
 sqlx = { workspace = true }
 serde_json = { workspace = true }
 anyhow = "1"
-serde_yml = "0.0"
+serde_yaml_ng = "0.9"
 uuid = { workspace = true }
 argon2 = { workspace = true }
 chrono = { workspace = true }

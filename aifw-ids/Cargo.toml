@@ -29,7 +29,7 @@ memchr = "2"
 httparse = "1"
 
 # Rule formats
-serde_yml = "0.0"
+serde_yaml_ng = "0.9"
 
 # System interfaces (BPF capture on FreeBSD)
 libc = "0.2"

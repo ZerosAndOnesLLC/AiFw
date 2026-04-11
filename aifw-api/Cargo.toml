@@ -35,7 +35,7 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 clap = { version = "4", features = ["derive", "env"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rcgen = "0.13"
-serde_yml = "0.0"
+serde_yaml_ng = "0.9"
 time = "0.3"
 tokio-rustls = "0.26"
 rustls = "0.23"

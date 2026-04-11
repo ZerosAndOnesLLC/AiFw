@@ -1851,6 +1851,6 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
         root.insert("metrics".to_string(), json!({"prometheus": {"address": addr}}));
     }
 
-    let yaml = serde_yml::to_string(&root)?;
+    let yaml = serde_yaml_ng::to_string(&root)?;
     Ok(yaml)
 }

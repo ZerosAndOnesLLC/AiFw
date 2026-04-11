@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ai"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-api"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -53,7 +53,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
- "serde_yml",
+ "serde_yaml_ng",
  "sqlx",
  "time",
  "tokio",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-cli"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -77,7 +77,7 @@ dependencies = [
  "chrono",
  "clap",
  "serde_json",
- "serde_yml",
+ "serde_yaml_ng",
  "sqlx",
  "tokio",
  "tracing",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-common"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "chrono",
  "serde",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-conntrack"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-core"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-daemon"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aho-corasick",
  "aifw-common",
@@ -165,7 +165,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "serde_yml",
+ "serde_yaml_ng",
  "smallvec",
  "sqlx",
  "thiserror",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-metrics"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-pf"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-plugins"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-setup"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-tui"
-version = "5.32.6"
+version = "5.32.7"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -1752,16 +1752,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libyml"
-version = "0.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3302702afa434ffa30847a83305f0a69d6abd74293b6554c18ec85c7ef30c980"
-dependencies = [
- "anyhow",
- "version_check",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2511,18 +2501,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yml"
-version = "0.0.12"
+name = "serde_yaml_ng"
+version = "0.9.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59e2dd588bf1597a252c3b920e0143eb99b0f76e4e082f4c92ce34fbc9e71ddd"
+checksum = "bd24347956e682cf958c95e82deb9914cad4010d3efc035d579f81f4c426038c"
 dependencies = [
  "indexmap",
  "itoa",
- "libyml",
- "memchr",
  "ryu",
  "serde",
- "version_check",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -3364,6 +3352,12 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

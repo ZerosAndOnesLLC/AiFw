@@ -1004,7 +1004,7 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
     }
 
     let yaml =
-        serde_yml::to_string(&serde_json::Value::Object(root)).unwrap_or_else(|_| "{}".to_string());
+        serde_yaml_ng::to_string(&serde_json::Value::Object(root)).unwrap_or_else(|_| "{}".to_string());
 
     Ok(yaml)
 }

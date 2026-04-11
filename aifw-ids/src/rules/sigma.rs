@@ -43,8 +43,8 @@ pub enum SigmaModifier {
 /// Sigma rules target log events, but we map them to network flow
 /// metadata fields (protocol parsers' sticky buffers).
 pub fn parse_sigma_rule(yaml_text: &str, source: RuleSource) -> Result<CompiledRule, String> {
-    let doc: serde_yml::Value =
-        serde_yml::from_str(yaml_text).map_err(|e| format!("YAML parse error: {e}"))?;
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(yaml_text).map_err(|e| format!("YAML parse error: {e}"))?;
 
     let title = doc
         .get("title")
@@ -133,7 +133,7 @@ pub fn parse_sigma_rule(yaml_text: &str, source: RuleSource) -> Result<CompiledR
 
 /// Parse the detection section of a Sigma rule.
 fn parse_sigma_detection(
-    detection: &serde_yml::Value,
+    detection: &serde_yaml_ng::Value,
 ) -> Result<(Vec<ContentMatch>, Vec<PcrePattern>), String> {
     let mut contents = Vec::new();
     let mut pcre_patterns = Vec::new();
@@ -266,16 +266,16 @@ fn extract_sigma_modifier(field: &str) -> (SigmaModifier, String) {
 }
 
 /// Extract string values from a YAML value (scalar or sequence)
-fn extract_values(val: &serde_yml::Value) -> Vec<String> {
+fn extract_values(val: &serde_yaml_ng::Value) -> Vec<String> {
     match val {
-        serde_yml::Value::String(s) => vec![s.clone()],
-        serde_yml::Value::Number(n) => vec![n.to_string()],
-        serde_yml::Value::Bool(b) => vec![b.to_string()],
-        serde_yml::Value::Sequence(seq) => seq
+        serde_yaml_ng::Value::String(s) => vec![s.clone()],
+        serde_yaml_ng::Value::Number(n) => vec![n.to_string()],
+        serde_yaml_ng::Value::Bool(b) => vec![b.to_string()],
+        serde_yaml_ng::Value::Sequence(seq) => seq
             .iter()
             .filter_map(|v| match v {
-                serde_yml::Value::String(s) => Some(s.clone()),
-                serde_yml::Value::Number(n) => Some(n.to_string()),
+                serde_yaml_ng::Value::String(s) => Some(s.clone()),
+                serde_yaml_ng::Value::Number(n) => Some(n.to_string()),
                 _ => None,
             })
             .collect(),
