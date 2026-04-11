@@ -30,52 +30,62 @@ function getSubnet24(ip: string): string {
   return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
 }
 
-/** Animated vertical pipe: green=in, blue=out, width/brightness scales with throughput */
+/** Animated vertical pipe using SVG: green=in (down), blue=out (up), width scales with throughput */
 function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: number; height?: number }) {
-  const total = rateIn + rateOut;
-  const width = Math.max(6, Math.min(56, total > 0 ? 6 + Math.log10(Math.max(total, 1)) * 6 : 6));
-  const inFrac = total > 0 ? rateIn / total : 0.5;
-  const inW = Math.max(2, width * inFrac);
-  const outW = Math.max(2, width * (1 - inFrac));
-  const intensity = Math.min(1, total > 0 ? 0.3 + Math.log10(Math.max(total, 1)) / 10 : 0.2);
+  const inW = Math.max(3, rateIn > 0 ? 3 + Math.log10(Math.max(rateIn, 1)) * 2 : 3);
+  const outW = Math.max(3, rateOut > 0 ? 3 + Math.log10(Math.max(rateOut, 1)) * 2 : 3);
+  const totalW = inW + outW + 8; // gap between pipes
+  const inA = Math.min(0.85, rateIn > 0 ? 0.35 + Math.log10(Math.max(rateIn, 1)) / 8 : 0.1);
+  const outA = Math.min(0.85, rateOut > 0 ? 0.35 + Math.log10(Math.max(rateOut, 1)) / 8 : 0.1);
+  const svgW = Math.max(40, totalW + 16);
+  const cx = svgW / 2;
+  const gap = 3;
   return (
-    <div className="flex justify-center" style={{ height }}>
-      <div className="relative overflow-hidden rounded-l-sm" style={{ width: `${inW}px`, height: "100%" }}>
-        <div className="absolute inset-0" style={{ backgroundColor: `rgba(34,197,94,${intensity * 0.3})` }} />
-        {rateIn > 0 && <div className="absolute inset-0" style={{ background: `repeating-linear-gradient(180deg, transparent, transparent 6px, rgba(34,197,94,${intensity}) 6px, rgba(34,197,94,${intensity}) 12px)`, animation: "flowDown 0.6s linear infinite" }} />}
-      </div>
-      <div className="relative overflow-hidden rounded-r-sm" style={{ width: `${outW}px`, height: "100%" }}>
-        <div className="absolute inset-0" style={{ backgroundColor: `rgba(59,130,246,${intensity * 0.3})` }} />
-        {rateOut > 0 && <div className="absolute inset-0" style={{ background: `repeating-linear-gradient(0deg, transparent, transparent 6px, rgba(59,130,246,${intensity}) 6px, rgba(59,130,246,${intensity}) 12px)`, animation: "flowUp 0.6s linear infinite" }} />}
-      </div>
-    </div>
+    <svg viewBox={`0 0 ${svgW} ${height}`} style={{ width: svgW, height }} className="block mx-auto">
+      {/* Glow */}
+      <line x1={cx} y1={0} x2={cx} y2={height} stroke="rgba(100,200,150,0.04)" strokeWidth={totalW + 10} strokeLinecap="round" />
+      {/* Inbound (green, left) — flows down */}
+      <line x1={cx - gap} y1={0} x2={cx - gap} y2={height} stroke="rgba(51,65,85,0.4)" strokeWidth={inW + 2} strokeLinecap="round" />
+      <line x1={cx - gap} y1={0} x2={cx - gap} y2={height} stroke={`rgba(34,197,94,${Math.max(0.15, inA)})`}
+        strokeWidth={inW} strokeDasharray="5 7" strokeLinecap="round">
+        {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
+      </line>
+      {/* Outbound (blue, right) — flows up */}
+      <line x1={cx + gap} y1={0} x2={cx + gap} y2={height} stroke="rgba(51,65,85,0.4)" strokeWidth={outW + 2} strokeLinecap="round" />
+      <line x1={cx + gap} y1={0} x2={cx + gap} y2={height} stroke={`rgba(59,130,246,${Math.max(0.15, outA)})`}
+        strokeWidth={outW} strokeDasharray="5 7" strokeLinecap="round">
+        {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="0" to="12" dur="0.5s" repeatCount="indefinite" />}
+      </line>
+    </svg>
   );
 }
 
-/** SVG animated pipe — green(in) + blue(out) as two parallel Bezier paths side-by-side.
- *  Each direction gets its own curve offset horizontally so both are always visible. */
+/** SVG animated pipe — green(in) + blue(out) as two parallel Bezier paths.
+ *  Width scales with throughput. In flows downward, out flows upward. */
 function SvgPipe({ pathIn, pathOut, rateIn, rateOut }: { pathIn: string; pathOut: string; rateIn: number; rateOut: number; id: string }) {
   const total = rateIn + rateOut;
-  const width = Math.max(8, Math.min(16, total > 0 ? 6 + Math.log10(Math.max(total, 1)) * 1.2 : 8));
-  const strokeW = width * 0.35;
+  // Scale width with throughput — same log curve as VPipe
+  const width = Math.max(4, Math.min(28, total > 0 ? 4 + Math.log10(Math.max(total, 1)) * 3 : 4));
+  const inW = Math.max(3, rateIn > 0 ? 3 + Math.log10(Math.max(rateIn, 1)) * 1.5 : 3);
+  const outW = Math.max(3, rateOut > 0 ? 3 + Math.log10(Math.max(rateOut, 1)) * 1.5 : 3);
   const inA = Math.min(0.85, rateIn > 0 ? 0.35 + Math.log10(Math.max(rateIn, 1)) / 8 : 0);
   const outA = Math.min(0.85, rateOut > 0 ? 0.35 + Math.log10(Math.max(rateOut, 1)) / 8 : 0);
   return (
     <g>
-      {/* Soft glow on inbound path */}
+      {/* Soft glow */}
       <path d={pathIn} fill="none" stroke="rgba(100,200,150,0.03)" strokeWidth={width + 8} strokeLinecap="round" />
       {/* Pipe backgrounds */}
-      <path d={pathIn} fill="none" stroke="rgba(51,65,85,0.4)" strokeWidth={strokeW + 2} strokeLinecap="round" />
-      <path d={pathOut} fill="none" stroke="rgba(51,65,85,0.4)" strokeWidth={strokeW + 2} strokeLinecap="round" />
-      {/* Inbound (green) — dashes flow downward */}
+      <path d={pathIn} fill="none" stroke="rgba(51,65,85,0.4)" strokeWidth={inW + 2} strokeLinecap="round" />
+      <path d={pathOut} fill="none" stroke="rgba(51,65,85,0.4)" strokeWidth={outW + 2} strokeLinecap="round" />
+      {/* Inbound (green) — dashes flow downward (negative offset = toward subnets) */}
       <path d={pathIn} fill="none" stroke={`rgba(34,197,94,${Math.max(0.2, inA)})`}
-        strokeWidth={strokeW} strokeDasharray="5 7" strokeLinecap="round">
+        strokeWidth={inW} strokeDasharray="5 7" strokeLinecap="round">
         {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
       </path>
-      {/* Outbound (blue) — dashes flow upward */}
+      {/* Outbound (blue) — dashes flow upward (positive offset = toward firewall) */}
       <path d={pathOut} fill="none" stroke={`rgba(59,130,246,${Math.max(0.2, outA)})`}
-        strokeWidth={strokeW} strokeDasharray="5 7" strokeLinecap="round">
-        {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="12" to="0" dur="0.5s" repeatCount="indefinite" />}
+        strokeWidth={outW} strokeDasharray="5 7" strokeLinecap="round">
+        {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="0" to="12" dur="0.5s" repeatCount="indefinite" />}
       </path>
     </g>
   );
