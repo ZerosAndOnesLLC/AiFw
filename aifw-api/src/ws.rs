@@ -95,6 +95,8 @@ struct SystemPayload {
     memory_total: u64,
     memory_used: u64,
     memory_pct: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_breakdown: Option<MemoryBreakdown>,
     disks: Vec<DiskPayload>,
     disk_io: DiskIoPayload,
     uptime_secs: u64,
@@ -103,6 +105,33 @@ struct SystemPayload {
     dns_servers: Vec<String>,
     default_gateway: String,
     route_count: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct MemoryBreakdown {
+    // OS-level memory categories (MB)
+    active_mb: f64,
+    inactive_mb: f64,
+    wired_mb: f64,
+    cached_mb: f64,
+    free_mb: f64,
+    // AiFw process memory
+    api_rss_mb: f64,
+    daemon_rss_mb: f64,
+    // IDS alert buffer
+    ids_buffer_mb: f64,
+    ids_buffer_max_mb: f64,
+    ids_buffer_count: usize,
+    // Dashboard metrics history
+    metrics_history_count: usize,
+    metrics_history_mb: f64,
+    // pf state table
+    pf_states: u64,
+    pf_states_max: u64,
+    // Database
+    db_size_mb: f64,
+    // ZFS ARC cache
+    arc_mb: f64,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -344,7 +373,18 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     }).collect();
 
     // --- System metrics ---
-    let system = collect_system_metrics().await;
+    let mut system = collect_system_metrics().await;
+
+    // Memory breakdown — refreshed every 10 ticks (~10s)
+    static MEM_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Option<MemoryBreakdown>>> = tokio::sync::OnceCell::const_new();
+    let mem_cache = MEM_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(None) }).await;
+    static MEM_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let mem_tick = MEM_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if mem_tick % 10 == 0 {
+        let breakdown = collect_memory_breakdown(state).await;
+        *mem_cache.write().await = Some(breakdown);
+    }
+    system.memory_breakdown = mem_cache.read().await.clone();
 
     // Get per-interface byte counters via netstat -I and addresses via ifconfig
     let mut interfaces = Vec::new();
@@ -728,7 +768,105 @@ async fn collect_system_metrics() -> SystemPayload {
 
     SystemPayload {
         cpu_usage, cpu_cores, memory_total: mem_total, memory_used: mem_used, memory_pct: mem_pct,
+        memory_breakdown: None,
         disks, disk_io, uptime_secs, hostname, os_version, dns_servers, default_gateway, route_count,
+    }
+}
+
+/// Collect memory breakdown: OS categories, process RSS, IDS buffer, metrics, pf states, DB, ARC.
+async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
+    use tokio::process::Command;
+
+    // OS-level memory categories via sysctl (FreeBSD page-based)
+    let page_size = async {
+        let out = Command::new("sysctl").args(["-n", "hw.pagesize"]).output().await.ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()
+    }.await.unwrap_or(4096);
+    let pages_to_mb = |key: &str| -> std::pin::Pin<Box<dyn std::future::Future<Output = f64> + Send + '_>> {
+        let key = key.to_string();
+        Box::pin(async move {
+            let out = Command::new("sysctl").args(["-n", &key]).output().await.ok();
+            let pages = out.and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()).unwrap_or(0);
+            (pages * page_size) as f64 / (1024.0 * 1024.0)
+        })
+    };
+    let active_mb = pages_to_mb("vm.stats.vm.v_active_count").await;
+    let inactive_mb = pages_to_mb("vm.stats.vm.v_inactive_count").await;
+    let wired_mb = pages_to_mb("vm.stats.vm.v_wire_count").await;
+    let cached_mb = pages_to_mb("vm.stats.vm.v_cache_count").await;
+    let free_mb = pages_to_mb("vm.stats.vm.v_free_count").await;
+
+    // Process RSS via ps (lightweight)
+    let get_rss = |pid_name: &str| -> std::pin::Pin<Box<dyn std::future::Future<Output = f64> + Send + '_>> {
+        let pid_name = pid_name.to_string();
+        Box::pin(async move {
+            let out = Command::new("ps").args(["aux"]).output().await.ok();
+            if let Some(out) = out {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                for line in stdout.lines() {
+                    if line.contains(&pid_name) && !line.contains("grep") {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 6 {
+                            // RSS is in KB in column 5 (0-indexed)
+                            return parts[5].parse::<f64>().unwrap_or(0.0) / 1024.0;
+                        }
+                    }
+                }
+            }
+            0.0
+        })
+    };
+    let api_rss_mb = get_rss("aifw-api").await;
+    let daemon_rss_mb = get_rss("aifw-daemon").await;
+
+    // IDS alert buffer
+    let (ids_buffer_mb, ids_buffer_max_mb, ids_buffer_count) = {
+        let stats = state.alert_buffer.stats().await;
+        (stats.estimated_mb, stats.max_mb, stats.count)
+    };
+
+    // Metrics history buffer
+    let (metrics_history_count, metrics_history_mb) = {
+        let buf = state.metrics_history.read().await;
+        let count = buf.len();
+        let bytes: usize = buf.iter().map(|s| s.len()).sum();
+        (count, bytes as f64 / (1024.0 * 1024.0))
+    };
+
+    // pf state table
+    let (pf_states, pf_states_max) = {
+        let s = state.pf.get_stats().await.unwrap_or_default();
+        let max = async {
+            let out = Command::new("pfctl").args(["-sm"]).output().await.ok()?;
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                if line.starts_with("states") {
+                    return line.split_whitespace().nth(3)?.parse::<u64>().ok();
+                }
+            }
+            None
+        }.await.unwrap_or(100_000);
+        (s.states_count, max)
+    };
+
+    // DB file size
+    let db_size_mb = tokio::fs::metadata("/var/db/aifw/aifw.db").await
+        .map(|m| m.len() as f64 / (1024.0 * 1024.0)).unwrap_or(0.0);
+
+    // ZFS ARC
+    let arc_mb = async {
+        let out = Command::new("sysctl").args(["-n", "kstat.zfs.misc.arcstats.size"]).output().await.ok()?;
+        let bytes = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()?;
+        Some(bytes as f64 / (1024.0 * 1024.0))
+    }.await.unwrap_or(0.0);
+
+    MemoryBreakdown {
+        active_mb, inactive_mb, wired_mb, cached_mb, free_mb,
+        api_rss_mb, daemon_rss_mb,
+        ids_buffer_mb, ids_buffer_max_mb, ids_buffer_count,
+        metrics_history_count, metrics_history_mb,
+        pf_states, pf_states_max,
+        db_size_mb, arc_mb,
     }
 }
 

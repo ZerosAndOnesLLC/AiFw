@@ -652,10 +652,65 @@ export default function Dashboard() {
               </button>
             </div>
             <div className="p-5 overflow-y-auto max-h-[calc(80vh-52px)]">
-              {modal === "system" && (
+              {modal === "system" && (() => {
+                const mb = (system as unknown as Record<string, unknown>)?.memory_breakdown as {
+                  active_mb: number; inactive_mb: number; wired_mb: number; cached_mb: number; free_mb: number;
+                  api_rss_mb: number; daemon_rss_mb: number;
+                  ids_buffer_mb: number; ids_buffer_max_mb: number; ids_buffer_count: number;
+                  metrics_history_count: number; metrics_history_mb: number;
+                  pf_states: number; pf_states_max: number; db_size_mb: number; arc_mb: number;
+                } | undefined;
+                const totalMb = (system?.memory_total ?? 0) / (1024 * 1024);
+                const barItem = (label: string, val: number, color: string) => {
+                  const pct = totalMb > 0 ? Math.min(100, (val / totalMb) * 100) : 0;
+                  return (
+                    <div key={label} className="flex items-center gap-2">
+                      <span className="text-[var(--text-muted)] w-20 text-right">{label}</span>
+                      <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: color }} />
+                      </div>
+                      <span className="font-mono w-16 text-right">{val.toFixed(0)} MB</span>
+                    </div>
+                  );
+                };
+                return (
                 <div className="space-y-3 text-xs">
                   <div className="flex justify-between"><span className="text-[var(--text-muted)]">Memory</span><span>{formatBytes(system?.memory_used ?? 0)} / {formatBytes(system?.memory_total ?? 0)} ({mem.toFixed(0)}%)</span></div>
                   <div className="w-full h-1.5 bg-gray-700 rounded-full"><div className="h-full rounded-full transition-all" style={{ width: `${mem}%`, backgroundColor: mem > 80 ? "#ef4444" : "#8b5cf6" }} /></div>
+
+                  {mb && (
+                    <div className="pt-2 border-t border-[var(--border)]">
+                      <h4 className="text-[10px] text-[var(--text-muted)] uppercase font-medium mb-2">Memory Breakdown</h4>
+                      <div className="space-y-1.5">
+                        {barItem("Active", mb.active_mb, "#8b5cf6")}
+                        {barItem("Wired", mb.wired_mb, "#f59e0b")}
+                        {barItem("Inactive", mb.inactive_mb, "#6366f1")}
+                        {barItem("Cached", mb.cached_mb, "#06b6d4")}
+                        {barItem("Free", mb.free_mb, "#22c55e")}
+                        {mb.arc_mb > 0 && barItem("ZFS ARC", mb.arc_mb, "#3b82f6")}
+                      </div>
+
+                      <h4 className="text-[10px] text-[var(--text-muted)] uppercase font-medium mt-3 mb-2">AiFw Memory Usage</h4>
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">API Process</span><span className="font-mono">{mb.api_rss_mb.toFixed(1)} MB</span></div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Daemon Process</span><span className="font-mono">{mb.daemon_rss_mb.toFixed(1)} MB</span></div>
+                        <div className="flex justify-between">
+                          <span className="text-[var(--text-muted)]">IDS Alert Buffer</span>
+                          <span className="font-mono">{mb.ids_buffer_mb.toFixed(1)} / {mb.ids_buffer_max_mb.toFixed(0)} MB <span className="text-[var(--text-muted)]">({mb.ids_buffer_count.toLocaleString()} alerts)</span></span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[var(--text-muted)]">Metrics History</span>
+                          <span className="font-mono">{mb.metrics_history_mb.toFixed(1)} MB <span className="text-[var(--text-muted)]">({mb.metrics_history_count.toLocaleString()} entries)</span></span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[var(--text-muted)]">pf State Table</span>
+                          <span className="font-mono">{mb.pf_states.toLocaleString()} / {mb.pf_states_max.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between"><span className="text-[var(--text-muted)]">Database</span><span className="font-mono">{mb.db_size_mb.toFixed(1)} MB</span></div>
+                      </div>
+                    </div>
+                  )}
+
                   {system?.disks?.map(d => (
                     <div key={d.mount}>
                       <div className="flex justify-between"><span className="text-[var(--text-muted)] font-mono">{d.mount}</span><span>{d.pct.toFixed(0)}% ({formatBytes(d.used)} / {formatBytes(d.total)})</span></div>
@@ -673,7 +728,8 @@ export default function Dashboard() {
                     <div className="flex justify-between"><span className="text-[var(--text-muted)]">Disk I/O</span><span>R: {(system?.disk_io?.read_kbps ?? 0).toFixed(0)} KB/s · W: {(system?.disk_io?.write_kbps ?? 0).toFixed(0)} KB/s</span></div>
                   </div>
                 </div>
-              )}
+                );
+              })()}
               {modal === "talkers" && (
                 topTalkers.length === 0
                   ? <div className="text-center text-[var(--text-muted)] py-4">No active connections</div>
