@@ -285,13 +285,42 @@ export default function NatFlowsPage() {
           </div>
           <p className="text-xs font-medium text-white mt-1.5">Internet</p>
 
-          {/* WAN interfaces — each gets its own pipe from Internet to AiFw */}
-          <div className="flex justify-center gap-6 my-1">
+          {/* SVG fan-out from Internet down to WAN interfaces */}
+          {wanIfaces.length > 0 && (() => {
+            const wanCardW = 140;
+            const wanGap = 48;
+            const totalWanW = wanIfaces.length * wanCardW + (wanIfaces.length - 1) * wanGap;
+            const wanFanW = Math.max(400, totalWanW + 80);
+            const wanFanH = 70;
+            return (
+              <div className="w-full mt-1 overflow-x-auto">
+                <div className="min-w-fit mx-auto" style={{ width: wanFanW }}>
+                  <svg viewBox={`0 0 ${wanFanW} ${wanFanH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: wanFanH }}>
+                    {wanIfaces.map((wan, idx) => {
+                      const cx = wanFanW / 2;
+                      const wanStartX = (wanFanW - totalWanW) / 2;
+                      const ax = wanStartX + idx * (wanCardW + wanGap) + wanCardW / 2;
+                      const wr = rates[wan.name] || { in: 0, out: 0 };
+                      const gap = 4;
+                      const pathIn  = `M ${cx - gap},0 C ${cx - gap},${wanFanH * 0.4} ${ax - gap},${wanFanH * 0.5} ${ax - gap},${wanFanH}`;
+                      const pathOut = `M ${cx + gap},0 C ${cx + gap},${wanFanH * 0.4} ${ax + gap},${wanFanH * 0.5} ${ax + gap},${wanFanH}`;
+                      return (
+                        <SvgPipe key={wan.name} id={`inet-${wan.name}`} pathIn={pathIn} pathOut={pathOut}
+                          rateIn={wr.in} rateOut={wr.out} />
+                      );
+                    })}
+                  </svg>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* WAN interface badges */}
+          <div className="flex justify-center gap-12 flex-wrap">
             {wanIfaces.map(wan => {
               const wr = rates[wan.name] || { in: 0, out: 0 };
               return (
                 <div key={wan.name} className="flex flex-col items-center">
-                  <VPipe rateIn={wr.in} rateOut={wr.out} height={32} />
                   <div className="px-3 py-1 rounded-lg bg-blue-500/15 border border-blue-500/30 text-center">
                     <span className="text-xs font-bold text-blue-400">{wan.name}</span>
                     <span className="text-[10px] text-blue-300/60 ml-1">WAN</span>
@@ -301,11 +330,41 @@ export default function NatFlowsPage() {
                     <span className="text-emerald-400">{formatBps(wr.in)}</span>
                     <span className="text-blue-400">{formatBps(wr.out)}</span>
                   </div>
-                  <VPipe rateIn={wr.in} rateOut={wr.out} height={16} />
                 </div>
               );
             })}
           </div>
+
+          {/* SVG fan-in from WAN interfaces up to Firewall */}
+          {wanIfaces.length > 0 && (() => {
+            const wanCardW = 140;
+            const wanGap = 48;
+            const totalWanW = wanIfaces.length * wanCardW + (wanIfaces.length - 1) * wanGap;
+            const wanFanW = Math.max(400, totalWanW + 80);
+            const wanFanH = 60;
+            return (
+              <div className="w-full overflow-x-auto">
+                <div className="min-w-fit mx-auto" style={{ width: wanFanW }}>
+                  <svg viewBox={`0 0 ${wanFanW} ${wanFanH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: wanFanH }}>
+                    {wanIfaces.map((wan, idx) => {
+                      const cx = wanFanW / 2;
+                      const wanStartX = (wanFanW - totalWanW) / 2;
+                      const ax = wanStartX + idx * (wanCardW + wanGap) + wanCardW / 2;
+                      const wr = rates[wan.name] || { in: 0, out: 0 };
+                      const gap = 4;
+                      // From each WAN interface (top) curving down to firewall center (bottom)
+                      const pathIn  = `M ${ax - gap},0 C ${ax - gap},${wanFanH * 0.5} ${cx - gap},${wanFanH * 0.6} ${cx - gap},${wanFanH}`;
+                      const pathOut = `M ${ax + gap},0 C ${ax + gap},${wanFanH * 0.5} ${cx + gap},${wanFanH * 0.6} ${cx + gap},${wanFanH}`;
+                      return (
+                        <SvgPipe key={wan.name} id={`wan-fw-${wan.name}`} pathIn={pathIn} pathOut={pathOut}
+                          rateIn={wr.in} rateOut={wr.out} />
+                      );
+                    })}
+                  </svg>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Firewall */}
           <div className="w-28 h-28 rounded-2xl bg-gradient-to-br from-amber-500/20 to-red-500/15 border-2 border-amber-500/30 flex flex-col items-center justify-center shadow-lg shadow-amber-500/10">
@@ -316,8 +375,38 @@ export default function NatFlowsPage() {
             <p className="text-[8px] text-gray-500">{connections.length} states</p>
           </div>
 
-          {/* Per-interface columns: each LAN/WG interface gets its own pipe + fan-out */}
-          <div className="flex justify-center gap-8 mt-1 flex-wrap">
+          {/* SVG fan-out from AiFw to each LAN/WG interface */}
+          {lanIfaces.length > 0 && (() => {
+            const lanCardW = 140;
+            const lanGap = 48;
+            const totalLanW = lanIfaces.length * lanCardW + (lanIfaces.length - 1) * lanGap;
+            const fanSvgW = Math.max(400, totalLanW + 80);
+            const fanH = 80;
+            return (
+              <div className="w-full mt-1 overflow-x-auto">
+                <div className="min-w-fit mx-auto" style={{ width: fanSvgW }}>
+                  <svg viewBox={`0 0 ${fanSvgW} ${fanH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: fanH }}>
+                    {lanIfaces.map((iface, idx) => {
+                      const cx = fanSvgW / 2;
+                      const lanStartX = (fanSvgW - totalLanW) / 2;
+                      const ax = lanStartX + idx * (lanCardW + lanGap) + lanCardW / 2;
+                      const ifRate = rates[iface.name] || { in: 0, out: 0 };
+                      const gap = 4;
+                      const pathIn  = `M ${cx - gap},0 C ${cx - gap},${fanH * 0.4} ${ax - gap},${fanH * 0.5} ${ax - gap},${fanH}`;
+                      const pathOut = `M ${cx + gap},0 C ${cx + gap},${fanH * 0.4} ${ax + gap},${fanH * 0.5} ${ax + gap},${fanH}`;
+                      return (
+                        <SvgPipe key={iface.name} id={`fw-${iface.name}`} pathIn={pathIn} pathOut={pathOut}
+                          rateIn={ifRate.out} rateOut={ifRate.in} />
+                      );
+                    })}
+                  </svg>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* LAN/WG interface columns */}
+          <div className="flex justify-center gap-12 flex-wrap">
             {lanIfaces.map(iface => {
               const ifRate = rates[iface.name] || { in: 0, out: 0 };
               const items = ifaceSubnets[iface.name] || [];
@@ -326,9 +415,6 @@ export default function NatFlowsPage() {
               const ifSvgW = Math.max(300, ifSubnetsW + 40);
               return (
                 <div key={iface.name} className="flex flex-col items-center">
-                  {/* Pipe from firewall */}
-                  <VPipe rateIn={ifRate.out} rateOut={ifRate.in} height={16} />
-
                   {/* Interface badge */}
                   <div className={`px-3 py-1.5 rounded-lg border text-center ${
                     isWg ? "bg-purple-500/15 border-purple-500/30" : "bg-emerald-500/15 border-emerald-500/30"
@@ -336,6 +422,10 @@ export default function NatFlowsPage() {
                     <span className={`text-xs font-bold ${isWg ? "text-purple-400" : "text-emerald-400"}`}>{iface.name}</span>
                     <span className={`text-[10px] ml-1 ${isWg ? "text-purple-300/60" : "text-emerald-300/60"}`}>{iface.role || (isWg ? "VPN" : "LAN")}</span>
                     {iface.subnet && <span className="text-[9px] text-gray-500 ml-1.5">{iface.subnet}</span>}
+                  </div>
+                  <div className="flex gap-2 mt-0.5 text-[9px]">
+                    <span className="text-emerald-400">{formatBps(ifRate.out)}</span>
+                    <span className="text-blue-400">{formatBps(ifRate.in)}</span>
                   </div>
 
                   {/* Fan-out to subnets */}
