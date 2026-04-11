@@ -35,7 +35,11 @@ async fn main() -> anyhow::Result<()> {
     // If --config provided, load from file instead of wizard
     if let Some(ref config_path) = args.config {
         let content = std::fs::read_to_string(config_path)?;
-        let config: config::SetupConfig = serde_json::from_str(&content)?;
+        let mut config: config::SetupConfig = serde_json::from_str(&content)?;
+        // Auto-detect RAM if not explicitly set in the config file
+        if config.ram_mb == 0 || config.ram_mb == 1024 {
+            config.ram_mb = hwdetect::SystemProfile::detect().memory.total_mb;
+        }
 
         if args.pf_only {
             println!("{}", apply::generate_pf_conf(&config));

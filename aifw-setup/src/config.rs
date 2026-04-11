@@ -40,9 +40,18 @@ pub struct SetupConfig {
     pub ssh_github_user: Option<String>,
     pub ssh_authorized_keys: Vec<String>,
 
+    // System
+    /// Detected RAM in MB — used to auto-size memory caches
+    #[serde(default = "default_ram_mb")]
+    pub ram_mb: u64,
+
     // Paths
     pub db_path: String,
     pub config_dir: String,
+}
+
+fn default_ram_mb() -> u64 {
+    1024
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -127,6 +136,7 @@ impl Default for SetupConfig {
             ssh_auth_method: SshAuthMethod::KeyOnly,
             ssh_github_user: None,
             ssh_authorized_keys: Vec::new(),
+            ram_mb: 1024,
             db_path: "/var/db/aifw/aifw.db".to_string(),
             config_dir: "/usr/local/etc/aifw".to_string(),
         }

@@ -579,6 +579,30 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
         .await
         .map_err(|e| format!("config error: {e}"))?;
 
+    // Auto-size memory caches based on detected RAM
+    let ram = config.ram_mb;
+    let (ids_alert_mb, dashboard_history_secs) = match ram {
+        0..=1024     => (16,   900),   // 1 GB:  16 MB alerts, 15 min history
+        1025..=2048  => (32,   1800),  // 2 GB:  32 MB alerts, 30 min history
+        2049..=4096  => (48,   1800),  // 4 GB:  48 MB alerts, 30 min history
+        4097..=8192  => (64,   3600),  // 8 GB:  64 MB alerts, 60 min history
+        8193..=16384 => (128,  3600),  // 16 GB: 128 MB alerts, 60 min history
+        _            => (256,  7200),  // 32+ GB: 256 MB alerts, 2 hr history
+    };
+    console::info(&format!("RAM: {} MB — IDS alert buffer: {} MB, dashboard history: {}s", ram, ids_alert_mb, dashboard_history_secs));
+    let cache_settings = [
+        ("ids_alert_max_mb", ids_alert_mb.to_string()),
+        ("ids_alert_max_age_secs", "86400".to_string()),
+        ("dashboard_history_seconds", dashboard_history_secs.to_string()),
+    ];
+    for (key, value) in &cache_settings {
+        sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)")
+            .bind(key).bind(value)
+            .execute(&pool)
+            .await
+            .map_err(|e| format!("cache config error: {e}"))?;
+    }
+
     // Seed firewall rules based on chosen policy
     seed_default_rules(&pool, config).await?;
 

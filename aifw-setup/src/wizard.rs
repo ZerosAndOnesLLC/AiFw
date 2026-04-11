@@ -220,6 +220,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     // ── Step 4: System Tuning (auto-detected) ────────────────
     let profile = SystemProfile::detect();
+    config.ram_mb = profile.memory.total_mb;
     let tuning_items = tuning::run_tuning_wizard(&profile);
 
     // ── Step 5: Network Interfaces ───────────────────────────
