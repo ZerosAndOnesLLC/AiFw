@@ -376,12 +376,11 @@ export default function Dashboard() {
               <h1 className="text-xl font-bold">{system?.hostname || "AiFw"}</h1>
               <p className="text-xs text-[var(--text-muted)]">{system?.os_version} · Up {formatUptime(system?.uptime_secs ?? 0)}</p>
             </div>
-            <div>
-              <span className={`text-xs font-medium ${healthTextCls[healthLevel]}`}>{healthLabel}</span>
-              {healthReasons.length > 0 && (
-                <p className={`text-[10px] ${healthTextCls[healthLevel]} opacity-80`}>{healthReasons.join(" · ")}</p>
-              )}
-            </div>
+            {healthReasons.length > 0 && (
+              <span className={`text-[11px] font-medium ${healthTextCls[healthLevel]}`}>
+                {healthReasons.join(" · ")}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {/* Services inline */}
