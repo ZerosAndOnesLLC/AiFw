@@ -285,84 +285,70 @@ export default function NatFlowsPage() {
           </div>
           <p className="text-xs font-medium text-white mt-1.5">Internet</p>
 
-          {/* SVG fan-out from Internet down to WAN interfaces */}
-          {wanIfaces.length > 0 && (() => {
-            const wanCardW = 140;
-            const wanGap = 48;
-            const totalWanW = wanIfaces.length * wanCardW + (wanIfaces.length - 1) * wanGap;
-            const wanFanW = Math.max(400, totalWanW + 80);
-            const wanFanH = 70;
+          {/* WAN: Internet → fan-out → badges → fan-in → Firewall */}
+          {(() => {
+            const wanColW = 200;
+            const wanGap = 32;
+            const totalWanW = wanIfaces.length * wanColW + Math.max(0, wanIfaces.length - 1) * wanGap;
+            const wanFanW = Math.max(400, totalWanW + 40);
+            const fanDownH = 70;
+            const fanUpH = 60;
             return (
-              <div className="w-full mt-1 overflow-x-auto">
-                <div className="min-w-fit mx-auto" style={{ width: wanFanW }}>
-                  <svg viewBox={`0 0 ${wanFanW} ${wanFanH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: wanFanH }}>
-                    {wanIfaces.map((wan, idx) => {
-                      const cx = wanFanW / 2;
-                      const wanStartX = (wanFanW - totalWanW) / 2;
-                      const ax = wanStartX + idx * (wanCardW + wanGap) + wanCardW / 2;
-                      const wr = rates[wan.name] || { in: 0, out: 0 };
-                      const gap = 4;
-                      const pathIn  = `M ${cx - gap},0 C ${cx - gap},${wanFanH * 0.4} ${ax - gap},${wanFanH * 0.5} ${ax - gap},${wanFanH}`;
-                      const pathOut = `M ${cx + gap},0 C ${cx + gap},${wanFanH * 0.4} ${ax + gap},${wanFanH * 0.5} ${ax + gap},${wanFanH}`;
-                      return (
-                        <SvgPipe key={wan.name} id={`inet-${wan.name}`} pathIn={pathIn} pathOut={pathOut}
-                          rateIn={wr.in} rateOut={wr.out} />
-                      );
-                    })}
-                  </svg>
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* WAN interface badges */}
-          <div className="flex justify-center gap-12 flex-wrap">
-            {wanIfaces.map(wan => {
-              const wr = rates[wan.name] || { in: 0, out: 0 };
-              return (
-                <div key={wan.name} className="flex flex-col items-center">
-                  <div className="px-3 py-1 rounded-lg bg-blue-500/15 border border-blue-500/30 text-center">
-                    <span className="text-xs font-bold text-blue-400">{wan.name}</span>
-                    <span className="text-[10px] text-blue-300/60 ml-1">WAN</span>
-                    {wan.address && <span className="text-[9px] text-gray-500 ml-1">{wan.address}</span>}
-                  </div>
-                  <div className="flex gap-2 mt-0.5 text-[9px]">
-                    <span className="text-emerald-400">{formatBps(wr.in)}</span>
-                    <span className="text-blue-400">{formatBps(wr.out)}</span>
+              <>
+                {/* Fan-out from Internet to WAN interfaces */}
+                <div className="w-full mt-1 overflow-x-auto">
+                  <div className="min-w-fit mx-auto" style={{ width: wanFanW }}>
+                    <svg viewBox={`0 0 ${wanFanW} ${fanDownH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: fanDownH }}>
+                      {wanIfaces.map((wan, idx) => {
+                        const cx = wanFanW / 2;
+                        const sx = (wanFanW - totalWanW) / 2;
+                        const ax = sx + idx * (wanColW + wanGap) + wanColW / 2;
+                        const wr = rates[wan.name] || { in: 0, out: 0 };
+                        const gap = 4;
+                        const pathIn  = `M ${cx - gap},0 C ${cx - gap},${fanDownH * 0.4} ${ax - gap},${fanDownH * 0.5} ${ax - gap},${fanDownH}`;
+                        const pathOut = `M ${cx + gap},0 C ${cx + gap},${fanDownH * 0.4} ${ax + gap},${fanDownH * 0.5} ${ax + gap},${fanDownH}`;
+                        return <SvgPipe key={wan.name} id={`inet-${wan.name}`} pathIn={pathIn} pathOut={pathOut} rateIn={wr.in} rateOut={wr.out} />;
+                      })}
+                    </svg>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-
-          {/* SVG fan-in from WAN interfaces up to Firewall */}
-          {wanIfaces.length > 0 && (() => {
-            const wanCardW = 140;
-            const wanGap = 48;
-            const totalWanW = wanIfaces.length * wanCardW + (wanIfaces.length - 1) * wanGap;
-            const wanFanW = Math.max(400, totalWanW + 80);
-            const wanFanH = 60;
-            return (
-              <div className="w-full overflow-x-auto">
-                <div className="min-w-fit mx-auto" style={{ width: wanFanW }}>
-                  <svg viewBox={`0 0 ${wanFanW} ${wanFanH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: wanFanH }}>
-                    {wanIfaces.map((wan, idx) => {
-                      const cx = wanFanW / 2;
-                      const wanStartX = (wanFanW - totalWanW) / 2;
-                      const ax = wanStartX + idx * (wanCardW + wanGap) + wanCardW / 2;
-                      const wr = rates[wan.name] || { in: 0, out: 0 };
-                      const gap = 4;
-                      // From each WAN interface (top) curving down to firewall center (bottom)
-                      const pathIn  = `M ${ax - gap},0 C ${ax - gap},${wanFanH * 0.5} ${cx - gap},${wanFanH * 0.6} ${cx - gap},${wanFanH}`;
-                      const pathOut = `M ${ax + gap},0 C ${ax + gap},${wanFanH * 0.5} ${cx + gap},${wanFanH * 0.6} ${cx + gap},${wanFanH}`;
-                      return (
-                        <SvgPipe key={wan.name} id={`wan-fw-${wan.name}`} pathIn={pathIn} pathOut={pathOut}
-                          rateIn={wr.in} rateOut={wr.out} />
-                      );
-                    })}
-                  </svg>
+                {/* WAN badges — fixed-width columns matching SVG */}
+                <div className="flex justify-center" style={{ gap: wanGap }}>
+                  {wanIfaces.map(wan => {
+                    const wr = rates[wan.name] || { in: 0, out: 0 };
+                    return (
+                      <div key={wan.name} className="flex flex-col items-center" style={{ width: wanColW }}>
+                        <div className="px-3 py-1 rounded-lg bg-blue-500/15 border border-blue-500/30 text-center">
+                          <span className="text-xs font-bold text-blue-400">{wan.name}</span>
+                          <span className="text-[10px] text-blue-300/60 ml-1">WAN</span>
+                          {wan.address && <span className="text-[9px] text-gray-500 ml-1">{wan.address}</span>}
+                        </div>
+                        <div className="flex gap-2 mt-0.5 text-[9px]">
+                          <span className="text-emerald-400">{formatBps(wr.in)}</span>
+                          <span className="text-blue-400">{formatBps(wr.out)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
+                {/* Fan-in from WAN interfaces to Firewall */}
+                <div className="w-full overflow-x-auto">
+                  <div className="min-w-fit mx-auto" style={{ width: wanFanW }}>
+                    <svg viewBox={`0 0 ${wanFanW} ${fanUpH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: fanUpH }}>
+                      {wanIfaces.map((wan, idx) => {
+                        const cx = wanFanW / 2;
+                        const sx = (wanFanW - totalWanW) / 2;
+                        const ax = sx + idx * (wanColW + wanGap) + wanColW / 2;
+                        const wr = rates[wan.name] || { in: 0, out: 0 };
+                        const gap = 4;
+                        const pathIn  = `M ${ax - gap},0 C ${ax - gap},${fanUpH * 0.5} ${cx - gap},${fanUpH * 0.6} ${cx - gap},${fanUpH}`;
+                        const pathOut = `M ${ax + gap},0 C ${ax + gap},${fanUpH * 0.5} ${cx + gap},${fanUpH * 0.6} ${cx + gap},${fanUpH}`;
+                        return <SvgPipe key={wan.name} id={`wan-fw-${wan.name}`} pathIn={pathIn} pathOut={pathOut} rateIn={wr.in} rateOut={wr.out} />;
+                      })}
+                    </svg>
+                  </div>
+                </div>
+              </>
             );
           })()}
 
@@ -375,58 +361,56 @@ export default function NatFlowsPage() {
             <p className="text-[8px] text-gray-500">{connections.length} states</p>
           </div>
 
-          {/* SVG fan-out from AiFw to each LAN/WG interface */}
+          {/* SVG fan-out from AiFw to LAN/WG interfaces + interface columns */}
           {lanIfaces.length > 0 && (() => {
-            const lanCardW = 140;
-            const lanGap = 48;
-            const totalLanW = lanIfaces.length * lanCardW + (lanIfaces.length - 1) * lanGap;
-            const fanSvgW = Math.max(400, totalLanW + 80);
+            const lanColW = 200; // fixed column width per interface
+            const lanGap = 32;
+            const totalLanW = lanIfaces.length * lanColW + (lanIfaces.length - 1) * lanGap;
+            const fanSvgW = Math.max(400, totalLanW + 40);
             const fanH = 80;
             return (
-              <div className="w-full mt-1 overflow-x-auto">
-                <div className="min-w-fit mx-auto" style={{ width: fanSvgW }}>
-                  <svg viewBox={`0 0 ${fanSvgW} ${fanH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: fanH }}>
-                    {lanIfaces.map((iface, idx) => {
-                      const cx = fanSvgW / 2;
-                      const lanStartX = (fanSvgW - totalLanW) / 2;
-                      const ax = lanStartX + idx * (lanCardW + lanGap) + lanCardW / 2;
-                      const ifRate = rates[iface.name] || { in: 0, out: 0 };
-                      const gap = 4;
-                      const pathIn  = `M ${cx - gap},0 C ${cx - gap},${fanH * 0.4} ${ax - gap},${fanH * 0.5} ${ax - gap},${fanH}`;
-                      const pathOut = `M ${cx + gap},0 C ${cx + gap},${fanH * 0.4} ${ax + gap},${fanH * 0.5} ${ax + gap},${fanH}`;
-                      return (
-                        <SvgPipe key={iface.name} id={`fw-${iface.name}`} pathIn={pathIn} pathOut={pathOut}
-                          rateIn={ifRate.out} rateOut={ifRate.in} />
-                      );
-                    })}
-                  </svg>
+              <>
+                <div className="w-full mt-1 overflow-x-auto">
+                  <div className="min-w-fit mx-auto" style={{ width: fanSvgW }}>
+                    <svg viewBox={`0 0 ${fanSvgW} ${fanH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: fanH }}>
+                      {lanIfaces.map((iface, idx) => {
+                        const cx = fanSvgW / 2;
+                        const lanStartX = (fanSvgW - totalLanW) / 2;
+                        const ax = lanStartX + idx * (lanColW + lanGap) + lanColW / 2;
+                        const ifRate = rates[iface.name] || { in: 0, out: 0 };
+                        const gap = 4;
+                        const pathIn  = `M ${cx - gap},0 C ${cx - gap},${fanH * 0.4} ${ax - gap},${fanH * 0.5} ${ax - gap},${fanH}`;
+                        const pathOut = `M ${cx + gap},0 C ${cx + gap},${fanH * 0.4} ${ax + gap},${fanH * 0.5} ${ax + gap},${fanH}`;
+                        return (
+                          <SvgPipe key={iface.name} id={`fw-${iface.name}`} pathIn={pathIn} pathOut={pathOut}
+                            rateIn={ifRate.out} rateOut={ifRate.in} />
+                        );
+                      })}
+                    </svg>
+                  </div>
                 </div>
-              </div>
-            );
-          })()}
-
-          {/* LAN/WG interface columns */}
-          <div className="flex justify-center gap-12 flex-wrap">
-            {lanIfaces.map(iface => {
-              const ifRate = rates[iface.name] || { in: 0, out: 0 };
-              const items = ifaceSubnets[iface.name] || [];
-              const isWg = iface.name.startsWith("wg");
-              const ifSubnetsW = items.length * subnetCardW + Math.max(0, items.length - 1) * subnetGap;
-              const ifSvgW = Math.max(300, ifSubnetsW + 40);
-              return (
-                <div key={iface.name} className="flex flex-col items-center">
-                  {/* Interface badge */}
-                  <div className={`px-3 py-1.5 rounded-lg border text-center ${
-                    isWg ? "bg-purple-500/15 border-purple-500/30" : "bg-emerald-500/15 border-emerald-500/30"
-                  }`}>
-                    <span className={`text-xs font-bold ${isWg ? "text-purple-400" : "text-emerald-400"}`}>{iface.name}</span>
-                    <span className={`text-[10px] ml-1 ${isWg ? "text-purple-300/60" : "text-emerald-300/60"}`}>{iface.role || (isWg ? "VPN" : "LAN")}</span>
-                    {iface.subnet && <span className="text-[9px] text-gray-500 ml-1.5">{iface.subnet}</span>}
-                  </div>
-                  <div className="flex gap-2 mt-0.5 text-[9px]">
-                    <span className="text-emerald-400">{formatBps(ifRate.out)}</span>
-                    <span className="text-blue-400">{formatBps(ifRate.in)}</span>
-                  </div>
+                {/* Interface columns — same widths as SVG so pipes connect */}
+                <div className="flex justify-center" style={{ gap: lanGap }}>
+                  {lanIfaces.map(iface => {
+                    const ifRate = rates[iface.name] || { in: 0, out: 0 };
+                    const items = ifaceSubnets[iface.name] || [];
+                    const isWg = iface.name.startsWith("wg");
+                    const ifSubnetsW = items.length * subnetCardW + Math.max(0, items.length - 1) * subnetGap;
+                    const ifSvgW = Math.max(300, ifSubnetsW + 40);
+                    return (
+                      <div key={iface.name} className="flex flex-col items-center" style={{ width: lanColW }}>
+                        {/* Interface badge */}
+                        <div className={`px-3 py-1.5 rounded-lg border text-center ${
+                          isWg ? "bg-purple-500/15 border-purple-500/30" : "bg-emerald-500/15 border-emerald-500/30"
+                        }`}>
+                          <span className={`text-xs font-bold ${isWg ? "text-purple-400" : "text-emerald-400"}`}>{iface.name}</span>
+                          <span className={`text-[10px] ml-1 ${isWg ? "text-purple-300/60" : "text-emerald-300/60"}`}>{iface.role || (isWg ? "VPN" : "LAN")}</span>
+                          {iface.subnet && <span className="text-[9px] text-gray-500 ml-1.5">{iface.subnet}</span>}
+                        </div>
+                        <div className="flex gap-2 mt-0.5 text-[9px]">
+                          <span className="text-emerald-400">{formatBps(ifRate.out)}</span>
+                          <span className="text-blue-400">{formatBps(ifRate.in)}</span>
+                        </div>
 
                   {/* Fan-out to subnets */}
                   {items.length > 0 ? (
@@ -492,7 +476,10 @@ export default function NatFlowsPage() {
                 </div>
               );
             })}
-          </div>
+                </div>
+              </>
+            );
+          })()}
           {lanIfaces.length === 0 && (
             <div className="text-center text-gray-600 text-xs py-6 mt-2">No LAN interfaces</div>
           )}
