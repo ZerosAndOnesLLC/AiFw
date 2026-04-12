@@ -8,6 +8,7 @@ baseurl: ""
 # Bing:   Webmaster Tools -> Site -> Configure -> Verify ownership -> Meta tag
 google_site_verification: ""
 bing_site_verification: ""
+google_analytics: "G-XDP7MDXR78"
 author: ZerosAndOnesLLC
 repository: ZerosAndOnesLLC/AiFw
 
