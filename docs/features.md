@@ -63,17 +63,15 @@ A complete inventory of what AiFw ships with today. All features are MIT-license
 
 ## AI threat detection
 
-Behavioral detectors running alongside signature-based IDS:
+Five behavioural detectors run alongside signature-based IDS, implemented in `aifw-ai/src/detectors/`:
 
-- Port scan detection
-- DDoS attack detection
-- Brute force detection
-- Command & Control (C2) beacon detection
-- DNS tunneling detection
-- Anomaly detection
-- Threat scoring with confidence 0.0–1.0
+1. **Port scan** — flags sources with >15 unique ports hit and >60% failed-connection ratio
+2. **DDoS** — detects SYN floods and high connection rates (>50 conn/sec)
+3. **Brute force** — concentrated auth attacks: 10+ connections across 1–5 ports with >70% failure rate
+4. **C2 beacon** — low-variance periodic connections to single or few hosts
+5. **DNS tunneling** — anomalous DNS traffic patterns consistent with tunneled data
 
-Auto-response actions include temporary IP blocks with configurable TTL, alert generation, and full audit trail of every decision.
+Each detector produces a threat score (0.0–1.0 confidence) and severity classification. Auto-response actions include temporary IP blocks with configurable TTL, alert generation, and full audit trail of every decision.
 
 ## DNS
 

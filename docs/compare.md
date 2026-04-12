@@ -108,14 +108,15 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 
 ## Where AiFw wins
 
-- **AI/ML threat detection** — 5 built-in behavioral detectors (port scan, DDoS, brute force, C2 beacon, DNS tunnel) with auto-response
-- **Sigma + YARA rule support** — modern rule formats neither OPNsense nor pfSense support
-- **NAT46** — unique, nobody else does this out of the box
-- **OAuth / SSO** — first-class, not a plugin
-- **Commit confirm** — auto-rollback if you lock yourself out. Both competitors have this as an open feature request for years.
-- **Modern React UI** — not PHP. Static export, no Node.js runtime needed on the appliance.
-- **WebSocket real-time dashboard** — live metrics, not poll-every-30s
-- **Single-binary Rust architecture** — the API process is <15 MB RSS, not a PHP-FPM pool
+- **AI/ML threat detection** — 5 built-in behavioural detectors (port scan, DDoS, brute force, C2 beacon, DNS tunneling) with auto-response and TTL blocks. Implemented in `aifw-ai/src/detectors/`.
+- **Sigma + YARA rule support** — modern rule formats neither OPNsense nor pfSense support. Full parsers in `aifw-ids/src/rules/`.
+- **NAT46** — IPv4→IPv6 translation. Nobody else has this out of the box.
+- **OAuth / SSO** — first-class auth method, not a plugin.
+- **Commit confirm** — auto-rollback if you lock yourself out. Default 300-second timeout, cancellable via oneshot channel. Both competitors have this as a years-open feature request.
+- **Modern React/Next.js UI** — static export, no Node.js runtime on the appliance. Not PHP.
+- **WebSocket live dashboard** — per-second metrics push, not poll-every-30s.
+- **257-endpoint REST API** — Axum-based, generated from structured route config.
+- **Rust single-binary services** — the API process measures under 15 MB private RSS, not a PHP-FPM pool.
 
 ## Where AiFw is behind
 

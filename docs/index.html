@@ -1,30 +1,38 @@
 ---
 layout: default
 title: AiFw — AI-Powered Open-Source Firewall for FreeBSD
-description: Open-source firewall built in Rust on FreeBSD pf. Modern alternative to pfSense and OPNsense with WireGuard, IDS/IPS, AI threat detection, and a React web UI.
+description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with Suricata, Sigma, and YARA rules. WireGuard, IPsec, HA clustering, 257-route REST API, and a React dashboard. MIT licensed.
 ---
 
 <section class="hero">
   <div class="container">
     <div class="hero-badge">
       <span class="hero-badge-dot"></span>
-      Open source · MIT licensed · Built in Rust
+      <span>Open source · MIT licensed · <strong>Built in Rust</strong></span>
     </div>
-    <h1>A modern firewall<br>for FreeBSD</h1>
+    <h1>The modern firewall<br>for <span class="accent">FreeBSD</span></h1>
     <p class="lead">
-      AI-powered open-source firewall built on FreeBSD pf. Real IDS/IPS with Sigma + YARA rules,
-      WireGuard VPN, traffic shaping, HA clustering, and a live dashboard — all in one Rust binary.
-      An honest alternative to pfSense and OPNsense.
+      A complete firewall platform in one Rust codebase: stateful pf rules,
+      Suricata + Sigma + YARA IDS, WireGuard &amp; IPsec VPN, CARP/pfsync HA,
+      AI threat detection, and a live React dashboard. An honest alternative
+      to pfSense and OPNsense.
     </p>
     <div class="hero-ctas">
-      <a href="{{ '/install' | relative_url }}" class="btn btn-primary btn-lg">Get started</a>
-      <a href="https://github.com/ZerosAndOnesLLC/AiFw" target="_blank" rel="noopener" class="btn btn-outline btn-lg">View on GitHub</a>
+      <a href="{{ '/install/' | relative_url }}" class="btn btn-primary btn-lg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        Install AiFw
+      </a>
+      <a href="https://github.com/ZerosAndOnesLLC/AiFw" target="_blank" rel="noopener" class="btn btn-outline btn-lg">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.57.1.79-.25.79-.55v-1.92c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.7 1.25 3.36.95.1-.74.4-1.25.73-1.53-2.55-.29-5.24-1.28-5.24-5.68 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.15 1.18.91-.25 1.89-.38 2.86-.39.97.01 1.95.14 2.86.39 2.19-1.49 3.15-1.18 3.15-1.18.62 1.58.23 2.75.11 3.04.74.8 1.18 1.83 1.18 3.08 0 4.42-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12v3.14c0 .31.21.66.79.55C20.21 21.38 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
+        GitHub
+      </a>
     </div>
-    <div class="hero-subtext">
-      <span>⚡ Rust · Axum · tokio</span>
-      <span>🛡️ FreeBSD pf</span>
-      <span>🎨 Next.js React UI</span>
-      <span>📦 ~50 MB ISO</span>
+    <div class="hero-stats">
+      <div class="hero-stat"><div class="hero-stat-num">257</div><div class="hero-stat-label">API endpoints</div></div>
+      <div class="hero-stat"><div class="hero-stat-num">34</div><div class="hero-stat-label">RBAC perms</div></div>
+      <div class="hero-stat"><div class="hero-stat-num">5</div><div class="hero-stat-label">AI detectors</div></div>
+      <div class="hero-stat"><div class="hero-stat-num">6</div><div class="hero-stat-label">NAT types</div></div>
+      <div class="hero-stat"><div class="hero-stat-num">3</div><div class="hero-stat-label">Rule formats</div></div>
     </div>
   </div>
 </section>
@@ -32,7 +40,7 @@ description: Open-source firewall built in Rust on FreeBSD pf. Modern alternativ
 <section class="hero-screenshot">
   <div class="container">
     <div class="screenshot-frame">
-      <img src="{{ '/assets/screenshots/vid-01-dashboard-live.gif' | relative_url }}" alt="AiFw live dashboard with real-time metrics" loading="lazy">
+      <img src="{{ '/assets/screenshots/vid-01-dashboard-live.gif' | relative_url }}" alt="AiFw live dashboard with real-time CPU, memory, and network graphs" loading="lazy">
     </div>
   </div>
 </section>
@@ -40,89 +48,128 @@ description: Open-source firewall built in Rust on FreeBSD pf. Modern alternativ
 <section>
   <div class="container">
     <div class="section-intro">
-      <h2>Everything you need, nothing you don't</h2>
-      <p>A complete firewall platform with modern defaults. No bolt-on packages, no legacy PHP.</p>
+      <div class="section-eyebrow">Features</div>
+      <h2>Everything a firewall needs.<br>Nothing it doesn't.</h2>
+      <p>A complete platform in one Rust binary per service. No PHP-FPM, no package sprawl, no legacy admin UIs.</p>
     </div>
     <div class="features">
-      <div class="feature">
-        <div class="feature-icon" style="background: rgba(239,68,68,0.15); color: var(--red);">🔥</div>
-        <h3>Stateful Firewall</h3>
-        <p>Full pf stateful filtering with scheduling, aliases, traffic shaping (CoDel, HFSC, PRIQ), and rate limiting. IPv4 + IPv6 out of the box.</p>
+
+      <div class="feature" data-c="red">
+        <div class="feature-icon" style="background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.2); color: var(--red);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+        </div>
+        <h3>Stateful firewall</h3>
+        <p>FreeBSD pf with rule scheduling, aliases, and traffic shaping. Full IPv4/IPv6 and VLAN support.</p>
+        <div class="feature-tags"><span class="tag">pf</span><span class="tag">IPv4/IPv6</span><span class="tag">VLAN</span></div>
       </div>
+
       <div class="feature">
-        <div class="feature-icon" style="background: rgba(59,130,246,0.15); color: var(--accent);">🔐</div>
-        <h3>WireGuard + IPsec</h3>
-        <p>Native WireGuard tunnels with per-peer config generation. IPsec ESP/AH in tunnel or transport mode. Zero-config road-warrior VPN.</p>
+        <div class="feature-icon" style="background: rgba(59,130,246,0.1); border-color: rgba(59,130,246,0.2); color: var(--accent);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        </div>
+        <h3>WireGuard &amp; IPsec</h3>
+        <p>Native WireGuard with auto-keypair generation and per-peer config export. IPsec ESP/AH in tunnel or transport mode.</p>
+        <div class="feature-tags"><span class="tag">WireGuard</span><span class="tag">ESP</span><span class="tag">AH</span></div>
       </div>
+
       <div class="feature">
-        <div class="feature-icon" style="background: rgba(245,158,11,0.15); color: var(--amber);">🚨</div>
-        <h3>IDS/IPS Engine</h3>
-        <p>Built-in Suricata-compatible engine with Sigma and YARA rule support. Real-time alerts, flow tracking, and per-rule suppressions.</p>
+        <div class="feature-icon" style="background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.2); color: var(--amber);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        </div>
+        <h3>IDS / IPS engine</h3>
+        <p>Suricata-compatible inspection with <strong>Sigma</strong> and <strong>YARA</strong> rule support — neither OPNsense nor pfSense can do this.</p>
+        <div class="feature-tags"><span class="tag">Suricata</span><span class="tag">Sigma</span><span class="tag">YARA</span></div>
       </div>
+
       <div class="feature">
-        <div class="feature-icon" style="background: rgba(139,92,246,0.15); color: var(--purple);">🤖</div>
-        <h3>AI Threat Detection</h3>
-        <p>Behavioral detectors for port scans, DDoS, brute force, C2 beacons, and DNS tunneling. Auto-response with configurable TTL blocks.</p>
+        <div class="feature-icon" style="background: rgba(168,85,247,0.1); border-color: rgba(168,85,247,0.2); color: var(--purple);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+        </div>
+        <h3>AI threat detection</h3>
+        <p>Five behavioural detectors: port scan, DDoS, brute force, C2 beacon, and DNS tunneling. Auto-response with TTL blocks.</p>
+        <div class="feature-tags"><span class="tag">port-scan</span><span class="tag">ddos</span><span class="tag">c2-beacon</span></div>
       </div>
+
       <div class="feature">
-        <div class="feature-icon" style="background: rgba(34,197,94,0.15); color: var(--green);">🌐</div>
-        <h3>NAT, DNS & DHCP</h3>
-        <p>SNAT, DNAT, port forwarding, 1:1 NAT, NAT64 and NAT46. Built-in DNS resolver, DHCP server with HA failover and DDNS.</p>
+        <div class="feature-icon" style="background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.2); color: var(--green);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        </div>
+        <h3>Full NAT suite</h3>
+        <p>SNAT, DNAT/port forwarding, masquerade, 1:1 binat, <strong>NAT64</strong>, and <strong>NAT46</strong> — the last one is unique.</p>
+        <div class="feature-tags"><span class="tag">snat</span><span class="tag">dnat</span><span class="tag">nat64</span><span class="tag">nat46</span></div>
       </div>
+
       <div class="feature">
-        <div class="feature-icon" style="background: rgba(6,182,212,0.15); color: var(--cyan);">📊</div>
-        <h3>Live Dashboard</h3>
-        <p>WebSocket-powered real-time metrics. Connection tracking, bandwidth graphs, memory breakdown, and live NAT flow topology.</p>
+        <div class="feature-icon" style="background: rgba(6,182,212,0.1); border-color: rgba(6,182,212,0.2); color: var(--cyan);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        </div>
+        <h3>Live dashboard</h3>
+        <p>WebSocket-powered real-time metrics. Connection tracking, bandwidth graphs, memory breakdown, animated NAT flow topology.</p>
+        <div class="feature-tags"><span class="tag">WebSocket</span><span class="tag">React</span><span class="tag">Next.js</span></div>
       </div>
+
       <div class="feature">
-        <div class="feature-icon" style="background: rgba(139,92,246,0.15); color: var(--purple);">🔁</div>
-        <h3>HA Clustering</h3>
-        <p>CARP virtual IPs, pfsync state synchronization, and config sync between cluster nodes. Automatic failover detection.</p>
+        <div class="feature-icon" style="background: rgba(168,85,247,0.1); border-color: rgba(168,85,247,0.2); color: var(--purple);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        </div>
+        <h3>HA clustering</h3>
+        <p>CARP virtual IPs, pfsync state sync, health checks, and config snapshots — failover ready out of the box.</p>
+        <div class="feature-tags"><span class="tag">CARP</span><span class="tag">pfsync</span><span class="tag">health-check</span></div>
       </div>
+
       <div class="feature">
-        <div class="feature-icon" style="background: rgba(59,130,246,0.15); color: var(--accent);">🔑</div>
+        <div class="feature-icon" style="background: rgba(59,130,246,0.1); border-color: rgba(59,130,246,0.2); color: var(--accent);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+        </div>
         <h3>Granular RBAC</h3>
-        <p>34 granular permissions across every subsystem. TOTP 2FA, OAuth/SSO, API keys, and custom roles. Built-in Certificate Authority.</p>
+        <p>34 specific permissions across every subsystem. TOTP 2FA, OAuth/SSO, API keys, built-in CA for certificate issuance.</p>
+        <div class="feature-tags"><span class="tag">34 perms</span><span class="tag">TOTP</span><span class="tag">OAuth</span></div>
       </div>
+
       <div class="feature">
-        <div class="feature-icon" style="background: rgba(245,158,11,0.15); color: var(--amber);">⚙️</div>
-        <h3>Commit Confirm</h3>
-        <p>Every config change can be staged and auto-reverted on timeout if not confirmed. Versioned config history with diff and restore.</p>
+        <div class="feature-icon" style="background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.2); color: var(--amber);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+        </div>
+        <h3>Commit confirm</h3>
+        <p>Every apply stages changes with a timer. If you don't confirm within the window, your config auto-reverts. Never lock yourself out.</p>
+        <div class="feature-tags"><span class="tag">auto-revert</span><span class="tag">snapshots</span><span class="tag">rollback</span></div>
       </div>
+
     </div>
   </div>
 </section>
 
-<section style="background: var(--bg-1); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);">
+<section class="alt">
   <div class="container">
     <div class="section-intro">
-      <h2>See it in action</h2>
-      <p>Real screenshots from AiFw running on a live FreeBSD VM.</p>
+      <div class="section-eyebrow">Screenshots</div>
+      <h2>Real screens, real state</h2>
+      <p>Every page below is rendered live from WebSocket data. No mockups.</p>
     </div>
     <div class="gallery">
       <figure>
-        <img src="{{ '/assets/screenshots/02-traffic.png' | relative_url }}" alt="NAT traffic flow visualization" loading="lazy">
-        <figcaption>Live NAT flow topology — per-interface pipes with throughput-scaled widths</figcaption>
+        <img src="{{ '/assets/screenshots/01-dashboard.png' | relative_url }}" alt="AiFw main dashboard" loading="lazy">
+        <figcaption><strong>Dashboard</strong>Live system metrics, service health, and IDS summary in one view.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/03-rules.png' | relative_url }}" alt="Firewall rules management" loading="lazy">
-        <figcaption>Rules editor with aliases, scheduling, and drag-to-reorder</figcaption>
+        <img src="{{ '/assets/screenshots/02-traffic.png' | relative_url }}" alt="NAT flow topology" loading="lazy">
+        <figcaption><strong>NAT flow topology</strong>Per-interface pipes with throughput-scaled widths — see exactly where traffic goes.</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/03-rules.png' | relative_url }}" alt="Firewall rules editor" loading="lazy">
+        <figcaption><strong>Rules</strong>Drag to reorder, schedule by time, group by alias. IPv4 and IPv6 side by side.</figcaption>
       </figure>
       <figure>
         <img src="{{ '/assets/screenshots/07-ids-dashboard.png' | relative_url }}" alt="IDS/IPS dashboard" loading="lazy">
-        <figcaption>IDS/IPS overview with Suricata + Sigma + YARA rule engines</figcaption>
+        <figcaption><strong>IDS / IPS</strong>Suricata, Sigma, and YARA engines on one pane. Classify, suppress, tune.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/13-vpn.png' | relative_url }}" alt="WireGuard VPN management" loading="lazy">
-        <figcaption>WireGuard tunnel and peer management with client config export</figcaption>
+        <img src="{{ '/assets/screenshots/13-vpn.png' | relative_url }}" alt="WireGuard VPN" loading="lazy">
+        <figcaption><strong>WireGuard</strong>Auto-keypair generation, per-peer config export, live handshake tracking.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/04-nat.png' | relative_url }}" alt="NAT rules" loading="lazy">
-        <figcaption>NAT — SNAT, DNAT, 1:1, NAT64/46 all in one page</figcaption>
-      </figure>
-      <figure>
-        <img src="{{ '/assets/screenshots/10-dhcp.png' | relative_url }}" alt="DHCP server configuration" loading="lazy">
-        <figcaption>DHCP server with HA failover, reservations, and live lease tracking</figcaption>
+        <img src="{{ '/assets/screenshots/10-dhcp.png' | relative_url }}" alt="DHCP server" loading="lazy">
+        <figcaption><strong>DHCP</strong>HA failover, reservations, live lease tracking. Powered by rDHCP.</figcaption>
       </figure>
     </div>
   </div>
@@ -131,74 +178,77 @@ description: Open-source firewall built in Rust on FreeBSD pf. Modern alternativ
 <section>
   <div class="container">
     <div class="section-intro">
-      <h2>How it compares</h2>
-      <p>Honest side-by-side with the established players. See the <a href="{{ '/compare' | relative_url }}" style="color: var(--accent);">full comparison matrix</a>.</p>
+      <div class="section-eyebrow">Comparison</div>
+      <h2>How it stacks up</h2>
+      <p>Against the incumbents. Full matrix at <a href="{{ '/compare/' | relative_url }}" style="color: var(--accent);">/compare</a>.</p>
     </div>
-    <div class="compare-wrapper">
-      <table class="compare">
-        <thead>
-          <tr>
-            <th>Feature</th>
-            <th>AiFw</th>
-            <th>OPNsense</th>
-            <th>pfSense</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>WireGuard (built-in)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>IDS/IPS (Suricata)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>Sigma + YARA rules</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
-          <tr><td>AI/ML threat detection</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
-          <tr><td>OAuth / SSO</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
-          <tr><td>Commit confirm (auto-rollback)</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
-          <tr><td>Modern React UI</td><td class="yes">✓</td><td class="no">PHP</td><td class="no">PHP</td></tr>
-          <tr><td>Native REST API</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">pkg</td></tr>
-          <tr><td>OpenVPN</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>Captive portal</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>Multi-WAN load balancing</td><td class="no">planned</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-        </tbody>
-      </table>
+    <div class="compare-teaser">
+      <div class="row header">
+        <div>Feature</div><div>AiFw</div><div>OPNsense</div><div>pfSense</div>
+      </div>
+      <div class="row"><div class="feat-name">WireGuard (native)</div><div><span class="ind yes">✓</span></div><div><span class="ind yes">✓</span></div><div><span class="ind yes">✓</span></div></div>
+      <div class="row"><div class="feat-name">Suricata IDS</div><div><span class="ind yes">✓</span></div><div><span class="ind yes">✓</span></div><div><span class="ind partial">pkg</span></div></div>
+      <div class="row"><div class="feat-name">Sigma + YARA rules</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
+      <div class="row"><div class="feat-name">AI behavioural detection</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
+      <div class="row"><div class="feat-name">NAT46</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
+      <div class="row"><div class="feat-name">OAuth / SSO</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
+      <div class="row"><div class="feat-name">Commit confirm (auto-rollback)</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
+      <div class="row"><div class="feat-name">Modern UI stack</div><div>React/Next.js</div><div>PHP</div><div>PHP</div></div>
+      <div class="row"><div class="feat-name">OpenVPN</div><div><span class="ind no">—</span></div><div><span class="ind yes">✓</span></div><div><span class="ind yes">✓</span></div></div>
+      <div class="row"><div class="feat-name">Multi-WAN load balancing</div><div><span class="ind partial">planned</span></div><div><span class="ind yes">✓</span></div><div><span class="ind yes">✓</span></div></div>
     </div>
     <p style="text-align: center; margin-top: 32px;">
-      <a href="{{ '/compare' | relative_url }}" class="btn btn-outline">See full feature matrix →</a>
+      <a href="{{ '/compare/' | relative_url }}" class="btn btn-outline">See the full matrix →</a>
+    </p>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="container">
+    <div class="section-intro">
+      <div class="section-eyebrow">Architecture</div>
+      <h2>Rust all the way down</h2>
+      <p>Every service is a single Rust binary. The web UI compiles to static HTML with no Node.js runtime on the appliance.</p>
+    </div>
+    <div class="arch" style="max-width: 820px; margin: 0 auto;">
+<div class="line"><span class="comment">// Workspace crates</span></div>
+<div class="line"><span class="crate">aifw-common</span>      shared types: rules, NAT, VPN, IDS, HA, geo-IP</div>
+<div class="line"><span class="crate">aifw-pf</span>          pf backend trait (ioctl on FreeBSD, mock on Linux)</div>
+<div class="line"><span class="crate">aifw-core</span>        engines: rules, NAT, VPN, HA, shaping, audit</div>
+<div class="line"><span class="crate">aifw-ids</span>         IDS/IPS engine with Suricata + Sigma + YARA</div>
+<div class="line"><span class="crate">aifw-ai</span>          5 behavioural threat detectors</div>
+<div class="line"><span class="crate">aifw-conntrack</span>   connection tracking</div>
+<div class="line"><span class="crate">aifw-plugins</span>     plugin host (native Rust; WASM planned)</div>
+<div class="line"><span class="crate">aifw-metrics</span>     metrics collection</div>
+<div class="line"><span class="crate">aifw-api</span>         Axum REST (257 routes) + WebSocket</div>
+<div class="line"><span class="crate">aifw-daemon</span>      background worker</div>
+<div class="line"><span class="crate">aifw-cli</span>         <span class="comment">`aifw` CLI — 17 subcommand groups</span></div>
+<div class="line"><span class="crate">aifw-tui</span>         terminal UI</div>
+<div class="line"><span class="crate">aifw-setup</span>       first-boot wizard</div>
+<br>
+<div class="line"><span class="comment">// Companion services (separate binaries)</span></div>
+<div class="line"><span class="crate">rDNS</span>             DNS resolver</div>
+<div class="line"><span class="crate">rDHCP</span>            DHCP server with HA failover</div>
+<div class="line"><span class="crate">rTIME</span>            NTP/PTP time sync</div>
+<div class="line"><span class="crate">TrafficCop</span>       reverse proxy (HTTP/TCP/UDP)</div>
+    </div>
+    <p style="text-align: center; margin-top: 24px; color: var(--text-2); font-size: 14px;">
+      <code>tokio</code> &middot; <code>axum 0.8</code> &middot; <code>sqlx 0.8</code> &middot; <code>rustls 0.23</code> &middot; <code>Next.js 16</code> &middot; <code>FreeBSD 15</code>
     </p>
   </div>
 </section>
 
 <section>
   <div class="container">
-    <div class="section-intro">
-      <h2>Built for modern operators</h2>
-      <p>A single Rust binary per component, no PHP, no perl, no pile of legacy packages. Just fast, observable, and honest about what it does.</p>
-    </div>
-    <div class="features">
-      <div class="feature">
-        <div class="feature-icon" style="background: rgba(239,68,68,0.15); color: var(--red);">⚡</div>
-        <h3>Fast by default</h3>
-        <p>Native pf performance. The API is a single tokio+axum binary under 15 MB RSS. No PHP-FPM, no sluggish web UI.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon" style="background: rgba(6,182,212,0.15); color: var(--cyan);">🔍</div>
-        <h3>Observable</h3>
-        <p>Live WebSocket metrics, per-process memory breakdown, pf state visibility, and complete audit logs for every rule change.</p>
-      </div>
-      <div class="feature">
-        <div class="feature-icon" style="background: rgba(34,197,94,0.15); color: var(--green);">🎯</div>
-        <h3>Migration-friendly</h3>
-        <p>Import existing OPNsense XML configs. Rollback every update. Auto-confirm every commit with timeout — never lock yourself out.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="container">
-    <div class="cta">
-      <h2>Ready to try it?</h2>
-      <p>Install from ISO, USB image, or update your existing box. Runs on anything FreeBSD runs on.</p>
-      <div class="hero-ctas" style="margin-top: 24px;">
-        <a href="{{ '/install' | relative_url }}" class="btn btn-primary btn-lg">Install AiFw →</a>
-        <a href="https://github.com/ZerosAndOnesLLC/AiFw/releases/latest" target="_blank" rel="noopener" class="btn btn-outline btn-lg">Download latest</a>
+    <div class="cta-box">
+      <h2>Install in minutes</h2>
+      <p>~203 MB compressed ISO. Runs on anything FreeBSD runs on: bare metal, KVM, ESXi, bhyve, Proxmox.</p>
+      <div class="hero-ctas">
+        <a href="{{ '/install/' | relative_url }}" class="btn btn-primary btn-lg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          Get started
+        </a>
+        <a href="https://github.com/ZerosAndOnesLLC/AiFw/releases/latest" target="_blank" rel="noopener" class="btn btn-outline btn-lg">Latest release →</a>
       </div>
     </div>
   </div>
