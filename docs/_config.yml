@@ -1,0 +1,37 @@
+title: AiFw — AI-Powered Open-Source Firewall
+description: Modern open-source firewall for FreeBSD built in Rust. Alternative to pfSense and OPNsense with WireGuard, IDS/IPS, AI threat detection, and a modern web UI.
+url: https://zerosandonesllc.github.io
+baseurl: /AiFw
+author: ZerosAndOnesLLC
+repository: ZerosAndOnesLLC/AiFw
+
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+  - jekyll-feed
+
+# SEO
+twitter:
+  card: summary_large_image
+logo: /assets/AiFw-1.png
+social:
+  name: AiFw
+  links:
+    - https://github.com/ZerosAndOnesLLC/AiFw
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+      image: /assets/AiFw-1.png
+
+exclude:
+  - README.md
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+
+markdown: kramdown
+kramdown:
+  syntax_highlighter: rouge

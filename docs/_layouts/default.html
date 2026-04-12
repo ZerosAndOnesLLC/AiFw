@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  {% seo %}
+  <link rel="icon" href="{{ '/assets/favicon.png' | relative_url }}">
+  <link rel="apple-touch-icon" href="{{ '/assets/apple-touch-icon.png' | relative_url }}">
+  <link rel="stylesheet" href="{{ '/assets/style.css' | relative_url }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script>
+    // Pre-hydrate theme to avoid flash
+    (function(){
+      const t = localStorage.getItem('theme');
+      if (t === 'light') document.documentElement.classList.add('light');
+    })();
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a href="{{ '/' | relative_url }}" class="brand">
+        <img src="{{ '/assets/AiFw-1.png' | relative_url }}" alt="AiFw" class="brand-logo">
+        <span>AiFw</span>
+      </a>
+      <nav>
+        <a href="{{ '/features' | relative_url }}">Features</a>
+        <a href="{{ '/compare' | relative_url }}">Compare</a>
+        <a href="{{ '/install' | relative_url }}">Install</a>
+        <a href="{{ '/docs' | relative_url }}">Docs</a>
+        <a href="https://github.com/ZerosAndOnesLLC/AiFw" class="btn btn-outline" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    {{ content }}
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div>
+          <div class="footer-brand">
+            <img src="{{ '/assets/AiFw-1.png' | relative_url }}" alt="AiFw">
+            <span>AiFw</span>
+          </div>
+          <p class="footer-tagline">AI-powered open-source firewall for FreeBSD. MIT licensed.</p>
+        </div>
+        <div>
+          <h4>Project</h4>
+          <a href="{{ '/features' | relative_url }}">Features</a>
+          <a href="{{ '/compare' | relative_url }}">Comparison</a>
+          <a href="{{ '/install' | relative_url }}">Installation</a>
+        </div>
+        <div>
+          <h4>Community</h4>
+          <a href="https://github.com/ZerosAndOnesLLC/AiFw" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/ZerosAndOnesLLC/AiFw/issues" target="_blank" rel="noopener">Issues</a>
+          <a href="https://github.com/ZerosAndOnesLLC/AiFw/discussions" target="_blank" rel="noopener">Discussions</a>
+          <a href="https://github.com/ZerosAndOnesLLC/AiFw/releases" target="_blank" rel="noopener">Releases</a>
+        </div>
+        <div>
+          <h4>Resources</h4>
+          <a href="https://github.com/ZerosAndOnesLLC/AiFw/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+          <a href="https://github.com/ZerosAndOnesLLC/AiFw/blob/main/CLAUDE.md" target="_blank" rel="noopener">Architecture</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>&copy; 2026 ZerosAndOnesLLC</span>
+        <span>Built in Rust · Runs on FreeBSD</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

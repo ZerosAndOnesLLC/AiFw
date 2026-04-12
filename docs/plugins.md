@@ -1,3 +1,13 @@
+---
+layout: default
+title: Plugin System — AiFw
+description: Extend AiFw with Rust and WASM plugins. 12 hook points across rules, connections, DNS, DHCP, VPN, and more.
+permalink: /plugins/
+---
+
+<div class="content-page">
+<article markdown="1">
+
 # AiFw Plugin System
 
 AiFw includes a plugin system that lets you extend firewall behavior without modifying core code. Plugins can react to network events, block traffic, add IPs to block tables, log activity, and integrate with external systems.
@@ -282,3 +292,6 @@ Sends notifications to an HTTP endpoint for security events.
 - pflog dispatch is per-packet but only for logged packets
 - Timer hooks fire once per minute, not per-packet
 - Plugin manager uses RwLock — reads don't block each other, only writes (toggle) block briefly
+
+</article>
+</div>

@@ -1,0 +1,206 @@
+---
+layout: default
+title: AiFw — AI-Powered Open-Source Firewall for FreeBSD
+description: Open-source firewall built in Rust on FreeBSD pf. Modern alternative to pfSense and OPNsense with WireGuard, IDS/IPS, AI threat detection, and a React web UI.
+---
+
+<section class="hero">
+  <div class="container">
+    <div class="hero-badge">
+      <span class="hero-badge-dot"></span>
+      Open source · MIT licensed · Built in Rust
+    </div>
+    <h1>A modern firewall<br>for FreeBSD</h1>
+    <p class="lead">
+      AI-powered open-source firewall built on FreeBSD pf. Real IDS/IPS with Sigma + YARA rules,
+      WireGuard VPN, traffic shaping, HA clustering, and a live dashboard — all in one Rust binary.
+      An honest alternative to pfSense and OPNsense.
+    </p>
+    <div class="hero-ctas">
+      <a href="{{ '/install' | relative_url }}" class="btn btn-primary btn-lg">Get started</a>
+      <a href="https://github.com/ZerosAndOnesLLC/AiFw" target="_blank" rel="noopener" class="btn btn-outline btn-lg">View on GitHub</a>
+    </div>
+    <div class="hero-subtext">
+      <span>⚡ Rust · Axum · tokio</span>
+      <span>🛡️ FreeBSD pf</span>
+      <span>🎨 Next.js React UI</span>
+      <span>📦 ~50 MB ISO</span>
+    </div>
+  </div>
+</section>
+
+<section class="hero-screenshot">
+  <div class="container">
+    <div class="screenshot-frame">
+      <img src="{{ '/assets/screenshots/vid-01-dashboard-live.gif' | relative_url }}" alt="AiFw live dashboard with real-time metrics" loading="lazy">
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <div class="section-intro">
+      <h2>Everything you need, nothing you don't</h2>
+      <p>A complete firewall platform with modern defaults. No bolt-on packages, no legacy PHP.</p>
+    </div>
+    <div class="features">
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(239,68,68,0.15); color: var(--red);">🔥</div>
+        <h3>Stateful Firewall</h3>
+        <p>Full pf stateful filtering with scheduling, aliases, traffic shaping (CoDel, HFSC, PRIQ), and rate limiting. IPv4 + IPv6 out of the box.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(59,130,246,0.15); color: var(--accent);">🔐</div>
+        <h3>WireGuard + IPsec</h3>
+        <p>Native WireGuard tunnels with per-peer config generation. IPsec ESP/AH in tunnel or transport mode. Zero-config road-warrior VPN.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(245,158,11,0.15); color: var(--amber);">🚨</div>
+        <h3>IDS/IPS Engine</h3>
+        <p>Built-in Suricata-compatible engine with Sigma and YARA rule support. Real-time alerts, flow tracking, and per-rule suppressions.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(139,92,246,0.15); color: var(--purple);">🤖</div>
+        <h3>AI Threat Detection</h3>
+        <p>Behavioral detectors for port scans, DDoS, brute force, C2 beacons, and DNS tunneling. Auto-response with configurable TTL blocks.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(34,197,94,0.15); color: var(--green);">🌐</div>
+        <h3>NAT, DNS & DHCP</h3>
+        <p>SNAT, DNAT, port forwarding, 1:1 NAT, NAT64 and NAT46. Built-in DNS resolver, DHCP server with HA failover and DDNS.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(6,182,212,0.15); color: var(--cyan);">📊</div>
+        <h3>Live Dashboard</h3>
+        <p>WebSocket-powered real-time metrics. Connection tracking, bandwidth graphs, memory breakdown, and live NAT flow topology.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(139,92,246,0.15); color: var(--purple);">🔁</div>
+        <h3>HA Clustering</h3>
+        <p>CARP virtual IPs, pfsync state synchronization, and config sync between cluster nodes. Automatic failover detection.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(59,130,246,0.15); color: var(--accent);">🔑</div>
+        <h3>Granular RBAC</h3>
+        <p>34 granular permissions across every subsystem. TOTP 2FA, OAuth/SSO, API keys, and custom roles. Built-in Certificate Authority.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(245,158,11,0.15); color: var(--amber);">⚙️</div>
+        <h3>Commit Confirm</h3>
+        <p>Every config change can be staged and auto-reverted on timeout if not confirmed. Versioned config history with diff and restore.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="background: var(--bg-1); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);">
+  <div class="container">
+    <div class="section-intro">
+      <h2>See it in action</h2>
+      <p>Real screenshots from AiFw running on a live FreeBSD VM.</p>
+    </div>
+    <div class="gallery">
+      <figure>
+        <img src="{{ '/assets/screenshots/02-traffic.png' | relative_url }}" alt="NAT traffic flow visualization" loading="lazy">
+        <figcaption>Live NAT flow topology — per-interface pipes with throughput-scaled widths</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/03-rules.png' | relative_url }}" alt="Firewall rules management" loading="lazy">
+        <figcaption>Rules editor with aliases, scheduling, and drag-to-reorder</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/07-ids-dashboard.png' | relative_url }}" alt="IDS/IPS dashboard" loading="lazy">
+        <figcaption>IDS/IPS overview with Suricata + Sigma + YARA rule engines</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/13-vpn.png' | relative_url }}" alt="WireGuard VPN management" loading="lazy">
+        <figcaption>WireGuard tunnel and peer management with client config export</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/04-nat.png' | relative_url }}" alt="NAT rules" loading="lazy">
+        <figcaption>NAT — SNAT, DNAT, 1:1, NAT64/46 all in one page</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/10-dhcp.png' | relative_url }}" alt="DHCP server configuration" loading="lazy">
+        <figcaption>DHCP server with HA failover, reservations, and live lease tracking</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <div class="section-intro">
+      <h2>How it compares</h2>
+      <p>Honest side-by-side with the established players. See the <a href="{{ '/compare' | relative_url }}" style="color: var(--accent);">full comparison matrix</a>.</p>
+    </div>
+    <div class="compare-wrapper">
+      <table class="compare">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>AiFw</th>
+            <th>OPNsense</th>
+            <th>pfSense</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>WireGuard (built-in)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>IDS/IPS (Suricata)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Sigma + YARA rules</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>AI/ML threat detection</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>OAuth / SSO</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Commit confirm (auto-rollback)</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Modern React UI</td><td class="yes">✓</td><td class="no">PHP</td><td class="no">PHP</td></tr>
+          <tr><td>Native REST API</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">pkg</td></tr>
+          <tr><td>WASM plugin system</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>OpenVPN</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Captive portal</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Multi-WAN load balancing</td><td class="no">planned</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="text-align: center; margin-top: 32px;">
+      <a href="{{ '/compare' | relative_url }}" class="btn btn-outline">See full feature matrix →</a>
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <div class="section-intro">
+      <h2>Built for modern operators</h2>
+      <p>A single Rust binary per component, no PHP, no perl, no pile of legacy packages. Just fast, observable, and honest about what it does.</p>
+    </div>
+    <div class="features">
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(239,68,68,0.15); color: var(--red);">⚡</div>
+        <h3>Fast by default</h3>
+        <p>Native pf performance. The API is a single tokio+axum binary under 15 MB RSS. No PHP-FPM, no sluggish web UI.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(6,182,212,0.15); color: var(--cyan);">🔍</div>
+        <h3>Observable</h3>
+        <p>Live WebSocket metrics, per-process memory breakdown, pf state visibility, and complete audit logs for every rule change.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(34,197,94,0.15); color: var(--green);">🎯</div>
+        <h3>Migration-friendly</h3>
+        <p>Import existing OPNsense XML configs. Rollback every update. Auto-confirm every commit with timeout — never lock yourself out.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <div class="cta">
+      <h2>Ready to try it?</h2>
+      <p>Install from ISO, USB image, or update your existing box. Runs on anything FreeBSD runs on.</p>
+      <div class="hero-ctas" style="margin-top: 24px;">
+        <a href="{{ '/install' | relative_url }}" class="btn btn-primary btn-lg">Install AiFw →</a>
+        <a href="https://github.com/ZerosAndOnesLLC/AiFw/releases/latest" target="_blank" rel="noopener" class="btn btn-outline btn-lg">Download latest</a>
+      </div>
+    </div>
+  </div>
+</section>
