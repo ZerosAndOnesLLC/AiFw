@@ -1229,7 +1229,11 @@ aifw_daemon_user="aifw"
 
 aifw_daemon_start()
 {{
-    /usr/sbin/daemon -u $aifw_daemon_user -p $pidfile -f $command $command_args
+    mkdir -p /var/log/aifw
+    chown aifw:aifw /var/log/aifw
+    # -R 5: restart after 5s if it dies, -S: log to syslog, -T: syslog tag,
+    # -o: also tee stderr/stdout to file for crash debugging
+    /usr/sbin/daemon -u $aifw_daemon_user -p $pidfile -f -R 5 -S -T aifw_daemon -o /var/log/aifw/daemon.log $command $command_args
 }}
 
 load_rc_config $name
@@ -1254,7 +1258,9 @@ aifw_api_user="aifw"
 
 aifw_api_start()
 {{
-    /usr/sbin/daemon -u $aifw_api_user -p $pidfile -f -R 5 -S -T aifw_api $command $command_args
+    mkdir -p /var/log/aifw
+    chown aifw:aifw /var/log/aifw
+    /usr/sbin/daemon -u $aifw_api_user -p $pidfile -f -R 5 -S -T aifw_api -o /var/log/aifw/api.log $command $command_args
 }}
 
 load_rc_config $name

@@ -592,7 +592,7 @@ export default function Dashboard() {
                 <div className={`w-1.5 h-1.5 rounded-full ${ids.running ? "bg-green-500" : "bg-gray-600"}`} />
                 <span className={`text-[10px] font-medium ${
                   ids.mode === "ids" ? "text-blue-400" : ids.mode === "ips" ? "text-amber-400" : "text-gray-500"
-                }`}>{ids.mode.toUpperCase()}</span>
+                }`}>{(ids.mode || "off").toUpperCase()}</span>
               </div>
             ) : (
               <span className="text-[10px] text-gray-600">N/A</span>
@@ -600,10 +600,10 @@ export default function Dashboard() {
           </div>
           {ids ? (
             <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
-              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Alerts</span><span className="font-mono text-red-400">{formatNumber(ids.alerts_total)}</span></div>
-              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Pkts/s</span><span className="font-mono text-cyan-400">{ids.packets_per_sec.toFixed(0)}</span></div>
-              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Drops</span><span className="font-mono text-yellow-400">{formatNumber(ids.drops_total)}</span></div>
-              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Rules</span><span className="font-mono text-blue-400">{ids.loaded_rules}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Alerts</span><span className="font-mono text-red-400">{formatNumber(ids.alerts_total ?? 0)}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Pkts/s</span><span className="font-mono text-cyan-400">{(ids.packets_per_sec ?? 0).toFixed(0)}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Drops</span><span className="font-mono text-yellow-400">{formatNumber(ids.drops_total ?? 0)}</span></div>
+              <div className="flex justify-between"><span className="text-[var(--text-muted)]">Rules</span><span className="font-mono text-blue-400">{ids.loaded_rules ?? 0}</span></div>
             </div>
           ) : (
             <div className="text-xs text-[var(--text-muted)]">Disabled</div>
