@@ -1077,6 +1077,55 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Memory-stats heartbeat — logs per-subsystem sizes every 60s so we can
+    // isolate which cache/buffer is responsible when RSS grows. Cheap: just reads
+    // existing counters; no allocation. Output goes to /var/log/aifw/api.log.
+    {
+        let mem_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let alert = mem_state.alert_buffer.stats().await;
+                let hist_entries = mem_state.metrics_history.read().await.len();
+                let hist_bytes: usize = mem_state.metrics_history.read().await.iter().map(|s| s.len()).sum();
+                let pf_states = mem_state.pf.get_stats().await
+                    .map(|s| s.states_count).unwrap_or(0);
+                let conns = mem_state.conntrack.get_connections().await.len();
+                let pmgr = mem_state.plugin_manager.read().await;
+                let plugins_total = pmgr.count();
+                let plugins_running = pmgr.running_count();
+                drop(pmgr);
+                let ids_rules = mem_state.ids_engine.as_ref()
+                    .map(|e| e.rule_db().rule_count()).unwrap_or(0);
+                let (ids_alerts_db,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ids_alerts")
+                    .fetch_one(&mem_state.pool).await.unwrap_or((0,));
+                let rss_kb = tokio::process::Command::new("ps")
+                    .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+                    .output().await.ok()
+                    .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+                    .unwrap_or(0);
+
+                tracing::info!(
+                    target: "aifw_api::memstats",
+                    rss_mb = rss_kb / 1024,
+                    alert_buffer_entries = alert.count,
+                    alert_buffer_mb = format!("{:.1}", alert.estimated_mb).as_str(),
+                    alert_buffer_max_mb = alert.max_mb as u64,
+                    ids_alerts_db = ids_alerts_db,
+                    ids_rules_loaded = ids_rules,
+                    metrics_history_entries = hist_entries,
+                    metrics_history_kb = hist_bytes / 1024,
+                    pf_states = pf_states,
+                    conntrack_entries = conns,
+                    plugins_total = plugins_total,
+                    plugins_running = plugins_running,
+                    "memstats heartbeat"
+                );
+            }
+        });
+    }
+
     let app = build_router(state, args.ui_dir.as_deref(), &args.cors_origins);
 
     if args.no_tls {
