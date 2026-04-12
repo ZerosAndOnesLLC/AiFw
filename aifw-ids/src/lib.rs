@@ -565,6 +565,13 @@ fn capture_interface_worker(
 
         info!(interface = %iface, "BPF capture active");
 
+        // Flow table expiry — each flow holds 2 MB of reassembly buffers,
+        // so without this the table grows without bound.
+        // 5 minute idle timeout, check every ~10,000 packets (roughly 1–10s under load).
+        const FLOW_IDLE_TIMEOUT_US: i64 = 300_000_000; // 5 minutes
+        const EXPIRE_CHECK_EVERY: u64 = 10_000;
+        let mut pkt_count: u64 = 0;
+
         while running.load(Ordering::Relaxed) {
             if let Some(pkt) = cap.next_packet() {
                 counters.packets_inspected.fetch_add(1, Ordering::Relaxed);
@@ -576,6 +583,22 @@ fn capture_interface_worker(
                         if let Err(e) = alert_tx.try_send(alert) {
                             tracing::debug!("alert channel full: {e}");
                         }
+                    }
+                }
+
+                pkt_count = pkt_count.wrapping_add(1);
+                if pkt_count.is_multiple_of(EXPIRE_CHECK_EVERY) {
+                    let now_us = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_micros() as i64;
+                    let expired = detection.flow_table().expire(now_us, FLOW_IDLE_TIMEOUT_US);
+                    if expired > 0 {
+                        tracing::debug!(
+                            expired = expired,
+                            active = detection.flow_table().len(),
+                            "flow table expiry"
+                        );
                     }
                 }
             }

@@ -7,7 +7,13 @@ use tokio::sync::RwLock;
 use super::AlertOutput;
 
 /// Estimated bytes per alert in memory (struct + strings + overhead).
-const ALERT_ESTIMATED_BYTES: usize = 512;
+///
+/// IdsAlert has several Strings (signature_msg, protocol, classification),
+/// Option<String>s (flow_id, payload_excerpt, analyst_notes), and an
+/// Option<HashMap<String,String>> for metadata. Realistic average once a rule
+/// source with metadata is loaded is ~1200 bytes, not 512. Under-estimating
+/// meant the buffer was consuming 2–3× its configured limit before eviction.
+const ALERT_ESTIMATED_BYTES: usize = 1200;
 
 /// In-memory ring buffer for IDS alerts with configurable limits.
 /// Replaces SQLite storage to avoid disk I/O on flash-based systems.

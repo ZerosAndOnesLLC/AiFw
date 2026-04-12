@@ -52,7 +52,15 @@ impl WebhookPlugin {
         };
 
         tracing::debug!(url = %self.url, event = %event_type, "webhook notification queued");
-        self.notifications.write().await.push(notif);
+        // Bounded ring buffer: keep newest N notifications. Without this the
+        // Vec grows unbounded under high event rates and burns GBs of RSS.
+        const MAX_QUEUED: usize = 10_000;
+        let mut buf = self.notifications.write().await;
+        buf.push(notif);
+        if buf.len() > MAX_QUEUED {
+            let drop_n = buf.len() - MAX_QUEUED;
+            buf.drain(0..drop_n);
+        }
     }
 }
 

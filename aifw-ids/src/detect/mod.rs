@@ -34,6 +34,13 @@ impl DetectionEngine {
         }
     }
 
+    /// Accessor for the flow table so the capture worker can periodically
+    /// expire idle flows. Each flow holds 2 MB of reassembly buffers, so
+    /// without periodic expiry the flow table grows unbounded.
+    pub fn flow_table(&self) -> &Arc<FlowTable> {
+        &self.flow_table
+    }
+
     /// Run the full detection pipeline on a decoded packet.
     /// Returns a list of matched alerts.
     pub fn detect(&self, packet: &DecodedPacket) -> Vec<IdsAlert> {
