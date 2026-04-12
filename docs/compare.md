@@ -84,8 +84,8 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>RBAC (granular perms)</td><td class="yes">34 perms</td><td class="yes">ACL</td><td class="partial">user/group</td></tr>
 
 <tr class="section-row"><td colspan="4">Plugins & extensibility</td></tr>
-<tr><td>Package/plugin system</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>WASM plugins</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>Package/plugin system</td><td class="partial">beta</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>WASM plugins</td><td class="partial">planned</td><td class="no">—</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">Architecture</td></tr>
 <tr><td>Web UI technology</td><td class="yes">React/Next.js</td><td class="partial">PHP</td><td class="partial">PHP</td></tr>
@@ -113,7 +113,6 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 - **NAT46** — unique, nobody else does this out of the box
 - **OAuth / SSO** — first-class, not a plugin
 - **Commit confirm** — auto-rollback if you lock yourself out. Both competitors have this as an open feature request for years.
-- **WASM plugin system** — future-proof, sandboxed, multi-language
 - **Modern React UI** — not PHP. Static export, no Node.js runtime needed on the appliance.
 - **WebSocket real-time dashboard** — live metrics, not poll-every-30s
 - **Single-binary Rust architecture** — the API process is <15 MB RSS, not a PHP-FPM pool

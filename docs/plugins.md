@@ -8,7 +8,15 @@ permalink: /plugins/
 <div class="content-page">
 <article markdown="1">
 
-# AiFw Plugin System
+# AiFw Plugin System <span class="badge-beta">Beta</span>
+
+<div class="callout beta" markdown="0">
+<span class="callout-icon">⚠️</span>
+<div>
+<strong>Experimental — under heavy development</strong>
+The plugin system is still early and unstable. APIs, hook names, and configuration formats will change without notice. Built-in plugins (Logging, IP Reputation, Webhook) have not been production-tested. WASM plugin support is not yet implemented. Don't build on this for production use yet — wait for a stable release.
+</div>
+</div>
 
 AiFw includes a plugin system that lets you extend firewall behavior without modifying core code. Plugins can react to network events, block traffic, add IPs to block tables, log activity, and integrate with external systems.
 

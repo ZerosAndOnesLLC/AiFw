@@ -151,13 +151,23 @@ Built-in roles: **admin**, **operator**, **viewer**. Custom roles supported.
 - **Commit confirm** — every apply auto-reverts on timeout unless confirmed
 - **OPNsense import** — migrate from existing OPNsense XML configs
 
-## Plugin system
+## Plugin system <span class="badge-beta">Beta</span>
 
-- WASM plugin support (unique to AiFw)
-- Native Rust plugins
+<div class="callout beta" markdown="0">
+<span class="callout-icon">⚠️</span>
+<div>
+<strong>Experimental</strong>
+The plugin system is under heavy development. APIs will change, built-in plugins haven't been production-tested, and WASM support is not yet implemented. Don't build production integrations yet.
+</div>
+</div>
+
+- Native Rust plugins via the `Plugin` trait
+- WASM plugin support (planned)
 - Pre/post rule hooks with event-based triggers
 - Plugin discovery from filesystem
 - Per-plugin configuration and logs
+
+See the full [plugin system documentation]({{ '/plugins' | relative_url }}) for details.
 
 ## Monitoring
 
