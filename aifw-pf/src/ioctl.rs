@@ -353,4 +353,54 @@ impl PfBackend for PfIoctl {
         pfctl(&["-a", anchor, "-Fq"]).await?;
         Ok(())
     }
+
+    async fn set_interface_fib(&self, iface: &str, fib: u32) -> Result<(), PfError> {
+        let output = Command::new("/usr/local/bin/sudo")
+            .args(["/sbin/ifconfig", iface, "fib", &fib.to_string()])
+            .output()
+            .await
+            .map_err(|e| PfError::Other(format!("ifconfig fib exec failed: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PfError::Other(format!(
+                "ifconfig {iface} fib {fib} failed: {stderr}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn get_interface_fib(&self, iface: &str) -> Result<u32, PfError> {
+        let output = Command::new("/sbin/ifconfig")
+            .arg(iface)
+            .output()
+            .await
+            .map_err(|e| PfError::Other(format!("ifconfig exec failed: {e}")))?;
+        if !output.status.success() {
+            return Err(PfError::Other(format!("ifconfig {iface} failed")));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if let Some(idx) = line.find("fib: ") {
+                if let Some(fib) = line[idx + 5..].split_whitespace().next() {
+                    return fib
+                        .parse()
+                        .map_err(|e| PfError::Other(format!("parse fib: {e}")));
+                }
+            }
+        }
+        Ok(0)
+    }
+
+    async fn list_fibs(&self) -> Result<u32, PfError> {
+        let output = Command::new("/sbin/sysctl")
+            .args(["-n", "net.fibs"])
+            .output()
+            .await
+            .map_err(|e| PfError::Other(format!("sysctl exec failed: {e}")))?;
+        if !output.status.success() {
+            return Ok(1);
+        }
+        let s = String::from_utf8_lossy(&output.stdout);
+        Ok(s.trim().parse().unwrap_or(1))
+    }
 }

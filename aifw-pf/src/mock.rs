@@ -13,6 +13,8 @@ pub struct PfMock {
     tables: RwLock<HashMap<String, Vec<IpAddr>>>,
     states: RwLock<Vec<PfState>>,
     running: RwLock<bool>,
+    iface_fibs: RwLock<HashMap<String, u32>>,
+    fib_count: RwLock<u32>,
 }
 
 impl PfMock {
@@ -24,7 +26,14 @@ impl PfMock {
             tables: RwLock::new(HashMap::new()),
             states: RwLock::new(Vec::new()),
             running: RwLock::new(true),
+            iface_fibs: RwLock::new(HashMap::new()),
+            fib_count: RwLock::new(1),
         }
+    }
+
+    /// Override the number of available FIBs for testing multi-WAN scenarios.
+    pub async fn set_fib_count(&self, n: u32) {
+        *self.fib_count.write().await = n.max(1);
     }
 
     /// Inject mock states for testing
@@ -168,5 +177,34 @@ impl PfBackend for PfMock {
         let mut queues = self.queues.write().await;
         queues.remove(anchor);
         Ok(())
+    }
+
+    async fn set_interface_fib(&self, iface: &str, fib: u32) -> Result<(), PfError> {
+        tracing::debug!(iface, fib, "mock: set_interface_fib");
+        let fib_count = *self.fib_count.read().await;
+        if fib >= fib_count {
+            return Err(PfError::Other(format!(
+                "fib {fib} out of range (net.fibs={fib_count})"
+            )));
+        }
+        self.iface_fibs
+            .write()
+            .await
+            .insert(iface.to_string(), fib);
+        Ok(())
+    }
+
+    async fn get_interface_fib(&self, iface: &str) -> Result<u32, PfError> {
+        Ok(self
+            .iface_fibs
+            .read()
+            .await
+            .get(iface)
+            .copied()
+            .unwrap_or(0))
+    }
+
+    async fn list_fibs(&self) -> Result<u32, PfError> {
+        Ok(*self.fib_count.read().await)
     }
 }

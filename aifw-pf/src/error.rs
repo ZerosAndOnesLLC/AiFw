@@ -19,6 +19,9 @@ pub enum PfError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("{0}")]
+    Other(String),
 }
 
 impl From<PfError> for aifw_common::AifwError {
