@@ -217,3 +217,47 @@ pub struct GroupMember {
     pub tier: u32,
     pub weight: u32,
 }
+
+/// Policy routing rule. Matches traffic on 5-tuple + metadata and steers it to a
+/// RoutingInstance (FIB), Gateway (route-to), or GatewayGroup (load-balance).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyRule {
+    pub id: Uuid,
+    pub priority: i64,
+    pub name: String,
+    pub status: String, // active | disabled
+    pub ip_version: String, // v4 | v6 | both
+    pub iface_in: Option<String>,
+    pub src_addr: String,
+    pub dst_addr: String,
+    pub src_port: Option<String>,
+    pub dst_port: Option<String>,
+    pub protocol: String, // any | tcp | udp | icmp
+    pub dscp_in: Option<u8>,
+    pub geoip_country: Option<String>,
+    pub schedule_id: Option<String>,
+    pub action_kind: String, // set_instance | set_gateway | set_group
+    pub target_id: Uuid,
+    pub sticky: StickyMode,
+    pub fallback_target_id: Option<Uuid>,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Cross-FIB leak: allows specified traffic from one RoutingInstance to reach
+/// prefixes in another (Juniper rib-groups analogue).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteLeak {
+    pub id: Uuid,
+    pub name: String,
+    pub src_instance_id: Uuid,
+    pub dst_instance_id: Uuid,
+    pub prefix: String,
+    pub protocol: String,
+    pub ports: Option<String>,
+    pub direction: String, // bidirectional | one_way
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

@@ -144,13 +144,13 @@ multiwan_group_members (group_id FK, gateway_id FK, tier=1, weight=1,
 
 User value: first dataplane phase. Rules like "LAN→Netflix via WAN2" work end-to-end.
 
-- [ ] 4a. `PfBackend` additions: `load_pbr_rules`, `flush_pbr_rules`, `kill_states_on_iface`, `kill_states_for_label`
-- [ ] 4b. `aifw-core/src/multiwan/policy.rs::PolicyEngine` — rebuild anchor on CRUD/gateway-state/group-change, 200 ms debounce
-- [ ] 4c. Emitters: `route-to`+`reply-to` for SetGateway; `rtable N` for SetInstance; weighted sticky for SetGroup
-- [ ] 4d. Anchor wiring: `aifw-pbr`, `aifw-mwan-reply` added to `aifw-setup/src/apply.rs` root ruleset
-- [ ] 4e. API CRUD + reorder under `/api/v1/multiwan/policies`
-- [ ] 4f. UI `multi-wan/policies/page.tsx` (reuse rules/page.tsx components)
-- [ ] 4g. Tests: golden pf output per action kind, regen on gateway down, reply-to paired, if-bound always set
+- [x] 4a. `PfBackend` additions: `kill_states_on_iface`, `kill_states_for_label` (used `load_rules` for PBR since existing trait method fits)
+- [x] 4b. `PolicyEngine` with CRUD + `apply()` that composes instance/gateway/group state into pf strings
+- [x] 4c. Emitters: `route-to`+`reply-to` for SetGateway; `rtable N` for SetInstance; weighted route-to with sticky-address for SetGroup
+- [ ] 4d. Anchor wiring into root ruleset (deferred to phase 10 — anchors exist but need pf.conf wiring)
+- [x] 4e. API CRUD + `/apply` under `/api/v1/multiwan/policies`
+- [ ] 4f. UI policies page (deferred — API-accessible for now)
+- [x] 4g. Golden tests: set_instance emits rtable, set_gateway emits paired route-to/reply-to with if-bound, disabled skipped
 
 Tables:
 ```sql

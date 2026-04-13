@@ -403,4 +403,26 @@ impl PfBackend for PfIoctl {
         let s = String::from_utf8_lossy(&output.stdout);
         Ok(s.trim().parse().unwrap_or(1))
     }
+
+    async fn kill_states_on_iface(&self, iface: &str) -> Result<u64, PfError> {
+        let out = pfctl(&["-k", "0.0.0.0/0", "-k", "0.0.0.0/0", "-i", iface]).await?;
+        Ok(parse_killed_count(&out))
+    }
+
+    async fn kill_states_for_label(&self, label: &str) -> Result<u64, PfError> {
+        let out = pfctl(&["-k", "label", "-k", label]).await?;
+        Ok(parse_killed_count(&out))
+    }
+}
+
+fn parse_killed_count(s: &str) -> u64 {
+    // pfctl prints "killed N states" on success
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("killed ") {
+            if let Some(n_str) = rest.split_whitespace().next() {
+                return n_str.parse().unwrap_or(0);
+            }
+        }
+    }
+    0
 }

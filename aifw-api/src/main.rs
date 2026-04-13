@@ -21,7 +21,7 @@ mod tests;
 use aifw_conntrack::ConnectionTracker;
 use aifw_core::{
     AliasEngine, Database, GatewayEngine, GeoIpEngine, GroupEngine, InstanceEngine, NatEngine,
-    RuleEngine, VpnEngine,
+    PolicyEngine, RuleEngine, VpnEngine,
 };
 use aifw_pf::PfBackend;
 use axum::{
@@ -97,6 +97,7 @@ pub struct AppState {
     pub multiwan_engine: Arc<InstanceEngine>,
     pub gateway_engine: Arc<GatewayEngine>,
     pub group_engine: Arc<GroupEngine>,
+    pub policy_engine: Arc<PolicyEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
@@ -610,6 +611,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/multiwan/groups", get(multiwan::list_groups))
         .route("/api/v1/multiwan/groups/{id}/members", get(multiwan::list_group_members))
         .route("/api/v1/multiwan/groups/{id}/active", get(multiwan::group_active))
+        .route("/api/v1/multiwan/policies", get(multiwan::list_policies))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanRead)));
 
     // multiwan:write
@@ -640,6 +642,12 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
             "/api/v1/multiwan/groups/{id}/members/{gw}",
             delete(multiwan::remove_group_member),
         )
+        .route("/api/v1/multiwan/policies", post(multiwan::create_policy))
+        .route(
+            "/api/v1/multiwan/policies/{id}",
+            put(multiwan::update_policy).delete(multiwan::delete_policy),
+        )
+        .route("/api/v1/multiwan/apply", post(multiwan::apply_policies))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
     // Merge all permission-scoped groups into one protected router with auth
@@ -732,6 +740,8 @@ async fn create_state_from_db(
     gateway_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let group_engine = Arc::new(GroupEngine::new(pool.clone()));
     group_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let policy_engine = Arc::new(PolicyEngine::new(pool.clone(), pf.clone()));
+    policy_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     ca::migrate(&pool).await?;
     dhcp::migrate(&pool).await?;
     updates::migrate(&pool).await?;
@@ -842,6 +852,7 @@ async fn create_state_from_db(
         multiwan_engine,
         gateway_engine,
         group_engine,
+        policy_engine,
         alias_engine,
         conntrack,
         ids_engine,

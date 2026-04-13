@@ -207,4 +207,17 @@ impl PfBackend for PfMock {
     async fn list_fibs(&self) -> Result<u32, PfError> {
         Ok(*self.fib_count.read().await)
     }
+
+    async fn kill_states_on_iface(&self, iface: &str) -> Result<u64, PfError> {
+        tracing::debug!(iface, "mock: kill_states_on_iface");
+        let mut states = self.states.write().await;
+        let before = states.len();
+        states.retain(|s| s.iface.as_deref() != Some(iface));
+        Ok((before - states.len()) as u64)
+    }
+
+    async fn kill_states_for_label(&self, label: &str) -> Result<u64, PfError> {
+        tracing::debug!(label, "mock: kill_states_for_label");
+        Ok(0)
+    }
 }

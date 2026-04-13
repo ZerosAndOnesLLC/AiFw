@@ -594,3 +594,142 @@ pub async fn group_active(
         },
     }))
 }
+
+// ============================================================
+// Policy routing rules (Phase 4)
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreatePolicyRequest {
+    pub priority: i64,
+    pub name: String,
+    pub status: Option<String>,
+    pub ip_version: Option<String>,
+    pub iface_in: Option<String>,
+    pub src_addr: Option<String>,
+    pub dst_addr: Option<String>,
+    pub src_port: Option<String>,
+    pub dst_port: Option<String>,
+    pub protocol: Option<String>,
+    pub dscp_in: Option<u8>,
+    pub action_kind: String,
+    pub target_id: String,
+    pub sticky: Option<String>,
+    pub fallback_target_id: Option<String>,
+    pub description: Option<String>,
+}
+
+pub async fn list_policies(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<aifw_common::PolicyRule>>>, StatusCode> {
+    let list = state.policy_engine.list().await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: list }))
+}
+
+fn req_to_policy(
+    req: CreatePolicyRequest,
+    id: Option<Uuid>,
+    created_at: Option<chrono::DateTime<Utc>>,
+) -> Result<aifw_common::PolicyRule, StatusCode> {
+    let target = Uuid::parse_str(&req.target_id).map_err(|_| bad_request())?;
+    let fallback = match req.fallback_target_id {
+        Some(s) => Some(Uuid::parse_str(&s).map_err(|_| bad_request())?),
+        None => None,
+    };
+    let sticky = req
+        .sticky
+        .as_deref()
+        .and_then(aifw_common::StickyMode::parse)
+        .unwrap_or(aifw_common::StickyMode::None);
+    let now = Utc::now();
+    Ok(aifw_common::PolicyRule {
+        id: id.unwrap_or_else(Uuid::new_v4),
+        priority: req.priority,
+        name: req.name,
+        status: req.status.unwrap_or_else(|| "active".into()),
+        ip_version: req.ip_version.unwrap_or_else(|| "both".into()),
+        iface_in: req.iface_in,
+        src_addr: req.src_addr.unwrap_or_else(|| "any".into()),
+        dst_addr: req.dst_addr.unwrap_or_else(|| "any".into()),
+        src_port: req.src_port,
+        dst_port: req.dst_port,
+        protocol: req.protocol.unwrap_or_else(|| "any".into()),
+        dscp_in: req.dscp_in,
+        geoip_country: None,
+        schedule_id: None,
+        action_kind: req.action_kind,
+        target_id: target,
+        sticky,
+        fallback_target_id: fallback,
+        description: req.description,
+        created_at: created_at.unwrap_or(now),
+        updated_at: now,
+    })
+}
+
+pub async fn create_policy(
+    State(state): State<AppState>,
+    Json(req): Json<CreatePolicyRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<aifw_common::PolicyRule>>), StatusCode> {
+    let p = req_to_policy(req, None, None)?;
+    let p = state.policy_engine.add(p).await.map_err(|_| bad_request())?;
+    let _ = apply_all(&state).await;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: p })))
+}
+
+pub async fn update_policy(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreatePolicyRequest>,
+) -> Result<Json<ApiResponse<aifw_common::PolicyRule>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let existing = state
+        .policy_engine
+        .get(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let p = req_to_policy(req, Some(uuid), Some(existing.created_at))?;
+    let p = state.policy_engine.update(p).await.map_err(|_| bad_request())?;
+    let _ = apply_all(&state).await;
+    Ok(Json(ApiResponse { data: p }))
+}
+
+pub async fn delete_policy(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    state
+        .policy_engine
+        .delete(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let _ = apply_all(&state).await;
+    Ok(Json(MessageResponse {
+        message: format!("policy {id} deleted"),
+    }))
+}
+
+pub async fn apply_policies(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    apply_all(&state).await.map_err(|_| internal())?;
+    Ok(Json(MessageResponse {
+        message: "pf anchors reloaded".into(),
+    }))
+}
+
+async fn apply_all(state: &AppState) -> aifw_common::Result<()> {
+    let instances = state.multiwan_engine.list().await?;
+    let gateways = state.gateway_engine.list().await?;
+    let groups = state.group_engine.list().await?;
+    let mut members = std::collections::HashMap::new();
+    for g in &groups {
+        members.insert(g.id, state.group_engine.list_members(g.id).await?);
+    }
+    state
+        .policy_engine
+        .apply(&instances, &gateways, &groups, &members)
+        .await?;
+    Ok(())
+}
