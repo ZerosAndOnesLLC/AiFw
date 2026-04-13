@@ -49,5 +49,6 @@ pub use ids::{
 };
 pub use multiwan::{
     DEFAULT_FIB_NUMBER, DEFAULT_INSTANCE_ID, DEFAULT_INSTANCE_NAME, Gateway, GatewayEvent,
-    GatewayState, InstanceMember, InstanceStatus, RoutingInstance,
+    GatewayGroup, GatewayState, GroupMember, GroupPolicy, InstanceMember, InstanceStatus,
+    RoutingInstance, StickyMode,
 };

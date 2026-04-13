@@ -7,7 +7,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use aifw_common::{Gateway, GatewayEvent, InstanceMember, InstanceStatus, RoutingInstance};
+use aifw_common::{
+    Gateway, GatewayEvent, GatewayGroup, GroupMember, GroupPolicy, InstanceMember, InstanceStatus,
+    RoutingInstance, StickyMode,
+};
 
 use crate::AppState;
 
@@ -404,3 +407,190 @@ pub async fn probe_now(
 }
 
 
+
+// ============================================================
+// Gateway groups (Phase 3)
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreateGroupRequest {
+    pub name: String,
+    pub policy: String,
+    pub preempt: Option<bool>,
+    pub sticky: Option<String>,
+    pub hysteresis_ms: Option<u32>,
+    pub kill_states_on_failover: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddGroupMemberRequest {
+    pub gateway_id: String,
+    pub tier: Option<u32>,
+    pub weight: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupActiveResponse {
+    pub selection: String,
+    pub gateways: Vec<Uuid>,
+}
+
+pub async fn list_groups(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<GatewayGroup>>>, StatusCode> {
+    let list = state.group_engine.list().await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: list }))
+}
+
+pub async fn create_group(
+    State(state): State<AppState>,
+    Json(req): Json<CreateGroupRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<GatewayGroup>>), StatusCode> {
+    let policy = GroupPolicy::parse(&req.policy).ok_or(bad_request())?;
+    let sticky = req
+        .sticky
+        .as_deref()
+        .and_then(StickyMode::parse)
+        .unwrap_or(StickyMode::None);
+    let now = Utc::now();
+    let g = GatewayGroup {
+        id: Uuid::new_v4(),
+        name: req.name,
+        policy,
+        preempt: req.preempt.unwrap_or(true),
+        sticky,
+        hysteresis_ms: req.hysteresis_ms.unwrap_or(2000),
+        kill_states_on_failover: req.kill_states_on_failover.unwrap_or(true),
+        created_at: now,
+        updated_at: now,
+    };
+    let g = state.group_engine.add(g).await.map_err(|_| bad_request())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: g })))
+}
+
+pub async fn update_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateGroupRequest>,
+) -> Result<Json<ApiResponse<GatewayGroup>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let existing = state
+        .group_engine
+        .get(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let policy = GroupPolicy::parse(&req.policy).ok_or(bad_request())?;
+    let sticky = req
+        .sticky
+        .as_deref()
+        .and_then(StickyMode::parse)
+        .unwrap_or(existing.sticky);
+    let g = GatewayGroup {
+        id: uuid,
+        name: req.name,
+        policy,
+        preempt: req.preempt.unwrap_or(existing.preempt),
+        sticky,
+        hysteresis_ms: req.hysteresis_ms.unwrap_or(existing.hysteresis_ms),
+        kill_states_on_failover: req
+            .kill_states_on_failover
+            .unwrap_or(existing.kill_states_on_failover),
+        created_at: existing.created_at,
+        updated_at: Utc::now(),
+    };
+    let g = state.group_engine.update(g).await.map_err(|_| bad_request())?;
+    Ok(Json(ApiResponse { data: g }))
+}
+
+pub async fn delete_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    state
+        .group_engine
+        .delete(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(MessageResponse {
+        message: format!("group {id} deleted"),
+    }))
+}
+
+pub async fn list_group_members(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<GroupMember>>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let members = state
+        .group_engine
+        .list_members(uuid)
+        .await
+        .map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: members }))
+}
+
+pub async fn add_group_member(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AddGroupMemberRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<GroupMember>>), StatusCode> {
+    let group_id = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let gateway_id = Uuid::parse_str(&req.gateway_id).map_err(|_| bad_request())?;
+    let m = GroupMember {
+        group_id,
+        gateway_id,
+        tier: req.tier.unwrap_or(1),
+        weight: req.weight.unwrap_or(1),
+    };
+    let m = state.group_engine.add_member(m).await.map_err(|_| bad_request())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: m })))
+}
+
+pub async fn remove_group_member(
+    State(state): State<AppState>,
+    Path((id, gw)): Path<(String, String)>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let group_id = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let gateway_id = Uuid::parse_str(&gw).map_err(|_| bad_request())?;
+    state
+        .group_engine
+        .remove_member(group_id, gateway_id)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(MessageResponse {
+        message: "member removed".into(),
+    }))
+}
+
+pub async fn group_active(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<GroupActiveResponse>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let group = state
+        .group_engine
+        .get(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let members = state
+        .group_engine
+        .list_members(uuid)
+        .await
+        .map_err(|_| internal())?;
+    let gateways = state.gateway_engine.list().await.map_err(|_| internal())?;
+    let sel = aifw_core::multiwan::select(&group, &members, &gateways);
+    let (kind, ids) = match sel {
+        aifw_core::multiwan::Selection::Single(id) => ("single".to_string(), vec![id]),
+        aifw_core::multiwan::Selection::WeightedList(l) => {
+            ("weighted".to_string(), l.into_iter().map(|(id, _)| id).collect())
+        }
+        aifw_core::multiwan::Selection::None => ("none".to_string(), vec![]),
+    };
+    Ok(Json(ApiResponse {
+        data: GroupActiveResponse {
+            selection: kind,
+            gateways: ids,
+        },
+    }))
+}

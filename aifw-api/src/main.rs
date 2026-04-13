@@ -20,8 +20,8 @@ mod tests;
 
 use aifw_conntrack::ConnectionTracker;
 use aifw_core::{
-    AliasEngine, Database, GatewayEngine, GeoIpEngine, InstanceEngine, NatEngine, RuleEngine,
-    VpnEngine,
+    AliasEngine, Database, GatewayEngine, GeoIpEngine, GroupEngine, InstanceEngine, NatEngine,
+    RuleEngine, VpnEngine,
 };
 use aifw_pf::PfBackend;
 use axum::{
@@ -96,6 +96,7 @@ pub struct AppState {
     pub geoip_engine: Arc<GeoIpEngine>,
     pub multiwan_engine: Arc<InstanceEngine>,
     pub gateway_engine: Arc<GatewayEngine>,
+    pub group_engine: Arc<GroupEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
@@ -606,6 +607,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/multiwan/gateways", get(multiwan::list_gateways))
         .route("/api/v1/multiwan/gateways/{id}", get(multiwan::get_gateway))
         .route("/api/v1/multiwan/gateways/{id}/events", get(multiwan::list_gateway_events))
+        .route("/api/v1/multiwan/groups", get(multiwan::list_groups))
+        .route("/api/v1/multiwan/groups/{id}/members", get(multiwan::list_group_members))
+        .route("/api/v1/multiwan/groups/{id}/active", get(multiwan::group_active))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanRead)));
 
     // multiwan:write
@@ -626,6 +630,16 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
             put(multiwan::update_gateway).delete(multiwan::delete_gateway),
         )
         .route("/api/v1/multiwan/gateways/{id}/probe-now", post(multiwan::probe_now))
+        .route("/api/v1/multiwan/groups", post(multiwan::create_group))
+        .route(
+            "/api/v1/multiwan/groups/{id}",
+            put(multiwan::update_group).delete(multiwan::delete_group),
+        )
+        .route("/api/v1/multiwan/groups/{id}/members", post(multiwan::add_group_member))
+        .route(
+            "/api/v1/multiwan/groups/{id}/members/{gw}",
+            delete(multiwan::remove_group_member),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
     // Merge all permission-scoped groups into one protected router with auth
@@ -716,6 +730,8 @@ async fn create_state_from_db(
     multiwan_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let gateway_engine = Arc::new(GatewayEngine::new(pool.clone()));
     gateway_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let group_engine = Arc::new(GroupEngine::new(pool.clone()));
+    group_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     ca::migrate(&pool).await?;
     dhcp::migrate(&pool).await?;
     updates::migrate(&pool).await?;
@@ -825,6 +841,7 @@ async fn create_state_from_db(
         geoip_engine,
         multiwan_engine,
         gateway_engine,
+        group_engine,
         alias_engine,
         conntrack,
         ids_engine,

@@ -137,3 +137,83 @@ pub struct GatewayEvent {
     pub reason: Option<String>,
     pub probe_snapshot_json: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupPolicy {
+    /// Strict tier order, first healthy gateway wins.
+    Failover,
+    /// Weighted round-robin inside a tier.
+    WeightedLb,
+    /// Weight scaled by live MOS/RTT health.
+    Adaptive,
+    /// Flow-hash distribution across all healthy members.
+    LoadBalance,
+}
+
+impl GroupPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Failover => "failover",
+            Self::WeightedLb => "weighted_lb",
+            Self::Adaptive => "adaptive",
+            Self::LoadBalance => "load_balance",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "failover" => Some(Self::Failover),
+            "weighted_lb" | "weighted" => Some(Self::WeightedLb),
+            "adaptive" => Some(Self::Adaptive),
+            "load_balance" | "load-balance" | "lb" => Some(Self::LoadBalance),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StickyMode {
+    None,
+    Src,
+    FiveTuple,
+}
+
+impl StickyMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Src => "src",
+            Self::FiveTuple => "five_tuple",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "src" => Some(Self::Src),
+            "five_tuple" | "five-tuple" | "5tuple" => Some(Self::FiveTuple),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayGroup {
+    pub id: Uuid,
+    pub name: String,
+    pub policy: GroupPolicy,
+    pub preempt: bool,
+    pub sticky: StickyMode,
+    pub hysteresis_ms: u32,
+    pub kill_states_on_failover: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMember {
+    pub group_id: Uuid,
+    pub gateway_id: Uuid,
+    pub tier: u32,
+    pub weight: u32,
+}

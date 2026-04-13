@@ -123,11 +123,11 @@ multiwan_gateway_events (id AUTO, gateway_id FK, ts, from_state, to_state, reaso
 
 User value: compose gateways into ordered groups with policy.
 
-- [ ] 3a. `aifw-core/src/multiwan/group.rs` — pure selection logic `select(now) -> SelectedMember`
-- [ ] 3b. API CRUD + member mgmt + `/active`
-- [ ] 3c. UI `multi-wan/groups/page.tsx` with dnd-kit tier reorder
-- [ ] 3d. `proptest` dev-dep; property-based convergence tests
-- [ ] 3e. Cisco/Juniper behavior scenario tests (strict failover, preempt)
+- [x] 3a. `aifw-core/src/multiwan/group.rs` — pure selection logic for failover/weighted/adaptive/LB
+- [x] 3b. API CRUD + member mgmt + `/active` endpoint
+- [ ] 3c. UI `multi-wan/groups/page.tsx` (deferred — API-accessible for now)
+- [ ] 3d. `proptest` dev-dep (deferred)
+- [x] 3e. Scenario tests: failover lowest-tier, fallback on down, adaptive MOS scaling
 
 Tables:
 ```sql
