@@ -62,3 +62,78 @@ pub struct InstanceMember {
 pub const DEFAULT_INSTANCE_ID: Uuid = Uuid::from_u128(0x6169_6677_0000_0000_0000_0000_0000_0000);
 pub const DEFAULT_INSTANCE_NAME: &str = "default";
 pub const DEFAULT_FIB_NUMBER: u32 = 0;
+
+/// A monitored next-hop within a RoutingInstance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Gateway {
+    pub id: Uuid,
+    pub name: String,
+    pub instance_id: Uuid,
+    pub interface: String,
+    pub next_hop: String,
+    pub ip_version: String,
+    pub monitor_kind: String,
+    pub monitor_target: Option<String>,
+    pub monitor_port: Option<u16>,
+    pub monitor_expect: Option<String>,
+    pub interval_ms: u64,
+    pub timeout_ms: u64,
+    pub loss_pct_down: f64,
+    pub loss_pct_up: f64,
+    pub latency_ms_down: Option<u64>,
+    pub latency_ms_up: Option<u64>,
+    pub consec_fail_down: u32,
+    pub consec_ok_up: u32,
+    pub weight: u32,
+    pub dampening_secs: u32,
+    pub dscp_tag: Option<u8>,
+    pub enabled: bool,
+    pub state: GatewayState,
+    pub last_rtt_ms: Option<f64>,
+    pub last_jitter_ms: Option<f64>,
+    pub last_loss_pct: Option<f64>,
+    pub last_mos: Option<f64>,
+    pub last_probe_ts: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayState {
+    Up,
+    Warning,
+    Down,
+    Unknown,
+}
+
+impl GatewayState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Warning => "warning",
+            Self::Down => "down",
+            Self::Unknown => "unknown",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "up" => Some(Self::Up),
+            "warning" => Some(Self::Warning),
+            "down" => Some(Self::Down),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayEvent {
+    pub id: i64,
+    pub gateway_id: Uuid,
+    pub ts: DateTime<Utc>,
+    pub from_state: Option<GatewayState>,
+    pub to_state: GatewayState,
+    pub reason: Option<String>,
+    pub probe_snapshot_json: Option<String>,
+}

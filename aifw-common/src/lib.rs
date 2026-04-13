@@ -48,6 +48,6 @@ pub use ids::{
     IdsStats, IdsSuppression, RuleFormat, RuleSource, SuppressType,
 };
 pub use multiwan::{
-    DEFAULT_FIB_NUMBER, DEFAULT_INSTANCE_ID, DEFAULT_INSTANCE_NAME, InstanceMember, InstanceStatus,
-    RoutingInstance,
+    DEFAULT_FIB_NUMBER, DEFAULT_INSTANCE_ID, DEFAULT_INSTANCE_NAME, Gateway, GatewayEvent,
+    GatewayState, InstanceMember, InstanceStatus, RoutingInstance,
 };

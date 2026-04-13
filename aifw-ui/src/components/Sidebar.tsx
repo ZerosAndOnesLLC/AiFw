@@ -56,6 +56,7 @@ const navItems: NavItem[] = [
       { href: "/vlans", label: "VLANs", permission: "interfaces:read" },
       { href: "/routes", label: "Routes", permission: "interfaces:read" },
       { href: "/multi-wan", label: "Multi-WAN", permission: "multiwan:read" },
+      { href: "/multi-wan/gateways", label: "  Gateways", permission: "multiwan:read" },
       { href: "/vpn", label: "VPN", permission: "vpn:read" },
     ],
   },

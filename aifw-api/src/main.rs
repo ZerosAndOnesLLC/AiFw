@@ -20,7 +20,8 @@ mod tests;
 
 use aifw_conntrack::ConnectionTracker;
 use aifw_core::{
-    AliasEngine, Database, GeoIpEngine, InstanceEngine, NatEngine, RuleEngine, VpnEngine,
+    AliasEngine, Database, GatewayEngine, GeoIpEngine, InstanceEngine, NatEngine, RuleEngine,
+    VpnEngine,
 };
 use aifw_pf::PfBackend;
 use axum::{
@@ -94,6 +95,7 @@ pub struct AppState {
     pub vpn_engine: Arc<VpnEngine>,
     pub geoip_engine: Arc<GeoIpEngine>,
     pub multiwan_engine: Arc<InstanceEngine>,
+    pub gateway_engine: Arc<GatewayEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
@@ -601,6 +603,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/multiwan/instances/{id}", get(multiwan::get_instance))
         .route("/api/v1/multiwan/instances/{id}/members", get(multiwan::list_members))
         .route("/api/v1/multiwan/fibs", get(multiwan::list_fibs))
+        .route("/api/v1/multiwan/gateways", get(multiwan::list_gateways))
+        .route("/api/v1/multiwan/gateways/{id}", get(multiwan::get_gateway))
+        .route("/api/v1/multiwan/gateways/{id}/events", get(multiwan::list_gateway_events))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanRead)));
 
     // multiwan:write
@@ -615,6 +620,12 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
             "/api/v1/multiwan/instances/{id}/members/{iface}",
             delete(multiwan::remove_member),
         )
+        .route("/api/v1/multiwan/gateways", post(multiwan::create_gateway))
+        .route(
+            "/api/v1/multiwan/gateways/{id}",
+            put(multiwan::update_gateway).delete(multiwan::delete_gateway),
+        )
+        .route("/api/v1/multiwan/gateways/{id}/probe-now", post(multiwan::probe_now))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
     // Merge all permission-scoped groups into one protected router with auth
@@ -703,6 +714,8 @@ async fn create_state_from_db(
     geoip_engine.migrate().await?;
     let multiwan_engine = Arc::new(InstanceEngine::new(pool.clone(), pf.clone()));
     multiwan_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let gateway_engine = Arc::new(GatewayEngine::new(pool.clone()));
+    gateway_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     ca::migrate(&pool).await?;
     dhcp::migrate(&pool).await?;
     updates::migrate(&pool).await?;
@@ -811,6 +824,7 @@ async fn create_state_from_db(
         vpn_engine,
         geoip_engine,
         multiwan_engine,
+        gateway_engine,
         alias_engine,
         conntrack,
         ids_engine,

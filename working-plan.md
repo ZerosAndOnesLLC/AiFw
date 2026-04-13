@@ -90,18 +90,18 @@ Risks:
 
 User value: define gateways; live RTT/loss/jitter/MOS. No dataplane effect.
 
-- [ ] 2a. New crate `aifw-probe` added to workspace
-- [ ] 2b. `IcmpProbe` worker (raw socket, sudo fallback)
-- [ ] 2c. `TcpProbe` worker
-- [ ] 2d. `HttpProbe` worker (expect status)
-- [ ] 2e. `DnsProbe` worker
-- [ ] 2f. `aifw-core/src/multiwan/gateway.rs::GatewayEngine` — aggregator, hysteresis state machine, mpsc event channel
-- [ ] 2g. `aifw-daemon` starts/stops monitors on engine boot
-- [ ] 2h. API CRUD + `/probe-now` + `/events` + `/stream` (SSE)
-- [ ] 2i. UI `multi-wan/gateways/page.tsx` with sparkline RTT, event drawer
-- [ ] 2j. Metrics: `aifw_gateway_{rtt,loss,jitter,mos,state,transitions_total}`
-- [ ] 2k. `GatewayEngine::inject_sample` test helper
-- [ ] 2l. Tests: transitions emit events, CRUD, probe_now, hysteresis math
+- [x] 2a. Probes module in `aifw-core/src/multiwan/probe.rs` (kept inline for minimal deps)
+- [x] 2b. `IcmpProbe` (sudo `/sbin/ping`)
+- [x] 2c. `TcpProbe` (tokio TcpStream + timeout)
+- [x] 2d. `HttpProbe` (curl shell-out with expect status)
+- [x] 2e. `DnsProbe` (`/usr/bin/host` shell-out)
+- [x] 2f. `GatewayEngine` with hysteresis, broadcast event channel, MOS scoring
+- [ ] 2g. `aifw-daemon` starts/stops monitors on engine boot (deferred — start_monitor wired in API CRUD)
+- [x] 2h. API CRUD + `/probe-now` + `/events` (SSE deferred)
+- [x] 2i. UI `multi-wan/gateways/page.tsx` with live polling + manual probe injection
+- [ ] 2j. Metrics emission (deferred to phase 10 hardening)
+- [x] 2k. `GatewayEngine::inject_sample` test helper
+- [x] 2l. Tests: transitions emit events, CRUD, probe outcomes, evaluate_transition
 
 Tables:
 ```sql
