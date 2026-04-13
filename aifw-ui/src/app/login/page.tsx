@@ -46,7 +46,7 @@ export default function LoginPage() {
       const res = await fetch("/api/v1/auth/totp/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, totp_code: totpCode }),
+        body: JSON.stringify({ username, password, totp_code: totpCode }),
       });
       if (!res.ok) throw new Error("Invalid code");
       const data = await res.json();
