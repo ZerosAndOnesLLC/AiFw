@@ -6,6 +6,7 @@ pub mod db;
 pub mod engine;
 pub mod geoip;
 pub mod ha;
+pub mod multiwan;
 pub mod nat;
 pub mod shaping;
 #[cfg(test)]
@@ -23,6 +24,10 @@ pub use db::Database;
 pub use engine::RuleEngine;
 pub use geoip::GeoIpEngine;
 pub use ha::ClusterEngine;
+pub use multiwan::{
+    GatewayEngine, GroupEngine, InstanceEngine, LeakEngine, PolicyEngine, PreflightEngine,
+    SlaEngine,
+};
 pub use nat::NatEngine;
 pub use shaping::ShapingEngine;
 pub use tls::TlsEngine;

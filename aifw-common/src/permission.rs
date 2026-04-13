@@ -38,6 +38,8 @@ pub enum Permission {
     SystemReboot,
     ProxyRead,
     ProxyWrite,
+    MultiWanRead,
+    MultiWanWrite,
 }
 
 impl Permission {
@@ -83,6 +85,8 @@ impl Permission {
             Self::SystemReboot => "system:reboot",
             Self::ProxyRead => "proxy:read",
             Self::ProxyWrite => "proxy:write",
+            Self::MultiWanRead => "multiwan:read",
+            Self::MultiWanWrite => "multiwan:write",
         }
     }
 
@@ -123,6 +127,8 @@ impl Permission {
             "system:reboot" => Some(Self::SystemReboot),
             "proxy:read" => Some(Self::ProxyRead),
             "proxy:write" => Some(Self::ProxyWrite),
+            "multiwan:read" => Some(Self::MultiWanRead),
+            "multiwan:write" => Some(Self::MultiWanWrite),
             _ => None,
         }
     }
@@ -170,6 +176,8 @@ pub const ALL_PERMISSIONS: &[Permission] = &[
     Permission::SystemReboot,
     Permission::ProxyRead,
     Permission::ProxyWrite,
+    Permission::MultiWanRead,
+    Permission::MultiWanWrite,
 ];
 
 /// A set of permissions stored as a u64 bitmask.

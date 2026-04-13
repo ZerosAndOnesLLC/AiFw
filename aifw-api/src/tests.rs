@@ -14,6 +14,10 @@ mod tests {
             require_totp: false,
             require_totp_for_oauth: false,
             auto_create_oauth_users: true,
+            max_login_attempts: 5,
+            lockout_duration_secs: 300,
+            allow_registration: true,
+            password_min_length: 8,
         };
 
         let state = crate::create_app_state_in_memory(auth_settings.clone())
@@ -1002,5 +1006,80 @@ mod tests {
             .await;
 
         resp.assert_status_ok();
+    }
+
+    // ============================================================
+    // Multi-WAN: routing instances (Phase 1)
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_multiwan_default_instance_seeded() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .get("/api/v1/multiwan/instances")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let list = body["data"].as_array().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["name"], "default");
+        assert_eq!(list[0]["fib_number"], 0);
+        assert_eq!(list[0]["mgmt_reachable"], true);
+    }
+
+    #[tokio::test]
+    async fn test_multiwan_create_and_list_instance() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .post("/api/v1/multiwan/instances")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "name": "wan2",
+                "fib_number": 0,  // mock has 1 FIB by default — this should fail
+                "description": "WAN 2"
+            }))
+            .await;
+        // FIB 0 collides with default seed -> bad request
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_multiwan_cannot_delete_default() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let list = server
+            .get("/api/v1/multiwan/instances")
+            .authorization_bearer(&token)
+            .await
+            .json::<Value>();
+        let default_id = list["data"][0]["id"].as_str().unwrap().to_string();
+
+        let resp = server
+            .delete(&format!("/api/v1/multiwan/instances/{default_id}"))
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status(StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_multiwan_fibs_endpoint() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .get("/api/v1/multiwan/fibs")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        // mock backend reports 1 FIB
+        assert_eq!(body["data"]["net_fibs"], 1);
+        assert_eq!(body["data"]["used"].as_array().unwrap()[0], 0);
     }
 }

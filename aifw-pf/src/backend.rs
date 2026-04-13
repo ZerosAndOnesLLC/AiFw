@@ -65,4 +65,21 @@ pub trait PfBackend: Send + Sync {
 
     /// Flush all queue definitions
     async fn flush_queues(&self, anchor: &str) -> Result<(), crate::PfError>;
+
+    /// Pin an interface to a specific FIB (FreeBSD `ifconfig <if> fib <N>`).
+    async fn set_interface_fib(&self, iface: &str, fib: u32) -> Result<(), crate::PfError>;
+
+    /// Return the FIB currently assigned to an interface.
+    async fn get_interface_fib(&self, iface: &str) -> Result<u32, crate::PfError>;
+
+    /// Number of FIBs available to userland (FreeBSD `sysctl net.fibs`).
+    /// Returns 1 on mock / non-FreeBSD backends.
+    async fn list_fibs(&self) -> Result<u32, crate::PfError>;
+
+    /// Kill all pf states on an interface (used on WAN failover).
+    /// Returns number of states killed.
+    async fn kill_states_on_iface(&self, iface: &str) -> Result<u64, crate::PfError>;
+
+    /// Kill all pf states tagged with a label (used for force-migrate / policy flush).
+    async fn kill_states_for_label(&self, label: &str) -> Result<u64, crate::PfError>;
 }

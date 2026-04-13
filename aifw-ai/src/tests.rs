@@ -26,7 +26,7 @@ mod tests {
                 packets_out: 1,
                 bytes_in: 0,
                 bytes_out: 60,
-                age_secs: 1,
+                age_secs: 1, iface: None, rtable: None,
             })
             .collect()
     }
@@ -45,7 +45,7 @@ mod tests {
                 packets_out: 1,
                 bytes_in: 0,
                 bytes_out: 60,
-                age_secs: 1,
+                age_secs: 1, iface: None, rtable: None,
             })
             .collect()
     }
@@ -64,7 +64,7 @@ mod tests {
                 packets_out: 3,
                 bytes_in: 200,
                 bytes_out: 200,
-                age_secs: 2,
+                age_secs: 2, iface: None, rtable: None,
             })
             .collect()
     }
@@ -83,7 +83,7 @@ mod tests {
                 packets_out: 2,
                 bytes_in: 100,
                 bytes_out: 50,
-                age_secs: 60, // regular interval
+                age_secs: 60, iface: None, rtable: None, // regular interval
             })
             .collect()
     }
@@ -102,7 +102,7 @@ mod tests {
                 packets_out: 1,
                 bytes_in: 500,
                 bytes_out: 200,
-                age_secs: 1,
+                age_secs: 1, iface: None, rtable: None,
             })
             .collect()
     }
@@ -210,7 +210,7 @@ mod tests {
                 packets_out: 50,
                 bytes_in: 50000,
                 bytes_out: 5000,
-                age_secs: 300,
+                age_secs: 300, iface: None, rtable: None,
             })
             .collect();
 

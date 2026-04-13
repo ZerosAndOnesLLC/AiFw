@@ -250,6 +250,17 @@ pub async fn reboot_system() -> Result<Json<MessageResponse>, StatusCode> {
     Ok(Json(MessageResponse { message: "System rebooting in 10 seconds".to_string() }))
 }
 
+pub async fn shutdown_system() -> Result<Json<MessageResponse>, StatusCode> {
+    // Schedule power-off in 10 seconds
+    let _ = Command::new("/usr/local/bin/sudo")
+        .args(["/sbin/shutdown", "-p", "+10s", "AiFw shutdown requested via admin UI"])
+        .output()
+        .await;
+    Ok(Json(MessageResponse {
+        message: "System shutting down in 10 seconds".to_string(),
+    }))
+}
+
 pub async fn get_schedule(
     State(state): State<AppState>,
 ) -> Result<Json<MaintenanceWindow>, StatusCode> {

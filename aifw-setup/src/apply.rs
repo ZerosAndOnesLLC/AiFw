@@ -39,7 +39,7 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // Create empty anchor files so pfctl doesn't error on load
     let anchors_dir = format!("{}/anchors", config.config_dir);
     std::fs::create_dir_all(&anchors_dir).map_err(|e| format!("failed to create anchors dir: {e}"))?;
-    for anchor in ["aifw", "aifw-nat", "aifw-ratelimit", "aifw-vpn", "aifw-geoip", "aifw-tls", "aifw-ha"] {
+    for anchor in ["aifw", "aifw-nat", "aifw-ratelimit", "aifw-vpn", "aifw-geoip", "aifw-tls", "aifw-ha", "aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"] {
         let path = format!("{anchors_dir}/{anchor}");
         if !std::path::Path::new(&path).exists() {
             write_file(&path, "# AiFw managed anchor\n")?;
@@ -1127,6 +1127,11 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     }
 
     lines.push("# AiFw filter anchors".to_string());
+    // Multi-WAN anchors MUST be evaluated first so policy-routing decisions
+    // (route-to / rtable) are set before general filtering.
+    lines.push("anchor \"aifw-pbr\"".to_string());
+    lines.push("anchor \"aifw-mwan-leak\"".to_string());
+    lines.push("anchor \"aifw-mwan-reply\"".to_string());
     lines.push("anchor \"aifw\"".to_string());
     lines.push("anchor \"aifw-nat\"".to_string());
     lines.push("anchor \"aifw-ratelimit\"".to_string());

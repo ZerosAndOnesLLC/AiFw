@@ -15,6 +15,10 @@ pub struct PfState {
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub age_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iface: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtable: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

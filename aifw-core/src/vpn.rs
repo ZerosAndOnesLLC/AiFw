@@ -167,6 +167,52 @@ impl VpnEngine {
         row.into_tunnel()
     }
 
+    pub async fn update_wg_tunnel(&self, tunnel: WgTunnel) -> Result<WgTunnel> {
+        if tunnel.name.is_empty() {
+            return Err(AifwError::Validation("tunnel name required".to_string()));
+        }
+        if tunnel.listen_port == 0 {
+            return Err(AifwError::Validation("listen port required".to_string()));
+        }
+
+        let existing = self.list_wg_tunnels().await?;
+        for t in &existing {
+            if t.id != tunnel.id && t.listen_port == tunnel.listen_port {
+                return Err(AifwError::Validation(format!(
+                    "Port {} is already used by tunnel '{}'", tunnel.listen_port, t.name
+                )));
+            }
+        }
+
+        let result = sqlx::query(
+            r#"
+            UPDATE wg_tunnels
+               SET name = ?1, listen_port = ?2, address = ?3, dns = ?4, mtu = ?5,
+                   listen_interface = ?6, private_key = ?7, public_key = ?8, updated_at = ?9
+             WHERE id = ?10
+            "#,
+        )
+        .bind(&tunnel.name)
+        .bind(tunnel.listen_port as i64)
+        .bind(tunnel.address.to_string())
+        .bind(tunnel.dns.as_deref())
+        .bind(tunnel.mtu.map(|m| m as i64))
+        .bind(tunnel.listen_interface.as_deref())
+        .bind(&tunnel.private_key)
+        .bind(&tunnel.public_key)
+        .bind(tunnel.updated_at.to_rfc3339())
+        .bind(tunnel.id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("WG tunnel {} not found", tunnel.id)));
+        }
+
+        tracing::info!(id = %tunnel.id, name = %tunnel.name, "WireGuard tunnel updated");
+        Ok(tunnel)
+    }
+
     pub async fn delete_wg_tunnel(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM wg_tunnels WHERE id = ?1")
             .bind(id.to_string())

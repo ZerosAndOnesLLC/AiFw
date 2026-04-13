@@ -7,6 +7,7 @@ mod dhcp;
 mod dns_resolver;
 mod iface;
 mod ids;
+mod multiwan;
 mod plugins;
 mod reverse_proxy;
 mod routes;
@@ -18,7 +19,10 @@ mod ws;
 mod tests;
 
 use aifw_conntrack::ConnectionTracker;
-use aifw_core::{AliasEngine, Database, GeoIpEngine, NatEngine, RuleEngine, VpnEngine};
+use aifw_core::{
+    AliasEngine, Database, GatewayEngine, GeoIpEngine, GroupEngine, InstanceEngine, LeakEngine,
+    NatEngine, PolicyEngine, PreflightEngine, RuleEngine, SlaEngine, VpnEngine,
+};
 use aifw_pf::PfBackend;
 use axum::{
     Router,
@@ -90,6 +94,13 @@ pub struct AppState {
     pub nat_engine: Arc<NatEngine>,
     pub vpn_engine: Arc<VpnEngine>,
     pub geoip_engine: Arc<GeoIpEngine>,
+    pub multiwan_engine: Arc<InstanceEngine>,
+    pub gateway_engine: Arc<GatewayEngine>,
+    pub group_engine: Arc<GroupEngine>,
+    pub policy_engine: Arc<PolicyEngine>,
+    pub leak_engine: Arc<LeakEngine>,
+    pub preflight_engine: Arc<PreflightEngine>,
+    pub sla_engine: Arc<SlaEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
@@ -536,9 +547,10 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/config/commit-confirm/confirm", post(backup::commit_confirm_accept))
         .layer(middleware::from_fn(perm_check!(Permission::BackupWrite)));
 
-    // system:reboot
+    // system:reboot (also governs shutdown — same privilege level)
     let system_reboot = Router::new()
         .route("/api/v1/updates/reboot", post(updates::reboot_system))
+        .route("/api/v1/updates/shutdown", post(updates::shutdown_system))
         .layer(middleware::from_fn(perm_check!(Permission::SystemReboot)));
 
     // proxy:read
@@ -591,6 +603,67 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/reverse-proxy/apply", post(reverse_proxy::apply_config))
         .layer(middleware::from_fn(perm_check!(Permission::ProxyWrite)));
 
+    // multiwan:read
+    let multiwan_read = Router::new()
+        .route("/api/v1/multiwan/instances", get(multiwan::list_instances))
+        .route("/api/v1/multiwan/instances/{id}", get(multiwan::get_instance))
+        .route("/api/v1/multiwan/instances/{id}/members", get(multiwan::list_members))
+        .route("/api/v1/multiwan/fibs", get(multiwan::list_fibs))
+        .route("/api/v1/multiwan/gateways", get(multiwan::list_gateways))
+        .route("/api/v1/multiwan/gateways/{id}", get(multiwan::get_gateway))
+        .route("/api/v1/multiwan/gateways/{id}/events", get(multiwan::list_gateway_events))
+        .route("/api/v1/multiwan/groups", get(multiwan::list_groups))
+        .route("/api/v1/multiwan/groups/{id}/members", get(multiwan::list_group_members))
+        .route("/api/v1/multiwan/groups/{id}/active", get(multiwan::group_active))
+        .route("/api/v1/multiwan/policies", get(multiwan::list_policies))
+        .route("/api/v1/multiwan/leaks", get(multiwan::list_leaks))
+        .route("/api/v1/multiwan/flows", get(multiwan::list_flows))
+        .route("/api/v1/multiwan/gateways/{id}/sla", get(multiwan::get_sla))
+        .route("/api/v1/multiwan/config.yaml", get(multiwan::export_config))
+        .layer(middleware::from_fn(perm_check!(Permission::MultiWanRead)));
+
+    // multiwan:write
+    let multiwan_write = Router::new()
+        .route("/api/v1/multiwan/instances", post(multiwan::create_instance))
+        .route(
+            "/api/v1/multiwan/instances/{id}",
+            put(multiwan::update_instance).delete(multiwan::delete_instance),
+        )
+        .route("/api/v1/multiwan/instances/{id}/members", post(multiwan::add_member))
+        .route(
+            "/api/v1/multiwan/instances/{id}/members/{iface}",
+            delete(multiwan::remove_member),
+        )
+        .route("/api/v1/multiwan/gateways", post(multiwan::create_gateway))
+        .route(
+            "/api/v1/multiwan/gateways/{id}",
+            put(multiwan::update_gateway).delete(multiwan::delete_gateway),
+        )
+        .route("/api/v1/multiwan/gateways/{id}/probe-now", post(multiwan::probe_now))
+        .route("/api/v1/multiwan/groups", post(multiwan::create_group))
+        .route(
+            "/api/v1/multiwan/groups/{id}",
+            put(multiwan::update_group).delete(multiwan::delete_group),
+        )
+        .route("/api/v1/multiwan/groups/{id}/members", post(multiwan::add_group_member))
+        .route(
+            "/api/v1/multiwan/groups/{id}/members/{gw}",
+            delete(multiwan::remove_group_member),
+        )
+        .route("/api/v1/multiwan/policies", post(multiwan::create_policy))
+        .route(
+            "/api/v1/multiwan/policies/{id}",
+            put(multiwan::update_policy).delete(multiwan::delete_policy),
+        )
+        .route("/api/v1/multiwan/apply", post(multiwan::apply_policies))
+        .route("/api/v1/multiwan/leaks", post(multiwan::create_leak))
+        .route("/api/v1/multiwan/leaks/{id}", delete(multiwan::delete_leak))
+        .route("/api/v1/multiwan/leaks/seed-mgmt", post(multiwan::seed_mgmt_escapes))
+        .route("/api/v1/multiwan/preview", post(multiwan::preview_policies))
+        .route("/api/v1/multiwan/flows/{label}/migrate", post(multiwan::migrate_flow))
+        .route("/api/v1/multiwan/apply-yaml", post(multiwan::import_config))
+        .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
+
     // Merge all permission-scoped groups into one protected router with auth
     let protected_routes = Router::new()
         .merge(self_service)
@@ -613,6 +686,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .merge(backup_read).merge(backup_write)
         .merge(system_reboot)
         .merge(proxy_read).merge(proxy_write)
+        .merge(multiwan_read).merge(multiwan_write)
         .layer(auth_layer);
 
     let mut app = Router::new()
@@ -674,6 +748,19 @@ async fn create_state_from_db(
     vpn_engine.migrate().await?;
     let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
     geoip_engine.migrate().await?;
+    let multiwan_engine = Arc::new(InstanceEngine::new(pool.clone(), pf.clone()));
+    multiwan_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let gateway_engine = Arc::new(GatewayEngine::new(pool.clone()));
+    gateway_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let group_engine = Arc::new(GroupEngine::new(pool.clone()));
+    group_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let policy_engine = Arc::new(PolicyEngine::new(pool.clone(), pf.clone()));
+    policy_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let leak_engine = Arc::new(LeakEngine::new(pool.clone(), pf.clone()));
+    leak_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let preflight_engine = Arc::new(PreflightEngine::new(pf.clone()));
+    let sla_engine = Arc::new(SlaEngine::new(pool.clone()));
+    sla_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     ca::migrate(&pool).await?;
     dhcp::migrate(&pool).await?;
     updates::migrate(&pool).await?;
@@ -781,6 +868,13 @@ async fn create_state_from_db(
         nat_engine,
         vpn_engine,
         geoip_engine,
+        multiwan_engine,
+        gateway_engine,
+        group_engine,
+        policy_engine,
+        leak_engine,
+        preflight_engine,
+        sla_engine,
         alias_engine,
         conntrack,
         ids_engine,
@@ -845,16 +939,36 @@ fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> a
 async fn ensure_rdr_anchor() {
     let pf_path = "/usr/local/etc/aifw/pf.conf.aifw";
     let Ok(content) = tokio::fs::read_to_string(pf_path).await else { return };
-    if content.contains("rdr-anchor \"aifw-nat\"") {
-        return; // already present
+    let mut patched = content.clone();
+    let mut changed = false;
+
+    if !patched.contains("rdr-anchor \"aifw-nat\"") && patched.contains("nat-anchor \"aifw-nat\"") {
+        patched = patched.replace(
+            "nat-anchor \"aifw-nat\"",
+            "nat-anchor \"aifw-nat\"\nrdr-anchor \"aifw-nat\"",
+        );
+        changed = true;
     }
-    if !content.contains("nat-anchor \"aifw-nat\"") {
-        return; // no nat-anchor either, not an AiFw-managed pf.conf
+
+    // Multi-WAN anchors (#132). Insert BEFORE `anchor "aifw"` so policy-routing
+    // decisions fire first. Existing installs upgrading to multi-WAN must pick
+    // these up without a re-run of aifw-setup.
+    for mwan_anchor in ["aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"] {
+        let line = format!("anchor \"{mwan_anchor}\"");
+        if !patched.contains(&line) && patched.contains("anchor \"aifw\"") {
+            patched = patched.replacen(
+                "anchor \"aifw\"",
+                &format!("{line}\nanchor \"aifw\""),
+                1,
+            );
+            changed = true;
+        }
     }
-    let patched = content.replace(
-        "nat-anchor \"aifw-nat\"",
-        "nat-anchor \"aifw-nat\"\nrdr-anchor \"aifw-nat\"",
-    );
+
+    if !changed {
+        return;
+    }
+
     if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["tee", pf_path])
         .stdin(std::process::Stdio::piped())
@@ -871,7 +985,7 @@ async fn ensure_rdr_anchor() {
             .args(["/sbin/pfctl", "-f", pf_path])
             .output()
             .await;
-        info!("Added rdr-anchor \"aifw-nat\" to pf.conf and reloaded");
+        info!("Patched pf.conf with missing AiFw anchors and reloaded");
     }
 }
 

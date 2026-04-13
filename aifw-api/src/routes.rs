@@ -1686,9 +1686,7 @@ pub async fn update_wg_tunnel(
     tunnel.mtu = req.mtu;
     tunnel.listen_interface = req.listen_interface;
     tunnel.updated_at = chrono::Utc::now();
-    // Re-insert (delete + add) since we don't have a dedicated update query
-    state.vpn_engine.delete_wg_tunnel(uuid).await.map_err(|_| internal())?;
-    let tunnel = state.vpn_engine.add_wg_tunnel(tunnel).await.map_err(|_| internal())?;
+    let tunnel = state.vpn_engine.update_wg_tunnel(tunnel).await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: tunnel }))
 }
 

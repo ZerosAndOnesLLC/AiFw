@@ -353,4 +353,127 @@ impl PfBackend for PfIoctl {
         pfctl(&["-a", anchor, "-Fq"]).await?;
         Ok(())
     }
+
+    async fn set_interface_fib(&self, iface: &str, fib: u32) -> Result<(), PfError> {
+        let output = Command::new("/usr/local/bin/sudo")
+            .args(["/sbin/ifconfig", iface, "fib", &fib.to_string()])
+            .output()
+            .await
+            .map_err(|e| PfError::Other(format!("ifconfig fib exec failed: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PfError::Other(format!(
+                "ifconfig {iface} fib {fib} failed: {stderr}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn get_interface_fib(&self, iface: &str) -> Result<u32, PfError> {
+        let output = Command::new("/sbin/ifconfig")
+            .arg(iface)
+            .output()
+            .await
+            .map_err(|e| PfError::Other(format!("ifconfig exec failed: {e}")))?;
+        if !output.status.success() {
+            return Err(PfError::Other(format!("ifconfig {iface} failed")));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if let Some(idx) = line.find("fib: ") {
+                if let Some(fib) = line[idx + 5..].split_whitespace().next() {
+                    return fib
+                        .parse()
+                        .map_err(|e| PfError::Other(format!("parse fib: {e}")));
+                }
+            }
+        }
+        Ok(0)
+    }
+
+    async fn list_fibs(&self) -> Result<u32, PfError> {
+        let output = Command::new("/sbin/sysctl")
+            .args(["-n", "net.fibs"])
+            .output()
+            .await
+            .map_err(|e| PfError::Other(format!("sysctl exec failed: {e}")))?;
+        if !output.status.success() {
+            return Ok(1);
+        }
+        let s = String::from_utf8_lossy(&output.stdout);
+        Ok(s.trim().parse().unwrap_or(1))
+    }
+
+    async fn kill_states_on_iface(&self, iface: &str) -> Result<u64, PfError> {
+        let out = pfctl(&["-k", "0.0.0.0/0", "-k", "0.0.0.0/0", "-i", iface]).await?;
+        Ok(parse_killed_count(&out))
+    }
+
+    async fn kill_states_for_label(&self, label: &str) -> Result<u64, PfError> {
+        // pfctl has no direct "kill states by label" — labels live on rules, not
+        // on states in a queryable form. We list states verbosely, find entries
+        // whose rule label matches, and kill each by src/dst pair.
+        let out = pfctl(&["-ss", "-v"]).await?;
+        let mut killed: u64 = 0;
+        let mut current: Option<(String, String)> = None;
+        for line in out.lines() {
+            let trimmed = line.trim_start();
+            if !line.starts_with(char::is_whitespace) {
+                // Header line: "<proto> <iface> <src> -> <dst> <state>"
+                // or for ICMP: "<proto> <iface> <src> -> <dst> (id:N) <state>"
+                current = parse_state_endpoints(line);
+            } else if trimmed.contains(&format!("label \"{label}\""))
+                || trimmed.contains(&format!("@0 {label}"))
+            {
+                if let Some((src, dst)) = current.as_ref() {
+                    if pfctl(&["-k", src, "-k", dst]).await.is_ok() {
+                        killed += 1;
+                    }
+                    current = None;
+                }
+            }
+        }
+        Ok(killed)
+    }
+}
+
+fn parse_killed_count(s: &str) -> u64 {
+    // pfctl prints "killed N states" on success
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("killed ") {
+            if let Some(n_str) = rest.split_whitespace().next() {
+                return n_str.parse().unwrap_or(0);
+            }
+        }
+    }
+    0
+}
+
+/// Parse "<proto> <iface> <src> -> <dst> ..." from pfctl -ss -v output,
+/// returning (src_stripped_of_port, dst_stripped_of_port).
+fn parse_state_endpoints(line: &str) -> Option<(String, String)> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    // Expected shape: proto iface src <dir> dst (state)
+    // Direction is one of -> <- <->
+    let arrow_idx = fields.iter().position(|f| matches!(*f, "->" | "<-" | "<->"))?;
+    if arrow_idx < 2 || arrow_idx + 1 >= fields.len() {
+        return None;
+    }
+    let src = strip_port(fields[arrow_idx - 1]);
+    let dst = strip_port(fields[arrow_idx + 1]);
+    Some((src, dst))
+}
+
+fn strip_port(s: &str) -> String {
+    // IPv6 bracket form: [::1]:443
+    if let Some(close) = s.find(']') {
+        return s[1..close].to_string();
+    }
+    // IPv4 x.y.z.w:port
+    match s.rfind(':') {
+        Some(i) if s[..i].chars().all(|c| c.is_ascii_digit() || c == '.') => {
+            s[..i].to_string()
+        }
+        _ => s.to_string(),
+    }
 }
