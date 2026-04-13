@@ -65,7 +65,7 @@ Loader emitter lives in `aifw-setup/src/apply.rs`.
 
 User value: declare named routing instances, assign interfaces to FIBs via UI/API. Feature-flagged "Multi-WAN preview."
 
-- [ ] 1a. `aifw-common/src/multiwan.rs` — types: `RoutingInstance`, `InstanceStatus`, `InstanceMember`
+- [x] 1a. `aifw-common/src/multiwan.rs` — types: `RoutingInstance`, `InstanceStatus`, `InstanceMember`
 - [ ] 1b. `PfBackend` additions — `set_interface_fib`, `get_interface_fib`, `list_fibs` (mock + ioctl)
 - [ ] 1c. `aifw-core/src/multiwan/instance.rs::InstanceEngine` + migrate (tables + seed `default/fib 0/mgmt_reachable=1`)
 - [ ] 1d. `aifw-common/src/permission.rs` — `MultiWanRead`, `MultiWanWrite`

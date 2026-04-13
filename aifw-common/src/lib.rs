@@ -4,6 +4,7 @@ pub mod error;
 pub mod geoip;
 pub mod ha;
 pub mod ids;
+pub mod multiwan;
 pub mod nat;
 pub mod ratelimit;
 pub mod rule;
@@ -45,4 +46,8 @@ pub use permission::{Permission, PermissionSet, ALL_PERMISSIONS, builtin_role_pe
 pub use ids::{
     IdsAction, IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleMatch, IdsRuleset, IdsSeverity,
     IdsStats, IdsSuppression, RuleFormat, RuleSource, SuppressType,
+};
+pub use multiwan::{
+    DEFAULT_FIB_NUMBER, DEFAULT_INSTANCE_ID, DEFAULT_INSTANCE_NAME, InstanceMember, InstanceStatus,
+    RoutingInstance,
 };
