@@ -132,7 +132,7 @@ const navItems: NavItem[] = [
       { href: "/users", label: "Users", permission: "users:read" },
       { href: "/backup", label: "Backup & Restore", permission: "backup:read" },
       { href: "/settings", label: "Settings", permission: "settings:read" },
-      { href: "/reboot", label: "Reboot", permission: "system:reboot" },
+      { href: "/reboot", label: "Power", permission: "system:reboot" },
     ],
   },
 ];

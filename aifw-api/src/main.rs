@@ -547,9 +547,10 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/config/commit-confirm/confirm", post(backup::commit_confirm_accept))
         .layer(middleware::from_fn(perm_check!(Permission::BackupWrite)));
 
-    // system:reboot
+    // system:reboot (also governs shutdown — same privilege level)
     let system_reboot = Router::new()
         .route("/api/v1/updates/reboot", post(updates::reboot_system))
+        .route("/api/v1/updates/shutdown", post(updates::shutdown_system))
         .layer(middleware::from_fn(perm_check!(Permission::SystemReboot)));
 
     // proxy:read
@@ -938,16 +939,36 @@ fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> a
 async fn ensure_rdr_anchor() {
     let pf_path = "/usr/local/etc/aifw/pf.conf.aifw";
     let Ok(content) = tokio::fs::read_to_string(pf_path).await else { return };
-    if content.contains("rdr-anchor \"aifw-nat\"") {
-        return; // already present
+    let mut patched = content.clone();
+    let mut changed = false;
+
+    if !patched.contains("rdr-anchor \"aifw-nat\"") && patched.contains("nat-anchor \"aifw-nat\"") {
+        patched = patched.replace(
+            "nat-anchor \"aifw-nat\"",
+            "nat-anchor \"aifw-nat\"\nrdr-anchor \"aifw-nat\"",
+        );
+        changed = true;
     }
-    if !content.contains("nat-anchor \"aifw-nat\"") {
-        return; // no nat-anchor either, not an AiFw-managed pf.conf
+
+    // Multi-WAN anchors (#132). Insert BEFORE `anchor "aifw"` so policy-routing
+    // decisions fire first. Existing installs upgrading to multi-WAN must pick
+    // these up without a re-run of aifw-setup.
+    for mwan_anchor in ["aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"] {
+        let line = format!("anchor \"{mwan_anchor}\"");
+        if !patched.contains(&line) && patched.contains("anchor \"aifw\"") {
+            patched = patched.replacen(
+                "anchor \"aifw\"",
+                &format!("{line}\nanchor \"aifw\""),
+                1,
+            );
+            changed = true;
+        }
     }
-    let patched = content.replace(
-        "nat-anchor \"aifw-nat\"",
-        "nat-anchor \"aifw-nat\"\nrdr-anchor \"aifw-nat\"",
-    );
+
+    if !changed {
+        return;
+    }
+
     if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["tee", pf_path])
         .stdin(std::process::Stdio::piped())
@@ -964,7 +985,7 @@ async fn ensure_rdr_anchor() {
             .args(["/sbin/pfctl", "-f", pf_path])
             .output()
             .await;
-        info!("Added rdr-anchor \"aifw-nat\" to pf.conf and reloaded");
+        info!("Patched pf.conf with missing AiFw anchors and reloaded");
     }
 }
 

@@ -410,8 +410,30 @@ impl PfBackend for PfIoctl {
     }
 
     async fn kill_states_for_label(&self, label: &str) -> Result<u64, PfError> {
-        let out = pfctl(&["-k", "label", "-k", label]).await?;
-        Ok(parse_killed_count(&out))
+        // pfctl has no direct "kill states by label" — labels live on rules, not
+        // on states in a queryable form. We list states verbosely, find entries
+        // whose rule label matches, and kill each by src/dst pair.
+        let out = pfctl(&["-ss", "-v"]).await?;
+        let mut killed: u64 = 0;
+        let mut current: Option<(String, String)> = None;
+        for line in out.lines() {
+            let trimmed = line.trim_start();
+            if !line.starts_with(char::is_whitespace) {
+                // Header line: "<proto> <iface> <src> -> <dst> <state>"
+                // or for ICMP: "<proto> <iface> <src> -> <dst> (id:N) <state>"
+                current = parse_state_endpoints(line);
+            } else if trimmed.contains(&format!("label \"{label}\""))
+                || trimmed.contains(&format!("@0 {label}"))
+            {
+                if let Some((src, dst)) = current.as_ref() {
+                    if pfctl(&["-k", src, "-k", dst]).await.is_ok() {
+                        killed += 1;
+                    }
+                    current = None;
+                }
+            }
+        }
+        Ok(killed)
     }
 }
 
@@ -425,4 +447,33 @@ fn parse_killed_count(s: &str) -> u64 {
         }
     }
     0
+}
+
+/// Parse "<proto> <iface> <src> -> <dst> ..." from pfctl -ss -v output,
+/// returning (src_stripped_of_port, dst_stripped_of_port).
+fn parse_state_endpoints(line: &str) -> Option<(String, String)> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    // Expected shape: proto iface src <dir> dst (state)
+    // Direction is one of -> <- <->
+    let arrow_idx = fields.iter().position(|f| matches!(*f, "->" | "<-" | "<->"))?;
+    if arrow_idx < 2 || arrow_idx + 1 >= fields.len() {
+        return None;
+    }
+    let src = strip_port(fields[arrow_idx - 1]);
+    let dst = strip_port(fields[arrow_idx + 1]);
+    Some((src, dst))
+}
+
+fn strip_port(s: &str) -> String {
+    // IPv6 bracket form: [::1]:443
+    if let Some(close) = s.find(']') {
+        return s[1..close].to_string();
+    }
+    // IPv4 x.y.z.w:port
+    match s.rfind(':') {
+        Some(i) if s[..i].chars().all(|c| c.is_ascii_digit() || c == '.') => {
+            s[..i].to_string()
+        }
+        _ => s.to_string(),
+    }
 }

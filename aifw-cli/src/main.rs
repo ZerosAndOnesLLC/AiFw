@@ -93,6 +93,47 @@ enum Commands {
     Status,
     /// Reload rules from database and apply to pf
     Reload,
+    /// Multi-WAN: routing instances, gateways, groups, policies, leaks
+    Multiwan {
+        #[command(subcommand)]
+        action: MultiwanAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum MultiwanAction {
+    /// List routing instances (FIBs)
+    Instances,
+    /// List gateways with live health state
+    Gateways,
+    /// List gateway groups
+    Groups,
+    /// List policy-routing rules
+    Policies,
+    /// List route leaks
+    Leaks,
+    /// Show live pf flows with iface/FIB
+    Flows,
+    /// Show current pf state table count
+    FibInfo,
+    /// Recompile and apply all multi-WAN pf anchors
+    Apply,
+    /// Seed management-escape leaks for non-default instances
+    SeedMgmt,
+    /// Force a manual probe outcome for a gateway (for testing)
+    Probe {
+        /// Gateway UUID
+        id: String,
+        /// "ok" or "fail"
+        #[arg(default_value = "ok")]
+        outcome: String,
+    },
+    /// Export full multi-WAN config as JSON
+    Export,
+    /// Import multi-WAN config from a JSON file
+    Import {
+        file: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -868,6 +909,24 @@ async fn main() -> anyhow::Result<()> {
         Commands::Reload => {
             commands::reload(&cli.db).await?;
         }
+        Commands::Multiwan { action } => match action {
+            MultiwanAction::Instances => commands::multiwan_instances(&cli.db).await?,
+            MultiwanAction::Gateways => commands::multiwan_gateways(&cli.db).await?,
+            MultiwanAction::Groups => commands::multiwan_groups(&cli.db).await?,
+            MultiwanAction::Policies => commands::multiwan_policies(&cli.db).await?,
+            MultiwanAction::Leaks => commands::multiwan_leaks(&cli.db).await?,
+            MultiwanAction::Flows => commands::multiwan_flows().await?,
+            MultiwanAction::FibInfo => commands::multiwan_fib_info().await?,
+            MultiwanAction::Apply => commands::multiwan_apply(&cli.db).await?,
+            MultiwanAction::SeedMgmt => commands::multiwan_seed_mgmt(&cli.db).await?,
+            MultiwanAction::Probe { id, outcome } => {
+                commands::multiwan_probe(&cli.db, &id, &outcome).await?
+            }
+            MultiwanAction::Export => commands::multiwan_export(&cli.db).await?,
+            MultiwanAction::Import { file } => {
+                commands::multiwan_import(&cli.db, &file).await?
+            }
+        },
     }
 
     Ok(())
