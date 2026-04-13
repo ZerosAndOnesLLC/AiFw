@@ -8,7 +8,7 @@ import { useWs } from "@/context/WsContext";
 interface WgTunnel {
   id: string;
   name: string;
-  interface_name: string;
+  interface: string;
   listen_port: number;
   address: string;
   private_key: string;
@@ -736,10 +736,14 @@ export default function VpnPage() {
                             <DeleteButton onClick={() => handleDeleteWg(tunnel.id)} title="Delete tunnel" />
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs ml-7">
+                        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-xs ml-7">
                           <div>
                             <span className="text-gray-500">Interface:</span>{" "}
-                            <span className="text-gray-300 font-mono">{tunnel.interface_name}</span>
+                            <span className="text-gray-300 font-mono">{tunnel.interface}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">Listen On:</span>{" "}
+                            <span className="text-gray-300 font-mono">{tunnel.listen_interface || "any"}</span>
                           </div>
                           <div>
                             <span className="text-gray-500">Port:</span>{" "}
