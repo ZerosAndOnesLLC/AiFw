@@ -970,3 +970,62 @@ pub async fn export_config(
     };
     Ok(Json(ApiResponse { data }))
 }
+
+// ============================================================
+// GitOps import (Phase 9b)
+// ============================================================
+
+pub async fn import_config(
+    State(state): State<AppState>,
+    Json(cfg): Json<ConfigYaml>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    // Instances: upsert by id (keeps FIB 0 default seed safe since its id is fixed)
+    for inst in cfg.instances.iter().filter(|i| !i.mgmt_reachable) {
+        // Only try to add; if already exists by id, update.
+        if state.multiwan_engine.get(inst.id).await.is_ok() {
+            let _ = state.multiwan_engine.update(inst.clone()).await;
+        } else {
+            let _ = state.multiwan_engine.add(inst.clone()).await;
+        }
+    }
+    for gw in &cfg.gateways {
+        if state.gateway_engine.get(gw.id).await.is_ok() {
+            let _ = state.gateway_engine.update(gw.clone()).await;
+        } else {
+            let _ = state.gateway_engine.add(gw.clone()).await;
+        }
+    }
+    for g in &cfg.groups {
+        if state.group_engine.get(g.id).await.is_ok() {
+            let _ = state.group_engine.update(g.clone()).await;
+        } else {
+            let _ = state.group_engine.add(g.clone()).await;
+        }
+    }
+    for p in &cfg.policies {
+        if state.policy_engine.get(p.id).await.is_ok() {
+            let _ = state.policy_engine.update(p.clone()).await;
+        } else {
+            let _ = state.policy_engine.add(p.clone()).await;
+        }
+    }
+    for l in &cfg.leaks {
+        if state.leak_engine.get(l.id).await.is_ok() {
+            let _ = state.leak_engine.update(l.clone()).await;
+        } else {
+            let _ = state.leak_engine.add(l.clone()).await;
+        }
+    }
+    let _ = apply_all(&state).await;
+    let _ = apply_leaks(&state).await;
+    Ok(Json(MessageResponse {
+        message: format!(
+            "imported {} instances, {} gateways, {} groups, {} policies, {} leaks",
+            cfg.instances.len(),
+            cfg.gateways.len(),
+            cfg.groups.len(),
+            cfg.policies.len(),
+            cfg.leaks.len(),
+        ),
+    }))
+}

@@ -129,6 +129,97 @@ fn derive_affected_flows(states: &[PfState], new_rules: &[String]) -> Vec<Affect
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aifw_common::{InstanceStatus, StickyMode};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn make_inst(fib: u32, mgmt: bool) -> RoutingInstance {
+        RoutingInstance {
+            id: Uuid::new_v4(),
+            name: format!("wan{fib}"),
+            fib_number: fib,
+            description: None,
+            mgmt_reachable: mgmt,
+            status: InstanceStatus::Active,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn make_policy(
+        target: Uuid,
+        src: &str,
+        status: &str,
+    ) -> PolicyRule {
+        PolicyRule {
+            id: Uuid::new_v4(),
+            priority: 100,
+            name: "p".into(),
+            status: status.into(),
+            ip_version: "v4".into(),
+            iface_in: Some("em_lan".into()),
+            src_addr: src.into(),
+            dst_addr: "any".into(),
+            src_port: None,
+            dst_port: None,
+            protocol: "any".into(),
+            dscp_in: None,
+            geoip_country: None,
+            schedule_id: None,
+            action_kind: "set_instance".into(),
+            target_id: target,
+            sticky: StickyMode::None,
+            fallback_target_id: None,
+            description: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn policy_moving_any_to_non_mgmt_flags_strand() {
+        let mgmt = make_inst(0, true);
+        let wan2 = make_inst(1, false);
+        let p = make_policy(wan2.id, "any", "active");
+        let mut findings = Vec::new();
+        let strand = validate_mgmt_safety(&[p], &[mgmt, wan2], &mut findings);
+        assert!(strand);
+        assert!(findings.iter().any(|f| f.severity == "error"));
+    }
+
+    #[test]
+    fn specific_subnet_does_not_strand() {
+        let mgmt = make_inst(0, true);
+        let wan2 = make_inst(1, false);
+        let p = make_policy(wan2.id, "10.0.0.0/24", "active");
+        let mut findings = Vec::new();
+        let strand = validate_mgmt_safety(&[p], &[mgmt, wan2], &mut findings);
+        assert!(!strand);
+    }
+
+    #[test]
+    fn disabled_policy_does_not_strand() {
+        let mgmt = make_inst(0, true);
+        let wan2 = make_inst(1, false);
+        let p = make_policy(wan2.id, "any", "disabled");
+        let mut findings = Vec::new();
+        let strand = validate_mgmt_safety(&[p], &[mgmt, wan2], &mut findings);
+        assert!(!strand);
+    }
+
+    #[test]
+    fn no_mgmt_instance_reports_warning() {
+        let wan1 = make_inst(1, false);
+        let wan2 = make_inst(2, false);
+        let mut findings = Vec::new();
+        validate_mgmt_safety(&[], &[wan1, wan2], &mut findings);
+        assert!(findings.iter().any(|f| f.severity == "warning"));
+    }
+}
+
 fn validate_mgmt_safety(
     proposed: &[PolicyRule],
     instances: &[RoutingInstance],

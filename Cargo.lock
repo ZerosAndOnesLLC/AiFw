@@ -117,6 +117,7 @@ version = "5.39.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
+ "anyhow",
  "async-trait",
  "chrono",
  "serde",
@@ -137,6 +138,7 @@ dependencies = [
  "aifw-ids",
  "aifw-pf",
  "anyhow",
+ "chrono",
  "clap",
  "libc",
  "serde",

@@ -2,32 +2,14 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Card from "@/components/Card";
-
-const API = "";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
-
-interface RoutingInstance {
-  id: string;
-  name: string;
-  fib_number: number;
-  description: string | null;
-  mgmt_reachable: boolean;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-
-interface InstanceMember {
-  instance_id: string;
-  interface: string;
-}
+import {
+  api,
+  InstanceMember,
+  RoutingInstance,
+  validateFib,
+  validateInterface,
+  validateName,
+} from "./lib";
 
 interface FibInfo {
   net_fibs: number;
@@ -39,22 +21,6 @@ interface Feedback {
   message: string;
 }
 
-function FeedbackBanner({ feedback }: { feedback: Feedback | null }) {
-  if (!feedback) return null;
-  const isError = feedback.type === "error";
-  return (
-    <div
-      className={`p-3 text-sm rounded-md border ${
-        isError
-          ? "text-red-400 bg-red-500/10 border-red-500/20"
-          : "text-green-400 bg-green-500/10 border-green-500/20"
-      }`}
-    >
-      {feedback.message}
-    </div>
-  );
-}
-
 export default function MultiWanPage() {
   const [instances, setInstances] = useState<RoutingInstance[]>([]);
   const [fibs, setFibs] = useState<FibInfo | null>(null);
@@ -62,167 +28,144 @@ export default function MultiWanPage() {
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
 
-  const [newName, setNewName] = useState("");
-  const [newFib, setNewFib] = useState<number>(1);
-  const [newDesc, setNewDesc] = useState("");
-  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name: "", fib: 1, description: "" });
+  const [errs, setErrs] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
 
   const [memberInputs, setMemberInputs] = useState<Record<string, string>>({});
+  const [memberErrs, setMemberErrs] = useState<Record<string, string>>({});
 
   const clearFeedback = useCallback(() => {
     setTimeout(() => setFeedback(null), 4000);
   }, []);
 
-  const fetchInstances = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/multiwan/instances`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`Failed to fetch instances: ${res.status}`);
-      const json = await res.json();
-      const list: RoutingInstance[] = json.data || [];
-      setInstances(list);
-
-      // fetch members for each instance
+      const [list, f] = await Promise.all([
+        api<{ data: RoutingInstance[] }>("GET", "/api/v1/multiwan/instances"),
+        api<{ data: FibInfo }>("GET", "/api/v1/multiwan/fibs"),
+      ]);
+      setInstances(list.data);
+      setFibs(f.data);
       const memberMap: Record<string, InstanceMember[]> = {};
       await Promise.all(
-        list.map(async (inst) => {
-          const r = await fetch(
-            `${API}/api/v1/multiwan/instances/${inst.id}/members`,
-            { headers: authHeaders() },
+        list.data.map(async (inst) => {
+          const r = await api<{ data: InstanceMember[] }>(
+            "GET",
+            `/api/v1/multiwan/instances/${inst.id}/members`,
           );
-          if (r.ok) {
-            const j = await r.json();
-            memberMap[inst.id] = j.data || [];
-          }
+          memberMap[inst.id] = r.data;
         }),
       );
       setMembers(memberMap);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to load instances";
-      setFeedback({ type: "error", message: msg });
+      setFeedback({
+        type: "error",
+        message: err instanceof Error ? err.message : "fetch failed",
+      });
       clearFeedback();
     } finally {
       setLoading(false);
     }
   }, [clearFeedback]);
 
-  const fetchFibs = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/api/v1/multiwan/fibs`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) return;
-      const json = await res.json();
-      setFibs(json.data || null);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   useEffect(() => {
-    fetchInstances();
-    fetchFibs();
-  }, [fetchInstances, fetchFibs]);
+    fetchAll();
+  }, [fetchAll]);
+
+  function validateInstance(): boolean {
+    const e: Record<string, string> = {};
+    const n = validateName(form.name);
+    if (n) e.name = n;
+    const max = fibs?.net_fibs ?? 1;
+    const f = validateFib(form.fib, max);
+    if (f) e.fib = f;
+    if (fibs?.used.includes(form.fib)) e.fib = `FIB ${form.fib} already used`;
+    setErrs(e);
+    return Object.keys(e).length === 0;
+  }
 
   async function createInstance(e: React.FormEvent) {
     e.preventDefault();
-    setAdding(true);
+    if (!validateInstance()) return;
+    setSubmitting(true);
     try {
-      const res = await fetch(`${API}/api/v1/multiwan/instances`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          name: newName,
-          fib_number: newFib,
-          description: newDesc || null,
-        }),
+      await api("POST", "/api/v1/multiwan/instances", {
+        name: form.name,
+        fib_number: form.fib,
+        description: form.description || null,
       });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Create failed: ${res.status}`);
-      }
-      setNewName("");
-      setNewDesc("");
-      setNewFib((fibs?.used?.length ?? 0) + 1);
-      setFeedback({ type: "success", message: "Routing instance created" });
+      setForm({
+        name: "",
+        fib: (fibs?.used.length ?? 0) + 1,
+        description: "",
+      });
+      setFeedback({ type: "success", message: "Instance created" });
       clearFeedback();
-      await fetchInstances();
-      await fetchFibs();
+      await fetchAll();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Create failed";
-      setFeedback({ type: "error", message: msg });
+      setFeedback({
+        type: "error",
+        message: err instanceof Error ? err.message : "create failed",
+      });
       clearFeedback();
     } finally {
-      setAdding(false);
+      setSubmitting(false);
     }
   }
 
   async function deleteInstance(id: string) {
-    if (!confirm("Delete this routing instance? Member interfaces will return to FIB 0."))
+    if (!confirm("Delete this routing instance? Member interfaces return to FIB 0."))
       return;
     try {
-      const res = await fetch(`${API}/api/v1/multiwan/instances/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Delete failed: ${res.status}`);
-      }
-      setFeedback({ type: "success", message: "Routing instance deleted" });
+      await api("DELETE", `/api/v1/multiwan/instances/${id}`);
+      setFeedback({ type: "success", message: "Instance deleted" });
       clearFeedback();
-      await fetchInstances();
-      await fetchFibs();
+      await fetchAll();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Delete failed";
-      setFeedback({ type: "error", message: msg });
+      setFeedback({
+        type: "error",
+        message: err instanceof Error ? err.message : "delete failed",
+      });
       clearFeedback();
     }
   }
 
   async function attachMember(instId: string) {
     const iface = (memberInputs[instId] || "").trim();
-    if (!iface) return;
+    const err = validateInterface(iface);
+    if (err) {
+      setMemberErrs({ ...memberErrs, [instId]: err });
+      return;
+    }
+    setMemberErrs({ ...memberErrs, [instId]: "" });
     try {
-      const res = await fetch(
-        `${API}/api/v1/multiwan/instances/${instId}/members`,
-        {
-          method: "POST",
-          headers: authHeaders(),
-          body: JSON.stringify({ interface: iface }),
-        },
-      );
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Attach failed: ${res.status}`);
-      }
+      await api("POST", `/api/v1/multiwan/instances/${instId}/members`, {
+        interface: iface,
+      });
       setMemberInputs((m) => ({ ...m, [instId]: "" }));
-      await fetchInstances();
+      await fetchAll();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Attach failed";
-      setFeedback({ type: "error", message: msg });
+      setFeedback({
+        type: "error",
+        message: err instanceof Error ? err.message : "attach failed",
+      });
       clearFeedback();
     }
   }
 
   async function detachMember(instId: string, iface: string) {
     try {
-      const res = await fetch(
-        `${API}/api/v1/multiwan/instances/${instId}/members/${encodeURIComponent(iface)}`,
-        {
-          method: "DELETE",
-          headers: authHeaders(),
-        },
+      await api(
+        "DELETE",
+        `/api/v1/multiwan/instances/${instId}/members/${encodeURIComponent(iface)}`,
       );
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Detach failed: ${res.status}`);
-      }
-      await fetchInstances();
+      await fetchAll();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Detach failed";
-      setFeedback({ type: "error", message: msg });
+      setFeedback({
+        type: "error",
+        message: err instanceof Error ? err.message : "detach failed",
+      });
       clearFeedback();
     }
   }
@@ -237,7 +180,17 @@ export default function MultiWanPage() {
         </p>
       </div>
 
-      <FeedbackBanner feedback={feedback} />
+      {feedback && (
+        <div
+          className={`p-3 text-sm rounded-md border ${
+            feedback.type === "error"
+              ? "text-red-400 bg-red-500/10 border-red-500/20"
+              : "text-green-400 bg-green-500/10 border-green-500/20"
+          }`}
+        >
+          {feedback.message}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <Card
@@ -260,47 +213,61 @@ export default function MultiWanPage() {
         />
       </div>
 
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-        <h2 className="text-lg font-semibold text-white mb-3">Create routing instance</h2>
-        <form onSubmit={createInstance} className="grid grid-cols-1 md:grid-cols-4 gap-2">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="name (e.g. wan2)"
-            required
-            className="px-3 py-2 rounded bg-black/30 border border-[var(--border)] text-white text-sm"
-          />
-          <input
-            type="number"
-            min={1}
-            max={(fibs?.net_fibs ?? 1) - 1}
-            value={newFib}
-            onChange={(e) => setNewFib(parseInt(e.target.value, 10) || 0)}
-            placeholder="fib"
-            required
-            className="px-3 py-2 rounded bg-black/30 border border-[var(--border)] text-white text-sm"
-          />
-          <input
-            value={newDesc}
-            onChange={(e) => setNewDesc(e.target.value)}
-            placeholder="description (optional)"
-            className="px-3 py-2 rounded bg-black/30 border border-[var(--border)] text-white text-sm"
-          />
-          <button
-            type="submit"
-            disabled={adding}
-            className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50"
-          >
-            {adding ? "Creating…" : "Create"}
-          </button>
-        </form>
+      <form
+        onSubmit={createInstance}
+        className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4 space-y-3"
+      >
+        <h2 className="text-lg font-semibold text-white">Create routing instance</h2>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label className="block text-xs text-[var(--text-muted)] mb-1">Name</label>
+            <input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="wan2"
+              className={cls(!!errs.name)}
+            />
+            {errs.name && <p className="text-xs text-red-400 mt-1">{errs.name}</p>}
+          </div>
+          <div>
+            <label className="block text-xs text-[var(--text-muted)] mb-1">FIB</label>
+            <input
+              type="number"
+              min={1}
+              max={(fibs?.net_fibs ?? 1) - 1}
+              value={form.fib}
+              onChange={(e) =>
+                setForm({ ...form, fib: parseInt(e.target.value, 10) || 0 })
+              }
+              className={cls(!!errs.fib)}
+            />
+            {errs.fib && <p className="text-xs text-red-400 mt-1">{errs.fib}</p>}
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-xs text-[var(--text-muted)] mb-1">
+              Description (optional)
+            </label>
+            <input
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              className={cls(false)}
+            />
+          </div>
+        </div>
         {fibs && fibs.net_fibs <= 1 && (
-          <p className="text-xs text-yellow-400 mt-2">
-            Only 1 FIB available. To enable multi-WAN, set <code>net.fibs=16</code> in
-            <code> /boot/loader.conf </code>and reboot.
+          <p className="text-xs text-yellow-400">
+            Only 1 FIB available. To enable multi-WAN, set{" "}
+            <code>net.fibs=16</code> in <code>/boot/loader.conf</code> and reboot.
           </p>
         )}
-      </div>
+        <button
+          type="submit"
+          disabled={submitting || (fibs?.net_fibs ?? 1) <= 1}
+          className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50"
+        >
+          {submitting ? "Creating…" : "Create"}
+        </button>
+      </form>
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
         {loading ? (
@@ -321,8 +288,12 @@ export default function MultiWanPage() {
               {instances.map((inst) => (
                 <tr key={inst.id} className="border-t border-[var(--border)]">
                   <td className="px-4 py-3 text-white font-medium">{inst.name}</td>
-                  <td className="px-4 py-3 text-cyan-400 font-mono">{inst.fib_number}</td>
-                  <td className="px-4 py-3 text-[var(--text-muted)]">{inst.status}</td>
+                  <td className="px-4 py-3 text-cyan-400 font-mono">
+                    {inst.fib_number}
+                  </td>
+                  <td className="px-4 py-3 text-[var(--text-muted)]">
+                    {(inst as { status?: string }).status ?? "—"}
+                  </td>
                   <td className="px-4 py-3">
                     {inst.mgmt_reachable ? (
                       <span className="text-green-400">✓</span>
@@ -331,7 +302,7 @@ export default function MultiWanPage() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-wrap gap-1 items-center">
                       {(members[inst.id] || []).map((m) => (
                         <span
                           key={m.interface}
@@ -350,24 +321,35 @@ export default function MultiWanPage() {
                         </span>
                       ))}
                       {!inst.mgmt_reachable && (
-                        <span className="inline-flex items-center gap-1">
-                          <input
-                            value={memberInputs[inst.id] || ""}
-                            onChange={(e) =>
-                              setMemberInputs((m) => ({
-                                ...m,
-                                [inst.id]: e.target.value,
-                              }))
-                            }
-                            placeholder="iface"
-                            className="w-20 px-2 py-1 rounded bg-black/30 border border-[var(--border)] text-white text-xs"
-                          />
-                          <button
-                            onClick={() => attachMember(inst.id)}
-                            className="text-xs px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white"
-                          >
-                            +
-                          </button>
+                        <span className="inline-flex flex-col">
+                          <div className="flex items-center gap-1">
+                            <input
+                              value={memberInputs[inst.id] || ""}
+                              onChange={(e) =>
+                                setMemberInputs((m) => ({
+                                  ...m,
+                                  [inst.id]: e.target.value,
+                                }))
+                              }
+                              placeholder="iface"
+                              className={`w-20 px-2 py-1 rounded bg-black/30 border text-white text-xs ${
+                                memberErrs[inst.id]
+                                  ? "border-red-500"
+                                  : "border-[var(--border)]"
+                              }`}
+                            />
+                            <button
+                              onClick={() => attachMember(inst.id)}
+                              className="text-xs px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white"
+                            >
+                              +
+                            </button>
+                          </div>
+                          {memberErrs[inst.id] && (
+                            <p className="text-xs text-red-400">
+                              {memberErrs[inst.id]}
+                            </p>
+                          )}
                         </span>
                       )}
                     </div>
@@ -390,4 +372,10 @@ export default function MultiWanPage() {
       </div>
     </div>
   );
+}
+
+function cls(hasErr: boolean): string {
+  return `w-full px-3 py-2 rounded bg-black/30 border text-white text-sm ${
+    hasErr ? "border-red-500" : "border-[var(--border)]"
+  }`;
 }

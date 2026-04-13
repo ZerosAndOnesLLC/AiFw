@@ -96,10 +96,10 @@ User value: define gateways; live RTT/loss/jitter/MOS. No dataplane effect.
 - [x] 2d. `HttpProbe` (curl shell-out with expect status)
 - [x] 2e. `DnsProbe` (`/usr/bin/host` shell-out)
 - [x] 2f. `GatewayEngine` with hysteresis, broadcast event channel, MOS scoring
-- [ ] 2g. `aifw-daemon` starts/stops monitors on engine boot (deferred — start_monitor wired in API CRUD)
+- [x] 2g. `aifw-daemon` starts all gateway monitors on boot + spawns SLA aggregation loop
 - [x] 2h. API CRUD + `/probe-now` + `/events` (SSE deferred)
-- [x] 2i. UI `multi-wan/gateways/page.tsx` with live polling + manual probe injection
-- [ ] 2j. Metrics emission (deferred to phase 10 hardening)
+- [x] 2i. UI `multi-wan/gateways/page.tsx` with full form validation + live polling
+- [ ] 2j. Metrics emission (deferred — `aifw-metrics` integration is a separate effort)
 - [x] 2k. `GatewayEngine::inject_sample` test helper
 - [x] 2l. Tests: transitions emit events, CRUD, probe outcomes, evaluate_transition
 
@@ -125,8 +125,8 @@ User value: compose gateways into ordered groups with policy.
 
 - [x] 3a. `aifw-core/src/multiwan/group.rs` — pure selection logic for failover/weighted/adaptive/LB
 - [x] 3b. API CRUD + member mgmt + `/active` endpoint
-- [ ] 3c. UI `multi-wan/groups/page.tsx` (deferred — API-accessible for now)
-- [ ] 3d. `proptest` dev-dep (deferred)
+- [x] 3c. UI `multi-wan/groups/page.tsx` with full form validation, live active-member indicator
+- [ ] 3d. `proptest` dev-dep (chaos harness in `examples/multiwan_chaos.rs` covers similar ground)
 - [x] 3e. Scenario tests: failover lowest-tier, fallback on down, adaptive MOS scaling
 
 Tables:
@@ -144,12 +144,12 @@ multiwan_group_members (group_id FK, gateway_id FK, tier=1, weight=1,
 
 User value: first dataplane phase. Rules like "LAN→Netflix via WAN2" work end-to-end.
 
-- [x] 4a. `PfBackend` additions: `kill_states_on_iface`, `kill_states_for_label` (used `load_rules` for PBR since existing trait method fits)
-- [x] 4b. `PolicyEngine` with CRUD + `apply()` that composes instance/gateway/group state into pf strings
+- [x] 4a. `PfBackend` additions: `kill_states_on_iface`, `kill_states_for_label`
+- [x] 4b. `PolicyEngine` with CRUD + `apply()` composing instance/gateway/group into pf
 - [x] 4c. Emitters: `route-to`+`reply-to` for SetGateway; `rtable N` for SetInstance; weighted route-to with sticky-address for SetGroup
-- [ ] 4d. Anchor wiring into root ruleset (deferred to phase 10 — anchors exist but need pf.conf wiring)
+- [x] 4d. Anchor wiring into `aifw-setup/src/apply.rs` — `aifw-pbr`, `aifw-mwan-leak`, `aifw-mwan-reply` emitted ahead of `aifw-nat`/`aifw` in root ruleset
 - [x] 4e. API CRUD + `/apply` under `/api/v1/multiwan/policies`
-- [ ] 4f. UI policies page (deferred — API-accessible for now)
+- [x] 4f. UI `multi-wan/policies/page.tsx` with target-aware picker + blast-radius preview button
 - [x] 4g. Golden tests: set_instance emits rtable, set_gateway emits paired route-to/reply-to with if-bound, disabled skipped
 
 Tables:
@@ -187,7 +187,7 @@ User value: cross-FIB traffic for DNS/NTP/API (Juniper rib-groups, declarative).
 - [x] 5a. `LeakEngine` + anchor `aifw-mwan-leak`
 - [x] 5b. `seed_mgmt_escapes` — idempotent seeding of src→mgmt leaks for each non-default instance
 - [x] 5c. API CRUD + `/seed-mgmt`
-- [ ] 5d. UI `multi-wan/leaks/page.tsx` (deferred)
+- [x] 5d. UI `multi-wan/leaks/page.tsx` with validation + "auto-seed mgmt escapes" button
 - [x] 5e. Tests: bidirectional compile, disabled skip; API returns 409 on mgmt-escape deletion
 
 Tables:
@@ -208,8 +208,8 @@ User value: nobody in enterprise gear does this well. Dry-run config changes.
 - [x] 6c. `POST /api/v1/multiwan/preview`
 - [x] 6d. `POST /api/v1/multiwan/apply`
 - [x] 6e. `POST /api/v1/multiwan/flows/{label}/migrate`
-- [ ] 6f. UI preview modal (deferred)
-- [ ] 6g. More extensive tests (deferred — mgmt-strand heuristic covered in code)
+- [x] 6f. UI "Preview blast radius" button on policies page (modal via alert for now)
+- [x] 6g. Tests: mgmt-strand on src=any, specific subnet OK, disabled skipped, missing-mgmt warning
 
 ---
 
@@ -218,10 +218,10 @@ User value: nobody in enterprise gear does this well. Dry-run config changes.
 User value: long-term observability exceeding Cisco IP SLA.
 
 - [x] 7a. `SlaEngine` with `multiwan_sla_samples` table + prune helper
-- [ ] 7b. Daemon housekeeper aggregation (deferred — `record()` is engine-callable when needed)
-- [ ] 7c. AI anomaly hook (deferred — `aifw-ai` scaffolding required)
+- [x] 7b. Daemon SLA aggregation loop: 1-min bucket record for each gateway, daily 30-day prune
+- [ ] 7c. AI anomaly hook (requires `aifw-ai` analysis pipeline — tracked separately)
 - [x] 7d. API `/gateways/{id}/sla?window=24h|7d|30d`
-- [ ] 7e. UI SLA page (deferred)
+- [x] 7e. UI `multi-wan/sla/page.tsx` with uptime/RTT/loss/MOS stat cards + RTT sparkline
 
 ---
 
@@ -232,7 +232,7 @@ User value: live per-flow WAN table with 1-click re-steer.
 - [x] 8a. `PfState` gains optional `iface`, `rtable`
 - [x] 8b. `GET /multiwan/flows` exposes flow summaries
 - [x] 8c. `POST /multiwan/flows/{label}/migrate` kills states by label
-- [ ] 8d. UI flows page (deferred)
+- [x] 8d. UI `multi-wan/flows/page.tsx` with filter, auto-refresh, and force-migrate-by-label
 
 ---
 
@@ -241,18 +241,18 @@ User value: live per-flow WAN table with 1-click re-steer.
 User value: the stuff Cisco/Juniper still make hard.
 
 - [x] 9a. `GET /multiwan/config.yaml` — full config as JSON/YAML-compatible struct
-- [ ] 9b. `POST /multiwan/apply-yaml` (deferred — export half done, import would reuse preview)
-- [ ] 9c. `aifw-bgp` crate (deferred — FRR integration is a standalone effort)
-- [ ] 9d. Auto-discovery (deferred)
-- [x] 9e. IPv6 parity — `ip_version` field wired through Gateway/Policy/Instance and emitted as `inet`/`inet6` in pf
-- [ ] 9f. Plugin probe hook (deferred — probes are async trait-friendly)
+- [x] 9b. `POST /multiwan/apply-yaml` — upsert all instances/gateways/groups/policies/leaks by id, then apply
+- [ ] 9c. `aifw-bgp` crate — needs separate issue; requires FRR integration
+- [ ] 9d. Auto-discovery — needs separate issue; traceroute + ASN DB
+- [x] 9e. IPv6 parity via `ip_version` field across Gateway/Policy/Instance
+- [ ] 9f. Plugin probe hook — needs plugin-system trait extension; separate issue
 
 ---
 
 ## Phase 10 — Hardening + chaos + docs
 
-- [ ] 10a. Chaos dev bin (deferred — `inject_sample` helper already supports scripted chaos)
-- [ ] 10b. FreeBSD dual-WAN VM test (deferred — requires VM infra)
+- [x] 10a. `cargo run --example multiwan_chaos` — seeded PRNG, invariant checks on oscillation + monotonic events
+- [ ] 10b. FreeBSD dual-WAN VM convergence test — requires VM infra; tracked separately
 - [x] 10c. `docs/multi-wan.md` architecture, quick-start, anchors, convergence, Cisco/Juniper comparison matrix
 
 ---

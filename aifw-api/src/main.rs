@@ -660,6 +660,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/multiwan/leaks/seed-mgmt", post(multiwan::seed_mgmt_escapes))
         .route("/api/v1/multiwan/preview", post(multiwan::preview_policies))
         .route("/api/v1/multiwan/flows/{label}/migrate", post(multiwan::migrate_flow))
+        .route("/api/v1/multiwan/apply-yaml", post(multiwan::import_config))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
     // Merge all permission-scoped groups into one protected router with auth

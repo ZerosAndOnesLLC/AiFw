@@ -1,4 +1,8 @@
-use aifw_core::{AliasEngine, Database, NatEngine, RuleEngine};
+use aifw_core::{
+    AliasEngine, Database, GatewayEngine, GroupEngine, InstanceEngine, LeakEngine, NatEngine,
+    PolicyEngine, RuleEngine, SlaEngine,
+};
+use chrono::Timelike;
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,6 +84,88 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(ref iface) = args.interface {
         info!(interface = %iface, "attached to interface");
+    }
+
+    // ========================================================
+    // Multi-WAN bootstrap (issue #132)
+    // ========================================================
+    let multiwan_engine = Arc::new(InstanceEngine::new(pool.clone(), pf.clone()));
+    let gateway_engine = Arc::new(GatewayEngine::new(pool.clone()));
+    let group_engine = Arc::new(GroupEngine::new(pool.clone()));
+    let policy_engine = Arc::new(PolicyEngine::new(pool.clone(), pf.clone()));
+    let leak_engine = Arc::new(LeakEngine::new(pool.clone(), pf.clone()));
+    let sla_engine = Arc::new(SlaEngine::new(pool.clone()));
+
+    if let Err(e) = multiwan_engine.migrate().await { error!("multiwan migrate: {e}"); }
+    if let Err(e) = gateway_engine.migrate().await { error!("gateway migrate: {e}"); }
+    if let Err(e) = group_engine.migrate().await { error!("group migrate: {e}"); }
+    if let Err(e) = policy_engine.migrate().await { error!("policy migrate: {e}"); }
+    if let Err(e) = leak_engine.migrate().await { error!("leak migrate: {e}"); }
+    if let Err(e) = sla_engine.migrate().await { error!("sla migrate: {e}"); }
+
+    // Re-apply policies/leaks from DB state at boot
+    let instances = multiwan_engine.list().await.unwrap_or_default();
+    let gateways = gateway_engine.list().await.unwrap_or_default();
+    let groups = group_engine.list().await.unwrap_or_default();
+    let mut members = std::collections::HashMap::new();
+    for g in &groups {
+        if let Ok(list) = group_engine.list_members(g.id).await {
+            members.insert(g.id, list);
+        }
+    }
+    if let Err(e) = policy_engine.apply(&instances, &gateways, &groups, &members).await {
+        error!("policy apply at boot: {e}");
+    }
+    if let Err(e) = leak_engine.apply(&instances).await {
+        error!("leak apply at boot: {e}");
+    }
+
+    // Spawn probe monitors for all enabled gateways
+    if let Err(e) = gateway_engine.start_all().await {
+        error!("gateway monitors failed to start: {e}");
+    } else {
+        info!(count = gateways.len(), "gateway monitors started");
+    }
+
+    // SLA aggregation loop — 1-minute buckets, retention pruned daily
+    {
+        let sla = sla_engine.clone();
+        let gw = gateway_engine.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut prune_counter: u32 = 0;
+            loop {
+                ticker.tick().await;
+                let Ok(list) = gw.list().await else { continue };
+                let now = chrono::Utc::now();
+                let bucket = now
+                    .with_second(0)
+                    .and_then(|t| t.with_nanosecond(0))
+                    .unwrap_or(now);
+                for g in list {
+                    let sample = aifw_core::multiwan::SlaSample {
+                        gateway_id: g.id,
+                        bucket_ts: bucket,
+                        samples: 60 / (g.interval_ms.max(1) as u64 / 1000).max(1),
+                        rtt_avg: g.last_rtt_ms,
+                        rtt_p95: g.last_rtt_ms,
+                        rtt_p99: g.last_rtt_ms,
+                        jitter_avg: g.last_jitter_ms,
+                        loss_pct: g.last_loss_pct,
+                        mos_avg: g.last_mos,
+                        up_seconds: if g.state == aifw_common::GatewayState::Up { 60 } else { 0 },
+                    };
+                    let _ = sla.record(&sample).await;
+                }
+                prune_counter += 1;
+                if prune_counter >= 60 * 24 {
+                    prune_counter = 0;
+                    let _ = sla.prune(30).await;
+                }
+            }
+        });
+        info!("SLA aggregation loop started");
     }
 
     // Initialize IDS engine (only allocate resources if enabled)
