@@ -14,7 +14,6 @@ repository: ZerosAndOnesLLC/AiFw
 
 plugins:
   - jekyll-seo-tag
-  - jekyll-sitemap
   - jekyll-feed
 
 # SEO
