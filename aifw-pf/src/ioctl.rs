@@ -144,12 +144,20 @@ impl PfBackend for PfIoctl {
                 let state_str = parts.get(5).unwrap_or(&"").to_string();
                 let (src_addr, src_port) = parse_addr_port(src);
                 let (dst_addr, dst_port) = parse_addr_port(dst);
+                // First field in `pfctl -ss` verbose output is the interface
+                // (e.g. "em0"). Non-verbose output uses "all" or direction.
+                let iface = parts.first().filter(|s| {
+                    let s = *s;
+                    !matches!(*s, "all" | "in" | "out") && s.chars().any(|c| c.is_ascii_digit())
+                }).map(|s| s.to_string());
                 current = Some(PfState {
                     id: 0, protocol: proto,
                     src_addr, src_port, dst_addr, dst_port,
                     state: state_str,
                     packets_in: 0, packets_out: 0,
                     bytes_in: 0, bytes_out: 0, age_secs: 0,
+                    iface,
+                    rtable: None,
                 });
             } else if let Some(ref mut s) = current {
                 // Detail line — extract bytes, packets, age

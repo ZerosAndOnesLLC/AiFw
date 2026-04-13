@@ -4,21 +4,17 @@ pub mod error;
 mod tests;
 pub mod types;
 
-#[cfg(not(target_os = "freebsd"))]
-pub mod mock;
-
-#[cfg(target_os = "freebsd")]
+// Both backends always compile so cargo check on any host catches
+// schema mismatches in the FreeBSD-only ioctl path. Only one is
+// selected at runtime by create_backend() below.
 pub mod ioctl;
+pub mod mock;
 
 pub use backend::PfBackend;
 pub use error::PfError;
-pub use types::{PfState, PfStats, PfTableEntry};
-
-#[cfg(not(target_os = "freebsd"))]
-pub use mock::PfMock;
-
-#[cfg(target_os = "freebsd")]
 pub use ioctl::PfIoctl;
+pub use mock::PfMock;
+pub use types::{PfState, PfStats, PfTableEntry};
 
 pub fn create_backend() -> Box<dyn PfBackend> {
     #[cfg(not(target_os = "freebsd"))]
