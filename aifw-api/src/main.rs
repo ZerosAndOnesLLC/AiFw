@@ -7,6 +7,7 @@ mod dhcp;
 mod dns_resolver;
 mod iface;
 mod ids;
+mod multiwan;
 mod plugins;
 mod reverse_proxy;
 mod routes;
@@ -18,7 +19,9 @@ mod ws;
 mod tests;
 
 use aifw_conntrack::ConnectionTracker;
-use aifw_core::{AliasEngine, Database, GeoIpEngine, NatEngine, RuleEngine, VpnEngine};
+use aifw_core::{
+    AliasEngine, Database, GeoIpEngine, InstanceEngine, NatEngine, RuleEngine, VpnEngine,
+};
 use aifw_pf::PfBackend;
 use axum::{
     Router,
@@ -90,6 +93,7 @@ pub struct AppState {
     pub nat_engine: Arc<NatEngine>,
     pub vpn_engine: Arc<VpnEngine>,
     pub geoip_engine: Arc<GeoIpEngine>,
+    pub multiwan_engine: Arc<InstanceEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
@@ -591,6 +595,28 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/reverse-proxy/apply", post(reverse_proxy::apply_config))
         .layer(middleware::from_fn(perm_check!(Permission::ProxyWrite)));
 
+    // multiwan:read
+    let multiwan_read = Router::new()
+        .route("/api/v1/multiwan/instances", get(multiwan::list_instances))
+        .route("/api/v1/multiwan/instances/{id}", get(multiwan::get_instance))
+        .route("/api/v1/multiwan/instances/{id}/members", get(multiwan::list_members))
+        .route("/api/v1/multiwan/fibs", get(multiwan::list_fibs))
+        .layer(middleware::from_fn(perm_check!(Permission::MultiWanRead)));
+
+    // multiwan:write
+    let multiwan_write = Router::new()
+        .route("/api/v1/multiwan/instances", post(multiwan::create_instance))
+        .route(
+            "/api/v1/multiwan/instances/{id}",
+            put(multiwan::update_instance).delete(multiwan::delete_instance),
+        )
+        .route("/api/v1/multiwan/instances/{id}/members", post(multiwan::add_member))
+        .route(
+            "/api/v1/multiwan/instances/{id}/members/{iface}",
+            delete(multiwan::remove_member),
+        )
+        .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
+
     // Merge all permission-scoped groups into one protected router with auth
     let protected_routes = Router::new()
         .merge(self_service)
@@ -613,6 +639,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .merge(backup_read).merge(backup_write)
         .merge(system_reboot)
         .merge(proxy_read).merge(proxy_write)
+        .merge(multiwan_read).merge(multiwan_write)
         .layer(auth_layer);
 
     let mut app = Router::new()
@@ -674,6 +701,8 @@ async fn create_state_from_db(
     vpn_engine.migrate().await?;
     let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
     geoip_engine.migrate().await?;
+    let multiwan_engine = Arc::new(InstanceEngine::new(pool.clone(), pf.clone()));
+    multiwan_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     ca::migrate(&pool).await?;
     dhcp::migrate(&pool).await?;
     updates::migrate(&pool).await?;
@@ -781,6 +810,7 @@ async fn create_state_from_db(
         nat_engine,
         vpn_engine,
         geoip_engine,
+        multiwan_engine,
         alias_engine,
         conntrack,
         ids_engine,

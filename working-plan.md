@@ -67,12 +67,12 @@ User value: declare named routing instances, assign interfaces to FIBs via UI/AP
 
 - [x] 1a. `aifw-common/src/multiwan.rs` — types: `RoutingInstance`, `InstanceStatus`, `InstanceMember`
 - [x] 1b. `PfBackend` additions — `set_interface_fib`, `get_interface_fib`, `list_fibs` (mock + ioctl)
-- [ ] 1c. `aifw-core/src/multiwan/instance.rs::InstanceEngine` + migrate (tables + seed `default/fib 0/mgmt_reachable=1`)
-- [ ] 1d. `aifw-common/src/permission.rs` — `MultiWanRead`, `MultiWanWrite`
-- [ ] 1e. `aifw-api/src/multiwan.rs` — instances CRUD + members + `/fibs` endpoint; wire in `main.rs` AppState + build_router
-- [ ] 1f. `aifw-ui/src/app/multi-wan/page.tsx` + nav entry
-- [ ] 1g. Tests: unit CRUD, duplicate fib, cascade delete; API integration tests
-- [ ] 1h. Version bump to 5.35.0, commit
+- [x] 1c. `aifw-core/src/multiwan/instance.rs::InstanceEngine` + migrate (tables + seed `default/fib 0/mgmt_reachable=1`)
+- [x] 1d. `aifw-common/src/permission.rs` — `MultiWanRead`, `MultiWanWrite`
+- [x] 1e. `aifw-api/src/multiwan.rs` — instances CRUD + members + `/fibs` endpoint; wire in `main.rs` AppState + build_router
+- [x] 1f. `aifw-ui/src/app/multi-wan/page.tsx` + nav entry
+- [x] 1g. Tests: unit CRUD, duplicate fib, cascade delete; API integration tests
+- [x] 1h. Version bump to 5.35.0, commit
 
 Tables:
 ```sql
