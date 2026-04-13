@@ -733,3 +733,240 @@ async fn apply_all(state: &AppState) -> aifw_common::Result<()> {
         .await?;
     Ok(())
 }
+
+// ============================================================
+// Route leaks (Phase 5)
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreateLeakRequest {
+    pub name: String,
+    pub src_instance_id: String,
+    pub dst_instance_id: String,
+    pub prefix: String,
+    pub protocol: Option<String>,
+    pub ports: Option<String>,
+    pub direction: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+pub async fn list_leaks(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<aifw_common::RouteLeak>>>, StatusCode> {
+    let list = state.leak_engine.list().await.map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: list }))
+}
+
+pub async fn create_leak(
+    State(state): State<AppState>,
+    Json(req): Json<CreateLeakRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<aifw_common::RouteLeak>>), StatusCode> {
+    let src = Uuid::parse_str(&req.src_instance_id).map_err(|_| bad_request())?;
+    let dst = Uuid::parse_str(&req.dst_instance_id).map_err(|_| bad_request())?;
+    let now = Utc::now();
+    let l = aifw_common::RouteLeak {
+        id: Uuid::new_v4(),
+        name: req.name,
+        src_instance_id: src,
+        dst_instance_id: dst,
+        prefix: req.prefix,
+        protocol: req.protocol.unwrap_or_else(|| "any".into()),
+        ports: req.ports,
+        direction: req.direction.unwrap_or_else(|| "bidirectional".into()),
+        enabled: req.enabled.unwrap_or(true),
+        created_at: now,
+        updated_at: now,
+    };
+    let l = state.leak_engine.add(l).await.map_err(|_| bad_request())?;
+    let _ = apply_leaks(&state).await;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: l })))
+}
+
+pub async fn delete_leak(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    state.leak_engine.delete(uuid).await.map_err(|e| match e {
+        aifw_common::AifwError::Validation(_) => StatusCode::CONFLICT,
+        aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+        _ => internal(),
+    })?;
+    let _ = apply_leaks(&state).await;
+    Ok(Json(MessageResponse {
+        message: format!("leak {id} deleted"),
+    }))
+}
+
+pub async fn seed_mgmt_escapes(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let instances = state.multiwan_engine.list().await.map_err(|_| internal())?;
+    state
+        .leak_engine
+        .seed_mgmt_escapes(&instances)
+        .await
+        .map_err(|_| internal())?;
+    let _ = apply_leaks(&state).await;
+    Ok(Json(MessageResponse {
+        message: "mgmt-escape leaks seeded".into(),
+    }))
+}
+
+async fn apply_leaks(state: &AppState) -> aifw_common::Result<()> {
+    let instances = state.multiwan_engine.list().await?;
+    state.leak_engine.apply(&instances).await
+}
+
+// ============================================================
+// Pre-flight / blast-radius (Phase 6)
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub struct PreviewRequest {
+    pub policies: Vec<CreatePolicyRequest>,
+}
+
+pub async fn preview_policies(
+    State(state): State<AppState>,
+    Json(req): Json<PreviewRequest>,
+) -> Result<Json<ApiResponse<aifw_core::multiwan::BlastRadiusReport>>, StatusCode> {
+    let current = state.policy_engine.list().await.map_err(|_| internal())?;
+    let proposed: Vec<aifw_common::PolicyRule> = req
+        .policies
+        .into_iter()
+        .map(|r| req_to_policy(r, None, None))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let instances = state.multiwan_engine.list().await.map_err(|_| internal())?;
+    let gateways = state.gateway_engine.list().await.map_err(|_| internal())?;
+    let groups = state.group_engine.list().await.map_err(|_| internal())?;
+    let mut members = std::collections::HashMap::new();
+    for g in &groups {
+        members.insert(
+            g.id,
+            state.group_engine.list_members(g.id).await.map_err(|_| internal())?,
+        );
+    }
+
+    let report = state
+        .preflight_engine
+        .preview(&current, &proposed, &instances, &gateways, &groups, &members)
+        .await
+        .map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: report }))
+}
+
+// ============================================================
+// Flow migration (Phase 6/8)
+// ============================================================
+
+#[derive(Debug, Serialize)]
+pub struct FlowMigrationResponse {
+    pub killed: u64,
+}
+
+pub async fn migrate_flow(
+    State(state): State<AppState>,
+    Path(label): Path<String>,
+) -> Result<Json<ApiResponse<FlowMigrationResponse>>, StatusCode> {
+    let killed = state
+        .pf
+        .kill_states_for_label(&label)
+        .await
+        .map_err(|_| internal())?;
+    Ok(Json(ApiResponse {
+        data: FlowMigrationResponse { killed },
+    }))
+}
+
+// ============================================================
+// Per-flow visibility (Phase 8)
+// ============================================================
+
+#[derive(Debug, Serialize)]
+pub struct FlowSummary {
+    pub id: u64,
+    pub protocol: String,
+    pub src: String,
+    pub dst: String,
+    pub iface: Option<String>,
+    pub rtable: Option<u32>,
+    pub bytes: u64,
+    pub age_secs: u64,
+}
+
+pub async fn list_flows(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<FlowSummary>>>, StatusCode> {
+    let states = state.pf.get_states().await.map_err(|_| internal())?;
+    let flows: Vec<FlowSummary> = states
+        .into_iter()
+        .take(500)
+        .map(|s| FlowSummary {
+            id: s.id,
+            protocol: s.protocol,
+            src: format!("{}:{}", s.src_addr, s.src_port),
+            dst: format!("{}:{}", s.dst_addr, s.dst_port),
+            iface: s.iface,
+            rtable: s.rtable,
+            bytes: s.bytes_in + s.bytes_out,
+            age_secs: s.age_secs,
+        })
+        .collect();
+    Ok(Json(ApiResponse { data: flows }))
+}
+
+// ============================================================
+// SLA reports (Phase 7)
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub struct SlaQuery {
+    pub window: Option<String>, // 24h | 7d | 30d
+}
+
+pub async fn get_sla(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<SlaQuery>,
+) -> Result<Json<ApiResponse<Vec<aifw_core::multiwan::SlaSample>>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let hours = match q.window.as_deref() {
+        Some("7d") => 7 * 24,
+        Some("30d") => 30 * 24,
+        _ => 24,
+    };
+    let samples = state
+        .sla_engine
+        .window(uuid, hours)
+        .await
+        .map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: samples }))
+}
+
+// ============================================================
+// YAML GitOps export/import (Phase 9)
+// ============================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfigYaml {
+    pub instances: Vec<RoutingInstance>,
+    pub gateways: Vec<Gateway>,
+    pub groups: Vec<GatewayGroup>,
+    pub policies: Vec<aifw_common::PolicyRule>,
+    pub leaks: Vec<aifw_common::RouteLeak>,
+}
+
+pub async fn export_config(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<ConfigYaml>>, StatusCode> {
+    let data = ConfigYaml {
+        instances: state.multiwan_engine.list().await.map_err(|_| internal())?,
+        gateways: state.gateway_engine.list().await.map_err(|_| internal())?,
+        groups: state.group_engine.list().await.map_err(|_| internal())?,
+        policies: state.policy_engine.list().await.map_err(|_| internal())?,
+        leaks: state.leak_engine.list().await.map_err(|_| internal())?,
+    };
+    Ok(Json(ApiResponse { data }))
+}

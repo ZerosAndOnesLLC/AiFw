@@ -20,8 +20,8 @@ mod tests;
 
 use aifw_conntrack::ConnectionTracker;
 use aifw_core::{
-    AliasEngine, Database, GatewayEngine, GeoIpEngine, GroupEngine, InstanceEngine, NatEngine,
-    PolicyEngine, RuleEngine, VpnEngine,
+    AliasEngine, Database, GatewayEngine, GeoIpEngine, GroupEngine, InstanceEngine, LeakEngine,
+    NatEngine, PolicyEngine, PreflightEngine, RuleEngine, SlaEngine, VpnEngine,
 };
 use aifw_pf::PfBackend;
 use axum::{
@@ -98,6 +98,9 @@ pub struct AppState {
     pub gateway_engine: Arc<GatewayEngine>,
     pub group_engine: Arc<GroupEngine>,
     pub policy_engine: Arc<PolicyEngine>,
+    pub leak_engine: Arc<LeakEngine>,
+    pub preflight_engine: Arc<PreflightEngine>,
+    pub sla_engine: Arc<SlaEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
@@ -612,6 +615,10 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/multiwan/groups/{id}/members", get(multiwan::list_group_members))
         .route("/api/v1/multiwan/groups/{id}/active", get(multiwan::group_active))
         .route("/api/v1/multiwan/policies", get(multiwan::list_policies))
+        .route("/api/v1/multiwan/leaks", get(multiwan::list_leaks))
+        .route("/api/v1/multiwan/flows", get(multiwan::list_flows))
+        .route("/api/v1/multiwan/gateways/{id}/sla", get(multiwan::get_sla))
+        .route("/api/v1/multiwan/config.yaml", get(multiwan::export_config))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanRead)));
 
     // multiwan:write
@@ -648,6 +655,11 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
             put(multiwan::update_policy).delete(multiwan::delete_policy),
         )
         .route("/api/v1/multiwan/apply", post(multiwan::apply_policies))
+        .route("/api/v1/multiwan/leaks", post(multiwan::create_leak))
+        .route("/api/v1/multiwan/leaks/{id}", delete(multiwan::delete_leak))
+        .route("/api/v1/multiwan/leaks/seed-mgmt", post(multiwan::seed_mgmt_escapes))
+        .route("/api/v1/multiwan/preview", post(multiwan::preview_policies))
+        .route("/api/v1/multiwan/flows/{label}/migrate", post(multiwan::migrate_flow))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
     // Merge all permission-scoped groups into one protected router with auth
@@ -742,6 +754,11 @@ async fn create_state_from_db(
     group_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let policy_engine = Arc::new(PolicyEngine::new(pool.clone(), pf.clone()));
     policy_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let leak_engine = Arc::new(LeakEngine::new(pool.clone(), pf.clone()));
+    leak_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let preflight_engine = Arc::new(PreflightEngine::new(pf.clone()));
+    let sla_engine = Arc::new(SlaEngine::new(pool.clone()));
+    sla_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     ca::migrate(&pool).await?;
     dhcp::migrate(&pool).await?;
     updates::migrate(&pool).await?;
@@ -853,6 +870,9 @@ async fn create_state_from_db(
         gateway_engine,
         group_engine,
         policy_engine,
+        leak_engine,
+        preflight_engine,
+        sla_engine,
         alias_engine,
         conntrack,
         ids_engine,

@@ -24,7 +24,10 @@ pub use db::Database;
 pub use engine::RuleEngine;
 pub use geoip::GeoIpEngine;
 pub use ha::ClusterEngine;
-pub use multiwan::{GatewayEngine, GroupEngine, InstanceEngine, PolicyEngine};
+pub use multiwan::{
+    GatewayEngine, GroupEngine, InstanceEngine, LeakEngine, PolicyEngine, PreflightEngine,
+    SlaEngine,
+};
 pub use nat::NatEngine;
 pub use shaping::ShapingEngine;
 pub use tls::TlsEngine;
