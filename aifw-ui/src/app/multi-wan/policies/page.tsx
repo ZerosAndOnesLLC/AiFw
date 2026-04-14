@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import Help, { HelpBanner } from "../Help";
 import {
   api,
   Gateway,
@@ -451,7 +452,35 @@ export default function PoliciesPage() {
       {/* ───────── Header ───────── */}
       <div className="flex flex-wrap gap-3 items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Policy Routing</h1>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+            Policy Routing
+            <Help title="Policy routing" size="md">
+              <p>
+                Policies match traffic on the usual 5-tuple plus interface and
+                ip-version, and steer matched traffic to one of three targets:
+              </p>
+              <ul className="list-disc ml-5 space-y-1">
+                <li>
+                  <b>Set routing instance</b> — traffic joins a FIB. pf uses
+                  <code> rtable N</code>. Clean isolation.
+                </li>
+                <li>
+                  <b>Route via gateway</b> — pf emits{" "}
+                  <code>route-to (if gw)</code> with a paired <code>reply-to</code>{" "}
+                  for return traffic. State is iface-bound.
+                </li>
+                <li>
+                  <b>Route via group</b> — emits a weighted{" "}
+                  <code>route-to &#123; ... &#125;</code> that picks from currently
+                  healthy group members.
+                </li>
+              </ul>
+              <p className="text-blue-400">
+                Rules are evaluated top to bottom — first match wins. Drag to
+                reorder.
+              </p>
+            </Help>
+          </h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">
             Ordered rules. First match wins. Drag rows to change priority.
             All changes are staged until you click Apply.
@@ -462,6 +491,7 @@ export default function PoliciesPage() {
             onClick={previewBlast}
             disabled={blastLoading}
             className="px-3 py-2 rounded bg-purple-600 hover:bg-purple-700 text-white text-sm disabled:opacity-50"
+            title="Dry-run: show which pf rules change + which live flows would move"
           >
             {blastLoading ? "Previewing…" : "Preview blast radius"}
           </button>
@@ -479,6 +509,32 @@ export default function PoliciesPage() {
           </button>
         </div>
       </div>
+
+      <HelpBanner title="How policy routing works" storageKey="mwan-policies">
+        <p>
+          Every policy generates one or two pf rules that live in AiFw-managed
+          anchors evaluated before the normal firewall:
+        </p>
+        <ul className="list-disc ml-5 space-y-1">
+          <li>
+            <code>aifw-pbr</code> — policy-routing (route-to / rtable) rules
+          </li>
+          <li>
+            <code>aifw-mwan-reply</code> — paired reply-to rules so return
+            packets come back via the same WAN
+          </li>
+        </ul>
+        <p>
+          Rules always use <code>keep state (if-bound)</code> so an established
+          flow doesn&apos;t silently fail over to a different WAN mid-stream.
+        </p>
+        <p>
+          <b>Preview blast radius</b> before applying — it shows the exact pf
+          rule diff and which currently-open flows would be affected. Especially
+          important before sweeping policies (e.g. <code>src=any</code>) that
+          could move your admin session.
+        </p>
+      </HelpBanner>
 
       {/* ───────── Error ───────── */}
       {error && (

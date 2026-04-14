@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Help, { HelpBanner } from "../Help";
 import {
   api,
   RouteLeak,
@@ -127,7 +128,25 @@ export default function LeaksPage() {
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white">Route Leaks</h1>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+            Route Leaks
+            <Help title="Route leaks" size="md">
+              <p>
+                FIBs are isolated by default — traffic in FIB 2 can&apos;t reach
+                FIB 0. That&apos;s great for segmentation, bad for shared
+                services like DNS, NTP, and the admin API.
+              </p>
+              <p>
+                A <b>leak</b> is an explicit pf pass rule that lets specified
+                traffic cross from one FIB to another. It&apos;s the declarative
+                equivalent of Juniper&apos;s <i>rib-groups</i>.
+              </p>
+              <p>
+                Each leak compiles into a <code>pass ... rtable N</code> rule in
+                the <code>aifw-mwan-leak</code> anchor.
+              </p>
+            </Help>
+          </h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">
             Cross-FIB passthrough for shared services (DNS, mgmt). Juniper rib-groups analogue.
           </p>
@@ -146,11 +165,48 @@ export default function LeaksPage() {
         </div>
       )}
 
+      <HelpBanner title="Why leaks matter" storageKey="mwan-leaks">
+        <p>
+          Without leaks, a host in FIB 2 has no path back to the management
+          network, can&apos;t resolve DNS against an internal resolver, and
+          can&apos;t see the admin API. That usually locks you out.
+        </p>
+        <p>
+          Click <b>Auto-seed mgmt escapes</b> to create safe default leaks from
+          every non-default instance back to FIB 0. These are marked so they
+          can&apos;t be accidentally deleted (API returns 409).
+        </p>
+        <p>
+          <b>Direction:</b> <code>bidirectional</code> emits reverse-path
+          leaks too (needed for stateful services). <code>one_way</code> is
+          useful for asymmetric cases like log-shipping out but nothing in.
+        </p>
+      </HelpBanner>
+
       <form
         onSubmit={submit}
         className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4 space-y-3"
       >
-        <h2 className="text-lg font-semibold text-white">Create leak</h2>
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+          Create leak
+          <Help title="Leak fields">
+            <p>
+              <b>From / To instance:</b> source and destination FIBs. Traffic
+              in source FIB is allowed to reach addresses in dest FIB&apos;s
+              prefix.
+            </p>
+            <p>
+              <b>Prefix:</b> the allowed network (e.g. <code>10.0.0.0/24</code>)
+              or <code>any</code> for everything. <code>any</code> is how
+              auto-seeded mgmt escapes work.
+            </p>
+            <p>
+              <b>Protocol / Ports:</b> narrow to specific services
+              (<code>tcp 8080</code>, <code>udp 53,853</code>) to minimize
+              attack surface.
+            </p>
+          </Help>
+        </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Field label="Name" err={errs.name}>
             <input

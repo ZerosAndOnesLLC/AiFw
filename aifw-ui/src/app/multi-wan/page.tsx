@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Card from "@/components/Card";
+import Help, { HelpBanner } from "./Help";
 import {
   api,
   InstanceMember,
@@ -172,13 +173,61 @@ export default function MultiWanPage() {
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
-      <div>
-        <h1 className="text-2xl font-bold text-white">Multi-WAN</h1>
-        <p className="text-sm text-[var(--text-muted)] mt-1">
-          Routing instances pin interfaces to FreeBSD FIBs for true WAN isolation.
-          The default instance (FIB 0) is reserved for management.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+            Multi-WAN
+            <Help title="What is multi-WAN?" size="md">
+              <p>
+                Multi-WAN lets you run multiple internet uplinks on one firewall
+                with true traffic isolation, failover, and load-balancing.
+              </p>
+              <p>
+                Under the hood we use <b>FreeBSD FIBs</b> (one routing table per
+                WAN) plus pf <code>route-to</code>/<code>rtable</code> rules.
+                It&apos;s the enterprise equivalent of Juniper routing-instances
+                or Cisco VRFs.
+              </p>
+              <p className="text-blue-400">
+                Start here (Instances) → define Gateways → optionally compose
+                them into Groups → write Policies that steer traffic.
+              </p>
+            </Help>
+          </h1>
+          <p className="text-sm text-[var(--text-muted)] mt-1">
+            Routing instances pin interfaces to FreeBSD FIBs for true WAN isolation.
+            The default instance (FIB 0) is reserved for management.
+          </p>
+        </div>
       </div>
+
+      <HelpBanner title="Routing instances — quick tour" storageKey="mwan-instances">
+        <p>
+          Each <b>instance</b> maps 1:1 to a FreeBSD FIB (forwarding information
+          base = a routing table). An interface can only belong to one instance
+          at a time.
+        </p>
+        <ul className="list-disc ml-5 space-y-1">
+          <li>
+            <b>default</b> (FIB 0) always exists and is marked mgmt-reachable — you
+            can&apos;t delete it. This keeps the admin session alive even if
+            policy rules break everything else.
+          </li>
+          <li>
+            Create one instance per WAN uplink: <code>wan1</code> on FIB 1,
+            <code>wan2</code> on FIB 2, etc.
+          </li>
+          <li>
+            Attach the WAN interface to the instance — AiFw runs{" "}
+            <code>ifconfig &lt;if&gt; fib N</code> for you.
+          </li>
+          <li>
+            <b>Prerequisite:</b> set <code>net.fibs=16</code> in
+            <code> /boot/loader.conf</code> and reboot. The
+            card below shows how many FIBs the kernel currently offers.
+          </li>
+        </ul>
+      </HelpBanner>
 
       {feedback && (
         <div
@@ -217,7 +266,23 @@ export default function MultiWanPage() {
         onSubmit={createInstance}
         className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4 space-y-3"
       >
-        <h2 className="text-lg font-semibold text-white">Create routing instance</h2>
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+          Create routing instance
+          <Help title="Instance fields">
+            <p>
+              <b>Name:</b> short identifier (<code>wan1</code>, <code>isp-a</code>).
+              Used in logs and UI.
+            </p>
+            <p>
+              <b>FIB:</b> unique non-zero FIB number. Max is <code>net.fibs - 1</code>.
+              Each instance owns exactly one FIB; each interface lives in exactly
+              one FIB.
+            </p>
+            <p>
+              <b>Description:</b> free-text note for future you.
+            </p>
+          </Help>
+        </h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
             <label className="block text-xs text-[var(--text-muted)] mb-1">Name</label>

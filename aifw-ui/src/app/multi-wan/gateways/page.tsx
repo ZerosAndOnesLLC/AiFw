@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Help, { HelpBanner } from "../Help";
 import {
   api,
   Gateway,
@@ -175,7 +176,23 @@ export default function GatewaysPage() {
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white">Gateways</h1>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+            Gateways
+            <Help title="Gateways" size="md">
+              <p>
+                A <b>gateway</b> is an upstream next-hop that AiFw actively
+                monitors. Each gateway belongs to one routing instance.
+              </p>
+              <p>
+                Health state (up / warning / down) drives policy routing and
+                gateway groups. Probes run every <code>interval_ms</code>.
+              </p>
+              <p className="text-blue-400">
+                Create one gateway per upstream router. Use it in Policies or
+                combine into Groups for failover/LB.
+              </p>
+            </Help>
+          </h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">
             Monitored next-hops with live RTT/jitter/loss and MOS scoring.
           </p>
@@ -200,12 +217,61 @@ export default function GatewaysPage() {
         </div>
       )}
 
+      <HelpBanner title="Gateway health monitoring" storageKey="mwan-gateways">
+        <p>
+          AiFw sends probes every <code>interval_ms</code> (default 500ms) and
+          tracks consecutive successes/failures for hysteresis — so one bad
+          probe doesn&apos;t flap a gateway down. Default thresholds:
+        </p>
+        <ul className="list-disc ml-5 space-y-1">
+          <li>3 consecutive failures → <b>down</b> (≤1.5s convergence)</li>
+          <li>5 consecutive successes → back to <b>up</b></li>
+          <li>
+            Recent loss &gt; <code>loss_pct_up</code> while technically up →
+            <b> warning</b> (still usable, deprioritized in adaptive groups)
+          </li>
+        </ul>
+        <p>
+          <b>MOS</b> (Mean Opinion Score, 1.0–4.5) is a quality estimate derived
+          from RTT + jitter + loss. ≥4.0 is excellent, 3.5 acceptable for voice,
+          &lt;3.0 poor.
+        </p>
+        <p>
+          Click the ✓/✗ buttons on a row to inject a fake probe outcome (great
+          for testing failover before you actually yank a cable).
+        </p>
+      </HelpBanner>
+
       {showForm && (
         <form
           onSubmit={submit}
           className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4 space-y-3"
         >
-          <h2 className="text-lg font-semibold text-white">New gateway</h2>
+          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+            New gateway
+            <Help title="Monitor types">
+              <p>
+                <b>ICMP ping</b> — simplest; works for any reachable host. Uses
+                setuid <code>/sbin/ping</code>.
+              </p>
+              <p>
+                <b>TCP connect</b> — opens a TCP socket to target:port. Good
+                when ICMP is filtered.
+              </p>
+              <p>
+                <b>HTTP GET</b> — full round-trip incl. TLS/layer-7. Set expected
+                HTTP status (default 200).
+              </p>
+              <p>
+                <b>DNS query</b> — sends an A lookup for the expect field
+                (default <code>example.com</code>).
+              </p>
+              <p className="text-blue-400">
+                If unsure, pick ICMP with target = next-hop. Many ISPs filter
+                ICMP to arbitrary internet hosts but not to their own routers.
+              </p>
+            </Help>
+          </h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="Name" err={errs.name}>
               <input

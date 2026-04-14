@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Help, { HelpBanner } from "../Help";
 import {
   api,
   Gateway,
@@ -174,11 +175,53 @@ export default function GroupsPage() {
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold text-white">Gateway Groups</h1>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          Gateway Groups
+          <Help title="Gateway groups" size="md">
+            <p>
+              A <b>group</b> bundles multiple gateways so policies can target a
+              collective (failover set or load-balance pool) instead of one
+              specific next-hop.
+            </p>
+            <p>
+              Groups are purely logical — the selection of which gateway wins
+              happens at pf-apply time based on live health, and again on every
+              failover event.
+            </p>
+          </Help>
+        </h1>
         <p className="text-sm text-[var(--text-muted)] mt-1">
           Compose gateways into ordered tiers with failover, weighted LB, or adaptive policies.
         </p>
       </div>
+
+      <HelpBanner title="Which policy should I pick?" storageKey="mwan-groups">
+        <ul className="list-disc ml-5 space-y-1">
+          <li>
+            <b>Failover</b> — lowest tier with at least one healthy member
+            wins. Within a tier, the highest <i>weight</i> wins. Standard
+            active/backup setup.
+          </li>
+          <li>
+            <b>Weighted LB</b> — flow-hash across all healthy members in the
+            lowest tier, scaled by weight. pf emits{" "}
+            <code>route-to &#123; (em1 gw1) weight N, ... &#125; round-robin</code>.
+          </li>
+          <li>
+            <b>Adaptive</b> — like weighted LB but weights auto-scale by live
+            MOS (higher quality → more flows). Great for video/voice.
+          </li>
+          <li>
+            <b>Load Balance</b> — simple flow distribution, no weight scaling.
+          </li>
+        </ul>
+        <p>
+          <b>Tier</b> = priority band (1 = preferred). <b>Weight</b> = intra-tier
+          share (higher = more traffic). <b>Preempt</b> = return to preferred
+          tier when it recovers. <b>Sticky</b> = keep the same client on the
+          same member (<code>src</code> hashes source IP).
+        </p>
+      </HelpBanner>
 
       {error && (
         <div className="p-3 text-sm rounded-md border text-red-400 bg-red-500/10 border-red-500/20">
@@ -190,7 +233,20 @@ export default function GroupsPage() {
         onSubmit={submit}
         className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4 space-y-3"
       >
-        <h2 className="text-lg font-semibold text-white">Create group</h2>
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+          Create group
+          <Help title="Group fields">
+            <p>
+              <b>Hysteresis:</b> ms a transition must be stable before the group
+              commits to it. Prevents flapping if a probe oscillates.
+            </p>
+            <p>
+              <b>Kill states on failover:</b> when active member goes down,
+              drop all pf states on its interface so clients reconnect via the
+              new path. Off = let TCP time out naturally.
+            </p>
+          </Help>
+        </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
             <label className="block text-xs text-[var(--text-muted)] mb-1">Name</label>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Help, { HelpBanner } from "../Help";
 import { api, Gateway } from "../lib";
 
 interface SlaSample {
@@ -74,11 +75,51 @@ export default function SlaPage() {
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold text-white">SLA Reports</h1>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          SLA Reports
+          <Help title="SLA reporting" size="md">
+            <p>
+              Every minute, the daemon snapshots each gateway&apos;s
+              rolling stats (RTT avg/p95/p99, jitter, loss %, MOS, up-seconds)
+              into a DB bucket.
+            </p>
+            <p>
+              Buckets older than 30 days are pruned automatically, so the DB
+              stays bounded even with many gateways.
+            </p>
+            <p className="text-blue-400">
+              Use the Window picker to zoom in (24h for live-ish) or out
+              (30d for monthly reports).
+            </p>
+          </Help>
+        </h1>
         <p className="text-sm text-[var(--text-muted)] mt-1">
           Rolling 1-minute buckets. 30-day retention.
         </p>
       </div>
+
+      <HelpBanner title="Reading the numbers" storageKey="mwan-sla">
+        <ul className="list-disc ml-5 space-y-1">
+          <li>
+            <b>Uptime</b> — percent of sampled minutes where the gateway was{" "}
+            <i>up</i>. Not the same as link availability from the ISP — this is
+            what AiFw&apos;s probes saw end-to-end.
+          </li>
+          <li>
+            <b>Avg RTT</b> — mean of per-minute averages. Compare against your
+            baseline; spikes usually indicate congestion or a problem
+            upstream.
+          </li>
+          <li>
+            <b>Avg Loss</b> — rolling packet loss %. &gt;1% for voice/video is
+            noticeable, &gt;5% is broken.
+          </li>
+          <li>
+            <b>Avg MOS</b> — 1.0–4.5 quality score. Green ≥4.0 excellent, yellow
+            3.5 acceptable, red &lt;3.5 poor.
+          </li>
+        </ul>
+      </HelpBanner>
 
       {error && (
         <div className="p-3 text-sm rounded-md border text-red-400 bg-red-500/10 border-red-500/20">

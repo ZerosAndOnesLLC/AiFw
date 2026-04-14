@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Help, { HelpBanner } from "../Help";
 import { api, FlowSummary } from "../lib";
 
 function formatBytes(n: number): string {
@@ -69,7 +70,27 @@ export default function FlowsPage() {
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
       <div className="flex justify-between items-start">
         <div>
-          <h1 className="text-2xl font-bold text-white">Live Flows</h1>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+            Live Flows
+            <Help title="Live flows" size="md">
+              <p>
+                Real-time dump of the pf state table. One row per active flow.
+                Refreshes every 3 seconds when auto-refresh is on.
+              </p>
+              <p>
+                <b>Iface</b> = which interface the flow is bound to (its{" "}
+                <code>(if-bound)</code> state).
+              </p>
+              <p>
+                <b>FIB</b> = which routing table the flow is using. Useful to
+                confirm your policies are steering traffic correctly.
+              </p>
+              <p>
+                <b>Bytes</b> is in + out combined. <b>Age</b> is time since the
+                state entry was created.
+              </p>
+            </Help>
+          </h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">
             Live pf state table with interface + FIB. Force-migrate kills states by label to force reroute.
           </p>
@@ -143,7 +164,25 @@ export default function FlowsPage() {
       </div>
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-4">
-        <h2 className="text-sm font-semibold text-white mb-2">Force-migrate by label</h2>
+        <h2 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
+          Force-migrate by label
+          <Help title="Force-migrate">
+            <p>
+              Every multi-WAN pf rule is labeled <code>pbr:&lt;policy-uuid&gt;</code>{" "}
+              or <code>leak:&lt;leak-uuid&gt;</code>. This kills every pf state
+              whose rule matched that label.
+            </p>
+            <p>
+              Use it when you&apos;ve changed a policy and want existing long-lived
+              flows (SSH, videoconference) to re-evaluate routing instead of
+              waiting for TCP timeout.
+            </p>
+            <p className="text-red-400">
+              This drops the flow. Clients must reconnect. Don&apos;t use on
+              your own admin session unless you know what you&apos;re doing.
+            </p>
+          </Help>
+        </h2>
         <p className="text-xs text-[var(--text-muted)] mb-2">
           Enter a policy label (e.g. <code>pbr:&lt;uuid&gt;</code>) to kill all matching states.
           Clients reconnect via the current active route.
