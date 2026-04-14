@@ -37,6 +37,8 @@ export const PERMISSION_LIST = [
   "system:reboot",     // 31
   "proxy:read",        // 32
   "proxy:write",       // 33
+  "multiwan:read",     // 34
+  "multiwan:write",    // 35
 ] as const;
 
 export type PermissionName = (typeof PERMISSION_LIST)[number];
