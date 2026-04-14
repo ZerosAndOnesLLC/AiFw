@@ -24,9 +24,12 @@ load_rc_config $name
 # running, and -R 5 respawns the child — accumulating orphans on every
 # restart.
 pidfile="${rdns_supervisor_pidfile}"
-procname="/usr/local/sbin/rdns"
+# procname matches the process whose PID is in pidfile — that's daemon(8),
+# not rdns itself. rc.subr uses this to detect stale pidfiles.
+procname="/usr/sbin/daemon"
+rdns_binary="/usr/local/sbin/rdns"
 command="/usr/sbin/daemon"
-command_args="-f -p ${rdns_pidfile} -P ${rdns_supervisor_pidfile} -R 5 -S -T rdns -o /var/log/rdns/rdns.log ${procname} -c ${rdns_config}"
+command_args="-f -p ${rdns_pidfile} -P ${rdns_supervisor_pidfile} -R 5 -S -T rdns -o /var/log/rdns/rdns.log ${rdns_binary} -c ${rdns_config}"
 
 start_precmd="rdns_precmd"
 stop_postcmd="rdns_poststop"
