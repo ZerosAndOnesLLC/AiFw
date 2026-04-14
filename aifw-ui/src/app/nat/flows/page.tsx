@@ -30,29 +30,58 @@ function getSubnet24(ip: string): string {
   return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
 }
 
-/** Animated vertical pipe using SVG: green=in (down), blue=out (up), width scales with throughput */
+/* ────────────────────────── Pipe geometry helpers ──────────────────────────
+ *
+ * Inbound = green   (emerald #10b981)   — flows from WAN/FW toward the client
+ * Outbound = amber  (#f59e0b)           — flows from client toward WAN
+ *
+ * Chosen so both pipes pop against the app's dark blue card background
+ * (previously outbound was blue-on-blue and nearly invisible).
+ *
+ * Width scaling is tuned so idle links look thin (3px) while live traffic
+ * visibly fattens — 1 Mbps ≈ 10px, 100 Mbps ≈ 26px, 1 Gbps ≈ 36px, capped
+ * at 48px so a huge flow doesn't crush the layout.
+ */
+const PIPE_IN = "16, 185, 129";   // emerald-500
+const PIPE_OUT = "245, 158, 11";  // amber-500
+
+/** bps → pipe stroke width in px (log curve tuned for 1 Kbps..10 Gbps). */
+function rateWidth(bps: number): number {
+  if (bps <= 0) return 3;
+  const lg = Math.log10(Math.max(bps, 1)); // bps:  1k=3, 1M=6, 100M=8, 1G=9
+  return Math.max(3, Math.min(48, 3 + (lg - 2) * 4));
+}
+
+/** bps → stroke alpha. Idle pipes are faint, heavy traffic is opaque. */
+function rateAlpha(bps: number): number {
+  if (bps <= 0) return 0.12;
+  const lg = Math.log10(Math.max(bps, 1));
+  return Math.min(0.95, 0.3 + (lg - 2) / 10);
+}
+
+/** Animated vertical pipe — green=in (down), amber=out (up). */
 function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: number; height?: number }) {
-  const inW = Math.max(3, rateIn > 0 ? 3 + Math.log10(Math.max(rateIn, 1)) * 2 : 3);
-  const outW = Math.max(3, rateOut > 0 ? 3 + Math.log10(Math.max(rateOut, 1)) * 2 : 3);
-  const totalW = inW + outW + 8; // gap between pipes
-  const inA = Math.min(0.85, rateIn > 0 ? 0.35 + Math.log10(Math.max(rateIn, 1)) / 8 : 0.1);
-  const outA = Math.min(0.85, rateOut > 0 ? 0.35 + Math.log10(Math.max(rateOut, 1)) / 8 : 0.1);
+  const inW = rateWidth(rateIn);
+  const outW = rateWidth(rateOut);
+  const inA = rateAlpha(rateIn);
+  const outA = rateAlpha(rateOut);
+  const totalW = inW + outW + 8;
   const svgW = Math.max(40, totalW + 16);
   const cx = svgW / 2;
-  const gap = 3;
+  const gap = Math.max(3, (inW + outW) / 6);
   return (
     <svg viewBox={`0 0 ${svgW} ${height}`} style={{ width: svgW, height }} className="block mx-auto">
-      {/* Glow */}
-      <line x1={cx} y1={0} x2={cx} y2={height} stroke="rgba(100,200,150,0.04)" strokeWidth={totalW + 10} strokeLinecap="round" />
-      {/* Inbound (green, left) — flows down */}
-      <line x1={cx - gap} y1={0} x2={cx - gap} y2={height} stroke="rgba(51,65,85,0.4)" strokeWidth={inW + 2} strokeLinecap="round" />
-      <line x1={cx - gap} y1={0} x2={cx - gap} y2={height} stroke={`rgba(34,197,94,${Math.max(0.15, inA)})`}
+      {/* Ambient glow — subtle halo around both pipes */}
+      <line x1={cx} y1={0} x2={cx} y2={height} stroke={`rgba(${PIPE_IN},0.05)`} strokeWidth={totalW + 10} strokeLinecap="round" />
+      {/* Inbound (green, left) */}
+      <line x1={cx - gap} y1={0} x2={cx - gap} y2={height} stroke="rgba(15,23,42,0.55)" strokeWidth={inW + 2} strokeLinecap="round" />
+      <line x1={cx - gap} y1={0} x2={cx - gap} y2={height} stroke={`rgba(${PIPE_IN},${inA})`}
         strokeWidth={inW} strokeDasharray="5 7" strokeLinecap="round">
         {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
       </line>
-      {/* Outbound (blue, right) — flows up */}
-      <line x1={cx + gap} y1={0} x2={cx + gap} y2={height} stroke="rgba(51,65,85,0.4)" strokeWidth={outW + 2} strokeLinecap="round" />
-      <line x1={cx + gap} y1={0} x2={cx + gap} y2={height} stroke={`rgba(59,130,246,${Math.max(0.15, outA)})`}
+      {/* Outbound (amber, right) */}
+      <line x1={cx + gap} y1={0} x2={cx + gap} y2={height} stroke="rgba(15,23,42,0.55)" strokeWidth={outW + 2} strokeLinecap="round" />
+      <line x1={cx + gap} y1={0} x2={cx + gap} y2={height} stroke={`rgba(${PIPE_OUT},${outA})`}
         strokeWidth={outW} strokeDasharray="5 7" strokeLinecap="round">
         {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="0" to="12" dur="0.5s" repeatCount="indefinite" />}
       </line>
@@ -60,30 +89,28 @@ function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: numb
   );
 }
 
-/** SVG animated pipe — green(in) + blue(out) as two parallel Bezier paths.
- *  Width scales with throughput. In flows downward, out flows upward. */
+/** SVG animated bezier pipe pair. Inbound green (down), outbound amber (up). */
 function SvgPipe({ pathIn, pathOut, rateIn, rateOut }: { pathIn: string; pathOut: string; rateIn: number; rateOut: number; id: string }) {
-  const total = rateIn + rateOut;
-  // Scale width with throughput — same log curve as VPipe
-  const width = Math.max(4, Math.min(28, total > 0 ? 4 + Math.log10(Math.max(total, 1)) * 3 : 4));
-  const inW = Math.max(3, rateIn > 0 ? 3 + Math.log10(Math.max(rateIn, 1)) * 1.5 : 3);
-  const outW = Math.max(3, rateOut > 0 ? 3 + Math.log10(Math.max(rateOut, 1)) * 1.5 : 3);
-  const inA = Math.min(0.85, rateIn > 0 ? 0.35 + Math.log10(Math.max(rateIn, 1)) / 8 : 0);
-  const outA = Math.min(0.85, rateOut > 0 ? 0.35 + Math.log10(Math.max(rateOut, 1)) / 8 : 0);
+  const inW = rateWidth(rateIn);
+  const outW = rateWidth(rateOut);
+  const inA = rateAlpha(rateIn);
+  const outA = rateAlpha(rateOut);
+  const haloW = Math.max(inW, outW) + 10;
   return (
     <g>
-      {/* Soft glow */}
-      <path d={pathIn} fill="none" stroke="rgba(100,200,150,0.03)" strokeWidth={width + 8} strokeLinecap="round" />
-      {/* Pipe backgrounds */}
-      <path d={pathIn} fill="none" stroke="rgba(51,65,85,0.4)" strokeWidth={inW + 2} strokeLinecap="round" />
-      <path d={pathOut} fill="none" stroke="rgba(51,65,85,0.4)" strokeWidth={outW + 2} strokeLinecap="round" />
-      {/* Inbound (green) — dashes flow downward (negative offset = toward subnets) */}
-      <path d={pathIn} fill="none" stroke={`rgba(34,197,94,${Math.max(0.2, inA)})`}
+      {/* Colored halos hint at direction even before dashes animate */}
+      <path d={pathIn} fill="none" stroke={`rgba(${PIPE_IN},0.06)`} strokeWidth={haloW} strokeLinecap="round" />
+      <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},0.06)`} strokeWidth={haloW} strokeLinecap="round" />
+      {/* Dark casing so the bright dash color reads against any background */}
+      <path d={pathIn} fill="none" stroke="rgba(15,23,42,0.55)" strokeWidth={inW + 2} strokeLinecap="round" />
+      <path d={pathOut} fill="none" stroke="rgba(15,23,42,0.55)" strokeWidth={outW + 2} strokeLinecap="round" />
+      {/* Inbound (green) — flows toward subnets */}
+      <path d={pathIn} fill="none" stroke={`rgba(${PIPE_IN},${inA})`}
         strokeWidth={inW} strokeDasharray="5 7" strokeLinecap="round">
         {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
       </path>
-      {/* Outbound (blue) — dashes flow upward (positive offset = toward firewall) */}
-      <path d={pathOut} fill="none" stroke={`rgba(59,130,246,${Math.max(0.2, outA)})`}
+      {/* Outbound (amber) — flows toward firewall/WAN */}
+      <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},${outA})`}
         strokeWidth={outW} strokeDasharray="5 7" strokeLinecap="round">
         {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="0" to="12" dur="0.5s" repeatCount="indefinite" />}
       </path>
@@ -265,8 +292,8 @@ export default function NatFlowsPage() {
             <span className="text-[var(--text-secondary)]">Group by /24</span>
           </label>
           <div className="flex items-center gap-3 text-[10px]">
-            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-emerald-500/50 rounded-sm inline-block" /> In</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-blue-500/50 rounded-sm inline-block" /> Out</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-emerald-500/70 rounded-sm inline-block" /> In</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-amber-500/70 rounded-sm inline-block" /> Out</span>
           </div>
           <div className="flex items-center gap-1.5">
             <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
@@ -327,7 +354,7 @@ export default function NatFlowsPage() {
                         </div>
                         <div className="flex gap-2 mt-0.5 text-[9px]">
                           <span className="text-emerald-400">{formatBps(wr.in)}</span>
-                          <span className="text-blue-400">{formatBps(wr.out)}</span>
+                          <span className="text-amber-400">{formatBps(wr.out)}</span>
                         </div>
                       </div>
                     );
@@ -429,7 +456,7 @@ export default function NatFlowsPage() {
                         </div>
                         <div className="flex gap-2 mt-0.5 text-[9px]">
                           <span className="text-emerald-400">{formatBps(ifRate.out)}</span>
-                          <span className="text-blue-400">{formatBps(ifRate.in)}</span>
+                          <span className="text-amber-400">{formatBps(ifRate.in)}</span>
                         </div>
 
                   {/* Fan-out to subnets */}
@@ -482,7 +509,7 @@ export default function NatFlowsPage() {
                                 </div>
                                 <div className="flex gap-1.5 mt-1 text-[9px] leading-none">
                                   <span className="text-emerald-400">{formatBps(sr.in)}</span>
-                                  <span className="text-blue-400">{formatBps(sr.out)}</span>
+                                  <span className="text-amber-400">{formatBps(sr.out)}</span>
                                 </div>
                                 <div className="flex justify-between w-full mt-0.5 text-[8px] text-gray-500 leading-none">
                                   <span>{sn.hosts.length}h · {sn.conns}c</span>
@@ -581,7 +608,7 @@ export default function NatFlowsPage() {
                   </div>
                   {(c.bytes_in > 0 || c.bytes_out > 0) && (
                     <div className="text-[10px] text-gray-500 mt-0.5">
-                      <span className="text-emerald-400">In: {formatBytes(c.bytes_in)}</span> · <span className="text-blue-400">Out: {formatBytes(c.bytes_out)}</span>
+                      <span className="text-emerald-400">In: {formatBytes(c.bytes_in)}</span> · <span className="text-amber-400">Out: {formatBytes(c.bytes_out)}</span>
                     </div>
                   )}
                 </div>
