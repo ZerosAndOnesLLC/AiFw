@@ -69,22 +69,23 @@ pub fn prompt_password(label: &str) -> String {
     // Try to disable echo on Unix
     #[cfg(unix)]
     {
-        use std::os::unix::io::AsRawFd;
-        let fd = io::stdin().as_raw_fd();
-        let mut term = unsafe {
-            let mut t = std::mem::zeroed::<libc::termios>();
-            libc::tcgetattr(fd, &mut t);
-            t
-        };
-        let old_term = term;
-        term.c_lflag &= !libc::ECHO;
-        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) };
+        use nix::sys::termios::{LocalFlags, SetArg, tcgetattr, tcsetattr};
+        let stdin = io::stdin();
+        if let Ok(old_term) = tcgetattr(&stdin) {
+            let mut term = old_term.clone();
+            term.local_flags.remove(LocalFlags::ECHO);
+            let _ = tcsetattr(&stdin, SetArg::TCSANOW, &term);
 
+            let mut input = String::new();
+            stdin.lock().read_line(&mut input).unwrap();
+            println!(); // newline after hidden input
+
+            let _ = tcsetattr(&stdin, SetArg::TCSANOW, &old_term);
+            return input.trim().to_string();
+        }
+        // tcgetattr failed (not a tty) — fall through to echoed read.
         let mut input = String::new();
-        io::stdin().lock().read_line(&mut input).unwrap();
-        println!(); // newline after hidden input
-
-        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &old_term) };
+        stdin.lock().read_line(&mut input).unwrap();
         return input.trim().to_string();
     }
 

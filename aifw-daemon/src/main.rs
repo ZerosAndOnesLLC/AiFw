@@ -199,20 +199,27 @@ async fn main() -> anyhow::Result<()> {
     // Drop privileges to 'aifw' user if running as root
     #[cfg(unix)]
     {
-        use std::ffi::CString;
-        if unsafe { libc::getuid() } == 0 {
-            let user = CString::new("aifw").unwrap();
-            let pw = unsafe { libc::getpwnam(user.as_ptr()) };
-            if !pw.is_null() {
-                let uid = unsafe { (*pw).pw_uid };
-                let gid = unsafe { (*pw).pw_gid };
-                unsafe {
-                    libc::setgid(gid);
-                    libc::setuid(uid);
+        use nix::unistd::{Uid, User};
+        if Uid::effective().is_root() {
+            match User::from_name("aifw") {
+                Ok(Some(pw)) => {
+                    let uid = pw.uid;
+                    let gid = pw.gid;
+                    if let Err(e) = nix::unistd::setgid(gid) {
+                        tracing::warn!(error = %e, "failed to setgid");
+                    }
+                    if let Err(e) = nix::unistd::setuid(uid) {
+                        tracing::warn!(error = %e, "failed to setuid");
+                    } else {
+                        info!(uid = uid.as_raw(), gid = gid.as_raw(), "dropped privileges to aifw user");
+                    }
                 }
-                info!(uid, gid, "dropped privileges to aifw user");
-            } else {
-                tracing::warn!("aifw user not found — continuing as root");
+                Ok(None) => {
+                    tracing::warn!("aifw user not found — continuing as root");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to look up aifw user — continuing as root");
+                }
             }
         }
     }
