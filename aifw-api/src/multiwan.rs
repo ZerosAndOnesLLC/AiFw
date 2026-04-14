@@ -1029,3 +1029,86 @@ pub async fn import_config(
         ),
     }))
 }
+
+// ============================================================
+// Policy reorder + duplicate (better UX)
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub struct ReorderRequest {
+    pub policy_ids: Vec<String>,
+}
+
+pub async fn reorder_policies(
+    State(state): State<AppState>,
+    Json(req): Json<ReorderRequest>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    for (i, id_str) in req.policy_ids.iter().enumerate() {
+        let uuid = Uuid::parse_str(id_str).map_err(|_| bad_request())?;
+        let mut p = state
+            .policy_engine
+            .get(uuid)
+            .await
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        p.priority = (i as i64) + 1;
+        state
+            .policy_engine
+            .update(p)
+            .await
+            .map_err(|_| internal())?;
+    }
+    let _ = apply_all(&state).await;
+    Ok(Json(MessageResponse {
+        message: format!("{} policies reordered", req.policy_ids.len()),
+    }))
+}
+
+pub async fn duplicate_policy(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<ApiResponse<aifw_common::PolicyRule>>), StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let src = state
+        .policy_engine
+        .get(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let now = Utc::now();
+    let dup = aifw_common::PolicyRule {
+        id: Uuid::new_v4(),
+        priority: src.priority + 1,
+        name: format!("{}-copy", src.name),
+        status: "disabled".into(), // duplicated rules start disabled for safety
+        created_at: now,
+        updated_at: now,
+        ..src
+    };
+    let dup = state
+        .policy_engine
+        .add(dup)
+        .await
+        .map_err(|_| bad_request())?;
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: dup })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TogglePolicyRequest {
+    pub enabled: bool,
+}
+
+pub async fn toggle_policy(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<TogglePolicyRequest>,
+) -> Result<Json<ApiResponse<aifw_common::PolicyRule>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let mut p = state
+        .policy_engine
+        .get(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    p.status = if req.enabled { "active".into() } else { "disabled".into() };
+    let p = state.policy_engine.update(p).await.map_err(|_| internal())?;
+    let _ = apply_all(&state).await;
+    Ok(Json(ApiResponse { data: p }))
+}

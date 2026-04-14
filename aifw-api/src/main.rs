@@ -656,6 +656,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
             put(multiwan::update_policy).delete(multiwan::delete_policy),
         )
         .route("/api/v1/multiwan/apply", post(multiwan::apply_policies))
+        .route("/api/v1/multiwan/policies/reorder", put(multiwan::reorder_policies))
+        .route("/api/v1/multiwan/policies/{id}/duplicate", post(multiwan::duplicate_policy))
+        .route("/api/v1/multiwan/policies/{id}/toggle", put(multiwan::toggle_policy))
         .route("/api/v1/multiwan/leaks", post(multiwan::create_leak))
         .route("/api/v1/multiwan/leaks/{id}", delete(multiwan::delete_leak))
         .route("/api/v1/multiwan/leaks/seed-mgmt", post(multiwan::seed_mgmt_escapes))
