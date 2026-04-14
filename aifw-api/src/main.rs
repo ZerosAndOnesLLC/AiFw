@@ -937,41 +937,104 @@ fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> a
     Ok(())
 }
 
-/// Ensure rdr-anchor "aifw-nat" exists in pf.conf (needed for DNAT port forwarding).
-/// Older installs only had nat-anchor; without rdr-anchor, rdr rules in the anchor are never evaluated.
+/// Ensure AiFw anchors are present in /usr/local/etc/aifw/pf.conf.aifw.
+///
+/// Works line-by-line (never substring-match) so `anchor "aifw"` cannot
+/// accidentally match inside `nat-anchor "aifw"` or `rdr-anchor "aifw"`.
+///
+/// - Adds `rdr-anchor "aifw-nat"` after `nat-anchor "aifw-nat"` if missing
+///   (fix for older installs that predated rdr support).
+/// - Inserts multi-WAN filter anchors (`aifw-pbr`, `aifw-mwan-leak`,
+///   `aifw-mwan-reply`) right before the first standalone `anchor "aifw"`
+///   line (i.e. the filter-anchors section, never the nat/rdr section).
+/// - Writes the patched file via `sudo tee` and reloads pf **only if**
+///   `pfctl -nf` validates it first. If validation fails we log a loud
+///   warning and leave the original file untouched.
 async fn ensure_rdr_anchor() {
     let pf_path = "/usr/local/etc/aifw/pf.conf.aifw";
     let Ok(content) = tokio::fs::read_to_string(pf_path).await else { return };
-    let mut patched = content.clone();
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 8);
     let mut changed = false;
 
-    if !patched.contains("rdr-anchor \"aifw-nat\"") && patched.contains("nat-anchor \"aifw-nat\"") {
-        patched = patched.replace(
-            "nat-anchor \"aifw-nat\"",
-            "nat-anchor \"aifw-nat\"\nrdr-anchor \"aifw-nat\"",
-        );
-        changed = true;
-    }
+    let has_rdr = lines.iter().any(|l| l.trim() == "rdr-anchor \"aifw-nat\"");
+    let mwan_anchors = ["aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"];
+    let has_mwan: Vec<bool> = mwan_anchors
+        .iter()
+        .map(|a| {
+            let wanted = format!("anchor \"{a}\"");
+            lines.iter().any(|l| l.trim() == wanted)
+        })
+        .collect();
 
-    // Multi-WAN anchors (#132). Insert BEFORE `anchor "aifw"` so policy-routing
-    // decisions fire first. Existing installs upgrading to multi-WAN must pick
-    // these up without a re-run of aifw-setup.
-    for mwan_anchor in ["aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"] {
-        let line = format!("anchor \"{mwan_anchor}\"");
-        if !patched.contains(&line) && patched.contains("anchor \"aifw\"") {
-            patched = patched.replacen(
-                "anchor \"aifw\"",
-                &format!("{line}\nanchor \"aifw\""),
-                1,
-            );
-            changed = true;
+    let mut mwan_inserted = false;
+
+    for line in lines.iter() {
+        let t = line.trim();
+
+        // 1. After `nat-anchor "aifw-nat"` inject `rdr-anchor "aifw-nat"` if absent.
+        if t == "nat-anchor \"aifw-nat\"" {
+            out.push((*line).to_string());
+            if !has_rdr {
+                out.push("rdr-anchor \"aifw-nat\"".to_string());
+                changed = true;
+            }
+            continue;
         }
+
+        // 2. Before the filter-section `anchor "aifw"` (trimmed EXACTLY — won't
+        //    match nat-anchor or rdr-anchor), inject any missing mwan anchors.
+        if !mwan_inserted && t == "anchor \"aifw\"" {
+            for (i, a) in mwan_anchors.iter().enumerate() {
+                if !has_mwan[i] {
+                    out.push(format!("anchor \"{a}\""));
+                    changed = true;
+                }
+            }
+            mwan_inserted = true;
+            out.push((*line).to_string());
+            continue;
+        }
+
+        out.push((*line).to_string());
     }
 
     if !changed {
         return;
     }
 
+    let patched = out.join("\n") + "\n";
+
+    // Dry-run validate before committing. Write to a temp file, pfctl -nf it,
+    // and only replace the real pf.conf.aifw if validation passes.
+    let tmp_path = "/tmp/aifw-pf.conf.aifw.patched";
+    if tokio::fs::write(tmp_path, &patched).await.is_err() {
+        tracing::warn!("Failed to stage patched pf.conf at {tmp_path}; aborting patch");
+        return;
+    }
+    let validate = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["/sbin/pfctl", "-nf", tmp_path])
+        .output()
+        .await;
+    match validate {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr).into_owned();
+            tracing::warn!(
+                "Patched pf.conf did NOT validate — leaving original in place. pfctl -nf: {err}"
+            );
+            let _ = tokio::fs::remove_file(tmp_path).await;
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("pfctl -nf failed to run: {e}");
+            let _ = tokio::fs::remove_file(tmp_path).await;
+            return;
+        }
+    }
+
+    // Validation passed — commit.
     if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["tee", pf_path])
         .stdin(std::process::Stdio::piped())
@@ -983,13 +1046,13 @@ async fn ensure_rdr_anchor() {
         }
         drop(child.stdin.take());
         let _ = child.wait().await;
-        // Reload pf with the patched config
         let _ = tokio::process::Command::new("/usr/local/bin/sudo")
             .args(["/sbin/pfctl", "-f", pf_path])
             .output()
             .await;
         info!("Patched pf.conf with missing AiFw anchors and reloaded");
     }
+    let _ = tokio::fs::remove_file(tmp_path).await;
 }
 
 #[tokio::main]
