@@ -1069,6 +1069,7 @@ pub async fn create_host(State(state): State<AppState>, Json(req): Json<CreateHo
         .bind(&id).bind(&req.hostname).bind(&req.domain).bind(&rt).bind(&req.value)
         .bind(req.mx_priority.map(|v| v as i64)).bind(req.description.as_deref()).bind(enabled).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
+    state.set_pending(|p| p.dns = true).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: HostOverride { id, hostname: req.hostname, domain: req.domain, record_type: rt, value: req.value, mx_priority: req.mx_priority, description: req.description, enabled, created_at: now } })))
 }
 
@@ -1085,12 +1086,14 @@ pub async fn update_host(State(state): State<AppState>, Path(id): Path<String>, 
         .bind(req.mx_priority.map(|v| v as i64)).bind(req.description.as_deref()).bind(enabled)
         .execute(&state.pool).await.map_err(|_| internal())?;
     if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    state.set_pending(|p| p.dns = true).await;
     Ok(Json(ApiResponse { data: HostOverride { id, hostname: req.hostname, domain: req.domain, record_type: rt, value: req.value, mx_priority: req.mx_priority, description: req.description, enabled, created_at: Utc::now().to_rfc3339() } }))
 }
 
 pub async fn delete_host(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<MessageResponse>, StatusCode> {
     let r = sqlx::query("DELETE FROM dns_host_overrides WHERE id=?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
     if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    state.set_pending(|p| p.dns = true).await;
     Ok(Json(MessageResponse { message: "Host override deleted".to_string() }))
 }
 
@@ -1112,6 +1115,7 @@ pub async fn create_domain(State(state): State<AppState>, Json(req): Json<Create
     sqlx::query("INSERT INTO dns_domain_overrides (id, domain, server, description, enabled, created_at) VALUES (?1,?2,?3,?4,?5,?6)")
         .bind(&id).bind(&req.domain).bind(&req.server).bind(req.description.as_deref()).bind(enabled).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
+    state.set_pending(|p| p.dns = true).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: DomainOverride { id, domain: req.domain, server: req.server, description: req.description, enabled, created_at: now } })))
 }
 
@@ -1121,12 +1125,14 @@ pub async fn update_domain(State(state): State<AppState>, Path(id): Path<String>
         .bind(&id).bind(&req.domain).bind(&req.server).bind(req.description.as_deref()).bind(enabled)
         .execute(&state.pool).await.map_err(|_| internal())?;
     if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    state.set_pending(|p| p.dns = true).await;
     Ok(Json(ApiResponse { data: DomainOverride { id, domain: req.domain, server: req.server, description: req.description, enabled, created_at: Utc::now().to_rfc3339() } }))
 }
 
 pub async fn delete_domain(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<MessageResponse>, StatusCode> {
     let r = sqlx::query("DELETE FROM dns_domain_overrides WHERE id=?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
     if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    state.set_pending(|p| p.dns = true).await;
     Ok(Json(MessageResponse { message: "Domain override deleted".to_string() }))
 }
 
