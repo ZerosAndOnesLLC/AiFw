@@ -113,9 +113,9 @@ fn validate_address(addr: &Address) -> Result<()> {
 
 fn validate_port_protocol(proto: &Protocol) -> Result<()> {
     match proto {
-        Protocol::Tcp | Protocol::Udp => Ok(()),
+        Protocol::Tcp | Protocol::Udp | Protocol::TcpUdp => Ok(()),
         _ => Err(AifwError::Validation(
-            "port matching requires TCP or UDP protocol".to_string(),
+            "port matching requires TCP, UDP, or TCP/UDP protocol".to_string(),
         )),
     }
 }
