@@ -43,7 +43,7 @@ function getSubnet24(ip: string): string {
  * at 48px so a huge flow doesn't crush the layout.
  */
 const PIPE_IN = "16, 185, 129";   // emerald-500
-const PIPE_OUT = "245, 158, 11";  // amber-500
+const PIPE_OUT = "239, 68, 68";   // red-500
 
 /** bps → pipe stroke width in px (log curve tuned for 1 Kbps..10 Gbps). */
 function rateWidth(bps: number): number {
@@ -293,7 +293,7 @@ export default function NatFlowsPage() {
           </label>
           <div className="flex items-center gap-3 text-[10px]">
             <span className="flex items-center gap-1"><span className="w-2 h-3 bg-emerald-500/70 rounded-sm inline-block" /> In</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-amber-500/70 rounded-sm inline-block" /> Out</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-red-500/70 rounded-sm inline-block" /> Out</span>
           </div>
           <div className="flex items-center gap-1.5">
             <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
@@ -354,7 +354,7 @@ export default function NatFlowsPage() {
                         </div>
                         <div className="flex gap-2 mt-0.5 text-[9px]">
                           <span className="text-emerald-400">{formatBps(wr.in)}</span>
-                          <span className="text-amber-400">{formatBps(wr.out)}</span>
+                          <span className="text-red-400">{formatBps(wr.out)}</span>
                         </div>
                       </div>
                     );
@@ -381,13 +381,16 @@ export default function NatFlowsPage() {
             );
           })()}
 
-          {/* Firewall */}
-          <div className="w-28 h-28 rounded-2xl bg-gradient-to-br from-amber-500/20 to-red-500/15 border-2 border-amber-500/30 flex flex-col items-center justify-center shadow-lg shadow-amber-500/10">
-            <svg className="w-9 h-9 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-            </svg>
-            <p className="text-[10px] font-bold text-amber-400 mt-0.5">AiFw</p>
-            <p className="text-[8px] text-gray-500">{connections.length} states</p>
+          {/* Firewall — uses the AiFw sidebar logo so this node matches the
+              brand mark shown in the top-left. */}
+          <div className="w-28 h-28 rounded-2xl bg-[var(--bg-primary)] border-2 border-[var(--border)] flex flex-col items-center justify-center shadow-lg shadow-black/40 px-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logo-sidebar.png"
+              alt="AiFw"
+              className="h-10 w-auto object-contain opacity-95"
+            />
+            <p className="text-[8px] text-gray-500 mt-1">{connections.length} states</p>
           </div>
 
           {/* SVG fan-out from AiFw to LAN/WG interfaces + interface columns */}
@@ -456,7 +459,7 @@ export default function NatFlowsPage() {
                         </div>
                         <div className="flex gap-2 mt-0.5 text-[9px]">
                           <span className="text-emerald-400">{formatBps(ifRate.out)}</span>
-                          <span className="text-amber-400">{formatBps(ifRate.in)}</span>
+                          <span className="text-red-400">{formatBps(ifRate.in)}</span>
                         </div>
 
                   {/* Fan-out to subnets */}
@@ -509,7 +512,7 @@ export default function NatFlowsPage() {
                                 </div>
                                 <div className="flex gap-1.5 mt-1 text-[9px] leading-none">
                                   <span className="text-emerald-400">{formatBps(sr.in)}</span>
-                                  <span className="text-amber-400">{formatBps(sr.out)}</span>
+                                  <span className="text-red-400">{formatBps(sr.out)}</span>
                                 </div>
                                 <div className="flex justify-between w-full mt-0.5 text-[8px] text-gray-500 leading-none">
                                   <span>{sn.hosts.length}h · {sn.conns}c</span>
@@ -608,7 +611,7 @@ export default function NatFlowsPage() {
                   </div>
                   {(c.bytes_in > 0 || c.bytes_out > 0) && (
                     <div className="text-[10px] text-gray-500 mt-0.5">
-                      <span className="text-emerald-400">In: {formatBytes(c.bytes_in)}</span> · <span className="text-amber-400">Out: {formatBytes(c.bytes_out)}</span>
+                      <span className="text-emerald-400">In: {formatBytes(c.bytes_in)}</span> · <span className="text-red-400">Out: {formatBytes(c.bytes_out)}</span>
                     </div>
                   )}
                 </div>
