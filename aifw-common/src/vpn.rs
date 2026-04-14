@@ -20,6 +20,11 @@ pub struct WgTunnel {
     pub mtu: Option<u16>,
     /// Physical interface to listen on (e.g. "vtnet0"). None = listen on all.
     pub listen_interface: Option<String>,
+    /// Comma-separated CIDRs to route through the tunnel when a client uses
+    /// split-tunnel mode (e.g. `172.29.0.0/16, 10.0.0.0/8`). When `None`, the
+    /// split-tunnel config falls back to the tunnel's own network CIDR.
+    #[serde(default)]
+    pub split_routes: Option<String>,
     pub status: VpnStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -40,6 +45,7 @@ impl WgTunnel {
             dns: None,
             mtu: None,
             listen_interface: None,
+            split_routes: None,
             status: VpnStatus::Down,
             created_at: now,
             updated_at: now,
@@ -159,8 +165,18 @@ impl WgPeer {
             tunnel.listen_port
         ));
         if split_tunnel {
-            // Only route the tunnel's subnet through the VPN
-            conf.push_str(&format!("AllowedIPs = {}\n", tunnel.address));
+            // Prefer admin-configured split routes; otherwise derive the
+            // network CIDR from the tunnel address (so 172.29.240.1/24 yields
+            // 172.29.240.0/24 instead of a host/prefix that confuses some
+            // clients).
+            let routes = tunnel
+                .split_routes
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| address_network_cidr(&tunnel.address));
+            conf.push_str(&format!("AllowedIPs = {routes}\n"));
         } else {
             // Route all traffic through the VPN
             conf.push_str("AllowedIPs = 0.0.0.0/0, ::/0\n");
@@ -554,4 +570,134 @@ fn rand_spi() -> u32 {
     let id = Uuid::new_v4();
     let bytes = id.as_bytes();
     u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) | 0x100
+}
+
+/// Turn an Address into a WireGuard-friendly network CIDR string.
+/// `Address::Network(172.29.240.1, 24)` → `"172.29.240.0/24"` (masked to the
+/// network boundary). Falls back to "0.0.0.0/0" for non-network variants.
+fn address_network_cidr(addr: &crate::types::Address) -> String {
+    use crate::types::Address;
+    use std::net::IpAddr;
+    match addr {
+        Address::Network(ip, prefix) => match ip {
+            IpAddr::V4(v4) => {
+                let p = (*prefix).min(32);
+                let bits = u32::from(*v4);
+                let mask: u32 = if p == 0 { 0 } else { u32::MAX << (32 - p) };
+                let net = std::net::Ipv4Addr::from(bits & mask);
+                format!("{net}/{p}")
+            }
+            IpAddr::V6(v6) => {
+                let p = (*prefix).min(128);
+                let bits = u128::from(*v6);
+                let mask: u128 = if p == 0 {
+                    0
+                } else {
+                    u128::MAX << (128 - p)
+                };
+                let net = std::net::Ipv6Addr::from(bits & mask);
+                format!("{net}/{p}")
+            }
+        },
+        Address::Single(ip) => match ip {
+            IpAddr::V4(_) => format!("{ip}/32"),
+            IpAddr::V6(_) => format!("{ip}/128"),
+        },
+        _ => "0.0.0.0/0".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod split_tunnel_tests {
+    use super::*;
+    use crate::types::Address;
+
+    #[test]
+    fn network_cidr_masks_to_boundary() {
+        let a = Address::Network("172.29.240.1".parse().unwrap(), 24);
+        assert_eq!(address_network_cidr(&a), "172.29.240.0/24");
+    }
+
+    #[test]
+    fn network_cidr_handles_slash_16() {
+        let a = Address::Network("172.29.5.1".parse().unwrap(), 16);
+        assert_eq!(address_network_cidr(&a), "172.29.0.0/16");
+    }
+
+    #[test]
+    fn single_address_becomes_host_route() {
+        let a = Address::Single("10.0.0.1".parse().unwrap());
+        assert_eq!(address_network_cidr(&a), "10.0.0.1/32");
+    }
+
+    #[test]
+    fn split_routes_override_wins() {
+        let tunnel = WgTunnel {
+            id: Uuid::new_v4(),
+            name: "wg0".into(),
+            interface: crate::types::Interface("wg0".into()),
+            private_key: "x".into(),
+            public_key: "y".into(),
+            listen_port: 51820,
+            address: Address::Network("172.29.240.1".parse().unwrap(), 24),
+            dns: None,
+            mtu: None,
+            listen_interface: None,
+            split_routes: Some("172.29.0.0/16, 10.0.0.0/8".into()),
+            status: VpnStatus::Down,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let peer = WgPeer {
+            id: Uuid::new_v4(),
+            tunnel_id: tunnel.id,
+            name: "peer1".into(),
+            public_key: "pk".into(),
+            preshared_key: None,
+            client_private_key: Some("cpk".into()),
+            endpoint: None,
+            allowed_ips: vec![Address::Network("172.29.240.2".parse().unwrap(), 32)],
+            persistent_keepalive: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let cfg = peer.to_client_config(&tunnel, "1.2.3.4", true);
+        assert!(cfg.contains("AllowedIPs = 172.29.0.0/16, 10.0.0.0/8"));
+    }
+
+    #[test]
+    fn split_routes_fallback_is_network_not_host() {
+        let tunnel = WgTunnel {
+            id: Uuid::new_v4(),
+            name: "wg0".into(),
+            interface: crate::types::Interface("wg0".into()),
+            private_key: "x".into(),
+            public_key: "y".into(),
+            listen_port: 51820,
+            address: Address::Network("172.29.240.1".parse().unwrap(), 24),
+            dns: None,
+            mtu: None,
+            listen_interface: None,
+            split_routes: None,
+            status: VpnStatus::Down,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let peer = WgPeer {
+            id: Uuid::new_v4(),
+            tunnel_id: tunnel.id,
+            name: "peer1".into(),
+            public_key: "pk".into(),
+            preshared_key: None,
+            client_private_key: Some("cpk".into()),
+            endpoint: None,
+            allowed_ips: vec![Address::Network("172.29.240.2".parse().unwrap(), 32)],
+            persistent_keepalive: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let cfg = peer.to_client_config(&tunnel, "1.2.3.4", true);
+        assert!(cfg.contains("AllowedIPs = 172.29.240.0/24"));
+        assert!(!cfg.contains("172.29.240.1/24"));
+    }
 }

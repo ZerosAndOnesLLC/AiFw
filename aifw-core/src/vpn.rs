@@ -76,6 +76,12 @@ impl VpnEngine {
             .execute(&self.pool)
             .await;
 
+        // Add split_routes column: comma-separated CIDRs used for split-tunnel
+        // AllowedIPs. NULL means fall back to tunnel's own network CIDR.
+        let _ = sqlx::query("ALTER TABLE wg_tunnels ADD COLUMN split_routes TEXT")
+            .execute(&self.pool)
+            .await;
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS ipsec_sas (
@@ -125,8 +131,8 @@ impl VpnEngine {
         sqlx::query(
             r#"
             INSERT INTO wg_tunnels (id, name, interface, private_key, public_key, listen_port,
-                address, dns, mtu, listen_interface, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                address, dns, mtu, listen_interface, split_routes, status, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             "#,
         )
         .bind(tunnel.id.to_string())
@@ -139,6 +145,7 @@ impl VpnEngine {
         .bind(tunnel.dns.as_deref())
         .bind(tunnel.mtu.map(|m| m as i64))
         .bind(tunnel.listen_interface.as_deref())
+        .bind(tunnel.split_routes.as_deref())
         .bind(tunnel.status.to_string())
         .bind(tunnel.created_at.to_rfc3339())
         .bind(tunnel.updated_at.to_rfc3339())
@@ -188,8 +195,9 @@ impl VpnEngine {
             r#"
             UPDATE wg_tunnels
                SET name = ?1, listen_port = ?2, address = ?3, dns = ?4, mtu = ?5,
-                   listen_interface = ?6, private_key = ?7, public_key = ?8, updated_at = ?9
-             WHERE id = ?10
+                   listen_interface = ?6, split_routes = ?7,
+                   private_key = ?8, public_key = ?9, updated_at = ?10
+             WHERE id = ?11
             "#,
         )
         .bind(&tunnel.name)
@@ -198,6 +206,7 @@ impl VpnEngine {
         .bind(tunnel.dns.as_deref())
         .bind(tunnel.mtu.map(|m| m as i64))
         .bind(tunnel.listen_interface.as_deref())
+        .bind(tunnel.split_routes.as_deref())
         .bind(&tunnel.private_key)
         .bind(&tunnel.public_key)
         .bind(tunnel.updated_at.to_rfc3339())
@@ -676,6 +685,8 @@ struct WgTunnelRow {
     dns: Option<String>,
     mtu: Option<i64>,
     listen_interface: Option<String>,
+    #[sqlx(default)]
+    split_routes: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -694,6 +705,7 @@ impl WgTunnelRow {
             dns: self.dns,
             mtu: self.mtu.map(|m| m as u16),
             listen_interface: self.listen_interface,
+            split_routes: self.split_routes,
             status: parse_vpn_status(&self.status),
             created_at: parse_dt(&self.created_at)?,
             updated_at: parse_dt(&self.updated_at)?,

@@ -1640,6 +1640,9 @@ pub struct CreateWgTunnelRequest {
     pub dns: Option<String>,
     pub mtu: Option<u16>,
     pub listen_interface: Option<String>,
+    /// Comma-separated CIDRs to advertise as split-tunnel AllowedIPs.
+    /// When empty/omitted, falls back to the tunnel's network CIDR.
+    pub split_routes: Option<String>,
 }
 
 pub async fn list_wg_tunnels(
@@ -1668,6 +1671,12 @@ pub async fn create_wg_tunnel(
     tunnel.dns = req.dns;
     tunnel.mtu = req.mtu;
     tunnel.listen_interface = req.listen_interface;
+    tunnel.split_routes = req
+        .split_routes
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let tunnel = state.vpn_engine.add_wg_tunnel(tunnel).await.map_err(|_| bad_request())?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: tunnel })))
 }
@@ -1685,6 +1694,12 @@ pub async fn update_wg_tunnel(
     tunnel.dns = req.dns;
     tunnel.mtu = req.mtu;
     tunnel.listen_interface = req.listen_interface;
+    tunnel.split_routes = req
+        .split_routes
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     tunnel.updated_at = chrono::Utc::now();
     let tunnel = state.vpn_engine.update_wg_tunnel(tunnel).await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: tunnel }))

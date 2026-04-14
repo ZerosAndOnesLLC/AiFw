@@ -16,6 +16,7 @@ interface WgTunnel {
   dns: string | null;
   mtu: number | null;
   listen_interface: string | null;
+  split_routes: string | null;
   status: string;
   created_at: string;
 }
@@ -87,6 +88,7 @@ const defaultWgForm = {
   dns: "",
   mtu: "",
   listen_interface: "any",
+  split_routes: "",
 };
 
 const defaultPeerForm = {
@@ -310,6 +312,9 @@ export default function VpnPage() {
       if (wgForm.listen_interface && wgForm.listen_interface !== "any") {
         body.listen_interface = wgForm.listen_interface;
       }
+      if (wgForm.split_routes.trim()) {
+        body.split_routes = wgForm.split_routes.trim();
+      }
 
       if (editingWgId) {
         await apiFetch(`/api/v1/vpn/wg/${editingWgId}`, {
@@ -342,6 +347,7 @@ export default function VpnPage() {
       dns: tunnel.dns || "",
       mtu: tunnel.mtu ? String(tunnel.mtu) : "",
       listen_interface: tunnel.listen_interface || "any",
+      split_routes: tunnel.split_routes || "",
     });
     setEditingWgId(tunnel.id);
     setShowWgForm(true);
@@ -672,6 +678,26 @@ export default function VpnPage() {
                       className={inputCls}
                     />
                   </div>
+                </div>
+                <div className="mt-3">
+                  <label className={labelCls}>
+                    Split-tunnel routes{" "}
+                    <span className="text-gray-500 font-normal">
+                      (comma-separated CIDRs for the split-tunnel <code>AllowedIPs</code>)
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    value={wgForm.split_routes}
+                    onChange={(e) => setWgForm((f) => ({ ...f, split_routes: e.target.value }))}
+                    placeholder="172.29.0.0/16, 10.0.0.0/8 — leave empty to use tunnel subnet"
+                    className={inputCls}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    When a client uses split-tunnel mode, only these networks are
+                    routed through the VPN. Empty = just the tunnel&apos;s own
+                    subnet. Use this to reach your whole LAN over the VPN.
+                  </p>
                 </div>
                 <div className="flex gap-2 mt-3">
                   <button
