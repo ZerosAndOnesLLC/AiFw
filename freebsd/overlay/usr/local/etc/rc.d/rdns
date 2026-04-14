@@ -17,11 +17,16 @@ load_rc_config $name
 : ${rdns_enable:="NO"}
 : ${rdns_config:="/usr/local/etc/rdns/rdns.toml"}
 : ${rdns_pidfile:="/var/run/rdns/rdns.pid"}
+: ${rdns_supervisor_pidfile:="/var/run/rdns/rdns-supervisor.pid"}
 
-pidfile="${rdns_pidfile}"
+# Track the daemon(8) supervisor so `service rdns stop` kills both it and
+# the rdns child. Using -p alone (child pidfile) leaves the supervisor
+# running, and -R 5 respawns the child — accumulating orphans on every
+# restart.
+pidfile="${rdns_supervisor_pidfile}"
 procname="/usr/local/sbin/rdns"
 command="/usr/sbin/daemon"
-command_args="-f -p ${rdns_pidfile} -R 5 -S -T rdns -o /var/log/rdns/rdns.log ${procname} -c ${rdns_config}"
+command_args="-f -p ${rdns_pidfile} -P ${rdns_supervisor_pidfile} -R 5 -S -T rdns -o /var/log/rdns/rdns.log ${procname} -c ${rdns_config}"
 
 start_precmd="rdns_precmd"
 stop_postcmd="rdns_poststop"
@@ -29,12 +34,15 @@ stop_postcmd="rdns_poststop"
 rdns_precmd()
 {
     /bin/mkdir -p /var/run/rdns /usr/local/etc/rdns/zones /usr/local/etc/rdns/rpz
-    /bin/rm -f ${rdns_pidfile}
+    # Reap any orphan daemon(8)+rdns pairs left by previous buggy restarts.
+    /usr/bin/pkill -f "daemon:.*${procname}" 2>/dev/null
+    /usr/bin/pkill -x rdns 2>/dev/null
+    /bin/rm -f ${rdns_pidfile} ${rdns_supervisor_pidfile}
 }
 
 rdns_poststop()
 {
-    /bin/rm -f ${rdns_pidfile}
+    /bin/rm -f ${rdns_pidfile} ${rdns_supervisor_pidfile}
 }
 
 run_rc_command "$1"
