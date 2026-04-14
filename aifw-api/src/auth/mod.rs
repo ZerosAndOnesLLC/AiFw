@@ -218,6 +218,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Add fib column (0 = main FIB). Multi-WAN (#132) routes can target
+    // additional FIBs created via routing instances.
+    let _ = sqlx::query("ALTER TABLE static_routes ADD COLUMN fib INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
     // Schedules
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS schedules (

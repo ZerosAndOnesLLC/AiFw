@@ -77,6 +77,8 @@ pub struct StaticRoute {
     pub enabled: bool,
     pub description: Option<String>,
     pub created_at: String,
+    #[serde(default)]
+    pub fib: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +89,8 @@ pub struct CreateRouteRequest {
     pub metric: Option<i32>,
     pub enabled: Option<bool>,
     pub description: Option<String>,
+    #[serde(default)]
+    pub fib: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1954,14 +1958,14 @@ pub async fn delete_ipsec_sa(
 pub async fn list_static_routes(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<StaticRoute>>>, StatusCode> {
-    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, bool, Option<String>, String)>(
-        "SELECT id, destination, gateway, interface, metric, enabled, description, created_at FROM static_routes ORDER BY metric ASC",
+    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, bool, Option<String>, String, i64)>(
+        "SELECT id, destination, gateway, interface, metric, enabled, description, created_at, COALESCE(fib,0) FROM static_routes ORDER BY fib ASC, metric ASC",
     )
     .fetch_all(&state.pool)
     .await
     .map_err(|_| internal())?;
-    let routes: Vec<StaticRoute> = rows.into_iter().map(|(id, dest, gw, iface, metric, enabled, desc, ca)| StaticRoute {
-        id, destination: dest, gateway: gw, interface: iface, metric, enabled, description: desc, created_at: ca,
+    let routes: Vec<StaticRoute> = rows.into_iter().map(|(id, dest, gw, iface, metric, enabled, desc, ca, fib)| StaticRoute {
+        id, destination: dest, gateway: gw, interface: iface, metric, enabled, description: desc, created_at: ca, fib: fib as u32,
     }).collect();
     Ok(Json(ApiResponse { data: routes }))
 }
@@ -1992,22 +1996,23 @@ pub async fn create_static_route(
     let now = chrono::Utc::now().to_rfc3339();
     let metric = req.metric.unwrap_or(0);
     let enabled = req.enabled.unwrap_or(true);
+    let fib = req.fib.unwrap_or(0);
 
     sqlx::query(
-        "INSERT INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at, fib) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )
     .bind(&id).bind(&req.destination).bind(&req.gateway).bind(req.interface.as_deref())
-    .bind(metric).bind(enabled).bind(req.description.as_deref()).bind(&now)
+    .bind(metric).bind(enabled).bind(req.description.as_deref()).bind(&now).bind(fib as i64)
     .execute(&state.pool)
     .await
     .map_err(|_| bad_request())?;
 
     // Apply to system if enabled
     if enabled {
-        apply_route_to_system(&req.destination, &req.gateway, req.interface.as_deref()).await;
+        apply_route_to_system(&req.destination, &req.gateway, req.interface.as_deref(), fib).await;
     }
 
-    let route = StaticRoute { id, destination: req.destination, gateway: req.gateway, interface: req.interface, metric, enabled, description: req.description, created_at: now };
+    let route = StaticRoute { id, destination: req.destination, gateway: req.gateway, interface: req.interface, metric, enabled, description: req.description, created_at: now, fib };
     Ok((StatusCode::CREATED, Json(ApiResponse { data: route })))
 }
 
@@ -2022,34 +2027,35 @@ pub async fn update_static_route(
         aifw_core::validation::validate_interface_name(iface).map_err(|_| bad_request())?;
     }
     // Get old route to remove from system
-    let old = sqlx::query_as::<_, (String, String, Option<String>, bool)>(
-        "SELECT destination, gateway, interface, enabled FROM static_routes WHERE id = ?1",
+    let old = sqlx::query_as::<_, (String, String, Option<String>, bool, i64)>(
+        "SELECT destination, gateway, interface, enabled, COALESCE(fib,0) FROM static_routes WHERE id = ?1",
     )
     .bind(&id).fetch_optional(&state.pool).await.map_err(|_| internal())?
     .ok_or(StatusCode::NOT_FOUND)?;
 
-    if old.3 { // was enabled, remove old route
-        remove_route_from_system(&old.0, &old.1).await;
+    if old.3 { // was enabled, remove old route (from the FIB it was in)
+        remove_route_from_system(&old.0, &old.1, old.4 as u32).await;
     }
 
     let metric = req.metric.unwrap_or(0);
     let enabled = req.enabled.unwrap_or(true);
+    let fib = req.fib.unwrap_or(0);
 
     sqlx::query(
-        "UPDATE static_routes SET destination = ?2, gateway = ?3, interface = ?4, metric = ?5, enabled = ?6, description = ?7 WHERE id = ?1",
+        "UPDATE static_routes SET destination = ?2, gateway = ?3, interface = ?4, metric = ?5, enabled = ?6, description = ?7, fib = ?8 WHERE id = ?1",
     )
     .bind(&id).bind(&req.destination).bind(&req.gateway).bind(req.interface.as_deref())
-    .bind(metric).bind(enabled).bind(req.description.as_deref())
+    .bind(metric).bind(enabled).bind(req.description.as_deref()).bind(fib as i64)
     .execute(&state.pool)
     .await
     .map_err(|_| internal())?;
 
     if enabled {
-        apply_route_to_system(&req.destination, &req.gateway, req.interface.as_deref()).await;
+        apply_route_to_system(&req.destination, &req.gateway, req.interface.as_deref(), fib).await;
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    let route = StaticRoute { id, destination: req.destination, gateway: req.gateway, interface: req.interface, metric, enabled, description: req.description, created_at: now };
+    let route = StaticRoute { id, destination: req.destination, gateway: req.gateway, interface: req.interface, metric, enabled, description: req.description, created_at: now, fib };
     Ok(Json(ApiResponse { data: route }))
 }
 
@@ -2057,14 +2063,14 @@ pub async fn delete_static_route(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let row = sqlx::query_as::<_, (String, String, bool)>(
-        "SELECT destination, gateway, enabled FROM static_routes WHERE id = ?1",
+    let row = sqlx::query_as::<_, (String, String, bool, i64)>(
+        "SELECT destination, gateway, enabled, COALESCE(fib,0) FROM static_routes WHERE id = ?1",
     )
     .bind(&id).fetch_optional(&state.pool).await.map_err(|_| internal())?
     .ok_or(StatusCode::NOT_FOUND)?;
 
     if row.2 {
-        remove_route_from_system(&row.0, &row.1).await;
+        remove_route_from_system(&row.0, &row.1, row.3 as u32).await;
     }
 
     sqlx::query("DELETE FROM static_routes WHERE id = ?1")
@@ -2073,8 +2079,17 @@ pub async fn delete_static_route(
     Ok(Json(MessageResponse { message: format!("Route to {} deleted", row.0) }))
 }
 
-async fn apply_route_to_system(destination: &str, gateway: &str, interface: Option<&str>) {
-    let mut args = vec!["/sbin/route", "add", destination, gateway];
+async fn apply_route_to_system(destination: &str, gateway: &str, interface: Option<&str>, fib: u32) {
+    let fib_s = fib.to_string();
+    let mut args: Vec<&str> = Vec::new();
+    args.push("/sbin/route");
+    if fib > 0 {
+        args.push("-fib");
+        args.push(&fib_s);
+    }
+    args.push("add");
+    args.push(destination);
+    args.push(gateway);
     if let Some(iface) = interface {
         args.push("-interface");
         args.push(iface);
@@ -2085,41 +2100,51 @@ async fn apply_route_to_system(destination: &str, gateway: &str, interface: Opti
         .await;
     match output {
         Ok(o) if o.status.success() => {
-            tracing::info!(destination, gateway, "route added");
+            tracing::info!(destination, gateway, fib, "route added");
         }
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
-            tracing::warn!(destination, gateway, error = %err, "route add failed");
+            tracing::warn!(destination, gateway, fib, error = %err, "route add failed");
         }
         Err(e) => {
-            tracing::warn!(destination, gateway, error = %e, "route command failed");
+            tracing::warn!(destination, gateway, fib, error = %e, "route command failed");
         }
     }
 }
 
-async fn remove_route_from_system(destination: &str, gateway: &str) {
+async fn remove_route_from_system(destination: &str, gateway: &str, fib: u32) {
+    let fib_s = fib.to_string();
+    let mut args: Vec<&str> = Vec::new();
+    args.push("/sbin/route");
+    if fib > 0 {
+        args.push("-fib");
+        args.push(&fib_s);
+    }
+    args.push("delete");
+    args.push(destination);
+    args.push(gateway);
     let output = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/sbin/route", "delete", destination, gateway])
+        .args(&args)
         .output()
         .await;
     match output {
         Ok(o) if o.status.success() => {
-            tracing::info!(destination, gateway, "route removed");
+            tracing::info!(destination, gateway, fib, "route removed");
         }
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
-            tracing::debug!(destination, gateway, error = %err, "route delete failed (may not exist)");
+            tracing::debug!(destination, gateway, fib, error = %err, "route delete failed (may not exist)");
         }
         Err(e) => {
-            tracing::warn!(destination, gateway, error = %e, "route command failed");
+            tracing::warn!(destination, gateway, fib, error = %e, "route command failed");
         }
     }
 }
 
 /// Apply all enabled static routes from the database. Called on API startup.
 pub async fn apply_all_routes(pool: &sqlx::SqlitePool) {
-    let routes: Vec<(String, String, Option<String>)> = match sqlx::query_as(
-        "SELECT destination, gateway, interface FROM static_routes WHERE enabled = 1 ORDER BY metric ASC"
+    let routes: Vec<(String, String, Option<String>, i64)> = match sqlx::query_as(
+        "SELECT destination, gateway, interface, COALESCE(fib,0) FROM static_routes WHERE enabled = 1 ORDER BY fib ASC, metric ASC"
     )
     .fetch_all(pool)
     .await
@@ -2136,16 +2161,27 @@ pub async fn apply_all_routes(pool: &sqlx::SqlitePool) {
     }
 
     tracing::info!(count = routes.len(), "applying static routes on startup");
-    for (dest, gw, iface) in &routes {
-        apply_route_to_system(dest, gw, iface.as_deref()).await;
+    for (dest, gw, iface, fib) in &routes {
+        apply_route_to_system(dest, gw, iface.as_deref(), *fib as u32).await;
     }
 }
 
 // --- System routing table ---
 
-pub async fn get_system_routes() -> Result<Json<ApiResponse<Vec<SystemRoute>>>, StatusCode> {
+pub async fn get_system_routes(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ApiResponse<Vec<SystemRoute>>>, StatusCode> {
+    // Optional ?fib=N filter — defaults to main FIB. `netstat -rn -F N` shows
+    // only the given FIB; without -F you get FIB 0.
+    let fib: u32 = q.get("fib").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let fib_s = fib.to_string();
+    let mut args: Vec<&str> = vec!["-rn", "-f", "inet"];
+    if fib > 0 {
+        args.push("-F");
+        args.push(&fib_s);
+    }
     let output = tokio::process::Command::new("netstat")
-        .args(["-rn", "-f", "inet"])
+        .args(&args)
         .output()
         .await
         .map_err(|_| internal())?;

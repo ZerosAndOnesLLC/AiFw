@@ -12,6 +12,14 @@ interface StaticRoute {
   enabled: boolean;
   description: string | null;
   created_at: string;
+  fib: number;
+}
+
+interface RoutingInstance {
+  id: string;
+  name: string;
+  fib_number: number;
+  mgmt_reachable: boolean;
 }
 
 interface SystemRoute {
@@ -36,6 +44,7 @@ interface RouteForm {
   metric: string;
   enabled: boolean;
   description: string;
+  fib: number;
 }
 
 const emptyForm: RouteForm = {
@@ -45,6 +54,7 @@ const emptyForm: RouteForm = {
   metric: "100",
   enabled: true,
   description: "",
+  fib: 0,
 };
 
 function authHeaders(): HeadersInit {
@@ -59,6 +69,8 @@ export default function RoutesPage() {
   const [staticRoutes, setStaticRoutes] = useState<StaticRoute[]>([]);
   const [systemRoutes, setSystemRoutes] = useState<SystemRoute[]>([]);
   const [interfaces, setInterfaces] = useState<InterfaceInfo[]>([]);
+  const [instances, setInstances] = useState<RoutingInstance[]>([]);
+  const [systemFib, setSystemFib] = useState<number>(0);
   const [form, setForm] = useState<RouteForm>({ ...emptyForm });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -76,16 +88,16 @@ export default function RoutesPage() {
     }
   }, []);
 
-  const fetchSystemRoutes = useCallback(async () => {
+  const fetchSystemRoutes = useCallback(async (fib: number = systemFib) => {
     try {
-      const res = await fetch("/api/v1/routes/system", { headers: authHeaders() });
+      const res = await fetch(`/api/v1/routes/system?fib=${fib}`, { headers: authHeaders() });
       if (!res.ok) throw new Error("Failed to fetch system routes");
       const json = await res.json();
       setSystemRoutes(json.data);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to fetch system routes");
     }
-  }, []);
+  }, [systemFib]);
 
   const fetchInterfaces = useCallback(async () => {
     try {
@@ -98,12 +110,24 @@ export default function RoutesPage() {
     }
   }, []);
 
+  const fetchInstances = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/multiwan/instances", { headers: authHeaders() });
+      if (!res.ok) return; // gracefully handle users without multiwan:read
+      const json = await res.json();
+      setInstances(json.data || []);
+    } catch { /* optional */ }
+  }, []);
+
   const fetchAll = useCallback(async () => {
     setLoading(true);
     setError(null);
-    await Promise.all([fetchStaticRoutes(), fetchSystemRoutes(), fetchInterfaces()]);
+    await Promise.all([fetchStaticRoutes(), fetchSystemRoutes(), fetchInterfaces(), fetchInstances()]);
     setLoading(false);
-  }, [fetchStaticRoutes, fetchSystemRoutes, fetchInterfaces]);
+  }, [fetchStaticRoutes, fetchSystemRoutes, fetchInterfaces, fetchInstances]);
+
+  // Refetch system routes when the viewer FIB changes.
+  useEffect(() => { fetchSystemRoutes(systemFib); }, [systemFib, fetchSystemRoutes]);
 
   useEffect(() => {
     fetchAll();
@@ -125,6 +149,7 @@ export default function RoutesPage() {
       destination: form.destination,
       gateway: form.gateway,
       enabled: form.enabled,
+      fib: form.fib,
     };
     if (form.interface) body.interface = form.interface;
     if (form.metric) body.metric = parseInt(form.metric, 10);
@@ -161,6 +186,7 @@ export default function RoutesPage() {
       metric: String(route.metric),
       enabled: route.enabled,
       description: route.description || "",
+      fib: route.fib ?? 0,
     });
   }
 
@@ -275,6 +301,30 @@ export default function RoutesPage() {
               />
             </div>
             <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Routing table (FIB)
+              </label>
+              <select
+                value={form.fib}
+                onChange={(e) => setForm({ ...form, fib: parseInt(e.target.value, 10) || 0 })}
+                className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value={0}>default (FIB 0 — main)</option>
+                {instances
+                  .filter((i) => i.fib_number !== 0)
+                  .sort((a, b) => a.fib_number - b.fib_number)
+                  .map((i) => (
+                    <option key={i.id} value={i.fib_number}>
+                      {i.name} (FIB {i.fib_number})
+                    </option>
+                  ))}
+              </select>
+              <p className="text-[10px] text-gray-500 mt-1">
+                Route lives in this FreeBSD FIB. Requires a routing instance
+                (Multi-WAN) for FIB &gt; 0.
+              </p>
+            </div>
+            <div>
               <label className="block text-xs text-gray-400 mb-1">Description</label>
               <input
                 value={form.description}
@@ -324,6 +374,7 @@ export default function RoutesPage() {
                 <th className="px-6 py-3">Destination</th>
                 <th className="px-6 py-3">Gateway</th>
                 <th className="px-6 py-3">Interface</th>
+                <th className="px-6 py-3">FIB</th>
                 <th className="px-6 py-3">Metric</th>
                 <th className="px-6 py-3">Status</th>
                 <th className="px-6 py-3">Description</th>
@@ -333,16 +384,24 @@ export default function RoutesPage() {
             <tbody className="divide-y divide-gray-700">
               {staticRoutes.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan={8} className="px-6 py-8 text-center text-gray-500">
                     No static routes configured
                   </td>
                 </tr>
               ) : (
-                staticRoutes.map((route) => (
+                staticRoutes.map((route) => {
+                  const inst = instances.find((i) => i.fib_number === (route.fib ?? 0));
+                  return (
                   <tr key={route.id} className="hover:bg-gray-700/30 transition-colors cursor-pointer" onClick={() => startEdit(route)}>
                     <td className="px-6 py-3 font-mono text-white">{route.destination}</td>
                     <td className="px-6 py-3 font-mono text-gray-300">{route.gateway}</td>
                     <td className="px-6 py-3 text-gray-300">{route.interface || "auto"}</td>
+                    <td className="px-6 py-3">
+                      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-mono">
+                        FIB {route.fib ?? 0}
+                        {inst && <span className="text-[10px] opacity-70">· {inst.name}</span>}
+                      </span>
+                    </td>
                     <td className="px-6 py-3 text-gray-300">{route.metric}</td>
                     <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                       <button
@@ -377,7 +436,8 @@ export default function RoutesPage() {
                       </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -386,17 +446,35 @@ export default function RoutesPage() {
 
       {/* ─── System Routing Table ─── */}
       <section className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between flex-wrap gap-2">
           <h2 className="text-lg font-semibold text-white">System Routing Table</h2>
-          <button
-            onClick={fetchSystemRoutes}
-            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-md transition-colors"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-400">FIB:</label>
+            <select
+              value={systemFib}
+              onChange={(e) => setSystemFib(parseInt(e.target.value, 10) || 0)}
+              className="bg-gray-900 border border-gray-600 rounded text-white text-xs px-2 py-1"
+            >
+              <option value={0}>default (FIB 0)</option>
+              {instances
+                .filter((i) => i.fib_number !== 0)
+                .sort((a, b) => a.fib_number - b.fib_number)
+                .map((i) => (
+                  <option key={i.id} value={i.fib_number}>
+                    {i.name} (FIB {i.fib_number})
+                  </option>
+                ))}
+            </select>
+            <button
+              onClick={() => fetchSystemRoutes(systemFib)}
+              className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-md transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Refresh
+            </button>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm text-left">
