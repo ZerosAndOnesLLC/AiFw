@@ -238,9 +238,11 @@ export default function NatFlowsPage() {
   // SVG topology layout
   const svgW = 800;
   const fwY = 0; // firewall bottom edge in SVG coordinates
-  const subnetY = 120; // top of subnet cards
-  const subnetCardW = 160;
-  const subnetGap = 16;
+  const subnetY = 110; // top of subnet cards
+  const subnetCardW = 120; // compact card width — dense layout
+  const subnetGap = 10;
+  const lanColPad = 24; // horizontal slack per interface column
+  const lanColMin = 200; // floor per column even when it holds zero subnets
   const totalSubnetsW = displayItems.length * subnetCardW + (displayItems.length - 1) * subnetGap;
   const startX = Math.max(0, (svgW - totalSubnetsW) / 2);
 
@@ -363,11 +365,27 @@ export default function NatFlowsPage() {
 
           {/* SVG fan-out from AiFw to LAN/WG interfaces + interface columns */}
           {lanIfaces.length > 0 && (() => {
-            const lanColW = 200; // fixed column width per interface
-            const lanGap = 32;
-            const totalLanW = lanIfaces.length * lanColW + (lanIfaces.length - 1) * lanGap;
+            // Each interface column auto-sizes to hold its own subnet grid.
+            // No more fixed 200px columns that overflow when 2+ subnets exist.
+            const lanGap = 24;
+            const perIfaceColW = lanIfaces.map(iface => {
+              const items = ifaceSubnets[iface.name] || [];
+              const gridW = items.length === 0
+                ? 0
+                : items.length * subnetCardW + (items.length - 1) * subnetGap;
+              return Math.max(lanColMin, gridW + lanColPad);
+            });
+            const totalLanW = perIfaceColW.reduce((a, b) => a + b, 0)
+              + Math.max(0, lanIfaces.length - 1) * lanGap;
             const fanSvgW = Math.max(400, totalLanW + 40);
             const fanH = 80;
+            // Precompute column centers for fan-out pipes.
+            const lanStartX = (fanSvgW - totalLanW) / 2;
+            const colCenters = perIfaceColW.map((_, idx) => {
+              const before = perIfaceColW.slice(0, idx).reduce((a, b) => a + b, 0)
+                + idx * lanGap;
+              return lanStartX + before + perIfaceColW[idx] / 2;
+            });
             return (
               <>
                 <div className="w-full mt-1 overflow-x-auto">
@@ -375,8 +393,7 @@ export default function NatFlowsPage() {
                     <svg viewBox={`0 0 ${fanSvgW} ${fanH}`} className="w-full" preserveAspectRatio="xMidYMid meet" style={{ height: fanH }}>
                       {lanIfaces.map((iface, idx) => {
                         const cx = fanSvgW / 2;
-                        const lanStartX = (fanSvgW - totalLanW) / 2;
-                        const ax = lanStartX + idx * (lanColW + lanGap) + lanColW / 2;
+                        const ax = colCenters[idx];
                         const ifRate = rates[iface.name] || { in: 0, out: 0 };
                         const gap = 4;
                         const pathIn  = `M ${cx - gap},0 C ${cx - gap},${fanH * 0.4} ${ax - gap},${fanH * 0.5} ${ax - gap},${fanH}`;
@@ -389,16 +406,19 @@ export default function NatFlowsPage() {
                     </svg>
                   </div>
                 </div>
-                {/* Interface columns — same widths as SVG so pipes connect */}
-                <div className="flex justify-center" style={{ gap: lanGap }}>
-                  {lanIfaces.map(iface => {
+                {/* Interface columns — each auto-sized to its subnet grid. */}
+                <div className="flex flex-wrap justify-center items-start" style={{ gap: lanGap }}>
+                  {lanIfaces.map((iface, idx) => {
                     const ifRate = rates[iface.name] || { in: 0, out: 0 };
                     const items = ifaceSubnets[iface.name] || [];
                     const isWg = iface.name.startsWith("wg");
-                    const ifSubnetsW = items.length * subnetCardW + Math.max(0, items.length - 1) * subnetGap;
-                    const ifSvgW = Math.max(300, ifSubnetsW + 40);
+                    const ifSubnetsW = items.length === 0
+                      ? 0
+                      : items.length * subnetCardW + (items.length - 1) * subnetGap;
+                    const columnW = perIfaceColW[idx];
+                    const ifSvgW = Math.max(columnW, ifSubnetsW + 20);
                     return (
-                      <div key={iface.name} className="flex flex-col items-center" style={{ width: lanColW }}>
+                      <div key={iface.name} className="flex flex-col items-center" style={{ width: columnW }}>
                         {/* Interface badge */}
                         <div className={`px-3 py-1.5 rounded-lg border text-center ${
                           isWg ? "bg-purple-500/15 border-purple-500/30" : "bg-emerald-500/15 border-emerald-500/30"
@@ -432,35 +452,43 @@ export default function NatFlowsPage() {
                             );
                           })}
                         </svg>
-                        <div className="flex justify-center gap-4 flex-wrap" style={{ marginTop: -4 }}>
+                        <div
+                          className="flex justify-center items-start flex-wrap"
+                          style={{ marginTop: -4, gap: subnetGap, width: ifSvgW }}
+                        >
                           {items.map(sn => {
                             const sr = (groupBySubnet ? subnetLiveRates[sn.subnet] : subnetLiveRates[getSubnet24(sn.subnet)]) || { in: 0, out: 0 };
                             const isSelected = selectedHost === sn.subnet;
                             return (
                               <button key={sn.subnet}
                                 onClick={() => setSelectedHost(isSelected ? null : sn.subnet)}
-                                className={`flex flex-col items-center p-3 rounded-xl border-2 transition-all duration-200 min-w-[140px] max-w-[180px] ${
+                                className={`flex flex-col items-center px-2 py-2 rounded-lg border transition-all duration-200 ${
                                   isSelected
                                     ? "bg-cyan-500/10 border-cyan-500/50 shadow-lg shadow-cyan-500/10"
                                     : "bg-[var(--bg-primary)] border-[var(--border)] hover:border-gray-500 hover:bg-gray-700/30"
                                 }`}
+                                style={{ width: subnetCardW }}
                               >
-                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-1.5 ${isSelected ? "bg-cyan-500/20" : "bg-gray-700/50"}`}>
-                                  <svg className={`w-4 h-4 ${isSelected ? "text-cyan-400" : "text-gray-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                                    {isWg
-                                      ? <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                                      : <path strokeLinecap="round" strokeLinejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
-                                    }
-                                  </svg>
+                                <div className="flex items-center gap-1.5 w-full justify-center">
+                                  <div className={`w-5 h-5 rounded flex items-center justify-center flex-shrink-0 ${isSelected ? "bg-cyan-500/20" : "bg-gray-700/50"}`}>
+                                    <svg className={`w-3 h-3 ${isSelected ? "text-cyan-400" : "text-gray-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                                      {isWg
+                                        ? <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                                        : <path strokeLinecap="round" strokeLinejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
+                                      }
+                                    </svg>
+                                  </div>
+                                  <span className={`text-[10px] font-mono font-bold truncate ${isSelected ? "text-cyan-400" : "text-white"}`}>{sn.subnet}</span>
                                 </div>
-                                <span className={`text-[11px] font-mono font-bold ${isSelected ? "text-cyan-400" : "text-white"}`}>{sn.subnet}</span>
-                                <div className="flex gap-2 mt-1 text-[9px]">
+                                <div className="flex gap-1.5 mt-1 text-[9px] leading-none">
                                   <span className="text-emerald-400">{formatBps(sr.in)}</span>
                                   <span className="text-blue-400">{formatBps(sr.out)}</span>
                                 </div>
-                                <span className="text-[9px] text-gray-500 mt-0.5">{sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {sn.conns} conn</span>
-                                <span className="text-[9px] text-gray-500">{formatBytes(sn.bytes)}</span>
-                                <div className="w-full h-1 bg-gray-700 rounded-full mt-1.5 overflow-hidden">
+                                <div className="flex justify-between w-full mt-0.5 text-[8px] text-gray-500 leading-none">
+                                  <span>{sn.hosts.length}h · {sn.conns}c</span>
+                                  <span>{formatBytes(sn.bytes)}</span>
+                                </div>
+                                <div className="w-full h-0.5 bg-gray-700 rounded-full mt-1 overflow-hidden">
                                   <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all"
                                     style={{ width: `${Math.max(2, (sn.bytes / maxItemBytes) * 100)}%` }} />
                                 </div>
