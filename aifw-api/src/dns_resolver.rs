@@ -560,7 +560,13 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
     // [security]
     toml.push_str("[security]\nsandbox = false\nrate_limit = 1000\n\n");
 
-    // [rpz] — blocklists
+    // [rpz] — host overrides (rewrites) + blocklists
+    let host_count: i64 = sqlx::query_as::<_, (i64,)>(
+        "SELECT COUNT(*) FROM dns_host_overrides WHERE enabled = 1"
+    ).fetch_one(pool).await.map(|r| r.0).unwrap_or(0);
+    if host_count > 0 {
+        toml.push_str("[[rpz.zones]]\nname = \"rpz.hosts\"\nfile = \"/usr/local/etc/rdns/rpz/hosts.rpz\"\n\n");
+    }
     if c.blocklists_enabled && !c.blocklist_urls.is_empty() {
         toml.push_str("[[rpz.zones]]\nname = \"rpz.blocklist\"\nfile = \"/usr/local/etc/rdns/rpz/blocklist.rpz\"\n\n");
     }
@@ -605,18 +611,11 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
         }
     }
 
-    // Write a zone file per domain
-    for (domain, records) in &domain_records {
-        let mut zone = format!(
-            "$TTL 300\n$ORIGIN {}.\n@ IN SOA ns1.{domain}. admin.{domain}. {serial} 3600 900 604800 300\n  IN NS  ns1.{domain}.\n",
-            domain, domain = domain, serial = serial
-        );
-        for record in records {
-            zone.push_str(record);
-            zone.push('\n');
-        }
-        zones.push((format!("{}.zone", domain), zone));
-    }
+    // Host overrides are emitted as RPZ rewrites (see generate_rdns_hosts_rpz)
+    // rather than authoritative zones, so a single override like
+    // aifw.example.com doesn't make rDNS authoritative for the entire
+    // example.com domain and black-hole every other name under it.
+    let _ = domain_records;
 
     // DHCP lease zone
     if c.register_dhcp {
@@ -685,6 +684,39 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
     }
 
     zones
+}
+
+/// Generate an RPZ zone that rewrites host overrides (A/AAAA/CNAME) to the
+/// configured values without making rDNS authoritative for the parent domain.
+/// Queries for unlisted names fall through to forwarders / recursion.
+async fn generate_rdns_hosts_rpz(pool: &SqlitePool) -> Option<String> {
+    let hosts = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT hostname, domain, record_type, value FROM dns_host_overrides WHERE enabled = 1"
+    ).fetch_all(pool).await.unwrap_or_default();
+
+    if hosts.is_empty() {
+        return None;
+    }
+
+    let serial = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let mut zone = format!(
+        "$TTL 60\n@ IN SOA localhost. admin.localhost. {} 3600 900 604800 60\n  IN NS  localhost.\n",
+        serial
+    );
+
+    for (hostname, domain, rtype, value) in &hosts {
+        let fqdn = if domain.is_empty() { hostname.clone() } else { format!("{}.{}", hostname, domain) };
+        match rtype.as_str() {
+            "A" => zone.push_str(&format!("{} A {}\n", fqdn, value)),
+            "AAAA" => zone.push_str(&format!("{} AAAA {}\n", fqdn, value)),
+            "CNAME" => zone.push_str(&format!("{} CNAME {}\n", fqdn, value)),
+            // MX / TXT aren't supported by rDNS's RPZ engine as rewrites;
+            // skip silently — these are rare for host overrides.
+            _ => {}
+        }
+    }
+
+    Some(zone)
 }
 
 /// Download blocklists and generate an RPZ zone file for rDNS.
@@ -945,6 +977,19 @@ async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<Me
         tokio::fs::write(&tmp_zone, content).await.map_err(|_| internal())?;
         sudo_copy(&tmp_zone, &dest_zone).await;
         let _ = tokio::fs::remove_file(&tmp_zone).await;
+    }
+
+    // Generate and write host-overrides RPZ (selective rewrites)
+    let hosts_rpz_path = "/usr/local/etc/rdns/rpz/hosts.rpz";
+    if let Some(rpz_content) = generate_rdns_hosts_rpz(&state.pool).await {
+        let tmp_rpz = "/tmp/aifw_rpz_hosts.rpz";
+        tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
+        sudo_copy(tmp_rpz, hosts_rpz_path).await;
+        let _ = tokio::fs::remove_file(tmp_rpz).await;
+    } else {
+        // No host overrides: make sure any stale file is removed so rDNS
+        // doesn't load yesterday's rewrites.
+        let _ = Command::new("/usr/local/bin/sudo").args(["/bin/rm", "-f", hosts_rpz_path]).output().await;
     }
 
     // Generate and write RPZ blocklist
