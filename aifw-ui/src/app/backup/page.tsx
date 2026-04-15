@@ -109,7 +109,7 @@ export default function BackupPage() {
 
   const fetchHistory = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/config/history?limit=100", { headers: authHeadersPlain() });
+      const res = await fetch("/api/v1/config/history?limit=10000", { headers: authHeadersPlain() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       setHistory(body.data || []);

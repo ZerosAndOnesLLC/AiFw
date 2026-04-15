@@ -97,6 +97,13 @@ export default function SettingsPage() {
   const [historySaving, setHistorySaving] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
 
+  // --- Config History (auto-snapshots) ---
+  const [cfgMaxVersions, setCfgMaxVersions] = useState(200);
+  const [cfgCurrentCount, setCfgCurrentCount] = useState(0);
+  const [cfgRetFeedback, setCfgRetFeedback] = useState<SectionFeedback | null>(null);
+  const [cfgRetSaving, setCfgRetSaving] = useState(false);
+  const [cfgRetLoading, setCfgRetLoading] = useState(true);
+
   // --- IDS Alert Buffer ---
   const [idsMaxMb, setIdsMaxMb] = useState(64);
   const [idsMaxAge, setIdsMaxAge] = useState(86400);
@@ -199,6 +206,21 @@ export default function SettingsPage() {
         // endpoint may not exist yet
       } finally {
         setHistoryLoading(false);
+      }
+    })();
+
+    // Fetch Config History retention
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/config/retention`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (typeof data.max_versions === "number") setCfgMaxVersions(data.max_versions);
+        if (typeof data.current_count === "number") setCfgCurrentCount(data.current_count);
+      } catch {
+        /* silent */
+      } finally {
+        setCfgRetLoading(false);
       }
     })();
 
@@ -396,6 +418,31 @@ export default function SettingsPage() {
       setFeedbackWithTimeout(setHistoryFeedback, { type: "error", message: `Save failed: ${msg}` });
     } finally {
       setHistorySaving(false);
+    }
+  };
+
+  const saveCfgRetention = async () => {
+    setCfgRetSaving(true);
+    setCfgRetFeedback(null);
+    try {
+      const res = await authFetch(`${API}/api/v1/config/retention`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ max_versions: cfgMaxVersions }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (typeof data.max_versions === "number") setCfgMaxVersions(data.max_versions);
+      if (typeof data.current_count === "number") setCfgCurrentCount(data.current_count);
+      setFeedbackWithTimeout(setCfgRetFeedback, { type: "success", message: "Config history retention saved." });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setFeedbackWithTimeout(setCfgRetFeedback, { type: "error", message: `Save failed: ${msg}` });
+    } finally {
+      setCfgRetSaving(false);
     }
   };
 
@@ -791,6 +838,47 @@ export default function SettingsPage() {
               {historySaving ? "Saving..." : "Save History"}
             </button>
           </div>
+        </div>
+      </section>
+
+      {/* Config History retention */}
+      <section className={sectionCls}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-medium">Config History</h2>
+          <span className="text-xs text-[var(--text-muted)]">
+            {cfgRetLoading ? "Loading…" : `${cfgCurrentCount.toLocaleString()} versions stored`}
+          </span>
+        </div>
+        <FeedbackBanner feedback={cfgRetFeedback} />
+        <p className="text-xs text-[var(--text-muted)] mb-3">
+          Every successful change (rules, NAT, VPN, DNS, firewall settings, etc.) is
+          auto-versioned. You can restore, diff, or compare any of the retained versions
+          from the <a className="text-blue-400 underline" href="/backup">Backup</a> page.
+          Oldest versions are pruned when this limit is exceeded; the currently-applied
+          version is always kept even if it falls outside the window.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls}>Maximum versions to keep</label>
+            <input
+              type="number"
+              min={5}
+              max={10000}
+              value={cfgMaxVersions}
+              onChange={(e) => setCfgMaxVersions(Math.max(5, Math.min(10000, Number(e.target.value) || 0)))}
+              className={inputCls}
+            />
+            <p className="text-xs text-[var(--text-muted)] mt-1">Range: 5–10000. Default 200.</p>
+          </div>
+        </div>
+        <div className="flex justify-end mt-4">
+          <button
+            onClick={saveCfgRetention}
+            disabled={cfgRetSaving || cfgRetLoading}
+            className={saveBtnCls}
+          >
+            {cfgRetSaving ? "Saving..." : "Save Retention"}
+          </button>
         </div>
       </section>
 

@@ -55,7 +55,70 @@ impl ConfigManager {
         .await
         .map_err(|e| format!("migration error: {e}"))?;
 
+        // Hash lookups happen on every auto-snapshot — one index pays for itself
+        // after the first handful of saves.
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_config_versions_created_at ON config_versions(created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("migration error: {e}"))?;
+
         Ok(())
+    }
+
+    // --- Retention ----------------------------------------------------------
+
+    /// How many config versions to retain. Configured via Settings → Config
+    /// History; stored in `auth_config` alongside other singleton settings.
+    pub async fn retention_limit(&self) -> u32 {
+        sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM auth_config WHERE key = 'config_history_max_versions'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|(v,)| v.parse().ok())
+        .filter(|n: &u32| *n >= 5 && *n <= 10_000)
+        .unwrap_or(200)
+    }
+
+    pub async fn set_retention_limit(&self, limit: u32) -> Result<(), String> {
+        if !(5..=10_000).contains(&limit) {
+            return Err("retention must be between 5 and 10000".into());
+        }
+        sqlx::query(
+            r#"INSERT INTO auth_config (key, value) VALUES ('config_history_max_versions', ?1)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value"#,
+        )
+        .bind(limit.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("db error: {e}"))?;
+        // Immediately apply the new cap so shrinking retention frees space now
+        // rather than on the next save.
+        self.prune_to_limit(limit).await?;
+        Ok(())
+    }
+
+    /// Delete versions beyond the `keep` most recent. The currently-applied
+    /// version is preserved even if it falls outside the window — losing the
+    /// running config's rollback anchor would be surprising.
+    pub async fn prune_to_limit(&self, keep: u32) -> Result<usize, String> {
+        let res = sqlx::query(
+            r#"DELETE FROM config_versions
+                WHERE version NOT IN (
+                    SELECT version FROM config_versions
+                    ORDER BY version DESC LIMIT ?1
+                )
+                AND applied = 0"#,
+        )
+        .bind(keep as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("db error: {e}"))?;
+        Ok(res.rows_affected() as usize)
     }
 
     /// Save a new config version. Does NOT apply it yet.
@@ -83,6 +146,40 @@ impl ConfigManager {
         .map_err(|e| format!("save error: {e}"))?;
 
         Ok(result.last_insert_rowid())
+    }
+
+    /// Save a new version **only** if the current config differs from the
+    /// most recent row (by SHA-256 hash). After a successful insert the
+    /// table is pruned to the configured retention limit. Returns the new
+    /// version id, or `None` when the config was unchanged.
+    ///
+    /// Used by the auto-snapshot middleware — middleware fires on every
+    /// mutating HTTP request, and most of those don't actually change the
+    /// config (no-op PUTs, validation errors that still returned 2xx, etc.)
+    /// so we de-dupe by hash before touching the table.
+    pub async fn save_if_changed(
+        &self,
+        config: &FirewallConfig,
+        created_by: &str,
+        comment: Option<&str>,
+    ) -> Result<Option<i64>, String> {
+        let new_hash = config.hash();
+        let prev_hash: Option<String> = sqlx::query_as::<_, (String,)>(
+            "SELECT hash FROM config_versions ORDER BY version DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("db error: {e}"))?
+        .map(|(h,)| h);
+        if prev_hash.as_deref() == Some(new_hash.as_str()) {
+            return Ok(None);
+        }
+        let version = self.save_version(config, created_by, comment).await?;
+        // Prune opportunistically — cheap, keeps history bounded without a
+        // background sweeper.
+        let keep = self.retention_limit().await;
+        let _ = self.prune_to_limit(keep).await;
+        Ok(Some(version))
     }
 
     /// Mark a version as applied (after successful pf apply)

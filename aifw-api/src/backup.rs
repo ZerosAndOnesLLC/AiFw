@@ -1,4 +1,4 @@
-use axum::{extract::{Query, State}, http::StatusCode, Json};
+use axum::{extract::{Query, Request, State}, http::{Method, StatusCode}, middleware::Next, response::Response, Json};
 use aifw_core::config_manager::{ConfigManager, ConfigVersion, ConfigDiff};
 use aifw_core::config::FirewallConfig;
 use serde::{Deserialize, Serialize};
@@ -924,4 +924,112 @@ fn parse_opn_addr(s: &str) -> String {
         };
     }
     s.trim().to_string()
+}
+
+// ============================================================
+// Auto-snapshot: every mutating HTTP request triggers a
+// save_if_changed() so config history accrues without any
+// per-endpoint plumbing. The middleware only runs AFTER a
+// successful (2xx) response, and snapshotting runs in a
+// spawned task so the response is never blocked.
+// ============================================================
+
+/// Routes where auto-snapshot would recurse or provide no value.
+/// Config-management routes already manage their own versions;
+/// WebSocket and streaming endpoints never change state.
+fn should_skip_auto_snapshot(path: &str) -> bool {
+    path.starts_with("/api/v1/config/")         // own subsystem
+        || path.starts_with("/api/v1/auth/login")
+        || path.starts_with("/api/v1/auth/refresh")
+        || path.starts_with("/api/v1/auth/logout")
+        || path.starts_with("/api/v1/auth/register")
+        || path.starts_with("/api/v1/auth/totp/login")
+        || path.starts_with("/api/v1/auth/oauth/")
+        || path.starts_with("/api/v1/dns/stream")  // WebSocket
+        || path.starts_with("/api/v1/ws")          // WebSocket
+        || path.starts_with("/api/v1/pending/stream")
+        || path.starts_with("/api/v1/updates/")    // ship-via-package ops, not config
+        || path.starts_with("/api/v1/reload")      // no config delta
+        || path.starts_with("/api/v1/metrics")
+}
+
+pub async fn auto_snapshot_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let mutating = matches!(&method, &Method::POST | &Method::PUT | &Method::DELETE | &Method::PATCH);
+
+    let response = next.run(request).await;
+
+    if !mutating || should_skip_auto_snapshot(&path) {
+        return response;
+    }
+    if !response.status().is_success() {
+        return response;
+    }
+
+    // Hand off to a background task so the client response isn't blocked
+    // by rebuilding + hashing the config. `save_if_changed` is a no-op if
+    // the hash is unchanged, which most endpoints will be.
+    let bg_state = state.clone();
+    let bg_actor = "auto".to_string();
+    let bg_comment = format!("{method} {path}");
+    tokio::spawn(async move {
+        match build_current_config(&bg_state).await {
+            Ok(cfg) => {
+                let mgr = ConfigManager::new(bg_state.pool.clone());
+                let _ = mgr.migrate().await;
+                if let Err(e) = mgr.save_if_changed(&cfg, &bg_actor, Some(&bg_comment)).await {
+                    tracing::debug!("auto-snapshot failed: {e}");
+                }
+            }
+            Err(_) => tracing::debug!("auto-snapshot: build_current_config failed"),
+        }
+    });
+
+    response
+}
+
+// ============================================================
+// Retention settings
+// ============================================================
+
+#[derive(Serialize)]
+pub struct RetentionResponse {
+    pub max_versions: u32,
+    pub current_count: u64,
+}
+
+pub async fn get_retention(
+    State(state): State<AppState>,
+) -> Result<Json<RetentionResponse>, StatusCode> {
+    let mgr = ConfigManager::new(state.pool.clone());
+    mgr.migrate().await.map_err(|_| internal())?;
+    let max_versions = mgr.retention_limit().await;
+    let current_count = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM config_versions")
+        .fetch_one(&state.pool)
+        .await
+        .map(|(n,)| n as u64)
+        .unwrap_or(0);
+    Ok(Json(RetentionResponse { max_versions, current_count }))
+}
+
+#[derive(Deserialize)]
+pub struct RetentionRequest {
+    pub max_versions: u32,
+}
+
+pub async fn put_retention(
+    State(state): State<AppState>,
+    Json(req): Json<RetentionRequest>,
+) -> Result<Json<RetentionResponse>, (StatusCode, String)> {
+    let mgr = ConfigManager::new(state.pool.clone());
+    mgr.migrate().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    mgr.set_retention_limit(req.max_versions)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    get_retention(State(state)).await.map_err(|c| (c, "read back failed".into()))
 }

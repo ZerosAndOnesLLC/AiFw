@@ -553,6 +553,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/preview-opnsense", post(backup::preview_opnsense))
         .route("/api/v1/config/commit-confirm/status", get(backup::commit_confirm_status))
+        .route("/api/v1/config/retention", get(backup::get_retention))
         .layer(middleware::from_fn(perm_check!(Permission::BackupRead)));
 
     // backup:write
@@ -563,6 +564,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/config/save", post(backup::save_version))
         .route("/api/v1/config/commit-confirm", post(backup::commit_confirm_start))
         .route("/api/v1/config/commit-confirm/confirm", post(backup::commit_confirm_accept))
+        .route("/api/v1/config/retention", put(backup::put_retention))
         .layer(middleware::from_fn(perm_check!(Permission::BackupWrite)));
 
     // system:reboot (also governs shutdown — same privilege level)
@@ -708,6 +710,11 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .merge(system_reboot)
         .merge(proxy_read).merge(proxy_write)
         .merge(multiwan_read).merge(multiwan_write)
+        // Auto-snapshot every successful mutation. Middleware is applied
+        // before the auth layer so it runs AFTER auth in the request chain;
+        // save_if_changed() de-dupes by hash so no-op writes don't pollute
+        // history, and retention pruning keeps the table bounded.
+        .layer(middleware::from_fn_with_state(state.clone(), backup::auto_snapshot_middleware))
         .layer(auth_layer);
 
     let mut app = Router::new()
