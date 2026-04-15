@@ -16,6 +16,10 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
+cron = "0.12"
+anyhow = "1"
 
 [dev-dependencies]
 anyhow = "1"

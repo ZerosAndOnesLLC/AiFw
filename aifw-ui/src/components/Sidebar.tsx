@@ -78,6 +78,8 @@ const navItems: NavItem[] = [
       { href: "/dns/domains", label: "  Domain Overrides", permission: "dns:read" },
       { href: "/dns/acls", label: "  Access Lists", permission: "dns:read" },
       { href: "/dns/logs", label: "  Query Log", permission: "dns:read" },
+      { href: "/dns/blocklists", label: "  Blocklists", permission: "dns:read" },
+      { href: "/dns/dashboard", label: "  Live Dashboard", permission: "dns:read" },
       { href: "/dhcp", label: "DHCP Server", permission: "dhcp:read" },
       { href: "/dhcp/subnets", label: "  Subnets", permission: "dhcp:read" },
       { href: "/dhcp/reservations", label: "  Reservations", permission: "dhcp:read" },

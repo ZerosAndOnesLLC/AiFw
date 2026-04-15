@@ -3,6 +3,7 @@ pub mod audit;
 pub mod config;
 pub mod config_manager;
 pub mod db;
+pub mod dns_blocklists;
 pub mod engine;
 pub mod geoip;
 pub mod ha;

@@ -4,6 +4,7 @@ mod auth;
 mod backup;
 mod ca;
 mod dhcp;
+mod dns_blocklists;
 mod dns_resolver;
 mod iface;
 mod ids;
@@ -334,6 +335,13 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/dns/resolver/domains", get(dns_resolver::list_domains))
         .route("/api/v1/dns/resolver/acls", get(dns_resolver::list_acls))
         .route("/api/v1/dns/resolver/logs", get(dns_resolver::resolver_logs))
+        .route("/api/v1/dns/blocklists", get(dns_blocklists::list_sources))
+        .route("/api/v1/dns/blocklists/{id}", get(dns_blocklists::get_source))
+        .route("/api/v1/dns/blocklists/schedule", get(dns_blocklists::get_schedule))
+        .route("/api/v1/dns/whitelist", get(dns_blocklists::list_whitelist))
+        .route("/api/v1/dns/customblocks", get(dns_blocklists::list_customblocks))
+        .route("/api/v1/dns/stats", get(dns_blocklists::get_stats_snapshot))
+        .route("/api/v1/dns/stream", get(dns_blocklists::stream_metrics))
         .layer(middleware::from_fn(perm_check!(Permission::DnsRead)));
 
     // dns:write
@@ -350,6 +358,15 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/dns/resolver/start", post(dns_resolver::resolver_start))
         .route("/api/v1/dns/resolver/stop", post(dns_resolver::resolver_stop))
         .route("/api/v1/dns/resolver/restart", post(dns_resolver::resolver_restart))
+        .route("/api/v1/dns/blocklists", post(dns_blocklists::create_source))
+        .route("/api/v1/dns/blocklists/{id}", put(dns_blocklists::update_source).delete(dns_blocklists::delete_source))
+        .route("/api/v1/dns/blocklists/{id}/refresh", post(dns_blocklists::refresh_one))
+        .route("/api/v1/dns/blocklists/refresh-all", post(dns_blocklists::refresh_everything))
+        .route("/api/v1/dns/blocklists/schedule", put(dns_blocklists::put_schedule))
+        .route("/api/v1/dns/whitelist", post(dns_blocklists::create_whitelist))
+        .route("/api/v1/dns/whitelist/{id}", delete(dns_blocklists::delete_whitelist))
+        .route("/api/v1/dns/customblocks", post(dns_blocklists::create_customblock))
+        .route("/api/v1/dns/customblocks/{id}", delete(dns_blocklists::delete_customblock))
         .layer(middleware::from_fn(perm_check!(Permission::DnsWrite)));
 
     // dhcp:read
@@ -769,6 +786,7 @@ async fn create_state_from_db(
     updates::migrate(&pool).await?;
     iface::migrate(&pool).await?;
     dns_resolver::migrate(&pool).await?;
+    dns_blocklists::migrate(&pool).await?;
     reverse_proxy::migrate(&pool).await?;
     time_service::migrate(&pool).await?;
     plugins::migrate(&pool).await?;

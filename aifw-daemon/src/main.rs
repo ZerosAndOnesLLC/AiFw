@@ -224,6 +224,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // DNS blocklist scheduler — owned by the daemon, never the API process.
+    aifw_core::dns_blocklists::migrate(&pool)
+        .await
+        .unwrap_or_else(|e| error!("dns_blocklists migration failed: {e}"));
+    aifw_core::dns_blocklists::spawn_scheduler(pool.clone());
+    info!("DNS blocklist scheduler started");
+
     info!("daemon ready, waiting for signals");
 
     // Wait for shutdown signal
