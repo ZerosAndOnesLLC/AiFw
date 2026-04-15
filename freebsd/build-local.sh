@@ -153,7 +153,7 @@ cp -a "$PROJECT_ROOT/aifw-ui/out" "$SCRIPT_DIR/ui-export"
 # on the build host) doesn't block a release. We stage to a separate
 # directory that build-iso.sh will not wipe, then copy into the release
 # OUTPUTDIR at the end.
-echo "=== [5/8] Building update tarball ==="
+echo "=== [5/9] Building update tarball ==="
 TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
 rm -rf "$TARBALL_DIR"
 mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui"
@@ -224,19 +224,42 @@ if [ -f "$TARBALL_DIR/bin/rdns" ]; then
         exit 1
     fi
 fi
-OUTPUTDIR="/usr/obj/aifw-iso/output"
-mkdir -p "$OUTPUTDIR"
-XZ_OPT='-9 -T0' tar -C /tmp -cJf "${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"
-cd "$OUTPUTDIR"
-sha256 "aifw-update-${VERSION}-amd64.tar.xz" > "aifw-update-${VERSION}-amd64.tar.xz.sha256"
+# Stage the tarball outside /usr/obj/aifw-iso/ — build-iso.sh wipes that
+# tree, so anything we put under it before the ISO step would vanish.
+STAGE_OUT="/usr/obj/aifw-release-stage"
+mkdir -p "$STAGE_OUT"
+XZ_OPT='-9 -T0' tar -C /tmp -cJf "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"
+( cd "$STAGE_OUT" && sha256 "aifw-update-${VERSION}-amd64.tar.xz" > "aifw-update-${VERSION}-amd64.tar.xz.sha256" )
 rm -rf "$TARBALL_DIR"
-echo "  Update tarball: ${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz"
-ls -lh "${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz"
+echo "  Update tarball staged: ${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz"
+ls -lh "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz"
 cd "$PROJECT_ROOT"
 
-# --- Compress ISO + IMG ---
-echo "=== [7/8] Compressing ISO + IMG ==="
+# --- Build ISO + IMG (best-effort) ---
+#
+# build-iso.sh runs `pkg bootstrap` against pkg.FreeBSD.org. When the
+# build host has flaky IPv6/IPv4 DNS for that name, this step fails. We
+# don't want one bad ISO build to block a release — every appliance gets
+# new code through the update tarball, not the ISO. So: failures here
+# are noted but non-fatal.
+echo "=== [6/9] Building ISO + IMG (best-effort) ==="
+ISO_BUILD_OK=1
+sh "$SCRIPT_DIR/build-iso.sh" "$VERSION" amd64 || ISO_BUILD_OK=0
+if [ "$ISO_BUILD_OK" -eq 0 ]; then
+    echo "WARNING: ISO/IMG build failed. The update tarball is still good for"
+    echo "         the in-app updater; release.sh will skip the ISO/IMG upload."
+fi
+
+# Move the staged tarball into the release output dir (created by
+# build-iso.sh; we recreate if the ISO step failed).
 OUTPUTDIR="/usr/obj/aifw-iso/output"
+mkdir -p "$OUTPUTDIR"
+mv "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz" "$OUTPUTDIR/"
+mv "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz.sha256" "$OUTPUTDIR/"
+rmdir "$STAGE_OUT" 2>/dev/null || true
+
+# --- Compress ISO + IMG ---
+echo "=== [7/9] Compressing ISO + IMG ==="
 for f in "${OUTPUTDIR}"/aifw-*.iso "${OUTPUTDIR}"/aifw-*.img; do
     if [ -f "$f" ] && [ ! -f "${f}.xz" ]; then
         echo "  Compressing $(basename $f)..."

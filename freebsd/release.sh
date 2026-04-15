@@ -38,14 +38,22 @@ echo "============================================"
 echo ""
 
 # --- Verify build artifacts exist (prefer .xz, fall back to uncompressed) ---
+#
+# ISO/IMG are nice-to-have; the update tarball is what every existing
+# appliance pulls via the in-app updater. If the build VM's network was
+# wedged (pkg.FreeBSD.org IPv6/IPv4 resolution issues we keep hitting)
+# the ISO step gets skipped but the tarball is still produced. Don't
+# block a release just because we can't ship a fresh ISO.
+ISO_UPLOAD=""
+ISO_SHA_UPLOAD=""
+IMG_UPLOAD=""
+IMG_SHA_UPLOAD=""
 if [ -f "$ISO_XZ" ]; then
     ISO_UPLOAD="$ISO_XZ"
     ISO_SHA_UPLOAD="$ISO_XZ_SHA"
 elif [ -f "$ISO" ]; then
     ISO_UPLOAD="$ISO"
     ISO_SHA_UPLOAD="$ISO_SHA"
-else
-    die "Missing: $ISO (or ${ISO}.xz) — run build-local.sh first"
 fi
 
 if [ -f "$IMG_XZ" ]; then
@@ -54,13 +62,13 @@ if [ -f "$IMG_XZ" ]; then
 elif [ -f "$IMG" ]; then
     IMG_UPLOAD="$IMG"
     IMG_SHA_UPLOAD="$IMG_SHA"
-else
-    die "Missing: $IMG (or ${IMG}.xz) — run build-local.sh first"
 fi
 
-# Verify checksum files exist
+# Validate checksum files for whichever artifacts we found.
 for f in "$ISO_SHA_UPLOAD" "$IMG_SHA_UPLOAD"; do
-    [ -f "$f" ] || die "Missing checksum: $f"
+    if [ -n "$f" ] && [ ! -f "$f" ]; then
+        die "Missing checksum: $f"
+    fi
 done
 
 # If uncompressed IMG exists and is over 1.5GB, compress for GitHub (2GB limit)
@@ -89,9 +97,14 @@ if [ ! -f "$UPDATE_TARBALL" ]; then
     UPDATE_SHA=""
 fi
 
+if [ -z "$ISO_UPLOAD" ] && [ -z "$IMG_UPLOAD" ] && [ -z "$UPDATE_TARBALL" ]; then
+    die "No artifacts to release. Run build-local.sh first."
+fi
+
 echo "Artifacts:"
-ls -lh "$ISO_UPLOAD" "$IMG_UPLOAD"
-[ -n "$UPDATE_TARBALL" ] && ls -lh "$UPDATE_TARBALL"
+[ -n "$ISO_UPLOAD" ]      && ls -lh "$ISO_UPLOAD"
+[ -n "$IMG_UPLOAD" ]      && ls -lh "$IMG_UPLOAD"
+[ -n "$UPDATE_TARBALL" ]  && ls -lh "$UPDATE_TARBALL"
 echo ""
 
 # --- Create git tag if it doesn't exist ---
@@ -108,28 +121,57 @@ fi
 echo ""
 echo "Creating GitHub release ${TAG}..."
 
-IMG_BASENAME="$(basename "$IMG_UPLOAD")"
-ISO_BASENAME="$(basename "$ISO_UPLOAD")"
+# Build downloads table from whatever artifacts we actually have. ISO/IMG
+# may be absent on a tarball-only release (build-iso.sh failed and was
+# skipped). Update tarball may be absent on a fresh-install-only release.
+DOWNLOADS_ROWS=""
+SHASUMS=""
 DECOMPRESS_NOTE=""
-if echo "$IMG_BASENAME" | grep -q '\.xz$'; then
-    DECOMPRESS_NOTE="
+if [ -n "$ISO_UPLOAD" ]; then
+    ISO_BASENAME="$(basename "$ISO_UPLOAD")"
+    DOWNLOADS_ROWS="${DOWNLOADS_ROWS}| \`${ISO_BASENAME}\` | $(du -h "$ISO_UPLOAD" | awk '{print $1}') | Bootable ISO (CD/DVD, VM) |
+"
+    SHASUMS="${SHASUMS}$(cat "$ISO_SHA_UPLOAD")
+"
+fi
+if [ -n "$IMG_UPLOAD" ]; then
+    IMG_BASENAME="$(basename "$IMG_UPLOAD")"
+    DOWNLOADS_ROWS="${DOWNLOADS_ROWS}| \`${IMG_BASENAME}\` | $(du -h "$IMG_UPLOAD" | awk '{print $1}') | USB flash drive image |
+"
+    SHASUMS="${SHASUMS}$(cat "$IMG_SHA_UPLOAD")
+"
+    if echo "$IMG_BASENAME" | grep -q '\.xz$'; then
+        DECOMPRESS_NOTE="
 > **Note:** The USB image is compressed with xz. Decompress before writing:
 > \`\`\`bash
 > xz -d ${IMG_BASENAME}
 > dd if=aifw-${VERSION}-amd64.img of=/dev/sdX bs=1M status=progress
 > \`\`\`"
+    fi
 fi
+if [ -n "$UPDATE_TARBALL" ]; then
+    TARBALL_BASENAME="$(basename "$UPDATE_TARBALL")"
+    DOWNLOADS_ROWS="${DOWNLOADS_ROWS}| \`${TARBALL_BASENAME}\` | $(du -h "$UPDATE_TARBALL" | awk '{print $1}') | In-app update tarball |
+"
+    SHASUMS="${SHASUMS}$(cat "$UPDATE_SHA")
+"
+fi
+[ -z "$ISO_UPLOAD$IMG_UPLOAD" ] && TARBALL_ONLY_NOTE="
+> **Note:** This release ships only the in-app update tarball — no ISO/IMG
+> were produced (build VM network issue). Existing appliances can still
+> update via the in-app updater. For fresh installs, use the previous
+> release's ISO/IMG and update from there." || TARBALL_ONLY_NOTE=""
 
 BODY="## AiFw v${VERSION}
 
 AI-Powered Firewall for FreeBSD 15.0
+${TARBALL_ONLY_NOTE}
 
 ### Downloads
 
 | File | Size | Description |
 |------|------|-------------|
-| \`${ISO_BASENAME}\` | $(du -h "$ISO_UPLOAD" | awk '{print $1}') | Bootable ISO (CD/DVD, VM) |
-| \`${IMG_BASENAME}\` | $(du -h "$IMG_UPLOAD" | awk '{print $1}') | USB flash drive image |
+${DOWNLOADS_ROWS}
 ${DECOMPRESS_NOTE}
 ### Quick Start
 
@@ -142,15 +184,15 @@ ${DECOMPRESS_NOTE}
 ### Verify Downloads
 
 \`\`\`
-$(cat "$ISO_SHA_UPLOAD")
-$(cat "$IMG_SHA_UPLOAD")
-\`\`\`"
+${SHASUMS}\`\`\`"
 
-# Build asset list
-ASSETS="$ISO_UPLOAD $IMG_UPLOAD $ISO_SHA_UPLOAD $IMG_SHA_UPLOAD"
-if [ -n "$UPDATE_TARBALL" ]; then
-    ASSETS="$ASSETS $UPDATE_TARBALL $UPDATE_SHA"
-fi
+# Build asset list — only include artifacts we actually have. `gh release
+# upload` errors on empty file paths, which would happen on a tarball-only
+# release if we just concatenated all four ISO/IMG vars unguarded.
+ASSETS=""
+[ -n "$ISO_UPLOAD" ]      && ASSETS="$ASSETS $ISO_UPLOAD $ISO_SHA_UPLOAD"
+[ -n "$IMG_UPLOAD" ]      && ASSETS="$ASSETS $IMG_UPLOAD $IMG_SHA_UPLOAD"
+[ -n "$UPDATE_TARBALL" ]  && ASSETS="$ASSETS $UPDATE_TARBALL $UPDATE_SHA"
 
 # Create release (or update if exists)
 if gh release view "$TAG" >/dev/null 2>&1; then
