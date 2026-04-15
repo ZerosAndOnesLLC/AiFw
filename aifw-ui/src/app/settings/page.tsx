@@ -1,8 +1,23 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 
 const API = "";
+
+// Settings categories. `key` matches the `?cat=` URL param; `sections` lists
+// the section <h2> labels that belong to the category. The render below uses
+// `inCategory(label)` to decide whether to show a card. This keeps the page
+// as one component (state is shared across many sections — e.g. DNS feeds
+// into the rest of system config) but makes the long scroll navigable.
+const CATEGORIES: { key: string; label: string; sections: string[] }[] = [
+  { key: "system",  label: "System",          sections: ["System Actions"] },
+  { key: "api",     label: "API & Auth",      sections: ["API Server", "TLS Policy", "Authentication"] },
+  { key: "dns",     label: "DNS",             sections: ["DNS Configuration"] },
+  { key: "storage", label: "Storage & Metrics", sections: ["Metrics Storage", "Dashboard History", "Metrics Persistence (Valkey)", "IDS Alert Storage"] },
+  { key: "backup",  label: "Backup & History", sections: ["Config History", "S3 Backup Sync", "Email Notifications (SMTP)"] },
+  { key: "ai",      label: "AI / LLM",        sections: ["AI / LLM Providers"] },
+];
 
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("aifw_token") || "";
@@ -775,15 +790,65 @@ export default function SettingsPage() {
   const saveBtnCls =
     "px-5 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
 
+  // Read ?cat= from the URL. "all" or unset => show every section.
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const activeCat = searchParams?.get("cat") || "all";
+  const inCategory = useCallback((label: string): boolean => {
+    if (activeCat === "all") return true;
+    const cat = CATEGORIES.find((c) => c.key === activeCat);
+    return !!cat && cat.sections.includes(label);
+  }, [activeCat]);
+  const setCat = useCallback((next: string) => {
+    const params = new URLSearchParams(searchParams?.toString() || "");
+    if (next === "all") params.delete("cat");
+    else params.set("cat", next);
+    const q = params.toString();
+    router.replace(q ? `${pathname}?${q}` : pathname);
+  }, [router, pathname, searchParams]);
+  const activeLabel = useMemo(
+    () => CATEGORIES.find((c) => c.key === activeCat)?.label || "All Settings",
+    [activeCat],
+  );
+
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
-        <h1 className="text-2xl font-bold">Settings</h1>
+        <h1 className="text-2xl font-bold">Settings <span className="text-[var(--text-muted)] font-normal text-base">/ {activeLabel}</span></h1>
         <p className="text-sm text-[var(--text-muted)]">System configuration and preferences</p>
       </div>
 
+      {/* Category tabs — quick in-page nav so the page is browseable even
+          if the user lands here without clicking a sidebar child link. */}
+      <nav className="flex flex-wrap gap-2 border-b border-[var(--border)] pb-3" aria-label="Settings categories">
+        <button
+          onClick={() => setCat("all")}
+          className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+            activeCat === "all"
+              ? "bg-[var(--accent)] text-white"
+              : "bg-[var(--bg-card-secondary)] hover:bg-[var(--bg-hover)] text-[var(--text-muted)]"
+          }`}
+        >
+          All
+        </button>
+        {CATEGORIES.map((c) => (
+          <button
+            key={c.key}
+            onClick={() => setCat(c.key)}
+            className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+              activeCat === c.key
+                ? "bg-[var(--accent)] text-white"
+                : "bg-[var(--bg-card-secondary)] hover:bg-[var(--bg-hover)] text-[var(--text-muted)]"
+            }`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </nav>
+
       {/* DNS Configuration */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("DNS Configuration") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">DNS Configuration</h2>
         </div>
@@ -848,7 +913,7 @@ export default function SettingsPage() {
       </section>
 
       {/* Metrics Backend */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("Metrics Storage") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">Metrics Storage</h2>
         </div>
@@ -912,7 +977,7 @@ export default function SettingsPage() {
       </section>
 
       {/* Dashboard History */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("Dashboard History") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">Dashboard History</h2>
           <span className="text-xs text-[var(--text-muted)] font-mono">
@@ -1040,7 +1105,7 @@ export default function SettingsPage() {
       </section>
 
       {/* Config History retention */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("Config History") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">Config History</h2>
           <span className="text-xs text-[var(--text-muted)]">
@@ -1081,7 +1146,7 @@ export default function SettingsPage() {
       </section>
 
       {/* S3 Backup Sync */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("S3 Backup Sync") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">S3 Backup Sync</h2>
           <label className="inline-flex items-center gap-2 text-sm">
@@ -1154,7 +1219,7 @@ export default function SettingsPage() {
       </section>
 
       {/* SMTP Notifications */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("Email Notifications (SMTP)") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">Email Notifications (SMTP)</h2>
           <label className="inline-flex items-center gap-2 text-sm">
@@ -1243,7 +1308,7 @@ export default function SettingsPage() {
       </section>
 
       {/* API Settings */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("API Server") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">API Server</h2>
         </div>
@@ -1288,7 +1353,7 @@ export default function SettingsPage() {
       </section>
 
       {/* TLS Policy */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("TLS Policy") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">TLS Policy</h2>
         </div>
@@ -1338,7 +1403,7 @@ export default function SettingsPage() {
       </section>
 
       {/* Auth Settings */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("Authentication") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-medium">Authentication</h2>
         </div>
@@ -1434,7 +1499,7 @@ export default function SettingsPage() {
       </section>
 
       {/* Valkey / Metrics Persistence */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("Metrics Persistence (Valkey)") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-medium">Metrics Persistence (Valkey)</h2>
           <span className={`px-2 py-0.5 rounded text-xs font-medium ${
@@ -1508,7 +1573,7 @@ export default function SettingsPage() {
       </section>
 
       {/* IDS Alert Buffer */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("IDS Alert Storage") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="font-medium">IDS Alert Storage</h2>
@@ -1578,7 +1643,7 @@ export default function SettingsPage() {
       </section>
 
       {/* AI Providers */}
-      <section className={sectionCls}>
+      <section className={`${sectionCls} ${inCategory("AI / LLM Providers") ? "" : "hidden"}`}>
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="font-medium">AI / LLM Providers</h2>
@@ -1780,7 +1845,7 @@ export default function SettingsPage() {
       {/* ================================================================ */}
       {/* System Actions                                                    */}
       {/* ================================================================ */}
-      <section className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
+      <section className={`bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden ${inCategory("System Actions") ? "" : "hidden"}`}>
         <div className="px-6 py-4 border-b border-[var(--border)]">
           <h2 className="text-lg font-semibold">System Actions</h2>
         </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -134,6 +134,12 @@ const navItems: NavItem[] = [
       { href: "/users", label: "Users", permission: "users:read" },
       { href: "/backup", label: "Backup & Restore", permission: "backup:read" },
       { href: "/settings", label: "Settings", permission: "settings:read" },
+      { href: "/settings?cat=system",  label: "  System",            permission: "settings:read" },
+      { href: "/settings?cat=api",     label: "  API & Auth",        permission: "settings:read" },
+      { href: "/settings?cat=dns",     label: "  DNS",               permission: "settings:read" },
+      { href: "/settings?cat=storage", label: "  Storage & Metrics", permission: "settings:read" },
+      { href: "/settings?cat=backup",  label: "  Backup & History",  permission: "settings:read" },
+      { href: "/settings?cat=ai",      label: "  AI / LLM",          permission: "settings:read" },
       { href: "/reboot", label: "Power", permission: "system:reboot" },
     ],
   },
@@ -141,6 +147,10 @@ const navItems: NavItem[] = [
 
 export default function Sidebar({ onClose, width }: { onClose?: () => void; width?: number }) {
   const pathname = usePathname();
+  // Subscribe to search params too so /settings?cat= changes re-render the
+  // sidebar and the active child highlight follows the user's clicks.
+  const searchParams = useSearchParams();
+  const currentCat = searchParams?.get("cat") || "";
   const { permissions, isLoading: authLoading } = useAuth();
   // If auth hasn't loaded yet or user has no permissions in JWT (legacy token),
   // show all nav items instead of hiding everything
@@ -273,9 +283,21 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
                   {children.map((child) => {
                     const isNicLink = child.href.includes("?interface=");
                     const nicName = isNicLink ? child.href.split("?interface=")[1] : null;
+                    // Settings sub-pages live at /settings?cat=X. Match on
+                    // both pathname and the cat query param so the sidebar
+                    // highlights the right Settings child. The bare
+                    // /settings link is treated as the "all categories"
+                    // entry — only active when no cat param is set.
+                    const isSettingsCatLink = child.href.startsWith("/settings?cat=");
+                    const isSettingsAll = child.href === "/settings";
+                    const childCat = isSettingsCatLink ? child.href.split("cat=")[1] : "";
                     const active = isNicLink
                       ? pathname === "/rules" && typeof window !== "undefined" && window.location.search === `?interface=${nicName}`
-                      : isActive(child.href);
+                      : isSettingsCatLink
+                        ? pathname === "/settings" && currentCat === childCat
+                        : isSettingsAll
+                          ? pathname === "/settings" && currentCat === ""
+                          : isActive(child.href);
                     const isSubItem = child.label.startsWith("  ");
                     const displayLabel = child.label.trimStart();
                     return (
