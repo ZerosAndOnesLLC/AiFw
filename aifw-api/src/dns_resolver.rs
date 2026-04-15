@@ -792,13 +792,13 @@ pub async fn resolver_status(
             let stream = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 tokio::net::UnixStream::connect("/var/run/rdns/control.sock"),
-            ).await.ok()??.ok()?;
+            ).await.ok()?.ok()?;
             let (reader, mut writer) = stream.into_split();
             writer.write_all(b"version\n").await.ok()?;
             writer.flush().await.ok()?;
             let mut br = BufReader::new(reader);
             let mut line = String::new();
-            tokio::time::timeout(
+            let _: usize = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 br.read_line(&mut line),
             ).await.ok()?.ok()?;
