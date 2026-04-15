@@ -1218,34 +1218,28 @@ pub async fn delete_acl(State(state): State<AppState>, Path(id): Path<String>) -
     Ok(Json(MessageResponse { message: "ACL entry deleted".to_string() }))
 }
 
-// Query log — backend-aware
+// Query log — backend-aware.
+//
+// Earlier versions did `sudo cat /var/log/messages` then filtered in Rust,
+// which on a busy box meant pulling 2+ MB and re-parsing every poll —
+// 10-15 s before the first line showed up in the UI. Now: `tail -n 5000`
+// each candidate file (bounded read), then `grep` for the backend's tag
+// inside the shell pipeline so the filter happens BEFORE we ever copy the
+// bytes to user space, and finally cap at 200 lines for the response.
 pub async fn resolver_logs(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
     let config = load_config(&state.pool).await;
     let is_rdns = config.backend == "rdns";
-
-    let content = if is_rdns {
-        // rDNS logs to stderr (captured by daemon) — check syslog
-        let primary = Command::new("/usr/local/bin/sudo").args(["/bin/cat", "/var/log/rdns.log"]).output().await;
-        match primary {
-            Ok(o) if o.status.success() && !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => Command::new("/usr/local/bin/sudo").args(["/bin/cat", "/var/log/messages"]).output().await
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default(),
-        }
+    let (primary_path, fallback_path, filter_term) = if is_rdns {
+        ("/var/log/rdns.log", "/var/log/messages", "rdns")
     } else {
-        let primary = Command::new("/usr/local/bin/sudo").args(["/bin/cat", "/var/log/unbound.log"]).output().await;
-        match primary {
-            Ok(o) if o.status.success() && !o.stdout.is_empty() => String::from_utf8_lossy(&o.stdout).to_string(),
-            _ => Command::new("/usr/local/bin/sudo").args(["/bin/cat", "/var/log/messages"]).output().await
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default(),
-        }
+        ("/var/log/unbound.log", "/var/log/messages", "unbound")
     };
 
-    let filter_term = if is_rdns { "rdns" } else { "unbound" };
-    let lines: Vec<String> = content.lines()
-        .filter(|l| l.to_lowercase().contains(filter_term))
-        .map(String::from)
-        .collect::<Vec<_>>()
-        .into_iter().rev().take(200).collect();
-
+    let lines = crate::log_tail::tail_filtered(
+        &[primary_path, fallback_path],
+        Some(filter_term),
+        5000,
+        200,
+    ).await;
     Ok(Json(ApiResponse { data: lines }))
 }

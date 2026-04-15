@@ -6,6 +6,7 @@ mod ca;
 mod acme;
 mod backup_s3;
 mod dhcp;
+mod log_tail;
 mod dns_blocklists;
 mod dns_resolver;
 mod iface;

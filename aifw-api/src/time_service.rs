@@ -412,27 +412,12 @@ pub async fn time_logs(
     let lines_param = params.get("lines").and_then(|v| v.parse::<usize>().ok()).unwrap_or(200);
     let search = params.get("search").cloned().unwrap_or_default();
 
-    let mut content = String::new();
-    for path in &[RTIME_LOG_PATH, "/var/log/rtime.log"] {
-        if let Ok(c) = tokio::fs::read_to_string(path).await {
-            content = c;
-            break;
-        }
-        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["/bin/cat", *path]).output().await
-            && output.status.success() {
-                content = String::from_utf8_lossy(&output.stdout).to_string();
-                break;
-            }
-    }
-
-    let mut log_lines: Vec<String> = content.lines()
-        .filter(|l| !l.is_empty())
-        .filter(|l| search.is_empty() || l.to_lowercase().contains(&search.to_lowercase()))
-        .map(String::from)
-        .collect();
-
-    log_lines.reverse();
-    log_lines.truncate(lines_param);
+    let log_lines = crate::log_tail::tail_filtered(
+        &[RTIME_LOG_PATH, "/var/log/rtime.log"],
+        if search.is_empty() { None } else { Some(&search) },
+        5000,
+        lines_param,
+    ).await;
 
     Ok(Json(ApiResponse { data: log_lines }))
 }

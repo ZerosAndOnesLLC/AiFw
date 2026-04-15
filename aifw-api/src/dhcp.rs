@@ -1129,39 +1129,15 @@ pub async fn dhcp_logs(
     let lines_param = params.get("lines").and_then(|v| v.parse::<usize>().ok()).unwrap_or(200);
     let search = params.get("search").cloned().unwrap_or_default();
 
-    // Read rDHCP log file
-    let log_paths = [RDHCP_LOG_PATH, "/var/log/rdhcpd.log"];
-    let mut content = String::new();
-    for path in &log_paths {
-        // Try direct read first (aifw user may have read access)
-        if let Ok(c) = tokio::fs::read_to_string(path).await {
-            content = c;
-            break;
-        }
-        // Fallback to sudo
-        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["/bin/cat", path]).output().await
-            && output.status.success() {
-                content = String::from_utf8_lossy(&output.stdout).to_string();
-                break;
-            }
-    }
-
-    // Also try journalctl if no log file found
-    if content.is_empty()
-        && let Ok(output) = Command::new("/usr/local/bin/sudo").args(["journalctl", "-u", "rdhcpd", "--no-pager", "-n", &lines_param.to_string()]).output().await
-            && output.status.success() {
-                content = String::from_utf8_lossy(&output.stdout).to_string();
-            }
-
-    let mut log_lines: Vec<String> = content.lines()
-        .filter(|l| !l.is_empty())
-        .filter(|l| search.is_empty() || l.to_lowercase().contains(&search.to_lowercase()))
-        .map(String::from)
-        .collect();
-
-    // Return last N lines (newest first)
-    log_lines.reverse();
-    log_lines.truncate(lines_param);
+    // Bounded tail + early grep — see dns_resolver::tail_filtered for the
+    // rationale. Reading the full log + filtering in Rust used to take
+    // seconds on a busy DHCP server.
+    let log_lines = crate::log_tail::tail_filtered(
+        &[RDHCP_LOG_PATH, "/var/log/rdhcpd.log"],
+        if search.is_empty() { None } else { Some(&search) },
+        5000,
+        lines_param,
+    ).await;
 
     Ok(Json(ApiResponse { data: log_lines }))
 }

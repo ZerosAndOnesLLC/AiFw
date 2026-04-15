@@ -1247,17 +1247,12 @@ pub async fn rp_logs(
         "/var/log/trafficcop/access.log"
     };
 
-    let content = tokio::fs::read_to_string(log_path).await.unwrap_or_default();
-
-    let mut log_lines: Vec<String> = content
-        .lines()
-        .filter(|l| !l.is_empty())
-        .filter(|l| search.is_empty() || l.to_lowercase().contains(&search.to_lowercase()))
-        .map(String::from)
-        .collect();
-
-    log_lines.reverse();
-    log_lines.truncate(lines_param);
+    let log_lines = crate::log_tail::tail_filtered(
+        &[log_path],
+        if search.is_empty() { None } else { Some(&search) },
+        5000,
+        lines_param,
+    ).await;
 
     Ok(Json(log_lines))
 }
