@@ -403,7 +403,7 @@ pub async fn update_source(pool: &SqlitePool, id: i64, req: UpdateBlocklistSourc
     .execute(pool).await.map_err(|e| e.to_string())?;
 
     if !enabled {
-        let _ = std::fs::remove_file(rpz_path_for(id));
+        remove_blocklist_file(&rpz_path_for(id)).await;
         let _ = trigger_rdns_reload().await;
     }
     load_source(pool, id).await.ok_or_else(|| "post-update read failed".into())
@@ -416,7 +416,7 @@ pub async fn delete_source(pool: &SqlitePool, id: i64) -> Result<(), String> {
     }
     sqlx::query("DELETE FROM dns_blocklist_source WHERE id=?")
         .bind(id).execute(pool).await.map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(rpz_path_for(id));
+    remove_blocklist_file(&rpz_path_for(id)).await;
     let _ = trigger_rdns_reload().await;
     Ok(())
 }
@@ -548,14 +548,52 @@ pub fn build_rpz(domains: &HashSet<String>, action: &str, redirect_ip: Option<&s
     out
 }
 
-fn atomic_write(path: &std::path::Path, body: &str) -> std::io::Result<()> {
+/// Write `body` to `path` via `sudo /usr/bin/install` — matches the existing
+/// AiFw pattern in `dns_resolver.rs` because the API/daemon both run as the
+/// `aifw` user, which has no direct write access to `/usr/local/etc/rdns/`.
+///
+/// Steps: write to `/tmp/aifw_blocklist_<basename>.tmp` as aifw, then
+/// `sudo /usr/bin/install -m 0644` it into place. Final rename inside
+/// `install(1)` is atomic on the destination filesystem.
+async fn atomic_write(path: &std::path::Path, body: &str) -> std::io::Result<()> {
+    use tokio::process::Command;
+    let basename = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("blocklist.rpz");
+    let tmp = format!("/tmp/aifw_blocklist_{basename}.tmp");
+
+    // Best-effort mkdir of parent (sudo /bin/mkdir is in sudoers).
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["/bin/mkdir", "-p", parent.to_str().unwrap_or("")])
+            .output().await;
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, path)?;
+
+    tokio::fs::write(&tmp, body).await?;
+
+    let dest = path.to_str().ok_or_else(|| std::io::Error::other("non-utf8 path"))?;
+    let out = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/bin/install", "-m", "0644", &tmp, dest])
+        .output().await?;
+    let _ = tokio::fs::remove_file(&tmp).await;
+    if !out.status.success() {
+        return Err(std::io::Error::other(format!(
+            "sudo install failed for {dest}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
     Ok(())
+}
+
+/// Remove a blocklist file via sudo. The sudoers entry restricts `rm` to the
+/// rdns rpz directory.
+async fn remove_blocklist_file(path: &std::path::Path) {
+    use tokio::process::Command;
+    if let Some(p) = path.to_str() {
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["/bin/rm", "-f", p])
+            .output().await;
+    }
 }
 
 pub fn rpz_path_for(id: i64) -> PathBuf {
@@ -577,7 +615,7 @@ pub async fn refresh_source(pool: &SqlitePool, id: i64) -> RefreshOutcome {
         return outcome;
     };
     if !src.enabled {
-        let _ = std::fs::remove_file(rpz_path_for(id));
+        remove_blocklist_file(&rpz_path_for(id)).await;
         outcome.ok = true;
         return outcome;
     }
@@ -623,7 +661,7 @@ pub async fn refresh_source(pool: &SqlitePool, id: i64) -> RefreshOutcome {
         !l.is_empty() && !l.starts_with(';') && !l.starts_with('$') && !l.starts_with('@')
     }).count() as i64;
 
-    if let Err(e) = atomic_write(&rpz_path_for(id), &zone_body) {
+    if let Err(e) = atomic_write(&rpz_path_for(id), &zone_body).await {
         record_error(pool, id, &format!("write rpz: {e}")).await;
         outcome.error = Some(format!("write rpz: {e}"));
         return outcome;
@@ -675,7 +713,7 @@ pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
         if d.is_empty() { continue; }
         out.push_str(&format!("{d} CNAME .\n"));
     }
-    atomic_write(&custom_rpz_path(), &out)?;
+    atomic_write(&custom_rpz_path(), &out).await?;
     Ok((whitelist.len() + custom.len()) as i64)
 }
 
