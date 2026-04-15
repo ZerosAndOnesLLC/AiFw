@@ -145,12 +145,15 @@ fi
 rm -rf "$SCRIPT_DIR/ui-export"
 cp -a "$PROJECT_ROOT/aifw-ui/out" "$SCRIPT_DIR/ui-export"
 
-# --- Build ISO + IMG (must run before tarball — build-iso.sh wipes /usr/obj/aifw-iso/) ---
-echo "=== [5/8] Building ISO + IMG ==="
-sh "$SCRIPT_DIR/build-iso.sh" "$VERSION" amd64
-
-# --- Build update tarball (after ISO so build-iso.sh cleanup doesn't delete it) ---
-echo "=== [6/8] Building update tarball ==="
+# --- Build update tarball FIRST ---
+#
+# The update tarball is the critical artifact — every appliance gets new
+# code through the in-app updater, which only needs this file. Building it
+# before the ISO means a busted ISO step (e.g. pkg.FreeBSD.org DNS issues
+# on the build host) doesn't block a release. We stage to a separate
+# directory that build-iso.sh will not wipe, then copy into the release
+# OUTPUTDIR at the end.
+echo "=== [5/8] Building update tarball ==="
 TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
 rm -rf "$TARBALL_DIR"
 mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui"

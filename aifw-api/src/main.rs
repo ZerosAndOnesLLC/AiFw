@@ -1093,6 +1093,14 @@ async fn ensure_rdr_anchor() {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // axum-server 0.8 + aws-sdk-* both pull in rustls 0.23 with multiple
+    // crypto providers enabled (aws-lc-rs from one, ring from the other).
+    // Without an explicit choice, rustls panics on the first TLS handshake
+    // with "Could not automatically determine the process-level
+    // CryptoProvider". Pin to aws-lc-rs since the AWS SDK already requires
+    // it; doing this before any TLS is used.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
