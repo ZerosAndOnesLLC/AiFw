@@ -165,6 +165,22 @@ if [ -f "$RTIME_DIR/target/release/rtime" ]; then
     cp "$RTIME_DIR/target/release/rtime" "$TARBALL_DIR/bin/"
 fi
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
+
+# rc.d service scripts — the updater (aifw-core/src/updater.rs) looks for
+# these under <tarball>/rc.d/ and installs each one listed in manifest.json's
+# `rc_scripts`. Skipping this ships stale service files (e.g. control-socket
+# chown/chmod fixes never reach the appliance).
+mkdir -p "$TARBALL_DIR/rc.d"
+if [ -d "$PROJECT_ROOT/freebsd/overlay/usr/local/etc/rc.d" ]; then
+    cp -a "$PROJECT_ROOT/freebsd/overlay/usr/local/etc/rc.d/"* "$TARBALL_DIR/rc.d/" 2>/dev/null || true
+fi
+
+# sbin scripts — aifw-console, aifw-installer, etc.
+mkdir -p "$TARBALL_DIR/sbin"
+if [ -d "$PROJECT_ROOT/freebsd/overlay/usr/local/sbin" ]; then
+    cp -a "$PROJECT_ROOT/freebsd/overlay/usr/local/sbin/"* "$TARBALL_DIR/sbin/" 2>/dev/null || true
+fi
+
 echo "$VERSION" > "$TARBALL_DIR/version"
 
 # Write a manifest of what made it into the tarball — commit SHAs for every

@@ -216,21 +216,33 @@ pub async fn stream_metrics(
 async fn handle_stream_socket(socket: WebSocket) {
     let (mut tx, mut rx) = socket.split();
 
+    // When we can't reach the rDNS control socket, we want the client to back
+    // off. Two rules make that work:
+    //   1. Send an error frame so the UI can surface the reason.
+    //   2. Then keep the WS open for ~5 seconds before closing. The client
+    //      measures aliveMs and, because no real "stats"/"block" frame ever
+    //      arrived, doubles its reconnect delay. Closing immediately after
+    //      an error frame used to confuse the client into thinking a frame
+    //      meant success, producing a 1 Hz reconnect loop.
+    async fn short_lived_error(mut tx: futures_util::stream::SplitSink<WebSocket, WsMessage>, reason: String) {
+        let _ = tx.send(WsMessage::Text(
+            format!("{{\"type\":\"error\",\"error\":{}}}", serde_json::Value::String(reason)).into()
+        )).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let _ = tx.close().await;
+    }
+
     let stats_stream = match tokio::net::UnixStream::connect(CONTROL_SOCKET).await {
         Ok(s) => s,
         Err(e) => {
-            let _ = tx.send(WsMessage::Text(
-                format!("{{\"type\":\"error\",\"error\":\"rdns control unreachable: {e}\"}}").into()
-            )).await;
+            short_lived_error(tx, format!("rdns control unreachable: {e}")).await;
             return;
         }
     };
     let blocks_stream = match tokio::net::UnixStream::connect(CONTROL_SOCKET).await {
         Ok(s) => s,
         Err(e) => {
-            let _ = tx.send(WsMessage::Text(
-                format!("{{\"type\":\"error\",\"error\":\"rdns control unreachable: {e}\"}}").into()
-            )).await;
+            short_lived_error(tx, format!("rdns control unreachable: {e}")).await;
             return;
         }
     };

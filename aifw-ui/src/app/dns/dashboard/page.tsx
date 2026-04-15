@@ -72,6 +72,7 @@ export default function DashboardPage() {
   const [recentBlocks, setRecentBlocks] = useState<BlockEvent[]>([]);
   const [paused, setPaused] = useState(false);
   const [conn, setConn] = useState<"connecting" | "open" | "closed">("connecting");
+  const [backendError, setBackendError] = useState<string | null>(null);
   const lastSnap = useRef<StatsSnapshot | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAt = useRef<number>(0);
@@ -106,10 +107,12 @@ export default function DashboardPage() {
       ws.onclose = () => {
         setConn("closed");
         if (stopped) return;
-        // If the connection died almost immediately, grow backoff further so
-        // a persistently-broken server doesn't get 1Hz reconnects.
-        const aliveMs = openedAt.t ? Date.now() - openedAt.t : 0;
-        if (aliveMs < 2000 && !gotFrame) {
+        // If we never saw a real (non-error) frame on this connection, the
+        // backend is unhealthy — grow backoff. The server holds an error
+        // connection open ~5s before closing so the UI can render the cause
+        // without triggering the "fast fail" path; the `!gotFrame` guard
+        // (below) is what keeps us from hammering at 1 Hz.
+        if (!gotFrame) {
           backoff = Math.min(backoff * 2, 30000);
         }
         reconnectAt.current = Date.now() + backoff;
@@ -117,13 +120,15 @@ export default function DashboardPage() {
       };
       ws.onmessage = (e) => {
         if (pausedRef.current) return;
-        // First real frame: we know the backend is healthy — reset backoff.
-        if (!gotFrame) {
-          gotFrame = true;
-          backoff = 1000;
-        }
         try {
           const f: Frame = JSON.parse(e.data);
+          // "error" frames mean the backend is unhealthy (e.g. rDNS control
+          // socket unreachable). They MUST NOT count as "successful frame"
+          // or we'll reset the backoff and reconnect at 1 Hz forever.
+          if (f.type !== "error" && !gotFrame) {
+            gotFrame = true;
+            backoff = 1000;
+          }
           if (f.type === "stats") {
             setSnapshot(f.data);
             const prev = lastSnap.current;
@@ -146,6 +151,11 @@ export default function DashboardPage() {
               const next = [f.data, ...prev];
               return next.length > 200 ? next.slice(0, 200) : next;
             });
+          } else if (f.type === "error") {
+            setBackendError(f.error);
+          } else {
+            // Any real frame clears a stale error message.
+            setBackendError(null);
           }
         } catch { /* ignore malformed */ }
       };
@@ -210,6 +220,19 @@ export default function DashboardPage() {
           </button>
         </div>
       </header>
+
+      {backendError && (
+        <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
+          <div className="font-semibold mb-1">Live metrics unavailable</div>
+          <div className="text-red-300/80 text-xs">{backendError}</div>
+          <div className="text-red-300/60 text-xs mt-1">
+            Typical causes: the rDNS control socket has the wrong ownership
+            (should be <code>root:aifw</code> mode 0660), or the rDNS service
+            is not running. Reconnect attempts are backing off — no action
+            needed from you, just a fix on the appliance.
+          </div>
+        </div>
+      )}
 
       <HelpBanner title="Reading the dashboard" storageKey="dns-dashboard">
         <p>
