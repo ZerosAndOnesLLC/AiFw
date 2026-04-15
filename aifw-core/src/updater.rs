@@ -346,31 +346,45 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     ))
 }
 
+/// Services that may have had their rc.d script replaced by an update and
+/// therefore need a restart for the new script to take effect. Order
+/// matters for aifw_api (last) so HTTP stays up as long as possible.
+const RESTARTABLE_SERVICES: &[&str] = &[
+    "rdns",
+    "rdhcpd",
+    "rtime",
+    "trafficcop",
+    "aifw_daemon",
+    "aifw_api",
+];
+
 /// Restart AiFw services (spawns background task, returns immediately).
+///
+/// Every companion service is restarted, not just aifw_daemon/aifw_api,
+/// because rc.d script updates arrive via the update tarball and only
+/// take effect on service restart. Skipping companions has burned us
+/// before (e.g. the rDNS control-socket chown fix landing in rc.d but
+/// the running daemon ignoring it until the next reboot).
 pub async fn restart_services() {
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "aifw_daemon", "restart"])
-            .output()
-            .await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "aifw_api", "restart"])
-            .output()
-            .await;
+        for svc in RESTARTABLE_SERVICES {
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["/usr/sbin/service", svc, "restart"])
+                .output()
+                .await;
+        }
     });
 }
 
 /// Restart AiFw services synchronously (blocks until restart completes, use from CLI).
 pub async fn restart_services_sync() {
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["service", "aifw_daemon", "restart"])
-        .output()
-        .await;
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["service", "aifw_api", "restart"])
-        .output()
-        .await;
+    for svc in RESTARTABLE_SERVICES {
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["service", svc, "restart"])
+            .output()
+            .await;
+    }
 }
 
 /// Rollback to the previous version from backup.
