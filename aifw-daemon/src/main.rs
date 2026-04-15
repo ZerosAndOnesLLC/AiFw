@@ -240,6 +240,15 @@ async fn main() -> anyhow::Result<()> {
     aifw_core::acme_engine::spawn_scheduler(pool.clone());
     info!("ACME renewal scheduler started");
 
+    // Dynamic DNS scheduler — also daemon-owned. Sweeps every
+    // ddns_config.poll_interval_secs and updates A/AAAA records via the
+    // same provider credentials used for ACME DNS-01.
+    aifw_core::ddns::migrate(&pool)
+        .await
+        .unwrap_or_else(|e| error!("ddns migration failed: {e}"));
+    aifw_core::ddns::spawn_scheduler(pool.clone());
+    info!("DDNS scheduler started");
+
     info!("daemon ready, waiting for signals");
 
     // Wait for shutdown signal

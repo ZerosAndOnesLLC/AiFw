@@ -12,6 +12,7 @@
 
 use crate::acme::{AcmeDnsProvider, DnsProviderKind};
 use async_trait::async_trait;
+use std::net::IpAddr;
 use std::time::Duration;
 
 /// Maximum time we'll spend polling for a TXT record to become visible
@@ -31,6 +32,16 @@ pub trait DnsSolver: Send + Sync {
     async fn remove_txt(&self, fqdn: &str, value: &str) -> Result<(), String>;
 }
 
+/// A/AAAA upsert API used by the DDNS subsystem. Same provider rows that
+/// solve DNS-01 challenges are reused here — Cloudflare API tokens with
+/// `Zone:DNS:Edit` and Route53 IAM keys with
+/// `route53:ChangeResourceRecordSets` already grant both.
+#[async_trait]
+pub trait DnsRecordWriter: Send + Sync {
+    async fn upsert_a(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String>;
+    async fn upsert_aaaa(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String>;
+}
+
 /// Build a concrete solver for a configured provider row.
 pub fn build_solver(p: &AcmeDnsProvider) -> Result<Box<dyn DnsSolver>, String> {
     match p.kind {
@@ -41,6 +52,19 @@ pub fn build_solver(p: &AcmeDnsProvider) -> Result<Box<dyn DnsSolver>, String> {
         // error rather than silently accepting and timing out at the CA.
         DnsProviderKind::DigitalOcean => Err("DigitalOcean DNS-01 not implemented yet".into()),
         DnsProviderKind::Rfc2136      => Err("rfc2136 DNS-01 not implemented yet".into()),
+    }
+}
+
+/// Companion factory: build a DDNS-capable A/AAAA writer for the same
+/// provider row. Manual is intentionally unsupported here — a manual
+/// provider can't push A records on a 5-minute schedule by definition.
+pub fn build_record_writer(p: &AcmeDnsProvider) -> Result<Box<dyn DnsRecordWriter>, String> {
+    match p.kind {
+        DnsProviderKind::Cloudflare   => Ok(Box::new(Cloudflare::new(p)?)),
+        DnsProviderKind::Route53      => Ok(Box::new(Route53::new(p)?)),
+        DnsProviderKind::Manual       => Err("manual provider can't auto-update A/AAAA — pick Cloudflare or Route53".into()),
+        DnsProviderKind::DigitalOcean => Err("DigitalOcean DDNS not implemented yet".into()),
+        DnsProviderKind::Rfc2136      => Err("rfc2136 DDNS not implemented yet".into()),
     }
 }
 
@@ -157,6 +181,62 @@ impl DnsSolver for Cloudflare {
     }
 }
 
+impl Cloudflare {
+    /// Look up the existing record id (if any) for a given (type, name).
+    /// Used by upsert_a/aaaa to decide between POST (create) and PUT (update)
+    /// since Cloudflare doesn't have a one-shot upsert.
+    async fn find_record_id_typed(&self, zone_id: &str, fqdn: &str, rtype: &str) -> Option<String> {
+        let c = self.client().await;
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?type={rtype}&name={fqdn}",
+        );
+        #[derive(serde::Deserialize)]
+        struct Resp { result: Vec<Rec> }
+        #[derive(serde::Deserialize)]
+        struct Rec { id: String }
+        let resp: Resp = c.get(&url)
+            .bearer_auth(&self.token)
+            .send().await.ok()?
+            .json().await.ok()?;
+        resp.result.into_iter().next().map(|r| r.id)
+    }
+
+    async fn upsert(&self, fqdn: &str, rtype: &str, content: &str, ttl: u32) -> Result<(), String> {
+        let zone_id = self.resolve_zone_id().await?;
+        let c = self.client().await;
+        let body = serde_json::json!({
+            "type": rtype,
+            "name": fqdn,
+            "content": content,
+            "ttl": ttl,
+        });
+        let resp = if let Some(id) = self.find_record_id_typed(&zone_id, fqdn, rtype).await {
+            let url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{id}");
+            c.put(&url).bearer_auth(&self.token).json(&body).send().await
+        } else {
+            let url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records");
+            c.post(&url).bearer_auth(&self.token).json(&body).send().await
+        }.map_err(|e| format!("cf {rtype} upsert: {e}"))?;
+        if !resp.status().is_success() {
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(format!("cf {rtype} upsert non-2xx: {txt}"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DnsRecordWriter for Cloudflare {
+    async fn upsert_a(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
+        if !ip.is_ipv4() { return Err(format!("upsert_a got non-v4 address {ip}")); }
+        self.upsert(fqdn, "A", &ip.to_string(), ttl).await
+    }
+    async fn upsert_aaaa(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
+        if !ip.is_ipv6() { return Err(format!("upsert_aaaa got non-v6 address {ip}")); }
+        self.upsert(fqdn, "AAAA", &ip.to_string(), ttl).await
+    }
+}
+
 fn urlencoding(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -265,6 +345,49 @@ impl DnsSolver for Route53 {
     }
     async fn remove_txt(&self, fqdn: &str, value: &str) -> Result<(), String> {
         self.change_txt(fqdn, value, aws_sdk_route53::types::ChangeAction::Delete).await
+    }
+}
+
+impl Route53 {
+    async fn upsert_addr(&self, fqdn: &str, rtype: aws_sdk_route53::types::RrType, ip: IpAddr, ttl: u32) -> Result<(), String> {
+        use aws_sdk_route53::types::{Change, ChangeAction, ChangeBatch, ResourceRecord, ResourceRecordSet};
+        let zone_id = self.resolve_zone_id().await?;
+        let c = self.client().await;
+        let rrset = ResourceRecordSet::builder()
+            .name(format!("{}.", fqdn.trim_end_matches('.')))
+            .r#type(rtype)
+            .ttl(ttl as i64)
+            .resource_records(ResourceRecord::builder().value(ip.to_string()).build()
+                .map_err(|e| format!("rr build: {e}"))?)
+            .build()
+            .map_err(|e| format!("rrset build: {e}"))?;
+        let change = Change::builder()
+            .action(ChangeAction::Upsert)
+            .resource_record_set(rrset)
+            .build()
+            .map_err(|e| format!("change build: {e}"))?;
+        let batch = ChangeBatch::builder()
+            .changes(change)
+            .build()
+            .map_err(|e| format!("batch build: {e}"))?;
+        c.change_resource_record_sets()
+            .hosted_zone_id(zone_id)
+            .change_batch(batch)
+            .send().await
+            .map_err(|e| format!("route53 ChangeRRSets: {e}"))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DnsRecordWriter for Route53 {
+    async fn upsert_a(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
+        if !ip.is_ipv4() { return Err(format!("upsert_a got non-v4 address {ip}")); }
+        self.upsert_addr(fqdn, aws_sdk_route53::types::RrType::A, ip, ttl).await
+    }
+    async fn upsert_aaaa(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
+        if !ip.is_ipv6() { return Err(format!("upsert_aaaa got non-v6 address {ip}")); }
+        self.upsert_addr(fqdn, aws_sdk_route53::types::RrType::Aaaa, ip, ttl).await
     }
 }
 

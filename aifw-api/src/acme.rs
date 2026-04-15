@@ -440,3 +440,169 @@ pub async fn delete_target(
         .execute(&state.pool).await.map_err(server)?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+// =============================================================================
+// Dynamic DNS — sibling subsystem that reuses acme_dns_provider rows
+// =============================================================================
+
+use aifw_core::ddns;
+
+#[derive(Serialize)]
+pub struct DdnsRecordResponse {
+    pub id: i64,
+    pub provider_id: i64,
+    pub provider_name: String,
+    pub hostname: String,
+    pub record_type: String,
+    pub source: String,
+    pub interface: Option<String>,
+    pub explicit_ip: Option<String>,
+    pub ttl: i32,
+    pub enabled: bool,
+    pub last_ip: Option<String>,
+    pub last_ipv6: Option<String>,
+    pub last_updated: Option<String>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+}
+
+async fn record_to_response(state: &AppState, r: ddns::DdnsRecord) -> DdnsRecordResponse {
+    let provider_name = aifw_core::acme::load_provider(&state.pool, r.provider_id).await
+        .map(|p| p.name).unwrap_or_else(|| format!("#{}", r.provider_id));
+    DdnsRecordResponse {
+        id: r.id,
+        provider_id: r.provider_id,
+        provider_name,
+        hostname: r.hostname,
+        record_type: r.record_type.as_str().into(),
+        source: r.source.as_str().into(),
+        interface: r.interface,
+        explicit_ip: r.explicit_ip,
+        ttl: r.ttl,
+        enabled: r.enabled,
+        last_ip: r.last_ip,
+        last_ipv6: r.last_ipv6,
+        last_updated: r.last_updated.map(|t| t.to_rfc3339()),
+        last_status: r.last_status,
+        last_error: r.last_error,
+    }
+}
+
+pub async fn list_ddns(State(state): State<AppState>) -> Json<Vec<DdnsRecordResponse>> {
+    let recs = ddns::load_all_records(&state.pool).await;
+    let mut out = Vec::with_capacity(recs.len());
+    for r in recs {
+        out.push(record_to_response(&state, r).await);
+    }
+    Json(out)
+}
+
+#[derive(Deserialize)]
+pub struct PutDdnsRequest {
+    pub provider_id: i64,
+    pub hostname: String,
+    #[serde(default = "default_record_type")]
+    pub record_type: String,
+    #[serde(default = "default_ip_source")]
+    pub source: String,
+    pub interface: Option<String>,
+    pub explicit_ip: Option<String>,
+    #[serde(default = "default_ttl")]
+    pub ttl: i32,
+    #[serde(default = "default_true_ddns")]
+    pub enabled: bool,
+}
+
+fn default_record_type() -> String { "a".into() }
+fn default_ip_source() -> String { "auto-public".into() }
+fn default_ttl() -> i32 { 60 }
+fn default_true_ddns() -> bool { true }
+
+pub async fn create_ddns(
+    State(state): State<AppState>,
+    Json(req): Json<PutDdnsRequest>,
+) -> Result<Json<DdnsRecordResponse>, (StatusCode, String)> {
+    aifw_core::acme::validate_dns_name(&req.hostname).map_err(bad)?;
+    if !(60..=86400).contains(&req.ttl) {
+        return Err(bad("ttl must be 60..86400"));
+    }
+    let res = sqlx::query(r#"
+        INSERT INTO ddns_record
+            (provider_id, hostname, record_type, source, interface, explicit_ip, ttl, enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    "#)
+    .bind(req.provider_id)
+    .bind(&req.hostname)
+    .bind(&req.record_type)
+    .bind(&req.source)
+    .bind(&req.interface)
+    .bind(&req.explicit_ip)
+    .bind(req.ttl as i64)
+    .bind(req.enabled as i64)
+    .execute(&state.pool).await
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    let id = res.last_insert_rowid();
+    let rec = ddns::load_record(&state.pool, id).await
+        .ok_or_else(|| server("post-insert read failed"))?;
+    Ok(Json(record_to_response(&state, rec).await))
+}
+
+pub async fn update_ddns(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<PutDdnsRequest>,
+) -> Result<Json<DdnsRecordResponse>, (StatusCode, String)> {
+    aifw_core::acme::validate_dns_name(&req.hostname).map_err(bad)?;
+    sqlx::query(r#"
+        UPDATE ddns_record SET provider_id = ?, hostname = ?, record_type = ?, source = ?,
+            interface = ?, explicit_ip = ?, ttl = ?, enabled = ?
+         WHERE id = ?
+    "#)
+    .bind(req.provider_id)
+    .bind(&req.hostname)
+    .bind(&req.record_type)
+    .bind(&req.source)
+    .bind(&req.interface)
+    .bind(&req.explicit_ip)
+    .bind(req.ttl as i64)
+    .bind(req.enabled as i64)
+    .bind(id)
+    .execute(&state.pool).await.map_err(server)?;
+    let rec = ddns::load_record(&state.pool, id).await
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "not found".into()))?;
+    Ok(Json(record_to_response(&state, rec).await))
+}
+
+pub async fn delete_ddns(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    sqlx::query("DELETE FROM ddns_record WHERE id = ?")
+        .bind(id).execute(&state.pool).await.map_err(server)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+pub struct DdnsUpdateResponse { pub ok: bool, pub message: String }
+
+pub async fn force_update_ddns(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Json<DdnsUpdateResponse> {
+    match ddns::update_record(&state.pool, id).await {
+        Ok(outcome) => Json(DdnsUpdateResponse { ok: true, message: format!("{outcome:?}") }),
+        Err(e) => Json(DdnsUpdateResponse { ok: false, message: e }),
+    }
+}
+
+pub async fn get_ddns_config(State(state): State<AppState>) -> Json<ddns::DdnsConfig> {
+    Json(ddns::load_config(&state.pool).await)
+}
+
+pub async fn put_ddns_config(
+    State(state): State<AppState>,
+    Json(cfg): Json<ddns::DdnsConfig>,
+) -> Result<Json<ddns::DdnsConfig>, (StatusCode, String)> {
+    ddns::save_config(&state.pool, &cfg).await.map_err(bad)?;
+    Ok(Json(ddns::load_config(&state.pool).await))
+}

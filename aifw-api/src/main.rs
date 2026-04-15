@@ -491,6 +491,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/acme/certs/{id}/cert.pem",      get(acme::download_cert_pem))
         .route("/api/v1/acme/dns-providers",            get(acme::list_providers))
         .route("/api/v1/acme/certs/{cert_id}/targets",  get(acme::list_targets))
+        .route("/api/v1/ddns/records",                  get(acme::list_ddns))
+        .route("/api/v1/ddns/config",                   get(acme::get_ddns_config))
         .layer(middleware::from_fn(perm_check!(Permission::SettingsRead)));
 
     // settings:write
@@ -528,6 +530,10 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/acme/dns-providers/{id}/test",       post(acme::test_provider))
         .route("/api/v1/acme/certs/{cert_id}/targets",       post(acme::create_target))
         .route("/api/v1/acme/export-targets/{id}",           delete(acme::delete_target))
+        .route("/api/v1/ddns/records",                       post(acme::create_ddns))
+        .route("/api/v1/ddns/records/{id}",                  put(acme::update_ddns).delete(acme::delete_ddns))
+        .route("/api/v1/ddns/records/{id}/update",           post(acme::force_update_ddns))
+        .route("/api/v1/ddns/config",                        put(acme::put_ddns_config))
         .layer(middleware::from_fn(perm_check!(Permission::SettingsWrite)));
 
     // plugins:read
@@ -823,6 +829,7 @@ async fn create_state_from_db(
     aifw_core::s3_backup::migrate(&pool).await?;
     aifw_core::smtp_notify::migrate(&pool).await?;
     aifw_core::acme::migrate(&pool).await?;
+    aifw_core::ddns::migrate(&pool).await?;
     reverse_proxy::migrate(&pool).await?;
     time_service::migrate(&pool).await?;
     plugins::migrate(&pool).await?;

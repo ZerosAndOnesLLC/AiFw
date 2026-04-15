@@ -73,6 +73,7 @@ const navItems: NavItem[] = [
     children: [
       { href: "/ca", label: "Certificates (Internal CA)", permission: "settings:read" },
       { href: "/acme", label: "ACME / TLS Certs", permission: "settings:read" },
+      { href: "/ddns", label: "Dynamic DNS", permission: "settings:read" },
       { href: "/dns", label: "DNS Resolver", permission: "dns:read" },
       { href: "/dns/hosts", label: "  Host Overrides", permission: "dns:read" },
       { href: "/dns/forwarding", label: "  Query Forwarding", permission: "dns:read" },
