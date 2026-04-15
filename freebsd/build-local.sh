@@ -60,54 +60,48 @@ cd "$PROJECT_ROOT"
 echo "=== [3/6] Building Rust binaries (release) ==="
 # Ensure cargo is in PATH (rustup installs to $HOME/.cargo/bin)
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+echo "--- AiFw commit: $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown) ---"
 cargo build --release
 
-# Build TrafficCop (reverse proxy)
+# Helper: clone-or-update a companion repo and FAIL LOUDLY on pull errors.
+# Previous version used `git pull 2>/dev/null || true` which silently
+# swallowed stale-checkout / merge-conflict errors, causing releases to
+# ship with ancient bundled rDNS / rDHCP / rTIME binaries.
+build_companion() {
+    local name="$1" dir="$2" url="$3"
+    if [ ! -d "$dir" ]; then
+        echo "Cloning $name from $url ..."
+        git clone "$url" "$dir" || {
+            echo "ERROR: clone of $name failed" >&2
+            exit 1
+        }
+    fi
+    echo "--- Updating $name ---"
+    ( cd "$dir" && \
+        git fetch --tags origin && \
+        git reset --hard origin/main ) || {
+        echo "ERROR: git update of $name ($dir) failed — refusing to build stale code" >&2
+        exit 1
+    }
+    local sha
+    sha=$(git -C "$dir" rev-parse --short HEAD)
+    echo "--- $name commit: $sha ---"
+    ( cd "$dir" && cargo build --release ) || {
+        echo "ERROR: cargo build of $name failed" >&2
+        exit 1
+    }
+}
+
+# Build companion services (reverse proxy, DHCP, DNS, NTP).
 TRAFFICCOP_DIR="$PROJECT_ROOT/../trafficcop"
-if [ ! -d "$TRAFFICCOP_DIR" ]; then
-    echo "Cloning TrafficCop..."
-    git clone https://github.com/ZerosAndOnesLLC/TrafficCop.git "$TRAFFICCOP_DIR"
-fi
-echo "Building TrafficCop..."
-cd "$TRAFFICCOP_DIR"
-git pull 2>/dev/null || true
-cargo build --release
-cd "$PROJECT_ROOT"
-
-# Build rDHCP (DHCP server)
 RDHCP_DIR="$PROJECT_ROOT/../rDHCP"
-if [ ! -d "$RDHCP_DIR" ]; then
-    echo "Cloning rDHCP..."
-    git clone https://github.com/ZerosAndOnesLLC/rDHCP.git "$RDHCP_DIR"
-fi
-echo "Building rDHCP..."
-cd "$RDHCP_DIR"
-git pull 2>/dev/null || true
-cargo build --release
-cd "$PROJECT_ROOT"
-
-# Build rDNS (DNS server)
 RDNS_DIR="$PROJECT_ROOT/../rDNS"
-if [ ! -d "$RDNS_DIR" ]; then
-    echo "Cloning rDNS..."
-    git clone https://github.com/ZerosAndOnesLLC/rDNS.git "$RDNS_DIR"
-fi
-echo "Building rDNS..."
-cd "$RDNS_DIR"
-git pull 2>/dev/null || true
-cargo build --release
-cd "$PROJECT_ROOT"
-
-# Build rTIME (NTP/PTP time service)
 RTIME_DIR="$PROJECT_ROOT/../rTIME"
-if [ ! -d "$RTIME_DIR" ]; then
-    echo "Cloning rTIME..."
-    git clone https://github.com/ZerosAndOnesLLC/rTIME.git "$RTIME_DIR"
-fi
-echo "Building rTIME..."
-cd "$RTIME_DIR"
-git pull 2>/dev/null || true
-cargo build --release
+
+build_companion TrafficCop "$TRAFFICCOP_DIR" https://github.com/ZerosAndOnesLLC/TrafficCop.git
+build_companion rDHCP      "$RDHCP_DIR"      https://github.com/ZerosAndOnesLLC/rDHCP.git
+build_companion rDNS       "$RDNS_DIR"       https://github.com/ZerosAndOnesLLC/rDNS.git
+build_companion rTIME      "$RTIME_DIR"      https://github.com/ZerosAndOnesLLC/rTIME.git
 cd "$PROJECT_ROOT"
 
 # --- Stage build inputs ---
@@ -172,6 +166,33 @@ if [ -f "$RTIME_DIR/target/release/rtime" ]; then
 fi
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
 echo "$VERSION" > "$TARBALL_DIR/version"
+
+# Write a manifest of what made it into the tarball — commit SHAs for every
+# component plus a quick sanity check on rDNS features. Makes stale companion
+# repos (which have burned us before — rdns 1.5.1 shipping in a v5.45.0
+# tarball) visible at build time.
+{
+    echo "AiFw             $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    [ -d "$TRAFFICCOP_DIR/.git" ] && echo "TrafficCop       $(git -C "$TRAFFICCOP_DIR" rev-parse --short HEAD)"
+    [ -d "$RDHCP_DIR/.git" ]      && echo "rDHCP            $(git -C "$RDHCP_DIR"      rev-parse --short HEAD)"
+    [ -d "$RDNS_DIR/.git" ]       && echo "rDNS             $(git -C "$RDNS_DIR"       rev-parse --short HEAD)"
+    [ -d "$RTIME_DIR/.git" ]      && echo "rTIME            $(git -C "$RTIME_DIR"      rev-parse --short HEAD)"
+    if [ -f "$TARBALL_DIR/bin/rdns" ]; then
+        rver=$(grep -ao 'rDNS [0-9][0-9.]*' "$TARBALL_DIR/bin/rdns" | head -1 || true)
+        echo "rdns binary      ${rver:-unknown}"
+    fi
+} | tee "$TARBALL_DIR/BUILD_MANIFEST"
+
+# Refuse to release an obviously-stale rDNS. Any rdns earlier than 1.10 is
+# missing per-zone counters and the streaming control commands that the
+# dashboard depends on.
+if [ -f "$TARBALL_DIR/bin/rdns" ]; then
+    if ! grep -q 'stats-json' "$TARBALL_DIR/bin/rdns"; then
+        echo "ERROR: rDNS binary does not contain 'stats-json' — this is a stale build (pre-v1.10)." >&2
+        echo "       Check that $RDNS_DIR is on origin/main before re-running." >&2
+        exit 1
+    fi
+fi
 OUTPUTDIR="/usr/obj/aifw-iso/output"
 mkdir -p "$OUTPUTDIR"
 XZ_OPT='-9 -T0' tar -C /tmp -cJf "${OUTPUTDIR}/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"

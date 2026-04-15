@@ -31,16 +31,37 @@ rdns_binary="/usr/local/sbin/rdns"
 command="/usr/sbin/daemon"
 command_args="-f -p ${rdns_pidfile} -P ${rdns_supervisor_pidfile} -R 5 -S -T rdns -o /var/log/rdns/rdns.log ${rdns_binary} -c ${rdns_config}"
 
-start_precmd="rdns_precmd"
+start_cmd="rdns_start"
 stop_postcmd="rdns_poststop"
 
-rdns_precmd()
+rdns_start()
 {
     /bin/mkdir -p /var/run/rdns /usr/local/etc/rdns/zones /usr/local/etc/rdns/rpz
+    # aifw user needs write to /usr/local/etc/rdns/rpz to stage blocklist
+    # files. Keeping the group as `rdns` so rDNS itself keeps reading them.
+    /usr/sbin/chown -R aifw:rdns /usr/local/etc/rdns/rpz 2>/dev/null
+    /bin/chmod 2775 /usr/local/etc/rdns/rpz 2>/dev/null
     # Reap any orphan daemon(8)+rdns pairs left by previous buggy restarts.
     /usr/bin/pkill -f "daemon:.*${procname}" 2>/dev/null
     /usr/bin/pkill -x rdns 2>/dev/null
     /bin/rm -f ${rdns_pidfile} ${rdns_supervisor_pidfile}
+
+    echo "Starting rdns."
+    ${command} ${command_args}
+
+    # Wait up to 3 s for the control socket to appear, then make it writable
+    # by the aifw group so aifw-api / aifw-daemon can send stats-json /
+    # tail-blocks / reload-rpz commands. On FreeBSD, connect(2) on a Unix
+    # domain socket requires write perm on the socket inode.
+    i=0
+    while [ ! -S /var/run/rdns/control.sock ] && [ $i -lt 30 ]; do
+        /bin/sleep 0.1
+        i=$((i+1))
+    done
+    if [ -S /var/run/rdns/control.sock ]; then
+        /usr/sbin/chown root:aifw /var/run/rdns/control.sock 2>/dev/null
+        /bin/chmod 660 /var/run/rdns/control.sock 2>/dev/null
+    fi
 }
 
 rdns_poststop()
