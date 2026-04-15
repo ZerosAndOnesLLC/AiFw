@@ -783,10 +783,29 @@ pub async fn resolver_status(
         .map(|o| o.status.success()).unwrap_or(false);
 
     let version = if is_rdns {
-        let v = Command::new("/usr/local/sbin/rdns").arg("--version").output().await
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
-        if v.is_empty() { "rDNS".to_string() } else { v }
+        // rDNS doesn't accept `--version` (errors with "unexpected argument").
+        // Ask the control socket instead — it answers the `version` command
+        // with a string like "rDNS 1.11.2". Use a short timeout so a wedged
+        // rDNS doesn't slow down the status page.
+        async fn rdns_version_via_socket() -> Option<String> {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            let stream = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                tokio::net::UnixStream::connect("/var/run/rdns/control.sock"),
+            ).await.ok()??.ok()?;
+            let (reader, mut writer) = stream.into_split();
+            writer.write_all(b"version\n").await.ok()?;
+            writer.flush().await.ok()?;
+            let mut br = BufReader::new(reader);
+            let mut line = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                br.read_line(&mut line),
+            ).await.ok()?.ok()?;
+            let v = line.trim().to_string();
+            if v.is_empty() { None } else { Some(v) }
+        }
+        rdns_version_via_socket().await.unwrap_or_else(|| "rDNS".to_string())
     } else {
         let v = Command::new("unbound").arg("-V").output().await
             .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string())
