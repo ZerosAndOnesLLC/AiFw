@@ -155,15 +155,29 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
   // If auth hasn't loaded yet or user has no permissions in JWT (legacy token),
   // show all nav items instead of hiding everything
   const permLoaded = !authLoading && permissions.size > 0;
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    Monitoring: true,
-    Firewall: false,
-    Network: false,
-    Services: false,
-    "Intrusion Detection": false,
-    Extensions: false,
-    System: false,
+  // All sections start collapsed. The user's manual expand/collapse state
+  // persists across page reloads via localStorage. The section containing
+  // the active route is auto-expanded on first render so a direct nav to
+  // /rules (or any deep page) doesn't leave the user staring at an empty
+  // sidebar.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const raw = window.localStorage.getItem("aifw_sidebar_expanded");
+      if (raw) return JSON.parse(raw) as Record<string, boolean>;
+    } catch {
+      /* fall through to empty */
+    }
+    return {};
   });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("aifw_sidebar_expanded", JSON.stringify(expanded));
+    } catch {
+      /* localStorage may be disabled — ignore */
+    }
+  }, [expanded]);
   const [interfaces, setInterfaces] = useState<{ name: string; role?: string }[]>([]);
 
   useEffect(() => {
@@ -254,11 +268,16 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
           }
 
           // Section group
-          const isOpen = expanded[item.label] ?? false;
           const children = getChildren(item);
           // Hide entire section if all children are filtered out by permissions
           if (children.length === 0) return null;
           const childActive = hasActiveChild(children);
+          // Default to collapsed, but auto-open the section containing the
+          // currently-active route so direct navigation to a deep page
+          // doesn't leave the user in an empty sidebar. Once the user has
+          // explicitly toggled (entry exists in `expanded`), respect their
+          // choice in both directions.
+          const isOpen = expanded[item.label] !== undefined ? expanded[item.label] : childActive;
 
           return (
             <div key={item.label}>
