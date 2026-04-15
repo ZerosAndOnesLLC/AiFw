@@ -104,6 +104,38 @@ export default function SettingsPage() {
   const [cfgRetSaving, setCfgRetSaving] = useState(false);
   const [cfgRetLoading, setCfgRetLoading] = useState(true);
 
+  // --- S3 Backup Sync ---
+  const [s3Enabled, setS3Enabled] = useState(false);
+  const [s3Bucket, setS3Bucket] = useState("");
+  const [s3Region, setS3Region] = useState("us-east-1");
+  const [s3Endpoint, setS3Endpoint] = useState("");
+  const [s3Prefix, setS3Prefix] = useState("");
+  const [s3PathStyle, setS3PathStyle] = useState(false);
+  const [s3AccessKey, setS3AccessKey] = useState("");
+  const [s3Secret, setS3Secret] = useState("");             // "" means "unchanged" on save
+  const [s3HasSecret, setS3HasSecret] = useState(false);
+  const [s3Saving, setS3Saving] = useState(false);
+  const [s3Testing, setS3Testing] = useState(false);
+  const [s3TestResult, setS3TestResult] = useState<{ ok: boolean; message: string; write: boolean; read: boolean; delete: boolean } | null>(null);
+  const [s3Feedback, setS3Feedback] = useState<SectionFeedback | null>(null);
+  const [s3Loading, setS3Loading] = useState(true);
+
+  // --- SMTP notifications ---
+  const [smtpEnabled, setSmtpEnabled] = useState(false);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState(587);
+  const [smtpTls, setSmtpTls] = useState<"none" | "starttls" | "implicit">("starttls");
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");             // "" means "unchanged"
+  const [smtpHasPass, setSmtpHasPass] = useState(false);
+  const [smtpFrom, setSmtpFrom] = useState("aifw@localhost");
+  const [smtpRecipients, setSmtpRecipients] = useState("");
+  const [smtpEvents, setSmtpEvents] = useState<string[]>(["s3_upload_failed", "restore_failed"]);
+  const [smtpSaving, setSmtpSaving] = useState(false);
+  const [smtpTesting, setSmtpTesting] = useState(false);
+  const [smtpFeedback, setSmtpFeedback] = useState<SectionFeedback | null>(null);
+  const [smtpLoading, setSmtpLoading] = useState(true);
+
   // --- IDS Alert Buffer ---
   const [idsMaxMb, setIdsMaxMb] = useState(64);
   const [idsMaxAge, setIdsMaxAge] = useState(86400);
@@ -221,6 +253,47 @@ export default function SettingsPage() {
         /* silent */
       } finally {
         setCfgRetLoading(false);
+      }
+    })();
+
+    // Fetch S3 backup config
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/backup/s3/config`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        setS3Enabled(!!d.enabled);
+        setS3Bucket(d.bucket || "");
+        setS3Region(d.region || "us-east-1");
+        setS3Endpoint(d.endpoint || "");
+        setS3Prefix(d.prefix || "");
+        setS3PathStyle(!!d.path_style);
+        setS3AccessKey(d.access_key_id || "");
+        setS3HasSecret(!!d.has_secret);
+        setS3Secret(""); // always blank in UI (means "unchanged")
+      } catch { /* silent */ } finally {
+        setS3Loading(false);
+      }
+    })();
+
+    // Fetch SMTP config
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/notify/smtp/config`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        setSmtpEnabled(!!d.enabled);
+        setSmtpHost(d.host || "");
+        setSmtpPort(Number(d.port) || 587);
+        setSmtpTls((d.tls || "starttls") as "none" | "starttls" | "implicit");
+        setSmtpUser(d.username || "");
+        setSmtpHasPass(!!d.has_password);
+        setSmtpPass("");
+        setSmtpFrom(d.from_address || "aifw@localhost");
+        setSmtpRecipients(d.recipients || "");
+        setSmtpEvents(Array.isArray(d.enabled_events) ? d.enabled_events : []);
+      } catch { /* silent */ } finally {
+        setSmtpLoading(false);
       }
     })();
 
@@ -443,6 +516,131 @@ export default function SettingsPage() {
       setFeedbackWithTimeout(setCfgRetFeedback, { type: "error", message: `Save failed: ${msg}` });
     } finally {
       setCfgRetSaving(false);
+    }
+  };
+
+  // Build the S3 payload from current form state. Secret field is left
+  // undefined (not null) when the user didn't touch it — the server reads
+  // `None` as "unchanged", avoiding accidental wipes.
+  const buildS3Payload = (): Record<string, unknown> => ({
+    enabled: s3Enabled,
+    bucket: s3Bucket.trim(),
+    region: s3Region.trim() || "us-east-1",
+    endpoint: s3Endpoint.trim() || null,
+    prefix: s3Prefix.trim(),
+    path_style: s3PathStyle,
+    access_key_id: s3AccessKey.trim() || null,
+    secret_access_key: s3Secret === "" ? null : s3Secret,
+  });
+
+  const saveS3 = async () => {
+    setS3Saving(true);
+    setS3Feedback(null);
+    try {
+      const res = await authFetch(`${API}/api/v1/backup/s3/config`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify(buildS3Payload()),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const d = await res.json();
+      setS3HasSecret(!!d.has_secret);
+      setS3Secret("");
+      setFeedbackWithTimeout(setS3Feedback, { type: "success", message: "S3 settings saved." });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setFeedbackWithTimeout(setS3Feedback, { type: "error", message: `Save failed: ${msg}` });
+    } finally {
+      setS3Saving(false);
+    }
+  };
+
+  const testS3 = async () => {
+    setS3Testing(true);
+    setS3TestResult(null);
+    try {
+      const res = await authFetch(`${API}/api/v1/backup/s3/test`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(buildS3Payload()),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json();
+      setS3TestResult({
+        ok: !!d.ok,
+        message: d.message || "",
+        write: !!d.write,
+        read: !!d.read,
+        delete: !!d.delete,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setS3TestResult({ ok: false, message: msg, write: false, read: false, delete: false });
+    } finally {
+      setS3Testing(false);
+    }
+  };
+
+  const buildSmtpPayload = (): Record<string, unknown> => ({
+    enabled: smtpEnabled,
+    host: smtpHost.trim(),
+    port: Number(smtpPort) || 587,
+    tls: smtpTls,
+    username: smtpUser.trim() || null,
+    password: smtpPass === "" ? null : smtpPass,
+    from_address: smtpFrom.trim(),
+    recipients: smtpRecipients.trim(),
+    enabled_events: smtpEvents,
+  });
+
+  const saveSmtp = async () => {
+    setSmtpSaving(true);
+    setSmtpFeedback(null);
+    try {
+      const res = await authFetch(`${API}/api/v1/notify/smtp/config`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify(buildSmtpPayload()),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const d = await res.json();
+      setSmtpHasPass(!!d.has_password);
+      setSmtpPass("");
+      setFeedbackWithTimeout(setSmtpFeedback, { type: "success", message: "SMTP settings saved." });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setFeedbackWithTimeout(setSmtpFeedback, { type: "error", message: `Save failed: ${msg}` });
+    } finally {
+      setSmtpSaving(false);
+    }
+  };
+
+  const testSmtp = async () => {
+    setSmtpTesting(true);
+    setSmtpFeedback(null);
+    try {
+      const res = await authFetch(`${API}/api/v1/notify/smtp/test`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(buildSmtpPayload()),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json();
+      setFeedbackWithTimeout(setSmtpFeedback, {
+        type: d.ok ? "success" : "error",
+        message: d.message || (d.ok ? "Test email sent." : "Test failed."),
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setFeedbackWithTimeout(setSmtpFeedback, { type: "error", message: `Test failed: ${msg}` });
+    } finally {
+      setSmtpTesting(false);
     }
   };
 
@@ -878,6 +1076,168 @@ export default function SettingsPage() {
             className={saveBtnCls}
           >
             {cfgRetSaving ? "Saving..." : "Save Retention"}
+          </button>
+        </div>
+      </section>
+
+      {/* S3 Backup Sync */}
+      <section className={sectionCls}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-medium">S3 Backup Sync</h2>
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={s3Enabled} onChange={(e) => setS3Enabled(e.target.checked)} />
+            <span>Enabled</span>
+          </label>
+        </div>
+        <FeedbackBanner feedback={s3Feedback} />
+        <p className="text-xs text-[var(--text-muted)] mb-3">
+          When enabled, every auto-snapshot is uploaded to the configured S3 bucket
+          under a per-host prefix. Leave access key &amp; secret empty to use the
+          machine&apos;s default AWS credential chain (env vars, <code>~/.aws/credentials</code>,
+          or the EC2/ECS instance role). S3-compatible providers (MinIO, Backblaze,
+          Wasabi) are supported via the optional endpoint field + path-style toggle.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls}>Bucket</label>
+            <input type="text" value={s3Bucket} onChange={(e) => setS3Bucket(e.target.value)} className={inputCls} placeholder="my-aifw-backups" />
+          </div>
+          <div>
+            <label className={labelCls}>Region</label>
+            <input type="text" value={s3Region} onChange={(e) => setS3Region(e.target.value)} className={inputCls} placeholder="us-east-1" />
+          </div>
+          <div>
+            <label className={labelCls}>Endpoint (optional)</label>
+            <input type="text" value={s3Endpoint} onChange={(e) => setS3Endpoint(e.target.value)} className={inputCls} placeholder="https://minio.example.com" />
+          </div>
+          <div>
+            <label className={labelCls}>Key prefix (optional)</label>
+            <input type="text" value={s3Prefix} onChange={(e) => setS3Prefix(e.target.value)} className={inputCls} placeholder="aifw/production" />
+          </div>
+          <div>
+            <label className={labelCls}>Access Key ID (optional)</label>
+            <input type="text" value={s3AccessKey} onChange={(e) => setS3AccessKey(e.target.value)} className={inputCls} placeholder="(uses default credential chain)" />
+          </div>
+          <div>
+            <label className={labelCls}>Secret Access Key {s3HasSecret && <span className="text-[var(--text-muted)]">(saved)</span>}</label>
+            <input type="password" value={s3Secret} onChange={(e) => setS3Secret(e.target.value)} className={inputCls} placeholder={s3HasSecret ? "••••••••  (leave blank to keep)" : "(optional)"} />
+          </div>
+        </div>
+        <div className="mt-3">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={s3PathStyle} onChange={(e) => setS3PathStyle(e.target.checked)} />
+            <span>Force path-style URLs <span className="text-[var(--text-muted)]">(required for most S3-compatible providers)</span></span>
+          </label>
+        </div>
+        {s3TestResult && (
+          <div className={`mt-3 rounded border p-3 text-xs ${s3TestResult.ok ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-200" : "border-red-500/40 bg-red-500/5 text-red-200"}`}>
+            <div className="flex gap-3 mb-1">
+              <span>Write: {s3TestResult.write ? "✓" : "✕"}</span>
+              <span>Read: {s3TestResult.read ? "✓" : "✕"}</span>
+              <span>Delete: {s3TestResult.delete ? "✓" : "✕"}</span>
+            </div>
+            <div>{s3TestResult.message}</div>
+          </div>
+        )}
+        <div className="flex justify-between items-center mt-4">
+          <button
+            onClick={testS3}
+            disabled={s3Testing || s3Loading || !s3Bucket.trim()}
+            className="px-4 py-2 text-sm font-medium rounded-md bg-[var(--bg-card-secondary)] hover:bg-[var(--bg-hover)] disabled:opacity-50"
+          >
+            {s3Testing ? "Testing (write → read → delete)…" : "Test connection"}
+          </button>
+          <button onClick={saveS3} disabled={s3Saving || s3Loading} className={saveBtnCls}>
+            {s3Saving ? "Saving…" : "Save S3 Settings"}
+          </button>
+        </div>
+      </section>
+
+      {/* SMTP Notifications */}
+      <section className={sectionCls}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-medium">Email Notifications (SMTP)</h2>
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={smtpEnabled} onChange={(e) => setSmtpEnabled(e.target.checked)} />
+            <span>Enabled</span>
+          </label>
+        </div>
+        <FeedbackBanner feedback={smtpFeedback} />
+        <p className="text-xs text-[var(--text-muted)] mb-3">
+          Send email when backup/restore events occur. Defaults subscribe to
+          failures only so an active appliance doesn&apos;t flood your inbox;
+          opt in to success events as needed.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls}>SMTP host</label>
+            <input type="text" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} className={inputCls} placeholder="smtp.example.com" />
+          </div>
+          <div>
+            <label className={labelCls}>Port</label>
+            <input type="number" min={1} max={65535} value={smtpPort} onChange={(e) => setSmtpPort(Number(e.target.value) || 587)} className={inputCls} />
+          </div>
+          <div>
+            <label className={labelCls}>Encryption</label>
+            <select value={smtpTls} onChange={(e) => setSmtpTls(e.target.value as "none" | "starttls" | "implicit")} className={inputCls}>
+              <option value="none">None (plaintext, discouraged)</option>
+              <option value="starttls">STARTTLS (port 587)</option>
+              <option value="implicit">Implicit TLS (port 465)</option>
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>Username (optional)</label>
+            <input type="text" value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} className={inputCls} autoComplete="off" />
+          </div>
+          <div>
+            <label className={labelCls}>Password {smtpHasPass && <span className="text-[var(--text-muted)]">(saved)</span>}</label>
+            <input type="password" value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} className={inputCls} placeholder={smtpHasPass ? "••••••••  (leave blank to keep)" : ""} autoComplete="new-password" />
+          </div>
+          <div>
+            <label className={labelCls}>From address</label>
+            <input type="text" value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} className={inputCls} placeholder="aifw@yourdomain.com" />
+          </div>
+          <div className="md:col-span-2">
+            <label className={labelCls}>Recipients (comma- or space-separated)</label>
+            <input type="text" value={smtpRecipients} onChange={(e) => setSmtpRecipients(e.target.value)} className={inputCls} placeholder="ops@example.com, oncall@example.com" />
+          </div>
+        </div>
+        <div className="mt-4">
+          <label className={labelCls}>Send email for</label>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-1 mt-1 text-sm">
+            {[
+              ["s3_upload_failed", "S3 upload failed  (recommended)"],
+              ["restore_failed",   "Restore failed    (recommended)"],
+              ["s3_upload_ok",     "S3 upload succeeded"],
+              ["restore_ok",       "Restore succeeded"],
+              ["backup_saved",     "Config snapshot saved"],
+              ["pruned",           "Old versions pruned"],
+            ].map(([k, label]) => (
+              <label key={k} className="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={smtpEvents.includes(k)}
+                  onChange={(e) => {
+                    setSmtpEvents((prev) =>
+                      e.target.checked ? [...prev, k] : prev.filter((x) => x !== k)
+                    );
+                  }}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="flex justify-between items-center mt-4">
+          <button
+            onClick={testSmtp}
+            disabled={smtpTesting || smtpLoading || !smtpHost.trim() || !smtpRecipients.trim()}
+            className="px-4 py-2 text-sm font-medium rounded-md bg-[var(--bg-card-secondary)] hover:bg-[var(--bg-hover)] disabled:opacity-50"
+          >
+            {smtpTesting ? "Sending test…" : "Send test email"}
+          </button>
+          <button onClick={saveSmtp} disabled={smtpSaving || smtpLoading} className={saveBtnCls}>
+            {smtpSaving ? "Saving…" : "Save SMTP Settings"}
           </button>
         </div>
       </section>

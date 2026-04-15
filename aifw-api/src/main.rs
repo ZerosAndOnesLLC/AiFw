@@ -3,6 +3,7 @@ mod aliases;
 mod auth;
 mod backup;
 mod ca;
+mod backup_s3;
 mod dhcp;
 mod dns_blocklists;
 mod dns_resolver;
@@ -554,6 +555,9 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/config/preview-opnsense", post(backup::preview_opnsense))
         .route("/api/v1/config/commit-confirm/status", get(backup::commit_confirm_status))
         .route("/api/v1/config/retention", get(backup::get_retention))
+        .route("/api/v1/backup/s3/config", get(backup_s3::get_s3_config))
+        .route("/api/v1/backup/s3/list", get(backup_s3::list_s3))
+        .route("/api/v1/notify/smtp/config", get(backup_s3::get_smtp_config))
         .layer(middleware::from_fn(perm_check!(Permission::BackupRead)));
 
     // backup:write
@@ -565,6 +569,11 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/config/commit-confirm", post(backup::commit_confirm_start))
         .route("/api/v1/config/commit-confirm/confirm", post(backup::commit_confirm_accept))
         .route("/api/v1/config/retention", put(backup::put_retention))
+        .route("/api/v1/backup/s3/config", put(backup_s3::put_s3_config))
+        .route("/api/v1/backup/s3/test", post(backup_s3::test_s3))
+        .route("/api/v1/backup/s3/import", post(backup_s3::import_s3))
+        .route("/api/v1/notify/smtp/config", put(backup_s3::put_smtp_config))
+        .route("/api/v1/notify/smtp/test", post(backup_s3::test_smtp))
         .layer(middleware::from_fn(perm_check!(Permission::BackupWrite)));
 
     // system:reboot (also governs shutdown — same privilege level)
@@ -795,6 +804,8 @@ async fn create_state_from_db(
     iface::migrate(&pool).await?;
     dns_resolver::migrate(&pool).await?;
     dns_blocklists::migrate(&pool).await?;
+    aifw_core::s3_backup::migrate(&pool).await?;
+    aifw_core::smtp_notify::migrate(&pool).await?;
     reverse_proxy::migrate(&pool).await?;
     time_service::migrate(&pool).await?;
     plugins::migrate(&pool).await?;

@@ -5,6 +5,8 @@ pub mod config_manager;
 pub mod db;
 pub mod dns_blocklists;
 pub mod engine;
+pub mod s3_backup;
+pub mod smtp_notify;
 pub mod geoip;
 pub mod ha;
 pub mod multiwan;

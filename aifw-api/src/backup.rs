@@ -978,15 +978,46 @@ pub async fn auto_snapshot_middleware(
     let bg_actor = "auto".to_string();
     let bg_comment = format!("{method} {path}");
     tokio::spawn(async move {
-        match build_current_config(&bg_state).await {
-            Ok(cfg) => {
-                let mgr = ConfigManager::new(bg_state.pool.clone());
-                let _ = mgr.migrate().await;
-                if let Err(e) = mgr.save_if_changed(&cfg, &bg_actor, Some(&bg_comment)).await {
-                    tracing::debug!("auto-snapshot failed: {e}");
+        let cfg = match build_current_config(&bg_state).await {
+            Ok(c) => c,
+            Err(_) => { tracing::debug!("auto-snapshot: build_current_config failed"); return; }
+        };
+        let mgr = ConfigManager::new(bg_state.pool.clone());
+        let _ = mgr.migrate().await;
+        let version = match mgr.save_if_changed(&cfg, &bg_actor, Some(&bg_comment)).await {
+            Ok(Some(v)) => v,
+            Ok(None) => return,   // config unchanged — no notification either
+            Err(e) => { tracing::debug!("auto-snapshot failed: {e}"); return; }
+        };
+
+        // Fire "saved" notification (opt-in — default disabled).
+        aifw_core::smtp_notify::send_event(
+            &bg_state.pool,
+            aifw_core::smtp_notify::Event::BackupSaved,
+            &format!("Version {version}: {bg_comment}"),
+        ).await;
+
+        // S3 upload if configured.
+        let s3cfg = aifw_core::s3_backup::load(&bg_state.pool).await;
+        if s3cfg.enabled {
+            let now = chrono::Utc::now().to_rfc3339();
+            match aifw_core::s3_backup::upload_version(&s3cfg, version, &now, &cfg.to_json()).await {
+                Ok(key) => {
+                    aifw_core::smtp_notify::send_event(
+                        &bg_state.pool,
+                        aifw_core::smtp_notify::Event::S3UploadOk,
+                        &format!("Version {version} uploaded to s3://{}/{}", s3cfg.bucket, key),
+                    ).await;
+                }
+                Err(e) => {
+                    tracing::warn!(version, error = %e, "S3 upload failed");
+                    aifw_core::smtp_notify::send_event(
+                        &bg_state.pool,
+                        aifw_core::smtp_notify::Event::S3UploadFailed,
+                        &format!("Version {version} failed to upload to s3://{}: {e}", s3cfg.bucket),
+                    ).await;
                 }
             }
-            Err(_) => tracing::debug!("auto-snapshot: build_current_config failed"),
         }
     });
 
