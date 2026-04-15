@@ -25,6 +25,7 @@ interface BlocklistSchedule {
   cron: string;
   on_boot: boolean;
   concurrency: number;
+  enabled: boolean;
 }
 
 interface PatternEntry {
@@ -102,6 +103,35 @@ function validateRedirectIp(ip: string): string | null {
 
 export default function BlocklistsPage() {
   const [tab, setTab] = useState<"sources" | "custom" | "whitelist" | "schedule">("sources");
+  const [masterEnabled, setMasterEnabled] = useState<boolean | null>(null);
+  const [masterBusy, setMasterBusy] = useState(false);
+  const [masterError, setMasterError] = useState<string | null>(null);
+
+  const loadMaster = useCallback(async () => {
+    try {
+      const s = await api<BlocklistSchedule>("GET", "/api/v1/dns/blocklists/schedule");
+      setMasterEnabled(s.enabled);
+    } catch (e) {
+      setMasterError(String(e));
+    }
+  }, []);
+
+  useEffect(() => { loadMaster(); }, [loadMaster]);
+
+  async function toggleMaster(next: boolean) {
+    if (!next && !confirm("Disable DNS blocklisting? Every blocklist RPZ file will be removed and rDNS will reload. Whitelist and custom blocks are unaffected.")) return;
+    setMasterBusy(true);
+    setMasterError(null);
+    try {
+      await api("PUT", "/api/v1/dns/blocklists/enabled", { enabled: next });
+      setMasterEnabled(next);
+    } catch (e) {
+      setMasterError(String(e));
+    } finally {
+      setMasterBusy(false);
+    }
+  }
+
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-4">
       <h1 className="text-2xl font-bold text-white flex items-center gap-2">
@@ -113,6 +143,40 @@ export default function BlocklistsPage() {
           query — performance impact is negligible.
         </Help>
       </h1>
+
+      <div className={`rounded-lg border p-4 flex items-center gap-4 ${masterEnabled ? "border-emerald-500/40 bg-emerald-500/5" : "border-yellow-500/40 bg-yellow-500/5"}`}>
+        <div className={`w-3 h-3 rounded-full ${masterEnabled ? "bg-emerald-400 animate-pulse" : "bg-yellow-400"}`} />
+        <div className="flex-1">
+          <div className="text-sm font-semibold text-white flex items-center gap-2">
+            {masterEnabled === null ? "Loading…" : masterEnabled ? "DNS blocklisting is ON" : "DNS blocklisting is OFF"}
+            <Help title="Master toggle" size="sm">
+              This is the global on/off switch for DNS blocklisting. When OFF,
+              no blocklist is enforced even if individual sources below are
+              toggled on. Whitelist and custom blocks still apply — they are
+              layered above blocklists.
+            </Help>
+          </div>
+          <div className="text-xs text-[var(--text-muted)]">
+            {masterEnabled
+              ? "Enabled sources below are downloaded and enforced via rDNS RPZ."
+              : "All blocklist RPZ files are removed from disk. Flip this on to start blocking."}
+          </div>
+          {masterError && <div className="text-xs text-red-400 mt-1">⚠ {masterError}</div>}
+        </div>
+        <label className="inline-flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            className="peer sr-only"
+            checked={!!masterEnabled}
+            disabled={masterBusy || masterEnabled === null}
+            onChange={(e) => toggleMaster(e.target.checked)}
+          />
+          <span className="relative w-11 h-6 rounded-full bg-[var(--bg-card-secondary)] peer-checked:bg-emerald-600 transition-colors">
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${masterEnabled ? "translate-x-5" : ""}`} />
+          </span>
+          <span className="text-sm font-medium text-white">{masterEnabled ? "On" : "Off"}</span>
+        </label>
+      </div>
 
       <HelpBanner title="DNS blocklists — quick tour" storageKey="dns-blocklists">
         <p>

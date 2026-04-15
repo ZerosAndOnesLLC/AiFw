@@ -109,6 +109,20 @@ pub async fn put_schedule(
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
 
+#[derive(serde::Deserialize)]
+pub struct EnabledReq {
+    pub enabled: bool,
+}
+
+pub async fn set_enabled(
+    State(state): State<AppState>,
+    Json(req): Json<EnabledReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    bl::set_enabled(&state.pool, req.enabled).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(serde_json::json!({ "enabled": req.enabled })))
+}
+
 // ---- whitelist / custom blocks ----
 
 pub async fn list_whitelist(State(state): State<AppState>) -> Json<Vec<bl::PatternEntry>> {

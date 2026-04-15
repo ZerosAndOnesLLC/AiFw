@@ -80,11 +80,18 @@ pub struct BlocklistSchedule {
     pub cron: String,
     pub on_boot: bool,
     pub concurrency: i64,
+    /// Master on/off for the entire DNS blocklisting feature. When false:
+    ///   - scheduler skips cron-driven refreshes,
+    ///   - refresh endpoints return an error,
+    ///   - on-disk blocklist files are removed and rDNS is reloaded.
+    /// Whitelist + custom blocks still apply (they are not blocklists).
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 impl Default for BlocklistSchedule {
     fn default() -> Self {
-        Self { cron: "0 0 3 * * *".into(), on_boot: true, concurrency: 4 }
+        Self { cron: "0 0 3 * * *".into(), on_boot: true, concurrency: 4, enabled: false }
     }
 }
 
@@ -139,12 +146,16 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             id          INTEGER PRIMARY KEY CHECK (id = 1),
             cron        TEXT NOT NULL DEFAULT '0 0 3 * * *',
             on_boot     INTEGER NOT NULL DEFAULT 1,
-            concurrency INTEGER NOT NULL DEFAULT 4
+            concurrency INTEGER NOT NULL DEFAULT 4,
+            enabled     INTEGER NOT NULL DEFAULT 0
         )
     "#).execute(pool).await?;
+    // Idempotent column add for existing deployments that predate the `enabled` flag.
+    let _ = sqlx::query("ALTER TABLE dns_blocklist_schedule ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0")
+        .execute(pool).await;
     sqlx::query(r#"
-        INSERT OR IGNORE INTO dns_blocklist_schedule (id, cron, on_boot, concurrency)
-        VALUES (1, '0 0 3 * * *', 1, 4)
+        INSERT OR IGNORE INTO dns_blocklist_schedule (id, cron, on_boot, concurrency, enabled)
+        VALUES (1, '0 0 3 * * *', 1, 4, 0)
     "#).execute(pool).await?;
 
     sqlx::query(r#"
@@ -307,14 +318,15 @@ pub async fn load_all_sources(pool: &SqlitePool) -> Vec<BlocklistSource> {
 }
 
 pub async fn load_schedule(pool: &SqlitePool) -> BlocklistSchedule {
-    sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT cron, on_boot, concurrency FROM dns_blocklist_schedule WHERE id = 1"
+    sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT cron, on_boot, concurrency, COALESCE(enabled, 0) FROM dns_blocklist_schedule WHERE id = 1"
     )
     .fetch_optional(pool).await.ok().flatten()
-    .map(|(cron, on_boot, concurrency)| BlocklistSchedule {
+    .map(|(cron, on_boot, concurrency, enabled)| BlocklistSchedule {
         cron,
         on_boot: on_boot != 0,
         concurrency: concurrency.max(1),
+        enabled: enabled != 0,
     })
     .unwrap_or_default()
 }
@@ -326,11 +338,33 @@ pub async fn put_schedule(pool: &SqlitePool, s: &BlocklistSchedule) -> Result<()
     }
     sqlx::query(r#"
         UPDATE dns_blocklist_schedule
-           SET cron=?, on_boot=?, concurrency=?
+           SET cron=?, on_boot=?, concurrency=?, enabled=?
          WHERE id=1
     "#)
-    .bind(&s.cron).bind(s.on_boot as i64).bind(s.concurrency)
+    .bind(&s.cron).bind(s.on_boot as i64).bind(s.concurrency).bind(s.enabled as i64)
     .execute(pool).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Toggle blocklisting on/off. When disabling, removes every blocklist RPZ
+/// file so rDNS matches drop to zero on reload. When enabling, refreshes
+/// every enabled source immediately.
+pub async fn set_enabled(pool: &SqlitePool, enabled: bool) -> Result<(), String> {
+    sqlx::query("UPDATE dns_blocklist_schedule SET enabled = ? WHERE id = 1")
+        .bind(enabled as i64)
+        .execute(pool).await.map_err(|e| e.to_string())?;
+
+    if enabled {
+        // Kick off a refresh of all enabled sources. Returns the outcomes but
+        // we don't surface them here — the UI polls `list_sources` afterwards.
+        refresh_all(pool).await;
+    } else {
+        // Wipe all per-source files; custom.rpz (whitelist/custom) stays.
+        for src in load_all_sources(pool).await {
+            remove_blocklist_file(&rpz_path_for(src.id)).await;
+        }
+        let _ = trigger_rdns_reload().await;
+    }
     Ok(())
 }
 
@@ -610,6 +644,12 @@ pub async fn refresh_source(pool: &SqlitePool, id: i64) -> RefreshOutcome {
         sha256: String::new(), error: None,
     };
 
+    let sched = load_schedule(pool).await;
+    if !sched.enabled {
+        outcome.error = Some("blocklisting globally disabled — turn it on first".into());
+        return outcome;
+    }
+
     let Some(src) = load_source(pool, id).await else {
         outcome.error = Some("source not found".into());
         return outcome;
@@ -719,6 +759,10 @@ pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
 
 pub async fn refresh_all(pool: &SqlitePool) -> Vec<RefreshOutcome> {
     let sched = load_schedule(pool).await;
+    if !sched.enabled {
+        tracing::debug!("refresh_all: blocklisting globally disabled — skipping");
+        return Vec::new();
+    }
     let permits = Arc::new(Semaphore::new(sched.concurrency.max(1) as usize));
     let sources = load_all_sources(pool).await;
 

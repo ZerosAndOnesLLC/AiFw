@@ -363,6 +363,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/dns/blocklists/{id}/refresh", post(dns_blocklists::refresh_one))
         .route("/api/v1/dns/blocklists/refresh-all", post(dns_blocklists::refresh_everything))
         .route("/api/v1/dns/blocklists/schedule", put(dns_blocklists::put_schedule))
+        .route("/api/v1/dns/blocklists/enabled", put(dns_blocklists::set_enabled))
         .route("/api/v1/dns/whitelist", post(dns_blocklists::create_whitelist))
         .route("/api/v1/dns/whitelist/{id}", delete(dns_blocklists::delete_whitelist))
         .route("/api/v1/dns/customblocks", post(dns_blocklists::create_customblock))

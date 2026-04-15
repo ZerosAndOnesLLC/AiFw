@@ -75,8 +75,15 @@ export default function DashboardPage() {
   const lastSnap = useRef<StatsSnapshot | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAt = useRef<number>(0);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   // WebSocket lifecycle with backoff reconnect.
+  //
+  // Backoff notes: DO NOT reset the backoff in `onopen`. A broken backend
+  // (e.g. rDNS control socket unreachable) will happily 101-upgrade the WS
+  // and then close immediately — if we reset on open, we retry 1s later,
+  // forever. Only reset once we've received a real frame from the server.
   useEffect(() => {
     let stopped = false;
     let backoff = 1000;
@@ -88,22 +95,33 @@ export default function DashboardPage() {
       const token = localStorage.getItem("aifw_token") || "";
       const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/dns/stream?token=${encodeURIComponent(token)}`);
       wsRef.current = ws;
+      const openedAt = { t: 0 };
+      let gotFrame = false;
 
       ws.onopen = () => {
         setConn("open");
-        backoff = 1000;
+        openedAt.t = Date.now();
       };
       ws.onerror = () => {};
       ws.onclose = () => {
         setConn("closed");
-        if (!stopped) {
-          reconnectAt.current = Date.now() + backoff;
-          setTimeout(connect, backoff);
-          backoff = Math.min(backoff * 2, 15000);
+        if (stopped) return;
+        // If the connection died almost immediately, grow backoff further so
+        // a persistently-broken server doesn't get 1Hz reconnects.
+        const aliveMs = openedAt.t ? Date.now() - openedAt.t : 0;
+        if (aliveMs < 2000 && !gotFrame) {
+          backoff = Math.min(backoff * 2, 30000);
         }
+        reconnectAt.current = Date.now() + backoff;
+        setTimeout(connect, backoff);
       };
       ws.onmessage = (e) => {
-        if (paused) return;
+        if (pausedRef.current) return;
+        // First real frame: we know the backend is healthy — reset backoff.
+        if (!gotFrame) {
+          gotFrame = true;
+          backoff = 1000;
+        }
         try {
           const f: Frame = JSON.parse(e.data);
           if (f.type === "stats") {
@@ -138,7 +156,8 @@ export default function DashboardPage() {
       stopped = true;
       wsRef.current?.close();
     };
-  }, [paused]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const blockRate = useMemo(() => {
     if (!snapshot) return 0;
