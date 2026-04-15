@@ -738,11 +738,62 @@ async fn record_error(pool: &SqlitePool, id: i64, err: &str) {
 pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
     let whitelist = load_whitelist(pool).await;
     let custom = load_custom_blocks(pool).await;
+
+    // DNS host/domain overrides MUST resolve to the operator's chosen
+    // target — a blocklist that happens to match the same name (or a
+    // wildcard parent) would silently break internal services. Pull
+    // every override hostname here and emit an implicit passthru so the
+    // override path always wins. No separate whitelist row to maintain;
+    // removing the override removes the implicit passthru on the next
+    // rebuild.
+    let mut implicit: Vec<String> = Vec::new();
+    if let Ok(rows) = sqlx::query_as::<_, (String, String)>(
+        "SELECT hostname, domain FROM dns_host_overrides WHERE enabled = 1"
+    ).fetch_all(pool).await {
+        for (host, domain) in rows {
+            let h = host.trim().trim_matches('.');
+            let d = domain.trim().trim_matches('.');
+            if h.is_empty() && d.is_empty() { continue; }
+            let fqdn = if d.is_empty() {
+                h.to_string()
+            } else if h.is_empty() || h == "@" {
+                d.to_string()
+            } else {
+                format!("{h}.{d}")
+            };
+            if !fqdn.is_empty() { implicit.push(fqdn); }
+        }
+    }
+    if let Ok(rows) = sqlx::query_as::<_, (String,)>(
+        "SELECT domain FROM dns_domain_overrides WHERE enabled = 1"
+    ).fetch_all(pool).await {
+        for (d,) in rows {
+            let d = d.trim().trim_matches('.');
+            if !d.is_empty() {
+                // Cover both the apex AND every subdomain — domain
+                // overrides forward an entire zone to a different
+                // resolver, so blocklists matching anything under it
+                // would also break the override.
+                implicit.push(d.to_string());
+                implicit.push(format!("*.{d}"));
+            }
+        }
+    }
+    implicit.sort();
+    implicit.dedup();
+
     let serial = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     let mut out = format!(
         "$TTL 300\n@ IN SOA rpz.custom. admin.rpz.custom. {serial} 3600 900 604800 300\n  IN NS  localhost.\n"
     );
+
+    // Implicit passthroughs from host/domain overrides come first so any
+    // explicit whitelist or custom-block entries below them only apply
+    // when there's no override — keeps the precedence unambiguous.
+    for d in &implicit {
+        out.push_str(&format!("{d} CNAME rpz-passthru.\n"));
+    }
     for w in &whitelist {
         let d = w.trim().trim_end_matches('.');
         if d.is_empty() { continue; }
@@ -754,7 +805,7 @@ pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
         out.push_str(&format!("{d} CNAME .\n"));
     }
     atomic_write(&custom_rpz_path(), &out).await?;
-    Ok((whitelist.len() + custom.len()) as i64)
+    Ok((whitelist.len() + custom.len() + implicit.len()) as i64)
 }
 
 pub async fn refresh_all(pool: &SqlitePool) -> Vec<RefreshOutcome> {
