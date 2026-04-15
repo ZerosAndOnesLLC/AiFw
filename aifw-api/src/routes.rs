@@ -1253,6 +1253,47 @@ pub async fn status(
     }))
 }
 
+// --- pf state-table tuning (Settings → System → max states) ---
+
+#[derive(serde::Serialize)]
+pub struct PfTuningResponse {
+    pub configured_max_states: u64,
+    /// What pf is actually using right now. Drifts from `configured` if the
+    /// last apply failed (e.g. pf wasn't running). UI uses both.
+    pub live_max_states: Option<u64>,
+    pub current_states: u64,
+    pub min_states: u64,
+    pub max_states: u64,
+}
+
+pub async fn get_pf_tuning(
+    State(state): State<AppState>,
+) -> Json<PfTuningResponse> {
+    let stats = state.pf.get_stats().await.unwrap_or_default();
+    Json(PfTuningResponse {
+        configured_max_states: aifw_core::pf_tuning::configured_max_states(&state.pool).await,
+        live_max_states: aifw_core::pf_tuning::live_max_states().await,
+        current_states: stats.states_count,
+        min_states: aifw_core::pf_tuning::MIN_STATES,
+        max_states: aifw_core::pf_tuning::MAX_STATES,
+    })
+}
+
+#[derive(serde::Deserialize)]
+pub struct PutPfTuningRequest {
+    pub max_states: u64,
+}
+
+pub async fn put_pf_tuning(
+    State(state): State<AppState>,
+    Json(req): Json<PutPfTuningRequest>,
+) -> Result<Json<PfTuningResponse>, (StatusCode, String)> {
+    aifw_core::pf_tuning::set_max_states(&state.pool, req.max_states)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(get_pf_tuning(State(state)).await)
+}
+
 /// `/api/v1/about` — surfaces version + memory breakdown for the About
 /// page so it doesn't need to subscribe to the dashboard WebSocket just
 /// to show a memory readout.

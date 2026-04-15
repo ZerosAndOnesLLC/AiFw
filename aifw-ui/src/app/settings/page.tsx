@@ -11,7 +11,7 @@ const API = "";
 // as one component (state is shared across many sections — e.g. DNS feeds
 // into the rest of system config) but makes the long scroll navigable.
 const CATEGORIES: { key: string; label: string; sections: string[] }[] = [
-  { key: "system",  label: "System",          sections: ["System Actions"] },
+  { key: "system",  label: "System",          sections: ["System Actions", "pf State Table"] },
   { key: "api",     label: "API & Auth",      sections: ["API Server", "TLS Policy", "Authentication"] },
   { key: "dns",     label: "DNS",             sections: ["DNS Configuration"] },
   { key: "storage", label: "Storage & Metrics", sections: ["Metrics Storage", "Dashboard History", "Metrics Persistence (Valkey)", "IDS Alert Storage"] },
@@ -111,6 +111,17 @@ export default function SettingsPage() {
   const [historyFeedback, setHistoryFeedback] = useState<SectionFeedback | null>(null);
   const [historySaving, setHistorySaving] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
+
+  // --- pf state-table tuning ---
+  const [pfMaxStates, setPfMaxStates] = useState(100000);
+  const [pfConfigured, setPfConfigured] = useState(100000);
+  const [pfLive, setPfLive] = useState<number | null>(null);
+  const [pfCurrent, setPfCurrent] = useState(0);
+  const [pfMin, setPfMin] = useState(1000);
+  const [pfMax, setPfMax] = useState(4000000);
+  const [pfFeedback, setPfFeedback] = useState<SectionFeedback | null>(null);
+  const [pfSaving, setPfSaving] = useState(false);
+  const [pfLoading, setPfLoading] = useState(true);
 
   // --- Config History (auto-snapshots) ---
   const [cfgMaxVersions, setCfgMaxVersions] = useState(200);
@@ -256,6 +267,24 @@ export default function SettingsPage() {
       } finally {
         setHistoryLoading(false);
       }
+    })();
+
+    // Fetch pf state-table tuning
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/settings/pf-tuning`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        if (typeof d.configured_max_states === "number") {
+          setPfConfigured(d.configured_max_states);
+          setPfMaxStates(d.configured_max_states);
+        }
+        if (typeof d.live_max_states === "number") setPfLive(d.live_max_states);
+        if (typeof d.current_states === "number") setPfCurrent(d.current_states);
+        if (typeof d.min_states === "number") setPfMin(d.min_states);
+        if (typeof d.max_states === "number") setPfMax(d.max_states);
+      } catch { /* silent */ }
+      finally { setPfLoading(false); }
     })();
 
     // Fetch Config History retention
@@ -533,6 +562,31 @@ export default function SettingsPage() {
       setFeedbackWithTimeout(setCfgRetFeedback, { type: "error", message: `Save failed: ${msg}` });
     } finally {
       setCfgRetSaving(false);
+    }
+  };
+
+  const savePfTuning = async () => {
+    setPfSaving(true);
+    setPfFeedback(null);
+    try {
+      const res = await authFetch(`${API}/api/v1/settings/pf-tuning`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ max_states: pfMaxStates }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+      const d = await res.json();
+      setPfConfigured(d.configured_max_states);
+      setPfLive(d.live_max_states);
+      setFeedbackWithTimeout(setPfFeedback, { type: "success", message: "pf state-table limit applied (no reload of rules required)." });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setFeedbackWithTimeout(setPfFeedback, { type: "error", message: `Save failed: ${msg}` });
+    } finally {
+      setPfSaving(false);
     }
   };
 
@@ -1844,6 +1898,62 @@ export default function SettingsPage() {
               })}
             </>
           )}
+        </div>
+      </section>
+
+      {/* pf State Table */}
+      <section className={`${sectionCls} ${inCategory("pf State Table") ? "" : "hidden"}`}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-medium">pf State Table</h2>
+          <span className="text-xs text-[var(--text-muted)]">
+            {pfLoading ? "Loading…" :
+              `${pfCurrent.toLocaleString()} active / ${(pfLive ?? pfConfigured).toLocaleString()} max (${
+                pfLive ? Math.round((pfCurrent / pfLive) * 100) : 0
+              }%)`}
+          </span>
+        </div>
+        <FeedbackBanner feedback={pfFeedback} />
+        <p className="text-xs text-[var(--text-muted)] mb-3">
+          pf tracks every connection in the state table. The default cap is 100,000;
+          high-throughput appliances or NAT-heavy workloads (lots of short-lived
+          connections) can exhaust it, after which pf drops new states until old ones
+          expire. Raise the limit if <code>pfctl -ss | wc -l</code> approaches the cap.
+          Memory cost is roughly 300 bytes per state — 1M states ≈ 300 MB of wired RAM.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls}>Maximum states</label>
+            <input
+              type="number"
+              min={pfMin}
+              max={pfMax}
+              step={1000}
+              value={pfMaxStates}
+              onChange={(e) => setPfMaxStates(Math.max(pfMin, Math.min(pfMax, Number(e.target.value) || 0)))}
+              className={inputCls}
+            />
+            <p className="text-xs text-[var(--text-muted)] mt-1">
+              Range: {pfMin.toLocaleString()}–{pfMax.toLocaleString()}.
+            </p>
+          </div>
+          <div>
+            <label className={labelCls}>Live limit</label>
+            <div className={`${inputCls} font-mono`}>{pfLive !== null ? pfLive.toLocaleString() : "(pf unavailable)"}</div>
+            {pfLive !== null && pfLive !== pfConfigured && (
+              <p className="text-xs text-yellow-300 mt-1">
+                ⚠ Live limit doesn&apos;t match configured ({pfConfigured.toLocaleString()}). Click save to re-apply.
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="flex justify-end mt-4">
+          <button
+            onClick={savePfTuning}
+            disabled={pfSaving || pfLoading}
+            className={saveBtnCls}
+          >
+            {pfSaving ? "Applying…" : "Apply (no rule reload)"}
+          </button>
         </div>
       </section>
 

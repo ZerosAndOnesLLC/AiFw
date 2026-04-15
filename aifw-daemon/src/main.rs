@@ -249,6 +249,10 @@ async fn main() -> anyhow::Result<()> {
     aifw_core::ddns::spawn_scheduler(pool.clone());
     info!("DDNS scheduler started");
 
+    // Re-apply pf state-table limit so an operator-set value survives
+    // reboot. Logs warn (not fatal) — pf may be in a transient state.
+    aifw_core::pf_tuning::apply_on_boot(&pool).await;
+
     info!("daemon ready, waiting for signals");
 
     // Wait for shutdown signal

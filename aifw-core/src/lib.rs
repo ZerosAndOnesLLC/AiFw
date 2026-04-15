@@ -9,6 +9,7 @@ pub mod acme_export;
 pub mod db;
 pub mod ddns;
 pub mod dns_blocklists;
+pub mod pf_tuning;
 pub mod engine;
 pub mod s3_backup;
 pub mod smtp_notify;

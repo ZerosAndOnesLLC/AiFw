@@ -486,6 +486,24 @@ function ProvidersTab() {
 
   return (
     <div className="space-y-3">
+      <HelpBanner title="DNS providers vs the Certificate Authority" storageKey="acme-providers-vs-ca">
+        <p>
+          A <b>DNS provider</b> here is who AiFw asks to <i>publish a TXT record</i>
+          (<code>_acme-challenge.&lt;host&gt;</code>) so the CA can prove you control
+          the domain. Today: Cloudflare, AWS Route 53, or Manual.
+        </p>
+        <p>
+          <b>Let&apos;s Encrypt is not listed</b> — it&apos;s the CA that <i>issues</i>
+          your cert, not a DNS host. It&apos;s configured on the
+          <a className="text-blue-400 underline mx-1" href="#" onClick={(e) => { e.preventDefault(); /* tab nav handled by parent */ document.querySelectorAll("button").forEach(b => { if (b.textContent === "Account") (b as HTMLButtonElement).click(); }); }}>Account</a>
+          tab (default URL: <code>https://acme-v02.api.letsencrypt.org/directory</code>).
+        </p>
+        <p>
+          So the typical setup is: Cloudflare or Route 53 here as the
+          DNS provider, Let&apos;s Encrypt on the Account tab as the CA.
+        </p>
+      </HelpBanner>
+
       <div className="flex items-center justify-between">
         <div className="text-sm text-[var(--text-muted)]">{providers.length} provider{providers.length === 1 ? "" : "s"}</div>
         <button onClick={() => setEditing("new")}
@@ -528,6 +546,96 @@ function ProvidersTab() {
   );
 }
 
+/* DNS provider catalog — each entry drives the picker tile + the per-kind
+   form layout. Adding a new provider here means: (1) add an entry, (2)
+   add the matching backend implementation in aifw-core::acme_dns. */
+const PROVIDER_CATALOG: {
+  kind: DnsProvider["kind"];
+  label: string;
+  blurb: string;
+  /** Concrete instructions to find/create the credential. */
+  setup: React.ReactNode;
+  /** Field labels override — defaults are "API token" / "Secret access key". */
+  tokenLabel?: string;
+  secretLabel?: string;
+  needsToken: boolean;
+  needsSecret: boolean;
+  /** Optional extra fields (region, etc.) keyed into the `extra` JSON. */
+  extraFields?: { key: string; label: string; placeholder?: string; help?: string }[];
+}[] = [
+  {
+    kind: "cloudflare",
+    label: "Cloudflare",
+    blurb: "REST API. Issue an API token scoped to one zone.",
+    needsToken: true,
+    needsSecret: false,
+    tokenLabel: "API Token",
+    setup: (
+      <>
+        <p>1. Go to <a className="text-blue-400 underline" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Cloudflare → My Profile → API Tokens</a>.</p>
+        <p>2. <b>Create Token</b> → use the <i>Edit zone DNS</i> template.</p>
+        <p>3. Under <b>Zone Resources</b>, restrict to the single zone you&apos;ll be issuing certs for.</p>
+        <p>4. Permissions must include <code>Zone:DNS:Edit</code> and <code>Zone:Zone:Read</code>.</p>
+        <p>5. Copy the token (it&apos;s shown once) and paste it below.</p>
+      </>
+    ),
+  },
+  {
+    kind: "route53",
+    label: "AWS Route 53",
+    blurb: "Uses the AWS SDK. IAM access key + secret with ChangeResourceRecordSets on the hosted zone.",
+    needsToken: true,
+    needsSecret: true,
+    tokenLabel: "Access Key ID",
+    secretLabel: "Secret Access Key",
+    extraFields: [
+      { key: "region", label: "AWS region", placeholder: "us-east-1", help: "Route53 is global; this only matters if your IAM policy is region-scoped." },
+      { key: "zone_id", label: "Hosted zone ID (optional)", placeholder: "Z2ABCDEFGHIJKL", help: "Auto-resolved from the zone name on first use if left blank." },
+    ],
+    setup: (
+      <>
+        <p>1. AWS Console → IAM → <b>Users</b> → create a user with programmatic access.</p>
+        <p>2. Attach this minimal policy (replace <code>Z2ABCDEFGHIJKL</code> with your hosted zone ID):</p>
+        <pre className="text-[10px] bg-black/40 rounded p-2 overflow-x-auto whitespace-pre">{`{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "route53:GetChange",
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets",
+        "route53:ListHostedZones",
+        "route53:ListHostedZonesByName"
+      ],
+      "Resource": [
+        "arn:aws:route53:::hostedzone/Z2ABCDEFGHIJKL",
+        "arn:aws:route53:::change/*"
+      ]
+    }
+  ]
+}`}</pre>
+        <p>3. Save the access key + secret somewhere safe — AWS only shows the secret once.</p>
+      </>
+    ),
+  },
+  {
+    kind: "manual",
+    label: "Manual",
+    blurb: "Paste the TXT record into your DNS by hand. Useful when no API exists.",
+    needsToken: false,
+    needsSecret: false,
+    setup: (
+      <>
+        <p>When you click <b>Renew now</b> on a cert that uses this provider, AiFw will surface the
+        <code>_acme-challenge.&lt;host&gt;</code> name + value in the cert&apos;s <i>Last error</i> field.</p>
+        <p>Add the TXT to your DNS, wait for it to propagate, then click <b>Renew now</b> again to finalize.</p>
+        <p className="text-yellow-300/80">Auto-renewal won&apos;t work with this provider — pick Cloudflare or Route53 if you want hands-off operation.</p>
+      </>
+    ),
+  },
+];
+
 function ProviderModal({ initial, onClose, onSaved }: { initial: DnsProvider | null; onClose: () => void; onSaved: () => void }) {
   const isNew = !initial;
   const [name, setName] = useState(initial?.name || "");
@@ -535,28 +643,64 @@ function ProviderModal({ initial, onClose, onSaved }: { initial: DnsProvider | n
   const [zone, setZone] = useState(initial?.zone || "");
   const [token, setToken] = useState("");                         // empty = unchanged
   const [secret, setSecret] = useState("");                       // empty = unchanged
-  const [extra, setExtra] = useState(JSON.stringify(initial?.extra || {}, null, 2));
+  const initialExtra: Record<string, string> = (initial?.extra ?? {}) as Record<string, string>;
+  const [extraVals, setExtraVals] = useState<Record<string, string>>(
+    Object.fromEntries(Object.entries(initialExtra).map(([k, v]) => [k, String(v ?? "")]))
+  );
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [zoneErr, setZoneErr] = useState<string | null>(null);
 
-  const valid = name.trim() && zone.trim() && (initial?.has_token || token || kind === "manual");
+  const spec = PROVIDER_CATALOG.find((p) => p.kind === kind)!;
+  const valid = name.trim() && zone.trim() && !zoneErr
+    && (!spec.needsToken || initial?.has_token || token)
+    && (!spec.needsSecret || initial?.has_secret || secret);
 
-  async function submit() {
+  function validateZone(v: string): string | null {
+    const z = v.trim().replace(/\.+$/, "");
+    if (!z) return null;
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(z)) {
+      return "must be a valid DNS zone like example.com";
+    }
+    return null;
+  }
+
+  function buildBody(): Record<string, unknown> {
+    const extraJson: Record<string, unknown> = {};
+    for (const f of spec.extraFields ?? []) {
+      const v = extraVals[f.key];
+      if (v && v.trim()) extraJson[f.key] = v.trim();
+    }
+    return {
+      name: name.trim(),
+      kind,
+      zone: zone.trim(),
+      api_token:      spec.needsToken  ? (token  === "" ? null : token)  : null,
+      aws_secret_key: spec.needsSecret ? (secret === "" ? null : secret) : null,
+      extra: extraJson,
+    };
+  }
+
+  async function saveAndTest(testAfter: boolean) {
     if (!valid) return;
-    setBusy(true); setErr(null);
+    setBusy(true); setErr(null); setTestResult(null);
     try {
-      let extraJson: Record<string, unknown> = {};
-      try { extraJson = JSON.parse(extra); } catch { throw new Error("extra is not valid JSON"); }
-      const body = {
-        name: name.trim(),
-        kind,
-        zone: zone.trim(),
-        api_token: token === "" ? null : token,
-        aws_secret_key: secret === "" ? null : secret,
-        extra: extraJson,
-      };
-      if (isNew) await api("POST", "/api/v1/acme/dns-providers", body);
-      else       await api("PUT", `/api/v1/acme/dns-providers/${initial!.id}`, body);
+      const body = buildBody();
+      const created: DnsProvider = isNew
+        ? await api<DnsProvider>("POST", "/api/v1/acme/dns-providers", body)
+        : await api<DnsProvider>("PUT", `/api/v1/acme/dns-providers/${initial!.id}`, body);
+      if (testAfter) {
+        setTesting(true);
+        try {
+          const r = await api<{ ok: boolean; message: string }>(
+            "POST", `/api/v1/acme/dns-providers/${created.id}/test`,
+          );
+          setTestResult(r);
+          if (!r.ok) { setBusy(false); setTesting(false); return; }
+        } finally { setTesting(false); }
+      }
       onSaved();
     } catch (e) { setErr(String(e)); }
     finally { setBusy(false); }
@@ -564,41 +708,113 @@ function ProviderModal({ initial, onClose, onSaved }: { initial: DnsProvider | n
 
   return (
     <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
-        <h2 className="text-lg font-semibold text-white">{isNew ? "Add" : "Edit"} DNS provider</h2>
-        <Field label="Name"><input value={name} onChange={(e) => setName(e.target.value)} className="form-input" placeholder="cloudflare-prod" /></Field>
-        <Field label={<>Kind <Help title="Provider kinds" size="xs">
-          <p><b>Cloudflare:</b> needs an API token with <code>Zone:DNS:Edit</code> on the target zone.</p>
-          <p><b>Route53:</b> needs an IAM access key + secret with <code>route53:ChangeResourceRecordSets</code>.</p>
-          <p><b>Manual:</b> AiFw will tell you which TXT to add — you publish it by hand and re-run the issue.</p>
-        </Help></>}>
-          <select value={kind} onChange={(e) => setKind(e.target.value as DnsProvider["kind"])} className="form-input">
-            <option value="cloudflare">cloudflare</option>
-            <option value="route53">route53</option>
-            <option value="manual">manual</option>
-          </select>
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">{isNew ? "Add" : "Edit"} DNS provider</h2>
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-white text-xl leading-none">✕</button>
+        </div>
+
+        <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-3 text-xs text-[var(--text-muted)]">
+          <span className="text-blue-300 font-semibold">Heads up:</span>{" "}
+          A DNS provider is who AiFw asks to <i>publish the validation TXT record</i> during a cert
+          issue. The certificate itself comes from your ACME CA (Let&apos;s Encrypt by default) —
+          configure that under the <b>Account</b> tab, not here.
+        </div>
+
+        {/* Provider picker — card grid, not a dropdown */}
+        <div>
+          <label className="block text-xs uppercase tracking-wide text-[var(--text-muted)] mb-2">Provider</label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {PROVIDER_CATALOG.map((p) => (
+              <button
+                key={p.kind}
+                type="button"
+                onClick={() => setKind(p.kind)}
+                className={`text-left p-3 rounded-md border transition-colors ${
+                  kind === p.kind
+                    ? "border-blue-500 bg-blue-500/10 ring-1 ring-blue-500/40"
+                    : "border-[var(--border)] hover:border-[var(--text-muted)] bg-[var(--bg-card-secondary)]"
+                }`}
+              >
+                <div className="text-sm font-semibold text-white">{p.label}</div>
+                <div className="text-[11px] text-[var(--text-muted)] mt-0.5">{p.blurb}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Per-provider setup instructions */}
+        <details open className="rounded-md border border-[var(--border)] bg-[var(--bg-card-secondary)]/40 p-3">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+            How to set up {spec.label}
+          </summary>
+          <div className="mt-2 space-y-2 text-xs text-[var(--text-muted)] [&_code]:bg-black/40 [&_code]:px-1 [&_code]:rounded">
+            {spec.setup}
+          </div>
+        </details>
+
+        <Field label="Name" >
+          <input value={name} onChange={(e) => setName(e.target.value)} className="form-input" placeholder={`${spec.label.toLowerCase()}-prod`} />
         </Field>
-        <Field label="DNS zone"><input value={zone} onChange={(e) => setZone(e.target.value)} className="form-input" placeholder="example.com" /></Field>
-        {kind !== "manual" && (
-          <Field label={<>{kind === "route53" ? "Access Key ID" : "API Token"} {initial?.has_token && <span className="text-[var(--text-muted)]">(saved)</span>}</>}>
-            <input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="form-input" placeholder={initial?.has_token ? "•••• (leave blank to keep)" : ""} autoComplete="new-password" />
+
+        <Field label="DNS zone" error={zoneErr}>
+          <input
+            value={zone}
+            onChange={(e) => { setZone(e.target.value); setZoneErr(validateZone(e.target.value)); }}
+            className="form-input"
+            placeholder="example.com"
+          />
+          <p className="text-[10px] text-[var(--text-muted)] mt-1">
+            The base zone you can edit. Certs for any FQDN under this zone can be issued via this provider.
+          </p>
+        </Field>
+
+        {spec.needsToken && (
+          <Field label={<>{spec.tokenLabel ?? "API token"} {initial?.has_token && <span className="text-[var(--text-muted)]">(saved — leave blank to keep)</span>}</>}>
+            <input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="form-input" autoComplete="new-password" placeholder={initial?.has_token ? "•••• (unchanged)" : ""} />
           </Field>
         )}
-        {kind === "route53" && (
-          <Field label={<>Secret Access Key {initial?.has_secret && <span className="text-[var(--text-muted)]">(saved)</span>}</>}>
-            <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} className="form-input" placeholder={initial?.has_secret ? "•••• (leave blank to keep)" : ""} autoComplete="new-password" />
+        {spec.needsSecret && (
+          <Field label={<>{spec.secretLabel ?? "Secret"} {initial?.has_secret && <span className="text-[var(--text-muted)]">(saved — leave blank to keep)</span>}</>}>
+            <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} className="form-input" autoComplete="new-password" placeholder={initial?.has_secret ? "•••• (unchanged)" : ""} />
           </Field>
         )}
-        <Field label="Extra (JSON)">
-          <textarea value={extra} onChange={(e) => setExtra(e.target.value)} className="form-input font-mono text-xs h-20" placeholder='{ "region": "us-east-1" }' />
-        </Field>
+        {(spec.extraFields ?? []).map((f) => (
+          <Field key={f.key} label={f.label}>
+            <input
+              value={extraVals[f.key] || ""}
+              onChange={(e) => setExtraVals({ ...extraVals, [f.key]: e.target.value })}
+              className="form-input"
+              placeholder={f.placeholder}
+            />
+            {f.help && <p className="text-[10px] text-[var(--text-muted)] mt-1">{f.help}</p>}
+          </Field>
+        ))}
+
+        {testResult && (
+          <div className={`rounded-md border p-3 text-xs ${testResult.ok ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200" : "border-red-500/40 bg-red-500/10 text-red-200"}`}>
+            <span className="font-semibold">{testResult.ok ? "Test OK:" : "Test failed:"}</span> {testResult.message}
+          </div>
+        )}
+
         {err && <div className="text-sm text-red-400">⚠ {err}</div>}
-        <div className="flex justify-end gap-2 pt-2">
+
+        <div className="flex justify-between items-center gap-2 pt-2 border-t border-[var(--border)]">
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded bg-[var(--bg-card-secondary)] hover:bg-[var(--bg-hover)]">Cancel</button>
-          <button onClick={submit} disabled={!valid || busy}
-            className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50">
-            {busy ? "Saving…" : "Save"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => saveAndTest(true)}
+              disabled={!valid || busy || testing || spec.kind === "manual"}
+              className="px-3 py-1.5 text-sm rounded bg-[var(--bg-card-secondary)] border border-[var(--border)] hover:border-blue-500 text-white disabled:opacity-50"
+              title={spec.kind === "manual" ? "Manual provider has nothing to test" : "Save and immediately add+remove a TXT record to verify perms"}
+            >
+              {testing ? "Testing…" : busy ? "Saving…" : "Save & Test"}
+            </button>
+            <button onClick={() => saveAndTest(false)} disabled={!valid || busy}
+              className="px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50">
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
