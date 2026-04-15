@@ -169,12 +169,15 @@ pub struct SmtpConfigResponse {
 
 fn events_to_vec(mask: u32) -> Vec<String> {
     let all = [
-        ("backup_saved",     smtp::Event::BackupSaved),
-        ("s3_upload_ok",     smtp::Event::S3UploadOk),
-        ("s3_upload_failed", smtp::Event::S3UploadFailed),
-        ("restore_ok",       smtp::Event::RestoreOk),
-        ("restore_failed",   smtp::Event::RestoreFailed),
-        ("pruned",           smtp::Event::Pruned),
+        ("backup_saved",       smtp::Event::BackupSaved),
+        ("s3_upload_ok",       smtp::Event::S3UploadOk),
+        ("s3_upload_failed",   smtp::Event::S3UploadFailed),
+        ("restore_ok",         smtp::Event::RestoreOk),
+        ("restore_failed",     smtp::Event::RestoreFailed),
+        ("pruned",             smtp::Event::Pruned),
+        ("cert_renewed_ok",    smtp::Event::CertRenewedOk),
+        ("cert_renew_failed",  smtp::Event::CertRenewFailed),
+        ("cert_expiring_soon", smtp::Event::CertExpiringSoon),
     ];
     all.iter()
         .filter(|(_, ev)| {
@@ -248,12 +251,15 @@ fn events_to_mask(events: &[String]) -> u32 {
     let mut mask = 0u32;
     for e in events {
         mask |= match e.as_str() {
-            "backup_saved"     => 1 << 0,
-            "s3_upload_ok"     => 1 << 1,
-            "s3_upload_failed" => 1 << 2,
-            "restore_ok"       => 1 << 3,
-            "restore_failed"   => 1 << 4,
-            "pruned"           => 1 << 5,
+            "backup_saved"       => 1 << 0,
+            "s3_upload_ok"       => 1 << 1,
+            "s3_upload_failed"   => 1 << 2,
+            "restore_ok"         => 1 << 3,
+            "restore_failed"     => 1 << 4,
+            "pruned"             => 1 << 5,
+            "cert_renewed_ok"    => 1 << 6,
+            "cert_renew_failed"  => 1 << 7,
+            "cert_expiring_soon" => 1 << 8,
             _ => 0,
         };
     }

@@ -145,7 +145,9 @@ export default function SettingsPage() {
   const [smtpHasPass, setSmtpHasPass] = useState(false);
   const [smtpFrom, setSmtpFrom] = useState("aifw@localhost");
   const [smtpRecipients, setSmtpRecipients] = useState("");
-  const [smtpEvents, setSmtpEvents] = useState<string[]>(["s3_upload_failed", "restore_failed"]);
+  const [smtpEvents, setSmtpEvents] = useState<string[]>([
+    "s3_upload_failed", "restore_failed", "cert_renew_failed", "cert_expiring_soon",
+  ]);
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpTesting, setSmtpTesting] = useState(false);
   const [smtpFeedback, setSmtpFeedback] = useState<SectionFeedback | null>(null);
@@ -1271,12 +1273,15 @@ export default function SettingsPage() {
           <label className={labelCls}>Send email for</label>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-1 mt-1 text-sm">
             {[
-              ["s3_upload_failed", "S3 upload failed  (recommended)"],
-              ["restore_failed",   "Restore failed    (recommended)"],
-              ["s3_upload_ok",     "S3 upload succeeded"],
-              ["restore_ok",       "Restore succeeded"],
-              ["backup_saved",     "Config snapshot saved"],
-              ["pruned",           "Old versions pruned"],
+              ["s3_upload_failed",   "S3 upload failed  (recommended)"],
+              ["restore_failed",     "Restore failed    (recommended)"],
+              ["cert_renew_failed",  "ACME cert renewal failed  (recommended)"],
+              ["cert_expiring_soon", "ACME cert expiring soon  (recommended)"],
+              ["s3_upload_ok",       "S3 upload succeeded"],
+              ["restore_ok",         "Restore succeeded"],
+              ["backup_saved",       "Config snapshot saved"],
+              ["pruned",             "Old versions pruned"],
+              ["cert_renewed_ok",    "ACME cert renewed"],
             ].map(([k, label]) => (
               <label key={k} className="inline-flex items-center gap-2">
                 <input

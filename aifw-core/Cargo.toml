@@ -22,8 +22,12 @@ cron = "0.16"
 anyhow = "1"
 aws-config = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-sdk-route53 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-credential-types = "1"
 aws-smithy-runtime-api = "1"
+instant-acme = "0.7"
+rcgen = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 
 [dev-dependencies]

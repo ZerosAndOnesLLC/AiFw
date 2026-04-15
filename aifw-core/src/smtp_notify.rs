@@ -26,47 +26,62 @@ pub enum Event {
     RestoreOk,
     RestoreFailed,
     Pruned,
+    CertRenewedOk,
+    CertRenewFailed,
+    CertExpiringSoon,
 }
 
 impl Event {
     fn bit(self) -> u32 {
         match self {
-            Event::BackupSaved   => 1 << 0,
-            Event::S3UploadOk    => 1 << 1,
-            Event::S3UploadFailed=> 1 << 2,
-            Event::RestoreOk     => 1 << 3,
-            Event::RestoreFailed => 1 << 4,
-            Event::Pruned        => 1 << 5,
+            Event::BackupSaved      => 1 << 0,
+            Event::S3UploadOk       => 1 << 1,
+            Event::S3UploadFailed   => 1 << 2,
+            Event::RestoreOk        => 1 << 3,
+            Event::RestoreFailed    => 1 << 4,
+            Event::Pruned           => 1 << 5,
+            Event::CertRenewedOk    => 1 << 6,
+            Event::CertRenewFailed  => 1 << 7,
+            Event::CertExpiringSoon => 1 << 8,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Event::BackupSaved   => "Config snapshot saved",
-            Event::S3UploadOk    => "S3 upload succeeded",
-            Event::S3UploadFailed=> "S3 upload failed",
-            Event::RestoreOk     => "Restore succeeded",
-            Event::RestoreFailed => "Restore failed",
-            Event::Pruned        => "Versions pruned",
+            Event::BackupSaved      => "Config snapshot saved",
+            Event::S3UploadOk       => "S3 upload succeeded",
+            Event::S3UploadFailed   => "S3 upload failed",
+            Event::RestoreOk        => "Restore succeeded",
+            Event::RestoreFailed    => "Restore failed",
+            Event::Pruned           => "Versions pruned",
+            Event::CertRenewedOk    => "ACME cert renewed",
+            Event::CertRenewFailed  => "ACME cert renewal failed",
+            Event::CertExpiringSoon => "ACME cert expiring soon",
         }
     }
 
     pub fn subject(self) -> &'static str {
         match self {
-            Event::BackupSaved   => "AiFw: config snapshot saved",
-            Event::S3UploadOk    => "AiFw: S3 backup uploaded",
-            Event::S3UploadFailed=> "AiFw: S3 backup FAILED",
-            Event::RestoreOk     => "AiFw: config restored",
-            Event::RestoreFailed => "AiFw: config restore FAILED",
-            Event::Pruned        => "AiFw: versions pruned",
+            Event::BackupSaved      => "AiFw: config snapshot saved",
+            Event::S3UploadOk       => "AiFw: S3 backup uploaded",
+            Event::S3UploadFailed   => "AiFw: S3 backup FAILED",
+            Event::RestoreOk        => "AiFw: config restored",
+            Event::RestoreFailed    => "AiFw: config restore FAILED",
+            Event::Pruned           => "AiFw: versions pruned",
+            Event::CertRenewedOk    => "AiFw: TLS cert renewed",
+            Event::CertRenewFailed  => "AiFw: TLS cert renewal FAILED",
+            Event::CertExpiringSoon => "AiFw: TLS cert expiring soon",
         }
     }
 }
 
-/// Default enabled set: failures only. Everything else is opt-in so a busy
-/// appliance doesn't flood the inbox on every auto-snapshot.
+/// Default enabled set: failures + cert-expiry warnings. Everything else is
+/// opt-in so a busy appliance doesn't flood the inbox on every auto-snapshot.
 fn default_enabled_mask() -> u32 {
-    Event::S3UploadFailed.bit() | Event::RestoreFailed.bit()
+    Event::S3UploadFailed.bit()
+        | Event::RestoreFailed.bit()
+        | Event::CertRenewFailed.bit()
+        | Event::CertExpiringSoon.bit()
 }
 
 // ============================================================================

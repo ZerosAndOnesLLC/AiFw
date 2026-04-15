@@ -3,6 +3,7 @@ mod aliases;
 mod auth;
 mod backup;
 mod ca;
+mod acme;
 mod backup_s3;
 mod dhcp;
 mod dns_blocklists;
@@ -484,6 +485,12 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/time/config", get(time_service::get_config))
         .route("/api/v1/time/sources", get(time_service::list_sources))
         .route("/api/v1/time/logs", get(time_service::time_logs))
+        .route("/api/v1/acme/account",                  get(acme::get_account))
+        .route("/api/v1/acme/certs",                    get(acme::list_certs))
+        .route("/api/v1/acme/certs/{id}",               get(acme::get_cert))
+        .route("/api/v1/acme/certs/{id}/cert.pem",      get(acme::download_cert_pem))
+        .route("/api/v1/acme/dns-providers",            get(acme::list_providers))
+        .route("/api/v1/acme/certs/{cert_id}/targets",  get(acme::list_targets))
         .layer(middleware::from_fn(perm_check!(Permission::SettingsRead)));
 
     // settings:write
@@ -510,6 +517,17 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/time/stop", post(time_service::time_stop))
         .route("/api/v1/time/restart", post(time_service::time_restart))
         .route("/api/v1/time/apply", post(time_service::apply_config))
+        .route("/api/v1/acme/account",                       put(acme::put_account))
+        .route("/api/v1/acme/certs",                         post(acme::create_cert))
+        .route("/api/v1/acme/certs/{id}",                    delete(acme::delete_cert))
+        .route("/api/v1/acme/certs/{id}/renew",              post(acme::renew_now))
+        .route("/api/v1/acme/certs/{id}/publish",            post(acme::publish_now))
+        .route("/api/v1/acme/certs/{id}/key.pem",            get(acme::download_key_pem))
+        .route("/api/v1/acme/dns-providers",                 post(acme::create_provider))
+        .route("/api/v1/acme/dns-providers/{id}",            put(acme::update_provider).delete(acme::delete_provider))
+        .route("/api/v1/acme/dns-providers/{id}/test",       post(acme::test_provider))
+        .route("/api/v1/acme/certs/{cert_id}/targets",       post(acme::create_target))
+        .route("/api/v1/acme/export-targets/{id}",           delete(acme::delete_target))
         .layer(middleware::from_fn(perm_check!(Permission::SettingsWrite)));
 
     // plugins:read
@@ -804,6 +822,7 @@ async fn create_state_from_db(
     dns_blocklists::migrate(&pool).await?;
     aifw_core::s3_backup::migrate(&pool).await?;
     aifw_core::smtp_notify::migrate(&pool).await?;
+    aifw_core::acme::migrate(&pool).await?;
     reverse_proxy::migrate(&pool).await?;
     time_service::migrate(&pool).await?;
     plugins::migrate(&pool).await?;

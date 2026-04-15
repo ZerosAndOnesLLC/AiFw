@@ -71,7 +71,8 @@ const navItems: NavItem[] = [
     icon: "M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2",
     color: "text-purple-400",
     children: [
-      { href: "/ca", label: "Certificates", permission: "settings:read" },
+      { href: "/ca", label: "Certificates (Internal CA)", permission: "settings:read" },
+      { href: "/acme", label: "ACME / TLS Certs", permission: "settings:read" },
       { href: "/dns", label: "DNS Resolver", permission: "dns:read" },
       { href: "/dns/hosts", label: "  Host Overrides", permission: "dns:read" },
       { href: "/dns/forwarding", label: "  Query Forwarding", permission: "dns:read" },

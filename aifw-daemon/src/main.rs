@@ -231,6 +231,15 @@ async fn main() -> anyhow::Result<()> {
     aifw_core::dns_blocklists::spawn_scheduler(pool.clone());
     info!("DNS blocklist scheduler started");
 
+    // ACME cert renewal scheduler — also daemon-owned. Sweeps certs flagged
+    // for auto-renewal whose expiry is within the renew window, plus fires
+    // expiring-soon notifications for certs nearing expiry.
+    aifw_core::acme::migrate(&pool)
+        .await
+        .unwrap_or_else(|e| error!("acme migration failed: {e}"));
+    aifw_core::acme_engine::spawn_scheduler(pool.clone());
+    info!("ACME renewal scheduler started");
+
     info!("daemon ready, waiting for signals");
 
     // Wait for shutdown signal
