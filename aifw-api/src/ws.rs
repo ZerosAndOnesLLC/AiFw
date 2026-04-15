@@ -108,30 +108,30 @@ struct SystemPayload {
 }
 
 #[derive(Serialize, Clone)]
-struct MemoryBreakdown {
+pub struct MemoryBreakdown {
     // OS-level memory categories (MB)
-    active_mb: f64,
-    inactive_mb: f64,
-    wired_mb: f64,
-    cached_mb: f64,
-    free_mb: f64,
+    pub active_mb: f64,
+    pub inactive_mb: f64,
+    pub wired_mb: f64,
+    pub cached_mb: f64,
+    pub free_mb: f64,
     // AiFw process memory
-    api_rss_mb: f64,
-    daemon_rss_mb: f64,
+    pub api_rss_mb: f64,
+    pub daemon_rss_mb: f64,
     // IDS alert buffer
-    ids_buffer_mb: f64,
-    ids_buffer_max_mb: f64,
-    ids_buffer_count: usize,
+    pub ids_buffer_mb: f64,
+    pub ids_buffer_max_mb: f64,
+    pub ids_buffer_count: usize,
     // Dashboard metrics history
-    metrics_history_count: usize,
-    metrics_history_mb: f64,
+    pub metrics_history_count: usize,
+    pub metrics_history_mb: f64,
     // pf state table
-    pf_states: u64,
-    pf_states_max: u64,
+    pub pf_states: u64,
+    pub pf_states_max: u64,
     // Database
-    db_size_mb: f64,
+    pub db_size_mb: f64,
     // ZFS ARC cache
-    arc_mb: f64,
+    pub arc_mb: f64,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -773,7 +773,7 @@ async fn collect_system_metrics() -> SystemPayload {
 }
 
 /// Collect memory breakdown: OS categories, process RSS, IDS buffer, metrics, pf states, DB, ARC.
-async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
+pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
     use tokio::process::Command;
 
     // OS-level memory categories via sysctl (FreeBSD page-based)

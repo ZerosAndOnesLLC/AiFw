@@ -11,27 +11,67 @@ interface ServiceInfo {
   color: string;
 }
 
+interface MemoryBreakdown {
+  active_mb: number;
+  inactive_mb: number;
+  wired_mb: number;
+  cached_mb: number;
+  free_mb: number;
+  api_rss_mb: number;
+  daemon_rss_mb: number;
+  ids_buffer_mb: number;
+  ids_buffer_max_mb: number;
+  ids_buffer_count: number;
+  metrics_history_count: number;
+  metrics_history_mb: number;
+  pf_states: number;
+  pf_states_max: number;
+  db_size_mb: number;
+  arc_mb: number;
+}
+
+interface AboutInfo {
+  version: string;
+  git_commit: string | null;
+  built_at: string | null;
+  memory: MemoryBreakdown;
+}
+
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("aifw_token") || "";
   return { Authorization: `Bearer ${token}` };
+}
+
+function fmtMb(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+  if (mb >= 1)    return `${mb.toFixed(0)} MB`;
+  return `${(mb * 1024).toFixed(0)} KB`;
+}
+function fmtNum(n: number): string {
+  return new Intl.NumberFormat().format(n);
+}
+function pct(num: number, total: number): number {
+  return total > 0 ? Math.round((num / total) * 100) : 0;
 }
 
 export default function AboutPage() {
   const [services, setServices] = useState<ServiceInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [aifwVersion, setAifwVersion] = useState("");
+  const [about, setAbout] = useState<AboutInfo | null>(null);
 
   useEffect(() => {
     (async () => {
       const headers = authHeaders();
       const results: ServiceInfo[] = [];
 
-      // AiFw API version
+      // /api/v1/about returns version + memory breakdown in one shot.
       try {
-        const res = await fetch("/api/v1/status", { headers });
+        const res = await fetch("/api/v1/about", { headers });
         if (res.ok) {
-          const data = await res.json();
-          setAifwVersion(data.version || data.data?.version || "");
+          const data: AboutInfo = await res.json();
+          setAbout(data);
+          setAifwVersion(data.version);
         }
       } catch {}
 
@@ -125,12 +165,80 @@ export default function AboutPage() {
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
           </svg>
         </div>
-        <div>
-          <h1 className="text-2xl font-bold text-white">AiFw</h1>
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3 flex-wrap">
+            AiFw
+            {aifwVersion && (
+              <span className="text-base font-mono text-blue-400 bg-blue-500/10 border border-blue-500/30 rounded px-2 py-0.5">
+                v{aifwVersion}
+              </span>
+            )}
+          </h1>
           <p className="text-sm text-gray-400">AI-Powered Firewall for FreeBSD</p>
           <p className="text-xs text-gray-500 mt-0.5">No garbage collectors. Pure Rust, C, and C++ on pf.</p>
+          {about && (about.git_commit || about.built_at) && (
+            <p className="text-[10px] text-gray-600 mt-1 font-mono">
+              {about.git_commit && <>commit {about.git_commit.slice(0, 8)}</>}
+              {about.git_commit && about.built_at && <> · </>}
+              {about.built_at && <>built {about.built_at}</>}
+            </p>
+          )}
         </div>
       </div>
+
+      {/* Memory breakdown */}
+      {about?.memory && (() => {
+        const m = about.memory;
+        const totalMb = m.active_mb + m.inactive_mb + m.wired_mb + m.cached_mb + m.free_mb;
+        return (
+          <div>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Memory Usage</h2>
+
+            {/* OS-level breakdown bar */}
+            <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-400">System total</span>
+                <span className="text-white font-mono">{fmtMb(totalMb)}</span>
+              </div>
+              <div className="flex h-3 rounded overflow-hidden bg-gray-900">
+                <div className="bg-blue-500"   style={{ width: `${pct(m.active_mb, totalMb)}%` }}   title={`Active ${fmtMb(m.active_mb)}`} />
+                <div className="bg-cyan-500"   style={{ width: `${pct(m.wired_mb, totalMb)}%` }}    title={`Wired ${fmtMb(m.wired_mb)}`} />
+                <div className="bg-amber-500"  style={{ width: `${pct(m.inactive_mb, totalMb)}%` }} title={`Inactive ${fmtMb(m.inactive_mb)}`} />
+                <div className="bg-purple-500" style={{ width: `${pct(m.cached_mb, totalMb)}%` }}   title={`Cached ${fmtMb(m.cached_mb)}`} />
+                <div className="bg-gray-600"   style={{ width: `${pct(m.free_mb, totalMb)}%` }}     title={`Free ${fmtMb(m.free_mb)}`} />
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+                {[
+                  ["Active",   m.active_mb,   "bg-blue-500"],
+                  ["Wired",    m.wired_mb,    "bg-cyan-500"],
+                  ["Inactive", m.inactive_mb, "bg-amber-500"],
+                  ["Cached",   m.cached_mb,   "bg-purple-500"],
+                  ["Free",     m.free_mb,     "bg-gray-600"],
+                ].map(([label, val, color]) => (
+                  <div key={label as string} className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded ${color as string}`} />
+                    <div>
+                      <div className="text-gray-500 text-[10px] uppercase tracking-wider">{label as string}</div>
+                      <div className="text-white font-mono">{fmtMb(val as number)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Per-component breakdown */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
+              <MemoryTile label="aifw-api RSS"     value={fmtMb(m.api_rss_mb)} />
+              <MemoryTile label="aifw-daemon RSS"  value={fmtMb(m.daemon_rss_mb)} />
+              <MemoryTile label="ZFS ARC"          value={fmtMb(m.arc_mb)} />
+              <MemoryTile label="IDS alert buffer" value={`${fmtMb(m.ids_buffer_mb)} / ${fmtMb(m.ids_buffer_max_mb)}`} sub={`${fmtNum(m.ids_buffer_count)} alerts`} />
+              <MemoryTile label="Dashboard history" value={fmtMb(m.metrics_history_mb)} sub={`${fmtNum(m.metrics_history_count)} entries`} />
+              <MemoryTile label="pf state table"   value={`${fmtNum(m.pf_states)} / ${fmtNum(m.pf_states_max)}`} sub={`${pct(m.pf_states, m.pf_states_max)}%`} />
+              <MemoryTile label="SQLite DB"        value={fmtMb(m.db_size_mb)} />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Links */}
       <div className="flex gap-3">
@@ -196,6 +304,16 @@ export default function AboutPage() {
       <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg px-4 py-3 text-xs text-gray-500">
         MIT License &middot; Copyright &copy; 2026 Zeros and Ones LLC
       </div>
+    </div>
+  );
+}
+
+function MemoryTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="bg-gray-800/60 border border-gray-700/60 rounded-lg px-3 py-2">
+      <div className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</div>
+      <div className="text-sm font-mono text-white">{value}</div>
+      {sub && <div className="text-[10px] text-gray-500 mt-0.5">{sub}</div>}
     </div>
   );
 }

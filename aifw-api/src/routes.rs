@@ -1253,6 +1253,30 @@ pub async fn status(
     }))
 }
 
+/// `/api/v1/about` — surfaces version + memory breakdown for the About
+/// page so it doesn't need to subscribe to the dashboard WebSocket just
+/// to show a memory readout.
+#[derive(serde::Serialize)]
+pub struct AboutResponse {
+    pub version: String,
+    pub git_commit: Option<String>,
+    pub built_at: Option<String>,
+    pub memory: crate::ws::MemoryBreakdown,
+}
+
+pub async fn about_info(
+    State(state): State<AppState>,
+) -> Json<AboutResponse> {
+    Json(AboutResponse {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        // Optional build-time stamps. Both injected via env if set; otherwise
+        // None — the About page treats them as best-effort.
+        git_commit: option_env!("AIFW_GIT_COMMIT").map(|s| s.to_string()),
+        built_at:   option_env!("AIFW_BUILT_AT").map(|s| s.to_string()),
+        memory: crate::ws::collect_memory_breakdown(&state).await,
+    })
+}
+
 // --- Connections ---
 
 pub async fn list_connections(

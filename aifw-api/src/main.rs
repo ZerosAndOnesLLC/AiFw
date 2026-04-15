@@ -225,6 +225,7 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
     // dashboard:view
     let dashboard_view = Router::new()
         .route("/api/v1/status", get(routes::status))
+        .route("/api/v1/about", get(routes::about_info))
         .route("/api/v1/metrics", get(routes::metrics))
         .route("/api/v1/ws", get(ws::ws_handler))
         .route("/api/v1/pending/stream", get(routes::pending_stream))
