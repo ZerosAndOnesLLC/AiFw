@@ -147,10 +147,24 @@ export default function DashboardPage() {
             }
             lastSnap.current = f.data;
           } else if (f.type === "block") {
-            setRecentBlocks((prev) => {
-              const next = [f.data, ...prev];
-              return next.length > 200 ? next.slice(0, 200) : next;
-            });
+            // rpz.hosts is the host-overrides zone — entries there
+            // intentionally rewrite resolution to internal IPs and are NOT
+            // blocks. rpz.custom is the operator's own passthroughs +
+            // explicit custom blocks; passthroughs there are also rewrites,
+            // not blocks (true admin custom blocks remain action=nxdomain
+            // and pass through the next filter check anyway).
+            const isOverrideZone =
+              f.data.zone === "rpz.hosts." || f.data.zone === "rpz.custom.";
+            const isRewrite =
+              f.data.action === "redirect" || f.data.action === "passthru";
+            if (isOverrideZone && isRewrite) {
+              // Drop — not a block.
+            } else {
+              setRecentBlocks((prev) => {
+                const next = [f.data, ...prev];
+                return next.length > 200 ? next.slice(0, 200) : next;
+              });
+            }
           } else if (f.type === "error") {
             setBackendError(f.error);
           } else {
