@@ -45,23 +45,32 @@ rdns_start()
     /usr/bin/pkill -f "daemon:.*${procname}" 2>/dev/null
     /usr/bin/pkill -x rdns 2>/dev/null
     /bin/rm -f ${rdns_pidfile} ${rdns_supervisor_pidfile}
+    # Also delete any stale socket from the prior instance so the
+    # post-start chown/chmod loop only ever sees the freshly-created one.
+    /bin/rm -f /var/run/rdns/control.sock
 
     echo "Starting rdns."
     ${command} ${command_args}
 
-    # Wait up to 3 s for the control socket to appear, then make it writable
-    # by the aifw group so aifw-api / aifw-daemon can send stats-json /
-    # tail-blocks / reload-rpz commands. On FreeBSD, connect(2) on a Unix
-    # domain socket requires write perm on the socket inode.
-    i=0
-    while [ ! -S /var/run/rdns/control.sock ] && [ $i -lt 30 ]; do
-        /bin/sleep 0.1
-        i=$((i+1))
-    done
-    if [ -S /var/run/rdns/control.sock ]; then
-        /usr/sbin/chown root:aifw /var/run/rdns/control.sock 2>/dev/null
-        /bin/chmod 660 /var/run/rdns/control.sock 2>/dev/null
-    fi
+    # Make the control socket writable by the aifw group so aifw-api and
+    # aifw-daemon can send stats-json / tail-blocks / reload-rpz commands.
+    # On FreeBSD, connect(2) on a Unix domain socket requires WRITE perm on
+    # the socket inode, so the default root:wheel 0660 leaves aifw locked
+    # out. We can't just one-shot the chown — daemon(8) returns immediately
+    # while rdns is still spinning up, and rdns recreates the socket the
+    # first time it binds. So: re-apply the perms in a short background
+    # loop so we win the race regardless of when rdns finishes binding.
+    (
+        i=0
+        while [ $i -lt 60 ]; do
+            if [ -S /var/run/rdns/control.sock ]; then
+                /usr/sbin/chown root:aifw /var/run/rdns/control.sock 2>/dev/null
+                /bin/chmod 660 /var/run/rdns/control.sock 2>/dev/null
+            fi
+            /bin/sleep 0.1
+            i=$((i+1))
+        done
+    ) &
 }
 
 rdns_poststop()
