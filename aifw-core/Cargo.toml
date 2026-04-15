@@ -18,7 +18,7 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
-cron = "0.12"
+cron = "0.16"
 anyhow = "1"
 aws-config = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }

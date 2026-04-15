@@ -18,7 +18,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 
 # Packet capture & parsing
-etherparse = "0.18"
+etherparse = "0.19"
 
 # Pattern matching
 aho-corasick = "1"
@@ -29,7 +29,7 @@ memchr = "2"
 httparse = "1"
 
 # Rule formats
-serde_yaml_ng = "0.9"
+serde_yaml_ng = "0.10"
 
 # System interfaces (BPF capture on FreeBSD)
 libc = "0.2"

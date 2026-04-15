@@ -33,9 +33,9 @@ async-stream = "0.3"
 futures-util = "0.3"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 clap = { version = "4", features = ["derive", "env"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
-rcgen = "0.13"
-serde_yaml_ng = "0.9"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.14"
+serde_yaml_ng = "0.10"
 time = "0.3"
 tokio-rustls = "0.26"
 rustls = "0.23"

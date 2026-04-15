@@ -1,6 +1,6 @@
 use axum::{extract::{Path, State}, http::StatusCode, Json};
 use chrono::Utc;
-use rcgen::{CertificateParams, DnType, DnValue, IsCa, BasicConstraints, KeyPair, KeyUsagePurpose, ExtendedKeyUsagePurpose};
+use rcgen::{CertificateParams, DnType, DnValue, IsCa, BasicConstraints, Issuer, KeyPair, KeyUsagePurpose, ExtendedKeyUsagePurpose};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
@@ -348,7 +348,12 @@ pub async fn issue_cert(
         _ => return Err(StatusCode::BAD_REQUEST),
     }
 
-    let cert = params.signed_by(&cert_key, &ca_cert, &ca_key)
+    // rcgen 0.14 consolidated the (CA cert, CA key) pair into an `Issuer`.
+    // Constructed from the CA params + key we already have. `ca_cert` remains
+    // the source of truth for the embedded CA certificate.
+    let _ = &ca_cert; // kept for code clarity; not passed to signed_by anymore
+    let issuer = Issuer::new(ca_params, ca_key);
+    let cert = params.signed_by(&cert_key, &issuer)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let cert_pem = cert.pem();
