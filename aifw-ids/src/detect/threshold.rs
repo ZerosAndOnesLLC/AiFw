@@ -60,7 +60,7 @@ impl ThresholdTracker {
             }
             ThresholdType::Threshold => {
                 // Alert every `count` occurrences
-                state.count >= config.count && (state.count - config.count) % config.count == 0
+                state.count >= config.count && (state.count - config.count).is_multiple_of(config.count)
             }
             ThresholdType::Both => {
                 // Alert once after `count` hits per window

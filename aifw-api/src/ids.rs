@@ -329,11 +329,10 @@ pub async fn update_ruleset(
             Ok(count) => {
                 tracing::info!(count, ruleset = %ruleset.name, "rules downloaded and stored");
                 // Reload the ruleset to get updated rule_count
-                if let Ok(rulesets) = mgr.list_rulesets().await {
-                    if let Some(updated) = rulesets.into_iter().find(|r| r.id == uuid) {
+                if let Ok(rulesets) = mgr.list_rulesets().await
+                    && let Some(updated) = rulesets.into_iter().find(|r| r.id == uuid) {
                         ruleset = updated;
                     }
-                }
             }
             Err(e) => {
                 tracing::error!(error = %e, ruleset = %ruleset.name, "failed to download rules");

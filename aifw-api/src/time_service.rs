@@ -418,12 +418,11 @@ pub async fn time_logs(
             content = c;
             break;
         }
-        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["/bin/cat", *path]).output().await {
-            if output.status.success() {
+        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["/bin/cat", *path]).output().await
+            && output.status.success() {
                 content = String::from_utf8_lossy(&output.stdout).to_string();
                 break;
             }
-        }
     }
 
     let mut log_lines: Vec<String> = content.lines()

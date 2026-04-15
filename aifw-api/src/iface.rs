@@ -117,20 +117,18 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         if let Ok(pf_conf) = tokio::fs::read_to_string("/usr/local/etc/aifw/pf.conf.aifw").await {
             for line in pf_conf.lines() {
                 let line = line.trim();
-                if let Some(rest) = line.strip_prefix("wan_if = \"") {
-                    if let Some(iface) = rest.strip_suffix('"') {
+                if let Some(rest) = line.strip_prefix("wan_if = \"")
+                    && let Some(iface) = rest.strip_suffix('"') {
                         let now = chrono::Utc::now().to_rfc3339();
                         let _ = sqlx::query("INSERT OR IGNORE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'WAN', ?2)")
                             .bind(iface).bind(&now).execute(pool).await;
                     }
-                }
-                if let Some(rest) = line.strip_prefix("lan_if = \"") {
-                    if let Some(iface) = rest.strip_suffix('"') {
+                if let Some(rest) = line.strip_prefix("lan_if = \"")
+                    && let Some(iface) = rest.strip_suffix('"') {
                         let now = chrono::Utc::now().to_rfc3339();
                         let _ = sqlx::query("INSERT OR IGNORE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'LAN', ?2)")
                             .bind(iface).bind(&now).execute(pool).await;
                     }
-                }
             }
         }
     }
@@ -214,9 +212,8 @@ async fn parse_ifconfig() -> Vec<InterfaceDetail> {
             if trimmed.starts_with("inet ") {
                 let parts: Vec<&str> = trimmed.split_whitespace().collect();
                 if parts.len() >= 2 { iface.ipv4 = Some(parts[1].to_string()); }
-                if let Some(idx) = parts.iter().position(|&p| p == "netmask") {
-                    if let Some(nm) = parts.get(idx + 1) { iface.ipv4_netmask = Some(nm.to_string()); }
-                }
+                if let Some(idx) = parts.iter().position(|&p| p == "netmask")
+                    && let Some(nm) = parts.get(idx + 1) { iface.ipv4_netmask = Some(nm.to_string()); }
             }
             if trimmed.starts_with("inet6 ") && !trimmed.contains("scopeid") {
                 let parts: Vec<&str> = trimmed.split_whitespace().collect();
@@ -360,23 +357,19 @@ pub async fn configure_interface(
             }
         }
     }
-    if let Some(ref gw) = req.gateway {
-        if !gw.is_empty() {
-            if let Err(e) = validate_ip(gw) {
+    if let Some(ref gw) = req.gateway
+        && !gw.is_empty()
+            && let Err(e) = validate_ip(gw) {
                 return Ok(Json(MessageResponse { message: format!("Invalid gateway: {}", e) }));
             }
-        }
-    }
-    if let Some(ref ipv6) = req.ipv6_address {
-        if !ipv6.is_empty() && !ipv6.contains(':') {
+    if let Some(ref ipv6) = req.ipv6_address
+        && !ipv6.is_empty() && !ipv6.contains(':') {
             return Ok(Json(MessageResponse { message: "Invalid IPv6 address.".to_string() }));
         }
-    }
-    if let Some(mtu) = req.mtu {
-        if mtu < 68 || mtu > 9000 {
+    if let Some(mtu) = req.mtu
+        && (!(68..=9000).contains(&mtu)) {
             return Ok(Json(MessageResponse { message: "MTU must be between 68 and 9000.".to_string() }));
         }
-    }
 
     let mut msgs = Vec::new();
 
@@ -490,11 +483,10 @@ pub async fn configure_interface(
         }
     }
 
-    if let Some(ref ipv6) = req.ipv6_address {
-        if !ipv6.is_empty() {
+    if let Some(ref ipv6) = req.ipv6_address
+        && !ipv6.is_empty() {
             let _ = sudo_cmd(&["/sbin/ifconfig", &name, "inet6", ipv6]).await;
         }
-    }
 
     if let Some(ref desc) = req.description {
         let _ = sudo_cmd(&["/sbin/ifconfig", &name, "description", desc]).await;

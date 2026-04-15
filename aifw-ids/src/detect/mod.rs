@@ -196,42 +196,36 @@ impl DetectionEngine {
         sticky_buffers: &StickyBuffers,
     ) -> bool {
         // Check protocol
-        if let Some(ref proto) = rule.protocol {
-            if !self.match_protocol(proto, packet, flow) {
+        if let Some(ref proto) = rule.protocol
+            && !self.match_protocol(proto, packet, flow) {
                 return false;
             }
-        }
 
         // Check flow constraint
-        if let Some(ref flow_constraint) = rule.flow {
-            if !self.match_flow_constraint(flow_constraint, flow, direction) {
+        if let Some(ref flow_constraint) = rule.flow
+            && !self.match_flow_constraint(flow_constraint, flow, direction) {
                 return false;
             }
-        }
 
         // Check address constraints
-        if let Some(ref src) = rule.src_addr {
-            if !self.match_address(src, packet.src_ip) {
+        if let Some(ref src) = rule.src_addr
+            && !self.match_address(src, packet.src_ip) {
                 return false;
             }
-        }
-        if let Some(ref dst) = rule.dst_addr {
-            if !self.match_address(dst, packet.dst_ip) {
+        if let Some(ref dst) = rule.dst_addr
+            && !self.match_address(dst, packet.dst_ip) {
                 return false;
             }
-        }
 
         // Check port constraints
-        if let Some(ref port) = rule.src_port {
-            if !self.match_port(port, packet.src_port) {
+        if let Some(ref port) = rule.src_port
+            && !self.match_port(port, packet.src_port) {
                 return false;
             }
-        }
-        if let Some(ref port) = rule.dst_port {
-            if !self.match_port(port, packet.dst_port) {
+        if let Some(ref port) = rule.dst_port
+            && !self.match_port(port, packet.dst_port) {
                 return false;
             }
-        }
 
         // Check all content matches
         for content in &rule.contents {
@@ -276,7 +270,7 @@ impl DetectionEngine {
 
             let data_str = String::from_utf8_lossy(data);
             // Use pre-compiled regex from the ruleset if available, otherwise compile
-            let matched = self.rule_db.ruleset().as_ref().map_or(false, |rs| {
+            let matched = self.rule_db.ruleset().as_ref().is_some_and(|rs| {
                 rs.regex_patterns.iter().any(|(re, _)| {
                     re.as_str() == pcre.pattern && re.is_match(&data_str)
                 })
@@ -365,11 +359,10 @@ impl DetectionEngine {
         }
 
         // CIDR match
-        if let Some((net, prefix_str)) = constraint.split_once('/') {
-            if let (Ok(net_ip), Ok(prefix)) = (net.parse::<IpAddr>(), prefix_str.parse::<u8>()) {
+        if let Some((net, prefix_str)) = constraint.split_once('/')
+            && let (Ok(net_ip), Ok(prefix)) = (net.parse::<IpAddr>(), prefix_str.parse::<u8>()) {
                 return ip_in_cidr(ip, net_ip, prefix);
             }
-        }
 
         // Exact IP match
         if let Ok(addr) = constraint.parse::<IpAddr>() {

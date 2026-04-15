@@ -532,12 +532,11 @@ impl VpnEngine {
             "peer".to_string(), peer.public_key.clone(),
             "allowed-ips".to_string(), allowed.join(","),
         ];
-        if let Some(ref endpoint) = peer.endpoint {
-            if !endpoint.is_empty() {
+        if let Some(ref endpoint) = peer.endpoint
+            && !endpoint.is_empty() {
                 args.push("endpoint".to_string());
                 args.push(endpoint.clone());
             }
-        }
         if let Some(ka) = peer.persistent_keepalive {
             args.push("persistent-keepalive".to_string());
             args.push(ka.to_string());

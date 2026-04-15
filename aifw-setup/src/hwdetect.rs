@@ -129,21 +129,19 @@ fn detect_cpu() -> CpuInfo {
             if line.starts_with("processor") {
                 processors += 1;
             }
-            if let Some(model) = line.strip_prefix("model name") {
-                if let Some(val) = model.split(':').nth(1) {
+            if let Some(model) = line.strip_prefix("model name")
+                && let Some(val) = model.split(':').nth(1) {
                     info.model = val.trim().to_string();
                 }
-            }
             if let Some(flags) = line.strip_prefix("flags") {
                 let flags = flags.to_lowercase();
                 info.has_aesni = flags.contains("aes");
                 info.has_sha_ni = flags.contains("sha_ni");
             }
-            if let Some(core_id) = line.strip_prefix("core id") {
-                if let Some(val) = core_id.split(':').nth(1) {
+            if let Some(core_id) = line.strip_prefix("core id")
+                && let Some(val) = core_id.split(':').nth(1) {
                     core_ids.insert(val.trim().to_string());
                 }
-            }
         }
 
         info.threads = processors.max(1);
@@ -226,7 +224,7 @@ fn detect_nics() -> Vec<NicInfo> {
             }
 
             let driver = read_sys_file(&format!("/sys/class/net/{name}/device/driver"))
-                .and_then(|p| p.split('/').last().map(String::from))
+                .and_then(|p| p.split('/').next_back().map(String::from))
                 .unwrap_or_else(|| "unknown".to_string());
 
             let features = read_sys_file(&format!("/sys/class/net/{name}/features"))

@@ -219,11 +219,10 @@ impl TlsParser {
                     }
                 }
                 EXT_ALPN => {
-                    if ext_len >= 2 {
-                        if let Some(alpn) = self.parse_alpn(&data[pos..pos + ext_len]) {
+                    if ext_len >= 2
+                        && let Some(alpn) = self.parse_alpn(&data[pos..pos + ext_len]) {
                             buffers.insert("tls.alpn".into(), alpn.into_bytes());
                         }
-                    }
                 }
                 _ => {}
             }
@@ -327,11 +326,10 @@ impl TlsParser {
         while pos < 2 + list_len && pos < data.len() {
             let proto_len = data[pos] as usize;
             pos += 1;
-            if pos + proto_len <= data.len() {
-                if let Ok(s) = std::str::from_utf8(&data[pos..pos + proto_len]) {
+            if pos + proto_len <= data.len()
+                && let Ok(s) = std::str::from_utf8(&data[pos..pos + proto_len]) {
                     protocols.push(s.to_string());
                 }
-            }
             pos += proto_len;
         }
         if protocols.is_empty() {

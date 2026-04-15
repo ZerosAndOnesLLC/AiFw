@@ -180,11 +180,10 @@ pub fn aggregate_cidrs(mut entries: Vec<(IpAddr, u8)>) -> Vec<(IpAddr, u8)> {
     // Remove entries that are already covered by a broader prefix
     let mut result: Vec<(IpAddr, u8)> = Vec::new();
     for entry in &entries {
-        if let Some(last) = result.last() {
-            if is_subnet_of(entry.0, entry.1, last.0, last.1) {
+        if let Some(last) = result.last()
+            && is_subnet_of(entry.0, entry.1, last.0, last.1) {
                 continue; // already covered
             }
-        }
         result.push(*entry);
     }
 

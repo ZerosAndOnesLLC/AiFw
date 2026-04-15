@@ -175,7 +175,7 @@ impl RulesetManager {
 
         // Read and parse
         let content = tokio::fs::read_to_string(&tmp).await
-            .map_err(|e| crate::IdsError::Io(e))?;
+            .map_err(crate::IdsError::Io)?;
         let _ = tokio::fs::remove_file(&tmp).await;
 
         // Parse each line as a Suricata rule

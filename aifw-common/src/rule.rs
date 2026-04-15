@@ -5,15 +5,14 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum IpVersion {
     Inet,
     Inet6,
+    #[default]
     Both,
 }
 
-impl Default for IpVersion {
-    fn default() -> Self { IpVersion::Both }
-}
 
 impl std::fmt::Display for IpVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -133,10 +132,12 @@ pub enum RuleStatus {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum StateTracking {
     /// No state tracking
     None,
     /// Standard keep state
+    #[default]
     KeepState,
     /// Modulate state (randomize ISN for TCP)
     ModulateState,
@@ -144,11 +145,6 @@ pub enum StateTracking {
     SynproxyState,
 }
 
-impl Default for StateTracking {
-    fn default() -> Self {
-        StateTracking::KeepState
-    }
-}
 
 impl std::fmt::Display for StateTracking {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

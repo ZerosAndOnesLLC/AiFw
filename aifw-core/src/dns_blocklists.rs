@@ -528,7 +528,7 @@ pub fn parse_body(body: &[u8], format: &str) -> HashSet<String> {
             }
             "adblock" => {
                 if let Some(rest) = line.strip_prefix("||") {
-                    let end = rest.find(|c: char| c == '^' || c == '/' || c == '*').unwrap_or(rest.len());
+                    let end = rest.find(['^', '/', '*']).unwrap_or(rest.len());
                     vec![&rest[..end]]
                 } else {
                     vec![]

@@ -75,15 +75,14 @@ fn default_enabled_mask() -> u32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TlsMode {
     None,
+    #[default]
     StartTls,
     ImplicitTls,
 }
 
-impl Default for TlsMode {
-    fn default() -> Self { TlsMode::StartTls }
-}
 
 impl TlsMode {
     fn from_str(s: &str) -> Self {

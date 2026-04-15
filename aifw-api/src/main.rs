@@ -74,11 +74,10 @@ impl LoginRateLimiter {
     pub async fn is_blocked(&self, ip: &str) -> bool {
         let now = chrono::Utc::now();
         let map = self.attempts.read().await;
-        if let Some((count, since)) = map.get(ip) {
-            if (now - *since).num_seconds() <= Self::WINDOW_SECS && *count >= Self::MAX_ATTEMPTS {
+        if let Some((count, since)) = map.get(ip)
+            && (now - *since).num_seconds() <= Self::WINDOW_SECS && *count >= Self::MAX_ATTEMPTS {
                 return true;
             }
-        }
         false
     }
 
@@ -738,13 +737,12 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .with_state(state);
 
     // Serve static UI if directory is provided
-    if let Some(dir) = ui_dir {
-        if dir.exists() {
+    if let Some(dir) = ui_dir
+        && dir.exists() {
             let index = dir.join("index.html");
             app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
             info!("Serving web UI from {}", dir.display());
         }
-    }
 
     app
 }
@@ -833,8 +831,8 @@ async fn create_state_from_db(
             tracing::info!("IDS engine initialized");
             let arc = Arc::new(engine);
             // Auto-start if mode != disabled, and compile rules
-            if let Ok(cfg) = arc.load_config().await {
-                if cfg.mode != aifw_common::ids::IdsMode::Disabled {
+            if let Ok(cfg) = arc.load_config().await
+                && cfg.mode != aifw_common::ids::IdsMode::Disabled {
                     let mgr = aifw_ids::rules::manager::RulesetManager::new(arc.pool().clone());
                     match mgr.compile_rules(arc.rule_db()).await {
                         Ok(count) => tracing::info!(count, "IDS rules compiled on startup"),
@@ -844,7 +842,6 @@ async fn create_state_from_db(
                         tracing::warn!("IDS engine failed to start: {e}");
                     }
                 }
-            }
             Some(arc)
         }
         Err(e) => {
@@ -1178,9 +1175,9 @@ async fn main() -> anyhow::Result<()> {
     // Restore DNS servers from DB to /etc/resolv.conf (survives DHCP renewal)
     if let Ok(Some((dns_json,))) = sqlx::query_as::<_, (String,)>(
         "SELECT value FROM auth_config WHERE key = 'dns_servers'"
-    ).fetch_optional(&state.pool).await {
-        if let Ok(servers) = serde_json::from_str::<Vec<String>>(&dns_json) {
-            if !servers.is_empty() {
+    ).fetch_optional(&state.pool).await
+        && let Ok(servers) = serde_json::from_str::<Vec<String>>(&dns_json)
+            && !servers.is_empty() {
                 let content: String = servers.iter().map(|s| format!("nameserver {s}")).collect::<Vec<_>>().join("\n");
                 if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
                     .args(["tee", "/etc/resolv.conf"])
@@ -1196,8 +1193,6 @@ async fn main() -> anyhow::Result<()> {
                     info!("DNS servers restored from DB: {}", servers.join(", "));
                 }
             }
-        }
-    }
 
     // Ensure rdr-anchor exists in pf.conf (required for DNAT/port forwarding)
     ensure_rdr_anchor().await;

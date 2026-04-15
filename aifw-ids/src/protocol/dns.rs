@@ -164,7 +164,7 @@ impl DnsParser {
                 if pos + 1 >= data.len() {
                     return None;
                 }
-                let offset = ((len & 0x3f) << 8 | data[pos + 1] as usize) as usize;
+                let offset = (len & 0x3f) << 8 | data[pos + 1] as usize;
                 if end_pos.is_none() {
                     end_pos = Some(pos + 2);
                 }

@@ -171,15 +171,14 @@ impl LeakEngine {
                 prefix = l.prefix,
                 fib = dst.fib_number,
             ));
-            if l.direction == "bidirectional" {
-                if let Some(src) = inst.get(&l.src_instance_id) {
+            if l.direction == "bidirectional"
+                && let Some(src) = inst.get(&l.src_instance_id) {
                     out.push(format!(
                         "pass quick{proto} from {prefix} to any{ports} rtable {fib} keep state (if-bound) label \"{label}:rev\"",
                         prefix = l.prefix,
                         fib = src.fib_number,
                     ));
                 }
-            }
         }
         out
     }

@@ -63,7 +63,7 @@ pub async fn run_probe(spec: &ProbeSpec) -> ProbeOutcome {
 }
 
 async fn icmp_probe(spec: &ProbeSpec) -> ProbeOutcome {
-    let timeout_secs = ((spec.timeout_ms + 999) / 1000).max(1);
+    let timeout_secs = spec.timeout_ms.div_ceil(1000).max(1);
     let start = Instant::now();
     let result = Command::new("/sbin/ping")
         .args([
@@ -138,7 +138,7 @@ async fn http_probe(spec: &ProbeSpec) -> ProbeOutcome {
     } else {
         format!("http://{}", spec.target)
     };
-    let timeout_secs = ((spec.timeout_ms + 999) / 1000).max(1);
+    let timeout_secs = spec.timeout_ms.div_ceil(1000).max(1);
     let start = Instant::now();
     let result = Command::new("/usr/local/bin/curl")
         .args([
@@ -187,7 +187,7 @@ async fn http_probe(spec: &ProbeSpec) -> ProbeOutcome {
 }
 
 async fn dns_probe(spec: &ProbeSpec) -> ProbeOutcome {
-    let timeout_secs = ((spec.timeout_ms + 999) / 1000).max(1);
+    let timeout_secs = spec.timeout_ms.div_ceil(1000).max(1);
     let start = Instant::now();
     let mut args = vec!["-W".to_string(), timeout_secs.to_string()];
     if let Some(p) = spec.port {

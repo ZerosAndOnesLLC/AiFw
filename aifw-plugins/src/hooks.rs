@@ -140,8 +140,10 @@ pub enum HookEventData {
 /// Action returned by a plugin to influence firewall behavior
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum HookAction {
     /// Continue normal processing
+    #[default]
     Continue,
     /// Block/deny the packet or request
     Block,
@@ -159,8 +161,3 @@ pub enum HookAction {
     Multi(Vec<HookAction>),
 }
 
-impl Default for HookAction {
-    fn default() -> Self {
-        HookAction::Continue
-    }
-}

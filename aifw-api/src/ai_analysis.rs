@@ -106,10 +106,8 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
                     if sig_id > 0 {
                         buf.classify_by_signature(sig_id, &classification, &notes_str).await;
                         analyzed_sigs.insert(sig_id);
-                    } else {
-                        if let Ok(uuid) = Uuid::parse_str(alert_id) {
-                            buf.classify(uuid, &classification, Some(&notes_str)).await;
-                        }
+                    } else if let Ok(uuid) = Uuid::parse_str(alert_id) {
+                        buf.classify(uuid, &classification, Some(&notes_str)).await;
                     }
                 }
 
@@ -148,7 +146,7 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
                 .bind(&provider)
                 .bind(&model)
                 .bind(&prompt)
-                .bind(&format!("ERROR: {e}"))
+                .bind(format!("ERROR: {e}"))
                 .bind(duration_ms)
                 .execute(pool).await;
             }

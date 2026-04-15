@@ -711,7 +711,7 @@ pub async fn auth_middleware(
     let query_token: Option<String> = request.uri().query()
         .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
         .and_then(|p| p.strip_prefix("token="))
-        .map(|t| percent_decode(t));
+        .map(percent_decode);
 
     // Resolve (user_id, perm_from_token, role_from_token) from the credential
     let (user_id, jwt_perm, jwt_role) = if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
@@ -790,13 +790,12 @@ fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""), 16) {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""), 16) {
                 out.push(b);
                 i += 3;
                 continue;
             }
-        }
         out.push(bytes[i]);
         i += 1;
     }

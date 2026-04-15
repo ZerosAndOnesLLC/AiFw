@@ -330,16 +330,14 @@ pub async fn logout(
         .await
         .map_err(|_| bad_request())?;
     // Also revoke the current access token if present
-    if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        if let Some(token) = auth_header.strip_prefix("Bearer ") {
-            if let Ok(data) = auth::verify_access_token(token, &state.auth_settings) {
+    if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok())
+        && let Some(token) = auth_header.strip_prefix("Bearer ")
+            && let Ok(data) = auth::verify_access_token(token, &state.auth_settings) {
                 let exp = chrono::DateTime::from_timestamp(data.claims.exp, 0)
                     .map(|d| d.to_rfc3339())
                     .unwrap_or_default();
                 let _ = auth::revoke_access_token(&state.pool, &data.claims.jti, &exp).await;
             }
-        }
-    }
     Ok(Json(MessageResponse { message: "Logged out".to_string() }))
 }
 
@@ -1364,8 +1362,7 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
     if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
         .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
         .output().await
-    {
-        if output.status.success() {
+        && output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().rev() {
                 let action = if line.contains(": block ") {
@@ -1453,7 +1450,6 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
                 }
             }
         }
-    }
 
     Ok(Json(ApiResponse { data: entries }))
 }
@@ -1501,11 +1497,7 @@ pub async fn get_dns() -> Result<Json<DnsConfigResponse>, StatusCode> {
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            if let Some(addr) = line.strip_prefix("nameserver") {
-                Some(addr.trim().to_string())
-            } else {
-                None
-            }
+            line.strip_prefix("nameserver").map(|addr| addr.trim().to_string())
         })
         .collect();
     Ok(Json(DnsConfigResponse { servers }))
@@ -1870,11 +1862,10 @@ async fn get_wan_ip(state: &AppState) -> Option<String> {
     // Parse "inet X.X.X.X" from ifconfig output
     for line in text.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("inet ") {
-            if let Some(ip) = rest.split_whitespace().next() {
+        if let Some(rest) = trimmed.strip_prefix("inet ")
+            && let Some(ip) = rest.split_whitespace().next() {
                 return Some(ip.to_string());
             }
-        }
     }
     None
 }
@@ -2441,11 +2432,11 @@ pub async fn update_dashboard_history_settings(
         }
         _ => {
             // User specifies duration in seconds
-            let secs = req.get("history_seconds")
+            
+            req.get("history_seconds")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize)
-                .ok_or(StatusCode::BAD_REQUEST)?;
-            secs
+                .ok_or(StatusCode::BAD_REQUEST)?
         }
     };
 

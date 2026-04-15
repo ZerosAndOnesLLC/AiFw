@@ -319,14 +319,13 @@ pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
                     break;
                 }
                 for part in input.split_whitespace() {
-                    if let Ok(num) = part.parse::<usize>() {
-                        if num >= 1 && num <= items.len() {
+                    if let Ok(num) = part.parse::<usize>()
+                        && num >= 1 && num <= items.len() {
                             items[num - 1].enabled = !items[num - 1].enabled;
                             let item = &items[num - 1];
                             let state = if item.enabled { "ENABLED" } else { "DISABLED" };
                             console::info(&format!("  {} — {}", item.key, state));
                         }
-                    }
                 }
             }
             let final_count = items.iter().filter(|i| i.enabled).count();

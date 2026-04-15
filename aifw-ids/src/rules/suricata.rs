@@ -433,8 +433,8 @@ fn unquote(s: &str) -> String {
 fn parse_pcre_pattern(s: &str) -> Option<String> {
     let s = s.trim().trim_start_matches('!');
     // Format: "/pattern/flags" — extract the pattern
-    if s.starts_with('/') {
-        if let Some(last_slash) = s[1..].rfind('/') {
+    if s.starts_with('/')
+        && let Some(last_slash) = s[1..].rfind('/') {
             let pattern = &s[1..last_slash + 1];
             let flags = &s[last_slash + 2..];
             // Build regex string with flags
@@ -451,7 +451,6 @@ fn parse_pcre_pattern(s: &str) -> Option<String> {
             regex.push_str(pattern);
             return Some(regex);
         }
-    }
     None
 }
 

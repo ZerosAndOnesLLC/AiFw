@@ -410,12 +410,11 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     }
 
     // DHCP lease registration (query rDHCP API for active leases)
-    if c.register_dhcp {
-        if let Ok(output) = tokio::process::Command::new("curl")
+    if c.register_dhcp
+        && let Ok(output) = tokio::process::Command::new("curl")
             .args(["-sf", "--max-time", "3", "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000"])
             .output().await
-        {
-            if output.status.success() {
+            && output.status.success() {
                 let body = String::from_utf8_lossy(&output.stdout);
                 if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
                     for lease in &leases {
@@ -428,8 +427,6 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
                     }
                 }
             }
-        }
-    }
 
     // Domain overrides (forward zones)
     let domains = sqlx::query_as::<_, (String, String)>(
@@ -450,8 +447,8 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
             .filter(|s| !s.is_empty())
             .cloned()
             .collect();
-        if c.use_system_nameservers {
-            if let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf") {
+        if c.use_system_nameservers
+            && let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf") {
                 for line in resolv.lines() {
                     let line = line.trim();
                     if let Some(ns) = line.strip_prefix("nameserver") {
@@ -462,7 +459,6 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
                     }
                 }
             }
-        }
         if !addrs.is_empty() {
             let mut zone = String::from("forward-zone:\n    name: \".\"\n    forward-first: yes\n");
             for addr in &addrs {
@@ -623,8 +619,7 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
         if let Ok(output) = tokio::process::Command::new("curl")
             .args(["-sf", "--max-time", "3", "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000"])
             .output().await
-        {
-            if output.status.success() {
+            && output.status.success() {
                 let body = String::from_utf8_lossy(&output.stdout);
                 if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
                     let mut zone = format!(
@@ -648,7 +643,6 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
                     zones.push((format!("dhcp.{}.zone", dhcp_domain), zone));
                 }
             }
-        }
     }
 
     // Reverse (PTR) zone — group by /24 subnet
@@ -746,8 +740,8 @@ async fn generate_rdns_rpz(pool: &SqlitePool) -> Option<String> {
         let output = tokio::process::Command::new("curl")
             .args(["-sf", "--max-time", "30", url.trim()])
             .output().await;
-        if let Ok(o) = output {
-            if o.status.success() {
+        if let Ok(o) = output
+            && o.status.success() {
                 let body = String::from_utf8_lossy(&o.stdout);
                 for line in body.lines() {
                     let line = line.trim();
@@ -769,7 +763,6 @@ async fn generate_rdns_rpz(pool: &SqlitePool) -> Option<String> {
                     }
                 }
             }
-        }
     }
 
     Some(zone)

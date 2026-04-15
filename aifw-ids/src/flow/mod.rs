@@ -18,7 +18,9 @@ pub enum FlowDirection {
 
 /// TCP connection state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum FlowState {
+    #[default]
     New,
     SynSent,
     SynAckSeen,
@@ -27,11 +29,6 @@ pub enum FlowState {
     Closed,
 }
 
-impl Default for FlowState {
-    fn default() -> Self {
-        Self::New
-    }
-}
 
 /// Canonical flow key — ordered so both directions map to the same flow.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -146,13 +146,11 @@ fn parse_addr_port(s: &str) -> Option<(IpAddr, u16)> {
         return Some((addr, port));
     }
     // IPv4: last dot-separated component is port
-    if let Some(last_dot) = s.rfind('.') {
-        if let Ok(port) = s[last_dot + 1..].parse::<u16>() {
-            if let Ok(addr) = s[..last_dot].parse::<IpAddr>() {
+    if let Some(last_dot) = s.rfind('.')
+        && let Ok(port) = s[last_dot + 1..].parse::<u16>()
+            && let Ok(addr) = s[..last_dot].parse::<IpAddr>() {
                 return Some((addr, port));
             }
-        }
-    }
     // No port
     let addr: IpAddr = s.parse().ok()?;
     Some((addr, 0))

@@ -834,11 +834,10 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
         if r.priority != 0 {
             rv["priority"] = json!(r.priority);
         }
-        if let Some(tls) = &r.tls_json {
-            if let Ok(tls_val) = serde_json::from_str::<serde_json::Value>(tls) {
+        if let Some(tls) = &r.tls_json
+            && let Ok(tls_val) = serde_json::from_str::<serde_json::Value>(tls) {
                 rv["tls"] = tls_val;
             }
-        }
         routers.insert(r.name.clone(), rv);
     }
     if !routers.is_empty() {
@@ -890,11 +889,10 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
         if r.priority != 0 {
             rv["priority"] = json!(r.priority);
         }
-        if let Some(tls) = &r.tls_json {
-            if let Ok(tls_val) = serde_json::from_str::<serde_json::Value>(tls) {
+        if let Some(tls) = &r.tls_json
+            && let Ok(tls_val) = serde_json::from_str::<serde_json::Value>(tls) {
                 rv["tls"] = tls_val;
             }
-        }
         tcp_router_map.insert(r.name.clone(), rv);
     }
     if !tcp_router_map.is_empty() {

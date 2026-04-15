@@ -86,7 +86,7 @@ pub fn prompt_password(label: &str) -> String {
         // tcgetattr failed (not a tty) — fall through to echoed read.
         let mut input = String::new();
         stdin.lock().read_line(&mut input).unwrap();
-        return input.trim().to_string();
+        input.trim().to_string()
     }
 
     #[cfg(not(unix))]
@@ -136,11 +136,10 @@ pub fn select(label: &str, options: &[&str], default: usize) -> usize {
 
     loop {
         let input = prompt("Choice", &(default + 1).to_string());
-        if let Ok(n) = input.parse::<usize>() {
-            if n >= 1 && n <= options.len() {
+        if let Ok(n) = input.parse::<usize>()
+            && n >= 1 && n <= options.len() {
                 return n - 1;
             }
-        }
         warn(&format!("Please enter 1-{}", options.len()));
     }
 }

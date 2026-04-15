@@ -89,18 +89,14 @@ impl AlertBuffer {
     ) -> Vec<IdsAlert> {
         let buf = self.alerts.read().await;
         let iter = buf.iter().rev().filter(|a| {
-            if let Some(sev) = severity {
-                if a.severity.0 != sev { return false; }
-            }
-            if let Some(ref ip) = src_ip {
-                if a.src_ip.to_string() != *ip { return false; }
-            }
-            if let Some(sid) = signature_id {
-                if a.signature_id != Some(sid) { return false; }
-            }
-            if let Some(ack) = acknowledged {
-                if a.acknowledged != ack { return false; }
-            }
+            if let Some(sev) = severity
+                && a.severity.0 != sev { return false; }
+            if let Some(ip) = src_ip
+                && a.src_ip.to_string() != ip { return false; }
+            if let Some(sid) = signature_id
+                && a.signature_id != Some(sid) { return false; }
+            if let Some(ack) = acknowledged
+                && a.acknowledged != ack { return false; }
             if let Some(cls) = classification {
                 if cls == "reviewed" {
                     if a.classification == "unreviewed" { return false; }

@@ -124,8 +124,8 @@ pub async fn rules_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<38} {:<6} {:<6} {:<5} {:<5} {:<20} {:<20} {}",
-        "ID", "PRI", "ACTION", "DIR", "PROTO", "SOURCE", "DESTINATION", "LABEL"
+        "{:<38} {:<6} {:<6} {:<5} {:<5} {:<20} {:<20} LABEL",
+        "ID", "PRI", "ACTION", "DIR", "PROTO", "SOURCE", "DESTINATION"
     );
     println!("{}", "-".repeat(110));
 
@@ -285,8 +285,8 @@ pub async fn nat_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<38} {:<12} {:<8} {:<5} {:<20} {:<20} {:<20} {}",
-        "ID", "TYPE", "IFACE", "PROTO", "SOURCE", "DESTINATION", "REDIRECT", "LABEL"
+        "{:<38} {:<12} {:<8} {:<5} {:<20} {:<20} {:<20} LABEL",
+        "ID", "TYPE", "IFACE", "PROTO", "SOURCE", "DESTINATION", "REDIRECT"
     );
     println!("{}", "-".repeat(130));
 
@@ -391,8 +391,8 @@ pub async fn queue_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<38} {:<15} {:<8} {:<8} {:<12} {:<12} {}",
-        "ID", "NAME", "IFACE", "TYPE", "BANDWIDTH", "CLASS", "DEFAULT"
+        "{:<38} {:<15} {:<8} {:<8} {:<12} {:<12} DEFAULT",
+        "ID", "NAME", "IFACE", "TYPE", "BANDWIDTH", "CLASS"
     );
     println!("{}", "-".repeat(100));
 
@@ -468,8 +468,8 @@ pub async fn ratelimit_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     }
 
     println!(
-        "{:<38} {:<15} {:<6} {:<10} {:<8} {:<20} {}",
-        "ID", "NAME", "PROTO", "MAX_CONN", "WINDOW", "TABLE", "FLUSH"
+        "{:<38} {:<15} {:<6} {:<10} {:<8} {:<20} FLUSH",
+        "ID", "NAME", "PROTO", "MAX_CONN", "WINDOW", "TABLE"
     );
     println!("{}", "-".repeat(105));
 
@@ -722,8 +722,8 @@ pub async fn geoip_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let (countries, entries) = engine.db_stats().await;
 
     println!(
-        "{:<38} {:<8} {:<8} {:<20} {}",
-        "ID", "COUNTRY", "ACTION", "TABLE", "LABEL"
+        "{:<38} {:<8} {:<8} {:<20} LABEL",
+        "ID", "COUNTRY", "ACTION", "TABLE"
     );
     println!("{}", "-".repeat(85));
 
@@ -825,7 +825,7 @@ pub async fn config_history(db_path: &Path, limit: i64) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{:<8} {:<10} {:<12} {:<22} {:<10} {}", "VERSION", "STATUS", "RESOURCES", "CREATED", "BY", "COMMENT");
+    println!("{:<8} {:<10} {:<12} {:<22} {:<10} COMMENT", "VERSION", "STATUS", "RESOURCES", "CREATED", "BY");
     println!("{}", "-".repeat(90));
 
     for v in &versions {
@@ -959,7 +959,7 @@ pub async fn routes_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{:<36} {:<20} {:<16} {:<8} {:<8} {}", "ID", "Destination", "Gateway", "Iface", "Metric", "Status");
+    println!("{:<36} {:<20} {:<16} {:<8} {:<8} Status", "ID", "Destination", "Gateway", "Iface", "Metric");
     println!("{}", "-".repeat(100));
     for (id, dest, gw, iface, metric, enabled, _desc) in &rows {
         let status = if *enabled { "active" } else { "disabled" };
@@ -1030,7 +1030,7 @@ pub async fn users_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{:<36} {:<16} {:<10} {:<6} {}", "ID", "Username", "Role", "MFA", "Status");
+    println!("{:<36} {:<16} {:<10} {:<6} Status", "ID", "Username", "Role", "MFA");
     println!("{}", "-".repeat(80));
     for (id, username, role, mfa, enabled) in &rows {
         let status = if *enabled { "active" } else { "disabled" };
@@ -1163,7 +1163,7 @@ pub async fn dhcp_subnets(db_path: &Path, json: bool) -> anyhow::Result<()> {
     }
 
     if rows.is_empty() { println!("No DHCP subnets."); return Ok(()); }
-    println!("{:<36} {:<20} {:<16} {:<16} {:<16} {}", "ID", "Network", "Pool Start", "Pool End", "Gateway", "Status");
+    println!("{:<36} {:<20} {:<16} {:<16} {:<16} Status", "ID", "Network", "Pool Start", "Pool End", "Gateway");
     println!("{}", "-".repeat(110));
     for (id, net, ps, pe, gw, en) in &rows {
         println!("{:<36} {:<20} {:<16} {:<16} {:<16} {}", id, net, ps, pe, gw, if *en { "active" } else { "disabled" });
@@ -1207,7 +1207,7 @@ pub async fn dhcp_reservations(db_path: &Path, json: bool) -> anyhow::Result<()>
     }
 
     if rows.is_empty() { println!("No DHCP reservations."); return Ok(()); }
-    println!("{:<36} {:<20} {:<16} {}", "ID", "MAC", "IP", "Hostname");
+    println!("{:<36} {:<20} {:<16} Hostname", "ID", "MAC", "IP");
     println!("{}", "-".repeat(80));
     for (id, mac, ip, hn) in &rows {
         println!("{:<36} {:<20} {:<16} {}", id, mac, ip, hn.as_deref().unwrap_or("-"));
@@ -1258,7 +1258,7 @@ pub async fn dhcp_leases(json: bool) -> anyhow::Result<()> {
     let leases: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap_or_default();
     if leases.is_empty() { println!("No active DHCP leases."); return Ok(()); }
 
-    println!("{:<16} {:<20} {:<20} {:<20} {}", "IP", "MAC", "Hostname", "Subnet", "State");
+    println!("{:<16} {:<20} {:<20} {:<20} State", "IP", "MAC", "Hostname", "Subnet");
     println!("{}", "-".repeat(90));
     for lease in &leases {
         let ip = lease["ip"].as_str().unwrap_or("-");
@@ -1563,7 +1563,7 @@ pub async fn rp_routers(db_path: &Path, json: bool) -> anyhow::Result<()> {
         }).collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        println!("{:<20} {:<40} {:<20} {:<5} {}", "NAME", "RULE", "SERVICE", "PRI", "ENABLED");
+        println!("{:<20} {:<40} {:<20} {:<5} ENABLED", "NAME", "RULE", "SERVICE", "PRI");
         println!("{}", "-".repeat(95));
         for (n, r, s, _, p, e) in &rows {
             let rule_display = if r.len() > 38 { format!("{}...", &r[..35]) } else { r.clone() };
@@ -1586,7 +1586,7 @@ pub async fn rp_services(db_path: &Path, json: bool) -> anyhow::Result<()> {
         }).collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        println!("{:<30} {:<20} {}", "NAME", "TYPE", "ENABLED");
+        println!("{:<30} {:<20} ENABLED", "NAME", "TYPE");
         println!("{}", "-".repeat(55));
         for (n, t, e) in &rows {
             println!("{:<30} {:<20} {}", n, t, if *e == 1 { "yes" } else { "no" });
@@ -1608,7 +1608,7 @@ pub async fn rp_middlewares(db_path: &Path, json: bool) -> anyhow::Result<()> {
         }).collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        println!("{:<30} {:<25} {}", "NAME", "TYPE", "ENABLED");
+        println!("{:<30} {:<25} ENABLED", "NAME", "TYPE");
         println!("{}", "-".repeat(60));
         for (n, t, e) in &rows {
             println!("{:<30} {:<25} {}", n, t, if *e == 1 { "yes" } else { "no" });
@@ -1630,7 +1630,7 @@ pub async fn rp_entrypoints(db_path: &Path, json: bool) -> anyhow::Result<()> {
         }).collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        println!("{:<20} {:<20} {}", "NAME", "ADDRESS", "ENABLED");
+        println!("{:<20} {:<20} ENABLED", "NAME", "ADDRESS");
         println!("{}", "-".repeat(45));
         for (n, a, e) in &rows {
             println!("{:<20} {:<20} {}", n, a, if *e == 1 { "yes" } else { "no" });
@@ -1682,9 +1682,8 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
             if !eps.is_empty() { rv["entryPoints"] = json!(eps); }
             if !mws.is_empty() { rv["middlewares"] = json!(mws); }
             if *pri != 0 { rv["priority"] = json!(pri); }
-            if let Some(t) = tls {
-                if let Ok(tv) = serde_json::from_str::<serde_json::Value>(t) { rv["tls"] = tv; }
-            }
+            if let Some(t) = tls
+                && let Ok(tv) = serde_json::from_str::<serde_json::Value>(t) { rv["tls"] = tv; }
             map.insert(name.clone(), rv);
         }
         http.insert("routers".to_string(), json!(map));
@@ -1732,9 +1731,8 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
             let mut rv = json!({"rule": rule, "service": svc});
             if !eps.is_empty() { rv["entryPoints"] = json!(eps); }
             if *pri != 0 { rv["priority"] = json!(pri); }
-            if let Some(t) = tls {
-                if let Ok(tv) = serde_json::from_str::<serde_json::Value>(t) { rv["tls"] = tv; }
-            }
+            if let Some(t) = tls
+                && let Ok(tv) = serde_json::from_str::<serde_json::Value>(t) { rv["tls"] = tv; }
             map.insert(name.clone(), rv);
         }
         tcp.insert("routers".to_string(), json!(map));
@@ -1873,7 +1871,7 @@ pub async fn multiwan_instances(db_path: &Path) -> anyhow::Result<()> {
     let engine = InstanceEngine::new(pool, pf);
     engine.migrate().await?;
     let list = engine.list().await?;
-    println!("{:<36} {:<16} {:<6} {:<8} {}", "ID", "NAME", "FIB", "MGMT", "STATUS");
+    println!("{:<36} {:<16} {:<6} {:<8} STATUS", "ID", "NAME", "FIB", "MGMT");
     for i in list {
         println!(
             "{:<36} {:<16} {:<6} {:<8} {}",
@@ -1894,8 +1892,8 @@ pub async fn multiwan_gateways(db_path: &Path) -> anyhow::Result<()> {
     engine.migrate().await?;
     let list = engine.list().await?;
     println!(
-        "{:<36} {:<16} {:<8} {:<16} {:<12} {:<8} {}",
-        "ID", "NAME", "STATE", "NEXT-HOP", "IFACE", "RTT", "MOS"
+        "{:<36} {:<16} {:<8} {:<16} {:<12} {:<8} MOS",
+        "ID", "NAME", "STATE", "NEXT-HOP", "IFACE", "RTT"
     );
     for g in list {
         println!(
@@ -1922,7 +1920,7 @@ pub async fn multiwan_groups(db_path: &Path) -> anyhow::Result<()> {
     let engine = GroupEngine::new(pool);
     engine.migrate().await?;
     let list = engine.list().await?;
-    println!("{:<36} {:<16} {:<14} {:<8} {}", "ID", "NAME", "POLICY", "PREEMPT", "STICKY");
+    println!("{:<36} {:<16} {:<14} {:<8} STICKY", "ID", "NAME", "POLICY", "PREEMPT");
     for g in list {
         let members = engine.list_members(g.id).await.unwrap_or_default();
         println!(
@@ -1946,8 +1944,8 @@ pub async fn multiwan_policies(db_path: &Path) -> anyhow::Result<()> {
     engine.migrate().await?;
     let list = engine.list().await?;
     println!(
-        "{:<36} {:<5} {:<20} {:<10} {:<12} {}",
-        "ID", "PRI", "NAME", "STATUS", "ACTION", "MATCH"
+        "{:<36} {:<5} {:<20} {:<10} {:<12} MATCH",
+        "ID", "PRI", "NAME", "STATUS", "ACTION"
     );
     for p in list {
         println!(
@@ -1973,8 +1971,8 @@ pub async fn multiwan_leaks(db_path: &Path) -> anyhow::Result<()> {
     engine.migrate().await?;
     let list = engine.list().await?;
     println!(
-        "{:<36} {:<20} {:<20} {:<8} {}",
-        "ID", "NAME", "PREFIX", "ENABLED", "DIRECTION"
+        "{:<36} {:<20} {:<20} {:<8} DIRECTION",
+        "ID", "NAME", "PREFIX", "ENABLED"
     );
     for l in list {
         println!(
@@ -1993,8 +1991,8 @@ pub async fn multiwan_flows() -> anyhow::Result<()> {
     let pf = open_pf().await;
     let states = pf.get_states().await?;
     println!(
-        "{:<8} {:<8} {:<28} {:<28} {:<6} {}",
-        "PROTO", "IFACE", "SRC", "DST", "FIB", "BYTES"
+        "{:<8} {:<8} {:<28} {:<28} {:<6} BYTES",
+        "PROTO", "IFACE", "SRC", "DST", "FIB"
     );
     for s in states.into_iter().take(100) {
         println!(

@@ -167,8 +167,7 @@ impl AliasEngine {
                     if let Ok(output) = tokio::process::Command::new("curl")
                         .args(["-sf", "--max-time", "30", url.trim()])
                         .output().await
-                    {
-                        if output.status.success() {
+                        && output.status.success() {
                             let body = String::from_utf8_lossy(&output.stdout);
                             for line in body.lines() {
                                 let line = line.trim();
@@ -179,7 +178,6 @@ impl AliasEngine {
                                 }
                             }
                         }
-                    }
                 }
             }
             AliasType::Port => {

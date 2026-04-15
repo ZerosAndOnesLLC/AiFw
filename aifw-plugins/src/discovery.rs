@@ -51,15 +51,14 @@ pub fn discover_plugins() -> Vec<DiscoveredPlugin> {
                 continue;
             }
 
-            if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                if let Ok(manifest) = toml::from_str::<PluginManifest>(&content) {
+            if let Ok(content) = std::fs::read_to_string(&manifest_path)
+                && let Ok(manifest) = toml::from_str::<PluginManifest>(&content) {
                     plugins.push(DiscoveredPlugin {
                         manifest,
                         path: path.clone(),
                         installed: true,
                     });
                 }
-            }
         }
     }
 

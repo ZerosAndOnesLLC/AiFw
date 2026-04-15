@@ -44,8 +44,8 @@ impl EveOutput {
     }
 
     fn check_rotation(&self) -> Result<()> {
-        if let Ok(metadata) = std::fs::metadata(&self.path) {
-            if metadata.len() >= self.max_size {
+        if let Ok(metadata) = std::fs::metadata(&self.path)
+            && metadata.len() >= self.max_size {
                 // Rotate: rename current file to .1, delete old .1 if exists
                 let rotated = self.path.with_extension("json.1");
                 let _ = std::fs::remove_file(&rotated);
@@ -55,7 +55,6 @@ impl EveOutput {
                 let mut guard = self.file.lock().unwrap();
                 *guard = None;
             }
-        }
         Ok(())
     }
 }

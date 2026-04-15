@@ -50,9 +50,9 @@ async fn main() -> anyhow::Result<()> {
         terminal.draw(|f| ui::draw(f, &app))?;
 
         // Poll for events with timeout
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => app.running = false,
                         KeyCode::Tab | KeyCode::Right => app.tab = app.tab.next(),
@@ -75,8 +75,6 @@ async fn main() -> anyhow::Result<()> {
                         _ => {}
                     }
                 }
-            }
-        }
 
         // Auto-refresh
         if last_refresh.elapsed() >= refresh_dur {

@@ -61,18 +61,16 @@ impl Plugin for IpReputationPlugin {
         }
 
         // Load any pre-configured blocked IPs from config
-        if let Some(ips) = config.settings.get("blocklist") {
-            if let Some(arr) = ips.as_array() {
+        if let Some(ips) = config.settings.get("blocklist")
+            && let Some(arr) = ips.as_array() {
                 let mut blocklist = self.blocklist.write().await;
                 for v in arr {
-                    if let Some(s) = v.as_str() {
-                        if let Ok(ip) = s.parse::<IpAddr>() {
+                    if let Some(s) = v.as_str()
+                        && let Ok(ip) = s.parse::<IpAddr>() {
                             blocklist.insert(ip);
                         }
-                    }
                 }
             }
-        }
 
         let bl_size = self.blocklist.read().await.len();
         tracing::info!(

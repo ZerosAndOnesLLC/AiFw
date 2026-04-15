@@ -106,11 +106,10 @@ pub fn parse_yara_rules(text: &str, source: RuleSource) -> Vec<CompiledRule> {
             let body: String = chars[body_start..pos].iter().collect();
             pos += 1; // skip '}'
 
-            if !is_private {
-                if let Ok(rule) = parse_yara_body(&rule_name, &body, source) {
+            if !is_private
+                && let Ok(rule) = parse_yara_body(&rule_name, &body, source) {
                     rules.push(rule);
                 }
-            }
         }
     }
 

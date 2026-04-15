@@ -163,30 +163,27 @@ impl MetricSeries {
 
         // Accumulate for minute consolidation
         self.minute_acc.push(point);
-        if self.minute_acc.len() >= Tier::Minute.consolidation_ratio() {
-            if let Some(agg) = aggregate(&self.minute_acc, self.aggregation) {
+        if self.minute_acc.len() >= Tier::Minute.consolidation_ratio()
+            && let Some(agg) = aggregate(&self.minute_acc, self.aggregation) {
                 self.minute.push(agg.clone());
                 self.minute_acc.clear();
 
                 // Accumulate for hour consolidation
                 self.hour_acc.push(agg);
-                if self.hour_acc.len() >= Tier::Hour.consolidation_ratio() {
-                    if let Some(agg) = aggregate(&self.hour_acc, self.aggregation) {
+                if self.hour_acc.len() >= Tier::Hour.consolidation_ratio()
+                    && let Some(agg) = aggregate(&self.hour_acc, self.aggregation) {
                         self.hour.push(agg.clone());
                         self.hour_acc.clear();
 
                         // Accumulate for day consolidation
                         self.day_acc.push(agg);
-                        if self.day_acc.len() >= Tier::Day.consolidation_ratio() {
-                            if let Some(agg) = aggregate(&self.day_acc, self.aggregation) {
+                        if self.day_acc.len() >= Tier::Day.consolidation_ratio()
+                            && let Some(agg) = aggregate(&self.day_acc, self.aggregation) {
                                 self.day.push(agg);
                                 self.day_acc.clear();
                             }
-                        }
                     }
-                }
             }
-        }
     }
 
     /// Get data points for a given tier

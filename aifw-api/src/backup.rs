@@ -603,12 +603,11 @@ pub async fn commit_confirm_start(
             _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => {
                 // Timer expired — rollback!
                 tracing::warn!("Commit confirm expired after {timeout_secs}s — rolling back");
-                if let Some(inner) = store.write().await.take() {
-                    if let Ok(config) = serde_json::from_str::<FirewallConfig>(&inner.rollback_config) {
+                if let Some(inner) = store.write().await.take()
+                    && let Ok(config) = serde_json::from_str::<FirewallConfig>(&inner.rollback_config) {
                         let _ = apply_firewall_config(&rollback_state, &config).await;
                         tracing::info!("Config rolled back successfully");
                     }
-                }
             }
             _ = cancel_rx => {
                 // Confirmed — do nothing, config stays

@@ -76,11 +76,10 @@ impl PluginManager {
             .remove(name)
             .ok_or_else(|| format!("plugin '{name}' not found"))?;
 
-        if loaded.state == PluginState::Running {
-            if let Err(e) = loaded.plugin.shutdown().await {
+        if loaded.state == PluginState::Running
+            && let Err(e) = loaded.plugin.shutdown().await {
                 warn!(plugin = %name, error = %e, "plugin shutdown error");
             }
-        }
 
         info!(plugin = %name, "plugin unloaded");
         Ok(())

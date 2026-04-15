@@ -380,7 +380,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     let mem_cache = MEM_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(None) }).await;
     static MEM_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let mem_tick = MEM_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if mem_tick % 10 == 0 {
+    if mem_tick.is_multiple_of(10) {
         let breakdown = collect_memory_breakdown(state).await;
         *mem_cache.write().await = Some(breakdown);
     }
@@ -401,7 +401,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     static ROLE_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<std::collections::HashMap<String, String>>> = tokio::sync::OnceCell::const_new();
     let role_cache = ROLE_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(std::collections::HashMap::new()) }).await;
     let iface_tick = IFACE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if iface_tick % 30 == 0 {
+    if iface_tick.is_multiple_of(30) {
         let roles: Vec<(String, String)> = sqlx::query_as("SELECT interface_name, role FROM interface_roles")
             .fetch_all(&state.pool).await.unwrap_or_default();
         *role_cache.write().await = roles.into_iter().collect();
@@ -430,15 +430,14 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                     if !parts.is_empty() {
                         addr = Some(parts[0].to_string());
                         // Convert hex netmask to CIDR subnet
-                        if let Some(mask_hex) = parts.iter().position(|&p| p == "netmask").and_then(|i| parts.get(i + 1)) {
-                            if let Ok(mask) = u32::from_str_radix(mask_hex.trim_start_matches("0x"), 16) {
+                        if let Some(mask_hex) = parts.iter().position(|&p| p == "netmask").and_then(|i| parts.get(i + 1))
+                            && let Ok(mask) = u32::from_str_radix(mask_hex.trim_start_matches("0x"), 16) {
                                 let cidr = mask.count_ones();
                                 let ip: u32 = parts[0].split('.').filter_map(|o| o.parse::<u32>().ok())
                                     .enumerate().fold(0u32, |acc, (i, o)| acc | (o << (24 - i * 8)));
                                 let net = ip & mask;
                                 sn = Some(format!("{}.{}.{}.{}/{}", net >> 24, (net >> 16) & 0xff, (net >> 8) & 0xff, net & 0xff, cidr));
                             }
-                        }
                     }
                     break;
                 }
@@ -501,7 +500,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     static VPN_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Vec<VpnTunnelStatus>>> = tokio::sync::OnceCell::const_new();
     let vpn_cache = VPN_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(Vec::new()) }).await;
     let tick = VPN_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let vpn = if tick % 10 == 0 {
+    let vpn = if tick.is_multiple_of(10) {
         let tunnels = state.vpn_engine.list_wg_tunnels().await.unwrap_or_default();
         let mut vpn_status = Vec::new();
         for t in &tunnels {
@@ -541,7 +540,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     // IDS status — refresh every 5 ticks (~5s) to avoid querying alerts every second
     static IDS_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Option<IdsStatusPayload>>> = tokio::sync::OnceCell::const_new();
     let ids_cache = IDS_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(None) }).await;
-    let ids = if tick % 5 == 0 {
+    let ids = if tick.is_multiple_of(5) {
         let payload = if let Some(ref engine) = state.ids_engine {
             let stats = engine.stats();
             let mode = engine.load_config().await
@@ -634,7 +633,8 @@ async fn collect_system_metrics() -> SystemPayload {
             if v.len() >= 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None }
         });
 
-        let usage = if let Some(cur) = cur {
+        
+        if let Some(cur) = cur {
             let mut prev_lock = PREV_CP.lock().unwrap();
             let pct = if let Some(prev) = *prev_lock {
                 let d: Vec<u64> = (0..5).map(|i| cur[i].saturating_sub(prev[i])).collect();
@@ -647,8 +647,7 @@ async fn collect_system_metrics() -> SystemPayload {
             pct
         } else {
             0.0
-        };
-        usage
+        }
     };
 
     // Memory via sysctl
@@ -670,7 +669,7 @@ async fn collect_system_metrics() -> SystemPayload {
         }).unwrap_or(0);
 
         let available = (free_pages + inactive_pages + cache_out) * page_size;
-        let used = if total > available { total - available } else { 0 };
+        let used = total.saturating_sub(available);
         let pct = if total > 0 { (used as f64 / total as f64) * 100.0 } else { 0.0 };
         Some((total, used, pct))
     }.await.unwrap_or((0, 0, 0.0));
@@ -967,11 +966,10 @@ pub fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw
         if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
             .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
             .output().await
-        {
-            if output.status.success() {
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let mut entries: Vec<BlockedPayload> = stdout.lines()
-                    .filter_map(|line| parse_pflog_line(line))
+                    .filter_map(parse_pflog_line)
                     .collect();
                 if entries.len() > PFLOG_MAX_ENTRIES {
                     entries.drain(..entries.len() - PFLOG_MAX_ENTRIES);
@@ -980,7 +978,6 @@ pub fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw
                 *buf.write().await = entries;
                 tracing::info!(count, "pflog bootstrap complete");
             }
-        }
 
         // Live capture: persistent tcpdump on pflog0 interface
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1055,7 +1052,7 @@ async fn collect_services() -> Vec<ServiceStatusPayload> {
     let tick = TICK.fetch_add(1, Ordering::Relaxed);
 
     // Refresh every 10 seconds
-    if tick % 10 == 0 {
+    if tick.is_multiple_of(10) {
         let mut svcs = Vec::new();
         for (name, svc_name) in [("rDNS", "rdns"), ("rDHCP", "rdhcpd"), ("rTIME", "rtime"), ("TrafficCop", "trafficcop")] {
             let running = tokio::process::Command::new("/usr/local/bin/sudo")

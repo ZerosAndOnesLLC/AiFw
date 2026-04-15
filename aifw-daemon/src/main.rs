@@ -147,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
                     let sample = aifw_core::multiwan::SlaSample {
                         gateway_id: g.id,
                         bucket_ts: bucket,
-                        samples: 60 / (g.interval_ms.max(1) as u64 / 1000).max(1),
+                        samples: 60 / (g.interval_ms.max(1) / 1000).max(1),
                         rtt_avg: g.last_rtt_ms,
                         rtt_p95: g.last_rtt_ms,
                         rtt_p99: g.last_rtt_ms,

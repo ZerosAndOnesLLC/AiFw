@@ -54,11 +54,10 @@ pub fn verify(secret: &str, code: &str) -> bool {
         if generate_code_at_step(&secret_bytes, current_step + offset) == code_num {
             return true;
         }
-        if offset > 0 && current_step >= offset {
-            if generate_code_at_step(&secret_bytes, current_step - offset) == code_num {
+        if offset > 0 && current_step >= offset
+            && generate_code_at_step(&secret_bytes, current_step - offset) == code_num {
                 return true;
             }
-        }
     }
 
     false

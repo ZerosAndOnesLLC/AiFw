@@ -332,13 +332,12 @@ pub async fn aifw_update_status(
         "SELECT value FROM update_config WHERE key = 'aifw_cached_info'"
     ).fetch_optional(&state.pool).await.ok().flatten();
 
-    if let Some((json,)) = cached {
-        if let Ok(mut info) = serde_json::from_str::<AifwUpdateInfo>(&json) {
+    if let Some((json,)) = cached
+        && let Ok(mut info) = serde_json::from_str::<AifwUpdateInfo>(&json) {
             // Refresh current version and backup info
             info.current_version = updater::get_current_version().await;
             return Ok(Json(info));
         }
-    }
 
     Ok(Json(AifwUpdateInfo {
         current_version: updater::get_current_version().await,

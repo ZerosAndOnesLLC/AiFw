@@ -148,11 +148,10 @@ impl WgPeer {
         if let Some(addr) = self.allowed_ips.first() {
             conf.push_str(&format!("Address = {addr}\n"));
         }
-        if let Some(ref dns) = tunnel.dns {
-            if !dns.is_empty() {
+        if let Some(ref dns) = tunnel.dns
+            && !dns.is_empty() {
                 conf.push_str(&format!("DNS = {dns}\n"));
             }
-        }
         if let Some(mtu) = tunnel.mtu {
             conf.push_str(&format!("MTU = {mtu}\n"));
         }
@@ -478,8 +477,8 @@ impl std::fmt::Display for VpnType {
 /// Elsewhere, generates random 32-byte keys (valid format but not cryptographically derived).
 pub fn generate_wg_keypair() -> (String, String) {
     // Try wg genkey first (FreeBSD with wireguard-tools installed)
-    if let Ok(output) = std::process::Command::new("wg").arg("genkey").output() {
-        if output.status.success() {
+    if let Ok(output) = std::process::Command::new("wg").arg("genkey").output()
+        && output.status.success() {
             let privkey = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if privkey.len() >= 40 {
                 // Derive public key from private key
@@ -495,17 +494,14 @@ pub fn generate_wg_keypair() -> (String, String) {
                         }
                         child.wait_with_output()
                     })
-                {
-                    if pub_output.status.success() {
+                    && pub_output.status.success() {
                         let pubkey = String::from_utf8_lossy(&pub_output.stdout).trim().to_string();
                         if pubkey.len() >= 40 {
                             return (privkey, pubkey);
                         }
                     }
-                }
             }
         }
-    }
 
     // Fallback: generate 32 random bytes for each key
     let mut private_bytes = [0u8; 32];
@@ -524,14 +520,13 @@ pub fn generate_wg_keypair() -> (String, String) {
 /// Generate a WireGuard preshared key (32 random bytes, base64 encoded)
 pub fn generate_wg_psk() -> String {
     // Try wg genpsk first
-    if let Ok(output) = std::process::Command::new("wg").arg("genpsk").output() {
-        if output.status.success() {
+    if let Ok(output) = std::process::Command::new("wg").arg("genpsk").output()
+        && output.status.success() {
             let psk = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if psk.len() >= 40 {
                 return psk;
             }
         }
-    }
     let mut bytes = [0u8; 32];
     let id1 = Uuid::new_v4();
     let id2 = Uuid::new_v4();

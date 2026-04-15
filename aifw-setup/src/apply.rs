@@ -729,11 +729,10 @@ rate_limit = 1000
     }
 
     // Seed DHCP server config if enabled
-    if config.dhcp_enabled {
-        if let Some(ref lan_cidr) = config.lan_ip {
+    if config.dhcp_enabled
+        && let Some(ref lan_cidr) = config.lan_ip {
             seed_dhcp_config(&pool, config, lan_cidr).await?;
         }
-    }
 
     Ok(())
 }
@@ -916,12 +915,11 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
                 ins(pool, 3, "pass", "in", lan, "any", subnet, None, false, "Allow LAN subnet", &now).await?;
             }
             // DHCP on LAN (src is 0.0.0.0 for discovery, must allow from any)
-            if config.dhcp_enabled {
-                if let Some(li) = lan {
+            if config.dhcp_enabled
+                && let Some(li) = lan {
                     ins(pool, 4, "pass", "in", Some(li), "udp", "any", Some(67), false, "Allow DHCP server (LAN)", &now).await?;
                     ins(pool, 5, "pass", "in", Some(li), "udp", "any", Some(68), false, "Allow DHCP client (LAN)", &now).await?;
                 }
-            }
             // Management: SSH + Web UI from LAN subnet only
             let mgmt_src = lan_subnet.as_deref().unwrap_or("any");
             ins(pool, 20, "pass", "in", None, "tcp", mgmt_src, Some(22), false, "Allow SSH (LAN)", &now).await?;
@@ -1014,7 +1012,7 @@ async fn write_anchor_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) {
         // quick
         if *quick { r.push_str(" quick"); }
         // interface
-        if let Some(i) = iface { if !i.is_empty() { r.push_str(&format!(" on {i}")); } }
+        if let Some(i) = iface && !i.is_empty() { r.push_str(&format!(" on {i}")); }
         // protocol
         if proto != "any" { r.push_str(&format!(" proto {proto}")); }
         // src
@@ -1028,7 +1026,7 @@ async fn write_anchor_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) {
         if let Some(p) = dp_s { r.push_str(&format!(" port {p}")); }
         // state (only for pass rules)
         if action != "block" { r.push_str(" keep state"); }
-        if let Some(l) = label { if !l.is_empty() { r.push_str(&format!(" label \"{l}\"")); } }
+        if let Some(l) = label && !l.is_empty() { r.push_str(&format!(" label \"{l}\"")); }
         pf_rules.push(r);
     }
     let _ = std::fs::write(format!("{anchors_dir}/aifw"), pf_rules.join("\n"));
@@ -1040,11 +1038,8 @@ async fn write_anchor_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) {
 
     let mut nat_rules = Vec::new();
     for (nat_type, iface, _proto, src, _redir, _rp) in &nat_rows {
-        match nat_type.as_str() {
-            "masquerade" => {
-                nat_rules.push(format!("nat on {iface} from {src} to any -> ({iface})"));
-            }
-            _ => {}
+        if nat_type.as_str() == "masquerade" {
+            nat_rules.push(format!("nat on {iface} from {src} to any -> ({iface})"));
         }
     }
     let _ = std::fs::write(format!("{anchors_dir}/aifw-nat"), nat_rules.join("\n"));
@@ -1159,7 +1154,7 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
 
     // Anti-spoof
     lines.push("# Anti-spoofing".to_string());
-    lines.push(format!("antispoof quick for $wan_if"));
+    lines.push("antispoof quick for $wan_if".to_string());
     if config.lan_interface.is_some() {
         lines.push("antispoof quick for $lan_if".to_string());
     }

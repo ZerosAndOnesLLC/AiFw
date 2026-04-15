@@ -176,12 +176,11 @@ impl PfBackend for PfIoctl {
                 }
                 if let Some(bytes_pos) = trimmed.find(" bytes") {
                     let before_bytes = &trimmed[..bytes_pos];
-                    if let Some(pair) = before_bytes.rsplit(", ").next() {
-                        if let Some((a, b)) = pair.split_once(':') {
+                    if let Some(pair) = before_bytes.rsplit(", ").next()
+                        && let Some((a, b)) = pair.split_once(':') {
                             s.bytes_in = a.trim().parse().unwrap_or(0);
                             s.bytes_out = b.trim().parse().unwrap_or(0);
                         }
-                    }
                 }
                 // Parse age
                 if let Some(age_pos) = trimmed.find("age ") {
@@ -388,13 +387,12 @@ impl PfBackend for PfIoctl {
         }
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
-            if let Some(idx) = line.find("fib: ") {
-                if let Some(fib) = line[idx + 5..].split_whitespace().next() {
+            if let Some(idx) = line.find("fib: ")
+                && let Some(fib) = line[idx + 5..].split_whitespace().next() {
                     return fib
                         .parse()
                         .map_err(|e| PfError::Other(format!("parse fib: {e}")));
                 }
-            }
         }
         Ok(0)
     }
@@ -430,16 +428,14 @@ impl PfBackend for PfIoctl {
                 // Header line: "<proto> <iface> <src> -> <dst> <state>"
                 // or for ICMP: "<proto> <iface> <src> -> <dst> (id:N) <state>"
                 current = parse_state_endpoints(line);
-            } else if trimmed.contains(&format!("label \"{label}\""))
-                || trimmed.contains(&format!("@0 {label}"))
-            {
-                if let Some((src, dst)) = current.as_ref() {
+            } else if (trimmed.contains(&format!("label \"{label}\""))
+                || trimmed.contains(&format!("@0 {label}")))
+                && let Some((src, dst)) = current.as_ref() {
                     if pfctl(&["-k", src, "-k", dst]).await.is_ok() {
                         killed += 1;
                     }
                     current = None;
                 }
-            }
         }
         Ok(killed)
     }
@@ -448,11 +444,10 @@ impl PfBackend for PfIoctl {
 fn parse_killed_count(s: &str) -> u64 {
     // pfctl prints "killed N states" on success
     for line in s.lines() {
-        if let Some(rest) = line.strip_prefix("killed ") {
-            if let Some(n_str) = rest.split_whitespace().next() {
+        if let Some(rest) = line.strip_prefix("killed ")
+            && let Some(n_str) = rest.split_whitespace().next() {
                 return n_str.parse().unwrap_or(0);
             }
-        }
     }
     0
 }

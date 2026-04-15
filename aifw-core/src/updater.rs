@@ -256,13 +256,12 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     // Ensure wg is in sudoers for aifw user (older installs may be missing it)
     {
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
-        if let Ok(content) = tokio::fs::read_to_string(sudoers_path).await {
-            if !content.contains("/usr/bin/wg") {
+        if let Ok(content) = tokio::fs::read_to_string(sudoers_path).await
+            && !content.contains("/usr/bin/wg") {
                 let patched = format!("{content}aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *\n");
                 let _ = tokio::fs::write(sudoers_path, patched).await;
                 info!("Added wg to sudoers for aifw user");
             }
-        }
     }
 
     // Ensure required packages are installed (older installs may be missing curl)
@@ -532,11 +531,9 @@ async fn http_get(url: &str) -> Result<String, UpdaterError> {
         .args(["-qo", "-", url])
         .output()
         .await
-    {
-        if o.status.success() {
+        && o.status.success() {
             return Ok(String::from_utf8_lossy(&o.stdout).to_string());
         }
-    }
 
     let output = Command::new("curl")
         .args(["-sL", "-H", "User-Agent: AiFw-Updater", url])
@@ -559,11 +556,9 @@ async fn http_download(url: &str, dest: &str) -> Result<(), UpdaterError> {
         .args(["-qo", dest, url])
         .output()
         .await
-    {
-        if o.status.success() {
+        && o.status.success() {
             return Ok(());
         }
-    }
 
     let output = Command::new("curl")
         .args(["-sL", "-H", "User-Agent: AiFw-Updater", "-o", dest, url])
@@ -583,12 +578,11 @@ async fn http_download(url: &str, dest: &str) -> Result<(), UpdaterError> {
 
 async fn verify_sha256(file: &str, expected: &str) -> Result<bool, UpdaterError> {
     // Try sha256 -q (FreeBSD)
-    if let Ok(o) = Command::new("sha256").args(["-q", file]).output().await {
-        if o.status.success() {
+    if let Ok(o) = Command::new("sha256").args(["-q", file]).output().await
+        && o.status.success() {
             let hash = String::from_utf8_lossy(&o.stdout).trim().to_string();
             return Ok(hash == expected);
         }
-    }
 
     // Fall back to sha256sum (Linux)
     let output = Command::new("sha256sum")

@@ -646,17 +646,15 @@ async fn generate_rdhcp_config(pool: &SqlitePool) -> String {
             if !res.mac_address.is_empty() {
                 toml.push_str(&format!("mac = \"{}\"\n", res.mac_address));
             }
-            if let Some(ref cid) = res.client_id {
-                if !cid.is_empty() {
+            if let Some(ref cid) = res.client_id
+                && !cid.is_empty() {
                     toml.push_str(&format!("client_id = \"{}\"\n", cid));
                 }
-            }
             toml.push_str(&format!("ip = \"{}\"\n", res.ip_address));
-            if let Some(ref hn) = res.hostname {
-                if !hn.is_empty() {
+            if let Some(ref hn) = res.hostname
+                && !hn.is_empty() {
                     toml.push_str(&format!("hostname = \"{}\"\n", hn));
                 }
-            }
         }
 
         toml.push('\n');
@@ -766,12 +764,11 @@ pub async fn dhcp_status(
 
     if running {
         // Lease stats
-        if let Ok(body) = rdhcp_api_get("/api/v1/leases/stats", config.api_port).await {
-            if let Ok(stats) = serde_json::from_str::<Vec<PoolStats>>(&body) {
+        if let Ok(body) = rdhcp_api_get("/api/v1/leases/stats", config.api_port).await
+            && let Ok(stats) = serde_json::from_str::<Vec<PoolStats>>(&body) {
                 active_leases = stats.iter().map(|s| s.allocated as usize).sum();
                 pool_stats = stats;
             }
-        }
 
         // HA status
         if let Ok(body) = rdhcp_api_get("/api/v1/ha/status", config.api_port).await {
@@ -1142,22 +1139,19 @@ pub async fn dhcp_logs(
             break;
         }
         // Fallback to sudo
-        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["/bin/cat", path]).output().await {
-            if output.status.success() {
+        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["/bin/cat", path]).output().await
+            && output.status.success() {
                 content = String::from_utf8_lossy(&output.stdout).to_string();
                 break;
             }
-        }
     }
 
     // Also try journalctl if no log file found
-    if content.is_empty() {
-        if let Ok(output) = Command::new("/usr/local/bin/sudo").args(["journalctl", "-u", "rdhcpd", "--no-pager", "-n", &lines_param.to_string()]).output().await {
-            if output.status.success() {
+    if content.is_empty()
+        && let Ok(output) = Command::new("/usr/local/bin/sudo").args(["journalctl", "-u", "rdhcpd", "--no-pager", "-n", &lines_param.to_string()]).output().await
+            && output.status.success() {
                 content = String::from_utf8_lossy(&output.stdout).to_string();
             }
-        }
-    }
 
     let mut log_lines: Vec<String> = content.lines()
         .filter(|l| !l.is_empty())

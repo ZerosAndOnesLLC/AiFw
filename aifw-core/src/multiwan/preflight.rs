@@ -238,8 +238,8 @@ fn validate_mgmt_safety(
     // could move management traffic. Flag it.
     let mut strand = false;
     for p in proposed.iter().filter(|p| p.status == "active") {
-        if p.action_kind == "set_instance" && p.target_id != mgmt.id {
-            if p.src_addr == "any" || p.src_addr == "0.0.0.0/0" {
+        if p.action_kind == "set_instance" && p.target_id != mgmt.id
+            && (p.src_addr == "any" || p.src_addr == "0.0.0.0/0") {
                 findings.push(ValidationFinding {
                     severity: "error".into(),
                     message: format!(
@@ -249,7 +249,6 @@ fn validate_mgmt_safety(
                 });
                 strand = true;
             }
-        }
     }
     strand
 }

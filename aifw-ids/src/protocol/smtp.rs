@@ -90,8 +90,8 @@ impl SmtpParser {
 
     fn parse_response(&self, text: &str, buffers: &mut StickyBuffers) -> ParseResult {
         // SMTP response: "NNN text" or "NNN-text" for multiline
-        if let Some(line) = text.lines().next() {
-            if line.len() >= 3 {
+        if let Some(line) = text.lines().next()
+            && line.len() >= 3 {
                 let code = &line[..3];
                 if code.bytes().all(|b| b.is_ascii_digit()) {
                     buffers.insert("smtp.reply_code".into(), code.as_bytes().to_vec());
@@ -104,7 +104,6 @@ impl SmtpParser {
                     }
                 }
             }
-        }
 
         ParseResult::Ok
     }
@@ -113,13 +112,11 @@ impl SmtpParser {
 /// Extract content from angle brackets: "<user@domain>" → "user@domain"
 fn extract_angle_bracket(s: &str) -> String {
     let trimmed = s.trim();
-    if let Some(start) = trimmed.find('<') {
-        if let Some(end) = trimmed.find('>') {
-            if end > start {
+    if let Some(start) = trimmed.find('<')
+        && let Some(end) = trimmed.find('>')
+            && end > start {
                 return trimmed[start + 1..end].to_string();
             }
-        }
-    }
     trimmed.to_string()
 }
 

@@ -15,46 +15,38 @@ pub struct ConnectionFilter {
 
 impl ConnectionFilter {
     pub fn matches(&self, s: &PfState) -> bool {
-        if let Some(ref proto) = self.protocol {
-            if !s.protocol.eq_ignore_ascii_case(proto) {
+        if let Some(ref proto) = self.protocol
+            && !s.protocol.eq_ignore_ascii_case(proto) {
                 return false;
             }
-        }
-        if let Some(addr) = self.src_addr {
-            if s.src_addr != addr {
+        if let Some(addr) = self.src_addr
+            && s.src_addr != addr {
                 return false;
             }
-        }
-        if let Some(addr) = self.dst_addr {
-            if s.dst_addr != addr {
+        if let Some(addr) = self.dst_addr
+            && s.dst_addr != addr {
                 return false;
             }
-        }
-        if let Some(port) = self.src_port {
-            if s.src_port != port {
+        if let Some(port) = self.src_port
+            && s.src_port != port {
                 return false;
             }
-        }
-        if let Some(port) = self.dst_port {
-            if s.dst_port != port {
+        if let Some(port) = self.dst_port
+            && s.dst_port != port {
                 return false;
             }
-        }
-        if let Some(ref state) = self.state {
-            if !s.state.eq_ignore_ascii_case(state) {
+        if let Some(ref state) = self.state
+            && !s.state.eq_ignore_ascii_case(state) {
                 return false;
             }
-        }
-        if let Some(min) = self.min_age_secs {
-            if s.age_secs < min {
+        if let Some(min) = self.min_age_secs
+            && s.age_secs < min {
                 return false;
             }
-        }
-        if let Some(max) = self.max_age_secs {
-            if s.age_secs > max {
+        if let Some(max) = self.max_age_secs
+            && s.age_secs > max {
                 return false;
             }
-        }
         true
     }
 }

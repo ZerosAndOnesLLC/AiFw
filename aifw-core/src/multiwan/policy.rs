@@ -194,11 +194,10 @@ impl PolicyEngine {
             let label = format!("pbr:{}", p.id);
             match p.action_kind.as_str() {
                 "set_instance" => {
-                    if let Some(inst) = inst_by_id.get(&p.target_id) {
-                        if let Some(line) = emit_set_instance(p, inst, &label) {
+                    if let Some(inst) = inst_by_id.get(&p.target_id)
+                        && let Some(line) = emit_set_instance(p, inst, &label) {
                             pbr.push(line);
                         }
-                    }
                 }
                 "set_gateway" => {
                     if let Some(gw) = gw_by_id.get(&p.target_id) {
