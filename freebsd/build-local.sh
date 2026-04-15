@@ -27,12 +27,24 @@ fi
 echo "=== [1/6] Installing dependencies ==="
 pkg install -y curl git gmake node24 npm-node24
 
-# Install Rust via rustup if not present
+# `sudo` clears PATH, so even if rust is already installed under root's home
+# we won't see `cargo` on PATH unless we source cargo's env first. Skipping
+# this check caused v5.47 builds on a working toolchain to attempt a full
+# rustup re-sync against static.rust-lang.org and fail on networks where
+# IPv6/IPv4 resolution for that host is broken.
+if [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
+# Only bootstrap rustup when cargo really isn't installed.
 if ! command -v cargo >/dev/null 2>&1; then
     echo "Installing Rust via rustup..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     . "$HOME/.cargo/env"
 fi
+
+echo "--- Using cargo: $(command -v cargo) ---"
+cargo --version
 
 # --- Clone or update repo ---
 if [ ! -f "$PROJECT_ROOT/Cargo.toml" ]; then
