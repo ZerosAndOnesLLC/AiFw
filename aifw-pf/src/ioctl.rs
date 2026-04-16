@@ -136,16 +136,39 @@ impl PfBackend for PfIoctl {
             if !line.starts_with(' ') && !line.starts_with('\t') {
                 // New state line — save previous if any
                 if let Some(s) = current.take() { states.push(s); }
+
+                // Anchor on the direction arrow (`->` or `<-`). pfctl's
+                // header line shape is:
+                //   <iface_or_all> <proto> <left> [(<nat_map>)] <arrow> <right> <state>...
+                // Indexing fixed offsets like parts[4]/parts[5] breaks on
+                // NAT'd states where parts[3] is the parenthesized natmap,
+                // so the dst/state would be "->" / "<right>" instead of
+                // "<right>" / "<state>". Find the arrow first; everything
+                // hangs off that.
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() < 5 { continue; }
+                let arrow_idx = parts.iter().position(|p| *p == "->" || *p == "<-");
+                let Some(ai) = arrow_idx else { continue };
+                if ai + 2 >= parts.len() { continue; }
+
                 let proto = parts.get(1).unwrap_or(&"").to_string();
-                let src = parts.get(2).unwrap_or(&"");
-                let dst = parts.get(4).unwrap_or(&"");
-                let state_str = parts.get(5).unwrap_or(&"").to_string();
+                let arrow = parts[ai];
+                // The state field is immediately after the arrow's right
+                // operand. ESTABLISHED:ESTABLISHED, FIN_WAIT_2, etc.
+                let state_str = parts[ai + 2].to_string();
+
+                // For `->` the left side is the originator (src) and the
+                // right is the destination. For `<-` it's reversed: the
+                // right side is the originator and the left is the dst.
+                // Either way, src_addr is whoever opened the connection.
+                let (lhs, rhs) = (parts[2], parts[ai + 1]);
+                let (src, dst) = if arrow == "->" { (lhs, rhs) } else { (rhs, lhs) };
+
                 let (src_addr, src_port) = parse_addr_port(src);
                 let (dst_addr, dst_port) = parse_addr_port(dst);
-                // First field in `pfctl -ss` verbose output is the interface
-                // (e.g. "em0"). Non-verbose output uses "all" or direction.
+
+                // First field is the interface in verbose output ("em0",
+                // "vtnet0"); "all"/"in"/"out" mean no interface tag.
                 let iface = parts.first().filter(|s| {
                     let s = *s;
                     !matches!(*s, "all" | "in" | "out") && s.chars().any(|c| c.is_ascii_digit())
