@@ -32,23 +32,29 @@ function getSubnet24(ip: string): string {
 
 /* ────────────────────────── Pipe geometry helpers ──────────────────────────
  *
- * Colors mirror the AiFw brand logo:
- *   Inbound  = bright blue (#3b82f6, blue-500) — the shield
- *   Outbound = bright red  (#ef4444, red-500) — the flame
+ * Pipes are rendered as "water under pressure":
+ *   1. A solid colored body (no dashed line) = continuous fluid.
+ *   2. A thin white highlight stream that flows along the top of the body,
+ *      simulating light glinting off the surface. Animation speed scales
+ *      with throughput — heavy traffic = fast water.
+ *   3. An ambient halo whose opacity rises with the flow rate, so busy
+ *      pipes feel hot/bright and idle ones fade.
  *
- * Width scaling is log-curve so each order-of-magnitude jump is visibly
- * fatter: idle ≈ 2px, 1 Mbps ≈ 26px, 100 Mbps ≈ 38px, 1 Gbps ≈ 44px,
- * capped at 60px so a huge flow doesn't crush the layout.
+ * Colors from the AiFw logo:
+ *   Inbound  = ocean water blue (#0ea5e9, sky-500) — the shield
+ *   Outbound = flame red       (#ef4444, red-500)  — the flame
+ *
+ * Pipe width is fixed — flow rate is conveyed by highlight animation
+ * speed and halo brightness, not by stroke thickness.
  */
-const PIPE_IN = "59, 130, 246";   // blue-500 (#3b82f6) — bright vivid blue
-const PIPE_OUT = "239, 68, 68";   // red-500  (#ef4444) — bright vivid red
+const PIPE_IN = "14, 165, 233";   // sky-500 (#0ea5e9) — ocean water blue
+const PIPE_OUT = "239, 68, 68";   // red-500 (#ef4444) — flame red
+const PIPE_W = 10;                // fixed pipe thickness (px)
 
-/** bps → pipe stroke width in px (log curve tuned for 1 Kbps..10 Gbps). */
-function rateWidth(bps: number): number {
-  if (bps <= 0) return 2;
-  const lg = Math.log10(Math.max(bps, 1)); // bps:  1k=3, 1M=6, 100M=8, 1G=9
-  return Math.max(2, Math.min(60, 2 + (lg - 2) * 6));
-}
+/** Fixed pipe stroke width. The `bps` arg is kept for call-site
+ *  compatibility; throughput is now conveyed by animation speed and
+ *  halo intensity, not thickness. */
+function rateWidth(_bps: number): number { return PIPE_W; }
 
 /** bps → stroke alpha. Idle pipes are faint, heavy traffic is opaque. */
 function rateAlpha(bps: number): number {
@@ -98,34 +104,49 @@ function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: numb
  * overlap, and they never drift apart.
  */
 const PIPE_SEP = 2; // px gap kept between the two streams at all times
+
+/** Animation duration in seconds: faster when busier, clamped so idle
+ *  pipes aren't stuck on a 10-second crawl and 10 Gbps doesn't blur. */
+function flowDur(bps: number): string {
+  if (bps <= 0) return "2s";
+  const lg = Math.log10(Math.max(bps, 1));
+  // 1 Kbps (lg=3) → ~1.5s ; 1 Mbps (lg=6) → ~0.6s ; 1 Gbps (lg=9) → ~0.22s
+  const d = Math.max(0.2, 1.8 - (lg - 2) * 0.22);
+  return `${d.toFixed(2)}s`;
+}
+
 function SvgPipe({ x1, y1, x2, y2, cy1, cy2, rateIn, rateOut }:
   { x1: number; y1: number; x2: number; y2: number; cy1: number; cy2: number; rateIn: number; rateOut: number; id?: string }) {
   const inW = rateWidth(rateIn);
   const outW = rateWidth(rateOut);
   const inA = rateAlpha(rateIn);
   const outA = rateAlpha(rateOut);
-  // Center each stream so its inner edge sits PIPE_SEP/2 off the
-  // centerline. Outer edges then live at ±(ownWidth + PIPE_SEP/2).
   const inDx = inW / 2 + PIPE_SEP / 2;
   const outDx = outW / 2 + PIPE_SEP / 2;
   const pathIn  = `M ${x1 - inDx},${y1} C ${x1 - inDx},${cy1} ${x2 - inDx},${cy2} ${x2 - inDx},${y2}`;
   const pathOut = `M ${x1 + outDx},${y1} C ${x1 + outDx},${cy1} ${x2 + outDx},${cy2} ${x2 + outDx},${y2}`;
-  const haloIn = inW + 10;
-  const haloOut = outW + 10;
+  // Highlight stripes — thin, bright, travel along the flow direction.
+  const hlInW  = Math.max(1, inW * 0.22);
+  const hlOutW = Math.max(1, outW * 0.22);
+  const hlInA  = Math.min(0.55, 0.15 + inA * 0.5);
+  const hlOutA = Math.min(0.55, 0.15 + outA * 0.5);
   return (
     <g>
-      {/* Colored halos hint at direction even before dashes animate */}
-      <path d={pathIn}  fill="none" stroke={`rgba(${PIPE_IN},0.06)`}  strokeWidth={haloIn}  strokeLinecap="round" />
-      <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},0.06)`} strokeWidth={haloOut} strokeLinecap="round" />
-      {/* Inbound (blue) — flows toward subnets */}
-      <path d={pathIn} fill="none" stroke={`rgba(${PIPE_IN},${inA})`}
-        strokeWidth={inW} strokeDasharray="5 7" strokeLinecap="round">
-        {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
+      {/* Rate-scaled colored halo — brightens as traffic ramps up */}
+      <path d={pathIn}  fill="none" stroke={`rgba(${PIPE_IN},${0.04 + inA * 0.14})`}   strokeWidth={inW + 14}  strokeLinecap="round" />
+      <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},${0.04 + outA * 0.14})`} strokeWidth={outW + 14} strokeLinecap="round" />
+      {/* Main fluid body — solid colored stroke, reads as continuous water */}
+      <path d={pathIn}  fill="none" stroke={`rgba(${PIPE_IN},${inA})`}   strokeWidth={inW}  strokeLinecap="round" />
+      <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},${outA})`} strokeWidth={outW} strokeLinecap="round" />
+      {/* Inbound (blue) highlight — bright streaks running along the top */}
+      <path d={pathIn} fill="none" stroke={`rgba(255,255,255,${hlInA})`}
+        strokeWidth={hlInW} strokeDasharray="10 22" strokeLinecap="round">
+        {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-32" dur={flowDur(rateIn)} repeatCount="indefinite" />}
       </path>
-      {/* Outbound (red) — flows toward firewall/WAN */}
-      <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},${outA})`}
-        strokeWidth={outW} strokeDasharray="5 7" strokeLinecap="round">
-        {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="0" to="12" dur="0.5s" repeatCount="indefinite" />}
+      {/* Outbound (red) highlight — bright streaks running along the top */}
+      <path d={pathOut} fill="none" stroke={`rgba(255,255,255,${hlOutA})`}
+        strokeWidth={hlOutW} strokeDasharray="10 22" strokeLinecap="round">
+        {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="0" to="32" dur={flowDur(rateOut)} repeatCount="indefinite" />}
       </path>
     </g>
   );
