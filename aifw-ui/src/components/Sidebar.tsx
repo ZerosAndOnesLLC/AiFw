@@ -165,7 +165,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
     if (typeof window === "undefined") return {};
     try {
-      const raw = window.localStorage.getItem("aifw_sidebar_expanded");
+      const raw = window.localStorage.getItem("aifw_sidebar_expanded_v2");
       if (raw) return JSON.parse(raw) as Record<string, boolean>;
     } catch {
       /* fall through to empty */
@@ -175,7 +175,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      window.localStorage.setItem("aifw_sidebar_expanded", JSON.stringify(expanded));
+      window.localStorage.setItem("aifw_sidebar_expanded_v2", JSON.stringify(expanded));
     } catch {
       /* localStorage may be disabled — ignore */
     }
