@@ -5,6 +5,31 @@ description: Step-by-step guide to install AiFw on FreeBSD from ISO, USB image, 
 permalink: /install/
 ---
 
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "Install AiFw on FreeBSD",
+  "description": "Install the AiFw firewall appliance on bare metal or a hypervisor via ISO or USB image.",
+  "totalTime": "PT10M",
+  "supply": [
+    {"@type": "HowToSupply", "name": "Target hardware or VM (bare metal, KVM, ESXi, bhyve, Proxmox)"},
+    {"@type": "HowToSupply", "name": "USB stick or virtual CD-ROM"}
+  ],
+  "step": [
+    {"@type": "HowToStep", "position": 1, "name": "Download the ISO or USB image",
+     "text": "Grab the latest AiFw ISO or USB IMG from GitHub Releases.",
+     "url": "https://github.com/ZerosAndOnesLLC/AiFw/releases/latest"},
+    {"@type": "HowToStep", "position": 2, "name": "Boot from the image",
+     "text": "Boot the target machine or VM from the ISO/USB. AiFw auto-logs into the console menu."},
+    {"@type": "HowToStep", "position": 3, "name": "Run the first-boot wizard",
+     "text": "Set root password, hostname, network interfaces (WAN/LAN), admin account with optional 2FA, and initial firewall policy."},
+    {"@type": "HowToStep", "position": 4, "name": "Access the web dashboard",
+     "text": "Browse to https://<appliance-ip>:8080 and log in with the admin account you created."}
+  ]
+}
+</script>
+
 <div class="content-page">
 <article markdown="1">
 

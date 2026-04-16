@@ -3,9 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  {% if site.google_site_verification %}<meta name="google-site-verification" content="{{ site.google_site_verification }}">{% endif %}
-  {% if site.bing_site_verification %}<meta name="msvalidate.01" content="{{ site.bing_site_verification }}">{% endif %}
+  {% if site.google_site_verification and site.google_site_verification != "" %}<meta name="google-site-verification" content="{{ site.google_site_verification }}">{% endif %}
+  {% if site.bing_site_verification and site.bing_site_verification != "" %}<meta name="msvalidate.01" content="{{ site.bing_site_verification }}">{% endif %}
   {% seo %}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "ZerosAndOnesLLC",
+    "url": "https://zerosandones.us",
+    "logo": "https://aifw.zerosandones.us/assets/AiFw-1.png",
+    "sameAs": ["https://github.com/ZerosAndOnesLLC"]
+  }
+  </script>
   {% if site.google_analytics %}
   <script async src="https://www.googletagmanager.com/gtag/js?id={{ site.google_analytics }}"></script>
   <script>
@@ -37,10 +47,10 @@
         <span>AiFw</span>
       </a>
       <nav>
-        <a href="{{ '/features' | relative_url }}">Features</a>
-        <a href="{{ '/compare' | relative_url }}">Compare</a>
-        <a href="{{ '/install' | relative_url }}">Install</a>
-        <a href="{{ '/docs' | relative_url }}">Docs</a>
+        <a href="{{ '/features/' | relative_url }}">Features</a>
+        <a href="{{ '/compare/' | relative_url }}">Compare</a>
+        <a href="{{ '/install/' | relative_url }}">Install</a>
+        <a href="{{ '/docs/' | relative_url }}">Docs</a>
         <a href="https://github.com/ZerosAndOnesLLC/AiFw" class="btn btn-outline" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </div>
@@ -62,9 +72,9 @@
         </div>
         <div>
           <h4>Project</h4>
-          <a href="{{ '/features' | relative_url }}">Features</a>
-          <a href="{{ '/compare' | relative_url }}">Comparison</a>
-          <a href="{{ '/install' | relative_url }}">Installation</a>
+          <a href="{{ '/features/' | relative_url }}">Features</a>
+          <a href="{{ '/compare/' | relative_url }}">Comparison</a>
+          <a href="{{ '/install/' | relative_url }}">Installation</a>
         </div>
         <div>
           <h4>Community</h4>

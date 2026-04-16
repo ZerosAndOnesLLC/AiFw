@@ -5,6 +5,35 @@ description: Honest head-to-head comparison of AiFw, OPNsense, and pfSense. Wire
 permalink: /compare/
 ---
 
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "ItemList",
+  "name": "AiFw vs OPNsense vs pfSense",
+  "description": "Feature-level comparison of three open-source FreeBSD firewalls.",
+  "itemListOrder": "https://schema.org/ItemListOrderAscending",
+  "numberOfItems": 3,
+  "itemListElement": [
+    {"@type": "ListItem", "position": 1,
+     "item": {"@type": "SoftwareApplication", "name": "AiFw",
+              "url": "https://aifw.zerosandones.us/",
+              "applicationCategory": "SecurityApplication",
+              "operatingSystem": "FreeBSD",
+              "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}},
+    {"@type": "ListItem", "position": 2,
+     "item": {"@type": "SoftwareApplication", "name": "OPNsense",
+              "url": "https://opnsense.org/",
+              "applicationCategory": "SecurityApplication",
+              "operatingSystem": "FreeBSD"}},
+    {"@type": "ListItem", "position": 3,
+     "item": {"@type": "SoftwareApplication", "name": "pfSense",
+              "url": "https://www.pfsense.org/",
+              "applicationCategory": "SecurityApplication",
+              "operatingSystem": "FreeBSD"}}
+  ]
+}
+</script>
+
 <div class="content-page">
 <article markdown="1">
 
