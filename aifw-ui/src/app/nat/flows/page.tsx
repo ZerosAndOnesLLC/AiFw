@@ -33,15 +33,15 @@ function getSubnet24(ip: string): string {
 /* ────────────────────────── Pipe geometry helpers ──────────────────────────
  *
  * Colors mirror the AiFw brand logo:
- *   Inbound  = deep saturated blue (#1d4ed8, blue-700) — the shield
- *   Outbound = rich saturated red  (#dc2626, red-600)  — the flame
+ *   Inbound  = bright blue (#3b82f6, blue-500) — the shield
+ *   Outbound = bright red  (#ef4444, red-500) — the flame
  *
  * Width scaling is log-curve so each order-of-magnitude jump is visibly
  * fatter: idle ≈ 2px, 1 Mbps ≈ 26px, 100 Mbps ≈ 38px, 1 Gbps ≈ 44px,
  * capped at 60px so a huge flow doesn't crush the layout.
  */
-const PIPE_IN = "29, 78, 216";    // blue-700 (#1d4ed8) — deep saturated ocean blue
-const PIPE_OUT = "220, 38, 38";   // red-600  (#dc2626) — rich saturated red
+const PIPE_IN = "59, 130, 246";   // blue-500 (#3b82f6) — bright vivid blue
+const PIPE_OUT = "239, 68, 68";   // red-500  (#ef4444) — bright vivid red
 
 /** bps → pipe stroke width in px (log curve tuned for 1 Kbps..10 Gbps). */
 function rateWidth(bps: number): number {
