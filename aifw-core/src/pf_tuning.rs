@@ -85,10 +85,7 @@ pub async fn live_max_states() -> Option<u64> {
 pub async fn apply_to_pf(value: u64) -> Result<(), String> {
     // Write tuning file via sudo install (same pattern as dns_blocklists
     // — the aifw user can't write under /usr/local/etc directly).
-    let body = format!(
-        "# Managed by AiFw. Do not edit by hand — change in Settings → System.\n\
-         set limit states {{ {value} }}\n",
-    );
+    let body = render_tuning(value);
     let tmp = "/tmp/aifw-pf-tuning.tmp";
     tokio::fs::write(tmp, body)
         .await
@@ -126,6 +123,16 @@ pub async fn apply_to_pf(value: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Render the pf.conf tuning fragment. Kept pure so unit tests can assert
+/// the syntax — a regression here puts the whole apply path into a silent-
+/// failure loop (see `set limit states { … }` incident).
+fn render_tuning(value: u64) -> String {
+    format!(
+        "# Managed by AiFw. Do not edit by hand — change in Settings → System.\n\
+         set limit states {value}\n",
+    )
+}
+
 /// Re-apply the saved value at daemon startup.
 pub async fn apply_on_boot(pool: &SqlitePool) {
     let v = configured_max_states(pool).await;
@@ -133,5 +140,32 @@ pub async fn apply_on_boot(pool: &SqlitePool) {
         tracing::warn!("pf-tuning apply at boot failed: {e}");
     } else {
         tracing::info!(max_states = v, "pf state-table limit applied");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `set limit states { N }` is a pf.conf parser error — the braces
+    /// wrap the limit-list, not the value. This test pins the correct form.
+    #[test]
+    fn render_tuning_uses_unbraced_single_limit() {
+        let out = render_tuning(100_000);
+        assert!(
+            out.contains("set limit states 100000\n"),
+            "expected unbraced `set limit states <N>`, got: {out:?}"
+        );
+        assert!(
+            !out.contains("states {"),
+            "braces must not wrap a single value; got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn render_tuning_embeds_requested_value() {
+        assert!(render_tuning(250_000).contains("set limit states 250000\n"));
+        assert!(render_tuning(MIN_STATES).contains(&format!("states {MIN_STATES}")));
+        assert!(render_tuning(MAX_STATES).contains(&format!("states {MAX_STATES}")));
     }
 }

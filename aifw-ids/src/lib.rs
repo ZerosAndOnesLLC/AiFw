@@ -262,6 +262,15 @@ impl IdsEngine {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ids_alerts_sev ON ids_alerts(severity)")
             .execute(pool)
             .await?;
+        // Covers the dashboard "top signatures" query
+        // (GROUP BY signature_msg ORDER BY count DESC). Without it the
+        // query scans + sorts all alerts (~2 s slow-query warnings on
+        // busy appliances).
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_ids_alerts_signature_msg ON ids_alerts(signature_msg)",
+        )
+        .execute(pool)
+        .await?;
 
         sqlx::query(
             r#"
