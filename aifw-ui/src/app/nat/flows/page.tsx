@@ -87,18 +87,36 @@ function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: numb
   );
 }
 
-/** SVG animated bezier pipe pair. Inbound blue (down), outbound red (up). */
-function SvgPipe({ pathIn, pathOut, rateIn, rateOut }: { pathIn: string; pathOut: string; rateIn: number; rateOut: number; id: string }) {
+/**
+ * SVG animated bezier pipe pair. Inbound blue (down), outbound red (up).
+ *
+ * Callers pass the centerline geometry (x1,y1 → x2,y2 with bezier
+ * control-point Y values cy1, cy2). Each stream is drawn offset to its
+ * own side of the centerline; the offset is derived from that stream's
+ * own stroke width, so the two pipes always abut with a fixed visible
+ * gap between them and expand outward as their rates grow — they never
+ * overlap, and they never drift apart.
+ */
+const PIPE_SEP = 2; // px gap kept between the two streams at all times
+function SvgPipe({ x1, y1, x2, y2, cy1, cy2, rateIn, rateOut }:
+  { x1: number; y1: number; x2: number; y2: number; cy1: number; cy2: number; rateIn: number; rateOut: number; id?: string }) {
   const inW = rateWidth(rateIn);
   const outW = rateWidth(rateOut);
   const inA = rateAlpha(rateIn);
   const outA = rateAlpha(rateOut);
-  const haloW = Math.max(inW, outW) + 10;
+  // Center each stream so its inner edge sits PIPE_SEP/2 off the
+  // centerline. Outer edges then live at ±(ownWidth + PIPE_SEP/2).
+  const inDx = inW / 2 + PIPE_SEP / 2;
+  const outDx = outW / 2 + PIPE_SEP / 2;
+  const pathIn  = `M ${x1 - inDx},${y1} C ${x1 - inDx},${cy1} ${x2 - inDx},${cy2} ${x2 - inDx},${y2}`;
+  const pathOut = `M ${x1 + outDx},${y1} C ${x1 + outDx},${cy1} ${x2 + outDx},${cy2} ${x2 + outDx},${y2}`;
+  const haloIn = inW + 10;
+  const haloOut = outW + 10;
   return (
     <g>
       {/* Colored halos hint at direction even before dashes animate */}
-      <path d={pathIn} fill="none" stroke={`rgba(${PIPE_IN},0.06)`} strokeWidth={haloW} strokeLinecap="round" />
-      <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},0.06)`} strokeWidth={haloW} strokeLinecap="round" />
+      <path d={pathIn}  fill="none" stroke={`rgba(${PIPE_IN},0.06)`}  strokeWidth={haloIn}  strokeLinecap="round" />
+      <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},0.06)`} strokeWidth={haloOut} strokeLinecap="round" />
       {/* Inbound (blue) — flows toward subnets */}
       <path d={pathIn} fill="none" stroke={`rgba(${PIPE_IN},${inA})`}
         strokeWidth={inW} strokeDasharray="5 7" strokeLinecap="round">
@@ -328,10 +346,10 @@ export default function NatFlowsPage() {
                         const sx = (wanFanW - totalWanW) / 2;
                         const ax = sx + idx * (wanColW + wanGap) + wanColW / 2;
                         const wr = rates[wan.name] || { in: 0, out: 0 };
-                        const gap = 4;
-                        const pathIn  = `M ${cx - gap},0 C ${cx - gap},${fanDownH * 0.4} ${ax - gap},${fanDownH * 0.5} ${ax - gap},${fanDownH}`;
-                        const pathOut = `M ${cx + gap},0 C ${cx + gap},${fanDownH * 0.4} ${ax + gap},${fanDownH * 0.5} ${ax + gap},${fanDownH}`;
-                        return <SvgPipe key={wan.name} id={`inet-${wan.name}`} pathIn={pathIn} pathOut={pathOut} rateIn={wr.in} rateOut={wr.out} />;
+                        return <SvgPipe key={wan.name} id={`inet-${wan.name}`}
+                          x1={cx} y1={0} x2={ax} y2={fanDownH}
+                          cy1={fanDownH * 0.4} cy2={fanDownH * 0.5}
+                          rateIn={wr.in} rateOut={wr.out} />;
                       })}
                     </svg>
                   </div>
@@ -364,10 +382,10 @@ export default function NatFlowsPage() {
                         const sx = (wanFanW - totalWanW) / 2;
                         const ax = sx + idx * (wanColW + wanGap) + wanColW / 2;
                         const wr = rates[wan.name] || { in: 0, out: 0 };
-                        const gap = 4;
-                        const pathIn  = `M ${ax - gap},0 C ${ax - gap},${fanUpH * 0.5} ${cx - gap},${fanUpH * 0.6} ${cx - gap},${fanUpH}`;
-                        const pathOut = `M ${ax + gap},0 C ${ax + gap},${fanUpH * 0.5} ${cx + gap},${fanUpH * 0.6} ${cx + gap},${fanUpH}`;
-                        return <SvgPipe key={wan.name} id={`wan-fw-${wan.name}`} pathIn={pathIn} pathOut={pathOut} rateIn={wr.in} rateOut={wr.out} />;
+                        return <SvgPipe key={wan.name} id={`wan-fw-${wan.name}`}
+                          x1={ax} y1={0} x2={cx} y2={fanUpH}
+                          cy1={fanUpH * 0.5} cy2={fanUpH * 0.6}
+                          rateIn={wr.in} rateOut={wr.out} />;
                       })}
                     </svg>
                   </div>
@@ -420,11 +438,10 @@ export default function NatFlowsPage() {
                         const cx = fanSvgW / 2;
                         const ax = colCenters[idx];
                         const ifRate = rates[iface.name] || { in: 0, out: 0 };
-                        const gap = 4;
-                        const pathIn  = `M ${cx - gap},0 C ${cx - gap},${fanH * 0.4} ${ax - gap},${fanH * 0.5} ${ax - gap},${fanH}`;
-                        const pathOut = `M ${cx + gap},0 C ${cx + gap},${fanH * 0.4} ${ax + gap},${fanH * 0.5} ${ax + gap},${fanH}`;
                         return (
-                          <SvgPipe key={iface.name} id={`fw-${iface.name}`} pathIn={pathIn} pathOut={pathOut}
+                          <SvgPipe key={iface.name} id={`fw-${iface.name}`}
+                            x1={cx} y1={0} x2={ax} y2={fanH}
+                            cy1={fanH * 0.4} cy2={fanH * 0.5}
                             rateIn={ifRate.out} rateOut={ifRate.in} />
                         );
                       })}
@@ -467,12 +484,11 @@ export default function NatFlowsPage() {
                             const cx = ifSvgW / 2;
                             const ifStartX = (ifSvgW - ifSubnetsW) / 2;
                             const ax = ifStartX + idx * (subnetCardW + subnetGap) + subnetCardW / 2;
-                            const gap = 4;
-                            const pathIn  = `M ${cx - gap},${fwY} C ${cx - gap},${subnetY * 0.4} ${ax - gap},${subnetY * 0.5} ${ax - gap},${subnetY}`;
-                            const pathOut = `M ${cx + gap},${fwY} C ${cx + gap},${subnetY * 0.4} ${ax + gap},${subnetY * 0.5} ${ax + gap},${subnetY}`;
                             const sr = (groupBySubnet ? subnetLiveRates[sn.subnet] : subnetLiveRates[getSubnet24(sn.subnet)]) || { in: 0, out: 0 };
                             return (
-                              <SvgPipe key={sn.subnet} id={`pipe-${iface.name}-${idx}`} pathIn={pathIn} pathOut={pathOut}
+                              <SvgPipe key={sn.subnet} id={`pipe-${iface.name}-${idx}`}
+                                x1={cx} y1={fwY} x2={ax} y2={subnetY}
+                                cy1={subnetY * 0.4} cy2={subnetY * 0.5}
                                 rateIn={sr.in} rateOut={sr.out} />
                             );
                           })}
