@@ -78,7 +78,6 @@ pub struct ApiResponse<T: Serialize> { pub data: T }
 pub struct MessageResponse { pub message: String }
 
 fn internal() -> StatusCode { StatusCode::INTERNAL_SERVER_ERROR }
-fn bad_request() -> StatusCode { StatusCode::BAD_REQUEST }
 
 // ============================================================
 // DB
@@ -639,33 +638,119 @@ pub async fn list_vlans(
     Ok(Json(ApiResponse { data: vlans }))
 }
 
+fn bad_req(msg: impl Into<String>) -> (StatusCode, Json<MessageResponse>) {
+    (StatusCode::BAD_REQUEST, Json(MessageResponse { message: msg.into() }))
+}
+
+/// Return the set of currently-present network interface names on the host,
+/// or None if the lookup failed (e.g. ifconfig missing on non-FreeBSD dev).
+async fn list_host_interfaces() -> Option<Vec<String>> {
+    let out = Command::new("/sbin/ifconfig").arg("-l").output().await.ok()?;
+    if !out.status.success() { return None; }
+    Some(String::from_utf8_lossy(&out.stdout).split_whitespace().map(String::from).collect())
+}
+
+struct ValidatedVlan {
+    mode: String,
+    ipv4_address: Option<String>,
+    ipv6_address: Option<String>,
+    mtu: u32,
+    enabled: bool,
+    description: Option<String>,
+    parent: String,
+}
+
+async fn validate_vlan_req(req: &CreateVlanRequest) -> Result<ValidatedVlan, (StatusCode, Json<MessageResponse>)> {
+    if !(1..=4094).contains(&req.vlan_id) {
+        return Err(bad_req("VLAN ID must be between 1 and 4094."));
+    }
+    let parent = req.parent.trim().to_string();
+    if !validate_iface_name(&parent) {
+        return Err(bad_req("Invalid parent interface name."));
+    }
+    // If we can enumerate host interfaces, require the parent to exist.
+    // Skipping the check when ifconfig is unavailable keeps non-FreeBSD dev runs working.
+    if let Some(ifaces) = list_host_interfaces().await
+        && !ifaces.iter().any(|i| i == &parent) {
+            return Err(bad_req(format!("Parent interface '{}' does not exist on this host.", parent)));
+        }
+
+    let mode = req.ipv4_mode.clone().unwrap_or_else(|| "none".to_string());
+    if !["dhcp", "static", "none"].contains(&mode.as_str()) {
+        return Err(bad_req("Invalid IPv4 mode. Must be dhcp, static, or none."));
+    }
+
+    let ipv4_address = match mode.as_str() {
+        "static" => {
+            let addr = req.ipv4_address.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                .ok_or_else(|| bad_req("Static mode requires an IPv4 address (e.g. 192.168.1.1/24)."))?;
+            validate_cidr(addr).map_err(bad_req)?;
+            Some(addr.to_string())
+        }
+        _ => None,
+    };
+
+    let ipv6_address = match req.ipv6_address.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(v6) => {
+            if v6.parse::<std::net::Ipv6Addr>().is_err() {
+                // Accept "addr/prefix" form too
+                let (addr, prefix) = v6.split_once('/').ok_or_else(|| bad_req("Invalid IPv6 address."))?;
+                if addr.parse::<std::net::Ipv6Addr>().is_err() {
+                    return Err(bad_req("Invalid IPv6 address."));
+                }
+                let p: u8 = prefix.parse().map_err(|_| bad_req("Invalid IPv6 prefix length."))?;
+                if p > 128 { return Err(bad_req("IPv6 prefix length must be between 0 and 128.")); }
+            }
+            Some(v6.to_string())
+        }
+        None => None,
+    };
+
+    let mtu = req.mtu.unwrap_or(1500);
+    if !(68..=9000).contains(&mtu) {
+        return Err(bad_req("MTU must be between 68 and 9000."));
+    }
+
+    let enabled = req.enabled.unwrap_or(true);
+    let description = req.description.as_deref().map(str::trim)
+        .filter(|s| !s.is_empty()).map(String::from);
+
+    Ok(ValidatedVlan { mode, ipv4_address, ipv6_address, mtu, enabled, description, parent })
+}
+
 pub async fn create_vlan(
     State(state): State<AppState>,
     Json(req): Json<CreateVlanRequest>,
-) -> Result<(StatusCode, Json<ApiResponse<VlanConfig>>), StatusCode> {
-    if req.vlan_id < 1 || req.vlan_id > 4094 { return Err(bad_request()); }
-    if !validate_iface_name(&req.parent) {
-        return Err(bad_request());
-    }
+) -> Result<(StatusCode, Json<ApiResponse<VlanConfig>>), (StatusCode, Json<MessageResponse>)> {
+    let v = validate_vlan_req(&req).await?;
+
+    // Reject if the vlan<id> device name is already taken by something that isn't a VLAN we own
+    let vlan_name = format!("vlan{}", req.vlan_id);
+    if let Some(ifaces) = list_host_interfaces().await
+        && ifaces.iter().any(|i| i == &vlan_name) {
+            let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vlans WHERE vlan_id = ?1")
+                .bind(req.vlan_id as i64).fetch_one(&state.pool).await.unwrap_or(0);
+            if existing == 0 {
+                return Err(bad_req(format!("Device name '{}' is already in use on this host.", vlan_name)));
+            }
+        }
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let mode = req.ipv4_mode.unwrap_or_else(|| "none".to_string());
-    let mtu = req.mtu.unwrap_or(1500);
-    let enabled = req.enabled.unwrap_or(true);
 
     sqlx::query("INSERT INTO vlans (id, vlan_id, parent, ipv4_mode, ipv4_address, ipv6_address, mtu, enabled, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
-        .bind(&id).bind(req.vlan_id as i64).bind(&req.parent).bind(&mode)
-        .bind(req.ipv4_address.as_deref()).bind(req.ipv6_address.as_deref())
-        .bind(mtu as i64).bind(enabled).bind(req.description.as_deref()).bind(&now)
-        .execute(&state.pool).await.map_err(|_| bad_request())?;
+        .bind(&id).bind(req.vlan_id as i64).bind(&v.parent).bind(&v.mode)
+        .bind(v.ipv4_address.as_deref()).bind(v.ipv6_address.as_deref())
+        .bind(v.mtu as i64).bind(v.enabled).bind(v.description.as_deref()).bind(&now)
+        .execute(&state.pool).await
+        .map_err(|e| bad_req(format!("Failed to save VLAN: {}", e)))?;
 
     // DB only — OS changes applied via /api/v1/reload
     state.set_pending(|p| p.firewall = true).await;
 
-    let vlan = VlanConfig { id, vlan_id: req.vlan_id, parent: req.parent, ipv4_mode: mode,
-        ipv4_address: req.ipv4_address, ipv6_address: req.ipv6_address, mtu, enabled,
-        description: req.description, created_at: now };
+    let vlan = VlanConfig { id, vlan_id: req.vlan_id, parent: v.parent, ipv4_mode: v.mode,
+        ipv4_address: v.ipv4_address, ipv6_address: v.ipv6_address, mtu: v.mtu, enabled: v.enabled,
+        description: v.description, created_at: now };
     Ok((StatusCode::CREATED, Json(ApiResponse { data: vlan })))
 }
 
@@ -690,27 +775,24 @@ pub async fn update_vlan(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<CreateVlanRequest>,
-) -> Result<Json<ApiResponse<VlanConfig>>, StatusCode> {
-    if req.vlan_id < 1 || req.vlan_id > 4094 { return Err(bad_request()); }
-    if !validate_iface_name(&req.parent) {
-        return Err(bad_request());
-    }
-    let mode = req.ipv4_mode.unwrap_or_else(|| "none".to_string());
-    let mtu = req.mtu.unwrap_or(1500);
-    let enabled = req.enabled.unwrap_or(true);
+) -> Result<Json<ApiResponse<VlanConfig>>, (StatusCode, Json<MessageResponse>)> {
+    let v = validate_vlan_req(&req).await?;
 
     let result = sqlx::query("UPDATE vlans SET vlan_id=?2, parent=?3, ipv4_mode=?4, ipv4_address=?5, ipv6_address=?6, mtu=?7, enabled=?8, description=?9 WHERE id=?1")
-        .bind(&id).bind(req.vlan_id as i64).bind(&req.parent).bind(&mode)
-        .bind(req.ipv4_address.as_deref()).bind(req.ipv6_address.as_deref())
-        .bind(mtu as i64).bind(enabled).bind(req.description.as_deref())
-        .execute(&state.pool).await.map_err(|_| internal())?;
-    if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+        .bind(&id).bind(req.vlan_id as i64).bind(&v.parent).bind(&v.mode)
+        .bind(v.ipv4_address.as_deref()).bind(v.ipv6_address.as_deref())
+        .bind(v.mtu as i64).bind(v.enabled).bind(v.description.as_deref())
+        .execute(&state.pool).await
+        .map_err(|e| bad_req(format!("Failed to update VLAN: {}", e)))?;
+    if result.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, Json(MessageResponse { message: "VLAN not found.".into() })));
+    }
 
     // DB only — OS changes applied via /api/v1/reload
     state.set_pending(|p| p.firewall = true).await;
 
     let now = Utc::now().to_rfc3339();
-    Ok(Json(ApiResponse { data: VlanConfig { id, vlan_id: req.vlan_id, parent: req.parent, ipv4_mode: mode,
-        ipv4_address: req.ipv4_address, ipv6_address: req.ipv6_address, mtu, enabled,
-        description: req.description, created_at: now } }))
+    Ok(Json(ApiResponse { data: VlanConfig { id, vlan_id: req.vlan_id, parent: v.parent, ipv4_mode: v.mode,
+        ipv4_address: v.ipv4_address, ipv6_address: v.ipv6_address, mtu: v.mtu, enabled: v.enabled,
+        description: v.description, created_at: now } }))
 }

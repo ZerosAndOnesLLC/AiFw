@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { validateCIDR } from "@/lib/validate";
+import { validateCIDR, isValidIP, isValidCIDR } from "@/lib/validate";
+
+type FieldErrors = Partial<Record<
+  "vlan_id" | "parent" | "ipv4_address" | "ipv6_address" | "mtu",
+  string
+>>;
 
 interface VlanConfig {
   id: string;
@@ -59,6 +64,7 @@ export default function VlansPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<VlanForm>({ ...emptyForm });
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
 
   const fetchVlans = useCallback(async () => {
@@ -104,6 +110,8 @@ export default function VlansPage() {
   function openAdd() {
     setEditingId(null);
     setForm({ ...emptyForm });
+    setFieldErrors({});
+    setError(null);
     setModalOpen(true);
   }
 
@@ -119,6 +127,8 @@ export default function VlansPage() {
       enabled: vlan.enabled,
       description: vlan.description || "",
     });
+    setFieldErrors({});
+    setError(null);
     setModalOpen(true);
   }
 
@@ -126,39 +136,64 @@ export default function VlansPage() {
     setModalOpen(false);
     setEditingId(null);
     setForm({ ...emptyForm });
+    setFieldErrors({});
+  }
+
+  function validateForm(): FieldErrors {
+    const errs: FieldErrors = {};
+    const vid = parseInt(form.vlan_id, 10);
+    if (!form.vlan_id.trim() || isNaN(vid) || vid < 1 || vid > 4094) {
+      errs.vlan_id = "Must be between 1 and 4094.";
+    }
+    if (!form.parent.trim()) {
+      errs.parent = "Select a parent interface.";
+    }
+    if (form.ipv4_mode === "static") {
+      const addr = form.ipv4_address.trim();
+      if (!addr) {
+        errs.ipv4_address = "Required when IPv4 mode is Static (e.g. 192.168.1.1/24).";
+      } else {
+        const cidrErr = validateCIDR(addr, "IPv4 address");
+        if (cidrErr) errs.ipv4_address = cidrErr;
+      }
+    }
+    const v6 = form.ipv6_address.trim();
+    if (v6) {
+      const v6Valid = v6.includes("/") ? isValidCIDR(v6) : isValidIP(v6);
+      if (!v6Valid) errs.ipv6_address = "Invalid IPv6 address (e.g. fe80::1 or fe80::1/64).";
+    }
+    const mtu = parseInt(form.mtu, 10);
+    if (!form.mtu.trim() || isNaN(mtu) || mtu < 68 || mtu > 9000) {
+      errs.mtu = "MTU must be between 68 and 9000.";
+    }
+    return errs;
   }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
 
-    // Client-side validation
-    const errors: string[] = [];
-    const vid = parseInt(form.vlan_id, 10);
-    if (isNaN(vid) || vid < 1 || vid > 4094) errors.push("VLAN ID must be between 1 and 4094");
-    if (form.ipv4_mode === "static" && form.ipv4_address) {
-      const e = validateCIDR(form.ipv4_address, "IPv4 address");
-      if (e) errors.push(e);
-    }
-    if (errors.length > 0) { setError(errors.join(". ")); return; }
+    const errs = validateForm();
+    setFieldErrors(errs);
+    if (Object.keys(errs).length > 0) { setError(null); return; }
 
     setSaving(true);
     setError(null);
 
     const body: Record<string, unknown> = {
       vlan_id: parseInt(form.vlan_id, 10),
-      parent: form.parent,
+      parent: form.parent.trim(),
       ipv4_mode: form.ipv4_mode,
       mtu: parseInt(form.mtu, 10),
       enabled: form.enabled,
     };
-    if (form.ipv4_mode === "static" && form.ipv4_address) {
-      body.ipv4_address = form.ipv4_address;
+    if (form.ipv4_mode === "static" && form.ipv4_address.trim()) {
+      body.ipv4_address = form.ipv4_address.trim();
     }
-    if (form.ipv6_address) {
-      body.ipv6_address = form.ipv6_address;
+    if (form.ipv6_address.trim()) {
+      body.ipv6_address = form.ipv6_address.trim();
     }
-    if (form.description) {
-      body.description = form.description;
+    if (form.description.trim()) {
+      body.description = form.description.trim();
     }
 
     try {
@@ -354,8 +389,13 @@ export default function VlansPage() {
                     setForm({ ...form, vlan_id: e.target.value })
                   }
                   placeholder="100"
-                  className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  className={`w-full bg-gray-900 border rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none ${
+                    fieldErrors.vlan_id ? "border-red-600 focus:border-red-500" : "border-gray-600 focus:border-blue-500"
+                  }`}
                 />
+                {fieldErrors.vlan_id && (
+                  <p className="mt-1 text-xs text-red-400">{fieldErrors.vlan_id}</p>
+                )}
               </div>
 
               {/* Parent Interface */}
@@ -369,7 +409,9 @@ export default function VlansPage() {
                   onChange={(e) =>
                     setForm({ ...form, parent: e.target.value })
                   }
-                  className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  className={`w-full bg-gray-900 border rounded-md px-3 py-2 text-sm text-white focus:outline-none ${
+                    fieldErrors.parent ? "border-red-600 focus:border-red-500" : "border-gray-600 focus:border-blue-500"
+                  }`}
                 >
                   <option value="">Select interface...</option>
                   {physicalInterfaces.map((name) => (
@@ -378,6 +420,9 @@ export default function VlansPage() {
                     </option>
                   ))}
                 </select>
+                {fieldErrors.parent && (
+                  <p className="mt-1 text-xs text-red-400">{fieldErrors.parent}</p>
+                )}
               </div>
 
               {/* IPv4 Mode */}
@@ -410,8 +455,13 @@ export default function VlansPage() {
                       setForm({ ...form, ipv4_address: e.target.value })
                     }
                     placeholder="192.168.100.1/24"
-                    className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    className={`w-full bg-gray-900 border rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none ${
+                      fieldErrors.ipv4_address ? "border-red-600 focus:border-red-500" : "border-gray-600 focus:border-blue-500"
+                    }`}
                   />
+                  {fieldErrors.ipv4_address && (
+                    <p className="mt-1 text-xs text-red-400">{fieldErrors.ipv4_address}</p>
+                  )}
                 </div>
               )}
 
@@ -426,8 +476,13 @@ export default function VlansPage() {
                     setForm({ ...form, ipv6_address: e.target.value })
                   }
                   placeholder="fe80::1/64"
-                  className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  className={`w-full bg-gray-900 border rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none ${
+                    fieldErrors.ipv6_address ? "border-red-600 focus:border-red-500" : "border-gray-600 focus:border-blue-500"
+                  }`}
                 />
+                {fieldErrors.ipv6_address && (
+                  <p className="mt-1 text-xs text-red-400">{fieldErrors.ipv6_address}</p>
+                )}
               </div>
 
               {/* MTU */}
@@ -439,8 +494,13 @@ export default function VlansPage() {
                   max={9000}
                   value={form.mtu}
                   onChange={(e) => setForm({ ...form, mtu: e.target.value })}
-                  className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  className={`w-full bg-gray-900 border rounded-md px-3 py-2 text-sm text-white focus:outline-none ${
+                    fieldErrors.mtu ? "border-red-600 focus:border-red-500" : "border-gray-600 focus:border-blue-500"
+                  }`}
                 />
+                {fieldErrors.mtu && (
+                  <p className="mt-1 text-xs text-red-400">{fieldErrors.mtu}</p>
+                )}
               </div>
 
               {/* Description */}
