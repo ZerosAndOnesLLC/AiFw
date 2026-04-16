@@ -33,15 +33,15 @@ function getSubnet24(ip: string): string {
 /* ────────────────────────── Pipe geometry helpers ──────────────────────────
  *
  * Colors mirror the AiFw brand logo:
- *   Inbound  = cyan   (#22d3ee, cyan-400)   — the shield / circuit blue
- *   Outbound = orange (#f97316, orange-500) — the flame
+ *   Inbound  = ocean deep blue (#2563eb, blue-600) — the shield
+ *   Outbound = bright red      (#ef4444, red-500)  — the flame
  *
  * Width scaling is log-curve so each order-of-magnitude jump is visibly
  * fatter: idle ≈ 2px, 1 Mbps ≈ 26px, 100 Mbps ≈ 38px, 1 Gbps ≈ 44px,
  * capped at 60px so a huge flow doesn't crush the layout.
  */
-const PIPE_IN = "34, 211, 238";   // cyan-400 — logo shield
-const PIPE_OUT = "249, 115, 22";  // orange-500 — logo flame
+const PIPE_IN = "37, 99, 235";    // blue-600 — logo shield (ocean deep blue)
+const PIPE_OUT = "239, 68, 68";   // red-500 — logo flame (bright red)
 
 /** bps → pipe stroke width in px (log curve tuned for 1 Kbps..10 Gbps). */
 function rateWidth(bps: number): number {
@@ -57,28 +57,28 @@ function rateAlpha(bps: number): number {
   return Math.min(0.95, 0.3 + (lg - 2) / 10);
 }
 
-/** Animated vertical pipe — cyan=in (down), orange=out (up). */
+/** Animated vertical pipe — blue=in (down), red=out (up). */
 function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: number; height?: number }) {
   const inW = rateWidth(rateIn);
   const outW = rateWidth(rateOut);
   const inA = rateAlpha(rateIn);
   const outA = rateAlpha(rateOut);
-  const totalW = inW + outW + 8;
+  const totalW = inW + outW + 4;
   const svgW = Math.max(40, totalW + 16);
   const cx = svgW / 2;
-  const gap = Math.max(3, (inW + outW) / 6);
+  // Tight separation — pipes sit just next to each other so the card
+  // background isn't visible as a "third line" between them.
+  const gap = (inW + outW) / 2 * 0.55;
   return (
     <svg viewBox={`0 0 ${svgW} ${height}`} style={{ width: svgW, height }} className="block mx-auto">
       {/* Ambient glow — subtle halo around both pipes */}
       <line x1={cx} y1={0} x2={cx} y2={height} stroke={`rgba(${PIPE_IN},0.05)`} strokeWidth={totalW + 10} strokeLinecap="round" />
-      {/* Inbound (cyan, left) */}
-      <line x1={cx - gap} y1={0} x2={cx - gap} y2={height} stroke="rgba(15,23,42,0.55)" strokeWidth={inW + 2} strokeLinecap="round" />
+      {/* Inbound (blue, left) */}
       <line x1={cx - gap} y1={0} x2={cx - gap} y2={height} stroke={`rgba(${PIPE_IN},${inA})`}
         strokeWidth={inW} strokeDasharray="5 7" strokeLinecap="round">
         {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
       </line>
-      {/* Outbound (orange, right) */}
-      <line x1={cx + gap} y1={0} x2={cx + gap} y2={height} stroke="rgba(15,23,42,0.55)" strokeWidth={outW + 2} strokeLinecap="round" />
+      {/* Outbound (red, right) */}
       <line x1={cx + gap} y1={0} x2={cx + gap} y2={height} stroke={`rgba(${PIPE_OUT},${outA})`}
         strokeWidth={outW} strokeDasharray="5 7" strokeLinecap="round">
         {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="0" to="12" dur="0.5s" repeatCount="indefinite" />}
@@ -87,7 +87,7 @@ function VPipe({ rateIn, rateOut, height = 60 }: { rateIn: number; rateOut: numb
   );
 }
 
-/** SVG animated bezier pipe pair. Inbound cyan (down), outbound orange (up). */
+/** SVG animated bezier pipe pair. Inbound blue (down), outbound red (up). */
 function SvgPipe({ pathIn, pathOut, rateIn, rateOut }: { pathIn: string; pathOut: string; rateIn: number; rateOut: number; id: string }) {
   const inW = rateWidth(rateIn);
   const outW = rateWidth(rateOut);
@@ -99,15 +99,12 @@ function SvgPipe({ pathIn, pathOut, rateIn, rateOut }: { pathIn: string; pathOut
       {/* Colored halos hint at direction even before dashes animate */}
       <path d={pathIn} fill="none" stroke={`rgba(${PIPE_IN},0.06)`} strokeWidth={haloW} strokeLinecap="round" />
       <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},0.06)`} strokeWidth={haloW} strokeLinecap="round" />
-      {/* Dark casing so the bright dash color reads against any background */}
-      <path d={pathIn} fill="none" stroke="rgba(15,23,42,0.55)" strokeWidth={inW + 2} strokeLinecap="round" />
-      <path d={pathOut} fill="none" stroke="rgba(15,23,42,0.55)" strokeWidth={outW + 2} strokeLinecap="round" />
-      {/* Inbound (cyan) — flows toward subnets */}
+      {/* Inbound (blue) — flows toward subnets */}
       <path d={pathIn} fill="none" stroke={`rgba(${PIPE_IN},${inA})`}
         strokeWidth={inW} strokeDasharray="5 7" strokeLinecap="round">
         {rateIn > 0 && <animate attributeName="stroke-dashoffset" from="0" to="-12" dur="0.5s" repeatCount="indefinite" />}
       </path>
-      {/* Outbound (orange) — flows toward firewall/WAN */}
+      {/* Outbound (red) — flows toward firewall/WAN */}
       <path d={pathOut} fill="none" stroke={`rgba(${PIPE_OUT},${outA})`}
         strokeWidth={outW} strokeDasharray="5 7" strokeLinecap="round">
         {rateOut > 0 && <animate attributeName="stroke-dashoffset" from="0" to="12" dur="0.5s" repeatCount="indefinite" />}
@@ -290,8 +287,8 @@ export default function NatFlowsPage() {
             <span className="text-[var(--text-secondary)]">Group by /24</span>
           </label>
           <div className="flex items-center gap-3 text-[10px]">
-            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-cyan-400/80 rounded-sm inline-block" /> In</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-orange-500/80 rounded-sm inline-block" /> Out</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-blue-600/90 rounded-sm inline-block" /> In</span>
+            <span className="flex items-center gap-1"><span className="w-2 h-3 bg-red-500/90 rounded-sm inline-block" /> Out</span>
           </div>
           <div className="flex items-center gap-1.5">
             <div className={`w-2 h-2 rounded-full ${ws.connected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
@@ -351,8 +348,8 @@ export default function NatFlowsPage() {
                           {wan.address && <span className="text-[9px] text-gray-500 ml-1">{wan.address}</span>}
                         </div>
                         <div className="flex gap-2 mt-0.5 text-[9px]">
-                          <span className="text-cyan-400">{formatBps(wr.in)}</span>
-                          <span className="text-orange-400">{formatBps(wr.out)}</span>
+                          <span className="text-blue-400">{formatBps(wr.in)}</span>
+                          <span className="text-red-400">{formatBps(wr.out)}</span>
                         </div>
                       </div>
                     );
@@ -456,8 +453,8 @@ export default function NatFlowsPage() {
                           {iface.subnet && <span className="text-[9px] text-gray-500 ml-1.5">{iface.subnet}</span>}
                         </div>
                         <div className="flex gap-2 mt-0.5 text-[9px]">
-                          <span className="text-cyan-400">{formatBps(ifRate.out)}</span>
-                          <span className="text-orange-400">{formatBps(ifRate.in)}</span>
+                          <span className="text-blue-400">{formatBps(ifRate.out)}</span>
+                          <span className="text-red-400">{formatBps(ifRate.in)}</span>
                         </div>
 
                   {/* Fan-out to subnets */}
@@ -509,15 +506,15 @@ export default function NatFlowsPage() {
                                   <span className={`text-[10px] font-mono font-bold truncate ${isSelected ? "text-cyan-400" : "text-white"}`}>{sn.subnet}</span>
                                 </div>
                                 <div className="flex gap-1.5 mt-1 text-[9px] leading-none">
-                                  <span className="text-cyan-400">{formatBps(sr.in)}</span>
-                                  <span className="text-orange-400">{formatBps(sr.out)}</span>
+                                  <span className="text-blue-400">{formatBps(sr.in)}</span>
+                                  <span className="text-red-400">{formatBps(sr.out)}</span>
                                 </div>
                                 <div className="flex justify-between w-full mt-0.5 text-[8px] text-gray-500 leading-none">
                                   <span>{sn.hosts.length}h · {sn.conns}c</span>
                                   <span>{formatBytes(sn.bytes)}</span>
                                 </div>
                                 <div className="w-full h-0.5 bg-gray-700 rounded-full mt-1 overflow-hidden">
-                                  <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all"
+                                  <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all"
                                     style={{ width: `${Math.max(2, (sn.bytes / maxItemBytes) * 100)}%` }} />
                                 </div>
                               </button>
@@ -559,7 +556,7 @@ export default function NatFlowsPage() {
                     <span className="text-[10px] text-gray-400">{sn.hosts.length} host{sn.hosts.length !== 1 ? "s" : ""} · {sn.conns} conn · {formatBytes(sn.bytes)}</span>
                   </div>
                   <div className="w-full h-1 bg-gray-700 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all" style={{ width: `${(sn.bytes / maxItemBytes) * 100}%` }} />
+                    <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all" style={{ width: `${(sn.bytes / maxItemBytes) * 100}%` }} />
                   </div>
                   {selectedHost === sn.subnet && (
                     <div className="mt-2 flex flex-wrap gap-1">
@@ -581,7 +578,7 @@ export default function NatFlowsPage() {
                     <span className="text-[10px] text-gray-400">{host.conns} conn · {formatBytes(host.bytes)}</span>
                   </div>
                   <div className="w-full h-1 bg-gray-700 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all" style={{ width: `${(host.bytes / maxHostBytes) * 100}%` }} />
+                    <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all" style={{ width: `${(host.bytes / maxHostBytes) * 100}%` }} />
                   </div>
                 </button>
               ))
@@ -609,7 +606,7 @@ export default function NatFlowsPage() {
                   </div>
                   {(c.bytes_in > 0 || c.bytes_out > 0) && (
                     <div className="text-[10px] text-gray-500 mt-0.5">
-                      <span className="text-cyan-400">In: {formatBytes(c.bytes_in)}</span> · <span className="text-orange-400">Out: {formatBytes(c.bytes_out)}</span>
+                      <span className="text-blue-400">In: {formatBytes(c.bytes_in)}</span> · <span className="text-red-400">Out: {formatBytes(c.bytes_out)}</span>
                     </div>
                   )}
                 </div>
