@@ -25,7 +25,7 @@ fi
 
 # --- Install dependencies ---
 echo "=== [1/6] Installing dependencies ==="
-pkg install -y curl git gmake node24 npm-node24
+pkg install -y curl git gmake node24 npm-node24 brotli
 
 # `sudo` clears PATH, so even if rust is already installed under root's home
 # we won't see `cargo` on PATH unless we source cargo's env first. Skipping
@@ -66,6 +66,34 @@ cd "$PROJECT_ROOT/aifw-ui"
 npm config delete python 2>/dev/null || true
 npm ci
 npm run build
+
+# Pre-compress every text asset alongside the originals. tower_http's
+# ServeDir picks up .br / .gz siblings automatically when the request
+# advertises the matching Accept-Encoding. Skipping images / fonts —
+# they're already compressed.
+if [ -d out ]; then
+    echo "  Pre-compressing UI text assets (br + gz)..."
+    has_brotli=0
+    command -v brotli >/dev/null 2>&1 && has_brotli=1
+    find out -type f \( -name '*.html' -o -name '*.js' -o -name '*.css' \
+        -o -name '*.svg' -o -name '*.json' -o -name '*.txt' \
+        -o -name '*.map' -o -name '*.xml' \) | while read -r f; do
+        if [ "$has_brotli" -eq 1 ] && [ ! -f "${f}.br" ]; then
+            brotli -q 11 -k "$f" 2>/dev/null || true
+        fi
+        if [ ! -f "${f}.gz" ]; then
+            gzip -k -9 "$f" 2>/dev/null || true
+        fi
+    done
+    # Quick stats so the build log shows the win.
+    js_orig=$(find out -name '*.js' -not -name '*.gz' -not -name '*.br' -exec stat -f%z {} + 2>/dev/null | awk '{s+=$1} END {print s}')
+    js_br=$(find out -name '*.js.br' -exec stat -f%z {} + 2>/dev/null | awk '{s+=$1} END {print s}')
+    if [ -n "$js_orig" ] && [ -n "$js_br" ] && [ "$js_orig" -gt 0 ]; then
+        printf "  JS size: %d KB raw  ->  %d KB brotli (%d%% smaller)\n" \
+            "$((js_orig / 1024))" "$((js_br / 1024))" \
+            "$(( (js_orig - js_br) * 100 / js_orig ))"
+    fi
+fi
 cd "$PROJECT_ROOT"
 
 # --- Build Rust binaries ---
