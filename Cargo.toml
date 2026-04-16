@@ -17,7 +17,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.53.8"
+version = "5.54.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -29,6 +29,7 @@ aifw-core = { path = "aifw-core" }
 aifw-conntrack = { path = "aifw-conntrack" }
 aifw-plugins = { path = "aifw-plugins" }
 aifw-ids = { path = "aifw-ids" }
+aifw-metrics = { path = "aifw-metrics" }
 aifw-api = { path = "aifw-api" }
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["full"] }

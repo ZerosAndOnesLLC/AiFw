@@ -72,54 +72,56 @@ pub fn aggregate(points: &[MetricPoint], method: Aggregation) -> Option<MetricPo
     })
 }
 
-/// Resolution tier for the RRD
+/// Resolution tier for the RRD. Intervals × capacities give the retention
+/// window for each tier:
+///   Live  1 s   × 1 800   = 30 min
+///   Short 10 s  × 2 160   = 6 hours
+///   Mid   60 s  × 10 080  = 7 days
+///   Long  300 s × 8 640   = 30 days
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Tier {
-    /// 1-second resolution, last 5 minutes (300 points)
-    Realtime,
-    /// 1-minute resolution, last 24 hours (1440 points)
-    Minute,
-    /// 1-hour resolution, last 30 days (720 points)
-    Hour,
-    /// 1-day resolution, last 1 year (365 points)
-    Day,
+    Live,
+    Short,
+    Mid,
+    Long,
 }
 
 impl Tier {
     pub fn capacity(&self) -> usize {
         match self {
-            Tier::Realtime => 300,
-            Tier::Minute => 1440,
-            Tier::Hour => 720,
-            Tier::Day => 365,
+            Tier::Live => 1800,    // 30 min at 1 s
+            Tier::Short => 2160,   // 6 hours at 10 s
+            Tier::Mid => 10080,    // 7 days at 60 s
+            Tier::Long => 8640,    // 30 days at 300 s
         }
     }
 
     pub fn interval_secs(&self) -> u64 {
         match self {
-            Tier::Realtime => 1,
-            Tier::Minute => 60,
-            Tier::Hour => 3600,
-            Tier::Day => 86400,
+            Tier::Live => 1,
+            Tier::Short => 10,
+            Tier::Mid => 60,
+            Tier::Long => 300,
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
-            Tier::Realtime => "realtime",
-            Tier::Minute => "minute",
-            Tier::Hour => "hour",
-            Tier::Day => "day",
+            Tier::Live => "live",
+            Tier::Short => "short",
+            Tier::Mid => "mid",
+            Tier::Long => "long",
         }
     }
 
-    /// How many lower-tier points to consolidate
+    /// How many points of the preceding tier fold into one of this tier.
     pub fn consolidation_ratio(&self) -> usize {
         match self {
-            Tier::Realtime => 1,
-            Tier::Minute => 60,  // 60 x 1s -> 1m
-            Tier::Hour => 60,    // 60 x 1m -> 1h
-            Tier::Day => 24,     // 24 x 1h -> 1d
+            Tier::Live => 1,
+            Tier::Short => 10, // 10 × 1 s  -> 1 × 10 s
+            Tier::Mid => 6,    // 6 × 10 s  -> 1 × 60 s
+            Tier::Long => 5,   // 5 × 60 s  -> 1 × 300 s
         }
     }
 }
@@ -129,16 +131,13 @@ impl Tier {
 pub struct MetricSeries {
     pub name: String,
     pub aggregation: Aggregation,
-    pub realtime: RingBuffer<MetricPoint>,
-    pub minute: RingBuffer<MetricPoint>,
-    pub hour: RingBuffer<MetricPoint>,
-    pub day: RingBuffer<MetricPoint>,
-    /// Accumulator for consolidation from realtime -> minute
-    minute_acc: Vec<MetricPoint>,
-    /// Accumulator for consolidation from minute -> hour
-    hour_acc: Vec<MetricPoint>,
-    /// Accumulator for consolidation from hour -> day
-    day_acc: Vec<MetricPoint>,
+    pub live: RingBuffer<MetricPoint>,
+    pub short: RingBuffer<MetricPoint>,
+    pub mid: RingBuffer<MetricPoint>,
+    pub long: RingBuffer<MetricPoint>,
+    short_acc: Vec<MetricPoint>,
+    mid_acc: Vec<MetricPoint>,
+    long_acc: Vec<MetricPoint>,
 }
 
 impl MetricSeries {
@@ -146,41 +145,38 @@ impl MetricSeries {
         Self {
             name: name.to_string(),
             aggregation,
-            realtime: RingBuffer::new(Tier::Realtime.capacity()),
-            minute: RingBuffer::new(Tier::Minute.capacity()),
-            hour: RingBuffer::new(Tier::Hour.capacity()),
-            day: RingBuffer::new(Tier::Day.capacity()),
-            minute_acc: Vec::new(),
-            hour_acc: Vec::new(),
-            day_acc: Vec::new(),
+            live: RingBuffer::new(Tier::Live.capacity()),
+            short: RingBuffer::new(Tier::Short.capacity()),
+            mid: RingBuffer::new(Tier::Mid.capacity()),
+            long: RingBuffer::new(Tier::Long.capacity()),
+            short_acc: Vec::new(),
+            mid_acc: Vec::new(),
+            long_acc: Vec::new(),
         }
     }
 
     /// Record a new value. Handles automatic consolidation into higher tiers.
     pub fn record(&mut self, value: f64) {
         let point = MetricPoint::new(value);
-        self.realtime.push(point.clone());
+        self.live.push(point.clone());
 
-        // Accumulate for minute consolidation
-        self.minute_acc.push(point);
-        if self.minute_acc.len() >= Tier::Minute.consolidation_ratio()
-            && let Some(agg) = aggregate(&self.minute_acc, self.aggregation) {
-                self.minute.push(agg.clone());
-                self.minute_acc.clear();
+        self.short_acc.push(point);
+        if self.short_acc.len() >= Tier::Short.consolidation_ratio()
+            && let Some(agg) = aggregate(&self.short_acc, self.aggregation) {
+                self.short.push(agg.clone());
+                self.short_acc.clear();
 
-                // Accumulate for hour consolidation
-                self.hour_acc.push(agg);
-                if self.hour_acc.len() >= Tier::Hour.consolidation_ratio()
-                    && let Some(agg) = aggregate(&self.hour_acc, self.aggregation) {
-                        self.hour.push(agg.clone());
-                        self.hour_acc.clear();
+                self.mid_acc.push(agg);
+                if self.mid_acc.len() >= Tier::Mid.consolidation_ratio()
+                    && let Some(agg) = aggregate(&self.mid_acc, self.aggregation) {
+                        self.mid.push(agg.clone());
+                        self.mid_acc.clear();
 
-                        // Accumulate for day consolidation
-                        self.day_acc.push(agg);
-                        if self.day_acc.len() >= Tier::Day.consolidation_ratio()
-                            && let Some(agg) = aggregate(&self.day_acc, self.aggregation) {
-                                self.day.push(agg);
-                                self.day_acc.clear();
+                        self.long_acc.push(agg);
+                        if self.long_acc.len() >= Tier::Long.consolidation_ratio()
+                            && let Some(agg) = aggregate(&self.long_acc, self.aggregation) {
+                                self.long.push(agg);
+                                self.long_acc.clear();
                             }
                     }
             }
@@ -189,38 +185,40 @@ impl MetricSeries {
     /// Get data points for a given tier
     pub fn get_tier(&self, tier: Tier) -> Vec<&MetricPoint> {
         match tier {
-            Tier::Realtime => self.realtime.values(),
-            Tier::Minute => self.minute.values(),
-            Tier::Hour => self.hour.values(),
-            Tier::Day => self.day.values(),
+            Tier::Live => self.live.values(),
+            Tier::Short => self.short.values(),
+            Tier::Mid => self.mid.values(),
+            Tier::Long => self.long.values(),
         }
     }
 
     /// Get the last N points from a tier
     pub fn get_last(&self, tier: Tier, n: usize) -> Vec<&MetricPoint> {
         match tier {
-            Tier::Realtime => self.realtime.last_n(n),
-            Tier::Minute => self.minute.last_n(n),
-            Tier::Hour => self.hour.last_n(n),
-            Tier::Day => self.day.last_n(n),
+            Tier::Live => self.live.last_n(n),
+            Tier::Short => self.short.last_n(n),
+            Tier::Mid => self.mid.last_n(n),
+            Tier::Long => self.long.last_n(n),
         }
     }
 
     /// Get the latest value
     pub fn latest(&self) -> Option<f64> {
-        self.realtime.latest().map(|p| p.value)
+        self.live.latest().map(|p| p.value)
     }
 
-    /// Auto-select the best tier for a time range in seconds
+    /// Pick the tier whose window covers the requested range with the finest
+    /// resolution available. Queries for ranges longer than the Long tier's
+    /// retention (30 days) still fall through to Long.
     pub fn best_tier_for_range(range_secs: u64) -> Tier {
-        if range_secs <= 300 {
-            Tier::Realtime
-        } else if range_secs <= 86400 {
-            Tier::Minute
-        } else if range_secs <= 2_592_000 {
-            Tier::Hour
+        if range_secs <= 1_800 {
+            Tier::Live
+        } else if range_secs <= 21_600 {
+            Tier::Short
+        } else if range_secs <= 604_800 {
+            Tier::Mid
         } else {
-            Tier::Day
+            Tier::Long
         }
     }
 }

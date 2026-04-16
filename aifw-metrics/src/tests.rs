@@ -135,58 +135,77 @@ mod tests {
         let mut series = MetricSeries::new("test", Aggregation::Average);
         series.record(42.0);
         assert_eq!(series.latest(), Some(42.0));
-        assert_eq!(series.realtime.len(), 1);
+        assert_eq!(series.live.len(), 1);
     }
 
     #[test]
-    fn test_series_consolidation_to_minute() {
+    fn test_series_consolidation_to_short() {
         let mut series = MetricSeries::new("test", Aggregation::Average);
 
-        // Record 60 points -> should trigger 1 minute consolidation
-        for i in 0..60 {
+        // Record 10 points -> 1 short-tier consolidation (10 × 1s = 10s bucket)
+        for i in 0..10 {
             series.record(i as f64);
         }
 
-        assert_eq!(series.realtime.len(), 60);
-        assert_eq!(series.minute.len(), 1);
+        assert_eq!(series.live.len(), 10);
+        assert_eq!(series.short.len(), 1);
 
-        let min_point = series.minute.latest().unwrap();
-        // Average of 0..59 = 29.5
-        assert!((min_point.value - 29.5).abs() < 0.01);
-        assert_eq!(min_point.min, 0.0);
-        assert_eq!(min_point.max, 59.0);
+        let sp = series.short.latest().unwrap();
+        // Average of 0..9 = 4.5
+        assert!((sp.value - 4.5).abs() < 0.01);
+        assert_eq!(sp.min, 0.0);
+        assert_eq!(sp.max, 9.0);
     }
 
     #[test]
-    fn test_series_multiple_minute_consolidations() {
+    fn test_series_consolidation_to_mid() {
         let mut series = MetricSeries::new("test", Aggregation::Sum);
 
-        // Record 180 points -> 3 minute consolidations
-        for _ in 0..180 {
+        // 60 × 1s live = 6 × 10s short = 1 × 60s mid
+        for _ in 0..60 {
             series.record(1.0);
         }
 
-        assert_eq!(series.minute.len(), 3);
+        assert_eq!(series.short.len(), 6);
+        assert_eq!(series.mid.len(), 1);
+    }
+
+    #[test]
+    fn test_series_consolidation_to_long() {
+        let mut series = MetricSeries::new("test", Aggregation::Sum);
+
+        // 300 × 1s = 30 × 10s = 5 × 60s = 1 × 300s
+        for _ in 0..300 {
+            series.record(1.0);
+        }
+
+        assert_eq!(series.short.len(), 30);
+        assert_eq!(series.mid.len(), 5);
+        assert_eq!(series.long.len(), 1);
     }
 
     #[test]
     fn test_series_tier_selection() {
-        assert_eq!(MetricSeries::best_tier_for_range(60), Tier::Realtime);
-        assert_eq!(MetricSeries::best_tier_for_range(300), Tier::Realtime);
-        assert_eq!(MetricSeries::best_tier_for_range(3600), Tier::Minute);
-        assert_eq!(MetricSeries::best_tier_for_range(86400), Tier::Minute);
-        assert_eq!(MetricSeries::best_tier_for_range(604800), Tier::Hour);
-        assert_eq!(MetricSeries::best_tier_for_range(31536000), Tier::Day);
+        assert_eq!(MetricSeries::best_tier_for_range(60), Tier::Live);
+        assert_eq!(MetricSeries::best_tier_for_range(1_800), Tier::Live);
+        assert_eq!(MetricSeries::best_tier_for_range(1_801), Tier::Short);
+        assert_eq!(MetricSeries::best_tier_for_range(21_600), Tier::Short);
+        assert_eq!(MetricSeries::best_tier_for_range(21_601), Tier::Mid);
+        assert_eq!(MetricSeries::best_tier_for_range(604_800), Tier::Mid);
+        assert_eq!(MetricSeries::best_tier_for_range(604_801), Tier::Long);
+        assert_eq!(MetricSeries::best_tier_for_range(31_536_000), Tier::Long);
     }
 
     #[test]
     fn test_tier_properties() {
-        assert_eq!(Tier::Realtime.capacity(), 300);
-        assert_eq!(Tier::Minute.capacity(), 1440);
-        assert_eq!(Tier::Hour.capacity(), 720);
-        assert_eq!(Tier::Day.capacity(), 365);
-        assert_eq!(Tier::Realtime.interval_secs(), 1);
-        assert_eq!(Tier::Day.interval_secs(), 86400);
+        assert_eq!(Tier::Live.capacity(), 1800);
+        assert_eq!(Tier::Short.capacity(), 2160);
+        assert_eq!(Tier::Mid.capacity(), 10080);
+        assert_eq!(Tier::Long.capacity(), 8640);
+        assert_eq!(Tier::Live.interval_secs(), 1);
+        assert_eq!(Tier::Short.interval_secs(), 10);
+        assert_eq!(Tier::Mid.interval_secs(), 60);
+        assert_eq!(Tier::Long.interval_secs(), 300);
     }
 
     // --- MetricsStore tests ---
@@ -197,7 +216,7 @@ mod tests {
         store.record("cpu", 50.0).await.unwrap();
         store.record("cpu", 60.0).await.unwrap();
 
-        let result = store.query("cpu", Tier::Realtime, None).await.unwrap();
+        let result = store.query("cpu", Tier::Live, None).await.unwrap();
         assert_eq!(result.points.len(), 2);
         assert_eq!(result.name, "cpu");
     }
@@ -241,7 +260,7 @@ mod tests {
             store.record("seq", i as f64).await.unwrap();
         }
 
-        let result = store.query("seq", Tier::Realtime, Some(5)).await.unwrap();
+        let result = store.query("seq", Tier::Live, Some(5)).await.unwrap();
         assert_eq!(result.points.len(), 5);
         assert_eq!(result.points.last().unwrap().value, 99.0);
     }
@@ -262,7 +281,7 @@ mod tests {
     #[tokio::test]
     async fn test_store_missing_metric() {
         let store = MetricsStore::new();
-        let result = store.query("nonexistent", Tier::Realtime, None).await;
+        let result = store.query("nonexistent", Tier::Live, None).await;
         assert!(result.is_err());
     }
 

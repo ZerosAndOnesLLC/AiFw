@@ -24,6 +24,7 @@ const navItems: NavItem[] = [
     children: [
       { href: "/", label: "Dashboard", permission: "dashboard:view" },
       { href: "/traffic", label: "Traffic", permission: "dashboard:view" },
+      { href: "/metrics", label: "Metrics", permission: "dashboard:view" },
       { href: "/nat/flows", label: "NAT Flows", permission: "nat:read" },
       { href: "/connections", label: "Connections", permission: "connections:view" },
       { href: "/blocked", label: "Blocked Traffic", permission: "connections:view" },

@@ -11,6 +11,7 @@ mod dns_blocklists;
 mod dns_resolver;
 mod iface;
 mod ids;
+mod metrics_series;
 mod multiwan;
 mod plugins;
 mod reverse_proxy;
@@ -109,6 +110,7 @@ pub struct AppState {
     pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
     pub alert_buffer: Arc<aifw_ids::output::memory::AlertBuffer>,
     pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
+    pub metrics_store: Arc<aifw_metrics::MetricsStore>,
     pub auth_settings: auth::AuthSettings,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
     pub metrics_history_max: Arc<std::sync::atomic::AtomicUsize>,
@@ -228,6 +230,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/status", get(routes::status))
         .route("/api/v1/about", get(routes::about_info))
         .route("/api/v1/metrics", get(routes::metrics))
+        .route("/api/v1/metrics/list", get(metrics_series::list))
+        .route("/api/v1/metrics/series", get(metrics_series::query))
         .route("/api/v1/ws", get(ws::ws_handler))
         .route("/api/v1/pending/stream", get(routes::pending_stream))
         .route("/api/v1/pending", get(routes::get_pending))
@@ -764,15 +768,67 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         )
         .with_state(state);
 
-    // Serve static UI if directory is provided
+    // Serve static UI if directory is provided.
+    //
+    // - `precompressed_br` / `precompressed_gzip`: ServeDir auto-serves
+    //   `<file>.br` / `<file>.gz` siblings when the request advertises
+    //   the matching Accept-Encoding, with the right Content-Encoding
+    //   header. The build pipeline writes those siblings under
+    //   `aifw-ui/out/`. ~5x reduction on the JS bundle.
+    // - Cache-Control headers via per-path layer below: long-lived
+    //   `immutable` for fingerprinted `_next/static/*` chunks (Next.js
+    //   content-hashes those filenames), short for everything else,
+    //   and `no-cache` for HTML so updates are seen immediately.
     if let Some(dir) = ui_dir
         && dir.exists() {
             let index = dir.join("index.html");
-            app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
-            info!("Serving web UI from {}", dir.display());
+            let serve = ServeDir::new(dir)
+                .precompressed_br()
+                .precompressed_gzip()
+                .fallback(ServeFile::new(index).precompressed_br().precompressed_gzip());
+            let layered = tower::ServiceBuilder::new()
+                .layer(axum::middleware::from_fn(ui_cache_headers))
+                .service(serve);
+            app = app.fallback_service(layered);
+            info!("Serving web UI from {} (precompressed + cache headers enabled)", dir.display());
         }
 
     app
+}
+
+/// Per-path Cache-Control for the static UI. Runs as middleware in front
+/// of ServeDir so we can pick the right policy from the URL path before
+/// the response is built.
+async fn ui_cache_headers(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::header::{HeaderValue, CACHE_CONTROL};
+
+    // Decide the policy from the request path. Header insertion happens
+    // after the inner service runs so it overrides anything ServeDir set
+    // (currently nothing).
+    let path = req.uri().path().to_string();
+    let policy: &'static str = if path.starts_with("/_next/static/") {
+        // Next.js content-hashes these filenames. Safe to cache for a year
+        // and let the browser skip the validate round-trip entirely.
+        "public, max-age=31536000, immutable"
+    } else if path == "/" || path == "/index.html" || path.ends_with("/index.html")
+        || (!path.contains('.') && !path.starts_with("/api/"))
+    {
+        // SPA shell + Next-routed pages without a file extension: must
+        // revalidate so deploys are seen on next refresh.
+        "no-cache, must-revalidate"
+    } else {
+        // Other static assets: 1 hour shared cache.
+        "public, max-age=3600"
+    };
+
+    let mut response = next.run(req).await;
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static(policy));
+    response
 }
 
 pub async fn create_app_state(
@@ -801,6 +857,11 @@ async fn create_state_from_db(
 ) -> anyhow::Result<AppState> {
     let pool = db.pool().clone();
     let pf: Arc<dyn PfBackend> = Arc::from(aifw_pf::create_backend());
+
+    // In-memory metrics RRD store + 1s collector tied to pf.
+    // Lives for the lifetime of the process; tier retention is 30 min / 6 h / 7 d / 30 d.
+    let metrics_store = Arc::new(aifw_metrics::MetricsStore::new());
+    let _metrics_task = aifw_metrics::MetricsCollector::new(pf.clone(), metrics_store.clone()).start();
 
     auth::migrate(&pool).await?;
 
@@ -947,6 +1008,7 @@ async fn create_state_from_db(
         ids_engine,
         alert_buffer,
         plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
+        metrics_store: metrics_store.clone(),
         auth_settings,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
         metrics_history_max: Arc::new(std::sync::atomic::AtomicUsize::new(history_max)),
