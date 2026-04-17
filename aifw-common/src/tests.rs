@@ -275,9 +275,13 @@ mod tests {
         );
         rule.dst_port = Some(PortRange { start: 80, end: 80 });
         let pf = rule.to_pf_rule();
+        // DNAT emits two rules: the rdr itself and a NAT reflection rule
+        // that SNATs forwarded traffic so replies route back through the
+        // firewall (fixes asymmetric routing — commit 492b947).
         assert_eq!(
             pf,
-            "rdr on em0 proto tcp to 203.0.113.1 port 80 -> 192.168.1.10 port 8080"
+            "rdr on em0 proto tcp to 203.0.113.1 port 80 -> 192.168.1.10 port 8080\n\
+             nat on em0 proto tcp from any to 192.168.1.10 port 8080 -> (em0)"
         );
     }
 
