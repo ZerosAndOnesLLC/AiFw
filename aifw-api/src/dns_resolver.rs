@@ -259,8 +259,14 @@ impl Default for ResolverConfig {
                 "10.0.0.0/8".into(), "172.16.0.0/12".into(), "192.168.0.0/16".into(),
                 "169.254.0.0/16".into(), "fd00::/8".into(), "fe80::/10".into(),
             ],
-            forwarding_enabled: false,
-            forwarding_servers: vec![],
+            // Default ON. Iterative recursion in rDNS 1.12.8 returns referrals
+            // instead of following them to completion, leaving clients with
+            // 0-answer responses for anything not already cached. Forwarding
+            // to public resolvers is the battle-tested fallback and keeps DNS
+            // working out of the box. Operators who want pure recursion can
+            // flip this off in the UI.
+            forwarding_enabled: true,
+            forwarding_servers: vec!["1.1.1.1".into(), "8.8.8.8".into()],
             use_system_nameservers: false,
             dot_enabled: false,
             dot_upstream: vec![
@@ -399,6 +405,33 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             description TEXT, created_at TEXT NOT NULL
         )
     "#).execute(pool).await?;
+
+    // Upgrade heal (v5.57.5): if forwarding is disabled but forwarding_servers
+    // is populated, flip forwarding on. rDNS 1.12.8 has broken iterative
+    // recursion — returns referrals instead of following them — so recursion-
+    // only mode leaves LAN clients with 0-answer responses for anything not
+    // cached. Forwarding to the user's configured upstreams is the only
+    // working path until the rDNS recursion bug is fixed.
+    //
+    // Only runs if servers are already configured (forwarding_servers
+    // non-empty). If an operator intentionally cleared both fields to
+    // disable DNS entirely, we don't touch it.
+    let fwd_enabled = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_enabled'"
+    ).fetch_optional(pool).await.ok().flatten();
+    let fwd_servers = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'"
+    ).fetch_optional(pool).await.ok().flatten();
+    let servers_set = fwd_servers.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if fwd_enabled.as_deref() == Some("false") && servers_set {
+        let _ = sqlx::query(
+            "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('forwarding_enabled', 'true')"
+        ).execute(pool).await;
+        tracing::warn!(
+            servers = fwd_servers.as_deref().unwrap_or(""),
+            "auto-enabled DNS forwarding at migration: rDNS iterative recursion is broken in the shipped build; using forwarders to your configured upstreams"
+        );
+    }
 
     Ok(())
 }
