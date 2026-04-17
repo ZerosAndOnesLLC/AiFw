@@ -1175,6 +1175,25 @@ pub async fn dns_set(servers_str: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn dns_probe_set(db_path: &Path, enabled: bool) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    sqlx::query("INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('probe_enabled', ?1)")
+        .bind(if enabled { "true" } else { "false" })
+        .execute(db.pool()).await?;
+    println!("DNS resolver probe: {}", if enabled { "ENABLED (auto-rollback on :53 silence)" } else { "DISABLED (trust service restart exit code only)" });
+    println!("Takes effect on the next apply/start/restart of the resolver.");
+    Ok(())
+}
+
+pub async fn dns_probe_status(db_path: &Path) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let row = sqlx::query_as::<_, (String,)>("SELECT value FROM dns_resolver_config WHERE key = 'probe_enabled'")
+        .fetch_optional(db.pool()).await?;
+    let enabled = row.map(|(v,)| v == "true").unwrap_or(true); // default ON
+    println!("DNS resolver probe: {}", if enabled { "enabled" } else { "disabled" });
+    Ok(())
+}
+
 // ============================================================
 // Users
 // ============================================================

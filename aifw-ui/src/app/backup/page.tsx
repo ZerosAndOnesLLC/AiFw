@@ -23,6 +23,33 @@ interface ConfigCheck {
   info: string[];
 }
 
+interface InterfaceInfo {
+  name: string;
+  mac: string | null;
+  ipv4: string | null;
+  ipv6: string | null;
+  ipv4_mode: string | null;
+  status: string;
+}
+
+interface DropSummary {
+  rules: number;
+  nat: number;
+  wireguard: number;
+  carp: number;
+  queues: number;
+  rate_limits: number;
+  pfsync: boolean;
+}
+
+interface ImportPreview {
+  interfaces_found: string[];
+  interfaces_missing: string[];
+  interfaces_present: InterfaceInfo[];
+  suggestions: Record<string, string>;
+  drop_summary_if_unmapped: DropSummary;
+}
+
 interface DiffSummary {
   v1: number;
   v2: number;
@@ -88,7 +115,13 @@ export default function BackupPage() {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importMap, setImportMap] = useState<Record<string, string>>({});
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // History Restore preview/mapping modal
+  const [restorePending, setRestorePending] = useState<{ version: number; preview: ImportPreview } | null>(null);
+  const [restoreMap, setRestoreMap] = useState<Record<string, string>>({});
 
   // OPNsense
   const [opnXml, setOpnXml] = useState("");
@@ -150,24 +183,63 @@ export default function BackupPage() {
 
   /* -- Restore ------------------------------------------------------- */
 
-  const restore = async (version: number) => {
-    if (!confirm(`Restore to version ${version}? This will replace all current rules and NAT configuration.`)) return;
+  /** Convert a user's mapping choices (UI strings) into the API shape. */
+  const buildInterfaceMapForApi = (
+    preview: ImportPreview,
+    uiMap: Record<string, string>,
+  ): Record<string, string | null> => {
+    const out: Record<string, string | null> = {};
+    for (const missing of preview.interfaces_missing) {
+      const choice = uiMap[missing] ?? "";
+      if (choice === "__drop__") out[missing] = null;
+      else if (choice === "__keep__" || choice === "") out[missing] = missing;
+      else out[missing] = choice;
+    }
+    return out;
+  };
+
+  const sendRestore = async (version: number, interface_map: Record<string, string | null>) => {
     setRestoring(version);
     try {
       const res = await fetch("/api/v1/config/restore", {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ version }),
+        body: JSON.stringify({ version, interface_map }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       showFeedback("success", data.message || "Restored");
       await fetchHistory();
+      setRestorePending(null);
+      setRestoreMap({});
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Restore failed");
     } finally {
       setRestoring(null);
     }
+  };
+
+  const restore = async (version: number) => {
+    setRestoring(version);
+    let preview: ImportPreview | null = null;
+    try {
+      const res = await fetch(`/api/v1/config/restore-preview?version=${version}`, { headers: authHeadersPlain() });
+      if (res.ok) preview = await res.json();
+    } catch { /* fall through */ }
+    setRestoring(null);
+
+    if (preview && preview.interfaces_missing.length > 0) {
+      const defaults: Record<string, string> = {};
+      for (const m of preview.interfaces_missing) {
+        defaults[m] = preview.suggestions[m] ?? "__keep__";
+      }
+      setRestoreMap(defaults);
+      setRestorePending({ version, preview });
+      return;
+    }
+
+    if (!confirm(`Restore to version ${version}? This will REPLACE all current rules, NAT, Geo-IP, VPN tunnels, DNS, auth settings, traffic shaping queues, rate limits, TLS rules, HA config, and pf tuning. Undo by restoring a later version.`)) return;
+    await sendRestore(version, {});
   };
 
   /* -- Diff ---------------------------------------------------------- */
@@ -234,33 +306,74 @@ export default function BackupPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const text = ev.target?.result as string;
       setPreview(text);
+      setImportPreview(null);
+      setImportMap({});
+      try {
+        const parsed = JSON.parse(text);
+        const res = await fetch("/api/v1/config/import-preview", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify(parsed),
+        });
+        if (res.ok) {
+          const data: ImportPreview = await res.json();
+          setImportPreview(data);
+          const defaults: Record<string, string> = {};
+          for (const m of data.interfaces_missing) defaults[m] = data.suggestions[m] ?? "__keep__";
+          setImportMap(defaults);
+        }
+      } catch { /* leave preview null; import will still run without mapping */ }
     };
     reader.readAsText(file);
   };
 
   const handleImport = async () => {
     if (!preview) return;
+    const needsMapping = importPreview && importPreview.interfaces_missing.length > 0;
+    if (!needsMapping && !window.confirm(
+      "Import will REPLACE all firewall rules, NAT, Geo-IP, VPN tunnels, DNS servers, auth settings, traffic shaping, TLS rules, HA config, and pf tuning with the contents of this file. This cannot be undone except by restoring an earlier history version. Continue?"
+    )) return;
     setImporting(true);
     try {
       const data = JSON.parse(preview);
+      const interface_map = importPreview ? buildInterfaceMapForApi(importPreview, importMap) : {};
       const res = await fetch("/api/v1/config/import", {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, interface_map }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       showFeedback("success", body.message || "Config imported");
       setPreview(null);
+      setImportPreview(null);
+      setImportMap({});
       if (fileRef.current) fileRef.current.value = "";
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Import failed");
     } finally {
       setImporting(false);
     }
+  };
+
+  /** Count entries in the uiMap that are set to drop. */
+  const countDroppedEntries = (preview: ImportPreview, uiMap: Record<string, string>): DropSummary => {
+    const droppedIfaces = new Set<string>();
+    for (const m of preview.interfaces_missing) {
+      if ((uiMap[m] ?? "") === "__drop__") droppedIfaces.add(m);
+    }
+    const s: DropSummary = { rules: 0, nat: 0, wireguard: 0, carp: 0, queues: 0, rate_limits: 0, pfsync: false };
+    // The initial API drop_summary was "if everything were dropped". We need the per-choice number.
+    // We can't recompute fully without the config; instead show the sum of drop_summary_if_unmapped
+    // scaled by whether each missing interface is being dropped. Approximation good enough.
+    if (droppedIfaces.size === 0) return s;
+    // If ALL missing are being dropped, use the full sum (upper bound).
+    if (droppedIfaces.size === preview.interfaces_missing.length) return preview.drop_summary_if_unmapped;
+    // Otherwise leave the counts at 0 — the server will report final counts on apply.
+    return s;
   };
 
   /* -- OPNsense Import ----------------------------------------------- */
@@ -653,7 +766,7 @@ export default function BackupPage() {
               {/* Import */}
               <div className="space-y-3">
                 <h2 className="text-lg font-semibold">Import Configuration</h2>
-                <p className="text-xs text-[var(--text-muted)]">Upload a previously exported AiFw configuration JSON file</p>
+                <p className="text-xs text-[var(--text-muted)]">Upload a previously exported AiFw configuration JSON file. Import replaces the current firewall state — use History restore if you only want to roll back one change.</p>
                 <input ref={fileRef} type="file" accept=".json" onChange={handleFileSelect}
                   className="block w-full text-sm text-[var(--text-secondary)] file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-[var(--accent)] file:text-white hover:file:bg-[var(--accent-hover)]" />
                 {preview && (
@@ -666,11 +779,19 @@ export default function BackupPage() {
                         {preview.substring(0, 5000)}{preview.length > 5000 ? "\n... (truncated)" : ""}
                       </pre>
                     </details>
+                    {importPreview && importPreview.interfaces_missing.length > 0 && (
+                      <InterfaceMappingPanel
+                        preview={importPreview}
+                        map={importMap}
+                        onMapChange={setImportMap}
+                        countDropped={countDroppedEntries}
+                      />
+                    )}
                     <div className="flex gap-3">
                       <button onClick={handleImport} disabled={importing} className={btnPrimary}>
-                        {importing ? "Importing..." : "Import & Apply"}
+                        {importing ? "Importing..." : (importPreview && importPreview.interfaces_missing.length > 0 ? "Apply with Mapping" : "Import & Apply")}
                       </button>
-                      <button onClick={() => { setPreview(null); if (fileRef.current) fileRef.current.value = ""; }}
+                      <button onClick={() => { setPreview(null); setImportPreview(null); setImportMap({}); if (fileRef.current) fileRef.current.value = ""; }}
                         className={btnSecondary}>Cancel</button>
                     </div>
                   </div>
@@ -790,6 +911,115 @@ export default function BackupPage() {
           )}
         </div>
       </div>
+
+      {/* ============ History Restore — NIC mapping modal ============ */}
+      {restorePending && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-5 border-b border-[var(--border)]">
+              <h3 className="text-lg font-semibold">Restore v{restorePending.version} — Interface Mapping Required</h3>
+              <p className="text-xs text-[var(--text-muted)] mt-1">
+                This snapshot references {restorePending.preview.interfaces_missing.length} interface name(s)
+                that don&apos;t exist on this system. Map each one to a local interface, keep the name, or drop entries that reference it.
+              </p>
+            </div>
+            <div className="p-5">
+              <InterfaceMappingPanel
+                preview={restorePending.preview}
+                map={restoreMap}
+                onMapChange={setRestoreMap}
+                countDropped={countDroppedEntries}
+              />
+            </div>
+            <div className="p-5 border-t border-[var(--border)] flex gap-3 justify-end">
+              <button
+                className={btnSecondary}
+                onClick={() => { setRestorePending(null); setRestoreMap({}); }}
+                disabled={restoring !== null}
+              >Cancel</button>
+              <button
+                className={btnPrimary}
+                disabled={restoring !== null}
+                onClick={() => {
+                  if (!restorePending) return;
+                  const mapped = buildInterfaceMapForApi(restorePending.preview, restoreMap);
+                  sendRestore(restorePending.version, mapped);
+                }}
+              >{restoring !== null ? "Restoring..." : "Apply Mapping & Restore"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===================== Interface mapping panel ===================== */
+
+function InterfaceMappingPanel({
+  preview,
+  map,
+  onMapChange,
+  countDropped,
+}: {
+  preview: ImportPreview;
+  map: Record<string, string>;
+  onMapChange: (m: Record<string, string>) => void;
+  countDropped: (preview: ImportPreview, m: Record<string, string>) => DropSummary;
+}) {
+  const drop = countDropped(preview, map);
+  const dropTotal = drop.rules + drop.nat + drop.wireguard + drop.carp + drop.queues + drop.rate_limits + (drop.pfsync ? 1 : 0);
+  const anyDropped = preview.interfaces_missing.some(m => map[m] === "__drop__");
+
+  const setChoice = (iface: string, value: string) => {
+    onMapChange({ ...map, [iface]: value });
+  };
+
+  return (
+    <div className="space-y-3 bg-amber-500/5 border border-amber-500/30 rounded-lg p-4">
+      <div className="text-sm text-amber-300 font-semibold">
+        NIC name mismatch — map {preview.interfaces_missing.length} missing interface(s)
+      </div>
+      <div className="space-y-2">
+        {preview.interfaces_missing.map(missing => {
+          const choice = map[missing] ?? "__keep__";
+          return (
+            <div key={missing} className="flex items-center gap-3 p-2.5 bg-[var(--bg-primary)] rounded border border-[var(--border)]">
+              <div className="font-mono text-sm font-semibold text-amber-400 w-24 shrink-0">{missing}</div>
+              <div className="text-[var(--text-muted)] text-xs">&rarr;</div>
+              <select
+                value={choice}
+                onChange={e => setChoice(missing, e.target.value)}
+                className="flex-1 px-2 py-1.5 bg-[var(--bg-card)] border border-[var(--border)] rounded text-sm"
+              >
+                <option value="__keep__">Keep as &ldquo;{missing}&rdquo; (virtual / will be created)</option>
+                <option value="__drop__">Drop all entries referencing this interface</option>
+                <optgroup label="Map to local interface">
+                  {preview.interfaces_present.map(iface => {
+                    const details: string[] = [];
+                    if (iface.mac) details.push(iface.mac);
+                    if (iface.ipv4) details.push(iface.ipv4 + (iface.ipv4_mode === "dhcp" ? " (DHCP)" : ""));
+                    if (!iface.ipv4 && iface.ipv4_mode === "dhcp") details.push("DHCP");
+                    if (iface.status) details.push(iface.status);
+                    const label = details.length > 0 ? `${iface.name} — ${details.join(" · ")}` : iface.name;
+                    return <option key={iface.name} value={iface.name}>{label}</option>;
+                  })}
+                </optgroup>
+              </select>
+            </div>
+          );
+        })}
+      </div>
+      {anyDropped && (
+        <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2.5">
+          <span className="font-semibold">Warning:</span> entries using dropped interfaces will be permanently removed on apply.
+          {dropTotal > 0 && (
+            <>
+              {" "}Upper bound: {drop.rules} rule(s), {drop.nat} NAT, {drop.wireguard} WG tunnel(s), {drop.carp} CARP VIP(s), {drop.queues} queue(s), {drop.rate_limits} rate-limit(s){drop.pfsync ? ", pfsync" : ""}.
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

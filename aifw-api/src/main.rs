@@ -584,6 +584,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/config/check", get(backup::check_config))
         .route("/api/v1/config/export", get(routes::export_config))
         .route("/api/v1/config/preview-opnsense", post(backup::preview_opnsense))
+        .route("/api/v1/config/import-preview", post(backup::preview_import))
+        .route("/api/v1/config/restore-preview", get(backup::preview_restore))
         .route("/api/v1/config/commit-confirm/status", get(backup::commit_confirm_status))
         .route("/api/v1/config/retention", get(backup::get_retention))
         .route("/api/v1/backup/s3/config", get(backup_s3::get_s3_config))

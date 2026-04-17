@@ -445,6 +445,21 @@ enum DnsAction {
         /// DNS servers (comma-separated)
         servers: String,
     },
+    /// Toggle the post-switch DNS probe (auto-rollback on :53 silence)
+    Probe {
+        #[command(subcommand)]
+        action: ProbeAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProbeAction {
+    /// Enable probe + auto-rollback on backend switch
+    On,
+    /// Disable probe — trust exit code of `service <backend> restart`
+    Off,
+    /// Show current probe_enabled value
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -866,6 +881,11 @@ async fn main() -> anyhow::Result<()> {
             DnsAction::Set { servers } => {
                 commands::dns_set(&servers).await?;
             }
+            DnsAction::Probe { action } => match action {
+                ProbeAction::On => commands::dns_probe_set(&cli.db, true).await?,
+                ProbeAction::Off => commands::dns_probe_set(&cli.db, false).await?,
+                ProbeAction::Status => commands::dns_probe_status(&cli.db).await?,
+            },
         },
         Commands::Users { action } => match action {
             UsersAction::List { json } => {

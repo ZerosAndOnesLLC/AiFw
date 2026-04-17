@@ -161,7 +161,7 @@ async fn get_default_gateway() -> (Option<String>, Option<String>) {
 }
 
 /// Get the persisted IPv4 mode for an interface from rc.conf
-async fn get_rc_ipv4_mode(name: &str) -> Option<String> {
+pub(crate) async fn get_rc_ipv4_mode(name: &str) -> Option<String> {
     let output = Command::new("sysrc").args(["-n", &format!("ifconfig_{}", name)]).output().await.ok()?;
     if !output.status.success() { return None; }
     let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -176,7 +176,7 @@ async fn get_rc_ipv4_mode(name: &str) -> Option<String> {
     }
 }
 
-async fn parse_ifconfig() -> Vec<InterfaceDetail> {
+pub(crate) async fn parse_ifconfig() -> Vec<InterfaceDetail> {
     let output = Command::new("ifconfig").arg("-a").output().await
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();

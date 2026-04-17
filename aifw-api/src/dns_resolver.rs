@@ -7,6 +7,103 @@ use uuid::Uuid;
 
 use crate::AppState;
 
+// ============================================================
+// DNS listen probe
+// ============================================================
+//
+// After a service restart we want to confirm that :53 is actually answering
+// queries, not just that the rc.d script exited 0. We build an SOA `.` query
+// by hand (17 bytes — no DNS crate needed) and look for any non-error response.
+// Both UDP and TCP are probed. UDP is the real success criterion — TCP status
+// is reported but doesn't block the switch.
+
+/// Wire-format DNS query for `SOA .` (root zone) with RD=1. 17 bytes total.
+fn build_soa_root_query() -> Vec<u8> {
+    let id: u16 = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0xBEEF) & 0xFFFF) as u16;
+    let mut q = Vec::with_capacity(17);
+    q.extend_from_slice(&id.to_be_bytes());    // transaction id
+    q.extend_from_slice(&0x0100u16.to_be_bytes()); // flags: std query, RD=1
+    q.extend_from_slice(&1u16.to_be_bytes());  // QDCOUNT
+    q.extend_from_slice(&0u16.to_be_bytes());  // ANCOUNT
+    q.extend_from_slice(&0u16.to_be_bytes());  // NSCOUNT
+    q.extend_from_slice(&0u16.to_be_bytes());  // ARCOUNT
+    q.push(0x00);                              // QNAME = . (root)
+    q.extend_from_slice(&6u16.to_be_bytes());  // QTYPE = SOA
+    q.extend_from_slice(&1u16.to_be_bytes());  // QCLASS = IN
+    q
+}
+
+/// A valid DNS response echoes our transaction id in the first 2 bytes
+/// and has the QR (response) bit set in the flags.
+fn response_matches(query: &[u8], resp: &[u8]) -> bool {
+    resp.len() >= 12
+        && resp[0] == query[0]
+        && resp[1] == query[1]
+        && (resp[2] & 0x80) != 0
+}
+
+/// Single UDP probe against `addr` (e.g. "127.0.0.1:53") with the given timeout.
+pub(crate) async fn probe_dns_udp_at(addr: &str, timeout: std::time::Duration) -> bool {
+    let q = build_soa_root_query();
+    let fut = async {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.ok()?;
+        sock.connect(addr).await.ok()?;
+        sock.send(&q).await.ok()?;
+        let mut buf = [0u8; 512];
+        let n = sock.recv(&mut buf).await.ok()?;
+        Some(response_matches(&q, &buf[..n]))
+    };
+    matches!(tokio::time::timeout(timeout, fut).await, Ok(Some(true)))
+}
+
+pub(crate) async fn probe_dns_udp(timeout: std::time::Duration) -> bool {
+    probe_dns_udp_at("127.0.0.1:53", timeout).await
+}
+
+/// Single TCP probe against `addr`. DNS over TCP prepends a 2-byte length field.
+pub(crate) async fn probe_dns_tcp_at(addr: &str, timeout: std::time::Duration) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let q = build_soa_root_query();
+    let fut = async {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+        let len = (q.len() as u16).to_be_bytes();
+        stream.write_all(&len).await.ok()?;
+        stream.write_all(&q).await.ok()?;
+        let mut len_buf = [0u8; 2];
+        stream.read_exact(&mut len_buf).await.ok()?;
+        let rlen = u16::from_be_bytes(len_buf) as usize;
+        if rlen == 0 || rlen > 4096 { return Some(false); }
+        let mut buf = vec![0u8; rlen];
+        stream.read_exact(&mut buf).await.ok()?;
+        Some(response_matches(&q, &buf))
+    };
+    matches!(tokio::time::timeout(timeout, fut).await, Ok(Some(true)))
+}
+
+pub(crate) async fn probe_dns_tcp(timeout: std::time::Duration) -> bool {
+    probe_dns_tcp_at("127.0.0.1:53", timeout).await
+}
+
+/// Poll UDP+TCP up to `deadline` total, 250 ms between attempts.
+/// UDP success is the hard requirement; TCP is reported but doesn't gate.
+pub(crate) async fn wait_for_dns_ready(deadline: std::time::Duration) -> (bool, bool) {
+    let start = std::time::Instant::now();
+    let per_try = std::time::Duration::from_millis(700);
+    let mut udp_ok = false;
+    let mut tcp_ok = false;
+    while start.elapsed() < deadline {
+        if !udp_ok { udp_ok = probe_dns_udp(per_try).await; }
+        if !tcp_ok { tcp_ok = probe_dns_tcp(per_try).await; }
+        if udp_ok && tcp_ok { break; }
+        if udp_ok && start.elapsed() + per_try >= deadline { break; }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    (udp_ok, tcp_ok)
+}
+
 /// Run a command with a 15-second timeout to prevent API hangs.
 async fn run_cmd_timeout(program: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
     tokio::time::timeout(
@@ -120,7 +217,15 @@ pub struct ResolverConfig {
     pub blocklist_redirect_ip: Option<String>,
     // Custom
     pub custom_options: String,
+    // Safety
+    /// Probe :53 after a resolver switch and auto-rollback on failure.
+    /// Default: true. Disable to restore the old fire-and-forget behavior
+    /// (e.g. for debugging, or on boxes where the probe misfires).
+    #[serde(default = "default_true")]
+    pub probe_enabled: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for ResolverConfig {
     fn default() -> Self {
@@ -168,6 +273,7 @@ impl Default for ResolverConfig {
             blocklist_action: "nxdomain".to_string(),
             blocklist_redirect_ip: None,
             custom_options: String::new(),
+            probe_enabled: true,
         }
     }
 }
@@ -240,6 +346,19 @@ pub struct ResolverStatus {
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub queries_total: u64,
+    /// Which backend is actually answering on :53 — "rdns" | "unbound" | "none"
+    pub backend: String,
+    /// Live probe of 127.0.0.1:53 UDP
+    pub listening_udp: bool,
+    /// Live probe of 127.0.0.1:53 TCP
+    pub listening_tcp: bool,
+    /// Last successful or rolled-back switch timestamp (RFC3339)
+    pub last_switch_at: Option<String>,
+    /// "ok" | "ok_disabled" | "rolled_back: <reason>" | "failed: <reason>"
+    pub last_switch_result: Option<String>,
+    /// Mirrors the config value — when false, UDP/TCP fields fall back to
+    /// service-running state and switch_backend skips the rollback check.
+    pub probe_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -331,6 +450,7 @@ async fn load_config(pool: &SqlitePool) -> ResolverConfig {
             "blocklist_action" => c.blocklist_action = v,
             "blocklist_redirect_ip" => c.blocklist_redirect_ip = if v.is_empty() { None } else { Some(v) },
             "custom_options" => c.custom_options = v,
+            "probe_enabled" => c.probe_enabled = v == "true",
             _ => {}
         }
     }
@@ -340,6 +460,11 @@ async fn load_config(pool: &SqlitePool) -> ResolverConfig {
 async fn save_key(pool: &SqlitePool, key: &str, value: &str) {
     let _ = sqlx::query("INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES (?1, ?2)")
         .bind(key).bind(value).execute(pool).await;
+}
+
+async fn load_key(pool: &SqlitePool, key: &str) -> Option<String> {
+    sqlx::query_as::<_, (String,)>("SELECT value FROM dns_resolver_config WHERE key = ?1")
+        .bind(key).fetch_optional(pool).await.ok().flatten().map(|(v,)| v)
 }
 
 fn bool_str(b: bool) -> &'static str { if b { "true" } else { "false" } }
@@ -889,9 +1014,34 @@ pub async fn resolver_status(
             }).unwrap_or((0, 0, 0))
     };
 
+    // Live port-53 probe (short per-attempt timeout — status is called often).
+    // Skipped when the operator has disabled probing — avoids false-negative
+    // "silent" banners if the probe itself misbehaves.
+    let (listening_udp, listening_tcp) = if config.probe_enabled {
+        tokio::join!(
+            probe_dns_udp(std::time::Duration::from_millis(500)),
+            probe_dns_tcp(std::time::Duration::from_millis(500)),
+        )
+    } else {
+        (running, running) // best available signal — service-running
+    };
+
+    let last_applied = load_key(&state.pool, "last_applied_backend").await
+        .filter(|s| !s.is_empty());
+    let last_switch_at = load_key(&state.pool, "last_switch_at").await;
+    let last_switch_result = load_key(&state.pool, "last_switch_result").await;
+
+    // Report the backend that's actually running. Fall back to the DB's
+    // desired value if we've never applied.
+    let backend_reported = last_applied.clone().unwrap_or_else(|| config.backend.clone());
+
     Ok(Json(ResolverStatus {
         running, version, total_hosts: hosts, total_domains: domains, total_acls: acls,
         cache_hits, cache_misses, queries_total,
+        backend: backend_reported,
+        listening_udp, listening_tcp,
+        last_switch_at, last_switch_result,
+        probe_enabled: config.probe_enabled,
     }))
 }
 
@@ -943,177 +1093,275 @@ pub async fn update_config_handler(
     save_key(pool, "blocklist_action", &c.blocklist_action).await;
     save_key(pool, "blocklist_redirect_ip", c.blocklist_redirect_ip.as_deref().unwrap_or("")).await;
     save_key(pool, "custom_options", &c.custom_options).await;
+    save_key(pool, "probe_enabled", bool_str(c.probe_enabled)).await;
     state.set_pending(|p| p.dns = true).await;
     Ok(Json(MessageResponse { message: "DNS resolver config saved".to_string() }))
 }
 
+// ============================================================
+// Backend switch — safe, probed, auto-rollback
+// ============================================================
+
+#[derive(Debug, Serialize)]
+pub struct ApplyReport {
+    pub backend: String,          // what's actually running now
+    pub enabled: bool,
+    pub probe_udp: bool,
+    pub probe_tcp: bool,
+    pub rolled_back: bool,
+    pub previous: Option<String>, // what was running before the switch attempt
+    pub message: String,
+}
+
+fn backend_service(b: &str) -> Option<(&'static str, &'static str)> {
+    match b {
+        "rdns" => Some(("rdns", "rdns_enable")),
+        "unbound" => Some(("local_unbound", "local_unbound_enable")),
+        _ => None,
+    }
+}
+
+/// Write config files for a backend. Does not touch services.
+async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(), StatusCode> {
+    match backend {
+        "unbound" => {
+            let conf = generate_unbound_conf(&state.pool).await;
+            let tmp_path = "/tmp/aifw_unbound.conf";
+            tokio::fs::write(tmp_path, &conf).await.map_err(|_| internal())?;
+            sudo_copy(tmp_path, "/var/unbound/unbound.conf").await;
+            let _ = tokio::fs::remove_file(tmp_path).await;
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"])
+                .output().await;
+            Ok(())
+        }
+        "rdns" => {
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["mkdir", "-p", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz",
+                       "/var/run/rdns", "/var/log/rdns"])
+                .output().await;
+
+            let conf = generate_rdns_conf(&state.pool).await;
+            let tmp = "/tmp/aifw_rdns.toml";
+            tokio::fs::write(tmp, &conf).await.map_err(|_| internal())?;
+            sudo_copy(tmp, "/usr/local/etc/rdns/rdns.toml").await;
+            let _ = tokio::fs::remove_file(tmp).await;
+
+            let zones = generate_rdns_zones(&state.pool).await;
+            let _ = Command::new("/usr/local/bin/sudo")
+                .args(["/usr/bin/find", "/usr/local/etc/rdns/zones", "-name", "*.zone", "-delete"])
+                .output().await;
+            for (filename, content) in &zones {
+                let safe_name = sanitize_zone_filename(filename);
+                if safe_name.is_empty() { continue; }
+                let tmp_zone = format!("/tmp/aifw_zone_{}", safe_name);
+                let dest_zone = format!("/usr/local/etc/rdns/zones/{}", safe_name);
+                tokio::fs::write(&tmp_zone, content).await.map_err(|_| internal())?;
+                sudo_copy(&tmp_zone, &dest_zone).await;
+                let _ = tokio::fs::remove_file(&tmp_zone).await;
+            }
+
+            let hosts_rpz_path = "/usr/local/etc/rdns/rpz/hosts.rpz";
+            if let Some(rpz_content) = generate_rdns_hosts_rpz(&state.pool).await {
+                let tmp_rpz = "/tmp/aifw_rpz_hosts.rpz";
+                tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
+                sudo_copy(tmp_rpz, hosts_rpz_path).await;
+                let _ = tokio::fs::remove_file(tmp_rpz).await;
+            } else {
+                let _ = Command::new("/usr/local/bin/sudo")
+                    .args(["/bin/rm", "-f", hosts_rpz_path]).output().await;
+            }
+
+            if let Some(rpz_content) = generate_rdns_rpz(&state.pool).await {
+                let tmp_rpz = "/tmp/aifw_rpz_blocklist.rpz";
+                tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
+                sudo_copy(tmp_rpz, "/usr/local/etc/rdns/rpz/blocklist.rpz").await;
+                let _ = tokio::fs::remove_file(tmp_rpz).await;
+            }
+            Ok(())
+        }
+        _ => Err(bad_request()),
+    }
+}
+
+/// Stop a backend's service and set its sysrc enable flag to NO.
+async fn stop_backend(backend: &str) {
+    let Some((svc, key)) = backend_service(backend) else { return };
+    service_cmd(svc, "stop").await;
+    sysrc_set_if_different(key, "NO").await;
+}
+
+/// Start a backend's service. Returns Ok(stdout+stderr) on success,
+/// Err(stdout+stderr or error string) on failure.
+async fn start_backend(backend: &str) -> Result<String, String> {
+    let Some((svc, key)) = backend_service(backend) else {
+        return Err(format!("unknown backend: {backend}"));
+    };
+    sysrc_set_if_different(key, "YES").await;
+    match run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/service", svc, "restart"]).await {
+        Ok(o) => {
+            let out = format!("{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)).trim().to_string();
+            if o.status.success() { Ok(out) } else { Err(out) }
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Core switch primitive. Stops the previously-running backend, starts
+/// the target, probes :53, and on failure rolls back to the previous.
+pub(crate) async fn switch_backend(state: &AppState, target: &str, config: &ResolverConfig) -> ApplyReport {
+    let previous = load_key(&state.pool, "last_applied_backend").await
+        .filter(|p| p == "rdns" || p == "unbound");
+    let now_iso = Utc::now().to_rfc3339();
+
+    // Disabled path — tear down everything, no probe.
+    if !config.enabled {
+        for b in ["rdns", "unbound"] {
+            if let Some((_, key)) = backend_service(b)
+                && sysrc_get(key).await.as_deref() == Some("YES") {
+                    stop_backend(b).await;
+                }
+        }
+        save_key(&state.pool, "last_applied_backend", "none").await;
+        save_key(&state.pool, "last_switch_at", &now_iso).await;
+        save_key(&state.pool, "last_switch_result", "ok_disabled").await;
+        state.set_pending(|p| p.dns = false).await;
+        return ApplyReport {
+            backend: target.to_string(), enabled: false,
+            probe_udp: false, probe_tcp: false, rolled_back: false,
+            previous, message: "DNS resolver stopped".to_string(),
+        };
+    }
+
+    // Sanity-check the target backend is known.
+    if backend_service(target).is_none() {
+        return ApplyReport {
+            backend: previous.clone().unwrap_or_else(|| "none".into()), enabled: true,
+            probe_udp: false, probe_tcp: false, rolled_back: false,
+            previous, message: format!("unknown backend: {target}"),
+        };
+    }
+
+    // Generate target config files first; if they fail, nothing has been torn down.
+    if let Err(code) = write_backend_config_files(state, target).await {
+        save_key(&state.pool, "last_switch_at", &now_iso).await;
+        save_key(&state.pool, "last_switch_result", "failed: config generation error").await;
+        return ApplyReport {
+            backend: previous.clone().unwrap_or_else(|| "none".into()), enabled: true,
+            probe_udp: false, probe_tcp: false, rolled_back: false,
+            previous, message: format!("config generation failed ({code})"),
+        };
+    }
+
+    // Stop the other backend if it's currently enabled in rc.conf.
+    let other = if target == "rdns" { "unbound" } else { "rdns" };
+    if let Some((_, key)) = backend_service(other)
+        && sysrc_get(key).await.as_deref() == Some("YES") {
+            stop_backend(other).await;
+        }
+
+    // Start target.
+    let start_result = start_backend(target).await;
+
+    // Probe — 8 s deadline. If the operator has disabled the probe, fall back
+    // to trusting the service-restart exit code (the pre-5.57 behavior).
+    let (udp_ok, tcp_ok) = if config.probe_enabled {
+        wait_for_dns_ready(std::time::Duration::from_secs(8)).await
+    } else {
+        (start_result.is_ok(), false)
+    };
+
+    if udp_ok {
+        save_key(&state.pool, "last_applied_backend", target).await;
+        save_key(&state.pool, "last_switch_at", &now_iso).await;
+        save_key(&state.pool, "last_switch_result", "ok").await;
+        state.set_pending(|p| p.dns = false).await;
+        let extra = start_result.as_ref().ok().filter(|s| !s.is_empty())
+            .map(|s| format!(": {s}")).unwrap_or_default();
+        return ApplyReport {
+            backend: target.to_string(), enabled: true,
+            probe_udp: true, probe_tcp: tcp_ok, rolled_back: false,
+            previous, message: format!("{target} applied and healthy{extra}"),
+        };
+    }
+
+    // Probe failed — attempt rollback.
+    let start_err = match &start_result {
+        Ok(_) => "no response on :53 after 8s".to_string(),
+        Err(e) if e.is_empty() => "service start failed with no output".to_string(),
+        Err(e) => e.clone(),
+    };
+
+    let Some(prev) = previous.clone() else {
+        // No previous to roll back to — leave the target stopped and report.
+        stop_backend(target).await;
+        let reason = format!("{target} failed to start ({start_err}); no previous backend to restore");
+        save_key(&state.pool, "last_applied_backend", "none").await;
+        save_key(&state.pool, "last_switch_at", &now_iso).await;
+        save_key(&state.pool, "last_switch_result", &format!("failed: {reason}")).await;
+        state.set_pending(|p| p.dns = false).await;
+        return ApplyReport {
+            backend: "none".to_string(), enabled: true,
+            probe_udp: false, probe_tcp: tcp_ok, rolled_back: false,
+            previous: None, message: reason,
+        };
+    };
+
+    // Roll back: stop target, regenerate previous config, start it, re-probe.
+    stop_backend(target).await;
+    let _ = write_backend_config_files(state, &prev).await;
+    let _ = start_backend(&prev).await;
+    let (prev_udp, prev_tcp) = wait_for_dns_ready(std::time::Duration::from_secs(8)).await;
+
+    // Flip the "desired" backend field too, so UI reflects what's actually running.
+    save_key(&state.pool, "backend", &prev).await;
+    save_key(&state.pool, "last_applied_backend", &prev).await;
+    save_key(&state.pool, "last_switch_at", &now_iso).await;
+    let rb_suffix = if prev_udp { "" } else { " (WARNING: previous backend also not responding)" };
+    let reason = format!("{target} failed probe ({start_err}); rolled back to {prev}{rb_suffix}");
+    save_key(&state.pool, "last_switch_result", &format!("rolled_back: {reason}")).await;
+    state.set_pending(|p| p.dns = false).await;
+
+    ApplyReport {
+        backend: prev.clone(), enabled: true,
+        probe_udp: prev_udp, probe_tcp: prev_tcp, rolled_back: true,
+        previous: Some(prev), message: reason,
+    }
+}
+
 pub async fn apply_resolver(
     State(state): State<AppState>,
-) -> Result<Json<MessageResponse>, StatusCode> {
+) -> Result<Json<ApplyReport>, StatusCode> {
     let config = load_config(&state.pool).await;
-
-    match config.backend.as_str() {
-        "rdns" => apply_rdns(&state, &config).await,
-        _ => apply_unbound(&state, &config).await,
-    }
-}
-
-async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json<MessageResponse>, StatusCode> {
-    // Only disable rdns if it's actually enabled — avoids unrelated config
-    // saves silently flipping rdns off at boot (see #154).
-    if sysrc_get("rdns_enable").await.as_deref() == Some("YES") {
-        service_cmd("rdns", "stop").await;
-        sysrc_set_if_different("rdns_enable", "NO").await;
-    }
-
-    let conf = generate_unbound_conf(&state.pool).await;
-    let tmp_path = "/tmp/aifw_unbound.conf";
-    tokio::fs::write(tmp_path, &conf).await.map_err(|_| internal())?;
-    sudo_copy(tmp_path, "/var/unbound/unbound.conf").await;
-    let _ = tokio::fs::remove_file(tmp_path).await;
-    let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
-
-    if config.enabled {
-        sysrc_set_if_different("local_unbound_enable", "YES").await;
-        let output = run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/service", "local_unbound", "restart"]).await;
-        match output {
-            Ok(o) => {
-                let msg = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-                if o.status.success() {
-                    state.set_pending(|p| p.dns = false).await;
-                    Ok(Json(MessageResponse { message: "Unbound config applied and restarted".to_string() }))
-                } else {
-                    state.set_pending(|p| p.dns = false).await;
-                    Ok(Json(MessageResponse { message: format!("Unbound restart issue: {}", msg.trim()) }))
-                }
-            }
-            Err(e) => Ok(Json(MessageResponse { message: format!("Failed: {}", e) })),
-        }
-    } else {
-        service_cmd("local_unbound", "stop").await;
-        sysrc_set_if_different("local_unbound_enable", "NO").await;
-        state.set_pending(|p| p.dns = false).await;
-        Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
-    }
-}
-
-async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<MessageResponse>, StatusCode> {
-    // Only disable unbound if it's actually enabled (see #154).
-    if sysrc_get("local_unbound_enable").await.as_deref() == Some("YES") {
-        service_cmd("local_unbound", "stop").await;
-        sysrc_set_if_different("local_unbound_enable", "NO").await;
-    }
-
-    // Create directories
-    let _ = Command::new("/usr/local/bin/sudo").args(["mkdir", "-p", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz", "/var/run/rdns", "/var/log/rdns"]).output().await;
-
-    // Generate and write rDNS config
-    let conf = generate_rdns_conf(&state.pool).await;
-    let tmp = "/tmp/aifw_rdns.toml";
-    tokio::fs::write(tmp, &conf).await.map_err(|_| internal())?;
-    sudo_copy(tmp, "/usr/local/etc/rdns/rdns.toml").await;
-    let _ = tokio::fs::remove_file(tmp).await;
-
-    // Generate and write zone files
-    let zones = generate_rdns_zones(&state.pool).await;
-    // Clear old auto-generated zones
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/bin/find", "/usr/local/etc/rdns/zones", "-name", "*.zone", "-delete"])
-        .output().await;
-    for (filename, content) in &zones {
-        let safe_name = sanitize_zone_filename(filename);
-        if safe_name.is_empty() { continue; }
-        let tmp_zone = format!("/tmp/aifw_zone_{}", safe_name);
-        let dest_zone = format!("/usr/local/etc/rdns/zones/{}", safe_name);
-        tokio::fs::write(&tmp_zone, content).await.map_err(|_| internal())?;
-        sudo_copy(&tmp_zone, &dest_zone).await;
-        let _ = tokio::fs::remove_file(&tmp_zone).await;
-    }
-
-    // Generate and write host-overrides RPZ (selective rewrites)
-    let hosts_rpz_path = "/usr/local/etc/rdns/rpz/hosts.rpz";
-    if let Some(rpz_content) = generate_rdns_hosts_rpz(&state.pool).await {
-        let tmp_rpz = "/tmp/aifw_rpz_hosts.rpz";
-        tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
-        sudo_copy(tmp_rpz, hosts_rpz_path).await;
-        let _ = tokio::fs::remove_file(tmp_rpz).await;
-    } else {
-        // No host overrides: make sure any stale file is removed so rDNS
-        // doesn't load yesterday's rewrites.
-        let _ = Command::new("/usr/local/bin/sudo").args(["/bin/rm", "-f", hosts_rpz_path]).output().await;
-    }
-
-    // Generate and write RPZ blocklist
-    if let Some(rpz_content) = generate_rdns_rpz(&state.pool).await {
-        let tmp_rpz = "/tmp/aifw_rpz_blocklist.rpz";
-        tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
-        sudo_copy(tmp_rpz, "/usr/local/etc/rdns/rpz/blocklist.rpz").await;
-        let _ = tokio::fs::remove_file(tmp_rpz).await;
-    }
-
-    if config.enabled {
-        sysrc_set_if_different("rdns_enable", "YES").await;
-        let output = run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/service", "rdns", "restart"]).await;
-        match output {
-            Ok(o) => {
-                let msg = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-                if o.status.success() {
-                    state.set_pending(|p| p.dns = false).await;
-                    Ok(Json(MessageResponse { message: format!("rDNS config applied — {} zone file(s)", zones.len()) }))
-                } else {
-                    Ok(Json(MessageResponse { message: format!("rDNS restart issue: {}", msg.trim()) }))
-                }
-            }
-            Err(e) => Ok(Json(MessageResponse { message: format!("Failed: {}", e) })),
-        }
-    } else {
-        service_cmd("rdns", "stop").await;
-        sysrc_set_if_different("rdns_enable", "NO").await;
-        state.set_pending(|p| p.dns = false).await;
-        Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
-    }
+    let target = config.backend.clone();
+    Ok(Json(switch_backend(&state, &target, &config).await))
 }
 
 // Service control — backend-aware. Each handler only stops the "other"
 // backend if it's actually enabled, and only rewrites rc.conf values that
 // are changing (see #154 — unconditional writes silently flipped rdns_enable
 // on reboot).
-pub async fn resolver_start(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
-    let config = load_config(&state.pool).await;
-    let (svc, enable_key, other_svc, other_key) = if config.backend == "rdns" {
-        ("rdns", "rdns_enable", "local_unbound", "local_unbound_enable")
-    } else {
-        ("local_unbound", "local_unbound_enable", "rdns", "rdns_enable")
-    };
-    if sysrc_get(other_key).await.as_deref() == Some("YES") {
-        service_cmd(other_svc, "stop").await;
-        sysrc_set_if_different(other_key, "NO").await;
-    }
-    sysrc_set_if_different(enable_key, "YES").await;
-    service_cmd(svc, "start").await;
-    Ok(Json(MessageResponse { message: format!("{} started", if config.backend == "rdns" { "rDNS" } else { "Unbound" }) }))
+pub async fn resolver_start(State(state): State<AppState>) -> Result<Json<ApplyReport>, StatusCode> {
+    let mut config = load_config(&state.pool).await;
+    config.enabled = true;
+    let target = config.backend.clone();
+    Ok(Json(switch_backend(&state, &target, &config).await))
 }
-pub async fn resolver_stop(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
-    let config = load_config(&state.pool).await;
-    let (svc, disable_key) = if config.backend == "rdns" { ("rdns", "rdns_enable") } else { ("local_unbound", "local_unbound_enable") };
-    service_cmd(svc, "stop").await;
-    sysrc_set_if_different(disable_key, "NO").await;
-    Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
+
+pub async fn resolver_stop(State(state): State<AppState>) -> Result<Json<ApplyReport>, StatusCode> {
+    let mut config = load_config(&state.pool).await;
+    config.enabled = false;
+    let target = config.backend.clone();
+    Ok(Json(switch_backend(&state, &target, &config).await))
 }
-pub async fn resolver_restart(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
-    let config = load_config(&state.pool).await;
-    let (svc, enable_key, other_svc, other_key) = if config.backend == "rdns" {
-        ("rdns", "rdns_enable", "local_unbound", "local_unbound_enable")
-    } else {
-        ("local_unbound", "local_unbound_enable", "rdns", "rdns_enable")
-    };
-    if sysrc_get(other_key).await.as_deref() == Some("YES") {
-        service_cmd(other_svc, "stop").await;
-        sysrc_set_if_different(other_key, "NO").await;
-    }
-    sysrc_set_if_different(enable_key, "YES").await;
-    service_cmd(svc, "restart").await;
-    Ok(Json(MessageResponse { message: format!("{} restarted", if config.backend == "rdns" { "rDNS" } else { "Unbound" }) }))
+
+pub async fn resolver_restart(State(state): State<AppState>) -> Result<Json<ApplyReport>, StatusCode> {
+    let mut config = load_config(&state.pool).await;
+    config.enabled = true;
+    let target = config.backend.clone();
+    Ok(Json(switch_backend(&state, &target, &config).await))
 }
 
 // Host overrides CRUD
@@ -1309,4 +1557,111 @@ pub async fn resolver_logs(State(state): State<AppState>) -> Result<Json<ApiResp
         200,
     ).await;
     Ok(Json(ApiResponse { data: lines }))
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::{TcpListener, UdpSocket};
+
+    #[test]
+    fn query_is_17_bytes_soa_root() {
+        let q = build_soa_root_query();
+        assert_eq!(q.len(), 17);
+        // Flags byte 2: RD=1 (bit 0)
+        assert_eq!(q[2] & 0x01, 0x01);
+        // QDCOUNT = 1
+        assert_eq!(&q[4..6], &[0, 1]);
+        // QNAME is the root label (single 0 byte) at offset 12
+        assert_eq!(q[12], 0);
+        // QTYPE = 6 (SOA), QCLASS = 1 (IN)
+        assert_eq!(&q[13..15], &[0, 6]);
+        assert_eq!(&q[15..17], &[0, 1]);
+    }
+
+    #[test]
+    fn response_matches_checks_id_and_qr_bit() {
+        let q = build_soa_root_query();
+        // Minimal valid response: copy id, set QR bit, keep rest.
+        let mut resp = vec![0u8; 12];
+        resp[0] = q[0];
+        resp[1] = q[1];
+        resp[2] = 0x80; // QR=1
+        assert!(response_matches(&q, &resp));
+
+        // Wrong ID: reject.
+        resp[0] = q[0].wrapping_add(1);
+        assert!(!response_matches(&q, &resp));
+
+        // Correct ID, QR bit cleared: reject.
+        resp[0] = q[0];
+        resp[2] = 0x00;
+        assert!(!response_matches(&q, &resp));
+
+        // Too short: reject.
+        assert!(!response_matches(&q, &resp[..8]));
+    }
+
+    #[tokio::test]
+    async fn probe_udp_succeeds_against_responding_server() {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        // Background responder: echo query ID with QR bit set.
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let Ok((n, peer)) = sock.recv_from(&mut buf).await else { return };
+                if n < 2 { continue; }
+                let mut resp = vec![0u8; 12];
+                resp[0] = buf[0]; resp[1] = buf[1];
+                resp[2] = 0x80; // QR
+                let _ = sock.send_to(&resp, peer).await;
+            }
+        });
+        assert!(probe_dns_udp_at(&addr.to_string(), std::time::Duration::from_secs(1)).await);
+    }
+
+    #[tokio::test]
+    async fn probe_udp_times_out_when_nothing_listening() {
+        // Bind then drop so the port is very likely unused.
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        drop(sock);
+        // On most platforms a UDP packet to a closed port produces ICMP
+        // unreachable, not a real reply — so recv times out.
+        assert!(!probe_dns_udp_at(&addr.to_string(), std::time::Duration::from_millis(300)).await);
+    }
+
+    #[tokio::test]
+    async fn probe_tcp_succeeds_against_responding_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let mut len_buf = [0u8; 2];
+            if stream.read_exact(&mut len_buf).await.is_err() { return }
+            let n = u16::from_be_bytes(len_buf) as usize;
+            let mut q = vec![0u8; n];
+            if stream.read_exact(&mut q).await.is_err() { return }
+            let mut resp = vec![0u8; 12];
+            resp[0] = q[0]; resp[1] = q[1]; resp[2] = 0x80;
+            let rlen = (resp.len() as u16).to_be_bytes();
+            let _ = stream.write_all(&rlen).await;
+            let _ = stream.write_all(&resp).await;
+        });
+        assert!(probe_dns_tcp_at(&addr.to_string(), std::time::Duration::from_secs(1)).await);
+    }
+
+    #[tokio::test]
+    async fn probe_tcp_fails_when_connection_refused() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        assert!(!probe_dns_tcp_at(&addr.to_string(), std::time::Duration::from_millis(300)).await);
+    }
 }

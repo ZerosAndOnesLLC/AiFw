@@ -13,6 +13,22 @@ interface DnsStatus {
   cache_hits: number;
   cache_misses: number;
   queries_total: number;
+  backend: string;
+  listening_udp: boolean;
+  listening_tcp: boolean;
+  last_switch_at: string | null;
+  last_switch_result: string | null;
+  probe_enabled: boolean;
+}
+
+interface ApplyReport {
+  backend: string;
+  enabled: boolean;
+  probe_udp: boolean;
+  probe_tcp: boolean;
+  rolled_back: boolean;
+  previous: string | null;
+  message: string;
 }
 
 interface ResolverConfig {
@@ -50,6 +66,7 @@ interface ResolverConfig {
   blocklist_action: string;
   blocklist_redirect_ip: string;
   custom_options: string;
+  probe_enabled: boolean;
 }
 
 interface NetInterface {
@@ -103,9 +120,10 @@ const defaultConfig: ResolverConfig = {
   blocklist_action: "nxdomain",
   blocklist_redirect_ip: "",
   custom_options: "",
+  probe_enabled: true,
 };
 
-const TABS = ["General", "DNS over TLS", "Blocklists", "Advanced", "Custom"] as const;
+const TABS = ["General", "DNS over TLS", "Advanced", "Custom"] as const;
 type Tab = (typeof TABS)[number];
 
 const LOCAL_ZONE_TYPES = [
@@ -141,8 +159,6 @@ export default function DnsResolverPage() {
 
   // list inputs
   const [dotUpstreamInput, setDotUpstreamInput] = useState("");
-  const [blocklistUrlInput, setBlocklistUrlInput] = useState("");
-  const [whitelistInput, setWhitelistInput] = useState("");
   const [privateAddrInput, setPrivateAddrInput] = useState("");
 
   const showFeedback = (type: "success" | "error", msg: string) => {
@@ -197,6 +213,17 @@ export default function DnsResolverPage() {
 
   /* -- Actions ------------------------------------------------------ */
 
+  const reportToFeedback = (r: ApplyReport, fallback: string) => {
+    const msg = r.message || fallback;
+    if (r.rolled_back) {
+      showFeedback("error", `Rolled back: ${msg}`);
+    } else if (r.enabled && !r.probe_udp) {
+      showFeedback("error", `Not responding on :53 — ${msg}`);
+    } else {
+      showFeedback("success", msg);
+    }
+  };
+
   const serviceAction = async (action: "start" | "stop" | "restart") => {
     setActionLoading(action);
     try {
@@ -204,11 +231,11 @@ export default function DnsResolverPage() {
         method: "POST",
         headers: authHeaders(),
       });
-      const data = await res.json().catch(() => ({ message: "" }));
-      const msg = data.message || `DNS Resolver ${action} completed`;
-      if (msg.toLowerCase().includes("fail") || msg.toLowerCase().includes("error")) {
-        showFeedback("error", msg);
+      const data: ApplyReport | { message?: string } = await res.json().catch(() => ({}));
+      if ("probe_udp" in data) {
+        reportToFeedback(data as ApplyReport, `DNS Resolver ${action} completed`);
       } else {
+        const msg = (data as { message?: string }).message || `DNS Resolver ${action} completed`;
         showFeedback("success", msg);
       }
       await fetchStatus();
@@ -254,9 +281,12 @@ export default function DnsResolverPage() {
         headers: authHeaders(),
       });
       if (!res.ok) throw new Error(`Apply failed: HTTP ${res.status}`);
-      const data = await res.json().catch(() => ({ message: "" }));
-      showFeedback("success", data.message || "Configuration applied and service restarted");
+      const data: ApplyReport = await res.json();
+      reportToFeedback(data, "Configuration applied");
       setIsDirty(false);
+      // If server rolled back, the persisted backend may have flipped —
+      // refresh local config so the radio buttons reflect reality.
+      if (data.rolled_back) await fetchConfig();
       await fetchStatus();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to apply config");
@@ -348,16 +378,53 @@ export default function DnsResolverPage() {
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Service Status</h2>
-          <span
-            className={`text-xs px-2.5 py-1 rounded-full border font-medium ${
-              status?.running
-                ? "bg-green-500/20 text-green-400 border-green-500/30"
-                : "bg-red-500/20 text-red-400 border-red-500/30"
-            }`}
-          >
-            {status?.running ? "Running" : "Stopped"}
-          </span>
+          <div className="flex items-center gap-2">
+            {status?.backend && (
+              <span className="text-xs px-2.5 py-1 rounded-full border font-medium bg-[var(--bg-primary)] border-[var(--border)] text-[var(--text-secondary)]">
+                {status.backend === "rdns" ? "rDNS" : status.backend === "unbound" ? "Unbound" : status.backend}
+              </span>
+            )}
+            <span
+              className={`text-xs px-2.5 py-1 rounded-full border font-medium ${
+                !status?.probe_enabled
+                  ? (status?.running
+                      ? "bg-slate-500/20 text-slate-300 border-slate-500/30"
+                      : "bg-red-500/20 text-red-400 border-red-500/30")
+                  : status?.listening_udp
+                    ? "bg-green-500/20 text-green-400 border-green-500/30"
+                    : status?.running
+                      ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                      : "bg-red-500/20 text-red-400 border-red-500/30"
+              }`}
+              title={
+                status?.probe_enabled
+                  ? `UDP: ${status?.listening_udp ? "up" : "down"} · TCP: ${status?.listening_tcp ? "up" : "down"}`
+                  : "Probe disabled — status reflects service process only, not port 53 liveness"
+              }
+            >
+              {!status?.probe_enabled
+                ? (status?.running ? "Running (probe off)" : "Stopped")
+                : status?.listening_udp
+                  ? `Healthy${status?.listening_tcp ? "" : " (UDP only)"}`
+                  : status?.running
+                    ? "Process up, port 53 silent"
+                    : "Stopped"}
+            </span>
+          </div>
         </div>
+
+        {status?.last_switch_result && (
+          <div className={`mb-4 p-3 text-xs rounded border ${
+            status.last_switch_result.startsWith("rolled_back") || status.last_switch_result.startsWith("failed")
+              ? "bg-red-500/10 text-red-300 border-red-500/30"
+              : "bg-blue-500/10 text-blue-300 border-blue-500/30"
+          }`}>
+            <span className="font-semibold">
+              Last switch{status.last_switch_at ? " " + new Date(status.last_switch_at).toLocaleString() : ""}:
+            </span>{" "}
+            {status.last_switch_result}
+          </div>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-4 text-sm mb-5">
           <div>
@@ -723,150 +790,6 @@ export default function DnsResolverPage() {
             </div>
           )}
 
-          {/* ===================== Blocklists Tab ================== */}
-          {activeTab === "Blocklists" && (
-            <div className="space-y-5">
-              {/* Enable blocklists */}
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setConfig((p) => ({ ...p, blocklists_enabled: !p.blocklists_enabled }))}
-                  className={`relative w-11 h-6 rounded-full transition-colors ${
-                    config.blocklists_enabled ? "bg-blue-600" : "bg-gray-600"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                      config.blocklists_enabled ? "translate-x-5" : ""
-                    }`}
-                  />
-                </button>
-                <span className="text-sm text-[var(--text-primary)]">Enable Blocklists</span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Blocklist action */}
-                <div>
-                  <label className="block text-xs text-[var(--text-muted)] mb-1">Block Action</label>
-                  <select
-                    value={config.blocklist_action}
-                    onChange={(e) => setConfig((p) => ({ ...p, blocklist_action: e.target.value }))}
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="nxdomain">NXDOMAIN</option>
-                    <option value="redirect">Redirect</option>
-                  </select>
-                </div>
-
-                {/* Redirect IP */}
-                <div>
-                  <label className="block text-xs text-[var(--text-muted)] mb-1">Redirect IP (if redirect)</label>
-                  <input
-                    type="text"
-                    value={config.blocklist_redirect_ip}
-                    onChange={(e) => setConfig((p) => ({ ...p, blocklist_redirect_ip: e.target.value }))}
-                    placeholder="e.g. 0.0.0.0"
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-              </div>
-
-              {/* Blocklist URLs */}
-              <div>
-                <label className="block text-xs text-[var(--text-muted)] mb-1.5">Blocklist URLs</label>
-                <div className="flex gap-2 mb-2">
-                  <input
-                    type="text"
-                    value={blocklistUrlInput}
-                    onChange={(e) => setBlocklistUrlInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        addToList("blocklist_urls", blocklistUrlInput);
-                        setBlocklistUrlInput("");
-                      }
-                    }}
-                    placeholder="https://example.com/blocklist.txt"
-                    className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
-                  <button
-                    onClick={() => {
-                      addToList("blocklist_urls", blocklistUrlInput);
-                      setBlocklistUrlInput("");
-                    }}
-                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md"
-                  >
-                    Add
-                  </button>
-                </div>
-                {config.blocklist_urls.length > 0 && (
-                  <div className="space-y-1">
-                    {config.blocklist_urls.map((url, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border border-gray-700 rounded-md"
-                      >
-                        <span className="text-xs font-mono text-[var(--text-secondary)] truncate mr-2">{url}</span>
-                        <button
-                          onClick={() => removeFromList("blocklist_urls", i)}
-                          className="text-red-400 hover:text-red-300 text-xs flex-shrink-0"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Whitelist entries */}
-              <div>
-                <label className="block text-xs text-[var(--text-muted)] mb-1.5">Whitelist Entries</label>
-                <div className="flex gap-2 mb-2">
-                  <input
-                    type="text"
-                    value={whitelistInput}
-                    onChange={(e) => setWhitelistInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        addToList("whitelist", whitelistInput);
-                        setWhitelistInput("");
-                      }
-                    }}
-                    placeholder="e.g. allowed-domain.com"
-                    className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
-                  <button
-                    onClick={() => {
-                      addToList("whitelist", whitelistInput);
-                      setWhitelistInput("");
-                    }}
-                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md"
-                  >
-                    Add
-                  </button>
-                </div>
-                {config.whitelist.length > 0 && (
-                  <div className="space-y-1">
-                    {config.whitelist.map((entry, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border border-gray-700 rounded-md"
-                      >
-                        <span className="text-xs font-mono text-[var(--text-secondary)]">{entry}</span>
-                        <button
-                          onClick={() => removeFromList("whitelist", i)}
-                          className="text-red-400 hover:text-red-300 text-xs"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* ===================== Advanced Tab ==================== */}
           {activeTab === "Advanced" && (
             <div className="space-y-5">
@@ -881,15 +804,48 @@ export default function DnsResolverPage() {
                 />
               </div>
 
+              <h3 className="text-sm font-medium text-[var(--text-secondary)]">Safety</h3>
+              <div className="flex items-start gap-3 p-3 bg-[var(--bg-primary)] border border-[var(--border)] rounded-md">
+                <button
+                  type="button"
+                  onClick={() => setConfig((p) => ({ ...p, probe_enabled: !p.probe_enabled }))}
+                  className={`shrink-0 mt-0.5 relative w-11 h-6 rounded-full transition-colors ${
+                    config.probe_enabled ? "bg-blue-600" : "bg-gray-600"
+                  }`}
+                  aria-label="Toggle post-switch DNS probe"
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                      config.probe_enabled ? "translate-x-5" : ""
+                    }`}
+                  />
+                </button>
+                <div className="flex-1">
+                  <div className="text-sm text-[var(--text-primary)] font-medium">
+                    Probe :53 after backend switch
+                  </div>
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                    When enabled (recommended), a real DNS query is sent to 127.0.0.1:53 after starting a resolver; if it doesn&apos;t answer within 8 seconds, the previous backend is automatically restored. Also drives the live health dot in the status bar. Disable only for debugging or if the probe itself is giving false negatives.
+                  </p>
+                </div>
+              </div>
+
               <h3 className="text-sm font-medium text-[var(--text-secondary)]">Cache & Threading</h3>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs text-[var(--text-muted)] mb-1">Threads</label>
+                  <label className="block text-xs text-[var(--text-muted)] mb-1">
+                    Threads
+                    {config.backend === "rdns" && (
+                      <span className="ml-2 text-[10px] text-[var(--text-muted)]">(Unbound only — rDNS uses SO_REUSEPORT workers)</span>
+                    )}
+                  </label>
                   <input
                     type="number"
                     value={config.num_threads}
                     onChange={(e) => setConfig((p) => ({ ...p, num_threads: Number(e.target.value) }))}
-                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
+                    disabled={config.backend === "rdns"}
+                    title={config.backend === "rdns" ? "rDNS does not use thread count; see SO_REUSEPORT workers in rDNS config" : ""}
+                    className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
                 <div>
@@ -1149,16 +1105,18 @@ export default function DnsResolverPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-xs text-[var(--text-muted)] mb-1.5">
-                  Custom Unbound Configuration
+                  {config.backend === "rdns" ? "Custom rDNS Configuration" : "Custom Unbound Configuration"}
                 </label>
                 <p className="text-[10px] text-[var(--text-muted)] mb-2">
-                  Raw unbound.conf lines appended to the generated configuration. Use with caution.
+                  {config.backend === "rdns"
+                    ? "Raw TOML lines appended to the generated rdns.toml. Use with caution."
+                    : "Raw unbound.conf lines appended to the generated configuration. Use with caution."}
                 </p>
                 <textarea
                   value={config.custom_options}
                   onChange={(e) => setConfig((p) => ({ ...p, custom_options: e.target.value }))}
                   rows={12}
-                  placeholder="# Custom unbound options..."
+                  placeholder={config.backend === "rdns" ? "# Custom rDNS TOML..." : "# Custom unbound options..."}
                   className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 font-mono focus:outline-none focus:border-blue-500"
                 />
               </div>

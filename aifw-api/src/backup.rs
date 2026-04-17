@@ -145,6 +145,8 @@ pub async fn save_version(
 #[derive(Deserialize)]
 pub struct RestoreRequest {
     pub version: i64,
+    #[serde(default)]
+    pub interface_map: InterfaceMap,
 }
 
 pub async fn restore_version(
@@ -154,8 +156,7 @@ pub async fn restore_version(
     let mgr = ConfigManager::new(state.pool.clone());
     let config = mgr.get_version(req.version).await.map_err(|_| StatusCode::NOT_FOUND)?;
 
-    // Apply the config: clear current rules/nat/routes and re-import from the version
-    apply_firewall_config(&state, &config).await?;
+    apply_firewall_config(&state, &config, &req.interface_map).await?;
 
     mgr.mark_applied(req.version).await.map_err(|_| internal())?;
 
@@ -605,7 +606,7 @@ pub async fn commit_confirm_start(
                 tracing::warn!("Commit confirm expired after {timeout_secs}s — rolling back");
                 if let Some(inner) = store.write().await.take()
                     && let Ok(config) = serde_json::from_str::<FirewallConfig>(&inner.rollback_config) {
-                        let _ = apply_firewall_config(&rollback_state, &config).await;
+                        let _ = apply_firewall_config(&rollback_state, &config, &InterfaceMap::new()).await;
                         tracing::info!("Config rolled back successfully");
                     }
             }
@@ -653,12 +654,33 @@ pub async fn commit_confirm_status() -> Result<Json<CommitConfirmState>, StatusC
 // ============================================================
 
 /// Build a FirewallConfig from current live state
-async fn build_current_config(state: &AppState) -> Result<FirewallConfig, StatusCode> {
+pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallConfig, StatusCode> {
+    use aifw_core::config::*;
+    use aifw_core::{ha::ClusterEngine, shaping::ShapingEngine, tls::TlsEngine};
+
     let rules = state.rule_engine.list_rules().await.map_err(|_| internal())?;
     let nat_rules = state.nat_engine.list_rules().await.map_err(|_| internal())?;
     let geoip_rules = state.geoip_engine.list_rules().await.map_err(|_| internal())?;
     let wg_tunnels = state.vpn_engine.list_wg_tunnels().await.map_err(|_| internal())?;
     let ipsec_sas = state.vpn_engine.list_ipsec_sas().await.map_err(|_| internal())?;
+
+    let shaping = ShapingEngine::new(state.pool.clone(), state.pf.clone());
+    let _ = shaping.migrate().await;
+    let queues = shaping.list_queues().await.unwrap_or_default();
+    let rate_limits = shaping.list_rate_limits().await.unwrap_or_default();
+
+    let tls_engine = TlsEngine::new(state.pool.clone(), state.pf.clone());
+    let _ = tls_engine.migrate().await;
+    let sni_rules = tls_engine.list_sni_rules().await.unwrap_or_default();
+    let ja3 = tls_engine.list_ja3_blocks().await.unwrap_or_default();
+
+    let ha = ClusterEngine::new(state.pool.clone(), state.pf.clone());
+    let _ = ha.migrate().await;
+    let carp_vips = ha.list_carp_vips().await.unwrap_or_default();
+    let cluster_nodes = ha.list_nodes().await.unwrap_or_default();
+    let pfsync = ha.get_pfsync().await.ok().flatten();
+
+    let max_states = aifw_core::pf_tuning::configured_max_states(&state.pool).await;
 
     let dns = tokio::fs::read_to_string("/etc/resolv.conf").await.unwrap_or_default();
     let dns_servers: Vec<String> = dns.lines()
@@ -666,7 +688,30 @@ async fn build_current_config(state: &AppState) -> Result<FirewallConfig, Status
 
     let auth = &state.auth_settings;
 
-    use aifw_core::config::*;
+    let mut wireguard: Vec<WireguardTunnelConfig> = Vec::with_capacity(wg_tunnels.len());
+    for t in &wg_tunnels {
+        let peers = state.vpn_engine.list_wg_peers(t.id).await.unwrap_or_default();
+        wireguard.push(WireguardTunnelConfig {
+            id: t.id.to_string(),
+            name: t.name.clone(),
+            interface: t.interface.0.clone(),
+            listen_port: t.listen_port,
+            private_key: t.private_key.clone(),
+            public_key: t.public_key.clone(),
+            address: t.address.to_string(),
+            dns: t.dns.clone(),
+            mtu: t.mtu,
+            peers: peers.iter().map(|p| WireguardPeerConfig {
+                id: p.id.to_string(),
+                name: p.name.clone(),
+                public_key: p.public_key.clone(),
+                preshared_key: p.preshared_key.clone(),
+                endpoint: p.endpoint.clone(),
+                allowed_ips: p.allowed_ips.iter().map(|a| a.to_string()).collect(),
+                persistent_keepalive: p.persistent_keepalive,
+            }).collect(),
+        });
+    }
 
     let config = FirewallConfig {
         schema_version: 1,
@@ -690,9 +735,9 @@ async fn build_current_config(state: &AppState) -> Result<FirewallConfig, Status
         rules: rules.iter().map(|r| RuleConfig {
             id: r.id.to_string(),
             priority: r.priority,
-            action: format!("{:?}", r.action).to_lowercase(),
-            direction: format!("{:?}", r.direction).to_lowercase(),
-            protocol: r.protocol.to_string(),
+            action: enum_as_string(&r.action),
+            direction: enum_as_string(&r.direction),
+            protocol: enum_as_string(&r.protocol),
             interface: r.interface.as_ref().map(|i| i.0.clone()),
             src_addr: Some(r.rule_match.src_addr.to_string()),
             src_port_start: r.rule_match.src_port.as_ref().map(|p| p.start),
@@ -703,14 +748,14 @@ async fn build_current_config(state: &AppState) -> Result<FirewallConfig, Status
             log: r.log,
             quick: r.quick,
             label: r.label.clone(),
-            state_tracking: format!("{:?}", r.state_options.tracking).to_lowercase(),
-            status: if r.status == aifw_common::RuleStatus::Active { "active".to_string() } else { "disabled".to_string() },
+            state_tracking: enum_as_string(&r.state_options.tracking),
+            status: enum_as_string(&r.status),
         }).collect(),
         nat: nat_rules.iter().map(|n| NatRuleConfig {
             id: n.id.to_string(),
-            nat_type: format!("{:?}", n.nat_type).to_lowercase(),
+            nat_type: enum_as_string(&n.nat_type),
             interface: n.interface.0.clone(),
-            protocol: n.protocol.to_string(),
+            protocol: enum_as_string(&n.protocol),
             src_addr: Some(n.src_addr.to_string()),
             src_port_start: n.src_port.as_ref().map(|p| p.start),
             src_port_end: n.src_port.as_ref().map(|p| p.end),
@@ -721,30 +766,42 @@ async fn build_current_config(state: &AppState) -> Result<FirewallConfig, Status
             redirect_port_start: n.redirect.port.as_ref().map(|p| p.start),
             redirect_port_end: n.redirect.port.as_ref().map(|p| p.end),
             label: n.label.clone(),
-            status: if n.status == aifw_common::NatStatus::Active { "active".to_string() } else { "disabled".to_string() },
+            status: enum_as_string(&n.status),
         }).collect(),
-        queues: Vec::new(),
-        rate_limits: Vec::new(),
+        queues: queues.iter().map(|q| QueueConfigEntry {
+            id: q.id.to_string(),
+            name: q.name.clone(),
+            interface: q.interface.0.clone(),
+            queue_type: enum_as_string(&q.queue_type),
+            bandwidth_value: q.bandwidth.value,
+            bandwidth_unit: enum_as_string(&q.bandwidth.unit),
+            traffic_class: enum_as_string(&q.traffic_class),
+            bandwidth_pct: q.bandwidth_pct,
+            default: q.default,
+            status: enum_as_string(&q.status),
+        }).collect(),
+        rate_limits: rate_limits.iter().map(|r| RateLimitEntry {
+            id: r.id.to_string(),
+            name: r.name.clone(),
+            interface: r.interface.as_ref().map(|i| i.0.clone()),
+            protocol: enum_as_string(&r.protocol),
+            dst_port_start: r.dst_port.as_ref().map(|p| p.start),
+            dst_port_end: r.dst_port.as_ref().map(|p| p.end),
+            max_connections: r.max_connections,
+            window_secs: r.window_secs,
+            overload_table: r.overload_table.clone(),
+            flush_states: r.flush_states,
+            status: enum_as_string(&r.status),
+        }).collect(),
         vpn: VpnConfig {
-            wireguard: wg_tunnels.iter().map(|t| WireguardTunnelConfig {
-                id: t.id.to_string(),
-                name: t.name.clone(),
-                interface: t.interface.0.clone(),
-                listen_port: t.listen_port,
-                private_key: String::new(),
-                public_key: t.public_key.clone(),
-                address: t.address.to_string(),
-                dns: t.dns.clone(),
-                mtu: t.mtu,
-                peers: Vec::new(), // peers fetched separately
-            }).collect(),
+            wireguard,
             ipsec: ipsec_sas.iter().map(|s| IpsecSaConfig {
                 id: s.id.to_string(),
                 name: s.name.clone(),
                 src_addr: s.src_addr.to_string(),
                 dst_addr: s.dst_addr.to_string(),
-                protocol: format!("{:?}", s.protocol).to_lowercase(),
-                mode: format!("{:?}", s.mode).to_lowercase(),
+                protocol: enum_as_string(&s.protocol),
+                mode: enum_as_string(&s.mode),
                 enc_algo: s.enc_algo.clone(),
                 auth_algo: s.auth_algo.clone(),
             }).collect(),
@@ -752,67 +809,668 @@ async fn build_current_config(state: &AppState) -> Result<FirewallConfig, Status
         geoip: geoip_rules.iter().map(|g| GeoIpEntry {
             id: g.id.to_string(),
             country: g.country.0.clone(),
-            action: format!("{:?}", g.action).to_lowercase(),
+            action: enum_as_string(&g.action),
             label: g.label.clone(),
-            status: if g.status == aifw_common::GeoIpRuleStatus::Active { "active".to_string() } else { "disabled".to_string() },
+            status: enum_as_string(&g.status),
         }).collect(),
-        tls: TlsConfig::default(),
-        ha: HaConfig::default(),
-        tuning: Vec::new(),
+        tls: TlsConfig {
+            min_version: "tls12".to_string(),
+            block_self_signed: false,
+            block_expired: true,
+            block_weak_keys: true,
+            blocked_ja3: ja3.into_iter().map(|(hash, _, _)| hash).collect(),
+            sni_rules: sni_rules.iter().map(|r| SniRuleConfig {
+                id: r.id.to_string(),
+                pattern: r.pattern.clone(),
+                action: enum_as_string(&r.action),
+                label: r.label.clone(),
+            }).collect(),
+        },
+        ha: HaConfig {
+            carp_vips: carp_vips.iter().map(|v| CarpVipConfig {
+                id: v.id.to_string(),
+                vhid: v.vhid,
+                virtual_ip: v.virtual_ip.to_string(),
+                prefix: v.prefix,
+                interface: v.interface.0.clone(),
+                advskew: v.advskew,
+                advbase: v.advbase,
+                password: v.password.clone(),
+            }).collect(),
+            pfsync: pfsync.as_ref().map(|p| PfsyncEntry {
+                sync_interface: p.sync_interface.0.clone(),
+                sync_peer: p.sync_peer.as_ref().map(|a| a.to_string()),
+                defer: p.defer,
+            }),
+            nodes: cluster_nodes.iter().map(|n| ClusterNodeConfig {
+                id: n.id.to_string(),
+                name: n.name.clone(),
+                address: n.address.to_string(),
+                role: enum_as_string(&n.role),
+            }).collect(),
+        },
+        tuning: vec![TuningEntry {
+            key: "pf.max_states".to_string(),
+            value: max_states.to_string(),
+            target: "sysctl".to_string(),
+            reason: "pf state table size".to_string(),
+            enabled: true,
+        }],
     };
 
     Ok(config)
 }
 
-/// Apply a FirewallConfig by importing rules/nat/routes
-async fn apply_firewall_config(state: &AppState, config: &FirewallConfig) -> Result<(), StatusCode> {
-    // Clear existing rules
+fn enum_as_string<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|val| val.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+pub(crate) type InterfaceMap = std::collections::HashMap<String, Option<String>>;
+
+// ============================================================
+// Import/Restore preview — NIC name mismatch detection
+// ============================================================
+
+#[derive(Serialize)]
+pub struct InterfaceInfo {
+    pub name: String,
+    pub mac: Option<String>,
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+    pub ipv4_mode: Option<String>,   // "dhcp" | "static" | "none"
+    pub status: String,               // "up" | "down"
+}
+
+#[derive(Serialize, Default)]
+pub struct DropSummary {
+    pub rules: u32,
+    pub nat: u32,
+    pub wireguard: u32,
+    pub carp: u32,
+    pub queues: u32,
+    pub rate_limits: u32,
+    pub pfsync: bool,
+}
+
+#[derive(Serialize)]
+pub struct ImportPreview {
+    pub interfaces_found: Vec<String>,
+    pub interfaces_missing: Vec<String>,
+    pub interfaces_present: Vec<InterfaceInfo>,
+    pub suggestions: std::collections::HashMap<String, String>,
+    /// How many entries WILL BE DROPPED per section if every currently-missing
+    /// interface is left unmapped. Updated client-side as user picks mappings.
+    pub drop_summary_if_unmapped: DropSummary,
+}
+
+/// Walk a FirewallConfig and collect every interface-name reference.
+fn collect_interface_refs(cfg: &FirewallConfig) -> std::collections::BTreeSet<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for r in &cfg.rules {
+        if let Some(i) = r.interface.as_deref() { set.insert(i.to_string()); }
+    }
+    for n in &cfg.nat {
+        set.insert(n.interface.clone());
+    }
+    for w in &cfg.vpn.wireguard {
+        set.insert(w.interface.clone());
+    }
+    for v in &cfg.ha.carp_vips {
+        set.insert(v.interface.clone());
+    }
+    if let Some(p) = &cfg.ha.pfsync {
+        set.insert(p.sync_interface.clone());
+    }
+    for q in &cfg.queues {
+        set.insert(q.interface.clone());
+    }
+    for rl in &cfg.rate_limits {
+        if let Some(i) = rl.interface.as_deref() { set.insert(i.to_string()); }
+    }
+    set
+}
+
+/// Count per-section entries that would be dropped if `missing` are unmapped.
+fn compute_drop_summary(cfg: &FirewallConfig, missing: &std::collections::BTreeSet<String>) -> DropSummary {
+    let mut s = DropSummary::default();
+    for r in &cfg.rules {
+        if r.interface.as_deref().is_some_and(|i| missing.contains(i)) { s.rules += 1; }
+    }
+    for n in &cfg.nat {
+        if missing.contains(&n.interface) { s.nat += 1; }
+    }
+    for w in &cfg.vpn.wireguard {
+        if missing.contains(&w.interface) { s.wireguard += 1; }
+    }
+    for v in &cfg.ha.carp_vips {
+        if missing.contains(&v.interface) { s.carp += 1; }
+    }
+    for q in &cfg.queues {
+        if missing.contains(&q.interface) { s.queues += 1; }
+    }
+    for rl in &cfg.rate_limits {
+        if rl.interface.as_deref().is_some_and(|i| missing.contains(i)) { s.rate_limits += 1; }
+    }
+    if let Some(p) = &cfg.ha.pfsync
+        && missing.contains(&p.sync_interface) { s.pfsync = true; }
+    s
+}
+
+/// Heuristic: prefer an interface that shares the same non-digit base name.
+/// Falls back to the first physical interface if no base match is available.
+fn suggest_interface(missing: &str, present: &[InterfaceInfo]) -> Option<String> {
+    let base = missing.trim_end_matches(|c: char| c.is_ascii_digit());
+    let physical: Vec<&InterfaceInfo> = present.iter()
+        .filter(|i| !i.name.starts_with("lo") && !i.name.starts_with("pflog")
+                  && !i.name.starts_with("pfsync") && !i.name.starts_with("enc"))
+        .collect();
+    if !base.is_empty()
+        && let Some(m) = physical.iter().find(|i| i.name.starts_with(base)) {
+            return Some(m.name.clone());
+        }
+    physical.first().map(|i| i.name.clone())
+}
+
+async fn collect_system_interfaces() -> Vec<InterfaceInfo> {
+    let details = crate::iface::parse_ifconfig().await;
+    let mut out = Vec::with_capacity(details.len());
+    for d in details {
+        let mode = crate::iface::get_rc_ipv4_mode(&d.name).await;
+        out.push(InterfaceInfo {
+            ipv4_mode: mode,
+            name: d.name,
+            mac: d.mac,
+            ipv4: d.ipv4,
+            ipv6: d.ipv6,
+            status: d.status,
+        });
+    }
+    out
+}
+
+/// Build the preview for a given FirewallConfig.
+pub(crate) async fn build_import_preview(cfg: &FirewallConfig) -> ImportPreview {
+    let refs = collect_interface_refs(cfg);
+    let present = collect_system_interfaces().await;
+    let present_names: std::collections::HashSet<String> =
+        present.iter().map(|i| i.name.clone()).collect();
+
+    let missing: std::collections::BTreeSet<String> = refs.iter()
+        .filter(|i| !present_names.contains(*i))
+        .cloned()
+        .collect();
+
+    let suggestions: std::collections::HashMap<String, String> = missing.iter()
+        .filter_map(|m| suggest_interface(m, &present).map(|s| (m.clone(), s)))
+        .collect();
+
+    let drop = compute_drop_summary(cfg, &missing);
+
+    ImportPreview {
+        interfaces_found: refs.into_iter().collect(),
+        interfaces_missing: missing.into_iter().collect(),
+        interfaces_present: present,
+        suggestions,
+        drop_summary_if_unmapped: drop,
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RestorePreviewQuery {
+    pub version: i64,
+}
+
+pub async fn preview_import(
+    State(_state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<ImportPreview>, StatusCode> {
+    let config_val = payload.get("config").ok_or(StatusCode::BAD_REQUEST)?;
+    let config: FirewallConfig = serde_json::from_value(config_val.clone())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    Ok(Json(build_import_preview(&config).await))
+}
+
+pub async fn preview_restore(
+    State(state): State<AppState>,
+    Query(q): Query<RestorePreviewQuery>,
+) -> Result<Json<ImportPreview>, StatusCode> {
+    let mgr = ConfigManager::new(state.pool.clone());
+    let config = mgr.get_version(q.version).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(build_import_preview(&config).await))
+}
+
+/// Resolve the target interface name via the provided map.
+/// Returns `None` iff the entry should be dropped (explicit skip).
+fn map_iface(name: &str, map: &InterfaceMap) -> Option<String> {
+    match map.get(name) {
+        Some(Some(new)) => Some(new.clone()),
+        Some(None) => None,
+        None => Some(name.to_string()),
+    }
+}
+
+/// Apply a FirewallConfig to live state: wipe all tracked tables, re-insert
+/// from the config, then reload pf anchors. Used by both version-history
+/// restore and by the raw Export/Import endpoint.
+///
+/// `iface_map` lets the caller rename interfaces (backup-name → target-name)
+/// or skip entries whose interface has no mapping on the target (value = None).
+/// Pass an empty map for literal restore (version history on the same box).
+pub(crate) async fn apply_firewall_config(
+    state: &AppState,
+    config: &FirewallConfig,
+    iface_map: &InterfaceMap,
+) -> Result<(), StatusCode> {
+    use aifw_common::{
+        Address, CountryCode, GeoIpAction, GeoIpRule, GeoIpRuleStatus, Interface,
+        IpsecMode, IpsecProtocol, IpsecSa, VpnStatus, WgPeer, WgTunnel,
+    };
+
+    let _ = sqlx::query("DELETE FROM wg_peers").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM wg_tunnels").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM ipsec_sas").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM geoip_rules").execute(&state.pool).await;
     let _ = sqlx::query("DELETE FROM rules").execute(&state.pool).await;
     let _ = sqlx::query("DELETE FROM nat_rules").execute(&state.pool).await;
 
-    // Re-import rules
     for rc in &config.rules {
-        let body = serde_json::json!({
-            "action": rc.action,
-            "direction": rc.direction,
-            "protocol": rc.protocol,
-            "src_addr": rc.src_addr,
-            "dst_addr": rc.dst_addr,
-            "interface": rc.interface,
-            "label": rc.label,
-            "log": rc.log,
-            "quick": rc.quick,
-            "status": rc.status,
-        });
-        if let Ok(req) = serde_json::from_value::<crate::routes::CreateRuleRequest>(body) {
-            let _ = create_rule_internal(state, req).await;
+        let iface_after = match rc.interface.as_deref() {
+            Some(name) => match map_iface(name, iface_map) {
+                Some(mapped) => Some(mapped),
+                None => continue, // user chose to drop entries on this interface
+            },
+            None => None,
+        };
+        let mut rc = rc.clone();
+        rc.interface = iface_after;
+        if let Some(rule) = rule_from_config(&rc) {
+            let _ = state.rule_engine.add_rule(rule).await;
         }
     }
 
-    // Re-import NAT
     for nc in &config.nat {
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
-        let _ = sqlx::query(
-            "INSERT INTO nat_rules (id, nat_type, interface, protocol, src_addr, dst_addr, redirect_addr, redirect_port_start, redirect_port_end, log, label, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?12)"
-        )
-        .bind(&id).bind(&nc.nat_type).bind(&nc.interface).bind(&nc.protocol)
-        .bind(nc.src_addr.as_deref()).bind(nc.dst_addr.as_deref())
-        .bind(&nc.redirect_addr)
-        .bind(nc.redirect_port_start.map(|p| p as i64))
-        .bind(nc.redirect_port_end.map(|p| p as i64))
-        .bind(nc.label.as_deref())
-        .bind(&nc.status)
-        .bind(&now)
-        .execute(&state.pool).await;
+        let Some(mapped_iface) = map_iface(&nc.interface, iface_map) else { continue };
+        let mut nc = nc.clone();
+        nc.interface = mapped_iface;
+        if let Some(nat) = nat_from_config(&nc) {
+            let _ = state.nat_engine.add_rule(nat).await;
+        }
     }
 
-    // Reload pf rules
-    let rules = state.rule_engine.list_rules().await.map_err(|_| internal())?;
-    let pf_rules: Vec<String> = rules.iter().map(|r| r.to_pf_rule("aifw")).collect();
-    let _ = state.pf.load_rules("aifw", &pf_rules).await;
+    for gc in &config.geoip {
+        let Ok(country) = CountryCode::new(&gc.country) else { continue; };
+        let Ok(action) = GeoIpAction::parse(&gc.action) else { continue; };
+        let status = if gc.status == "disabled" { GeoIpRuleStatus::Disabled } else { GeoIpRuleStatus::Active };
+        let id = uuid::Uuid::parse_str(&gc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+        let mut rule = GeoIpRule::new(country, action);
+        rule.id = id;
+        rule.label = gc.label.clone();
+        rule.status = status;
+        let _ = state.geoip_engine.add_rule(rule).await;
+    }
+
+    for wg in &config.vpn.wireguard {
+        let Ok(address) = Address::parse(&wg.address) else { continue; };
+        let Some(iface_name) = map_iface(&wg.interface, iface_map) else { continue };
+        let id = uuid::Uuid::parse_str(&wg.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+        let now = chrono::Utc::now();
+        let tunnel = WgTunnel {
+            id,
+            name: wg.name.clone(),
+            interface: Interface(iface_name),
+            private_key: wg.private_key.clone(),
+            public_key: wg.public_key.clone(),
+            listen_port: wg.listen_port,
+            address,
+            dns: wg.dns.clone(),
+            mtu: wg.mtu,
+            listen_interface: None,
+            split_routes: None,
+            status: VpnStatus::Down,
+            created_at: now,
+            updated_at: now,
+        };
+        if state.vpn_engine.add_wg_tunnel(tunnel).await.is_err() {
+            continue;
+        }
+        for p in &wg.peers {
+            let peer_id = uuid::Uuid::parse_str(&p.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+            let allowed_ips: Vec<Address> = p.allowed_ips.iter()
+                .filter_map(|s| Address::parse(s).ok())
+                .collect();
+            let peer = WgPeer {
+                id: peer_id,
+                tunnel_id: id,
+                name: p.name.clone(),
+                public_key: p.public_key.clone(),
+                preshared_key: p.preshared_key.clone(),
+                client_private_key: None,
+                endpoint: p.endpoint.clone(),
+                allowed_ips,
+                persistent_keepalive: p.persistent_keepalive,
+                created_at: now,
+                updated_at: now,
+            };
+            let _ = state.vpn_engine.add_wg_peer(peer).await;
+        }
+    }
+
+    for sac in &config.vpn.ipsec {
+        let Ok(src_addr) = Address::parse(&sac.src_addr) else { continue; };
+        let Ok(dst_addr) = Address::parse(&sac.dst_addr) else { continue; };
+        let Ok(protocol) = IpsecProtocol::parse(&sac.protocol) else { continue; };
+        let mode = match sac.mode.as_str() {
+            "transport" => IpsecMode::Transport,
+            _ => IpsecMode::Tunnel,
+        };
+        let id = uuid::Uuid::parse_str(&sac.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+        let mut sa = IpsecSa::new(sac.name.clone(), src_addr, dst_addr, protocol, mode);
+        sa.id = id;
+        sa.enc_algo = sac.enc_algo.clone();
+        sa.auth_algo = sac.auth_algo.clone();
+        let _ = state.vpn_engine.add_ipsec_sa(sa).await;
+    }
+
+    if !config.system.dns_servers.is_empty() {
+        let content: String = config.system.dns_servers.iter()
+            .map(|s| format!("nameserver {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = tokio::fs::write("/etc/resolv.conf", &content).await;
+    }
+
+    let auth = &config.auth;
+    let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('access_token_expiry_mins', ?1)")
+        .bind(auth.access_token_expiry_mins.to_string()).execute(&state.pool).await;
+    let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('refresh_token_expiry_days', ?1)")
+        .bind(auth.refresh_token_expiry_days.to_string()).execute(&state.pool).await;
+    let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('require_totp', ?1)")
+        .bind(if auth.require_totp { "true" } else { "false" }).execute(&state.pool).await;
+
+    // Traffic shaping: queues + per-IP rate limits
+    let shaping = aifw_core::shaping::ShapingEngine::new(state.pool.clone(), state.pf.clone());
+    let _ = shaping.migrate().await;
+    let _ = sqlx::query("DELETE FROM queues").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM rate_limits").execute(&state.pool).await;
+    for qc in &config.queues {
+        let Some(mapped) = map_iface(&qc.interface, iface_map) else { continue };
+        let mut qc = qc.clone();
+        qc.interface = mapped;
+        if let Some(q) = queue_from_config(&qc) {
+            let _ = shaping.add_queue(q).await;
+        }
+    }
+    for rc in &config.rate_limits {
+        let iface_after = match rc.interface.as_deref() {
+            Some(name) => match map_iface(name, iface_map) {
+                Some(m) => Some(m),
+                None => continue,
+            },
+            None => None,
+        };
+        let mut rc = rc.clone();
+        rc.interface = iface_after;
+        if let Some(r) = rate_limit_from_config(&rc) {
+            let _ = shaping.add_rate_limit(r).await;
+        }
+    }
+    let _ = shaping.apply_queues().await;
+    let _ = shaping.apply_rate_limits().await;
+
+    // TLS: SNI rules + JA3 blocklist
+    let tls_engine = aifw_core::tls::TlsEngine::new(state.pool.clone(), state.pf.clone());
+    let _ = tls_engine.migrate().await;
+    let _ = sqlx::query("DELETE FROM sni_rules").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM ja3_blocklist").execute(&state.pool).await;
+    for sc in &config.tls.sni_rules {
+        if let Some(sni) = sni_rule_from_config(sc) {
+            let _ = tls_engine.add_sni_rule(sni).await;
+        }
+    }
+    for hash in &config.tls.blocked_ja3 {
+        let _ = tls_engine.add_ja3_block(hash, "restored from backup").await;
+    }
+
+    // HA: CARP VIPs + pfsync + cluster nodes
+    let ha_engine = aifw_core::ha::ClusterEngine::new(state.pool.clone(), state.pf.clone());
+    let _ = ha_engine.migrate().await;
+    let _ = sqlx::query("DELETE FROM carp_vips").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM pfsync_config").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM cluster_nodes").execute(&state.pool).await;
+    for vc in &config.ha.carp_vips {
+        let Some(mapped) = map_iface(&vc.interface, iface_map) else { continue };
+        let mut vc = vc.clone();
+        vc.interface = mapped;
+        if let Some(vip) = carp_vip_from_config(&vc) {
+            let _ = ha_engine.add_carp_vip(vip).await;
+        }
+    }
+    if let Some(pc) = &config.ha.pfsync
+        && let Some(mapped_sync) = map_iface(&pc.sync_interface, iface_map) {
+            let mut pc = pc.clone();
+            pc.sync_interface = mapped_sync;
+            if let Some(pfsync) = pfsync_from_config(&pc) {
+                let _ = ha_engine.set_pfsync(pfsync).await;
+            }
+        }
+    for nc in &config.ha.nodes {
+        if let Some(node) = cluster_node_from_config(nc) {
+            let _ = ha_engine.add_node(node).await;
+        }
+    }
+
+    // pf state-table tuning
+    for t in &config.tuning {
+        if t.enabled && t.key == "pf.max_states"
+            && let Ok(val) = t.value.parse::<u64>() {
+                let _ = aifw_core::pf_tuning::set_max_states(&state.pool, val).await;
+            }
+    }
+
+    if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
+        state.rule_engine.set_extra_rules(vpn_rules).await;
+    }
+    let _ = state.rule_engine.apply_rules().await;
+    let _ = state.nat_engine.apply_rules().await;
+    let _ = state.geoip_engine.apply_rules().await;
 
     Ok(())
+}
+
+fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::Rule> {
+    use aifw_common::*;
+    let action: Action = serde_json::from_value(serde_json::Value::String(rc.action.clone())).ok()?;
+    let direction: Direction = serde_json::from_value(serde_json::Value::String(rc.direction.clone())).ok()?;
+    let protocol = Protocol::parse(&rc.protocol).ok()?;
+    let src_addr = rc.src_addr.as_deref().map(Address::parse).transpose().ok()?.unwrap_or(Address::Any);
+    let dst_addr = rc.dst_addr.as_deref().map(Address::parse).transpose().ok()?.unwrap_or(Address::Any);
+    let src_port = match (rc.src_port_start, rc.src_port_end) {
+        (Some(s), Some(e)) => Some(PortRange { start: s, end: e }),
+        (Some(s), None) => Some(PortRange { start: s, end: s }),
+        _ => None,
+    };
+    let dst_port = match (rc.dst_port_start, rc.dst_port_end) {
+        (Some(s), Some(e)) => Some(PortRange { start: s, end: e }),
+        (Some(s), None) => Some(PortRange { start: s, end: s }),
+        _ => None,
+    };
+    let tracking: StateTracking = serde_json::from_value(serde_json::Value::String(rc.state_tracking.clone())).unwrap_or_default();
+    let status = if rc.status == "disabled" { RuleStatus::Disabled } else { RuleStatus::Active };
+    let id = uuid::Uuid::parse_str(&rc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let now = chrono::Utc::now();
+    Some(Rule {
+        id,
+        priority: rc.priority,
+        action,
+        direction,
+        ip_version: IpVersion::default(),
+        interface: rc.interface.clone().map(Interface),
+        protocol,
+        rule_match: RuleMatch { src_addr, src_port, dst_addr, dst_port },
+        src_invert: false,
+        dst_invert: false,
+        log: rc.log,
+        quick: rc.quick,
+        label: rc.label.clone(),
+        description: None,
+        gateway: None,
+        state_options: StateOptions { tracking, ..Default::default() },
+        status,
+        schedule_id: None,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+fn nat_from_config(nc: &aifw_core::config::NatRuleConfig) -> Option<aifw_common::NatRule> {
+    use aifw_common::*;
+    let nat_type = NatType::parse(&nc.nat_type).ok()?;
+    let protocol = Protocol::parse(&nc.protocol).ok()?;
+    let src_addr = nc.src_addr.as_deref().map(Address::parse).transpose().ok()?.unwrap_or(Address::Any);
+    let dst_addr = nc.dst_addr.as_deref().map(Address::parse).transpose().ok()?.unwrap_or(Address::Any);
+    let redirect_addr = Address::parse(&nc.redirect_addr).ok()?;
+    let src_port = match (nc.src_port_start, nc.src_port_end) {
+        (Some(s), Some(e)) => Some(PortRange { start: s, end: e }),
+        (Some(s), None) => Some(PortRange { start: s, end: s }),
+        _ => None,
+    };
+    let dst_port = match (nc.dst_port_start, nc.dst_port_end) {
+        (Some(s), Some(e)) => Some(PortRange { start: s, end: e }),
+        (Some(s), None) => Some(PortRange { start: s, end: s }),
+        _ => None,
+    };
+    let redirect_port = match (nc.redirect_port_start, nc.redirect_port_end) {
+        (Some(s), Some(e)) => Some(PortRange { start: s, end: e }),
+        (Some(s), None) => Some(PortRange { start: s, end: s }),
+        _ => None,
+    };
+    let status = if nc.status == "disabled" { NatStatus::Disabled } else { NatStatus::Active };
+    let id = uuid::Uuid::parse_str(&nc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let now = chrono::Utc::now();
+    Some(NatRule {
+        id,
+        nat_type,
+        interface: Interface(nc.interface.clone()),
+        protocol,
+        src_addr,
+        src_port,
+        dst_addr,
+        dst_port,
+        redirect: NatRedirect { address: redirect_addr, port: redirect_port },
+        label: nc.label.clone(),
+        status,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+fn queue_from_config(qc: &aifw_core::config::QueueConfigEntry) -> Option<aifw_common::QueueConfig> {
+    use aifw_common::*;
+    let queue_type: QueueType = serde_json::from_value(serde_json::Value::String(qc.queue_type.clone())).ok()?;
+    let unit: BandwidthUnit = serde_json::from_value(serde_json::Value::String(qc.bandwidth_unit.clone())).ok()?;
+    let traffic_class: TrafficClass = serde_json::from_value(serde_json::Value::String(qc.traffic_class.clone())).ok()?;
+    let status: QueueStatus = serde_json::from_value(serde_json::Value::String(qc.status.clone())).ok()?;
+    let id = uuid::Uuid::parse_str(&qc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let now = chrono::Utc::now();
+    Some(QueueConfig {
+        id,
+        interface: Interface(qc.interface.clone()),
+        queue_type,
+        bandwidth: Bandwidth { value: qc.bandwidth_value, unit },
+        name: qc.name.clone(),
+        traffic_class,
+        bandwidth_pct: qc.bandwidth_pct,
+        default: qc.default,
+        status,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+fn rate_limit_from_config(rc: &aifw_core::config::RateLimitEntry) -> Option<aifw_common::RateLimitRule> {
+    use aifw_common::*;
+    let protocol = Protocol::parse(&rc.protocol).ok()?;
+    let status: RateLimitStatus = serde_json::from_value(serde_json::Value::String(rc.status.clone())).ok()?;
+    let dst_port = match (rc.dst_port_start, rc.dst_port_end) {
+        (Some(s), Some(e)) => Some(PortRange { start: s, end: e }),
+        (Some(s), None) => Some(PortRange { start: s, end: s }),
+        _ => None,
+    };
+    let id = uuid::Uuid::parse_str(&rc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let now = chrono::Utc::now();
+    Some(RateLimitRule {
+        id,
+        name: rc.name.clone(),
+        interface: rc.interface.clone().map(Interface),
+        protocol,
+        src_addr: Address::Any,
+        dst_addr: Address::Any,
+        dst_port,
+        max_connections: rc.max_connections,
+        window_secs: rc.window_secs,
+        overload_table: rc.overload_table.clone(),
+        flush_states: rc.flush_states,
+        status,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+fn sni_rule_from_config(sc: &aifw_core::config::SniRuleConfig) -> Option<aifw_common::SniRule> {
+    use aifw_common::*;
+    let action = SniAction::parse(&sc.action).ok()?;
+    let id = uuid::Uuid::parse_str(&sc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let now = chrono::Utc::now();
+    let mut rule = SniRule::new(sc.pattern.clone(), action);
+    rule.id = id;
+    rule.label = sc.label.clone();
+    rule.created_at = now;
+    rule.updated_at = now;
+    Some(rule)
+}
+
+fn carp_vip_from_config(vc: &aifw_core::config::CarpVipConfig) -> Option<aifw_common::CarpVip> {
+    use aifw_common::*;
+    let virtual_ip: std::net::IpAddr = vc.virtual_ip.parse().ok()?;
+    let id = uuid::Uuid::parse_str(&vc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let now = chrono::Utc::now();
+    Some(CarpVip {
+        id,
+        vhid: vc.vhid,
+        virtual_ip,
+        prefix: vc.prefix,
+        interface: Interface(vc.interface.clone()),
+        advskew: vc.advskew,
+        advbase: vc.advbase,
+        password: vc.password.clone(),
+        status: CarpStatus::Init,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+fn pfsync_from_config(pc: &aifw_core::config::PfsyncEntry) -> Option<aifw_common::PfsyncConfig> {
+    use aifw_common::*;
+    let sync_peer = pc.sync_peer.as_ref()
+        .map(|s| s.parse::<std::net::IpAddr>())
+        .transpose().ok()?;
+    let mut cfg = PfsyncConfig::new(Interface(pc.sync_interface.clone()));
+    cfg.sync_peer = sync_peer;
+    cfg.defer = pc.defer;
+    Some(cfg)
+}
+
+fn cluster_node_from_config(nc: &aifw_core::config::ClusterNodeConfig) -> Option<aifw_common::ClusterNode> {
+    use aifw_common::*;
+    let address: std::net::IpAddr = nc.address.parse().ok()?;
+    let role = ClusterRole::parse(&nc.role).ok()?;
+    let id = uuid::Uuid::parse_str(&nc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let mut node = ClusterNode::new(nc.name.clone(), address, role);
+    node.id = id;
+    Some(node)
 }
 
 async fn create_rule_internal(state: &AppState, req: crate::routes::CreateRuleRequest) -> Result<(), StatusCode> {
