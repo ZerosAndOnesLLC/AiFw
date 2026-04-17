@@ -232,14 +232,11 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *\n";
         use std::process::Command;
         console::info("Starting services...");
 
-        // Write seeded rules to anchor files so pf has them on first load
-        console::info("Writing anchor rules...");
-        {
-            let db = aifw_core::Database::new(std::path::Path::new(&config.db_path)).await
-                .map_err(|e| format!("db open: {e}"))?;
-            write_anchor_rules(db.pool(), config).await;
-        }
-        console::success("Anchor rules written");
+        // Anchor population is handled at runtime by aifw-daemon reading from
+        // the DB. We deliberately do NOT write anchor files here — see
+        // generate_pf_conf() notes. Writing them once at install created a
+        // stale on-disk source of truth that pf.conf's `load anchor` would
+        // keep re-applying over the daemon's DB-driven updates (v5.57.3 fix).
 
         // Load pf rules
         let _ = Command::new("pfctl").args(["-f", &format!("{}/pf.conf.aifw", config.config_dir)]).output();
@@ -989,62 +986,6 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
     Ok(())
 }
 
-/// Write seeded DB rules to pf anchor files so they're active on first pf load
-#[allow(dead_code)]
-async fn write_anchor_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) {
-    let anchors_dir = format!("{}/anchors", config.config_dir);
-
-    // Write firewall rules to aifw anchor
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, String, Option<i64>, Option<i64>, String, Option<i64>, Option<i64>, bool, bool, Option<String>)>(
-        "SELECT action, direction, interface, protocol, src_addr, src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, log, quick, label FROM rules WHERE status='active' ORDER BY priority ASC"
-    ).fetch_all(pool).await.unwrap_or_default();
-
-    let mut pf_rules = Vec::new();
-    for (action, dir, iface, proto, src, _sp_s, _sp_e, dst, dp_s, _dp_e, log, quick, label) in &rows {
-        let mut r = String::new();
-        // action
-        r.push_str(action);
-        if action == "block" { r.push_str(" drop"); }
-        // direction
-        if dir != "any" { r.push_str(&format!(" {dir}")); }
-        // log
-        if *log { r.push_str(" log"); }
-        // quick
-        if *quick { r.push_str(" quick"); }
-        // interface
-        if let Some(i) = iface && !i.is_empty() { r.push_str(&format!(" on {i}")); }
-        // protocol
-        if proto != "any" { r.push_str(&format!(" proto {proto}")); }
-        // src
-        if src != "any" { r.push_str(&format!(" from {src}")); } else { r.push_str(" from any"); }
-        // dst + port
-        if dst != "any" || dp_s.is_some() {
-            r.push_str(&format!(" to {dst}"));
-        } else {
-            r.push_str(" to any");
-        }
-        if let Some(p) = dp_s { r.push_str(&format!(" port {p}")); }
-        // state (only for pass rules)
-        if action != "block" { r.push_str(" keep state"); }
-        if let Some(l) = label && !l.is_empty() { r.push_str(&format!(" label \"{l}\"")); }
-        pf_rules.push(r);
-    }
-    let _ = std::fs::write(format!("{anchors_dir}/aifw"), pf_rules.join("\n"));
-
-    // Write NAT rules to aifw-nat anchor
-    let nat_rows = sqlx::query_as::<_, (String, String, String, String, String, Option<i64>)>(
-        "SELECT nat_type, interface, protocol, src_addr, redirect_addr, redirect_port_start FROM nat_rules WHERE status='active'"
-    ).fetch_all(pool).await.unwrap_or_default();
-
-    let mut nat_rules = Vec::new();
-    for (nat_type, iface, _proto, src, _redir, _rp) in &nat_rows {
-        if nat_type.as_str() == "masquerade" {
-            nat_rules.push(format!("nat on {iface} from {src} to any -> ({iface})"));
-        }
-    }
-    let _ = std::fs::write(format!("{anchors_dir}/aifw-nat"), nat_rules.join("\n"));
-}
-
 fn hash_for_db(password: &str) -> String {
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng};
     let salt = SaltString::generate(&mut OsRng);
@@ -1202,9 +1143,23 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
         }
     }
 
-    // Load AiFw managed rules
-    lines.push("# Load AiFw managed rules".to_string());
-    lines.push("load anchor \"aifw\" from \"/usr/local/etc/aifw/anchors/aifw\"".to_string());
+    // NOTE: we intentionally do NOT `load anchor "aifw" from ...` here.
+    //
+    // The aifw-daemon / aifw-api processes populate the `aifw` anchor directly
+    // via `pfctl -a aifw -f -` from the DB on startup and on every rule change.
+    // If pf.conf.aifw ALSO loaded the anchor from a stale on-disk file, any
+    // pf.conf reload (service pf reload, `aifw reconcile`, setup re-apply)
+    // would wipe the DB-driven rules back to whatever was in the file at
+    // install time — which is exactly how user edits to the LAN subnet rule
+    // silently regressed on reload. See root-cause write-up in v5.57.x notes.
+    //
+    // The anchor hook is already declared earlier via `anchor "aifw"`; it
+    // starts empty and gets populated by the daemon. The brief window
+    // between `service pf start` and `aifw_daemon start` is acceptable —
+    // the default-block catches inbound traffic, and daemon fills in the
+    // pass rules within ~1 second.
+    lines.push("# aifw anchor is populated at runtime by aifw-daemon from the DB.".to_string());
+    lines.push("# Do NOT add `load anchor \"aifw\" from ...` here — see v5.57.3 notes.".to_string());
     lines.push(String::new());
 
     lines.join("\n")
