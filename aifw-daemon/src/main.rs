@@ -253,11 +253,21 @@ async fn main() -> anyhow::Result<()> {
     // reboot. Logs warn (not fatal) — pf may be in a transient state.
     aifw_core::pf_tuning::apply_on_boot(&pool).await;
 
-    // Drift detection only — runs AFTER all rule engines have populated
-    // their anchors (so we don't briefly wipe them by reloading main).
-    // Logs errors; operator must run `aifw reconcile` to apply fixes.
-    // See #153 and the v5.55.1 regression that auto-reload caused.
-    reconcile_pf_main_detect().await;
+    // Drift detect + auto-heal — runs AFTER all rule engines have populated
+    // their anchors from the DB. If the main pf ruleset is missing our
+    // anchor hooks (pf_start at boot occasionally doesn't load
+    // pf.conf.aifw — exact cause still under investigation but reproducible:
+    // anchors get populated fine by apply_rules, main ruleset ends up empty
+    // so none of the pass/NAT hooks are reachable → LAN outbound silently
+    // breaks at every reboot), reload pf.conf.aifw ourselves.
+    //
+    // Safe since v5.57.3: pf.conf.aifw no longer contains
+    // `load anchor "aifw" from <file>`, so `pfctl -f` won't wipe the
+    // anchor contents we just populated. The v5.55.1 regression that made
+    // this detect-only no longer applies.
+    //
+    // Opt-out: set env var AIFW_NO_PF_AUTO_HEAL=1 to revert to detect-only.
+    reconcile_pf_main().await;
     reconcile_dns_backend_detect(&pool).await;
 
     info!("daemon ready, waiting for signals");
@@ -280,18 +290,30 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Boot-time drift detection — does NOT auto-repair. Logs an error if the
-/// kernel pf main ruleset has lost its aifw anchor hooks so the operator
-/// can run `aifw reconcile` to apply the fix.
+/// Boot-time drift detection + auto-heal.
 ///
-/// Earlier (v5.55.1) this function auto-reloaded pf.conf.aifw on perceived
-/// drift. That was a disaster: the probe ran as the aifw user without sudo,
-/// failed with "Operation not permitted", returned empty stdout, and we
-/// mistook that for "hooks missing." The subsequent reload wiped anchor
-/// contents for the brief window until `apply_rules` repopulated them —
-/// taking out NAT and DNS for everyone on downstream subnets. Detect-only
-/// is the safer default.
-async fn reconcile_pf_main_detect() {
+/// If the kernel pf main ruleset has lost (or never received) its aifw
+/// anchor hooks, reload pf.conf.aifw ourselves so the anchors the rule
+/// engines just populated are actually reachable. Without this,
+/// pf_start failures at boot leave main empty, NAT + filter anchors
+/// have rules nobody evaluates, and LAN outbound silently breaks.
+///
+/// Safe as of v5.57.3: pf.conf.aifw no longer contains
+/// `load anchor "aifw" from <file>`, so `pfctl -f` loads/replaces main
+/// without wiping anchor contents that apply_rules just wrote from the DB.
+///
+/// This replaces the v5.55.2 detect-only behavior. That detect-only
+/// guard existed because v5.55.1 auto-reload had the twin bugs of
+/// (a) probing pf as the aifw user without sudo (got "Operation not
+/// permitted", treated as empty stdout, treated as drift), and
+/// (b) pf.conf.aifw's `load anchor` line wiping anchors the daemon
+/// had just populated. We fixed (a) by using sudo below, (b) by
+/// removing the load-anchor line from the generated pf.conf.aifw in
+/// aifw-setup. Both guardrails in place → auto-heal is the right
+/// default again.
+///
+/// Opt-out: set env var `AIFW_NO_PF_AUTO_HEAL=1` for detect-only.
+async fn reconcile_pf_main() {
     const PF_CONF: &str = "/usr/local/etc/aifw/pf.conf.aifw";
 
     if !std::path::Path::new(PF_CONF).exists() {
@@ -329,10 +351,42 @@ async fn reconcile_pf_main_detect() {
     let has_hooks = stdout.contains("aifw-nat") || stdout.contains("anchor \"aifw\"");
     if has_hooks {
         info!("pf drift check: main ruleset has aifw anchor hooks");
-    } else {
+        return;
+    }
+
+    let auto_heal_disabled = std::env::var("AIFW_NO_PF_AUTO_HEAL")
+        .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("no") && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false);
+
+    if auto_heal_disabled {
         error!(
-            "pf drift check: main ruleset is MISSING aifw anchor hooks — run `aifw reconcile` to reload from {PF_CONF}"
+            "pf drift check: main ruleset is MISSING aifw anchor hooks — \
+             auto-heal disabled via AIFW_NO_PF_AUTO_HEAL; run `aifw reconcile` to reload from {PF_CONF}"
         );
+        return;
+    }
+
+    error!(
+        "pf drift check: main ruleset is MISSING aifw anchor hooks — auto-healing by reloading {PF_CONF}"
+    );
+    let reload = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["/sbin/pfctl", "-f", PF_CONF])
+        .output()
+        .await;
+    match reload {
+        Ok(o) if o.status.success() => {
+            info!("pf drift check: auto-heal succeeded — {PF_CONF} loaded into main ruleset");
+        }
+        Ok(o) => {
+            error!(
+                "pf drift check: auto-heal FAILED (status {}): {}",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+        }
+        Err(e) => {
+            error!("pf drift check: auto-heal could not spawn pfctl: {e}");
+        }
     }
 }
 
