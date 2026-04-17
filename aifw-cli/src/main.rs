@@ -93,6 +93,10 @@ enum Commands {
     Status,
     /// Reload rules from database and apply to pf
     Reload,
+    /// Reconcile kernel pf state and rc.conf against db/pf.conf.aifw.
+    /// Reloads pf.conf.aifw if anchor hooks are missing and fixes rc.conf
+    /// DNS backend flags if they disagree with the db.
+    Reconcile,
     /// Multi-WAN: routing instances, gateways, groups, policies, leaks
     Multiwan {
         #[command(subcommand)]
@@ -908,6 +912,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Reload => {
             commands::reload(&cli.db).await?;
+        }
+        Commands::Reconcile => {
+            commands::reconcile(&cli.db).await?;
         }
         Commands::Multiwan { action } => match action {
             MultiwanAction::Instances => commands::multiwan_instances(&cli.db).await?,

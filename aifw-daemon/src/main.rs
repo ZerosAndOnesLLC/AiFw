@@ -61,13 +61,6 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => error!("failed to check pf status: {e}"),
     }
 
-    // Reconcile pf main ruleset and DNS backend state against our source
-    // of truth (pf.conf.aifw + DB). If the kernel state has drifted — e.g.
-    // the main ruleset got wiped, or rc.conf says a different DNS backend
-    // than the DB — fix it before we proceed. See #153.
-    reconcile_pf_main().await;
-    reconcile_dns_backend(&pool).await;
-
     // Sync aliases to pf tables (must happen before rules that reference them)
     match alias_engine.sync_all().await {
         Ok(()) => info!("aliases synced to pf tables"),
@@ -260,6 +253,13 @@ async fn main() -> anyhow::Result<()> {
     // reboot. Logs warn (not fatal) — pf may be in a transient state.
     aifw_core::pf_tuning::apply_on_boot(&pool).await;
 
+    // Drift detection only — runs AFTER all rule engines have populated
+    // their anchors (so we don't briefly wipe them by reloading main).
+    // Logs errors; operator must run `aifw reconcile` to apply fixes.
+    // See #153 and the v5.55.1 regression that auto-reload caused.
+    reconcile_pf_main_detect().await;
+    reconcile_dns_backend_detect(&pool).await;
+
     info!("daemon ready, waiting for signals");
 
     // Wait for shutdown signal
@@ -280,56 +280,66 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Boot-time reconciliation: make sure the kernel pf main ruleset has the
-/// aifw anchor hooks. If it doesn't (e.g. main rules got flushed), reload
-/// from `/usr/local/etc/aifw/pf.conf.aifw`. See #153.
-async fn reconcile_pf_main() {
+/// Boot-time drift detection — does NOT auto-repair. Logs an error if the
+/// kernel pf main ruleset has lost its aifw anchor hooks so the operator
+/// can run `aifw reconcile` to apply the fix.
+///
+/// Earlier (v5.55.1) this function auto-reloaded pf.conf.aifw on perceived
+/// drift. That was a disaster: the probe ran as the aifw user without sudo,
+/// failed with "Operation not permitted", returned empty stdout, and we
+/// mistook that for "hooks missing." The subsequent reload wiped anchor
+/// contents for the brief window until `apply_rules` repopulated them —
+/// taking out NAT and DNS for everyone on downstream subnets. Detect-only
+/// is the safer default.
+async fn reconcile_pf_main_detect() {
     const PF_CONF: &str = "/usr/local/etc/aifw/pf.conf.aifw";
 
     if !std::path::Path::new(PF_CONF).exists() {
-        info!("{PF_CONF} not present; skipping pf main reconciliation");
+        info!("{PF_CONF} not present; skipping pf drift check");
         return;
     }
 
-    let out = tokio::process::Command::new("/sbin/pfctl")
-        .args(["-sn"])
+    // MUST use sudo — aifw user can't probe pf state directly.
+    let out = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["/sbin/pfctl", "-sn"])
         .output()
         .await;
-    let has_hooks = match out {
+
+    let (output_ok, stdout) = match out {
+        Ok(o) if o.status.success() => (true, String::from_utf8_lossy(&o.stdout).into_owned()),
         Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            s.contains("aifw-nat") || s.contains("anchor \"aifw\"")
+            info!(
+                "pf drift check: pfctl -sn failed (status {}): {}",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            (false, String::new())
         }
-        Err(_) => false,
+        Err(e) => {
+            info!("pf drift check: could not spawn pfctl: {e}");
+            (false, String::new())
+        }
     };
 
-    if has_hooks {
-        info!("pf main ruleset has aifw anchor hooks");
+    if !output_ok {
+        // Can't tell — don't false-positive into "drift detected."
         return;
     }
 
-    error!(
-        "pf main ruleset is missing aifw anchor hooks (drift detected); reloading from {PF_CONF}"
-    );
-    let reload = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/sbin/pfctl", "-f", PF_CONF])
-        .output()
-        .await;
-    match reload {
-        Ok(o) if o.status.success() => info!("pf main ruleset reloaded from {PF_CONF}"),
-        Ok(o) => error!(
-            "pfctl -f {PF_CONF} failed: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        ),
-        Err(e) => error!("pfctl -f could not spawn: {e}"),
+    let has_hooks = stdout.contains("aifw-nat") || stdout.contains("anchor \"aifw\"");
+    if has_hooks {
+        info!("pf drift check: main ruleset has aifw anchor hooks");
+    } else {
+        error!(
+            "pf drift check: main ruleset is MISSING aifw anchor hooks — run `aifw reconcile` to reload from {PF_CONF}"
+        );
     }
 }
 
-/// Boot-time reconciliation: make sure rc.conf matches the DB's configured
-/// DNS backend. If the DB says rdns, `rdns_enable` must be YES and
-/// `local_unbound_enable` must be NO (and vice versa). Prevents stale DB
-/// values from silently flipping the running backend at reboot (#154).
-async fn reconcile_dns_backend(pool: &sqlx::SqlitePool) {
+/// Boot-time drift detection for rc.conf vs DB DNS backend.
+/// Logs an error on mismatch. Does NOT auto-write rc.conf — too risky to
+/// force-flip enable flags on boot without operator oversight.
+async fn reconcile_dns_backend_detect(pool: &sqlx::SqlitePool) {
     let backend = sqlx::query_scalar::<_, String>(
         "SELECT value FROM dns_resolver_config WHERE key = 'backend'",
     )
@@ -341,19 +351,23 @@ async fn reconcile_dns_backend(pool: &sqlx::SqlitePool) {
     let (want_key, other_key) = match backend.as_str() {
         "rdns" => ("rdns_enable", "local_unbound_enable"),
         "unbound" => ("local_unbound_enable", "rdns_enable"),
-        _ => {
-            // Missing or unknown — don't touch rc.conf.
-            return;
-        }
+        _ => return,
     };
 
-    if sysrc_read(want_key).await.as_deref() != Some("YES") {
-        info!(%backend, "rc.conf drift: setting {want_key}=YES");
-        sysrc_write(want_key, "YES").await;
-    }
-    if sysrc_read(other_key).await.as_deref() == Some("YES") {
-        info!(%backend, "rc.conf drift: setting {other_key}=NO");
-        sysrc_write(other_key, "NO").await;
+    let want_val = sysrc_read(want_key).await;
+    let other_val = sysrc_read(other_key).await;
+
+    if want_val.as_deref() != Some("YES") {
+        error!(
+            "dns backend drift: db=`{backend}` but rc.conf {want_key} is `{}` — run `aifw reconcile` to fix",
+            want_val.as_deref().unwrap_or("unset")
+        );
+    } else if other_val.as_deref() == Some("YES") {
+        error!(
+            "dns backend drift: db=`{backend}` but rc.conf also has {other_key}=YES — run `aifw reconcile` to fix"
+        );
+    } else {
+        info!(%backend, "dns backend check: rc.conf matches db");
     }
 }
 
@@ -368,13 +382,6 @@ async fn sysrc_read(key: &str) -> Option<String> {
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
-}
-
-async fn sysrc_write(key: &str, value: &str) {
-    let _ = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/sysrc", &format!("{key}={value}")])
-        .output()
-        .await;
 }
 
 async fn shutdown_signal() {
