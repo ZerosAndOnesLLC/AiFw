@@ -61,6 +61,13 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => error!("failed to check pf status: {e}"),
     }
 
+    // Reconcile pf main ruleset and DNS backend state against our source
+    // of truth (pf.conf.aifw + DB). If the kernel state has drifted — e.g.
+    // the main ruleset got wiped, or rc.conf says a different DNS backend
+    // than the DB — fix it before we proceed. See #153.
+    reconcile_pf_main().await;
+    reconcile_dns_backend(&pool).await;
+
     // Sync aliases to pf tables (must happen before rules that reference them)
     match alias_engine.sync_all().await {
         Ok(()) => info!("aliases synced to pf tables"),
@@ -271,6 +278,103 @@ async fn main() -> anyhow::Result<()> {
 
     info!("AiFw daemon stopped");
     Ok(())
+}
+
+/// Boot-time reconciliation: make sure the kernel pf main ruleset has the
+/// aifw anchor hooks. If it doesn't (e.g. main rules got flushed), reload
+/// from `/usr/local/etc/aifw/pf.conf.aifw`. See #153.
+async fn reconcile_pf_main() {
+    const PF_CONF: &str = "/usr/local/etc/aifw/pf.conf.aifw";
+
+    if !std::path::Path::new(PF_CONF).exists() {
+        info!("{PF_CONF} not present; skipping pf main reconciliation");
+        return;
+    }
+
+    let out = tokio::process::Command::new("/sbin/pfctl")
+        .args(["-sn"])
+        .output()
+        .await;
+    let has_hooks = match out {
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.contains("aifw-nat") || s.contains("anchor \"aifw\"")
+        }
+        Err(_) => false,
+    };
+
+    if has_hooks {
+        info!("pf main ruleset has aifw anchor hooks");
+        return;
+    }
+
+    error!(
+        "pf main ruleset is missing aifw anchor hooks (drift detected); reloading from {PF_CONF}"
+    );
+    let reload = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["/sbin/pfctl", "-f", PF_CONF])
+        .output()
+        .await;
+    match reload {
+        Ok(o) if o.status.success() => info!("pf main ruleset reloaded from {PF_CONF}"),
+        Ok(o) => error!(
+            "pfctl -f {PF_CONF} failed: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => error!("pfctl -f could not spawn: {e}"),
+    }
+}
+
+/// Boot-time reconciliation: make sure rc.conf matches the DB's configured
+/// DNS backend. If the DB says rdns, `rdns_enable` must be YES and
+/// `local_unbound_enable` must be NO (and vice versa). Prevents stale DB
+/// values from silently flipping the running backend at reboot (#154).
+async fn reconcile_dns_backend(pool: &sqlx::SqlitePool) {
+    let backend = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM dns_resolver_config WHERE key = 'backend'",
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None)
+    .unwrap_or_default();
+
+    let (want_key, other_key) = match backend.as_str() {
+        "rdns" => ("rdns_enable", "local_unbound_enable"),
+        "unbound" => ("local_unbound_enable", "rdns_enable"),
+        _ => {
+            // Missing or unknown — don't touch rc.conf.
+            return;
+        }
+    };
+
+    if sysrc_read(want_key).await.as_deref() != Some("YES") {
+        info!(%backend, "rc.conf drift: setting {want_key}=YES");
+        sysrc_write(want_key, "YES").await;
+    }
+    if sysrc_read(other_key).await.as_deref() == Some("YES") {
+        info!(%backend, "rc.conf drift: setting {other_key}=NO");
+        sysrc_write(other_key, "NO").await;
+    }
+}
+
+async fn sysrc_read(key: &str) -> Option<String> {
+    let out = tokio::process::Command::new("/usr/sbin/sysrc")
+        .args(["-n", key])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+async fn sysrc_write(key: &str, value: &str) {
+    let _ = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["/usr/sbin/sysrc", &format!("{key}={value}")])
+        .output()
+        .await;
 }
 
 async fn shutdown_signal() {

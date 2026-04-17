@@ -187,12 +187,79 @@ pub async fn status(db_path: &Path) -> anyhow::Result<()> {
     println!("pf states:      {}", stats.states_count);
     println!("pf rules (pf):  {}", stats.rules_count);
     println!("aifw rules:     {} ({} active)", rules.len(), active_rules);
+    let pf_anchors = check_pf_anchors_present().await;
+    println!(
+        "pf anchor hooks: {}",
+        if pf_anchors { "present" } else { "MISSING (run `aifw reload`)" }
+    );
+    if let Ok(pool) = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await {
+        match check_dns_backend_drift(&pool).await {
+            Some(msg) => println!("dns backend:    DRIFT — {msg}"),
+            None => println!("dns backend:    ok"),
+        }
+        pool.close().await;
+    }
     println!("packets in:     {}", stats.packets_in);
     println!("packets out:    {}", stats.packets_out);
     println!("bytes in:       {}", stats.bytes_in);
     println!("bytes out:      {}", stats.bytes_out);
 
     Ok(())
+}
+
+/// True if the running kernel pf main ruleset references the aifw anchors.
+/// When this is false the whole aifw firewall config is effectively
+/// bypassed — see #153.
+async fn check_pf_anchors_present() -> bool {
+    match tokio::process::Command::new("/sbin/pfctl").args(["-sn"]).output().await {
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.contains("aifw-nat") || s.contains("anchor \"aifw\"")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Returns `Some(message)` if the DB's configured DNS backend doesn't
+/// match what rc.conf says is enabled. See #154.
+async fn check_dns_backend_drift(pool: &sqlx::SqlitePool) -> Option<String> {
+    let backend = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM dns_resolver_config WHERE key = 'backend'",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()?;
+
+    let (want_key, other_key) = match backend.as_str() {
+        "rdns" => ("rdns_enable", "local_unbound_enable"),
+        "unbound" => ("local_unbound_enable", "rdns_enable"),
+        _ => return None,
+    };
+
+    let want_val = sysrc_read_local(want_key).await;
+    let other_val = sysrc_read_local(other_key).await;
+
+    if want_val.as_deref() != Some("YES") {
+        return Some(format!("db={backend} but {want_key} is not YES"));
+    }
+    if other_val.as_deref() == Some("YES") {
+        return Some(format!("db={backend} but {other_key} is also YES"));
+    }
+    None
+}
+
+async fn sysrc_read_local(key: &str) -> Option<String> {
+    let out = tokio::process::Command::new("/usr/sbin/sysrc")
+        .args(["-n", key])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
 }
 
 pub async fn reload(db_path: &Path) -> anyhow::Result<()> {

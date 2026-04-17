@@ -25,6 +25,28 @@ async fn sysrc(setting: &str) {
     let _ = run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/sysrc", setting]).await;
 }
 
+/// Read a sysrc value — returns the raw value without the "key: " prefix.
+async fn sysrc_get(key: &str) -> Option<String> {
+    let out = run_cmd_timeout("/usr/sbin/sysrc", &["-n", key]).await.ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Set a sysrc key only if the current value differs from `value`.
+///
+/// Avoids pointless rewrites of /etc/rc.conf and makes log-grepping
+/// effective — today's ops bug (#154) stemmed from unconditional writes
+/// masking genuine state changes.
+async fn sysrc_set_if_different(key: &str, value: &str) {
+    if sysrc_get(key).await.as_deref() == Some(value) {
+        return;
+    }
+    sysrc(&format!("{key}={value}")).await;
+}
+
 /// Copy a file to a destination using sudo tee — no shell interpolation.
 async fn sudo_copy(src: &str, dest: &str) {
     let _ = Command::new("/usr/local/bin/sudo")
@@ -329,14 +351,26 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     let interfaces: String = c.listen_interfaces.iter()
         .map(|i| format!("    interface: {}", i)).collect::<Vec<_>>().join("\n");
 
+    // chroot is intentionally empty — FreeBSD's local-unbound chroot dir is
+    // created with only root.key/unbound.conf. Populating dev/ etc/ for a
+    // real chroot would require nullmount or mknod and we already drop to
+    // the unprivileged `unbound` user (see #155).
+    //
+    // do-daemonize must be yes so `service local_unbound start` returns
+    // promptly — the rc.d script times out if the binary stays in
+    // foreground (see #155).
     let mut server_lines = vec![
         format!("    username: unbound"),
         format!("    directory: /var/unbound"),
-        format!("    chroot: /var/unbound"),
+        format!("    chroot: \"\""),
         format!("    pidfile: /var/run/local_unbound.pid"),
         format!("    auto-trust-anchor-file: /var/unbound/root.key"),
         format!("    port: {}", c.port),
-        format!("    do-daemonize: no"),
+        format!("    do-daemonize: yes"),
+        // FreeBSD's base local-unbound is built without libevent; its builtin
+        // mini-event loop caps at 1024 FDs. Keep outgoing-num-ports well under
+        // that cap so unbound doesn't warn "continuing with less udp ports".
+        format!("    outgoing-num-ports: 512"),
         interfaces,
         format!("    access-control: 0.0.0.0/0 allow"),
         format!("    access-control: ::0/0 allow"),
@@ -925,9 +959,12 @@ pub async fn apply_resolver(
 }
 
 async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json<MessageResponse>, StatusCode> {
-    // Stop rDNS if running (with timeout to prevent hang)
-    service_cmd("rdns", "stop").await;
-    sysrc("rdns_enable=NO").await;
+    // Only disable rdns if it's actually enabled — avoids unrelated config
+    // saves silently flipping rdns off at boot (see #154).
+    if sysrc_get("rdns_enable").await.as_deref() == Some("YES") {
+        service_cmd("rdns", "stop").await;
+        sysrc_set_if_different("rdns_enable", "NO").await;
+    }
 
     let conf = generate_unbound_conf(&state.pool).await;
     let tmp_path = "/tmp/aifw_unbound.conf";
@@ -937,7 +974,7 @@ async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json
     let _ = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"]).output().await;
 
     if config.enabled {
-        sysrc("local_unbound_enable=YES").await;
+        sysrc_set_if_different("local_unbound_enable", "YES").await;
         let output = run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/service", "local_unbound", "restart"]).await;
         match output {
             Ok(o) => {
@@ -954,16 +991,18 @@ async fn apply_unbound(state: &AppState, config: &ResolverConfig) -> Result<Json
         }
     } else {
         service_cmd("local_unbound", "stop").await;
-        sysrc("local_unbound_enable=NO").await;
+        sysrc_set_if_different("local_unbound_enable", "NO").await;
         state.set_pending(|p| p.dns = false).await;
         Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
     }
 }
 
 async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<MessageResponse>, StatusCode> {
-    // Stop Unbound if running (with timeout)
-    service_cmd("local_unbound", "stop").await;
-    sysrc("local_unbound_enable=NO").await;
+    // Only disable unbound if it's actually enabled (see #154).
+    if sysrc_get("local_unbound_enable").await.as_deref() == Some("YES") {
+        service_cmd("local_unbound", "stop").await;
+        sysrc_set_if_different("local_unbound_enable", "NO").await;
+    }
 
     // Create directories
     let _ = Command::new("/usr/local/bin/sudo").args(["mkdir", "-p", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz", "/var/run/rdns", "/var/log/rdns"]).output().await;
@@ -1013,7 +1052,7 @@ async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<Me
     }
 
     if config.enabled {
-        sysrc("rdns_enable=YES").await;
+        sysrc_set_if_different("rdns_enable", "YES").await;
         let output = run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/service", "rdns", "restart"]).await;
         match output {
             Ok(o) => {
@@ -1029,43 +1068,50 @@ async fn apply_rdns(state: &AppState, config: &ResolverConfig) -> Result<Json<Me
         }
     } else {
         service_cmd("rdns", "stop").await;
-        sysrc("rdns_enable=NO").await;
+        sysrc_set_if_different("rdns_enable", "NO").await;
         state.set_pending(|p| p.dns = false).await;
         Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
     }
 }
 
-// Service control — backend-aware
+// Service control — backend-aware. Each handler only stops the "other"
+// backend if it's actually enabled, and only rewrites rc.conf values that
+// are changing (see #154 — unconditional writes silently flipped rdns_enable
+// on reboot).
 pub async fn resolver_start(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
     let config = load_config(&state.pool).await;
     let (svc, enable_key, other_svc, other_key) = if config.backend == "rdns" {
-        ("rdns", "rdns_enable=YES", "local_unbound", "local_unbound_enable=NO")
+        ("rdns", "rdns_enable", "local_unbound", "local_unbound_enable")
     } else {
-        ("local_unbound", "local_unbound_enable=YES", "rdns", "rdns_enable=NO")
+        ("local_unbound", "local_unbound_enable", "rdns", "rdns_enable")
     };
-    service_cmd(other_svc, "stop").await;
-    sysrc(other_key).await;
-    sysrc(enable_key).await;
+    if sysrc_get(other_key).await.as_deref() == Some("YES") {
+        service_cmd(other_svc, "stop").await;
+        sysrc_set_if_different(other_key, "NO").await;
+    }
+    sysrc_set_if_different(enable_key, "YES").await;
     service_cmd(svc, "start").await;
     Ok(Json(MessageResponse { message: format!("{} started", if config.backend == "rdns" { "rDNS" } else { "Unbound" }) }))
 }
 pub async fn resolver_stop(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
     let config = load_config(&state.pool).await;
-    let (svc, disable_key) = if config.backend == "rdns" { ("rdns", "rdns_enable=NO") } else { ("local_unbound", "local_unbound_enable=NO") };
+    let (svc, disable_key) = if config.backend == "rdns" { ("rdns", "rdns_enable") } else { ("local_unbound", "local_unbound_enable") };
     service_cmd(svc, "stop").await;
-    sysrc(disable_key).await;
+    sysrc_set_if_different(disable_key, "NO").await;
     Ok(Json(MessageResponse { message: "DNS resolver stopped".to_string() }))
 }
 pub async fn resolver_restart(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
     let config = load_config(&state.pool).await;
     let (svc, enable_key, other_svc, other_key) = if config.backend == "rdns" {
-        ("rdns", "rdns_enable=YES", "local_unbound", "local_unbound_enable=NO")
+        ("rdns", "rdns_enable", "local_unbound", "local_unbound_enable")
     } else {
-        ("local_unbound", "local_unbound_enable=YES", "rdns", "rdns_enable=NO")
+        ("local_unbound", "local_unbound_enable", "rdns", "rdns_enable")
     };
-    service_cmd(other_svc, "stop").await;
-    sysrc(other_key).await;
-    sysrc(enable_key).await;
+    if sysrc_get(other_key).await.as_deref() == Some("YES") {
+        service_cmd(other_svc, "stop").await;
+        sysrc_set_if_different(other_key, "NO").await;
+    }
+    sysrc_set_if_different(enable_key, "YES").await;
     service_cmd(svc, "restart").await;
     Ok(Json(MessageResponse { message: format!("{} restarted", if config.backend == "rdns" { "rDNS" } else { "Unbound" }) }))
 }
