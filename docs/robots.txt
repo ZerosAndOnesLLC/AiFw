@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://aifw.zerosandones.us/sitemap.xml
+Sitemap: https://aifw.zerosandones.us/site-map.xml
