@@ -119,6 +119,7 @@ pub struct AppState {
     /// Watch channel that fires whenever `pending` changes — drives SSE.
     pub pending_tx: watch::Sender<PendingChanges>,
     pub login_limiter: LoginRateLimiter,
+    pub ws_tickets: Arc<auth::ws_ticket::WsTicketStore>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -219,7 +220,8 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
         .route("/api/v1/auth/totp/setup", post(routes::totp_setup))
         .route("/api/v1/auth/totp/verify", post(routes::totp_verify))
         .route("/api/v1/auth/totp/disable", post(routes::totp_disable))
-        .route("/api/v1/auth/me", get(routes::get_current_user));
+        .route("/api/v1/auth/me", get(routes::get_current_user))
+        .route("/api/v1/auth/ws-ticket", post(routes::issue_ws_ticket));
 
     // --- Permission-scoped route groups ---
     // Each group enforces a specific permission via perm_check! middleware.
@@ -1018,6 +1020,7 @@ async fn create_state_from_db(
         pending: Arc::new(RwLock::new(PendingChanges::default())),
         pending_tx: watch::channel(PendingChanges::default()).0,
         login_limiter: LoginRateLimiter::default(),
+        ws_tickets: auth::ws_ticket::WsTicketStore::new(),
     })
 }
 

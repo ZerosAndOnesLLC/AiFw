@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Help, { HelpBanner } from "../Help";
+import { getWsTicket } from "@/lib/api";
 
 /* ---------- Types ---------- */
 
@@ -89,12 +90,19 @@ export default function DashboardPage() {
     let stopped = false;
     let backoff = 1000;
 
-    function connect() {
+    async function connect() {
       if (stopped) return;
       setConn("connecting");
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const token = localStorage.getItem("aifw_token") || "";
-      const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/dns/stream?token=${encodeURIComponent(token)}`);
+      let ticket: string;
+      try {
+        ticket = await getWsTicket();
+      } catch {
+        setConn("closed");
+        if (!stopped) setTimeout(connect, backoff);
+        return;
+      }
+      const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/dns/stream?ticket=${ticket}`);
       wsRef.current = ws;
       const openedAt = { t: 0 };
       let gotFrame = false;

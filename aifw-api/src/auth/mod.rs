@@ -3,6 +3,7 @@ pub mod oauth;
 pub mod password;
 pub mod totp;
 pub mod tokens;
+pub mod ws_ticket;
 
 pub use config::AuthSettings;
 pub use password::{hash_password, verify_password};
@@ -703,15 +704,11 @@ pub async fn auth_middleware(
 ) -> Result<Response, StatusCode> {
     use aifw_common::permission::PermissionSet;
 
-    // Accept auth from: Authorization header, or ?token= query param (for WebSocket/SSE)
+    // Credentials: Authorization: Bearer <jwt>, Authorization: ApiKey <key>,
+    // or ?ticket=<id> (short-lived, single-use; see auth::ws_ticket).
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok());
-
-    let query_token: Option<String> = request.uri().query()
-        .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
-        .and_then(|p| p.strip_prefix("token="))
-        .map(percent_decode);
 
     // Resolve (user_id, perm_from_token, role_from_token) from the credential
     let (user_id, jwt_perm, jwt_role) = if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
@@ -724,13 +721,10 @@ pub async fn auth_middleware(
     } else if let Some(key) = auth_header.and_then(|h| h.strip_prefix("ApiKey ")) {
         let uid = verify_api_key(&state.pool, key).await?;
         (uid, None, None) // API keys don't carry JWT claims — will do DB lookup
-    } else if let Some(ref token) = query_token {
-        let token_data = verify_access_token(token, &state.auth_settings)
-            .map_err(|_| StatusCode::UNAUTHORIZED)?;
-        if is_token_revoked(&state.pool, &token_data.claims.jti).await {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-        (token_data.claims.sub, token_data.claims.perm, token_data.claims.role)
+    } else if let Some(ticket_id) = query_ticket(request.uri().query()) {
+        let uid = state.ws_tickets.consume(&ticket_id).await
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        (uid, None, None) // tickets inherit permissions from the DB row
     } else {
         return Err(StatusCode::UNAUTHORIZED);
     };
@@ -784,22 +778,19 @@ pub async fn auth_middleware(
     Ok(next.run(request).await)
 }
 
-/// Simple percent-decoding for URL query params (no external crate needed).
-fn percent_decode(s: &str) -> String {
-    let mut out = Vec::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len()
-            && let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""), 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
-        out.push(bytes[i]);
-        i += 1;
+/// Extract `ticket=<id>` from a query string. Tickets are URL-safe hex so
+/// no percent-decoding is needed. Returns None if the param is absent or
+/// contains characters that aren't in our ticket alphabet — those almost
+/// certainly indicate a stale `?token=<jwt>` client that hasn't been
+/// updated to the ticket flow.
+fn query_ticket(q: Option<&str>) -> Option<String> {
+    let raw = q?
+        .split('&')
+        .find_map(|p| p.strip_prefix("ticket="))?;
+    if !raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
     }
-    String::from_utf8(out).unwrap_or_default()
+    Some(raw.to_string())
 }
 
 #[derive(Debug, Clone)]

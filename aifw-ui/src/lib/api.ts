@@ -72,7 +72,23 @@ export const api = {
 
   // Reload
   reload: () => fetchApi<{ message: string }>("/api/v1/reload", { method: "POST" }),
+
+  // WebSocket / SSE auth: issues a 30-second single-use ticket so browser
+  // WS/EventSource (neither of which supports custom headers) can avoid
+  // putting the JWT itself in the URL.
+  wsTicket: () =>
+    fetchApi<{ ticket: string; expires_in_seconds: number }>(
+      "/api/v1/auth/ws-ticket",
+      { method: "POST" },
+    ),
 };
+
+/// Fetch a ticket and return just the ID. Throws if the user is logged
+/// out or the API rejects the request.
+export async function getWsTicket(): Promise<string> {
+  const { ticket } = await api.wsTicket();
+  return ticket;
+}
 
 // Types
 export interface StatusResponse {

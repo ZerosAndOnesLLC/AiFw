@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef, useState, useCallback, ReactNode } from "react";
+import { getWsTicket } from "@/lib/api";
 
 interface WsData {
   status: Record<string, unknown> | null;
@@ -37,13 +38,20 @@ export function WsProvider({ children }: { children: ReactNode }) {
   const reconRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const histBuf = useRef<Record<string, unknown>[]>([]);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
     if (wsRef.current && wsRef.current.readyState <= 1) return;
 
+    let ticket: string;
+    try {
+      ticket = await getWsTicket();
+    } catch {
+      return;
+    }
+
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws?token=${encodeURIComponent(token)}`);
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws?ticket=${ticket}`);
     wsRef.current = ws;
 
     ws.onopen = () => setConnected(true);

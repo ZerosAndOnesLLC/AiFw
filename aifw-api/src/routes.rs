@@ -1296,8 +1296,21 @@ pub async fn get_pending(
     Ok(Json(pending))
 }
 
+/// Issue a short-lived, single-use ticket for the WebSocket / SSE handshake.
+/// The caller authenticates via the normal bearer header; the returned
+/// ticket is then appended as `?ticket=<id>` to the stream URL. Browsers
+/// can't set Authorization on WebSocket or EventSource, so the ticket is
+/// the canonical way to prove identity on those endpoints.
+pub async fn issue_ws_ticket(
+    State(state): State<AppState>,
+    auth_user: axum::Extension<crate::auth::AuthUser>,
+) -> Json<serde_json::Value> {
+    let ticket = state.ws_tickets.issue(&auth_user.user_id).await;
+    Json(serde_json::json!({ "ticket": ticket, "expires_in_seconds": 30 }))
+}
+
 /// SSE stream that pushes PendingChanges whenever they mutate.
-/// Auth handled by auth_middleware (accepts ?token= query param for browser compatibility).
+/// Auth handled by auth_middleware — for browsers use `?ticket=<id>`.
 pub async fn pending_stream(
     State(state): State<AppState>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { getWsTicket } from "@/lib/api";
 
 interface PendingState {
   firewall: boolean;
@@ -33,11 +34,17 @@ export default function PendingBanner() {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
 
-    const connect = () => {
-      // EventSource doesn't support custom headers, so use query param for auth
-      // The SSE endpoint will also accept the cookie/session if present.
-      // For now, fall back to polling if EventSource fails.
-      const es = new EventSource(`/api/v1/pending/stream?token=${encodeURIComponent(token)}`);
+    const connect = async () => {
+      // EventSource can't set Authorization, so auth rides via a single-use
+      // ticket issued by POST /auth/ws-ticket (see aifw-api auth::ws_ticket).
+      let ticket: string;
+      try {
+        ticket = await getWsTicket();
+      } catch {
+        setTimeout(connect, 5000);
+        return;
+      }
+      const es = new EventSource(`/api/v1/pending/stream?ticket=${ticket}`);
       esRef.current = es;
 
       es.onmessage = (event) => {
