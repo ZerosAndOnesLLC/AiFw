@@ -46,6 +46,9 @@ interface DhcpGlobalConfig {
   log_format: string;
   api_port: number;
   workers: number;
+  accept_relayed: boolean;
+  relay_rate_limit_burst: number;
+  relay_rate_limit_pps: number;
 }
 
 interface NetInterface {
@@ -81,6 +84,9 @@ const defaultConfig: DhcpGlobalConfig = {
   log_format: "text",
   api_port: 9967,
   workers: 1,
+  accept_relayed: true,
+  relay_rate_limit_burst: 200,
+  relay_rate_limit_pps: 100.0,
 };
 
 /* -- Page ------------------------------------------------------------ */
@@ -176,6 +182,15 @@ export default function DhcpOverviewPage() {
   };
 
   const saveConfig = async () => {
+    // Defensive re-validation — UI clamps these on change, but catch hand-edited values too.
+    if (!Number.isFinite(config.relay_rate_limit_burst) || config.relay_rate_limit_burst < 1) {
+      showFeedback("error", "Relay rate-limit burst must be ≥ 1");
+      return;
+    }
+    if (!Number.isFinite(config.relay_rate_limit_pps) || config.relay_rate_limit_pps <= 0) {
+      showFeedback("error", "Relay rate-limit pps must be > 0");
+      return;
+    }
     setSaving(true);
     try {
       const payload: DhcpGlobalConfig = {
@@ -548,6 +563,75 @@ export default function DhcpOverviewPage() {
                   className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
                 />
                 <p className="text-[10px] text-[var(--text-muted)] mt-1">Internal management API</p>
+              </div>
+            </div>
+          </div>
+
+          {/* DHCP Relay */}
+          <div>
+            <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">DHCP Relay</h3>
+
+            <div className="flex items-center gap-3 mb-3">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={config.accept_relayed}
+                onClick={() => setConfig((p) => ({ ...p, accept_relayed: !p.accept_relayed }))}
+                className={`relative w-11 h-6 rounded-full transition-colors ${
+                  config.accept_relayed ? "bg-blue-600" : "bg-gray-600"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                    config.accept_relayed ? "translate-x-5" : ""
+                  }`}
+                />
+              </button>
+              <div>
+                <p className="text-sm text-[var(--text-primary)]">Accept DHCP relay</p>
+                <p className="text-[10px] text-[var(--text-muted)]">
+                  When off, all packets with giaddr != 0 are dropped regardless of per-subnet trusted_relays.
+                </p>
+              </div>
+            </div>
+
+            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${config.accept_relayed ? "" : "opacity-60"}`}>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">
+                  Relay rate-limit burst (packets)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100000}
+                  value={config.relay_rate_limit_burst}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setConfig((p) => ({ ...p, relay_rate_limit_burst: Number.isFinite(n) && n > 0 ? n : p.relay_rate_limit_burst }));
+                  }}
+                  disabled={!config.accept_relayed}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500 disabled:cursor-not-allowed"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">Per-relay-source burst. Default 200.</p>
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">
+                  Relay rate-limit sustained (pps)
+                </label>
+                <input
+                  type="number"
+                  min={0.1}
+                  step="0.1"
+                  max={100000}
+                  value={config.relay_rate_limit_pps}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setConfig((p) => ({ ...p, relay_rate_limit_pps: Number.isFinite(n) && n > 0 ? n : p.relay_rate_limit_pps }));
+                  }}
+                  disabled={!config.accept_relayed}
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500 disabled:cursor-not-allowed"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">Per-relay-source sustained pps. Default 100.</p>
               </div>
             </div>
           </div>

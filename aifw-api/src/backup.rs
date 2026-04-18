@@ -891,6 +891,9 @@ async fn build_dhcp_section(pool: &sqlx::SqlitePool) -> aifw_core::config::DhcpS
             "log_format" => global.log_format = value,
             "api_port" => global.api_port = value.parse().unwrap_or(9967),
             "workers" => global.workers = value.parse().unwrap_or(1),
+            "accept_relayed" => global.accept_relayed = value == "true",
+            "relay_rate_limit_burst" => global.relay_rate_limit_burst = value.parse().unwrap_or(200),
+            "relay_rate_limit_pps" => global.relay_rate_limit_pps = value.parse().unwrap_or(100.0),
             _ => {}
         }
     }
@@ -899,14 +902,16 @@ async fn build_dhcp_section(pool: &sqlx::SqlitePool) -> aifw_core::config::DhcpS
     let subnet_rows = sqlx::query(
         "SELECT id, network, pool_start, pool_end, gateway, dns_servers, domain_name, \
          lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, \
-         subnet_type, delegated_length, enabled, description, accept_relayed, \
-         trusted_relays, created_at FROM dhcp_subnets ORDER BY created_at ASC"
+         subnet_type, delegated_length, enabled, description, \
+         trusted_relays, ntp_servers, options, created_at FROM dhcp_subnets ORDER BY created_at ASC"
     ).fetch_all(pool).await.unwrap_or_default();
 
     let subnets: Vec<DhcpSubnetConfig> = subnet_rows.into_iter().map(|r| {
-        let accept_relayed = r.try_get::<i64, _>("accept_relayed").map(|v| v != 0).unwrap_or(true);
         let trusted_relays = r.try_get::<String, _>("trusted_relays").ok()
             .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default();
+        let options = r.try_get::<String, _>("options").ok()
+            .and_then(|s| serde_json::from_str::<Vec<DhcpOptionOverrideConfig>>(&s).ok())
             .unwrap_or_default();
         DhcpSubnetConfig {
             id: r.get("id"),
@@ -925,8 +930,9 @@ async fn build_dhcp_section(pool: &sqlx::SqlitePool) -> aifw_core::config::DhcpS
             delegated_length: r.get::<Option<i64>, _>("delegated_length").map(|v| v as u8),
             enabled: r.get("enabled"),
             description: r.get("description"),
-            accept_relayed,
             trusted_relays,
+            ntp_servers: r.try_get::<Option<String>, _>("ntp_servers").ok().flatten(),
+            options,
             created_at: r.get("created_at"),
         }
     }).collect();
@@ -1064,11 +1070,35 @@ async fn validate_dhcp(
             }
         }
 
-        if !s.accept_relayed && !s.trusted_relays.is_empty() {
+        // Global accept_relayed off + per-subnet trusted_relays set is user intent
+        // mismatch — warn so the operator knows the whitelist won't be consulted.
+        if !dhcp.global.accept_relayed && !s.trusted_relays.is_empty() {
             warnings.push(format!(
-                "DHCP subnet {}: trusted_relays set but accept_relayed is off — list will be ignored",
+                "DHCP subnet {}: trusted_relays set but global accept_relayed is off — list will be ignored",
                 s.network
             ));
+        }
+
+        // Generic option overrides — rDHCP refuses to start on bad entries, so
+        // surface them as errors here before the operator saves/applies.
+        let mut seen_codes: std::collections::HashSet<u8> = std::collections::HashSet::new();
+        for opt in &s.options {
+            if !seen_codes.insert(opt.code) {
+                errors.push(format!("DHCP subnet {}: option {} is duplicated", s.network, opt.code));
+            }
+            if RESERVED_OPTION_CODES.contains(&opt.code) {
+                errors.push(format!("DHCP subnet {}: option code {} is reserved", s.network, opt.code));
+            } else if COLLISION_OPTION_CODES.contains(&opt.code) {
+                errors.push(format!(
+                    "DHCP subnet {}: option code {} conflicts with a typed field (router/dns/domain/ntp)",
+                    s.network, opt.code
+                ));
+            } else if !is_option_override_safe(opt) {
+                errors.push(format!(
+                    "DHCP subnet {}: option {} has an invalid value for type '{}'",
+                    s.network, opt.code, opt.value_type
+                ));
+            }
         }
     }
 
@@ -1103,6 +1133,31 @@ async fn validate_dhcp(
                 ));
             }
         }
+    }
+}
+
+/// Must mirror `aifw-api/src/dhcp.rs::validate_option_overrides` — kept in
+/// sync with rDHCP src/config/validation.rs RESERVED_CODES.
+const RESERVED_OPTION_CODES: &[u8] = &[0, 1, 28, 50, 51, 53, 54, 55, 57, 58, 59, 82, 255];
+const COLLISION_OPTION_CODES: &[u8] = &[3, 6, 15, 42];
+
+fn is_option_override_safe(o: &aifw_core::config::DhcpOptionOverrideConfig) -> bool {
+    if RESERVED_OPTION_CODES.contains(&o.code) { return false; }
+    if COLLISION_OPTION_CODES.contains(&o.code) { return false; }
+    let v = o.value.trim();
+    if v.is_empty() { return false; }
+    match o.value_type.as_str() {
+        "ip" => v.parse::<std::net::Ipv4Addr>().is_ok(),
+        "ips" => {
+            let parts: Vec<&str> = v.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            !parts.is_empty() && parts.iter().all(|p| p.parse::<std::net::Ipv4Addr>().is_ok())
+        }
+        "string" => v.len() <= 255 && v.bytes().all(|b| b.is_ascii_graphic() || b == b' '),
+        "u8" => v.parse::<u8>().is_ok(),
+        "u16" => v.parse::<u16>().is_ok(),
+        "u32" => v.parse::<u32>().is_ok(),
+        "hex" => v.len() <= 510 && v.len() % 2 == 0 && v.chars().all(|c| c.is_ascii_hexdigit()),
+        _ => false,
     }
 }
 
@@ -1570,6 +1625,9 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         ("log_format", g.log_format.clone()),
         ("api_port", g.api_port.to_string()),
         ("workers", g.workers.to_string()),
+        ("accept_relayed", if g.accept_relayed { "true".to_string() } else { "false".to_string() }),
+        ("relay_rate_limit_burst", g.relay_rate_limit_burst.to_string()),
+        ("relay_rate_limit_pps", g.relay_rate_limit_pps.to_string()),
     ] {
         let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
             .bind(k).bind(v).execute(&state.pool).await;
@@ -1596,13 +1654,27 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         }
         let trusted_json = serde_json::to_string(&relays).unwrap_or_else(|_| "[]".to_string());
 
+        // Revalidate option overrides on restore, same as trusted_relays above.
+        // rDHCP will refuse to start if invalid/reserved codes reach its config,
+        // so we filter rather than abort the whole restore.
+        let safe_options: Vec<_> = s.options.iter()
+            .filter(|o| is_option_override_safe(o))
+            .cloned()
+            .collect();
+        if safe_options.len() != s.options.len() {
+            tracing::warn!(
+                "dhcp.restore subnet={} dropped {} invalid option override(s)",
+                s.network, s.options.len() - safe_options.len()
+            );
+        }
+        let options_json = serde_json::to_string(&safe_options).unwrap_or_else(|_| "[]".to_string());
         let _ = sqlx::query(
             "INSERT INTO dhcp_subnets \
              (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, \
               lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, \
-              subnet_type, delegated_length, enabled, description, accept_relayed, \
-              trusted_relays, created_at) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"
+              subnet_type, delegated_length, enabled, description, \
+              trusted_relays, ntp_servers, options, created_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"
         )
         .bind(&s.id).bind(&s.network).bind(&s.pool_start).bind(&s.pool_end).bind(&s.gateway)
         .bind(&s.dns_servers).bind(&s.domain_name)
@@ -1614,8 +1686,9 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         .bind(&s.subnet_type)
         .bind(s.delegated_length.map(|v| v as i64))
         .bind(s.enabled).bind(&s.description)
-        .bind(if s.accept_relayed { 1_i64 } else { 0_i64 })
         .bind(&trusted_json)
+        .bind(&s.ntp_servers)
+        .bind(&options_json)
         .bind(&s.created_at)
         .execute(&state.pool).await;
     }

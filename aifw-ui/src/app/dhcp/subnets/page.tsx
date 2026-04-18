@@ -5,6 +5,12 @@ import { validateCIDR, validateIP, isValidIPv4 } from "@/lib/validate";
 
 /* -- Types ---------------------------------------------------------- */
 
+interface DhcpOptionOverride {
+  code: number;
+  value_type: "ip" | "ips" | "string" | "u8" | "u16" | "u32" | "hex";
+  value: string;
+}
+
 interface DhcpSubnet {
   id: string;
   network: string;
@@ -22,8 +28,9 @@ interface DhcpSubnet {
   delegated_length?: number;
   enabled: boolean;
   description?: string;
-  accept_relayed?: boolean;
   trusted_relays?: string[];
+  ntp_servers?: string;
+  options?: DhcpOptionOverride[];
   created_at: string;
 }
 
@@ -43,8 +50,70 @@ interface SubnetForm {
   delegated_length: string;
   description: string;
   enabled: boolean;
-  accept_relayed: boolean;
   trusted_relays: string[];
+  ntp_servers: string;
+  options: DhcpOptionOverride[];
+}
+
+// Reserved + collision codes (kept in sync with rDHCP src/config/validation.rs
+// and aifw-api/src/dhcp.rs).
+const RESERVED_OPTION_CODES = [0, 1, 28, 50, 51, 53, 54, 55, 57, 58, 59, 82, 255];
+const COLLISION_OPTION_CODES = [3, 6, 15, 42];
+
+const OPTION_VALUE_TYPES: DhcpOptionOverride["value_type"][] = [
+  "ip", "ips", "string", "u8", "u16", "u32", "hex",
+];
+
+function validateOption(opt: DhcpOptionOverride): string | null {
+  if (!Number.isInteger(opt.code) || opt.code < 0 || opt.code > 255) {
+    return `Code must be 0-255`;
+  }
+  if (RESERVED_OPTION_CODES.includes(opt.code)) {
+    return `Code ${opt.code} is reserved`;
+  }
+  if (COLLISION_OPTION_CODES.includes(opt.code)) {
+    return `Code ${opt.code} conflicts with a typed field — use the dedicated input`;
+  }
+  const v = opt.value.trim();
+  if (!v) return "Value cannot be empty";
+  switch (opt.value_type) {
+    case "ip":
+      if (!isValidIPv4(v)) return `ip must be a valid IPv4`;
+      return null;
+    case "ips": {
+      const parts = v.split(",").map((s) => s.trim()).filter(Boolean);
+      if (parts.length === 0) return "ips must have at least one IPv4";
+      for (const p of parts) if (!isValidIPv4(p)) return `ips: '${p}' is not a valid IPv4`;
+      return null;
+    }
+    case "string":
+      if (v.length > 255) return "string exceeds 255 bytes";
+      // Printable ASCII only (graphic chars + space) — matches rDHCP validator
+      if (!/^[\x20-\x7e]+$/.test(v)) return "string must be printable ASCII only";
+      return null;
+    case "u8": {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0 || n > 255) return "u8 must be 0-255";
+      return null;
+    }
+    case "u16": {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0 || n > 65535) return "u16 must be 0-65535";
+      return null;
+    }
+    case "u32": {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0 || n > 4294967295) return "u32 must be 0-4294967295";
+      return null;
+    }
+    case "hex":
+      if (v.length % 2 !== 0) return "hex must be even-length";
+      if (v.length > 510) return "hex exceeds 255 bytes (510 hex chars)";
+      if (!/^[0-9a-fA-F]+$/.test(v)) return "hex contains non-hex characters";
+      return null;
+    default:
+      return `unknown value_type`;
+  }
 }
 
 const defaultForm: SubnetForm = {
@@ -63,8 +132,9 @@ const defaultForm: SubnetForm = {
   delegated_length: "",
   description: "",
   enabled: true,
-  accept_relayed: true,
   trusted_relays: [],
+  ntp_servers: "",
+  options: [],
 };
 
 // Loopback: any IPv4 starting with 127.
@@ -102,10 +172,23 @@ function fmtDate(iso: string): string {
 
 /* -- Page ------------------------------------------------------------ */
 
+interface GlobalDefaults {
+  dns_servers: string[];
+  ntp_servers: string[];
+  domain_name: string;
+  default_lease_time: number;
+}
+
 export default function DhcpSubnetsPage() {
   const [subnets, setSubnets] = useState<DhcpSubnet[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const [globalDefaults, setGlobalDefaults] = useState<GlobalDefaults>({
+    dns_servers: [],
+    ntp_servers: [],
+    domain_name: "",
+    default_lease_time: 86400,
+  });
 
   // Modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -136,13 +219,29 @@ export default function DhcpSubnetsPage() {
     }
   }, []);
 
+  const fetchGlobalDefaults = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/dhcp/v4/config", { headers: authHeadersPlain() });
+      if (!res.ok) return;
+      const cfg = await res.json();
+      setGlobalDefaults({
+        dns_servers: Array.isArray(cfg.dns_servers) ? cfg.dns_servers : [],
+        ntp_servers: Array.isArray(cfg.ntp_servers) ? cfg.ntp_servers : [],
+        domain_name: cfg.domain_name || "",
+        default_lease_time: cfg.default_lease_time || 86400,
+      });
+    } catch {
+      /* silent — Auto will fall back to safe defaults */
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       setLoading(true);
-      await fetchSubnets();
+      await Promise.all([fetchSubnets(), fetchGlobalDefaults()]);
       setLoading(false);
     })();
-  }, [fetchSubnets]);
+  }, [fetchSubnets, fetchGlobalDefaults]);
 
   /* -- Modal -------------------------------------------------------- */
 
@@ -172,8 +271,9 @@ export default function DhcpSubnetsPage() {
       delegated_length: subnet.delegated_length ? String(subnet.delegated_length) : "",
       description: subnet.description || "",
       enabled: subnet.enabled,
-      accept_relayed: subnet.accept_relayed ?? true,
       trusted_relays: Array.isArray(subnet.trusted_relays) ? [...subnet.trusted_relays] : [],
+      ntp_servers: subnet.ntp_servers || "",
+      options: Array.isArray(subnet.options) ? subnet.options.map((o) => ({ ...o })) : [],
     });
     setRelayDraft("");
     setRelayError(null);
@@ -203,6 +303,39 @@ export default function DhcpSubnetsPage() {
     setForm((p) => ({ ...p, trusted_relays: p.trusted_relays.filter((r) => r !== ip) }));
   };
 
+  /** Auto-fill pool + gateway + DNS + NTP from the CIDR's network base +
+   *  global defaults. Convention: gateway = .1, pool = .20 — .220. Works
+   *  for /16 through /24. */
+  const autoFillFromCidr = () => {
+    const cidr = form.network.trim();
+    const m = cidr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}\/(\d{1,2})$/);
+    if (!m) {
+      showFeedback("error", "Enter a valid IPv4 CIDR first (e.g. 172.29.44.0/24)");
+      return;
+    }
+    const [, a, b, c, prefixStr] = m;
+    const prefix = Number(prefixStr);
+    if (prefix < 16 || prefix > 24) {
+      showFeedback("error", "Auto-fill supports /16 through /24; fill pool manually for other sizes");
+      return;
+    }
+    const base = `${a}.${b}.${c}`;
+    setForm((p) => ({
+      ...p,
+      gateway: `${base}.1`,
+      pool_start: `${base}.20`,
+      pool_end: `${base}.220`,
+      dns_servers: globalDefaults.dns_servers.length > 0
+        ? globalDefaults.dns_servers.join(", ")
+        : p.dns_servers,
+      ntp_servers: globalDefaults.ntp_servers.length > 0
+        ? globalDefaults.ntp_servers.join(", ")
+        : p.ntp_servers,
+      domain_name: p.domain_name || globalDefaults.domain_name,
+    }));
+    showFeedback("success", "Pool, gateway, DNS, and NTP filled from defaults");
+  };
+
   const handleSubmit = async () => {
     if (!form.network.trim() || !form.pool_start.trim() || !form.pool_end.trim() || !form.gateway.trim()) {
       showFeedback("error", "Network, pool start, pool end, and gateway are required");
@@ -222,9 +355,25 @@ export default function DhcpSubnetsPage() {
       if (bad.length > 0) errors.push(`DNS servers: invalid ${bad.join(", ")}`);
     }
     // Trusted relays — revalidate saved chips (in case they bypassed per-chip check)
-    if (form.accept_relayed) {
+    {
       const bad = form.trusted_relays.filter((ip) => !isValidIPv4(ip) || isLoopbackV4(ip));
       if (bad.length > 0) errors.push(`Trusted relays: invalid ${bad.join(", ")}`);
+    }
+    // NTP servers — each entry must be a valid IP (IPv4 or IPv6)
+    if (form.ntp_servers.trim()) {
+      const bad = form.ntp_servers.split(",").map((s) => s.trim()).filter(Boolean)
+        .filter((ip) => !isValidIPv4(ip) && !/^[0-9a-fA-F:]+$/.test(ip));
+      if (bad.length > 0) errors.push(`NTP servers: invalid ${bad.join(", ")}`);
+    }
+    // Generic DHCP option overrides
+    {
+      const codes = new Set<number>();
+      for (const opt of form.options) {
+        const err = validateOption(opt);
+        if (err) { errors.push(`Option ${opt.code}: ${err}`); continue; }
+        if (codes.has(opt.code)) { errors.push(`Option ${opt.code} is duplicated`); }
+        codes.add(opt.code);
+      }
     }
     if (errors.length > 0) { showFeedback("error", errors.join(". ")); return; }
 
@@ -237,9 +386,13 @@ export default function DhcpSubnetsPage() {
         gateway: form.gateway.trim(),
         subnet_type: form.subnet_type,
         enabled: form.enabled,
-        accept_relayed: form.accept_relayed,
-        trusted_relays: form.accept_relayed ? form.trusted_relays : [],
+        trusted_relays: form.trusted_relays,
+        options: form.options,
       };
+      if (form.ntp_servers.trim()) {
+        payload.ntp_servers = form.ntp_servers
+          .split(",").map((s) => s.trim()).filter(Boolean);
+      }
       if (form.dns_servers.trim()) {
         payload.dns_servers = form.dns_servers
           .split(",")
@@ -472,6 +625,14 @@ export default function DhcpSubnetsPage() {
                     <option value="29">/29</option>
                     <option value="30">/30</option>
                   </select>
+                  <button
+                    type="button"
+                    onClick={autoFillFromCidr}
+                    title="Fill pool (.20–.220), gateway (.1), and DNS from global defaults"
+                    className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded-md whitespace-nowrap"
+                  >
+                    Auto
+                  </button>
                 </div>
                 <p className="text-[10px] text-gray-500 mt-0.5 font-mono">{form.network || "—"}</p>
               </div>
@@ -536,6 +697,20 @@ export default function DhcpSubnetsPage() {
                     className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">
+                  NTP Servers (comma-separated, DHCP option 42)
+                </label>
+                <input
+                  type="text"
+                  value={form.ntp_servers}
+                  onChange={(e) => setForm((p) => ({ ...p, ntp_servers: e.target.value }))}
+                  placeholder="e.g. 172.29.69.1"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-gray-500 mt-0.5">Leave empty to inherit from global NTP servers</p>
               </div>
 
               {/* Subnet type */}
@@ -655,80 +830,159 @@ export default function DhcpSubnetsPage() {
                 <span className="text-sm text-[var(--text-primary)]">Enabled</span>
               </div>
 
-              {/* -- DHCP Relay --------------------------------------- */}
-              <div className="space-y-3 pt-2 border-t border-gray-700">
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">DHCP Relay</p>
-
-                <div className="flex items-center gap-3">
+              {/* -- Advanced DHCP option overrides ------------------ */}
+              <div className="space-y-2 pt-2 border-t border-gray-700">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Advanced DHCP options
+                  </label>
                   <button
                     type="button"
-                    onClick={() => setForm((p) => ({ ...p, accept_relayed: !p.accept_relayed }))}
-                    className={`relative w-11 h-6 rounded-full transition-colors ${
-                      form.accept_relayed ? "bg-blue-600" : "bg-gray-600"
-                    }`}
+                    onClick={() => setForm((p) => ({
+                      ...p,
+                      options: [...p.options, { code: 0, value_type: "string", value: "" }],
+                    }))}
+                    className="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 text-white rounded-md"
                   >
-                    <span
-                      className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                        form.accept_relayed ? "translate-x-5" : ""
-                      }`}
-                    />
+                    + Add option
                   </button>
-                  <span className="text-sm text-[var(--text-primary)]">Accept DHCP relay</span>
                 </div>
-                <p className="text-[10px] text-gray-500 -mt-1">
-                  When off, all relayed packets for this scope are dropped.
-                </p>
-
-                <div className={form.accept_relayed ? "" : "opacity-50 pointer-events-none"}>
-                  <label className="block text-xs text-[var(--text-muted)] mb-1">
-                    Trusted relay agents
-                  </label>
-                  <div className="flex flex-wrap items-center gap-2 min-h-[2.5rem] px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md focus-within:border-blue-500">
-                    {form.trusted_relays.map((ip) => (
-                      <span
-                        key={ip}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-500/20 border border-blue-500/30 text-blue-300 text-xs font-mono rounded"
-                      >
-                        {ip}
-                        <button
-                          type="button"
-                          onClick={() => removeRelay(ip)}
-                          className="text-blue-400 hover:text-red-400"
-                          aria-label={`Remove ${ip}`}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                    <input
-                      type="text"
-                      value={relayDraft}
-                      onChange={(e) => {
-                        setRelayDraft(e.target.value.replace(/[^0-9.]/g, ""));
-                        if (relayError) setRelayError(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === ",") {
-                          e.preventDefault();
-                          addRelay();
-                        } else if (e.key === "Backspace" && !relayDraft && form.trusted_relays.length > 0) {
-                          removeRelay(form.trusted_relays[form.trusted_relays.length - 1]);
-                        }
-                      }}
-                      onBlur={() => { if (relayDraft.trim()) addRelay(); }}
-                      placeholder={form.trusted_relays.length === 0 ? "e.g. 172.29.69.5 (press Enter)" : ""}
-                      disabled={!form.accept_relayed}
-                      className="flex-1 min-w-[8rem] bg-transparent text-sm text-white font-mono placeholder-gray-500 focus:outline-none"
-                    />
+                {form.options.length === 0 ? (
+                  <p className="text-[10px] text-gray-500">
+                    No overrides. Common codes: 66 (TFTP server), 67 (Bootfile), 252 (WPAD URL).
+                    Reserved (0, 1, 28, 51, 53, 54, 58, 59, 255) and typed-field codes (3, 6, 15, 42) are blocked.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {form.options.map((opt, idx) => {
+                      const err = validateOption(opt);
+                      return (
+                        <div key={idx} className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              max={255}
+                              value={opt.code}
+                              onChange={(e) => {
+                                const n = Number(e.target.value);
+                                setForm((p) => ({
+                                  ...p,
+                                  options: p.options.map((o, i) => i === idx ? { ...o, code: Number.isFinite(n) ? n : 0 } : o),
+                                }));
+                              }}
+                              placeholder="code"
+                              className="w-20 px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md text-sm text-white font-mono focus:outline-none focus:border-blue-500"
+                              aria-label={`Option ${idx + 1} code`}
+                            />
+                            <select
+                              value={opt.value_type}
+                              onChange={(e) => {
+                                const t = e.target.value as DhcpOptionOverride["value_type"];
+                                setForm((p) => ({
+                                  ...p,
+                                  options: p.options.map((o, i) => i === idx ? { ...o, value_type: t } : o),
+                                }));
+                              }}
+                              className="w-24 px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md text-sm text-white focus:outline-none focus:border-blue-500"
+                              aria-label={`Option ${idx + 1} type`}
+                            >
+                              {OPTION_VALUE_TYPES.map((t) => (
+                                <option key={t} value={t}>{t}</option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={opt.value}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setForm((p) => ({
+                                  ...p,
+                                  options: p.options.map((o, i) => i === idx ? { ...o, value: v } : o),
+                                }));
+                              }}
+                              placeholder={
+                                opt.value_type === "ip" ? "e.g. 10.0.0.1" :
+                                opt.value_type === "ips" ? "e.g. 10.0.0.1, 10.0.0.2" :
+                                opt.value_type === "hex" ? "e.g. deadbeef" :
+                                opt.value_type === "string" ? "text value" :
+                                opt.value_type
+                              }
+                              className="flex-1 px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md text-sm text-white font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                              aria-label={`Option ${idx + 1} value`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setForm((p) => ({
+                                ...p,
+                                options: p.options.filter((_, i) => i !== idx),
+                              }))}
+                              className="p-1.5 text-gray-500 hover:text-red-400"
+                              aria-label={`Remove option ${idx + 1}`}
+                            >
+                              ×
+                            </button>
+                          </div>
+                          {err && (
+                            <p className="text-[10px] text-red-400 ml-1">{err}</p>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                  {relayError ? (
-                    <p className="text-[10px] text-red-400 mt-0.5">{relayError}</p>
-                  ) : (
-                    <p className="text-[10px] text-gray-500 mt-0.5">
-                      Relay agents outside this list will be silently dropped. Leave empty to trust any relay.
-                    </p>
-                  )}
+                )}
+              </div>
+
+              {/* -- Trusted relay agents ---------------------------- */}
+              <div className="space-y-2 pt-2 border-t border-gray-700">
+                <label className="block text-xs font-medium text-gray-400 uppercase tracking-wider">
+                  Trusted relay agents
+                </label>
+                <div className="flex flex-wrap items-center gap-2 min-h-[2.5rem] px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md focus-within:border-blue-500">
+                  {form.trusted_relays.map((ip) => (
+                    <span
+                      key={ip}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-500/20 border border-blue-500/30 text-blue-300 text-xs font-mono rounded"
+                    >
+                      {ip}
+                      <button
+                        type="button"
+                        onClick={() => removeRelay(ip)}
+                        className="text-blue-400 hover:text-red-400"
+                        aria-label={`Remove ${ip}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    type="text"
+                    value={relayDraft}
+                    onChange={(e) => {
+                      setRelayDraft(e.target.value.replace(/[^0-9.]/g, ""));
+                      if (relayError) setRelayError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === ",") {
+                        e.preventDefault();
+                        addRelay();
+                      } else if (e.key === "Backspace" && !relayDraft && form.trusted_relays.length > 0) {
+                        removeRelay(form.trusted_relays[form.trusted_relays.length - 1]);
+                      }
+                    }}
+                    onBlur={() => { if (relayDraft.trim()) addRelay(); }}
+                    placeholder={form.trusted_relays.length === 0 ? "e.g. 172.29.69.5 (press Enter)" : ""}
+                    className="flex-1 min-w-[8rem] bg-transparent text-sm text-white font-mono placeholder-gray-500 focus:outline-none"
+                  />
                 </div>
+                {relayError ? (
+                  <p className="text-[10px] text-red-400 mt-0.5">{relayError}</p>
+                ) : (
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Relay agents outside this list will be silently dropped. Leave empty to trust any relay.
+                    The global &quot;Accept DHCP relay&quot; switch lives in DHCP settings.
+                  </p>
+                )}
               </div>
             </div>
 

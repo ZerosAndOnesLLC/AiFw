@@ -43,7 +43,18 @@ pub struct DhcpGlobalConfig {
     pub log_format: String,
     pub api_port: u16,
     pub workers: u32,
+    // DHCP relay (matches rDHCP's [global] schema — see feature/dhcpv4-accept-relayed).
+    #[serde(default = "default_accept_relayed")]
+    pub accept_relayed: bool,
+    #[serde(default = "default_relay_rate_limit_burst")]
+    pub relay_rate_limit_burst: u32,
+    #[serde(default = "default_relay_rate_limit_pps")]
+    pub relay_rate_limit_pps: f64,
 }
+
+fn default_accept_relayed() -> bool { true }
+fn default_relay_rate_limit_burst() -> u32 { 200 }
+fn default_relay_rate_limit_pps() -> f64 { 100.0 }
 
 impl Default for DhcpGlobalConfig {
     fn default() -> Self {
@@ -64,6 +75,9 @@ impl Default for DhcpGlobalConfig {
             log_format: "text".to_string(),
             api_port: 9967,
             workers: 1,
+            accept_relayed: default_accept_relayed(),
+            relay_rate_limit_burst: default_relay_rate_limit_burst(),
+            relay_rate_limit_pps: default_relay_rate_limit_pps(),
         }
     }
 }
@@ -90,9 +104,24 @@ pub struct DhcpSubnet {
     pub delegated_length: Option<u8>,
     pub enabled: bool,
     pub description: Option<String>,
-    pub accept_relayed: bool,
     pub trusted_relays: Vec<String>,
+    /// Per-subnet NTP servers (DHCP option 42). None = inherit from global default.
+    pub ntp_servers: Option<String>,
+    /// Generic per-subnet DHCP option overrides (codes not covered by typed fields).
+    pub options: Vec<DhcpOptionOverride>,
     pub created_at: String,
+}
+
+/// Per-subnet generic DHCP option override. Mirrors rDHCP's OptionOverride.
+/// The wire format picks exactly one value field based on `value_type`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DhcpOptionOverride {
+    pub code: u8,
+    /// One of: "ip", "ips", "string", "u8", "u16", "u32", "hex".
+    pub value_type: String,
+    /// Raw string; parsed per value_type when emitted to TOML.
+    /// For "ips", comma-separated IPv4 addresses. For "hex", contiguous hex digits.
+    pub value: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,8 +141,9 @@ pub struct CreateSubnetRequest {
     pub delegated_length: Option<u8>,
     pub enabled: Option<bool>,
     pub description: Option<String>,
-    pub accept_relayed: Option<bool>,
     pub trusted_relays: Option<Vec<String>>,
+    pub ntp_servers: Option<Vec<String>>,
+    pub options: Option<Vec<DhcpOptionOverride>>,
 }
 
 // ============================================================
@@ -331,7 +361,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     "#).execute(pool).await?;
 
     // Add new columns if they don't exist (migration from old schema)
-    for col in ["preferred_time INTEGER", "subnet_type TEXT DEFAULT 'address'", "delegated_length INTEGER", "max_lease_time INTEGER", "renewal_time INTEGER", "rebinding_time INTEGER", "accept_relayed INTEGER NOT NULL DEFAULT 1", "trusted_relays TEXT NOT NULL DEFAULT '[]'"] {
+    for col in ["preferred_time INTEGER", "subnet_type TEXT DEFAULT 'address'", "delegated_length INTEGER", "max_lease_time INTEGER", "renewal_time INTEGER", "rebinding_time INTEGER", "accept_relayed INTEGER NOT NULL DEFAULT 1", "trusted_relays TEXT NOT NULL DEFAULT '[]'", "ntp_servers TEXT", "options TEXT NOT NULL DEFAULT '[]'"] {
         let col_name = col.split_whitespace().next().unwrap_or("");
         let check = sqlx::query_scalar::<_, i32>(
             &format!("SELECT COUNT(*) FROM pragma_table_info('dhcp_subnets') WHERE name='{}'", col_name)
@@ -405,6 +435,9 @@ async fn load_global_config(pool: &SqlitePool) -> DhcpGlobalConfig {
             "log_format" => config.log_format = value,
             "api_port" => config.api_port = value.parse().unwrap_or(9967),
             "workers" => config.workers = value.parse().unwrap_or(1),
+            "accept_relayed" => config.accept_relayed = value == "true",
+            "relay_rate_limit_burst" => config.relay_rate_limit_burst = value.parse().unwrap_or(200),
+            "relay_rate_limit_pps" => config.relay_rate_limit_pps = value.parse().unwrap_or(100.0),
             _ => {}
         }
     }
@@ -471,16 +504,22 @@ async fn save_ha_key(pool: &SqlitePool, key: &str, value: &str) {
 }
 
 async fn list_subnets_db(pool: &SqlitePool) -> Vec<DhcpSubnet> {
+    // Note: `accept_relayed` column still exists in dhcp_subnets (dead since
+    // v5.60.0 — rDHCP only honours this flag globally, not per-subnet). We
+    // no longer read or write it.
     let rows = sqlx::query(
-        "SELECT id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, subnet_type, delegated_length, enabled, description, accept_relayed, trusted_relays, created_at FROM dhcp_subnets ORDER BY created_at ASC"
+        "SELECT id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, subnet_type, delegated_length, enabled, description, trusted_relays, ntp_servers, options, created_at FROM dhcp_subnets ORDER BY created_at ASC"
     ).fetch_all(pool).await.unwrap_or_default();
 
     use sqlx::Row;
     rows.into_iter().map(|r| {
-        let accept_relayed = r.try_get::<i64, _>("accept_relayed").map(|v| v != 0).unwrap_or(true);
         let trusted_relays = r.try_get::<String, _>("trusted_relays")
             .ok()
             .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default();
+        let options = r.try_get::<String, _>("options")
+            .ok()
+            .and_then(|s| serde_json::from_str::<Vec<DhcpOptionOverride>>(&s).ok())
             .unwrap_or_default();
         DhcpSubnet {
             id: r.get("id"),
@@ -499,11 +538,98 @@ async fn list_subnets_db(pool: &SqlitePool) -> Vec<DhcpSubnet> {
             delegated_length: r.get::<Option<i64>, _>("delegated_length").map(|v| v as u8),
             enabled: r.get("enabled"),
             description: r.get("description"),
-            accept_relayed,
             trusted_relays,
+            ntp_servers: r.try_get::<Option<String>, _>("ntp_servers").ok().flatten(),
+            options,
             created_at: r.get("created_at"),
         }
     }).collect()
+}
+
+/// Reserved DHCP option codes rDHCP will never allow (server-managed).
+/// Kept in sync with rDHCP src/config/validation.rs RESERVED_CODES.
+const RESERVED_OPTION_CODES: &[u8] = &[0, 1, 28, 50, 51, 53, 54, 55, 57, 58, 59, 82, 255];
+/// Codes that conflict with typed per-subnet fields — use the dedicated field instead.
+/// 3 = router (use `gateway`), 6 = dns (use `dns_servers`),
+/// 15 = domain (use `domain_name`), 42 = ntp (use `ntp_servers`).
+const COLLISION_OPTION_CODES: &[u8] = &[3, 6, 15, 42];
+
+/// Validate generic DHCP option overrides. Same rules rDHCP enforces on config load.
+fn validate_option_overrides(options: &[DhcpOptionOverride]) -> Result<(), String> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<u8> = HashSet::new();
+    for opt in options {
+        if RESERVED_OPTION_CODES.contains(&opt.code) {
+            return Err(format!("option code {} is reserved by the server", opt.code));
+        }
+        if COLLISION_OPTION_CODES.contains(&opt.code) {
+            return Err(format!(
+                "option code {} conflicts with a typed field; set the typed field instead",
+                opt.code
+            ));
+        }
+        if !seen.insert(opt.code) {
+            return Err(format!("option code {} is duplicated", opt.code));
+        }
+        match opt.value_type.as_str() {
+            "ip" => {
+                opt.value.trim().parse::<std::net::Ipv4Addr>()
+                    .map_err(|_| format!("option {}: 'ip' value must be an IPv4 address", opt.code))?;
+            }
+            "ips" => {
+                let parts: Vec<&str> = opt.value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                if parts.is_empty() {
+                    return Err(format!("option {}: 'ips' value cannot be empty", opt.code));
+                }
+                for ip in parts {
+                    ip.parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| format!("option {}: 'ips' has invalid IPv4 '{}'", opt.code, ip))?;
+                }
+            }
+            "string" => {
+                if opt.value.is_empty() {
+                    return Err(format!("option {}: 'string' value cannot be empty", opt.code));
+                }
+                if opt.value.len() > 255 {
+                    return Err(format!("option {}: 'string' exceeds 255 bytes", opt.code));
+                }
+                // rDHCP only accepts printable ASCII (graphic + space); reject
+                // anything else now so the TOML renderer can't emit control
+                // bytes rDHCP refuses to parse.
+                if !opt.value.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                    return Err(format!(
+                        "option {}: 'string' must contain only printable ASCII (graphic + space)",
+                        opt.code
+                    ));
+                }
+            }
+            "u8" => { opt.value.trim().parse::<u8>().map_err(|_| format!("option {}: 'u8' must be 0-255", opt.code))?; }
+            "u16" => { opt.value.trim().parse::<u16>().map_err(|_| format!("option {}: 'u16' must be 0-65535", opt.code))?; }
+            "u32" => { opt.value.trim().parse::<u32>().map_err(|_| format!("option {}: 'u32' must be 0-{}", opt.code, u32::MAX))?; }
+            "hex" => {
+                let v = opt.value.trim();
+                if v.is_empty() {
+                    return Err(format!("option {}: 'hex' value cannot be empty", opt.code));
+                }
+                if v.len() % 2 != 0 {
+                    return Err(format!("option {}: 'hex' value must be even-length", opt.code));
+                }
+                if v.len() > 510 {
+                    return Err(format!("option {}: 'hex' value exceeds 255 bytes (510 hex chars)", opt.code));
+                }
+                if !v.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(format!("option {}: 'hex' value contains non-hex characters", opt.code));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "option {}: unknown value_type '{}' (expected ip/ips/string/u8/u16/u32/hex)",
+                    opt.code, other
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate a list of trusted relay agent IPs. IPv4-only; loopback (127.0.0.0/8) rejected.
@@ -556,6 +682,10 @@ pub(crate) async fn generate_rdhcp_config(pool: &SqlitePool) -> String {
     toml.push_str(&format!("log_format = \"{}\"\n", config.log_format));
     toml.push_str(&format!("lease_db = \"{}\"\n", RDHCP_LEASE_DB));
     toml.push_str(&format!("workers = {}\n", config.workers));
+    // DHCP relay (rDHCP [global] schema)
+    toml.push_str(&format!("accept_relayed = {}\n", config.accept_relayed));
+    toml.push_str(&format!("relay_rate_limit_burst = {}\n", config.relay_rate_limit_burst));
+    toml.push_str(&format!("relay_rate_limit_pps = {}\n", config.relay_rate_limit_pps));
     toml.push('\n');
 
     // [api]
@@ -665,11 +795,49 @@ pub(crate) async fn generate_rdhcp_config(pool: &SqlitePool) -> String {
             toml.push_str(&format!("domain = \"{}\"\n", domain));
         }
 
-        // DHCP relay acceptance (always emit — explicit > implicit in generated config)
-        toml.push_str(&format!("accept_relayed = {}\n", subnet.accept_relayed));
+        // Per-subnet NTP (DHCP option 42). Omit if none so rDHCP falls back to
+        // its own behaviour; we don't synthesize a default here.
+        if let Some(ntp) = subnet.ntp_servers.as_ref() {
+            let ntp_list: Vec<String> = ntp.split(',')
+                .map(|s| s.trim()).filter(|s| !s.is_empty())
+                .map(|s| format!("\"{}\"", s)).collect();
+            if !ntp_list.is_empty() {
+                toml.push_str(&format!("ntp = [{}]\n", ntp_list.join(", ")));
+            }
+        }
+
+        // Per-subnet trusted relay whitelist (global accept_relayed lives in [global])
         let relays_str: Vec<String> = subnet.trusted_relays.iter()
             .map(|r| format!("\"{}\"", r)).collect();
         toml.push_str(&format!("trusted_relays = [{}]\n", relays_str.join(", ")));
+
+        // Generic per-subnet DHCP option overrides. Each override becomes a
+        // [[subnet.option]] block with exactly one value field set, matching
+        // rDHCP's OptionOverride schema.
+        for opt in &subnet.options {
+            toml.push('\n');
+            toml.push_str("[[subnet.option]]\n");
+            toml.push_str(&format!("code = {}\n", opt.code));
+            match opt.value_type.as_str() {
+                "ip" => toml.push_str(&format!("ip = \"{}\"\n", opt.value.trim())),
+                "ips" => {
+                    let ips: Vec<String> = opt.value.split(',')
+                        .map(|s| s.trim()).filter(|s| !s.is_empty())
+                        .map(|s| format!("\"{}\"", s)).collect();
+                    toml.push_str(&format!("ips = [{}]\n", ips.join(", ")));
+                }
+                "string" => {
+                    // Escape backslashes + quotes for TOML basic string
+                    let escaped = opt.value.replace('\\', "\\\\").replace('"', "\\\"");
+                    toml.push_str(&format!("string = \"{}\"\n", escaped));
+                }
+                "u8" => toml.push_str(&format!("u8 = {}\n", opt.value.trim())),
+                "u16" => toml.push_str(&format!("u16 = {}\n", opt.value.trim())),
+                "u32" => toml.push_str(&format!("u32 = {}\n", opt.value.trim())),
+                "hex" => toml.push_str(&format!("hex = \"{}\"\n", opt.value.trim())),
+                _ => {} // validated earlier; unreachable
+            }
+        }
 
         // Reservations for this subnet
         let sub_reservations: Vec<&DhcpReservation> = reservations.iter()
@@ -905,6 +1073,9 @@ pub async fn update_config(
     save_config_key(&state.pool, "log_format", &config.log_format).await;
     save_config_key(&state.pool, "api_port", &config.api_port.to_string()).await;
     save_config_key(&state.pool, "workers", &config.workers.to_string()).await;
+    save_config_key(&state.pool, "accept_relayed", if config.accept_relayed { "true" } else { "false" }).await;
+    save_config_key(&state.pool, "relay_rate_limit_burst", &config.relay_rate_limit_burst.to_string()).await;
+    save_config_key(&state.pool, "relay_rate_limit_pps", &config.relay_rate_limit_pps.to_string()).await;
     auto_apply(&state).await;
     Ok(Json(MessageResponse { message: "DHCP config updated and applied".to_string() }))
 }
@@ -1006,26 +1177,37 @@ pub async fn create_subnet(
     let enabled = req.enabled.unwrap_or(true);
     let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
     let dns_str = req.dns_servers.as_ref().map(|v| v.join(","));
-    let accept_relayed = req.accept_relayed.unwrap_or(true);
+    let ntp_str = req.ntp_servers.as_ref().and_then(|v| {
+        let s = v.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(",");
+        if s.is_empty() { None } else { Some(s) }
+    });
     let trusted_relays = req.trusted_relays.clone().unwrap_or_default();
     if let Err(e) = validate_trusted_relays(&trusted_relays) {
         tracing::warn!("dhcp.subnet.create rejected: {}", e);
         return Err(bad_request());
     }
+    let options = req.options.clone().unwrap_or_default();
+    if let Err(e) = validate_option_overrides(&options) {
+        tracing::warn!("dhcp.subnet.create rejected: {}", e);
+        return Err(bad_request());
+    }
     let trusted_relays_json = serde_json::to_string(&trusted_relays).unwrap_or_else(|_| "[]".to_string());
-    sqlx::query("INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, subnet_type, delegated_length, enabled, description, accept_relayed, trusted_relays, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)")
+    let options_json = serde_json::to_string(&options).unwrap_or_else(|_| "[]".to_string());
+    sqlx::query("INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, subnet_type, delegated_length, enabled, description, trusted_relays, ntp_servers, options, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)")
         .bind(&id).bind(&req.network).bind(&req.pool_start).bind(&req.pool_end).bind(&req.gateway)
         .bind(dns_str.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
         .bind(req.max_lease_time.map(|v| v as i64)).bind(req.renewal_time.map(|v| v as i64))
         .bind(req.rebinding_time.map(|v| v as i64)).bind(req.preferred_time.map(|v| v as i64))
         .bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
         .bind(enabled).bind(req.description.as_deref())
-        .bind(if accept_relayed { 1_i64 } else { 0_i64 }).bind(&trusted_relays_json)
+        .bind(&trusted_relays_json)
+        .bind(ntp_str.as_deref())
+        .bind(&options_json)
         .bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
     tracing::info!(
-        "dhcp.subnet.create id={} network={} accept_relayed={} trusted_relays={}",
-        id, req.network, accept_relayed, trusted_relays_json
+        "dhcp.subnet.create id={} network={} trusted_relays={} options={}",
+        id, req.network, trusted_relays_json, options_json
     );
     let dns_display = req.dns_servers.as_ref().map(|v| v.join(","));
     let subnet = DhcpSubnet {
@@ -1036,7 +1218,9 @@ pub async fn create_subnet(
         preferred_time: req.preferred_time,
         subnet_type: subnet_type.to_string(), delegated_length: req.delegated_length,
         enabled, description: req.description,
-        accept_relayed, trusted_relays,
+        trusted_relays,
+        ntp_servers: ntp_str,
+        options,
         created_at: now,
     };
     auto_apply(&state).await;
@@ -1051,36 +1235,52 @@ pub async fn update_subnet(
     let enabled = req.enabled.unwrap_or(true);
     let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
     let dns_str = req.dns_servers.as_ref().map(|v| v.join(","));
-    let accept_relayed = req.accept_relayed.unwrap_or(true);
+    let ntp_str = req.ntp_servers.as_ref().and_then(|v| {
+        let s = v.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(",");
+        if s.is_empty() { None } else { Some(s) }
+    });
     let trusted_relays = req.trusted_relays.clone().unwrap_or_default();
     if let Err(e) = validate_trusted_relays(&trusted_relays) {
         tracing::warn!("dhcp.subnet.update id={} rejected: {}", id, e);
         return Err(bad_request());
     }
+    let options = req.options.clone().unwrap_or_default();
+    if let Err(e) = validate_option_overrides(&options) {
+        tracing::warn!("dhcp.subnet.update id={} rejected: {}", id, e);
+        return Err(bad_request());
+    }
     let trusted_relays_json = serde_json::to_string(&trusted_relays).unwrap_or_else(|_| "[]".to_string());
+    let options_json = serde_json::to_string(&options).unwrap_or_else(|_| "[]".to_string());
 
-    // Snapshot prior relay state for audit diff
-    let prior: Option<(i64, String)> = sqlx::query_as(
-        "SELECT accept_relayed, trusted_relays FROM dhcp_subnets WHERE id=?1"
+    // Snapshot prior trusted_relays + options for audit diff
+    let prior: Option<(String, String)> = sqlx::query_as(
+        "SELECT trusted_relays, options FROM dhcp_subnets WHERE id=?1"
     ).bind(&id).fetch_optional(&state.pool).await.map_err(|_| internal())?;
 
-    let result = sqlx::query("UPDATE dhcp_subnets SET network=?2, pool_start=?3, pool_end=?4, gateway=?5, dns_servers=?6, domain_name=?7, lease_time=?8, max_lease_time=?9, renewal_time=?10, rebinding_time=?11, preferred_time=?12, subnet_type=?13, delegated_length=?14, enabled=?15, description=?16, accept_relayed=?17, trusted_relays=?18 WHERE id=?1")
+    let result = sqlx::query("UPDATE dhcp_subnets SET network=?2, pool_start=?3, pool_end=?4, gateway=?5, dns_servers=?6, domain_name=?7, lease_time=?8, max_lease_time=?9, renewal_time=?10, rebinding_time=?11, preferred_time=?12, subnet_type=?13, delegated_length=?14, enabled=?15, description=?16, trusted_relays=?17, ntp_servers=?18, options=?19 WHERE id=?1")
         .bind(&id).bind(&req.network).bind(&req.pool_start).bind(&req.pool_end).bind(&req.gateway)
         .bind(dns_str.as_deref()).bind(req.domain_name.as_deref()).bind(req.lease_time.map(|v| v as i64))
         .bind(req.max_lease_time.map(|v| v as i64)).bind(req.renewal_time.map(|v| v as i64))
         .bind(req.rebinding_time.map(|v| v as i64)).bind(req.preferred_time.map(|v| v as i64))
         .bind(subnet_type).bind(req.delegated_length.map(|v| v as i64))
         .bind(enabled).bind(req.description.as_deref())
-        .bind(if accept_relayed { 1_i64 } else { 0_i64 }).bind(&trusted_relays_json)
+        .bind(&trusted_relays_json)
+        .bind(ntp_str.as_deref())
+        .bind(&options_json)
         .execute(&state.pool).await.map_err(|_| internal())?;
     if result.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
 
-    if let Some((prev_accept, prev_relays)) = prior {
-        let prev_accept_bool = prev_accept != 0;
-        if prev_accept_bool != accept_relayed || prev_relays != trusted_relays_json {
+    if let Some((prev_relays, prev_options)) = prior {
+        if prev_relays != trusted_relays_json {
             tracing::info!(
-                "dhcp.subnet.update id={} accept_relayed: {} -> {}; trusted_relays: {} -> {}",
-                id, prev_accept_bool, accept_relayed, prev_relays, trusted_relays_json
+                "dhcp.subnet.update id={} trusted_relays: {} -> {}",
+                id, prev_relays, trusted_relays_json
+            );
+        }
+        if prev_options != options_json {
+            tracing::info!(
+                "dhcp.subnet.update id={} options: {} -> {}",
+                id, prev_options, options_json
             );
         }
     }
@@ -1096,7 +1296,9 @@ pub async fn update_subnet(
         preferred_time: req.preferred_time,
         subnet_type: subnet_type.to_string(), delegated_length: req.delegated_length,
         enabled, description: req.description,
-        accept_relayed, trusted_relays,
+        trusted_relays,
+        ntp_servers: ntp_str,
+        options,
         created_at: now,
     }}))
 }

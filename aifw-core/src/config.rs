@@ -357,7 +357,18 @@ pub struct DhcpGlobalSection {
     pub log_format: String,
     pub api_port: u16,
     pub workers: u32,
+    // DHCP relay — matches rDHCP [global] schema (see rDHCP feature/dhcpv4-accept-relayed).
+    #[serde(default = "default_accept_relayed")]
+    pub accept_relayed: bool,
+    #[serde(default = "default_relay_rate_limit_burst")]
+    pub relay_rate_limit_burst: u32,
+    #[serde(default = "default_relay_rate_limit_pps")]
+    pub relay_rate_limit_pps: f64,
 }
+
+fn default_accept_relayed() -> bool { true }
+fn default_relay_rate_limit_burst() -> u32 { 200 }
+fn default_relay_rate_limit_pps() -> f64 { 100.0 }
 
 impl Default for DhcpGlobalSection {
     fn default() -> Self {
@@ -378,6 +389,9 @@ impl Default for DhcpGlobalSection {
             log_format: "text".to_string(),
             api_port: 9967,
             workers: 1,
+            accept_relayed: default_accept_relayed(),
+            relay_rate_limit_burst: default_relay_rate_limit_burst(),
+            relay_rate_limit_pps: default_relay_rate_limit_pps(),
         }
     }
 }
@@ -400,14 +414,23 @@ pub struct DhcpSubnetConfig {
     pub delegated_length: Option<u8>,
     pub enabled: bool,
     pub description: Option<String>,
-    #[serde(default = "default_true")]
-    pub accept_relayed: bool,
     #[serde(default)]
     pub trusted_relays: Vec<String>,
+    /// Per-subnet NTP (DHCP option 42). Comma-separated IPv4 list; None = inherit.
+    #[serde(default)]
+    pub ntp_servers: Option<String>,
+    /// Generic per-subnet DHCP option overrides (codes not covered by typed fields).
+    #[serde(default)]
+    pub options: Vec<DhcpOptionOverrideConfig>,
     pub created_at: String,
 }
 
-fn default_true() -> bool { true }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DhcpOptionOverrideConfig {
+    pub code: u8,
+    pub value_type: String,
+    pub value: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhcpReservationConfig {
