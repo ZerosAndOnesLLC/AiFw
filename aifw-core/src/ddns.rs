@@ -176,6 +176,10 @@ pub async fn save_config(pool: &SqlitePool, c: &DdnsConfig) -> Result<(), String
     if c.poll_interval_secs < 60 || c.poll_interval_secs > 86400 {
         return Err("poll_interval_secs must be 60..86400".into());
     }
+    crate::net_safety::validate_outbound_url(&c.ip_echo_url_v4).await
+        .map_err(|e| format!("ip_echo_url_v4: {e}"))?;
+    crate::net_safety::validate_outbound_url(&c.ip_echo_url_v6).await
+        .map_err(|e| format!("ip_echo_url_v6: {e}"))?;
     sqlx::query("UPDATE ddns_config SET poll_interval_secs = ?, ip_echo_url_v4 = ?, ip_echo_url_v6 = ? WHERE id = 1")
         .bind(c.poll_interval_secs)
         .bind(&c.ip_echo_url_v4)
@@ -305,6 +309,7 @@ async fn interface_ip(name: &str, want_v6: bool) -> Result<IpAddr, String> {
 /// Query a public IP-echo service. We force the resolver family so a v4
 /// query doesn't accidentally reach a v6 endpoint and vice versa.
 async fn public_ip(url: &str, want_v6: bool) -> Result<IpAddr, String> {
+    crate::net_safety::validate_outbound_url(url).await?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .local_address(if want_v6 {

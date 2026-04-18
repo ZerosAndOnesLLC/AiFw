@@ -141,6 +141,8 @@ async fn run_webhook(cert: &AcmeCert, cfg: &serde_json::Value) -> Result<(), Str
         .ok_or_else(|| "webhook target missing url".to_string())?;
     let auth = cfg.get("auth_header").and_then(|v| v.as_str()).unwrap_or("");
 
+    crate::net_safety::validate_outbound_url(url).await?;
+
     let body = serde_json::json!({
         "common_name": cert.common_name,
         "sans": cert.sans,
