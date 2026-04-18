@@ -18,6 +18,10 @@ pub struct FirewallConfig {
     pub tls: TlsConfig,
     pub ha: HaConfig,
     pub tuning: Vec<TuningEntry>,
+    /// DHCP subnets, reservations, global config, DDNS, HA. Added in a later
+    /// schema rev — `#[serde(default)]` keeps older backups deserialising.
+    #[serde(default)]
+    pub dhcp: DhcpSection,
 }
 
 impl Default for FirewallConfig {
@@ -35,6 +39,7 @@ impl Default for FirewallConfig {
             tls: TlsConfig::default(),
             ha: HaConfig::default(),
             tuning: Vec::new(),
+            dhcp: DhcpSection::default(),
         }
     }
 }
@@ -314,6 +319,135 @@ pub struct TuningEntry {
     pub target: String,
     pub reason: String,
     pub enabled: bool,
+}
+
+// ============================================================
+// DHCP
+// ============================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DhcpSection {
+    #[serde(default)]
+    pub global: DhcpGlobalSection,
+    #[serde(default)]
+    pub subnets: Vec<DhcpSubnetConfig>,
+    #[serde(default)]
+    pub reservations: Vec<DhcpReservationConfig>,
+    #[serde(default)]
+    pub ddns: DhcpDdnsSection,
+    #[serde(default)]
+    pub dhcp_ha: DhcpHaSection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DhcpGlobalSection {
+    pub enabled: bool,
+    pub interfaces: Vec<String>,
+    pub authoritative: bool,
+    pub default_lease_time: u32,
+    pub max_lease_time: u32,
+    pub dns_servers: Vec<String>,
+    pub domain_name: String,
+    pub domain_search: Vec<String>,
+    pub ntp_servers: Vec<String>,
+    pub wins_servers: Vec<String>,
+    pub next_server: Option<String>,
+    pub boot_filename: Option<String>,
+    pub log_level: String,
+    pub log_format: String,
+    pub api_port: u16,
+    pub workers: u32,
+}
+
+impl Default for DhcpGlobalSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interfaces: vec![],
+            authoritative: true,
+            default_lease_time: 3600,
+            max_lease_time: 86400,
+            dns_servers: vec![],
+            domain_name: String::new(),
+            domain_search: vec![],
+            ntp_servers: vec![],
+            wins_servers: vec![],
+            next_server: None,
+            boot_filename: None,
+            log_level: "info".to_string(),
+            log_format: "text".to_string(),
+            api_port: 9967,
+            workers: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DhcpSubnetConfig {
+    pub id: String,
+    pub network: String,
+    pub pool_start: String,
+    pub pool_end: String,
+    pub gateway: String,
+    pub dns_servers: Option<String>,
+    pub domain_name: Option<String>,
+    pub lease_time: Option<u32>,
+    pub max_lease_time: Option<u32>,
+    pub renewal_time: Option<u32>,
+    pub rebinding_time: Option<u32>,
+    pub preferred_time: Option<u32>,
+    pub subnet_type: String,
+    pub delegated_length: Option<u8>,
+    pub enabled: bool,
+    pub description: Option<String>,
+    #[serde(default = "default_true")]
+    pub accept_relayed: bool,
+    #[serde(default)]
+    pub trusted_relays: Vec<String>,
+    pub created_at: String,
+}
+
+fn default_true() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DhcpReservationConfig {
+    pub id: String,
+    pub subnet_id: Option<String>,
+    pub mac_address: String,
+    pub ip_address: String,
+    pub hostname: Option<String>,
+    pub client_id: Option<String>,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DhcpDdnsSection {
+    pub enabled: bool,
+    pub forward_zone: String,
+    pub reverse_zone_v4: String,
+    pub reverse_zone_v6: String,
+    pub dns_server: String,
+    pub tsig_key: String,
+    pub tsig_algorithm: String,
+    #[serde(default)]
+    pub tsig_secret: String,
+    pub ttl: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DhcpHaSection {
+    pub mode: String,
+    pub peer: Option<String>,
+    pub listen: Option<String>,
+    pub scope_split: Option<f64>,
+    pub mclt: Option<u32>,
+    pub partner_down_delay: Option<u32>,
+    pub node_id: Option<u64>,
+    pub peers: Option<Vec<String>>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub tls_ca: Option<String>,
 }
 
 // ============================================================

@@ -256,6 +256,9 @@ pub async fn check_config(
         warnings.push("No firewall rules configured — all traffic may be blocked or allowed by default".to_string());
     }
 
+    // DHCP validation
+    validate_dhcp(&state.pool, &mut errors, &mut warnings, &mut info).await;
+
     let valid = errors.is_empty();
 
     Ok(Json(ApiResponse {
@@ -856,9 +859,265 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             reason: "pf state table size".to_string(),
             enabled: true,
         }],
+        dhcp: build_dhcp_section(&state.pool).await,
     };
 
     Ok(config)
+}
+
+async fn build_dhcp_section(pool: &sqlx::SqlitePool) -> aifw_core::config::DhcpSection {
+    use aifw_core::config::*;
+    use sqlx::Row;
+
+    // --- global key/value config -----------------------------
+    let mut global = DhcpGlobalSection::default();
+    let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM dhcp_config")
+        .fetch_all(pool).await.unwrap_or_default();
+    for (key, value) in rows {
+        match key.as_str() {
+            "enabled" => global.enabled = value == "true",
+            "interfaces" => global.interfaces = split_csv(&value),
+            "authoritative" => global.authoritative = value == "true",
+            "default_lease_time" => global.default_lease_time = value.parse().unwrap_or(3600),
+            "max_lease_time" => global.max_lease_time = value.parse().unwrap_or(86400),
+            "dns_servers" => global.dns_servers = split_csv(&value),
+            "domain_name" => global.domain_name = value,
+            "domain_search" => global.domain_search = split_csv(&value),
+            "ntp_servers" => global.ntp_servers = split_csv(&value),
+            "wins_servers" => global.wins_servers = split_csv(&value),
+            "next_server" => global.next_server = if value.is_empty() { None } else { Some(value) },
+            "boot_filename" => global.boot_filename = if value.is_empty() { None } else { Some(value) },
+            "log_level" => global.log_level = value,
+            "log_format" => global.log_format = value,
+            "api_port" => global.api_port = value.parse().unwrap_or(9967),
+            "workers" => global.workers = value.parse().unwrap_or(1),
+            _ => {}
+        }
+    }
+
+    // --- subnets ---------------------------------------------
+    let subnet_rows = sqlx::query(
+        "SELECT id, network, pool_start, pool_end, gateway, dns_servers, domain_name, \
+         lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, \
+         subnet_type, delegated_length, enabled, description, accept_relayed, \
+         trusted_relays, created_at FROM dhcp_subnets ORDER BY created_at ASC"
+    ).fetch_all(pool).await.unwrap_or_default();
+
+    let subnets: Vec<DhcpSubnetConfig> = subnet_rows.into_iter().map(|r| {
+        let accept_relayed = r.try_get::<i64, _>("accept_relayed").map(|v| v != 0).unwrap_or(true);
+        let trusted_relays = r.try_get::<String, _>("trusted_relays").ok()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default();
+        DhcpSubnetConfig {
+            id: r.get("id"),
+            network: r.get("network"),
+            pool_start: r.get("pool_start"),
+            pool_end: r.get("pool_end"),
+            gateway: r.get("gateway"),
+            dns_servers: r.get("dns_servers"),
+            domain_name: r.get("domain_name"),
+            lease_time: r.get::<Option<i64>, _>("lease_time").map(|v| v as u32),
+            max_lease_time: r.get::<Option<i64>, _>("max_lease_time").map(|v| v as u32),
+            renewal_time: r.get::<Option<i64>, _>("renewal_time").map(|v| v as u32),
+            rebinding_time: r.get::<Option<i64>, _>("rebinding_time").map(|v| v as u32),
+            preferred_time: r.get::<Option<i64>, _>("preferred_time").map(|v| v as u32),
+            subnet_type: r.get::<Option<String>, _>("subnet_type").unwrap_or_else(|| "address".to_string()),
+            delegated_length: r.get::<Option<i64>, _>("delegated_length").map(|v| v as u8),
+            enabled: r.get("enabled"),
+            description: r.get("description"),
+            accept_relayed,
+            trusted_relays,
+            created_at: r.get("created_at"),
+        }
+    }).collect();
+
+    // --- reservations ----------------------------------------
+    let reservations: Vec<DhcpReservationConfig> = sqlx::query_as::<_,
+        (String, Option<String>, String, String, Option<String>, Option<String>, Option<String>, String)>(
+        "SELECT id, subnet_id, mac_address, ip_address, hostname, client_id, description, created_at \
+         FROM dhcp_reservations ORDER BY ip_address ASC"
+    ).fetch_all(pool).await.unwrap_or_default()
+    .into_iter().map(|(id, subnet_id, mac, ip, hostname, client_id, description, created_at)| {
+        DhcpReservationConfig { id, subnet_id, mac_address: mac, ip_address: ip, hostname, client_id, description, created_at }
+    }).collect();
+
+    // --- DDNS ------------------------------------------------
+    let mut ddns = DhcpDdnsSection::default();
+    let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM dhcp_ddns_config")
+        .fetch_all(pool).await.unwrap_or_default();
+    for (key, value) in rows {
+        match key.as_str() {
+            "enabled" => ddns.enabled = value == "true",
+            "forward_zone" => ddns.forward_zone = value,
+            "reverse_zone_v4" => ddns.reverse_zone_v4 = value,
+            "reverse_zone_v6" => ddns.reverse_zone_v6 = value,
+            "dns_server" => ddns.dns_server = value,
+            "tsig_key" => ddns.tsig_key = value,
+            "tsig_algorithm" => ddns.tsig_algorithm = value,
+            "tsig_secret" => ddns.tsig_secret = value,
+            "ttl" => ddns.ttl = value.parse().unwrap_or(300),
+            _ => {}
+        }
+    }
+
+    // --- DHCP HA ---------------------------------------------
+    let mut ha = DhcpHaSection::default();
+    let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM dhcp_ha_config")
+        .fetch_all(pool).await.unwrap_or_default();
+    for (key, value) in rows {
+        match key.as_str() {
+            "mode" => ha.mode = value,
+            "peer" => ha.peer = nonempty(value),
+            "listen" => ha.listen = nonempty(value),
+            "scope_split" => ha.scope_split = value.parse().ok(),
+            "mclt" => ha.mclt = value.parse().ok(),
+            "partner_down_delay" => ha.partner_down_delay = value.parse().ok(),
+            "node_id" => ha.node_id = value.parse().ok(),
+            "peers" => ha.peers = nonempty(value.clone()).map(|_| split_csv(&value)),
+            "tls_cert" => ha.tls_cert = nonempty(value),
+            "tls_key" => ha.tls_key = nonempty(value),
+            "tls_ca" => ha.tls_ca = nonempty(value),
+            _ => {}
+        }
+    }
+
+    DhcpSection { global, subnets, reservations, ddns, dhcp_ha: ha }
+}
+
+fn split_csv(s: &str) -> Vec<String> {
+    s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+fn nonempty(s: String) -> Option<String> {
+    if s.is_empty() { None } else { Some(s) }
+}
+
+async fn validate_dhcp(
+    pool: &sqlx::SqlitePool,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    info: &mut Vec<String>,
+) {
+    let dhcp = build_dhcp_section(pool).await;
+
+    if !dhcp.global.enabled && dhcp.subnets.is_empty() {
+        return; // no DHCP configured, nothing to check
+    }
+    info.push(format!("{} DHCP subnet(s) configured", dhcp.subnets.len()));
+    if !dhcp.reservations.is_empty() {
+        info.push(format!("{} DHCP reservation(s) configured", dhcp.reservations.len()));
+    }
+
+    use std::net::Ipv4Addr;
+
+    // Per-subnet checks: gateway + pool inside CIDR, pool_start ≤ pool_end, relay IPs sane.
+    for s in &dhcp.subnets {
+        if !s.enabled { continue; }
+        let Some((net_ip, prefix)) = parse_v4_cidr(&s.network) else {
+            warnings.push(format!("DHCP subnet {}: invalid CIDR", s.network));
+            continue;
+        };
+
+        // Skip IPv6 / prefix-delegation — only validate address-family IPv4 scopes.
+        if s.subnet_type == "prefix-delegation" {
+            continue;
+        }
+
+        if let Ok(gw) = s.gateway.parse::<Ipv4Addr>() {
+            if !ipv4_in_subnet(gw, net_ip, prefix) {
+                errors.push(format!(
+                    "DHCP subnet {}: gateway {} is outside the subnet",
+                    s.network, s.gateway
+                ));
+            }
+        } else if !s.gateway.is_empty() {
+            errors.push(format!("DHCP subnet {}: gateway '{}' is not a valid IPv4 address", s.network, s.gateway));
+        }
+
+        match (s.pool_start.parse::<Ipv4Addr>(), s.pool_end.parse::<Ipv4Addr>()) {
+            (Ok(start), Ok(end)) => {
+                if u32::from(start) > u32::from(end) {
+                    errors.push(format!(
+                        "DHCP subnet {}: pool_start {} > pool_end {}",
+                        s.network, s.pool_start, s.pool_end
+                    ));
+                }
+                if !ipv4_in_subnet(start, net_ip, prefix) {
+                    errors.push(format!("DHCP subnet {}: pool_start {} outside subnet", s.network, s.pool_start));
+                }
+                if !ipv4_in_subnet(end, net_ip, prefix) {
+                    errors.push(format!("DHCP subnet {}: pool_end {} outside subnet", s.network, s.pool_end));
+                }
+            }
+            _ => errors.push(format!("DHCP subnet {}: invalid pool range", s.network)),
+        }
+
+        for relay in &s.trusted_relays {
+            match relay.parse::<Ipv4Addr>() {
+                Ok(ip) if ip.is_loopback() => errors.push(format!(
+                    "DHCP subnet {}: trusted relay {} is a loopback address", s.network, relay
+                )),
+                Err(_) => errors.push(format!(
+                    "DHCP subnet {}: trusted relay '{}' is not a valid IPv4 address", s.network, relay
+                )),
+                Ok(_) => {}
+            }
+        }
+
+        if !s.accept_relayed && !s.trusted_relays.is_empty() {
+            warnings.push(format!(
+                "DHCP subnet {}: trusted_relays set but accept_relayed is off — list will be ignored",
+                s.network
+            ));
+        }
+    }
+
+    // Overlapping pools across enabled v4 subnets (same network collision).
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in dhcp.subnets.iter().filter(|s| s.enabled && s.subnet_type != "prefix-delegation") {
+        if !seen.insert(s.network.clone()) {
+            warnings.push(format!("DHCP: duplicate subnet {}", s.network));
+        }
+    }
+
+    // Reservation checks: IP should be in its linked subnet, and unique.
+    let mut reserved_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for r in &dhcp.reservations {
+        if !reserved_ips.insert(r.ip_address.clone()) {
+            errors.push(format!("DHCP reservation IP {} is duplicated", r.ip_address));
+        }
+        if let Some(sid) = &r.subnet_id {
+            if let Some(subnet) = dhcp.subnets.iter().find(|s| &s.id == sid) {
+                if let (Some((net_ip, prefix)), Ok(ip)) = (parse_v4_cidr(&subnet.network), r.ip_address.parse::<Ipv4Addr>())
+                    && !ipv4_in_subnet(ip, net_ip, prefix)
+                {
+                    errors.push(format!(
+                        "DHCP reservation {} (MAC {}) is outside subnet {}",
+                        r.ip_address, r.mac_address, subnet.network
+                    ));
+                }
+            } else {
+                warnings.push(format!(
+                    "DHCP reservation {} references missing subnet {}",
+                    r.ip_address, sid
+                ));
+            }
+        }
+    }
+}
+
+fn parse_v4_cidr(cidr: &str) -> Option<(std::net::Ipv4Addr, u8)> {
+    let (ip_str, prefix_str) = cidr.split_once('/')?;
+    let ip: std::net::Ipv4Addr = ip_str.parse().ok()?;
+    let prefix: u8 = prefix_str.parse().ok()?;
+    if prefix > 32 { return None; }
+    Some((ip, prefix))
+}
+
+fn ipv4_in_subnet(ip: std::net::Ipv4Addr, net: std::net::Ipv4Addr, prefix: u8) -> bool {
+    if prefix == 0 { return true; }
+    let mask: u32 = u32::MAX.checked_shl(32 - prefix as u32).unwrap_or(0);
+    (u32::from(ip) & mask) == (u32::from(net) & mask)
 }
 
 fn enum_as_string<T: serde::Serialize>(v: &T) -> String {
@@ -1270,6 +1529,9 @@ pub(crate) async fn apply_firewall_config(
             }
     }
 
+    // DHCP: subnets, reservations, global/DDNS/HA config
+    apply_dhcp_section(state, &config.dhcp).await;
+
     if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
         state.rule_engine.set_extra_rules(vpn_rules).await;
     }
@@ -1278,6 +1540,135 @@ pub(crate) async fn apply_firewall_config(
     let _ = state.geoip_engine.apply_rules().await;
 
     Ok(())
+}
+
+async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSection) {
+    // Wipe + re-insert for a clean restore. `auto_apply` at the end regenerates
+    // the rDHCP TOML config and restarts the service.
+    let _ = sqlx::query("DELETE FROM dhcp_subnets").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM dhcp_reservations").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM dhcp_config").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM dhcp_ddns_config").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM dhcp_ha_config").execute(&state.pool).await;
+
+    // --- global ----------------------------------------------
+    let g = &dhcp.global;
+    for (k, v) in [
+        ("enabled", if g.enabled { "true".to_string() } else { "false".to_string() }),
+        ("interfaces", g.interfaces.join(",")),
+        ("authoritative", if g.authoritative { "true".to_string() } else { "false".to_string() }),
+        ("default_lease_time", g.default_lease_time.to_string()),
+        ("max_lease_time", g.max_lease_time.to_string()),
+        ("dns_servers", g.dns_servers.join(",")),
+        ("domain_name", g.domain_name.clone()),
+        ("domain_search", g.domain_search.join(",")),
+        ("ntp_servers", g.ntp_servers.join(",")),
+        ("wins_servers", g.wins_servers.join(",")),
+        ("next_server", g.next_server.clone().unwrap_or_default()),
+        ("boot_filename", g.boot_filename.clone().unwrap_or_default()),
+        ("log_level", g.log_level.clone()),
+        ("log_format", g.log_format.clone()),
+        ("api_port", g.api_port.to_string()),
+        ("workers", g.workers.to_string()),
+    ] {
+        let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
+            .bind(k).bind(v).execute(&state.pool).await;
+    }
+
+    // --- subnets ---------------------------------------------
+    for s in &dhcp.subnets {
+        // Revalidate trusted_relays on restore: older backups or hand-edited JSON
+        // could contain bad entries. Skip invalid ones rather than abort the
+        // whole restore.
+        let relays: Vec<String> = s.trusted_relays.iter()
+            .filter(|r| {
+                let t = r.trim();
+                !t.is_empty()
+                    && t.parse::<std::net::Ipv4Addr>().map(|ip| !ip.is_loopback()).unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        if relays.len() != s.trusted_relays.len() {
+            tracing::warn!(
+                "dhcp.restore subnet={} dropped {} invalid trusted_relays entries",
+                s.network, s.trusted_relays.len() - relays.len()
+            );
+        }
+        let trusted_json = serde_json::to_string(&relays).unwrap_or_else(|_| "[]".to_string());
+
+        let _ = sqlx::query(
+            "INSERT INTO dhcp_subnets \
+             (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, \
+              lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, \
+              subnet_type, delegated_length, enabled, description, accept_relayed, \
+              trusted_relays, created_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"
+        )
+        .bind(&s.id).bind(&s.network).bind(&s.pool_start).bind(&s.pool_end).bind(&s.gateway)
+        .bind(&s.dns_servers).bind(&s.domain_name)
+        .bind(s.lease_time.map(|v| v as i64))
+        .bind(s.max_lease_time.map(|v| v as i64))
+        .bind(s.renewal_time.map(|v| v as i64))
+        .bind(s.rebinding_time.map(|v| v as i64))
+        .bind(s.preferred_time.map(|v| v as i64))
+        .bind(&s.subnet_type)
+        .bind(s.delegated_length.map(|v| v as i64))
+        .bind(s.enabled).bind(&s.description)
+        .bind(if s.accept_relayed { 1_i64 } else { 0_i64 })
+        .bind(&trusted_json)
+        .bind(&s.created_at)
+        .execute(&state.pool).await;
+    }
+
+    // --- reservations ----------------------------------------
+    for r in &dhcp.reservations {
+        let _ = sqlx::query(
+            "INSERT INTO dhcp_reservations (id, subnet_id, mac_address, ip_address, hostname, client_id, description, created_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"
+        )
+        .bind(&r.id).bind(&r.subnet_id).bind(&r.mac_address).bind(&r.ip_address)
+        .bind(&r.hostname).bind(&r.client_id).bind(&r.description).bind(&r.created_at)
+        .execute(&state.pool).await;
+    }
+
+    // --- DDNS ------------------------------------------------
+    let d = &dhcp.ddns;
+    for (k, v) in [
+        ("enabled", if d.enabled { "true".to_string() } else { "false".to_string() }),
+        ("forward_zone", d.forward_zone.clone()),
+        ("reverse_zone_v4", d.reverse_zone_v4.clone()),
+        ("reverse_zone_v6", d.reverse_zone_v6.clone()),
+        ("dns_server", d.dns_server.clone()),
+        ("tsig_key", d.tsig_key.clone()),
+        ("tsig_algorithm", d.tsig_algorithm.clone()),
+        ("tsig_secret", d.tsig_secret.clone()),
+        ("ttl", d.ttl.to_string()),
+    ] {
+        let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
+            .bind(k).bind(v).execute(&state.pool).await;
+    }
+
+    // --- DHCP HA ---------------------------------------------
+    let h = &dhcp.dhcp_ha;
+    for (k, v) in [
+        ("mode", h.mode.clone()),
+        ("peer", h.peer.clone().unwrap_or_default()),
+        ("listen", h.listen.clone().unwrap_or_default()),
+        ("scope_split", h.scope_split.map(|v| v.to_string()).unwrap_or_default()),
+        ("mclt", h.mclt.map(|v| v.to_string()).unwrap_or_default()),
+        ("partner_down_delay", h.partner_down_delay.map(|v| v.to_string()).unwrap_or_default()),
+        ("node_id", h.node_id.map(|v| v.to_string()).unwrap_or_default()),
+        ("peers", h.peers.as_ref().map(|v| v.join(",")).unwrap_or_default()),
+        ("tls_cert", h.tls_cert.clone().unwrap_or_default()),
+        ("tls_key", h.tls_key.clone().unwrap_or_default()),
+        ("tls_ca", h.tls_ca.clone().unwrap_or_default()),
+    ] {
+        let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
+            .bind(k).bind(v).execute(&state.pool).await;
+    }
+
+    // Regenerate rDHCP TOML + restart service so the restored config takes effect.
+    crate::dhcp::auto_apply(state).await;
 }
 
 fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::Rule> {

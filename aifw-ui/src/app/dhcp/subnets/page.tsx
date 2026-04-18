@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { validateCIDR, validateIP } from "@/lib/validate";
+import { validateCIDR, validateIP, isValidIPv4 } from "@/lib/validate";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -22,6 +22,8 @@ interface DhcpSubnet {
   delegated_length?: number;
   enabled: boolean;
   description?: string;
+  accept_relayed?: boolean;
+  trusted_relays?: string[];
   created_at: string;
 }
 
@@ -41,6 +43,8 @@ interface SubnetForm {
   delegated_length: string;
   description: string;
   enabled: boolean;
+  accept_relayed: boolean;
+  trusted_relays: string[];
 }
 
 const defaultForm: SubnetForm = {
@@ -59,7 +63,14 @@ const defaultForm: SubnetForm = {
   delegated_length: "",
   description: "",
   enabled: true,
+  accept_relayed: true,
+  trusted_relays: [],
 };
+
+// Loopback: any IPv4 starting with 127.
+function isLoopbackV4(ip: string): boolean {
+  return ip.trim().startsWith("127.");
+}
 
 function fmtSeconds(s: number): string {
   if (s >= 86400 && s % 86400 === 0) return `${s / 86400}d`;
@@ -101,6 +112,8 @@ export default function DhcpSubnetsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SubnetForm>(defaultForm);
   const [submitting, setSubmitting] = useState(false);
+  const [relayDraft, setRelayDraft] = useState("");
+  const [relayError, setRelayError] = useState<string | null>(null);
 
   // Delete confirm
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -136,6 +149,8 @@ export default function DhcpSubnetsPage() {
   const openCreate = () => {
     setEditingId(null);
     setForm(defaultForm);
+    setRelayDraft("");
+    setRelayError(null);
     setModalOpen(true);
   };
 
@@ -157,7 +172,11 @@ export default function DhcpSubnetsPage() {
       delegated_length: subnet.delegated_length ? String(subnet.delegated_length) : "",
       description: subnet.description || "",
       enabled: subnet.enabled,
+      accept_relayed: subnet.accept_relayed ?? true,
+      trusted_relays: Array.isArray(subnet.trusted_relays) ? [...subnet.trusted_relays] : [],
     });
+    setRelayDraft("");
+    setRelayError(null);
     setModalOpen(true);
   };
 
@@ -165,6 +184,23 @@ export default function DhcpSubnetsPage() {
     setModalOpen(false);
     setEditingId(null);
     setForm(defaultForm);
+    setRelayDraft("");
+    setRelayError(null);
+  };
+
+  const addRelay = () => {
+    const ip = relayDraft.trim();
+    if (!ip) return;
+    if (!isValidIPv4(ip)) { setRelayError("Must be a valid IPv4 address"); return; }
+    if (isLoopbackV4(ip)) { setRelayError("Loopback (127.x.x.x) is not allowed"); return; }
+    if (form.trusted_relays.includes(ip)) { setRelayError("Already in list"); return; }
+    setForm((p) => ({ ...p, trusted_relays: [...p.trusted_relays, ip] }));
+    setRelayDraft("");
+    setRelayError(null);
+  };
+
+  const removeRelay = (ip: string) => {
+    setForm((p) => ({ ...p, trusted_relays: p.trusted_relays.filter((r) => r !== ip) }));
   };
 
   const handleSubmit = async () => {
@@ -179,6 +215,17 @@ export default function DhcpSubnetsPage() {
     { const e = validateIP(form.pool_start, "Pool start"); if (e) errors.push(e); }
     { const e = validateIP(form.pool_end, "Pool end"); if (e) errors.push(e); }
     { const e = validateIP(form.gateway, "Gateway"); if (e) errors.push(e); }
+    // DNS servers — each entry must be a valid IP
+    if (form.dns_servers.trim()) {
+      const bad = form.dns_servers.split(",").map((s) => s.trim()).filter(Boolean)
+        .filter((ip) => !isValidIPv4(ip) && !/^[0-9a-fA-F:]+$/.test(ip));
+      if (bad.length > 0) errors.push(`DNS servers: invalid ${bad.join(", ")}`);
+    }
+    // Trusted relays — revalidate saved chips (in case they bypassed per-chip check)
+    if (form.accept_relayed) {
+      const bad = form.trusted_relays.filter((ip) => !isValidIPv4(ip) || isLoopbackV4(ip));
+      if (bad.length > 0) errors.push(`Trusted relays: invalid ${bad.join(", ")}`);
+    }
     if (errors.length > 0) { showFeedback("error", errors.join(". ")); return; }
 
     setSubmitting(true);
@@ -190,6 +237,8 @@ export default function DhcpSubnetsPage() {
         gateway: form.gateway.trim(),
         subnet_type: form.subnet_type,
         enabled: form.enabled,
+        accept_relayed: form.accept_relayed,
+        trusted_relays: form.accept_relayed ? form.trusted_relays : [],
       };
       if (form.dns_servers.trim()) {
         payload.dns_servers = form.dns_servers
@@ -604,6 +653,82 @@ export default function DhcpSubnetsPage() {
                   />
                 </button>
                 <span className="text-sm text-[var(--text-primary)]">Enabled</span>
+              </div>
+
+              {/* -- DHCP Relay --------------------------------------- */}
+              <div className="space-y-3 pt-2 border-t border-gray-700">
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">DHCP Relay</p>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setForm((p) => ({ ...p, accept_relayed: !p.accept_relayed }))}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${
+                      form.accept_relayed ? "bg-blue-600" : "bg-gray-600"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                        form.accept_relayed ? "translate-x-5" : ""
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm text-[var(--text-primary)]">Accept DHCP relay</span>
+                </div>
+                <p className="text-[10px] text-gray-500 -mt-1">
+                  When off, all relayed packets for this scope are dropped.
+                </p>
+
+                <div className={form.accept_relayed ? "" : "opacity-50 pointer-events-none"}>
+                  <label className="block text-xs text-[var(--text-muted)] mb-1">
+                    Trusted relay agents
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2 min-h-[2.5rem] px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-md focus-within:border-blue-500">
+                    {form.trusted_relays.map((ip) => (
+                      <span
+                        key={ip}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-500/20 border border-blue-500/30 text-blue-300 text-xs font-mono rounded"
+                      >
+                        {ip}
+                        <button
+                          type="button"
+                          onClick={() => removeRelay(ip)}
+                          className="text-blue-400 hover:text-red-400"
+                          aria-label={`Remove ${ip}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    <input
+                      type="text"
+                      value={relayDraft}
+                      onChange={(e) => {
+                        setRelayDraft(e.target.value.replace(/[^0-9.]/g, ""));
+                        if (relayError) setRelayError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === ",") {
+                          e.preventDefault();
+                          addRelay();
+                        } else if (e.key === "Backspace" && !relayDraft && form.trusted_relays.length > 0) {
+                          removeRelay(form.trusted_relays[form.trusted_relays.length - 1]);
+                        }
+                      }}
+                      onBlur={() => { if (relayDraft.trim()) addRelay(); }}
+                      placeholder={form.trusted_relays.length === 0 ? "e.g. 172.29.69.5 (press Enter)" : ""}
+                      disabled={!form.accept_relayed}
+                      className="flex-1 min-w-[8rem] bg-transparent text-sm text-white font-mono placeholder-gray-500 focus:outline-none"
+                    />
+                  </div>
+                  {relayError ? (
+                    <p className="text-[10px] text-red-400 mt-0.5">{relayError}</p>
+                  ) : (
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Relay agents outside this list will be silently dropped. Leave empty to trust any relay.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
 
