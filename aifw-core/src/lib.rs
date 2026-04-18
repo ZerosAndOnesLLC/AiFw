@@ -18,6 +18,7 @@ pub mod ha;
 pub mod multiwan;
 pub mod nat;
 pub mod net_safety;
+pub mod path_safety;
 pub mod shaping;
 #[cfg(test)]
 mod tests;

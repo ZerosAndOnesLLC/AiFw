@@ -67,15 +67,24 @@ async fn run_file(cert: &AcmeCert, cfg: &serde_json::Value) -> Result<(), String
     let mode_cert  = cfg.get("mode").and_then(|v| v.as_str()).unwrap_or("0644");
     let mode_key   = cfg.get("key_mode").and_then(|v| v.as_str()).unwrap_or("0600");
 
+    // Reject any destination that escapes our allow-listed export roots
+    // (blocks writes to /root/.ssh, /etc/rc.conf.d, /etc/sudoers.d, etc).
+    let cert_path_ok = crate::path_safety::validate_export_path(cert_path)?;
+    let key_path_ok  = crate::path_safety::validate_export_path(key_path)?;
+    let chain_path_ok = match chain_path {
+        Some(p) => Some(crate::path_safety::validate_export_path(p)?),
+        None => None,
+    };
+
     let leaf = cert.cert_pem.as_deref().unwrap_or("");
     let chain = cert.chain_pem.as_deref().unwrap_or("");
     let key  = cert.key_pem.as_deref().unwrap_or("");
     let fullchain = format!("{leaf}\n{chain}");
 
-    sudo_install_string(&fullchain, cert_path, mode_cert, owner).await?;
-    sudo_install_string(key, key_path, mode_key, owner).await?;
-    if let Some(p) = chain_path {
-        sudo_install_string(chain, p, mode_cert, owner).await?;
+    sudo_install_string(&fullchain, &cert_path_ok.to_string_lossy(), mode_cert, owner).await?;
+    sudo_install_string(key, &key_path_ok.to_string_lossy(), mode_key, owner).await?;
+    if let Some(p) = chain_path_ok {
+        sudo_install_string(chain, &p.to_string_lossy(), mode_cert, owner).await?;
     }
     Ok(())
 }
