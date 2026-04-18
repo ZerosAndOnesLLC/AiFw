@@ -198,6 +198,10 @@ pub struct ResolverConfig {
     pub log_queries: bool,
     pub log_replies: bool,
     pub log_verbosity: u32,
+    /// Ceiling on a single query's resolution (ms). 0 = rDNS built-in
+    /// per-transport defaults (UDP 3000, TCP/DoT 30000).
+    #[serde(default)]
+    pub query_timeout_ms: u32,
     pub hide_identity: bool,
     pub hide_version: bool,
     pub rebind_protection: bool,
@@ -252,6 +256,7 @@ impl Default for ResolverConfig {
             log_queries: false,
             log_replies: false,
             log_verbosity: 1,
+            query_timeout_ms: 0,
             hide_identity: true,
             hide_version: true,
             rebind_protection: true,
@@ -468,6 +473,7 @@ async fn load_config(pool: &SqlitePool) -> ResolverConfig {
             "log_queries" => c.log_queries = v == "true",
             "log_replies" => c.log_replies = v == "true",
             "log_verbosity" => c.log_verbosity = v.parse().unwrap_or(1),
+            "query_timeout_ms" => c.query_timeout_ms = v.parse().unwrap_or(0),
             "hide_identity" => c.hide_identity = v == "true",
             "hide_version" => c.hide_version = v == "true",
             "rebind_protection" => c.rebind_protection = v == "true",
@@ -713,6 +719,9 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
         toml.push_str("forwarders = []\n");
     }
     toml.push_str(&format!("dnssec = {}\nqname_minimization = true\n", c.dnssec));
+    if c.query_timeout_ms > 0 {
+        toml.push_str(&format!("query_timeout_ms = {}\n", c.query_timeout_ms));
+    }
 
     // Per-domain forward zones
     let domains = sqlx::query_as::<_, (String, String)>(
@@ -741,9 +750,15 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
     // [metrics]
     toml.push_str("[metrics]\nenabled = true\naddress = \"127.0.0.1:9153\"\n\n");
 
-    // [logging]
-    let level = if c.log_queries || c.log_verbosity >= 3 { "debug" } else if c.log_verbosity >= 2 { "debug" } else { "info" };
-    toml.push_str(&format!("[logging]\nlevel = \"{}\"\nformat = \"text\"\n\n", level));
+    // [logging] — query_log emits one INFO line per query from rDNS'
+    // listeners (src/qname/qtype/rcode/transport). This is separate from
+    // raising level=debug, which only exposes resolver-internal diagnostics.
+    let level = if c.log_verbosity >= 2 { "debug" } else { "info" };
+    toml.push_str(&format!(
+        "[logging]\nlevel = \"{}\"\nformat = \"text\"\nquery_log = {}\n\n",
+        level,
+        if c.log_queries { "true" } else { "false" }
+    ));
 
     // [security]
     toml.push_str("[security]\nsandbox = false\nrate_limit = 1000\n\n");
@@ -1111,6 +1126,7 @@ pub async fn update_config_handler(
     save_key(pool, "log_queries", bool_str(c.log_queries)).await;
     save_key(pool, "log_replies", bool_str(c.log_replies)).await;
     save_key(pool, "log_verbosity", &c.log_verbosity.to_string()).await;
+    save_key(pool, "query_timeout_ms", &c.query_timeout_ms.to_string()).await;
     save_key(pool, "hide_identity", bool_str(c.hide_identity)).await;
     save_key(pool, "hide_version", bool_str(c.hide_version)).await;
     save_key(pool, "rebind_protection", bool_str(c.rebind_protection)).await;
@@ -1577,8 +1593,10 @@ pub async fn delete_acl(State(state): State<AppState>, Path(id): Path<String>) -
 pub async fn resolver_logs(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
     let config = load_config(&state.pool).await;
     let is_rdns = config.backend == "rdns";
+    // rDNS' rc.d script runs under daemon(8) with -o /var/log/rdns/rdns.log,
+    // so the log lives in a subdirectory, not at /var/log/rdns.log.
     let (primary_path, fallback_path, filter_term) = if is_rdns {
-        ("/var/log/rdns.log", "/var/log/messages", "rdns")
+        ("/var/log/rdns/rdns.log", "/var/log/messages", "rdns")
     } else {
         ("/var/log/unbound.log", "/var/log/messages", "unbound")
     };

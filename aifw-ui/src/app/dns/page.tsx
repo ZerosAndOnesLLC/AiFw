@@ -54,6 +54,7 @@ interface ResolverConfig {
   log_queries: boolean;
   log_replies: boolean;
   log_verbosity: number;
+  query_timeout_ms: number;
   hide_identity: boolean;
   hide_version: boolean;
   rebind_protection: boolean;
@@ -108,6 +109,7 @@ const defaultConfig: ResolverConfig = {
   log_queries: false,
   log_replies: false,
   log_verbosity: 1,
+  query_timeout_ms: 0,
   hide_identity: true,
   hide_version: true,
   rebind_protection: true,
@@ -934,6 +936,22 @@ export default function DnsResolverPage() {
                   </button>
                   <span className="text-sm text-[var(--text-primary)]">Prefetch DNSKEY</span>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] mb-1">Max Query Timeout (ms)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={60000}
+                  value={config.query_timeout_ms}
+                  onChange={(e) => setConfig((p) => ({ ...p, query_timeout_ms: Number(e.target.value) }))}
+                  placeholder="0 = defaults (UDP 3000, TCP/DoT 30000)"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  Keep under 5000 for UDP so stub resolvers retry before giving up. 0 leaves rDNS per-transport defaults in place.
+                </p>
               </div>
 
               <div>

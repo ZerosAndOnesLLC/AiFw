@@ -14,6 +14,14 @@ export default function DnsLogsPage() {
   const [lines, setLines] = useState(200);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [backend, setBackend] = useState<"rdns" | "unbound">("rdns");
+
+  useEffect(() => {
+    fetch(`/api/v1/dns/resolver/config`, { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((c) => { if (c?.backend === "unbound" || c?.backend === "rdns") setBackend(c.backend); })
+      .catch(() => {});
+  }, []);
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -59,7 +67,7 @@ export default function DnsLogsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">DNS Query Log</h1>
-          <p className="text-sm text-[var(--text-muted)]">Unbound DNS resolver activity log</p>
+          <p className="text-sm text-[var(--text-muted)]">{backend === "rdns" ? "rDNS" : "Unbound"} resolver activity log</p>
         </div>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-xs text-[var(--text-muted)] cursor-pointer">
@@ -110,7 +118,7 @@ export default function DnsLogsPage() {
       <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
         <div className="px-4 py-2 border-b border-gray-700 flex items-center justify-between">
           <span className="text-xs text-[var(--text-muted)]">
-            {logs.length} log entries · /var/log/unbound.log
+            {logs.length} log entries · {backend === "rdns" ? "/var/log/rdns/rdns.log" : "/var/log/unbound.log"}
           </span>
           {autoRefresh && (
             <span className="flex items-center gap-1 text-xs text-green-400">
