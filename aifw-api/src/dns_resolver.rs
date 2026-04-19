@@ -532,9 +532,9 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
         format!("    port: {}", c.port),
         format!("    do-daemonize: yes"),
         // FreeBSD's base local-unbound is built without libevent; its builtin
-        // mini-event loop caps at 1024 FDs. Keep outgoing-num-ports well under
+        // mini-event loop caps at 1024 FDs. Keep outgoing-range well under
         // that cap so unbound doesn't warn "continuing with less udp ports".
-        format!("    outgoing-num-ports: 512"),
+        format!("    outgoing-range: 512"),
         interfaces,
         format!("    access-control: 0.0.0.0/0 allow"),
         format!("    access-control: ::0/0 allow"),
