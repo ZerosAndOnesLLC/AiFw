@@ -172,15 +172,19 @@ pub async fn login(
     headers: HeaderMap,
     Json(req): Json<auth::LoginRequest>,
 ) -> Result<Json<auth::LoginResponse>, StatusCode> {
-    // Rate limit by IP (X-Forwarded-For behind ALB, fall back to username)
+    // Rate-limit on two axes: the X-Forwarded-For-ish client IP (best
+    // effort — spoofable without a trusted-proxies allow-list, tracked
+    // as a follow-up) AND the username. The username axis guarantees a
+    // password-spray against one account still gets limited even if
+    // the attacker rotates XFF per request.
     let client_ip = headers.get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.split(',').next())
-        .unwrap_or(&req.username)
-        .trim()
-        .to_string();
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| format!("user:{}", req.username));
+    let rl_user = req.username.to_ascii_lowercase();
 
-    if state.login_limiter.is_blocked(&client_ip).await {
+    if state.login_limiter.is_blocked(&client_ip, &rl_user).await {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -203,11 +207,11 @@ pub async fn login(
 
     if !password_valid {
         auth::log_user_audit(&state.pool, &user.id.to_string(), Some(&user.id.to_string()), "login_failed", Some(&req.username)).await;
-        state.login_limiter.record_failure(&client_ip).await;
+        state.login_limiter.record_failure(&client_ip, &rl_user).await;
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    state.login_limiter.clear(&client_ip).await;
+    state.login_limiter.clear(&client_ip, &rl_user).await;
 
     // Check if TOTP is required
     if user.totp_enabled {

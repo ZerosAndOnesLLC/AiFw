@@ -51,44 +51,72 @@ use tracing::{info, warn};
 pub const METRICS_HISTORY_SIZE_DEFAULT: usize = 1800;
 
 /// Per-IP login attempt tracker for brute-force protection.
+/// Two-axis login rate limiter.
+///
+/// Keys every attempt under both the client-IP-ish value and the
+/// username. A request is blocked if **either** key has hit the cap.
+/// This matters because X-Forwarded-For is trivially spoofable when
+/// the appliance sits behind an untrusted proxy — keying solely by IP
+/// lets an attacker change XFF per request and bypass the limit.
+/// Keying by username closes that.
 #[derive(Clone, Default)]
 pub struct LoginRateLimiter {
-    attempts: Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
+    by_ip: Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
+    by_user: Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
 }
 
 impl LoginRateLimiter {
     const MAX_ATTEMPTS: u32 = 5;
     const WINDOW_SECS: i64 = 300; // 5 minutes
 
-    /// Record a failed attempt. Returns true if the IP is now blocked.
-    pub async fn record_failure(&self, ip: &str) -> bool {
-        let now = chrono::Utc::now();
-        let mut map = self.attempts.write().await;
-        let entry = map.entry(ip.to_string()).or_insert((0, now));
-        // Reset window if expired
-        if (now - entry.1).num_seconds() > Self::WINDOW_SECS {
-            *entry = (1, now);
-            return false;
-        }
-        entry.0 += 1;
-        entry.0 >= Self::MAX_ATTEMPTS
+    /// Record a failed attempt against both axes. Returns true if the
+    /// caller is now blocked (either key at the cap).
+    pub async fn record_failure(&self, ip: &str, username: &str) -> bool {
+        let a = bump(&self.by_ip, ip).await;
+        let b = bump(&self.by_user, username).await;
+        a || b
     }
 
-    /// Check if an IP is currently blocked.
-    pub async fn is_blocked(&self, ip: &str) -> bool {
-        let now = chrono::Utc::now();
-        let map = self.attempts.read().await;
-        if let Some((count, since)) = map.get(ip)
-            && (now - *since).num_seconds() <= Self::WINDOW_SECS && *count >= Self::MAX_ATTEMPTS {
-                return true;
-            }
-        false
+    /// Check if this (IP, username) pair is currently blocked on either
+    /// axis.
+    pub async fn is_blocked(&self, ip: &str, username: &str) -> bool {
+        over_cap(&self.by_ip, ip).await || over_cap(&self.by_user, username).await
     }
 
-    /// Clear attempts on successful login.
-    pub async fn clear(&self, ip: &str) {
-        self.attempts.write().await.remove(ip);
+    /// Clear attempts on successful login — clears both axes.
+    pub async fn clear(&self, ip: &str, username: &str) {
+        self.by_ip.write().await.remove(ip);
+        self.by_user.write().await.remove(username);
     }
+}
+
+async fn bump(
+    map: &Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
+    key: &str,
+) -> bool {
+    let now = chrono::Utc::now();
+    let mut m = map.write().await;
+    let entry = m.entry(key.to_string()).or_insert((0, now));
+    if (now - entry.1).num_seconds() > LoginRateLimiter::WINDOW_SECS {
+        *entry = (1, now);
+        return false;
+    }
+    entry.0 += 1;
+    entry.0 >= LoginRateLimiter::MAX_ATTEMPTS
+}
+
+async fn over_cap(
+    map: &Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
+    key: &str,
+) -> bool {
+    let now = chrono::Utc::now();
+    let m = map.read().await;
+    matches!(
+        m.get(key),
+        Some((count, since))
+            if (now - *since).num_seconds() <= LoginRateLimiter::WINDOW_SECS
+                && *count >= LoginRateLimiter::MAX_ATTEMPTS
+    )
 }
 
 #[derive(Clone)]
