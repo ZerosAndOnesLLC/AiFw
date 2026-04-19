@@ -227,15 +227,20 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Always send historical data first (even if empty) so the frontend sets historyLoaded=true
+    // Send a bounded slice of historical data so the frontend sets
+    // historyLoaded=true. Cap at INITIAL_HISTORY_SAMPLES so a long
+    // ring buffer (e.g. 24 h at 1 Hz) doesn't ship multi-MB JSON to
+    // every reconnecting client.
+    const INITIAL_HISTORY_SAMPLES: usize = 600; // ~10 minutes at 1 Hz
     {
         let history = state.metrics_history.read().await;
         let batch = if history.is_empty() {
             "{\"type\":\"history\",\"data\":[]}".to_string()
         } else {
+            let skip = history.len().saturating_sub(INITIAL_HISTORY_SAMPLES);
             format!(
                 "{{\"type\":\"history\",\"data\":[{}]}}",
-                history.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")
+                history.iter().skip(skip).map(|s| s.as_str()).collect::<Vec<_>>().join(",")
             )
         };
         let _ = sender.send(Message::Text(batch.into())).await;
