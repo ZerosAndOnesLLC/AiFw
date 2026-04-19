@@ -523,6 +523,13 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     // do-daemonize must be yes so `service local_unbound start` returns
     // promptly — the rc.d script times out if the binary stays in
     // foreground (see #155).
+    //
+    // FreeBSD's base local-unbound is built without libevent; its builtin
+    // mini-event loop caps at 1024 FDs total. outgoing-range is per-thread,
+    // so scale it inversely with num-threads and reserve ~128 FDs for listen
+    // sockets, pidfile, control socket, and logs. Clamp to a sane minimum.
+    let threads = c.num_threads.max(1) as u32;
+    let outgoing_range = ((1024u32.saturating_sub(128)) / threads).max(64);
     let mut server_lines = vec![
         format!("    username: unbound"),
         format!("    directory: /var/unbound"),
@@ -531,10 +538,7 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
         format!("    auto-trust-anchor-file: /var/unbound/root.key"),
         format!("    port: {}", c.port),
         format!("    do-daemonize: yes"),
-        // FreeBSD's base local-unbound is built without libevent; its builtin
-        // mini-event loop caps at 1024 FDs. Keep outgoing-range well under
-        // that cap so unbound doesn't warn "continuing with less udp ports".
-        format!("    outgoing-range: 512"),
+        format!("    outgoing-range: {}", outgoing_range),
         interfaces,
         format!("    access-control: 0.0.0.0/0 allow"),
         format!("    access-control: ::0/0 allow"),
@@ -673,10 +677,17 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     // Custom options
     let custom = if c.custom_options.is_empty() { String::new() } else { format!("\n    # Custom options\n{}", c.custom_options.lines().map(|l| format!("    {}", l)).collect::<Vec<_>>().join("\n")) };
 
-    format!("# AiFw Unbound Configuration — Auto-generated\n# Do not edit manually\n\nserver:\n{}\n{}{}\n\n{}\n",
+    // remote-control over a unix socket in /var/unbound (owned by the unbound
+    // user) — needed so FreeBSD's rc.d poststart `unbound-control status`
+    // probe succeeds. Without this, `service local_unbound start` reports
+    // "giving up" even though the daemon is running fine.
+    let remote_control = "\nremote-control:\n    control-enable: yes\n    control-interface: /var/unbound/unbound.ctl\n";
+
+    format!("# AiFw Unbound Configuration — Auto-generated\n# Do not edit manually\n\nserver:\n{}\n{}{}\n{}\n{}\n",
         server_lines.join("\n"),
         local_data_lines.join("\n"),
         custom,
+        remote_control,
         forward_zones.join("\n"),
     )
 }
