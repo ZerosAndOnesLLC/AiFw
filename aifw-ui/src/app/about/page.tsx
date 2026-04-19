@@ -136,7 +136,7 @@ export default function AboutPage() {
 
       // TrafficCop
       try {
-        const res = await fetch("/api/v1/traffic/status", { headers });
+        const res = await fetch("/api/v1/reverse-proxy/status", { headers });
         const data = res.ok ? await res.json() : {};
         const d = data.data || data;
         results.push({

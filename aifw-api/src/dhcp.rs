@@ -942,20 +942,18 @@ pub async fn dhcp_status(
         .map(|o| o.status.success())
         .unwrap_or(false);
 
+    // rDHCP exposes its build version via /health once the daemon is patched
+    // to include it; until then the field is absent and we show "unknown".
     let version = if running {
-        // Check rDHCP health endpoint for version info
         match rdhcp_api_get("/health", config.api_port).await {
-            Ok(body) => {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                    format!("rDHCP ({})", v["ha_mode"].as_str().unwrap_or("standalone"))
-                } else {
-                    "rDHCP".to_string()
-                }
-            }
-            Err(_) => "rDHCP (API unreachable)".to_string(),
+            Ok(body) => serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("version").and_then(|s| s.as_str()).map(str::to_string))
+                .unwrap_or_else(|| "unknown".to_string()),
+            Err(_) => "unknown".to_string(),
         }
     } else {
-        "rDHCP (stopped)".to_string()
+        "stopped".to_string()
     };
 
     let subnets = list_subnets_db(&state.pool).await;

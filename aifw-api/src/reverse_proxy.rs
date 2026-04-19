@@ -22,6 +22,7 @@ fn internal() -> StatusCode {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReverseProxyStatus {
     pub running: bool,
+    pub version: String,
     pub entrypoints: u32,
     pub http_routers: u32,
     pub http_services: u32,
@@ -1043,6 +1044,16 @@ pub async fn rp_status(
         .map(|o| o.status.success())
         .unwrap_or(false);
 
+    // `trafficcop --version` prints e.g. "trafficcop 1.4.2"
+    let version = Command::new("/usr/local/sbin/trafficcop")
+        .arg("--version")
+        .output()
+        .await
+        .ok()
+        .and_then(|o| o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string()))
+        .and_then(|s| s.split_whitespace().nth(1).map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+
     let entrypoints = sqlx::query_as::<_, (i64,)>(
         "SELECT COUNT(*) FROM tc_entrypoints WHERE enabled = 1",
     )
@@ -1093,6 +1104,7 @@ pub async fn rp_status(
 
     Ok(Json(ReverseProxyStatus {
         running,
+        version,
         entrypoints,
         http_routers,
         http_services,
