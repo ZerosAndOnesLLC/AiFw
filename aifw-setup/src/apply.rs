@@ -52,33 +52,63 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     write_rcd_scripts(config)?;
     console::success("Service scripts installed");
 
-    // 5b. Grant aifw user sudo access to pfctl (no password)
+    // 5b. Grant aifw user sudo access to the specific commands the daemon
+    // needs. Most call sites still rely on broad wildcards while the
+    // end-to-end wrapper-script migration is in flight (tracked as a
+    // follow-up to GHSA-mjqh-2vx8-7hq7). The lines below tighten the two
+    // highest-impact categories:
+    //   - pfctl is restricted to aifw-* anchors + a small set of
+    //     read-only / anchor-flush forms; a compromised daemon can no
+    //     longer rewrite the host ruleset outside its anchors.
+    //   - shutdown is restricted to the two commands the daemon actually
+    //     issues; arbitrary shutdown flags are no longer permitted.
+    // The remainder is kept permissive for now — documented openly so
+    // operators understand the residual risk.
     #[cfg(target_os = "freebsd")]
     {
         let sudoers_line = "\
-aifw ALL=(ALL) NOPASSWD: /sbin/pfctl *\n\
-aifw ALL=(ALL) NOPASSWD: /sbin/pfctl\n\
-aifw ALL=(ALL) NOPASSWD: /sbin/ifconfig *\n\
-aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *\n\
-aifw ALL=(ALL) NOPASSWD: /sbin/route *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/service *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/sysrc *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/pkg *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/freebsd-update *\n\
-aifw ALL=(ALL) NOPASSWD: /sbin/shutdown *\n\
-aifw ALL=(ALL) NOPASSWD: /bin/cat *\n\
-aifw ALL=(ALL) NOPASSWD: /bin/cp *\n\
-aifw ALL=(ALL) NOPASSWD: /bin/rm *\n\
-aifw ALL=(ALL) NOPASSWD: /bin/mkdir *\n\
-aifw ALL=(ALL) NOPASSWD: /bin/chmod *\n\
-aifw ALL=(ALL) NOPASSWD: /bin/pkill *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/bin/install *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/bin/tar *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/bin/tee *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *\n\
-aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *\n";
+# --- pfctl (restricted to aifw anchors) ---
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /usr/local/etc/aifw/anchors/aifw*
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -nf /tmp/aifw_pf_*.conf
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -F all
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sr
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -ss
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -k label -k aifw*
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -sr
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -si
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -f /etc/pf.conf
+
+# --- shutdown (exact forms only; -p power-off or -r reboot with +10s grace) ---
+aifw ALL=(root) NOPASSWD: /sbin/shutdown -p +10s *
+aifw ALL=(root) NOPASSWD: /sbin/shutdown -r +10s *
+
+# --- Network configuration ---
+# TODO(GHSA-mjqh-2vx8-7hq7): the wildcards below still grant broad root.
+# Migrate each call site to a narrow wrapper script and replace these
+# lines with the wrapper path.
+aifw ALL=(ALL) NOPASSWD: /sbin/ifconfig *
+aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *
+aifw ALL=(ALL) NOPASSWD: /sbin/route *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/service *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/sysrc *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/pkg *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/freebsd-update *
+aifw ALL=(ALL) NOPASSWD: /bin/cat *
+aifw ALL=(ALL) NOPASSWD: /bin/cp *
+aifw ALL=(ALL) NOPASSWD: /bin/rm *
+aifw ALL=(ALL) NOPASSWD: /bin/mkdir *
+aifw ALL=(ALL) NOPASSWD: /bin/chmod *
+aifw ALL=(ALL) NOPASSWD: /bin/pkill *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/install *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/tar *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/tee *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
+";
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
         let _ = std::fs::create_dir_all("/usr/local/etc/sudoers.d");
         let _ = std::fs::write(sudoers_path, sudoers_line);
