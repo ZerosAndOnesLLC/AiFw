@@ -167,9 +167,6 @@ fn internal() -> StatusCode {
 
 // --- Auth endpoints ---
 
-/// Dummy hash for constant-time login — prevents user enumeration via timing.
-const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-
 pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -193,7 +190,7 @@ pub async fn login(
     let password_valid = if let Some(ref u) = user {
         auth::verify_password(&req.password, &u.password_hash)
     } else {
-        let _ = auth::verify_password(&req.password, DUMMY_HASH);
+        let _ = auth::verify_password(&req.password, auth::password::dummy_hash());
         false
     };
 
