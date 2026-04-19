@@ -41,6 +41,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{RwLock, watch};
 use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -815,6 +816,11 @@ pub fn build_router(
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
+                // Compress JSON responses (dashboards, /logs, /connections,
+                // /ids/alerts) so a slow uplink doesn't starve the UI. br
+                // beats gzip by ~25% on JSON but adds CPU; keep both so
+                // clients negotiate.
+                .layer(CompressionLayer::new().gzip(true).br(true))
                 .layer(cors),
         )
         .with_state(state);

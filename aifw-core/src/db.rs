@@ -14,12 +14,21 @@ pub struct Database {
 
 impl Database {
     pub async fn new(path: &Path) -> Result<Self> {
+        use sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
+
         let opts = SqliteConnectOptions::new()
             .filename(path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            // WAL + synchronous=NORMAL lets many readers + one writer run
+            // concurrently without blocking the dashboard / metrics loops.
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5));
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(20)
+            .min_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(10))
             .connect_with(opts)
             .await?;
 
