@@ -49,6 +49,14 @@ rdns_start()
     # post-start chown/chmod loop only ever sees the freshly-created one.
     /bin/rm -f /var/run/rdns/control.sock
 
+    # Pre-create the log file with group-read perms. daemon(8) opens -o with
+    # umask 077 (0600 root:wheel), which leaves aifw-api locked out of
+    # /api/v1/dns/resolver/logs. Touch + chown + chmod first so the existing
+    # inode keeps its 0640 root:aifw perms when daemon(8) opens it in append.
+    /usr/bin/touch /var/log/rdns/rdns.log
+    /usr/sbin/chown root:aifw /var/log/rdns/rdns.log
+    /bin/chmod 640 /var/log/rdns/rdns.log
+
     echo "Starting rdns."
     ${command} ${command_args}
 
