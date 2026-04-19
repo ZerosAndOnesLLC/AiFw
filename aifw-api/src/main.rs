@@ -60,28 +60,46 @@ pub const METRICS_HISTORY_SIZE_DEFAULT: usize = 1800;
 /// the appliance sits behind an untrusted proxy — keying solely by IP
 /// lets an attacker change XFF per request and bypass the limit.
 /// Keying by username closes that.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct LoginRateLimiter {
     by_ip: Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
     by_user: Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
+    /// Attempts allowed per window before the key is blocked.
+    max_attempts: u32,
+    /// Window length, in seconds.
+    window_secs: i64,
+}
+
+impl Default for LoginRateLimiter {
+    fn default() -> Self {
+        Self::with_limits(5, 300)
+    }
 }
 
 impl LoginRateLimiter {
-    const MAX_ATTEMPTS: u32 = 5;
-    const WINDOW_SECS: i64 = 300; // 5 minutes
+    /// Construct with explicit limits, sourced from AuthSettings at boot.
+    pub fn with_limits(max_attempts: u32, window_secs: i64) -> Self {
+        Self {
+            by_ip: Arc::default(),
+            by_user: Arc::default(),
+            max_attempts: max_attempts.max(1),
+            window_secs: window_secs.max(1),
+        }
+    }
 
     /// Record a failed attempt against both axes. Returns true if the
     /// caller is now blocked (either key at the cap).
     pub async fn record_failure(&self, ip: &str, username: &str) -> bool {
-        let a = bump(&self.by_ip, ip).await;
-        let b = bump(&self.by_user, username).await;
+        let a = bump(&self.by_ip, ip, self.max_attempts, self.window_secs).await;
+        let b = bump(&self.by_user, username, self.max_attempts, self.window_secs).await;
         a || b
     }
 
     /// Check if this (IP, username) pair is currently blocked on either
     /// axis.
     pub async fn is_blocked(&self, ip: &str, username: &str) -> bool {
-        over_cap(&self.by_ip, ip).await || over_cap(&self.by_user, username).await
+        over_cap(&self.by_ip, ip, self.max_attempts, self.window_secs).await
+            || over_cap(&self.by_user, username, self.max_attempts, self.window_secs).await
     }
 
     /// Clear attempts on successful login — clears both axes.
@@ -94,29 +112,33 @@ impl LoginRateLimiter {
 async fn bump(
     map: &Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
     key: &str,
+    max_attempts: u32,
+    window_secs: i64,
 ) -> bool {
     let now = chrono::Utc::now();
     let mut m = map.write().await;
     let entry = m.entry(key.to_string()).or_insert((0, now));
-    if (now - entry.1).num_seconds() > LoginRateLimiter::WINDOW_SECS {
+    if (now - entry.1).num_seconds() > window_secs {
         *entry = (1, now);
         return false;
     }
     entry.0 += 1;
-    entry.0 >= LoginRateLimiter::MAX_ATTEMPTS
+    entry.0 >= max_attempts
 }
 
 async fn over_cap(
     map: &Arc<RwLock<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>>,
     key: &str,
+    max_attempts: u32,
+    window_secs: i64,
 ) -> bool {
     let now = chrono::Utc::now();
     let m = map.read().await;
     matches!(
         m.get(key),
         Some((count, since))
-            if (now - *since).num_seconds() <= LoginRateLimiter::WINDOW_SECS
-                && *count >= LoginRateLimiter::MAX_ATTEMPTS
+            if (now - *since).num_seconds() <= window_secs
+                && *count >= max_attempts
     )
 }
 
@@ -1293,8 +1315,22 @@ async fn main() -> anyhow::Result<()> {
     state.auth_settings.require_totp = loaded.require_totp;
     state.auth_settings.require_totp_for_oauth = loaded.require_totp_for_oauth;
     state.auth_settings.auto_create_oauth_users = loaded.auto_create_oauth_users;
+    state.auth_settings.max_login_attempts = loaded.max_login_attempts;
+    state.auth_settings.lockout_duration_secs = loaded.lockout_duration_secs;
 
-    info!("Auth settings: token expiry={}min, refresh={}days", state.auth_settings.access_token_expiry_mins, state.auth_settings.refresh_token_expiry_days);
+    // Apply operator-configurable login rate-limit thresholds.
+    state.login_limiter = LoginRateLimiter::with_limits(
+        loaded.max_login_attempts,
+        loaded.lockout_duration_secs as i64,
+    );
+
+    info!(
+        "Auth settings: token expiry={}min, refresh={}days, lockout {}/{}s",
+        state.auth_settings.access_token_expiry_mins,
+        state.auth_settings.refresh_token_expiry_days,
+        state.auth_settings.max_login_attempts,
+        state.auth_settings.lockout_duration_secs,
+    );
 
     // Connect to Valkey/Redis for metrics persistence (optional, with timeout)
     match redis::Client::open(args.valkey_url.as_str()) {

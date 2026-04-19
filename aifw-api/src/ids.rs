@@ -24,6 +24,12 @@ pub struct MessageResponse {
     pub message: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct PageQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 fn internal() -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
@@ -473,11 +479,19 @@ pub async fn search_rules(
 
 pub async fn list_suppressions(
     State(state): State<AppState>,
+    Query(q): Query<PageQuery>,
 ) -> Result<Json<ApiResponse<Vec<IdsSuppression>>>, StatusCode> {
     let engine = state.ids_engine.as_ref().ok_or(internal())?;
+    // Bound the response so busy deployments (10k+ suppressions) don't
+    // load the whole table into memory + JSON on every list call.
+    let limit = q.limit.unwrap_or(1000).clamp(1, 5000);
+    let offset = q.offset.unwrap_or(0).max(0);
     let rows: Vec<(String, i64, String, Option<String>, String)> = sqlx::query_as(
-        "SELECT id, sid, suppress_type, ip_cidr, created_at FROM ids_suppressions ORDER BY created_at DESC",
+        "SELECT id, sid, suppress_type, ip_cidr, created_at FROM ids_suppressions \
+         ORDER BY created_at DESC LIMIT ? OFFSET ?",
     )
+    .bind(limit)
+    .bind(offset)
     .fetch_all(engine.pool())
     .await
     .map_err(|_| internal())?;
