@@ -1,8 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+/// Highest `schema_version` that [`FirewallConfig::validate`] will accept.
+/// Bump this when adding a required top-level field; older backups with a
+/// matching-or-lower version will still restore via the per-field
+/// `#[serde(default)]` defaults.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 /// The complete firewall configuration — single source of truth.
 /// Every config change produces a new version of this struct.
+///
+/// `deny_unknown_fields` at the top level makes corrupt or tampered
+/// backups fail loudly rather than silently restoring only the fields
+/// we recognize — a future config field added by an attacker (hoping
+/// we'd grow support for it and honour the value) is now rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FirewallConfig {
     /// Schema version for forward compatibility
     pub schema_version: u32,
@@ -71,6 +83,48 @@ impl FirewallConfig {
             + self.vpn.ipsec.len()
             + self.geoip.len()
             + self.tls.sni_rules.len()
+    }
+
+    /// Basic sanity check for a config being *restored* from a backup file.
+    /// Caller should run this before any persistence/apply so a malformed
+    /// or adversarial backup can't corrupt the daemon state.
+    ///
+    /// Not intended as a full semantic validator — per-entity engines
+    /// re-validate on add.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version == 0 || self.schema_version > CURRENT_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported schema_version {}: expected 1..={}",
+                self.schema_version, CURRENT_SCHEMA_VERSION
+            ));
+        }
+        if self.rules.len() > 10_000 {
+            return Err(format!("rules count {} exceeds cap 10000", self.rules.len()));
+        }
+        if self.nat.len() > 10_000 {
+            return Err(format!("nat count {} exceeds cap 10000", self.nat.len()));
+        }
+        if self.geoip.len() > 1_000 {
+            return Err(format!("geoip count {} exceeds cap 1000", self.geoip.len()));
+        }
+        if self.vpn.wireguard.len() > 1_000 || self.vpn.ipsec.len() > 1_000 {
+            return Err("vpn tunnel count exceeds cap 1000".to_string());
+        }
+        if self.system.hostname.len() > 253
+            || self.system.hostname.contains('\0')
+            || self.system.hostname.contains('\n')
+        {
+            return Err("system.hostname invalid".to_string());
+        }
+        for s in &self.system.dns_servers {
+            if s.parse::<std::net::IpAddr>().is_err() {
+                return Err(format!("system.dns_servers entry {s} is not a valid IP"));
+            }
+        }
+        if self.system.api_port == 0 {
+            return Err("system.api_port cannot be 0".to_string());
+        }
+        Ok(())
     }
 }
 

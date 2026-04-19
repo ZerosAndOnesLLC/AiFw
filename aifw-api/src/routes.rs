@@ -693,8 +693,19 @@ pub async fn import_config(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let config_val = payload.get("config").ok_or(StatusCode::BAD_REQUEST)?;
+    // Strict deserialization: FirewallConfig uses deny_unknown_fields, so a
+    // backup that tries to smuggle in a field we don't recognise is rejected
+    // here rather than silently restored with the unknown fields ignored.
     let config: aifw_core::config::FirewallConfig = serde_json::from_value(config_val.clone())
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        .map_err(|e| {
+            tracing::warn!(error = %e, "import_config rejected malformed backup");
+            StatusCode::BAD_REQUEST
+        })?;
+    // Structural sanity — size caps, schema version, DNS + hostname shape.
+    if let Err(e) = config.validate() {
+        tracing::warn!(error = %e, "import_config rejected invalid backup");
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     let iface_map: crate::backup::InterfaceMap = payload.get("interface_map")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
