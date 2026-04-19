@@ -74,7 +74,7 @@ pub struct XEngine {
 }
 ```
 
-Engines: `RuleEngine` (engine.rs), `NatEngine` (nat.rs), `AliasEngine` (alias.rs), `GeoIpEngine` (geoip.rs), `VpnEngine` (vpn.rs), `ShapingEngine` (shaping.rs), `HaEngine` (ha.rs).
+Engines: `RuleEngine` (engine.rs), `NatEngine` (nat.rs), `AliasEngine` (alias.rs), `GeoIpEngine` (geoip.rs), `VpnEngine` (vpn.rs), `ShapingEngine` (shaping.rs), `HaEngine` / `ClusterEngine` (ha.rs), plus the multiwan family (`InstanceEngine`, `GatewayEngine`, `GroupEngine`, `PolicyEngine`, `LeakEngine`, `PreflightEngine`, `SlaEngine`) under `multiwan/`.
 
 Each engine has its own `migrate()` method that creates its SQLite tables. Migrations are **inline SQL** in Rust code (no separate migration files).
 
@@ -97,7 +97,8 @@ Central type: `Database` struct in `aifw-core/src/db.rs` wrapping `SqlitePool`.
 **Auth middleware** (`aifw-api/src/auth/mod.rs`) extracts identity from:
 - `Authorization: Bearer <JWT>` header
 - `Authorization: ApiKey <key>` header
-- `?token=<JWT>` query param (WebSocket/SSE)
+- `?ticket=<id>` query param (WebSocket/SSE) — single-use, 30-second
+  ticket issued by `POST /auth/ws-ticket` (see `auth::ws_ticket`).
 
 **AppState** holds all engines as `Arc<T>`, shared `Arc<dyn PfBackend>`, and `SqlitePool`. Passed to handlers via Axum's `State` extractor.
 
@@ -163,8 +164,11 @@ Base: `http://<ip>:8080/api/v1/`
 - **Geo-IP**: `GET/POST /geoip`, `PUT/DELETE /geoip/{id}`, `GET /geoip/lookup/{ip}`
 - **Auth**: `/auth/login`, `/auth/totp/*`, `/auth/refresh`, `/auth/logout`, `/auth/users`, `/auth/api-keys`, `/auth/oauth/*`
 - **Status**: `GET /status`, `/connections`, `/metrics`, `/logs`, `POST /reload`
-- **IDS**: `GET/PUT /ids/config`, `POST /ids/reload`, `GET /ids/alerts`, `GET/PUT /ids/alerts/{id}`, `PUT /ids/alerts/{id}/acknowledge`, `GET/POST /ids/rulesets`, `PUT/DELETE /ids/rulesets/{id}`, `GET /ids/rules`, `GET/PUT /ids/rules/{id}`, `GET/POST /ids/suppressions`, `DELETE /ids/suppressions/{id}`, `GET /ids/stats`
+- **IDS**: `GET/PUT /ids/config`, `POST /ids/reload`, `GET /ids/alerts`, `GET/PUT /ids/alerts/{id}`, `PUT /ids/alerts/{id}/acknowledge`, `GET/POST /ids/rulesets`, `PUT/DELETE /ids/rulesets/{id}`, `GET /ids/rules`, `GET/PUT /ids/rules/{id}`, `GET/POST /ids/suppressions` (paginated via `?limit=&offset=`), `DELETE /ids/suppressions/{id}`, `GET /ids/stats`
 - **DNS**: `GET/PUT /dns`
+- **Multiwan**: `GET/POST /multiwan/instances`, gateways/groups/policies/leak/preflight/sla under `/multiwan/{gateways,groups,policies,leak,preflight,sla}` — load-balancing, SLA-driven failover, leak detection. Implementation in `aifw-core/src/multiwan/` + `aifw-api/src/multiwan.rs`.
+- **Reverse proxy** (control plane for the external TrafficCop daemon): HTTP/TCP/UDP routers, services, middlewares, TLS certs under `/reverse-proxy/*`. Implementation in `aifw-api/src/reverse_proxy.rs`; data plane is the `trafficcop` service shipped via `freebsd/manifest.json`.
+- **ACME**: `GET/POST /acme/certs`, providers, exports under `/acme/*` — Let's Encrypt cert issuance + push to local TLS store / file / webhook.
 
 ## Code Rules
 
