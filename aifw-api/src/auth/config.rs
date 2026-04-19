@@ -63,7 +63,9 @@ impl AuthSettings {
 
         for (key, value) in rows {
             match key.as_str() {
-                "jwt_secret" => settings.jwt_secret = value,
+                // `jwt_secret` used to live here. It now lives in a file
+                // (see auth::jwt_key) and is stripped out on load.
+                "jwt_secret" => {}
                 "access_token_expiry_mins" => {
                     settings.access_token_expiry_mins = value.parse().unwrap_or(15);
                 }

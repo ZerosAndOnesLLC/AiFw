@@ -1,4 +1,5 @@
 pub mod config;
+pub mod jwt_key;
 pub mod oauth;
 pub mod password;
 pub mod totp;

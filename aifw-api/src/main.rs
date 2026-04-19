@@ -44,7 +44,7 @@ use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Default dashboard history: 30 minutes at 1 update/sec
 pub const METRICS_HISTORY_SIZE_DEFAULT: usize = 1800;
@@ -149,9 +149,15 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:8080")]
     listen: String,
 
-    /// JWT secret (auto-generated if not provided)
-    #[arg(long, env = "AIFW_JWT_SECRET")]
+    /// JWT signing secret (development / test override only — production
+    /// should leave this unset so the key is read from --jwt-key-file).
+    #[arg(long, env = "AIFW_JWT_SECRET", hide = true)]
     jwt_secret: Option<String>,
+
+    /// File holding the JWT signing secret. Created with 0600 perms on
+    /// first run; legacy DB-stored secrets are migrated into it.
+    #[arg(long, default_value = "/var/db/aifw/jwt.key")]
+    jwt_key_file: PathBuf,
 
     /// CORS allowed origins (comma-separated, or * for any)
     #[arg(long, default_value = "*")]
@@ -1205,31 +1211,31 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Create state first to get the DB pool, then load settings from DB
-    let mut auth_settings = auth::AuthSettings::default();
-    if let Some(ref secret) = args.jwt_secret {
-        auth_settings.jwt_secret = secret.clone();
-    }
+    // Temporary AuthSettings so create_app_state has a DB pool. The real
+    // JWT secret is loaded from the key file below, then swapped in.
+    let auth_settings = auth::AuthSettings::default();
 
     let mut state = create_app_state(&args.db, auth_settings).await?;
 
-    // Load auth settings from DB (overrides defaults with saved values)
-    let loaded = auth::AuthSettings::load(&state.pool).await;
-    // Preserve the JWT secret from CLI arg if provided, otherwise use DB/generated
+    // Resolve the JWT secret: explicit override > key file (migrating any
+    // legacy DB-stored secret on first run) > freshly generated in file.
     if let Some(secret) = args.jwt_secret {
+        warn!("using JWT secret from CLI/env — intended for dev only");
         state.auth_settings.jwt_secret = secret;
-    } else if loaded.jwt_secret != state.auth_settings.jwt_secret {
-        // DB has a persisted secret — use it
-        state.auth_settings.jwt_secret = loaded.jwt_secret;
+    } else {
+        state.auth_settings.jwt_secret =
+            auth::jwt_key::load_or_create(&args.jwt_key_file, &state.pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("JWT key file: {e}"))?;
     }
+
+    // Load non-secret auth settings from DB.
+    let loaded = auth::AuthSettings::load(&state.pool).await;
     state.auth_settings.access_token_expiry_mins = loaded.access_token_expiry_mins;
     state.auth_settings.refresh_token_expiry_days = loaded.refresh_token_expiry_days;
     state.auth_settings.require_totp = loaded.require_totp;
     state.auth_settings.require_totp_for_oauth = loaded.require_totp_for_oauth;
     state.auth_settings.auto_create_oauth_users = loaded.auto_create_oauth_users;
-
-    // Persist the JWT secret to DB if not already saved (so it survives restarts)
-    let _ = auth::AuthSettings::save_setting(&state.pool, "jwt_secret", &state.auth_settings.jwt_secret).await;
 
     info!("Auth settings: token expiry={}min, refresh={}days", state.auth_settings.access_token_expiry_mins, state.auth_settings.refresh_token_expiry_days);
 
