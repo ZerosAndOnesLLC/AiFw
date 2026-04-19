@@ -24,7 +24,7 @@ mod tests {
             .await
             .unwrap();
 
-        let app = crate::build_router(state, None, "*");
+        let app = crate::build_router(state, None, "*", false);
         let server = TestServer::new(app).unwrap();
         (server, auth_settings)
     }

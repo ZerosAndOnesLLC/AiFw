@@ -43,6 +43,7 @@ use tokio::sync::{RwLock, watch};
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
@@ -175,9 +176,16 @@ struct Args {
     #[arg(long, default_value = "/usr/local/etc/aifw/tls/key.pem")]
     tls_key: PathBuf,
 
-    /// Disable TLS (serve plain HTTP)
+    /// Disable TLS (serve plain HTTP). Refuses to bind a non-loopback
+    /// listener unless --allow-plaintext-external is also passed, so
+    /// plaintext creds can't leak onto the wire by operator mistake.
     #[arg(long)]
     no_tls: bool,
+
+    /// Escape hatch for --no-tls on a non-loopback listener. Required
+    /// when the daemon sits behind another TLS terminator (nginx, ALB).
+    #[arg(long, default_value_t = false)]
+    allow_plaintext_external: bool,
 
     /// Valkey/Redis URL for metrics persistence (optional)
     #[arg(long, env = "AIFW_VALKEY_URL", default_value = "redis://127.0.0.1:6379")]
@@ -188,7 +196,12 @@ struct Args {
     log_level: String,
 }
 
-pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_origins: &str) -> Router {
+pub fn build_router(
+    state: AppState,
+    ui_dir: Option<&std::path::Path>,
+    cors_origins: &str,
+    tls_enabled: bool,
+) -> Router {
     use tower_http::cors::AllowOrigin;
     let cors = if cors_origins == "*" {
         CorsLayer::new()
@@ -777,6 +790,16 @@ pub fn build_router(state: AppState, ui_dir: Option<&std::path::Path>, cors_orig
                 .layer(cors),
         )
         .with_state(state);
+
+    // HSTS: when TLS is on, tell browsers to refuse plaintext for this
+    // host for a year (and preload eligible). Skipped under --no-tls
+    // because HSTS over HTTP would pin the user to a broken origin.
+    if tls_enabled {
+        app = app.layer(SetResponseHeaderLayer::if_not_present(
+            axum::http::header::STRICT_TRANSPORT_SECURITY,
+            axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ));
+    }
 
     // Serve static UI if directory is provided.
     //
@@ -1449,9 +1472,28 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = build_router(state, args.ui_dir.as_deref(), &args.cors_origins);
+    let tls_enabled = !args.no_tls;
+    let app = build_router(state, args.ui_dir.as_deref(), &args.cors_origins, tls_enabled);
 
     if args.no_tls {
+        // Refuse to serve plaintext on a reachable address unless the
+        // operator has explicitly opted in — protects against accidental
+        // exposure of Authorization bearer tokens.
+        let bind_addr: std::net::SocketAddr = args.listen.parse()?;
+        let ip = bind_addr.ip();
+        let is_loopback = ip.is_loopback();
+        if !is_loopback && !args.allow_plaintext_external {
+            anyhow::bail!(
+                "refusing to bind {} without TLS; pass --allow-plaintext-external to override",
+                bind_addr
+            );
+        }
+        if !is_loopback {
+            warn!(
+                "serving plaintext HTTP on {}; bearer tokens will travel in the clear",
+                bind_addr
+            );
+        }
         let listener = tokio::net::TcpListener::bind(&args.listen).await?;
         info!("AiFw API listening on http://{}", args.listen);
         axum::serve(listener, app).await?;
