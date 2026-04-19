@@ -59,13 +59,23 @@ impl Default for FirewallConfig {
 impl FirewallConfig {
     /// Compute a SHA-256 hash of the config for diff detection
     pub fn hash(&self) -> String {
-        let json = serde_json::to_string(self).unwrap_or_default();
+        // Serialization failure is structurally impossible for the
+        // current FirewallConfig (no Serialize impl in the tree throws);
+        // log loudly if that ever changes so the empty-hash drift is
+        // visible instead of silently corrupting config history.
+        let json = serde_json::to_string(self).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "FirewallConfig::hash serialize failed");
+            String::new()
+        });
         sha256_hex(&json)
     }
 
     /// Serialize to pretty JSON
     pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_default()
+        serde_json::to_string_pretty(self).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "FirewallConfig::to_json serialize failed");
+            String::new()
+        })
     }
 
     /// Deserialize from JSON
