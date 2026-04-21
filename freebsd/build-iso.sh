@@ -240,10 +240,8 @@ dd if=/dev/random of="$STAGEDIR/entropy" bs=4096 count=1 2>/dev/null
 # Version file
 echo "$VERSION" > "$STAGEDIR/usr/local/share/aifw/version"
 
-# MOTD
+# MOTD — version intentionally omitted; lives in /usr/local/share/aifw/version
 cat > "$STAGEDIR/etc/motd.template" <<MOTD
-
-  AiFw ${VERSION} — AI-Powered Firewall for FreeBSD
 
   Commands:
     aifw-console        Launch the management menu
