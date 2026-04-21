@@ -1067,6 +1067,62 @@ mod tests {
         resp.assert_status(StatusCode::CONFLICT);
     }
 
+    // ================================================================
+    // System settings — general GET/PUT
+    // ================================================================
+
+    #[tokio::test]
+    async fn get_system_general_returns_defaults() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+        let resp = server.get("/api/v1/system/general")
+            .authorization_bearer(&token).await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["timezone"], "UTC");
+        assert!(body["hostname"].is_string());
+        assert!(body["domain"].is_string());
+    }
+
+    #[tokio::test]
+    async fn put_system_general_round_trips() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server.put("/api/v1/system/general")
+            .authorization_bearer(&token)
+            .json(&json!({ "hostname": "myfw", "domain": "home.lan", "timezone": "America/Chicago" }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["ok"], true);
+
+        let resp2 = server.get("/api/v1/system/general")
+            .authorization_bearer(&token).await;
+        let back: Value = resp2.json();
+        assert_eq!(back["hostname"], "myfw");
+        assert_eq!(back["domain"], "home.lan");
+        assert_eq!(back["timezone"], "America/Chicago");
+    }
+
+    #[tokio::test]
+    async fn put_system_general_rejects_invalid_hostname() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+        let resp = server.put("/api/v1/system/general")
+            .authorization_bearer(&token)
+            .json(&json!({ "hostname": "has.dot", "domain": "", "timezone": "UTC" }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_system_general_requires_auth() {
+        let (server, _) = test_app().await;
+        let resp = server.get("/api/v1/system/general").await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn test_multiwan_fibs_endpoint() {
         let (server, _) = test_app().await;

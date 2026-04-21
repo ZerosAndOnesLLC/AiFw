@@ -16,6 +16,7 @@ mod multiwan;
 mod plugins;
 mod reverse_proxy;
 mod routes;
+mod system;
 mod time_service;
 mod updates;
 mod ws;
@@ -681,6 +682,24 @@ pub fn build_router(
         .route("/api/v1/notify/smtp/test", post(backup_s3::test_smtp))
         .layer(middleware::from_fn(perm_check!(Permission::BackupWrite)));
 
+    // system:read
+    let system_read = Router::new()
+        .route("/api/v1/system/general", get(system::get_general))
+        .route("/api/v1/system/banner", get(system::get_banner))
+        .route("/api/v1/system/ssh", get(system::get_ssh))
+        .route("/api/v1/system/console", get(system::get_console))
+        .route("/api/v1/system/info", get(system::get_info))
+        .route("/api/v1/system/timezones", get(system::list_timezones))
+        .layer(middleware::from_fn(perm_check!(Permission::SettingsRead)));
+
+    // system:write
+    let system_write = Router::new()
+        .route("/api/v1/system/general", put(system::put_general))
+        .route("/api/v1/system/banner", put(system::put_banner))
+        .route("/api/v1/system/ssh", put(system::put_ssh))
+        .route("/api/v1/system/console", put(system::put_console))
+        .layer(middleware::from_fn(perm_check!(Permission::SettingsWrite)));
+
     // system:reboot (also governs shutdown — same privilege level)
     let system_reboot = Router::new()
         .route("/api/v1/updates/reboot", post(updates::reboot_system))
@@ -824,6 +843,7 @@ pub fn build_router(
         .merge(system_reboot)
         .merge(proxy_read).merge(proxy_write)
         .merge(multiwan_read).merge(multiwan_write)
+        .merge(system_read).merge(system_write)
         // Auto-snapshot every successful mutation. Middleware is applied
         // before the auth layer so it runs AFTER auth in the request chain;
         // save_if_changed() de-dupes by hash so no-op writes don't pollute
@@ -985,6 +1005,7 @@ async fn create_state_from_db(
     aifw_core::acme::migrate(&pool).await?;
     aifw_core::ddns::migrate(&pool).await?;
     reverse_proxy::migrate(&pool).await?;
+    system::migrate(&pool).await?;
     time_service::migrate(&pool).await?;
     plugins::migrate(&pool).await?;
     aifw_core::config_manager::ConfigManager::new(pool.clone()).migrate().await.map_err(|e| anyhow::anyhow!(e))?;
