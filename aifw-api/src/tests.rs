@@ -1283,4 +1283,38 @@ mod tests {
         let status = resp.status_code().as_u16();
         assert!(status == 400 || status == 422, "expected 400 or 422, got {}", status);
     }
+
+    #[tokio::test]
+    async fn system_info_returns_shape() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .get("/api/v1/system/info")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["os_version"].is_string());
+        assert!(body["cpu_count"].as_u64().unwrap() >= 1);
+        assert!(body["mem_total_bytes"].as_u64().unwrap() > 0);
+        assert!(body["load_avg"].is_array());
+        assert_eq!(body["load_avg"].as_array().unwrap().len(), 3);
+        assert!(body["temperatures_c"].is_array());
+    }
+
+    #[tokio::test]
+    async fn system_timezones_non_empty_includes_utc() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .get("/api/v1/system/timezones")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Vec<String> = resp.json();
+        assert!(!body.is_empty());
+        assert!(body.iter().any(|z| z == "UTC"));
+    }
 }

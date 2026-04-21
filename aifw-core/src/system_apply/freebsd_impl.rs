@@ -144,8 +144,102 @@ pub async fn apply_console(i: &ConsoleInput) -> ApplyReport {
     r
 }
 
-// Stubs — filled in Task 9.
-pub async fn collect_info() -> SystemInfo { SystemInfo::default() }
+pub async fn collect_info() -> SystemInfo {
+    let hostname = read_sysctl_str("kern.hostname").unwrap_or_default();
+    let os_release = run_stdout("/usr/bin/uname", &["-sr"]).await.unwrap_or_default();
+    let kernel = run_stdout("/usr/bin/uname", &["-v"]).await.unwrap_or_default();
+    let cpu_model = read_sysctl_str("hw.model").unwrap_or_default();
+    let cpu_count: u32 = read_sysctl_int("hw.ncpu").unwrap_or(1);
+    let mem_total: u64 = read_sysctl_int("hw.physmem").unwrap_or(0);
+    let uptime_secs = uptime_from_boottime().unwrap_or(0);
+    let load_avg = read_loadavg().unwrap_or([0.0, 0.0, 0.0]);
+    let domain = tokio::fs::read_to_string("/etc/resolv.conf").await.ok()
+        .and_then(|s| s.lines()
+            .find_map(|l| l.strip_prefix("search ").or_else(|| l.strip_prefix("domain ")).map(|v| v.to_string()))
+            .map(|v| v.split_whitespace().next().unwrap_or("").to_string()))
+        .unwrap_or_default();
+    let (disk_total, disk_used) = df_root().await.unwrap_or((0, 0));
+    let (mem_used, _) = mem_used_bytes().unwrap_or((0, 0));
+    let temperatures_c = read_cpu_temps(cpu_count);
+
+    SystemInfo {
+        hostname, domain,
+        os_version: os_release.trim().to_string(),
+        kernel: kernel.trim().to_string(),
+        uptime_secs,
+        load_avg,
+        cpu_model, cpu_count,
+        cpu_usage_pct: 0.0,  // dual-sample CPU usage is best-effort; skip for v1
+        mem_total_bytes: mem_total,
+        mem_used_bytes: mem_used,
+        disk_total_bytes: disk_total,
+        disk_used_bytes: disk_used,
+        temperatures_c,
+    }
+}
+
+async fn run_stdout(cmd: &str, args: &[&str]) -> Option<String> {
+    let out = tokio::process::Command::new(cmd).args(args).output().await.ok()?;
+    if !out.status.success() { return None; }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn read_sysctl_str(name: &str) -> Option<String> {
+    let out = std::process::Command::new("/sbin/sysctl").args(["-n", name]).output().ok()?;
+    if !out.status.success() { return None; }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn read_sysctl_int<T: std::str::FromStr>(name: &str) -> Option<T> {
+    read_sysctl_str(name)?.parse().ok()
+}
+
+fn uptime_from_boottime() -> Option<u64> {
+    // `sysctl -n kern.boottime` → "{ sec = 1234567890, usec = 0 } ..."
+    let s = read_sysctl_str("kern.boottime")?;
+    let sec: u64 = s.split("sec = ").nth(1)?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(now.saturating_sub(sec))
+}
+
+fn read_loadavg() -> Option<[f64; 3]> {
+    // `sysctl -n vm.loadavg` → "{ 0.05 0.10 0.08 }"
+    let s = read_sysctl_str("vm.loadavg")?;
+    let nums: Vec<f64> = s.split_whitespace()
+        .filter_map(|w| w.trim_matches(|c: char| !c.is_ascii_digit() && c != '.').parse().ok())
+        .collect();
+    if nums.len() >= 3 { Some([nums[0], nums[1], nums[2]]) } else { None }
+}
+
+async fn df_root() -> Option<(u64, u64)> {
+    // `df -k /` → "Filesystem  1K-blocks  Used  Avail  Capacity  Mounted on"
+    let out = run_stdout("/bin/df", &["-k", "/"]).await?;
+    let line = out.lines().nth(1)?;
+    let cols: Vec<&str> = line.split_whitespace().collect();
+    if cols.len() < 4 { return None; }
+    let total: u64 = cols[1].parse().ok()?;
+    let used: u64 = cols[2].parse().ok()?;
+    Some((total * 1024, used * 1024))
+}
+
+fn mem_used_bytes() -> Option<(u64, u64)> {
+    let page_size: u64 = read_sysctl_int("hw.pagesize").unwrap_or(4096);
+    let total: u64 = read_sysctl_int("hw.physmem")?;
+    let free: u64 = read_sysctl_int("vm.stats.vm.v_free_count")?;
+    Some((total.saturating_sub(free * page_size), total))
+}
+
+fn read_cpu_temps(n: u32) -> Vec<super::CpuTemp> {
+    let mut out = Vec::new();
+    for core in 0..n {
+        let name = format!("dev.cpu.{}.temperature", core);
+        let Some(raw) = read_sysctl_str(&name) else { continue };
+        // FreeBSD reports "38.0C"
+        let celsius: f32 = raw.trim_end_matches('C').parse().unwrap_or(0.0);
+        out.push(super::CpuTemp { core, celsius });
+    }
+    out
+}
 
 // ---------- Privileged helpers ----------
 

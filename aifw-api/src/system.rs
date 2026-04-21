@@ -1,7 +1,7 @@
 //! System settings API — KV-backed persistence + apply hooks.
 
 use crate::AppState;
-use aifw_core::system_apply::{apply_banner, apply_console, apply_general, apply_ssh, ApplyReport, BannerInput, ConsoleInput, GeneralInput, SshInput};
+use aifw_core::system_apply::{apply_banner, apply_console, apply_general, apply_ssh, collect_info, ApplyReport, BannerInput, ConsoleInput, GeneralInput, SshInput, SystemInfo};
 use aifw_core::system_apply_helpers::{validate_baud, validate_domain, validate_hostname, validate_ssh_port};
 use aifw_core::ConsoleKind;
 use axum::{extract::State, http::StatusCode, Json};
@@ -163,6 +163,51 @@ pub async fn put_console(
     Ok(Json(report))
 }
 
-// ---------- Info — stubs (filled in Task 9) ----------
-pub async fn get_info() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
-pub async fn list_timezones() -> Result<Json<Vec<String>>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
+// ---------- Info ----------
+
+pub async fn get_info() -> Result<Json<SystemInfo>, StatusCode> {
+    Ok(Json(collect_info().await))
+}
+
+pub async fn list_timezones() -> Result<Json<Vec<String>>, StatusCode> {
+    Ok(Json(enumerate_timezones()))
+}
+
+#[cfg(target_os = "freebsd")]
+fn enumerate_timezones() -> Vec<String> {
+    use std::path::PathBuf;
+    fn walk(base: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(base) else { return };
+        for e in entries.flatten() {
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') { continue; }
+            // Skip non-zone files
+            if ["posix", "right", "Etc"].contains(&name.as_str()) && prefix.is_empty() {
+                // keep Etc for UTC
+                if name != "Etc" { continue; }
+            }
+            let joined = if prefix.is_empty() { name.clone() } else { format!("{}/{}", prefix, name) };
+            let ft = match e.file_type() { Ok(t) => t, Err(_) => continue };
+            if ft.is_dir() {
+                walk(&path, &joined, out);
+            } else if ft.is_file() {
+                out.push(joined);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&PathBuf::from("/usr/share/zoneinfo"), "", &mut out);
+    if !out.iter().any(|z| z == "UTC") { out.push("UTC".to_string()); }
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn enumerate_timezones() -> Vec<String> {
+    // Fixed short list for Linux dev so the UI has something to render.
+    ["UTC", "America/Chicago", "America/Los_Angeles", "America/New_York",
+     "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Australia/Sydney"]
+        .iter().map(|s| s.to_string()).collect()
+}
