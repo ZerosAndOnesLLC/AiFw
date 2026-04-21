@@ -122,8 +122,29 @@ pub async fn apply_ssh(i: &SshInput) -> ApplyReport {
     r
 }
 
-// Stubs — filled in Tasks 8-9.
-pub async fn apply_console(_i: &ConsoleInput) -> ApplyReport { ApplyReport::ok_requires_reboot() }
+pub async fn apply_console(i: &ConsoleInput) -> ApplyReport {
+    let console_val = match i.kind {
+        crate::config::ConsoleKind::Serial => "comconsole",
+        crate::config::ConsoleKind::Dual   => "comconsole vidconsole",
+        crate::config::ConsoleKind::Video  => "vidconsole",
+    };
+    let block = format!(
+        "console=\"{}\"\ncomconsole_speed=\"{}\"\n",
+        console_val, i.baud,
+    );
+
+    let path = "/boot/loader.conf";
+    let existing = read_best_effort(path).await;
+    let updated = crate::system_apply_helpers::replace_managed_block(&existing, "AiFw console", &block);
+
+    let mut r = ApplyReport::ok_requires_reboot();
+    if let Err(e) = sudo_install_content(path, updated.as_bytes(), "0644").await {
+        r.warning = Some(format!("/boot/loader.conf write failed: {}", e));
+    }
+    r
+}
+
+// Stubs — filled in Task 9.
 pub async fn collect_info() -> SystemInfo { SystemInfo::default() }
 
 // ---------- Privileged helpers ----------

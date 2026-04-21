@@ -1,8 +1,9 @@
 //! System settings API — KV-backed persistence + apply hooks.
 
 use crate::AppState;
-use aifw_core::system_apply::{apply_banner, apply_general, apply_ssh, ApplyReport, BannerInput, GeneralInput, SshInput};
-use aifw_core::system_apply_helpers::{validate_domain, validate_hostname, validate_ssh_port};
+use aifw_core::system_apply::{apply_banner, apply_console, apply_general, apply_ssh, ApplyReport, BannerInput, ConsoleInput, GeneralInput, SshInput};
+use aifw_core::system_apply_helpers::{validate_baud, validate_domain, validate_hostname, validate_ssh_port};
+use aifw_core::ConsoleKind;
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -125,8 +126,43 @@ pub async fn put_ssh(
     Ok(Json(report))
 }
 
-// ---------- Console / Info — stubs (filled in Tasks 8-9) ----------
-pub async fn get_console() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
-pub async fn put_console() -> Result<Json<ApplyReport>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
+// ---------- Console ----------
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConsoleDto {
+    pub kind: ConsoleKind,
+    pub baud: u32,
+}
+
+pub async fn get_console(State(state): State<AppState>) -> Result<Json<ConsoleDto>, StatusCode> {
+    let kind_str = get_kv(&state.pool, "console_kind").await.unwrap_or_else(|| "video".to_string());
+    let kind = match kind_str.as_str() {
+        "serial" => ConsoleKind::Serial,
+        "dual"   => ConsoleKind::Dual,
+        _        => ConsoleKind::Video,
+    };
+    let baud = get_kv(&state.pool, "console_baud").await.and_then(|v| v.parse().ok()).unwrap_or(115200);
+    Ok(Json(ConsoleDto { kind, baud }))
+}
+
+pub async fn put_console(
+    State(state): State<AppState>,
+    Json(req): Json<ConsoleDto>,
+) -> Result<Json<ApplyReport>, (StatusCode, String)> {
+    validate_baud(req.baud).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    let kind_str = match req.kind {
+        ConsoleKind::Video  => "video",
+        ConsoleKind::Serial => "serial",
+        ConsoleKind::Dual   => "dual",
+    };
+    set_kv(&state.pool, "console_kind", kind_str).await;
+    set_kv(&state.pool, "console_baud", &req.baud.to_string()).await;
+
+    let report = apply_console(&ConsoleInput { kind: req.kind, baud: req.baud }).await;
+    Ok(Json(report))
+}
+
+// ---------- Info — stubs (filled in Task 9) ----------
 pub async fn get_info() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
 pub async fn list_timezones() -> Result<Json<Vec<String>>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }

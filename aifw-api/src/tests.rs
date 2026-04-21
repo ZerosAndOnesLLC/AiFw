@@ -1224,4 +1224,63 @@ mod tests {
         let back: Value = resp.json();
         assert_eq!(back["port"], 2222);
     }
+
+    #[tokio::test]
+    async fn system_console_defaults_and_round_trip() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .get("/api/v1/system/console")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["kind"], "video");
+        assert_eq!(body["baud"], 115200);
+
+        let resp = server
+            .put("/api/v1/system/console")
+            .authorization_bearer(&token)
+            .json(&json!({ "kind": "serial", "baud": 115200 }))
+            .await;
+        resp.assert_status_ok();
+        let report: Value = resp.json();
+        assert_eq!(report["requires_reboot"], true);
+
+        let resp = server
+            .get("/api/v1/system/console")
+            .authorization_bearer(&token)
+            .await;
+        let back: Value = resp.json();
+        assert_eq!(back["kind"], "serial");
+    }
+
+    #[tokio::test]
+    async fn system_console_rejects_bad_baud() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+        let resp = server
+            .put("/api/v1/system/console")
+            .authorization_bearer(&token)
+            .json(&json!({ "kind": "video", "baud": 4242 }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn system_console_rejects_bad_kind() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+        // "braille" is not a ConsoleKind variant — serde rejects at deserialize with 400.
+        let resp = server
+            .put("/api/v1/system/console")
+            .authorization_bearer(&token)
+            .json(&json!({ "kind": "braille", "baud": 115200 }))
+            .await;
+        // Axum's JSON extractor returns 422 for unknown enum variants at deserialize time.
+        // Both 400 and 422 are acceptable for bad JSON shape.
+        let status = resp.status_code().as_u16();
+        assert!(status == 400 || status == 422, "expected 400 or 422, got {}", status);
+    }
 }
