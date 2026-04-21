@@ -53,10 +53,12 @@ impl InstanceEngine {
         .await
         .map_err(|e| AifwError::Database(e.to_string()))?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_mwan_inst_fib ON multiwan_instances(fib_number)")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_mwan_inst_fib ON multiwan_instances(fib_number)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?;
 
         let now = Utc::now().to_rfc3339();
         sqlx::query(
@@ -165,7 +167,10 @@ impl InstanceEngine {
         .map_err(|e| AifwError::Database(e.to_string()))?;
 
         if result.rows_affected() == 0 {
-            return Err(AifwError::NotFound(format!("instance {} not found", inst.id)));
+            return Err(AifwError::NotFound(format!(
+                "instance {} not found",
+                inst.id
+            )));
         }
 
         let mut updated = inst;
@@ -244,20 +249,24 @@ impl InstanceEngine {
     }
 
     pub async fn remove_member(&self, instance_id: Uuid, interface: &str) -> Result<()> {
-        let result =
-            sqlx::query("DELETE FROM multiwan_instance_members WHERE instance_id = ?1 AND interface = ?2")
-                .bind(instance_id.to_string())
-                .bind(interface)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| AifwError::Database(e.to_string()))?;
+        let result = sqlx::query(
+            "DELETE FROM multiwan_instance_members WHERE instance_id = ?1 AND interface = ?2",
+        )
+        .bind(instance_id.to_string())
+        .bind(interface)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?;
         if result.rows_affected() == 0 {
             return Err(AifwError::NotFound(format!(
                 "member {interface} not in instance {instance_id}"
             )));
         }
         // Return interface to default FIB
-        let _ = self.pf.set_interface_fib(interface, DEFAULT_FIB_NUMBER).await;
+        let _ = self
+            .pf
+            .set_interface_fib(interface, DEFAULT_FIB_NUMBER)
+            .await;
         Ok(())
     }
 
@@ -279,14 +288,8 @@ fn row_to_instance(r: &sqlx::sqlite::SqliteRow) -> RoutingInstance {
         description: r.get("description"),
         mgmt_reachable: r.get::<i64, _>("mgmt_reachable") != 0,
         status: InstanceStatus::parse(&status_str).unwrap_or(InstanceStatus::Idle),
-        created_at: r
-            .get::<String, _>("created_at")
-            .parse()
-            .unwrap_or_default(),
-        updated_at: r
-            .get::<String, _>("updated_at")
-            .parse()
-            .unwrap_or_default(),
+        created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
+        updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
     }
 }
 

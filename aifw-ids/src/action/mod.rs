@@ -67,11 +67,7 @@ impl ActionEngine {
                     "IPS blocking source"
                 );
 
-                if let Err(e) = self
-                    .pf
-                    .add_table_entry(IDS_BLOCK_TABLE, alert.src_ip)
-                    .await
-                {
+                if let Err(e) = self.pf.add_table_entry(IDS_BLOCK_TABLE, alert.src_ip).await {
                     warn!("failed to add {} to IDS block table: {e}", alert.src_ip);
                 }
             }
@@ -134,8 +130,14 @@ mod tests {
 
         // In IDS mode, everything becomes Alert
         assert_eq!(engine.verdict(&test_alert(IdsAction::Drop)), Verdict::Alert);
-        assert_eq!(engine.verdict(&test_alert(IdsAction::Reject)), Verdict::Alert);
-        assert_eq!(engine.verdict(&test_alert(IdsAction::Alert)), Verdict::Alert);
+        assert_eq!(
+            engine.verdict(&test_alert(IdsAction::Reject)),
+            Verdict::Alert
+        );
+        assert_eq!(
+            engine.verdict(&test_alert(IdsAction::Alert)),
+            Verdict::Alert
+        );
     }
 
     #[tokio::test]
@@ -153,8 +155,14 @@ mod tests {
         let engine = ActionEngine::new(pf, config);
 
         assert_eq!(engine.verdict(&test_alert(IdsAction::Drop)), Verdict::Drop);
-        assert_eq!(engine.verdict(&test_alert(IdsAction::Reject)), Verdict::Reject);
-        assert_eq!(engine.verdict(&test_alert(IdsAction::Alert)), Verdict::Alert);
+        assert_eq!(
+            engine.verdict(&test_alert(IdsAction::Reject)),
+            Verdict::Reject
+        );
+        assert_eq!(
+            engine.verdict(&test_alert(IdsAction::Alert)),
+            Verdict::Alert
+        );
         assert_eq!(engine.verdict(&test_alert(IdsAction::Pass)), Verdict::Pass);
     }
 }

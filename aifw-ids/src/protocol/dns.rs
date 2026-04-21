@@ -212,7 +212,10 @@ impl DnsParser {
                 // A record
                 format!(
                     "{}.{}.{}.{}",
-                    data[pos], data[pos + 1], data[pos + 2], data[pos + 3]
+                    data[pos],
+                    data[pos + 1],
+                    data[pos + 2],
+                    data[pos + 3]
                 )
             }
             28 if rdlen == 16 => {
@@ -314,7 +317,9 @@ mod tests {
         let key = FlowKey::from_packet(
             "10.0.0.1".parse().unwrap(),
             "8.8.8.8".parse().unwrap(),
-            5353, 53, 17,
+            5353,
+            53,
+            17,
         );
         let pkt = crate::decode::DecodedPacket {
             timestamp_us: 0,

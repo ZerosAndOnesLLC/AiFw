@@ -69,20 +69,37 @@ impl SystemProfile {
     /// Summary string for display
     pub fn summary_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        lines.push(format!("CPU:     {} ({} cores / {} threads)",
-            self.cpu.model, self.cpu.cores, self.cpu.threads));
+        lines.push(format!(
+            "CPU:     {} ({} cores / {} threads)",
+            self.cpu.model, self.cpu.cores, self.cpu.threads
+        ));
         lines.push(format!("Arch:    {}", self.cpu.arch));
-        lines.push(format!("RAM:     {:.1} GB ({} MB)", self.memory.total_gb, self.memory.total_mb));
-        lines.push(format!("Disk:    {} ({})",
+        lines.push(format!(
+            "RAM:     {:.1} GB ({} MB)",
+            self.memory.total_gb, self.memory.total_mb
+        ));
+        lines.push(format!(
+            "Disk:    {} ({})",
             self.disk.root_device,
-            if self.disk.is_ssd { "SSD" } else { "HDD" }));
+            if self.disk.is_ssd { "SSD" } else { "HDD" }
+        ));
 
         let mut crypto_caps = Vec::new();
-        if self.crypto.has_aesni { crypto_caps.push("AES-NI"); }
-        if self.crypto.has_sha_ni { crypto_caps.push("SHA-NI"); }
-        if self.crypto.has_qat { crypto_caps.push("Intel QAT"); }
-        if self.crypto.has_arm_crypto { crypto_caps.push("ARM Crypto"); }
-        if crypto_caps.is_empty() { crypto_caps.push("none"); }
+        if self.crypto.has_aesni {
+            crypto_caps.push("AES-NI");
+        }
+        if self.crypto.has_sha_ni {
+            crypto_caps.push("SHA-NI");
+        }
+        if self.crypto.has_qat {
+            crypto_caps.push("Intel QAT");
+        }
+        if self.crypto.has_arm_crypto {
+            crypto_caps.push("ARM Crypto");
+        }
+        if crypto_caps.is_empty() {
+            crypto_caps.push("none");
+        }
         lines.push(format!("Crypto:  {}", crypto_caps.join(", ")));
 
         if self.cpu.has_hyperthreading {
@@ -92,13 +109,27 @@ impl SystemProfile {
         lines.push(format!("NICs:    {} detected", self.nics.len()));
         for nic in &self.nics {
             let mut caps: Vec<String> = Vec::new();
-            if nic.has_rxcsum { caps.push("rxcsum".into()); }
-            if nic.has_txcsum { caps.push("txcsum".into()); }
-            if nic.has_tso { caps.push("TSO".into()); }
-            if nic.has_lro { caps.push("LRO".into()); }
-            if nic.has_rss { caps.push(format!("RSS({}q)", nic.rss_queues)); }
-            lines.push(format!("  {}:  driver={} caps=[{}]",
-                nic.name, nic.driver, caps.join(", ")));
+            if nic.has_rxcsum {
+                caps.push("rxcsum".into());
+            }
+            if nic.has_txcsum {
+                caps.push("txcsum".into());
+            }
+            if nic.has_tso {
+                caps.push("TSO".into());
+            }
+            if nic.has_lro {
+                caps.push("LRO".into());
+            }
+            if nic.has_rss {
+                caps.push(format!("RSS({}q)", nic.rss_queues));
+            }
+            lines.push(format!(
+                "  {}:  driver={} caps=[{}]",
+                nic.name,
+                nic.driver,
+                caps.join(", ")
+            ));
         }
 
         lines
@@ -130,41 +161,69 @@ fn detect_cpu() -> CpuInfo {
                 processors += 1;
             }
             if let Some(model) = line.strip_prefix("model name")
-                && let Some(val) = model.split(':').nth(1) {
-                    info.model = val.trim().to_string();
-                }
+                && let Some(val) = model.split(':').nth(1)
+            {
+                info.model = val.trim().to_string();
+            }
             if let Some(flags) = line.strip_prefix("flags") {
                 let flags = flags.to_lowercase();
                 info.has_aesni = flags.contains("aes");
                 info.has_sha_ni = flags.contains("sha_ni");
             }
             if let Some(core_id) = line.strip_prefix("core id")
-                && let Some(val) = core_id.split(':').nth(1) {
-                    core_ids.insert(val.trim().to_string());
-                }
+                && let Some(val) = core_id.split(':').nth(1)
+            {
+                core_ids.insert(val.trim().to_string());
+            }
         }
 
         info.threads = processors.max(1);
-        info.cores = if core_ids.is_empty() { info.threads } else { core_ids.len() };
+        info.cores = if core_ids.is_empty() {
+            info.threads
+        } else {
+            core_ids.len()
+        };
         info.has_hyperthreading = info.threads > info.cores;
     }
 
     // FreeBSD: sysctl
     #[cfg(target_os = "freebsd")]
     {
-        if let Ok(out) = std::process::Command::new("sysctl").arg("-n").arg("hw.ncpu").output() {
-            info.threads = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(1);
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .arg("-n")
+            .arg("hw.ncpu")
+            .output()
+        {
+            info.threads = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(1);
         }
-        if let Ok(out) = std::process::Command::new("sysctl").arg("-n").arg("hw.model").output() {
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .arg("-n")
+            .arg("hw.model")
+            .output()
+        {
             info.model = String::from_utf8_lossy(&out.stdout).trim().to_string();
         }
-        if let Ok(out) = std::process::Command::new("sysctl").arg("-n").arg("kern.features").output() {
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .arg("-n")
+            .arg("kern.features")
+            .output()
+        {
             let features = String::from_utf8_lossy(&out.stdout).to_lowercase();
             info.has_aesni = features.contains("aesni");
         }
         // Detect physical cores vs HT
-        if let Ok(out) = std::process::Command::new("sysctl").arg("-n").arg("kern.smp.cores").output() {
-            info.cores = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(info.threads);
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .arg("-n")
+            .arg("kern.smp.cores")
+            .output()
+        {
+            info.cores = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(info.threads);
             info.has_hyperthreading = info.threads > info.cores;
         }
     }
@@ -195,7 +254,11 @@ fn detect_memory() -> MemoryInfo {
     // FreeBSD: sysctl
     #[cfg(target_os = "freebsd")]
     {
-        if let Ok(out) = std::process::Command::new("sysctl").arg("-n").arg("hw.physmem").output() {
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .arg("-n")
+            .arg("hw.physmem")
+            .output()
+        {
             if let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>() {
                 total_mb = bytes / (1024 * 1024);
             }
@@ -219,7 +282,11 @@ fn detect_nics() -> Vec<NicInfo> {
     if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == "lo" || name.starts_with("veth") || name.starts_with("docker") || name.starts_with("br-") {
+            if name == "lo"
+                || name.starts_with("veth")
+                || name.starts_with("docker")
+                || name.starts_with("br-")
+            {
                 continue;
             }
 
@@ -232,8 +299,10 @@ fn detect_nics() -> Vec<NicInfo> {
                 .to_lowercase();
 
             // Check ethtool features via /sys
-            let has_tso = features.contains("tx-tcp-segmentation: on") || check_sys_flag(&name, "tso");
-            let has_lro = features.contains("large-receive-offload: on") || check_sys_flag(&name, "lro");
+            let has_tso =
+                features.contains("tx-tcp-segmentation: on") || check_sys_flag(&name, "tso");
+            let has_lro =
+                features.contains("large-receive-offload: on") || check_sys_flag(&name, "lro");
             let has_rxcsum = features.contains("rx-checksum: on") || true; // most modern NICs
             let has_txcsum = features.contains("tx-checksum") || true;
 
@@ -258,7 +327,8 @@ fn detect_nics() -> Vec<NicInfo> {
     if nics.is_empty() {
         if let Ok(out) = std::process::Command::new("ifconfig").arg("-l").output() {
             for name in String::from_utf8_lossy(&out.stdout).split_whitespace() {
-                if name.starts_with("lo") || name.starts_with("pflog") || name.starts_with("pfsync") {
+                if name.starts_with("lo") || name.starts_with("pflog") || name.starts_with("pfsync")
+                {
                     continue;
                 }
                 nics.push(NicInfo {
@@ -308,7 +378,9 @@ fn count_rss_queues(iface: &str) -> usize {
 #[cfg(target_os = "freebsd")]
 fn detect_freebsd_nic_driver(iface: &str) -> String {
     // Strip trailing digits to get driver name: em0 -> em, igb1 -> igb
-    iface.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
+    iface
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+        .to_string()
 }
 
 // ============================================================
@@ -340,14 +412,22 @@ fn detect_disk() -> DiskInfo {
     // FreeBSD: camcontrol or sysctl
     #[cfg(target_os = "freebsd")]
     {
-        if let Ok(out) = std::process::Command::new("sysctl").arg("-n").arg("kern.disks").output() {
+        if let Ok(out) = std::process::Command::new("sysctl")
+            .arg("-n")
+            .arg("kern.disks")
+            .output()
+        {
             let disks = String::from_utf8_lossy(&out.stdout);
             if let Some(first) = disks.split_whitespace().next() {
                 root_device = format!("/dev/{first}");
             }
         }
         // Check for NVMe or SSD indicators
-        if let Ok(out) = std::process::Command::new("camcontrol").arg("identify").arg("ada0").output() {
+        if let Ok(out) = std::process::Command::new("camcontrol")
+            .arg("identify")
+            .arg("ada0")
+            .output()
+        {
             let output = String::from_utf8_lossy(&out.stdout).to_lowercase();
             if output.contains("solid state") || output.contains("ssd") {
                 is_ssd = true;
@@ -358,7 +438,10 @@ fn detect_disk() -> DiskInfo {
         }
     }
 
-    DiskInfo { is_ssd, root_device }
+    DiskInfo {
+        is_ssd,
+        root_device,
+    }
 }
 
 // ============================================================

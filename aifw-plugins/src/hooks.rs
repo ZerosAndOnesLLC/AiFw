@@ -110,18 +110,16 @@ pub enum HookEventData {
         mac_address: String,
         ip_address: IpAddr,
         hostname: Option<String>,
-        lease_action: String,  // "assign", "renew", "release"
+        lease_action: String, // "assign", "renew", "release"
     },
     /// VPN event
     Vpn {
         tunnel_name: String,
         peer: Option<String>,
-        action: String,  // "up", "down", "handshake"
+        action: String, // "up", "down", "handshake"
     },
     /// Timer tick
-    Tick {
-        timestamp: u64,
-    },
+    Tick { timestamp: u64 },
     /// IDS alert event
     IdsAlertEvent {
         signature_id: Option<u32>,
@@ -160,4 +158,3 @@ pub enum HookAction {
     /// Multiple actions
     Multi(Vec<HookAction>),
 }
-

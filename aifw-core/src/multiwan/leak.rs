@@ -148,8 +148,7 @@ impl LeakEngine {
 
     /// Compile leaks into pf rules. Pure function — no I/O.
     pub fn compile(leaks: &[RouteLeak], instances: &[RoutingInstance]) -> Vec<String> {
-        let inst: HashMap<Uuid, &RoutingInstance> =
-            instances.iter().map(|i| (i.id, i)).collect();
+        let inst: HashMap<Uuid, &RoutingInstance> = instances.iter().map(|i| (i.id, i)).collect();
         let mut out = Vec::new();
         for l in leaks.iter().filter(|l| l.enabled) {
             let Some(dst) = inst.get(&l.dst_instance_id) else {
@@ -172,13 +171,14 @@ impl LeakEngine {
                 fib = dst.fib_number,
             ));
             if l.direction == "bidirectional"
-                && let Some(src) = inst.get(&l.src_instance_id) {
-                    out.push(format!(
+                && let Some(src) = inst.get(&l.src_instance_id)
+            {
+                out.push(format!(
                         "pass quick{proto} from {prefix} to any{ports} rtable {fib} keep state (if-bound) label \"{label}:rev\"",
                         prefix = l.prefix,
                         fib = src.fib_number,
                     ));
-                }
+            }
         }
         out
     }
@@ -257,14 +257,8 @@ fn row_to_leak(r: &sqlx::sqlite::SqliteRow) -> RouteLeak {
         ports: r.get("ports"),
         direction: r.get("direction"),
         enabled: r.get::<i64, _>("enabled") != 0,
-        created_at: r
-            .get::<String, _>("created_at")
-            .parse()
-            .unwrap_or_default(),
-        updated_at: r
-            .get::<String, _>("updated_at")
-            .parse()
-            .unwrap_or_default(),
+        created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
+        updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
     }
 }
 

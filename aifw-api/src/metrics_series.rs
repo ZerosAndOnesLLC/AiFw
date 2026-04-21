@@ -3,9 +3,16 @@
 //! `/api/v1/metrics/list`            — registered series names
 //! `/api/v1/metrics/series?name=…&range_secs=…`  — points for the best tier covering that range
 
-use axum::{extract::{Query, State}, http::StatusCode, Json};
+use aifw_metrics::{
+    backend::MetricsBackend,
+    series::{MetricPoint, MetricSeries},
+};
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::StatusCode,
+};
 use serde::{Deserialize, Serialize};
-use aifw_metrics::{backend::MetricsBackend, series::{MetricSeries, MetricPoint}};
 
 use crate::AppState;
 
@@ -25,8 +32,8 @@ pub struct SeriesQuery {
 
 #[derive(Debug, Serialize)]
 pub struct SeriesPoint {
-    pub t: i64,    // unix epoch seconds
-    pub v: f64,    // aggregated value (the series' configured aggregation)
+    pub t: i64, // unix epoch seconds
+    pub v: f64, // aggregated value (the series' configured aggregation)
     pub min: f64,
     pub max: f64,
 }
@@ -39,10 +46,11 @@ pub struct SeriesResponse {
     pub points: Vec<SeriesPoint>,
 }
 
-pub async fn list(
-    State(state): State<AppState>,
-) -> Result<Json<SeriesListResponse>, StatusCode> {
-    let mut names = state.metrics_store.list_metrics().await
+pub async fn list(State(state): State<AppState>) -> Result<Json<SeriesListResponse>, StatusCode> {
+    let mut names = state
+        .metrics_store
+        .list_metrics()
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     names.sort();
     Ok(Json(SeriesListResponse { names }))
@@ -59,17 +67,27 @@ pub async fn query(
     // How many points from this tier cover the requested range?
     // Fall back to whatever the tier currently holds if the range exceeds the tier's window.
     let points_needed = ((range + interval - 1) / interval) as usize;
-    let effective_limit = q.limit.map(|l| l.min(points_needed)).unwrap_or(points_needed);
+    let effective_limit = q
+        .limit
+        .map(|l| l.min(points_needed))
+        .unwrap_or(points_needed);
 
-    let res = state.metrics_store.query(&q.name, tier, Some(effective_limit)).await
+    let res = state
+        .metrics_store
+        .query(&q.name, tier, Some(effective_limit))
+        .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let points: Vec<SeriesPoint> = res.points.into_iter().map(|p: MetricPoint| SeriesPoint {
-        t: p.timestamp.timestamp(),
-        v: p.value,
-        min: p.min,
-        max: p.max,
-    }).collect();
+    let points: Vec<SeriesPoint> = res
+        .points
+        .into_iter()
+        .map(|p: MetricPoint| SeriesPoint {
+            t: p.timestamp.timestamp(),
+            v: p.value,
+            min: p.min,
+            max: p.max,
+        })
+        .collect();
 
     Ok(Json(SeriesResponse {
         name: q.name,

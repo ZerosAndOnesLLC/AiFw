@@ -8,8 +8,15 @@ pub struct HttpParser;
 
 /// Known HTTP methods for quick detection
 const HTTP_METHODS: &[&[u8]] = &[
-    b"GET ", b"POST ", b"PUT ", b"DELETE ", b"HEAD ", b"OPTIONS ",
-    b"PATCH ", b"CONNECT ", b"TRACE ",
+    b"GET ",
+    b"POST ",
+    b"PUT ",
+    b"DELETE ",
+    b"HEAD ",
+    b"OPTIONS ",
+    b"PATCH ",
+    b"CONNECT ",
+    b"TRACE ",
 ];
 
 impl ProtocolParser for HttpParser {
@@ -131,10 +138,7 @@ impl HttpParser {
                 for header in resp.headers.iter() {
                     let name_lower = header.name.to_ascii_lowercase();
                     if name_lower == "content-type" {
-                        buffers.insert(
-                            "http.response_content_type".into(),
-                            header.value.to_vec(),
-                        );
+                        buffers.insert("http.response_content_type".into(), header.value.to_vec());
                     }
                     if name_lower == "server" {
                         buffers.insert("http.server".into(), header.value.to_vec());
@@ -143,10 +147,7 @@ impl HttpParser {
 
                 // Store response body if available
                 if body_offset < payload.len() {
-                    buffers.insert(
-                        "http.response_body".into(),
-                        payload[body_offset..].to_vec(),
-                    );
+                    buffers.insert("http.response_body".into(), payload[body_offset..].to_vec());
                 }
 
                 ParseResult::Ok
@@ -202,7 +203,8 @@ mod tests {
         let parser = HttpParser;
         let mut buffers: StickyBuffers = HashMap::new();
 
-        let payload = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\nUser-Agent: TestBot/1.0\r\n\r\n";
+        let payload =
+            b"GET /index.html HTTP/1.1\r\nHost: example.com\r\nUser-Agent: TestBot/1.0\r\n\r\n";
         let mut flow = test_flow();
         let result = parser.parse(&mut flow, payload, FlowDirection::ToServer, &mut buffers);
 
@@ -233,7 +235,9 @@ mod tests {
         let key = FlowKey::from_packet(
             "10.0.0.1".parse().unwrap(),
             "10.0.0.2".parse().unwrap(),
-            1234, 80, 6,
+            1234,
+            80,
+            6,
         );
         let pkt = crate::decode::DecodedPacket {
             timestamp_us: 0,

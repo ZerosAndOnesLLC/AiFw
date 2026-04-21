@@ -24,7 +24,11 @@ impl PcapCapture {
 
 impl CaptureBackend for PcapCapture {
     fn open(interface: &str, config: &CaptureConfig) -> Result<Self> {
-        tracing::info!(interface, snaplen = config.snaplen, "pcap capture opened (mock)");
+        tracing::info!(
+            interface,
+            snaplen = config.snaplen,
+            "pcap capture opened (mock)"
+        );
         Ok(Self {
             interface: interface.to_string(),
             _config: config.clone(),

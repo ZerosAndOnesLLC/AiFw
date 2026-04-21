@@ -123,7 +123,8 @@ impl VpnEngine {
         for t in &existing {
             if t.id != tunnel.id && t.listen_port == tunnel.listen_port {
                 return Err(AifwError::Validation(format!(
-                    "Port {} is already used by tunnel '{}'", tunnel.listen_port, t.name
+                    "Port {} is already used by tunnel '{}'",
+                    tunnel.listen_port, t.name
                 )));
             }
         }
@@ -157,11 +158,10 @@ impl VpnEngine {
     }
 
     pub async fn list_wg_tunnels(&self) -> Result<Vec<WgTunnel>> {
-        let rows = sqlx::query_as::<_, WgTunnelRow>(
-            "SELECT * FROM wg_tunnels ORDER BY created_at ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query_as::<_, WgTunnelRow>("SELECT * FROM wg_tunnels ORDER BY created_at ASC")
+                .fetch_all(&self.pool)
+                .await?;
         rows.into_iter().map(|r| r.into_tunnel()).collect()
     }
 
@@ -186,7 +186,8 @@ impl VpnEngine {
         for t in &existing {
             if t.id != tunnel.id && t.listen_port == tunnel.listen_port {
                 return Err(AifwError::Validation(format!(
-                    "Port {} is already used by tunnel '{}'", tunnel.listen_port, t.name
+                    "Port {} is already used by tunnel '{}'",
+                    tunnel.listen_port, t.name
                 )));
             }
         }
@@ -215,7 +216,10 @@ impl VpnEngine {
         .await?;
 
         if result.rows_affected() == 0 {
-            return Err(AifwError::NotFound(format!("WG tunnel {} not found", tunnel.id)));
+            return Err(AifwError::NotFound(format!(
+                "WG tunnel {} not found",
+                tunnel.id
+            )));
         }
 
         tracing::info!(id = %tunnel.id, name = %tunnel.name, "WireGuard tunnel updated");
@@ -245,14 +249,18 @@ impl VpnEngine {
 
     pub async fn add_wg_peer(&self, peer: WgPeer) -> Result<WgPeer> {
         if peer.public_key.is_empty() {
-            return Err(AifwError::Validation("peer public key required".to_string()));
+            return Err(AifwError::Validation(
+                "peer public key required".to_string(),
+            ));
         }
         // Verify tunnel exists
         let _ = self.get_wg_tunnel(peer.tunnel_id).await?;
 
         // Check for duplicate IPs — no two peers in the same tunnel can share an IP
         let existing_peers = self.list_wg_peers(peer.tunnel_id).await?;
-        let new_ips: std::collections::HashSet<String> = peer.allowed_ips.iter()
+        let new_ips: std::collections::HashSet<String> = peer
+            .allowed_ips
+            .iter()
             .map(|a| a.to_string().split('/').next().unwrap_or("").to_string())
             .collect();
         for ep in &existing_peers {
@@ -260,7 +268,8 @@ impl VpnEngine {
                 let eip_str = eip.to_string().split('/').next().unwrap_or("").to_string();
                 if new_ips.contains(&eip_str) {
                     return Err(AifwError::Validation(format!(
-                        "IP {} is already assigned to peer '{}'", eip_str, ep.name
+                        "IP {} is already assigned to peer '{}'",
+                        eip_str, ep.name
                     )));
                 }
             }
@@ -383,11 +392,10 @@ impl VpnEngine {
     }
 
     pub async fn list_ipsec_sas(&self) -> Result<Vec<IpsecSa>> {
-        let rows = sqlx::query_as::<_, IpsecSaRow>(
-            "SELECT * FROM ipsec_sas ORDER BY created_at ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query_as::<_, IpsecSaRow>("SELECT * FROM ipsec_sas ORDER BY created_at ASC")
+                .fetch_all(&self.pool)
+                .await?;
         rows.into_iter().map(|r| r.into_sa()).collect()
     }
 
@@ -414,46 +422,73 @@ impl VpnEngine {
 
         // Write private key to temp file (wg set reads from file, not stdin)
         let key_path = format!("/tmp/wg-{}.key", tunnel.id);
-        tokio::fs::write(&key_path, &tunnel.private_key).await
+        tokio::fs::write(&key_path, &tunnel.private_key)
+            .await
             .map_err(|e| AifwError::Pf(format!("Failed to write key file: {e}")))?;
         // Restrict permissions
-        let _ = Command::new("chmod").args(["600", &key_path]).output().await;
+        let _ = Command::new("chmod")
+            .args(["600", &key_path])
+            .output()
+            .await;
 
         // Create the WireGuard interface
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["ifconfig", iface, "destroy"]).output().await; // clean up if exists
+            .args(["ifconfig", iface, "destroy"])
+            .output()
+            .await; // clean up if exists
         let output = Command::new("/usr/local/bin/sudo")
-            .args(["ifconfig", iface, "create"]).output().await
+            .args(["ifconfig", iface, "create"])
+            .output()
+            .await
             .map_err(|e| AifwError::Pf(format!("ifconfig create failed: {e}")))?;
         if !output.status.success() {
             let _ = tokio::fs::remove_file(&key_path).await;
-            return Err(AifwError::Pf(format!("ifconfig {} create failed: {}",
-                iface, String::from_utf8_lossy(&output.stderr))));
+            return Err(AifwError::Pf(format!(
+                "ifconfig {} create failed: {}",
+                iface,
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
 
         // Set address and bring up
         let addr = tunnel.address.to_string();
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["ifconfig", iface, "inet", &addr, "up"]).output().await;
+            .args(["ifconfig", iface, "inet", &addr, "up"])
+            .output()
+            .await;
 
         // Set MTU if specified
         if let Some(mtu) = tunnel.mtu {
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["ifconfig", iface, "mtu", &mtu.to_string()]).output().await;
+                .args(["ifconfig", iface, "mtu", &mtu.to_string()])
+                .output()
+                .await;
         }
 
         // Configure WireGuard private key and listen port
         let output = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/bin/wg", "set", iface, "private-key", &key_path,
-                   "listen-port", &tunnel.listen_port.to_string()])
-            .output().await
+            .args([
+                "/usr/bin/wg",
+                "set",
+                iface,
+                "private-key",
+                &key_path,
+                "listen-port",
+                &tunnel.listen_port.to_string(),
+            ])
+            .output()
+            .await
             .map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
         let _ = tokio::fs::remove_file(&key_path).await;
         if !output.status.success() {
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["ifconfig", iface, "destroy"]).output().await;
-            return Err(AifwError::Pf(format!("wg set failed: {}",
-                String::from_utf8_lossy(&output.stderr))));
+                .args(["ifconfig", iface, "destroy"])
+                .output()
+                .await;
+            return Err(AifwError::Pf(format!(
+                "wg set failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
 
         // Add all peers
@@ -466,7 +501,8 @@ impl VpnEngine {
         let _ = sqlx::query("UPDATE wg_tunnels SET status = 'up', updated_at = ?1 WHERE id = ?2")
             .bind(Utc::now().to_rfc3339())
             .bind(id.to_string())
-            .execute(&self.pool).await;
+            .execute(&self.pool)
+            .await;
 
         // Open WAN UDP for this tunnel's listen-port in the aifw-vpn anchor.
         // Without this, handshake packets are dropped by the default block rule.
@@ -482,12 +518,15 @@ impl VpnEngine {
         let iface = &tunnel.interface.0;
 
         let _ = Command::new("/usr/local/bin/sudo")
-            .args(["ifconfig", iface, "destroy"]).output().await;
+            .args(["ifconfig", iface, "destroy"])
+            .output()
+            .await;
 
         let _ = sqlx::query("UPDATE wg_tunnels SET status = 'down', updated_at = ?1 WHERE id = ?2")
             .bind(Utc::now().to_rfc3339())
             .bind(id.to_string())
-            .execute(&self.pool).await;
+            .execute(&self.pool)
+            .await;
 
         // Close the WAN pass rule for this tunnel by recomputing from remaining
         // up tunnels only.
@@ -528,15 +567,20 @@ impl VpnEngine {
     async fn apply_peer_to_interface(&self, iface: &str, peer: &WgPeer) -> Result<()> {
         let allowed: Vec<String> = peer.allowed_ips.iter().map(|a| a.to_string()).collect();
         let mut args = vec![
-            "/usr/bin/wg".to_string(), "set".to_string(), iface.to_string(),
-            "peer".to_string(), peer.public_key.clone(),
-            "allowed-ips".to_string(), allowed.join(","),
+            "/usr/bin/wg".to_string(),
+            "set".to_string(),
+            iface.to_string(),
+            "peer".to_string(),
+            peer.public_key.clone(),
+            "allowed-ips".to_string(),
+            allowed.join(","),
         ];
         if let Some(ref endpoint) = peer.endpoint
-            && !endpoint.is_empty() {
-                args.push("endpoint".to_string());
-                args.push(endpoint.clone());
-            }
+            && !endpoint.is_empty()
+        {
+            args.push("endpoint".to_string());
+            args.push(endpoint.clone());
+        }
         if let Some(ka) = peer.persistent_keepalive {
             args.push("persistent-keepalive".to_string());
             args.push(ka.to_string());
@@ -544,28 +588,38 @@ impl VpnEngine {
         // PSK requires a temp file
         if let Some(ref psk) = peer.preshared_key {
             let psk_path = format!("/tmp/wg-psk-{}.key", peer.id);
-            tokio::fs::write(&psk_path, psk).await
+            tokio::fs::write(&psk_path, psk)
+                .await
                 .map_err(|e| AifwError::Pf(format!("Failed to write PSK: {e}")))?;
-            let _ = Command::new("chmod").args(["600", &psk_path]).output().await;
+            let _ = Command::new("chmod")
+                .args(["600", &psk_path])
+                .output()
+                .await;
             args.push("preshared-key".to_string());
             args.push(psk_path.clone());
             let output = Command::new("/usr/local/bin/sudo")
                 .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-                .output().await
+                .output()
+                .await
                 .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
             let _ = tokio::fs::remove_file(&psk_path).await;
             if !output.status.success() {
-                return Err(AifwError::Pf(format!("wg set peer failed: {}",
-                    String::from_utf8_lossy(&output.stderr))));
+                return Err(AifwError::Pf(format!(
+                    "wg set peer failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
             }
         } else {
             let output = Command::new("/usr/local/bin/sudo")
                 .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-                .output().await
+                .output()
+                .await
                 .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
             if !output.status.success() {
-                return Err(AifwError::Pf(format!("wg set peer failed: {}",
-                    String::from_utf8_lossy(&output.stderr))));
+                return Err(AifwError::Pf(format!(
+                    "wg set peer failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
             }
         }
         Ok(())
@@ -578,7 +632,8 @@ impl VpnEngine {
 
         let output = Command::new("/usr/local/bin/sudo")
             .args(["/usr/bin/wg", "show", iface, "dump"])
-            .output().await
+            .output()
+            .await
             .map_err(|e| AifwError::Pf(format!("wg show failed: {e}")))?;
 
         if !output.status.success() {
@@ -602,7 +657,9 @@ impl VpnEngine {
                 let handshake_ts: i64 = cols[4].parse().unwrap_or(0);
                 let handshake_ago = if handshake_ts > 0 {
                     Utc::now().timestamp() - handshake_ts
-                } else { -1 };
+                } else {
+                    -1
+                };
                 peers.push(serde_json::json!({
                     "public_key": cols[0],
                     "endpoint": if cols[2] == "(none)" { serde_json::Value::Null } else { serde_json::Value::String(cols[2].to_string()) },
@@ -655,10 +712,13 @@ impl VpnEngine {
 
         // Collect existing peer IPs
         let peers = self.list_wg_peers(tunnel_id).await?;
-        let used: std::collections::HashSet<String> = peers.iter()
-            .flat_map(|p| p.allowed_ips.iter().map(|a| {
-                a.to_string().split('/').next().unwrap_or("").to_string()
-            }))
+        let used: std::collections::HashSet<String> = peers
+            .iter()
+            .flat_map(|p| {
+                p.allowed_ips
+                    .iter()
+                    .map(|a| a.to_string().split('/').next().unwrap_or("").to_string())
+            })
             .collect();
 
         // Find next free IP in the /24 (or smaller) range
@@ -669,7 +729,9 @@ impl VpnEngine {
                 return Ok(format!("{candidate}/32"));
             }
         }
-        Err(AifwError::Validation("No free IPs in tunnel subnet".to_string()))
+        Err(AifwError::Validation(
+            "No free IPs in tunnel subnet".to_string(),
+        ))
     }
 
     // ============================================================

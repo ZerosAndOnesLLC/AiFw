@@ -28,17 +28,13 @@ pub struct AlertPipeline {
 impl AlertPipeline {
     /// Create a new pipeline with SQLite output enabled by default.
     pub fn new(pool: SqlitePool) -> Self {
-        let outputs: Vec<Box<dyn AlertOutput>> = vec![
-            Box::new(sqlite::SqliteOutput::new(pool)),
-        ];
+        let outputs: Vec<Box<dyn AlertOutput>> = vec![Box::new(sqlite::SqliteOutput::new(pool))];
         Self { outputs }
     }
 
     /// Create a pipeline that writes to an in-memory buffer (no SQLite for alerts).
     pub fn with_memory(buffer: std::sync::Arc<memory::AlertBuffer>) -> Self {
-        let outputs: Vec<Box<dyn AlertOutput>> = vec![
-            Box::new(memory::MemoryOutput::new(buffer)),
-        ];
+        let outputs: Vec<Box<dyn AlertOutput>> = vec![Box::new(memory::MemoryOutput::new(buffer))];
         Self { outputs }
     }
 

@@ -62,7 +62,9 @@ impl MetricsBackend for MetricsStore {
         last_n: Option<usize>,
     ) -> Result<MetricQueryResult, String> {
         let series = self.series.read().await;
-        let s = series.get(name).ok_or_else(|| format!("metric '{name}' not found"))?;
+        let s = series
+            .get(name)
+            .ok_or_else(|| format!("metric '{name}' not found"))?;
 
         let points: Vec<MetricPoint> = match last_n {
             Some(n) => s.get_last(tier, n).into_iter().cloned().collect(),

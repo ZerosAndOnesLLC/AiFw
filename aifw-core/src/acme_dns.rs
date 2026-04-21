@@ -45,13 +45,15 @@ pub trait DnsRecordWriter: Send + Sync {
 /// Build a concrete solver for a configured provider row.
 pub fn build_solver(p: &AcmeDnsProvider) -> Result<Box<dyn DnsSolver>, String> {
     match p.kind {
-        DnsProviderKind::Cloudflare   => Ok(Box::new(Cloudflare::new(p)?)),
-        DnsProviderKind::Route53      => Ok(Box::new(Route53::new(p)?)),
-        DnsProviderKind::Manual       => Ok(Box::new(Manual { name: p.name.clone() })),
+        DnsProviderKind::Cloudflare => Ok(Box::new(Cloudflare::new(p)?)),
+        DnsProviderKind::Route53 => Ok(Box::new(Route53::new(p)?)),
+        DnsProviderKind::Manual => Ok(Box::new(Manual {
+            name: p.name.clone(),
+        })),
         // DigitalOcean and rfc2136 are stubbed for v1 — return a clear
         // error rather than silently accepting and timing out at the CA.
         DnsProviderKind::DigitalOcean => Err("DigitalOcean DNS-01 not implemented yet".into()),
-        DnsProviderKind::Rfc2136      => Err("rfc2136 DNS-01 not implemented yet".into()),
+        DnsProviderKind::Rfc2136 => Err("rfc2136 DNS-01 not implemented yet".into()),
     }
 }
 
@@ -60,11 +62,13 @@ pub fn build_solver(p: &AcmeDnsProvider) -> Result<Box<dyn DnsSolver>, String> {
 /// provider can't push A records on a 5-minute schedule by definition.
 pub fn build_record_writer(p: &AcmeDnsProvider) -> Result<Box<dyn DnsRecordWriter>, String> {
     match p.kind {
-        DnsProviderKind::Cloudflare   => Ok(Box::new(Cloudflare::new(p)?)),
-        DnsProviderKind::Route53      => Ok(Box::new(Route53::new(p)?)),
-        DnsProviderKind::Manual       => Err("manual provider can't auto-update A/AAAA — pick Cloudflare or Route53".into()),
+        DnsProviderKind::Cloudflare => Ok(Box::new(Cloudflare::new(p)?)),
+        DnsProviderKind::Route53 => Ok(Box::new(Route53::new(p)?)),
+        DnsProviderKind::Manual => {
+            Err("manual provider can't auto-update A/AAAA — pick Cloudflare or Route53".into())
+        }
         DnsProviderKind::DigitalOcean => Err("DigitalOcean DDNS not implemented yet".into()),
-        DnsProviderKind::Rfc2136      => Err("rfc2136 DDNS not implemented yet".into()),
+        DnsProviderKind::Rfc2136 => Err("rfc2136 DDNS not implemented yet".into()),
     }
 }
 
@@ -82,14 +86,20 @@ pub struct Cloudflare {
 
 impl Cloudflare {
     fn new(p: &AcmeDnsProvider) -> Result<Self, String> {
-        let token = p.api_token.clone()
+        let token = p
+            .api_token
+            .clone()
             .ok_or_else(|| "Cloudflare provider missing API token".to_string())?;
         let zone_id = tokio::sync::OnceCell::new();
         if let Some(z) = p.extra.get("zone_id").and_then(|v| v.as_str()) {
             // Fine to ignore the result — OnceCell::set_blocking isn't needed here.
             let _ = zone_id.set(z.to_string());
         }
-        Ok(Self { token, zone_id, zone_name: p.zone.clone() })
+        Ok(Self {
+            token,
+            zone_id,
+            zone_name: p.zone.clone(),
+        })
     }
 
     async fn client(&self) -> reqwest::Client {
@@ -103,20 +113,39 @@ impl Cloudflare {
     }
 
     async fn resolve_zone_id(&self) -> Result<String, String> {
-        if let Some(z) = self.zone_id.get() { return Ok(z.clone()); }
+        if let Some(z) = self.zone_id.get() {
+            return Ok(z.clone());
+        }
         let c = self.client().await;
-        let url = format!("https://api.cloudflare.com/client/v4/zones?name={}", self.zone_name);
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones?name={}",
+            self.zone_name
+        );
         #[derive(serde::Deserialize)]
-        struct Resp { result: Vec<Zone>, success: bool }
+        struct Resp {
+            result: Vec<Zone>,
+            success: bool,
+        }
         #[derive(serde::Deserialize)]
-        struct Zone { id: String }
-        let resp: Resp = c.get(&url)
+        struct Zone {
+            id: String,
+        }
+        let resp: Resp = c
+            .get(&url)
             .bearer_auth(&self.token)
-            .send().await.map_err(|e| format!("cf zone list: {e}"))?
-            .error_for_status().map_err(|e| format!("cf zone list status: {e}"))?
-            .json().await.map_err(|e| format!("cf zone list parse: {e}"))?;
+            .send()
+            .await
+            .map_err(|e| format!("cf zone list: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("cf zone list status: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("cf zone list parse: {e}"))?;
         if !resp.success || resp.result.is_empty() {
-            return Err(format!("Cloudflare returned no zone matching '{}'", self.zone_name));
+            return Err(format!(
+                "Cloudflare returned no zone matching '{}'",
+                self.zone_name
+            ));
         }
         let id = resp.result.into_iter().next().unwrap().id;
         let _ = self.zone_id.set(id.clone());
@@ -130,13 +159,22 @@ impl Cloudflare {
             urlencoding(value),
         );
         #[derive(serde::Deserialize)]
-        struct Resp { result: Vec<Rec> }
+        struct Resp {
+            result: Vec<Rec>,
+        }
         #[derive(serde::Deserialize)]
-        struct Rec { id: String }
-        let resp: Resp = c.get(&url)
+        struct Rec {
+            id: String,
+        }
+        let resp: Resp = c
+            .get(&url)
             .bearer_auth(&self.token)
-            .send().await.ok()?
-            .json().await.ok()?;
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
         resp.result.into_iter().next().map(|r| r.id)
     }
 }
@@ -153,10 +191,13 @@ impl DnsSolver for Cloudflare {
             "content": value,
             "ttl": 60,
         });
-        let resp = c.post(&url)
+        let resp = c
+            .post(&url)
             .bearer_auth(&self.token)
             .json(&body)
-            .send().await.map_err(|e| format!("cf TXT create: {e}"))?;
+            .send()
+            .await
+            .map_err(|e| format!("cf TXT create: {e}"))?;
         if !resp.status().is_success() {
             let txt = resp.text().await.unwrap_or_default();
             return Err(format!("cf TXT create non-2xx: {txt}"));
@@ -171,8 +212,13 @@ impl DnsSolver for Cloudflare {
             return Ok(());
         };
         let c = self.client().await;
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{rec_id}");
-        let resp = c.delete(&url).bearer_auth(&self.token).send().await
+        let url =
+            format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{rec_id}");
+        let resp = c
+            .delete(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
             .map_err(|e| format!("cf TXT delete: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("cf TXT delete non-2xx: {}", resp.status()));
@@ -191,13 +237,22 @@ impl Cloudflare {
             "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?type={rtype}&name={fqdn}",
         );
         #[derive(serde::Deserialize)]
-        struct Resp { result: Vec<Rec> }
+        struct Resp {
+            result: Vec<Rec>,
+        }
         #[derive(serde::Deserialize)]
-        struct Rec { id: String }
-        let resp: Resp = c.get(&url)
+        struct Rec {
+            id: String,
+        }
+        let resp: Resp = c
+            .get(&url)
             .bearer_auth(&self.token)
-            .send().await.ok()?
-            .json().await.ok()?;
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
         resp.result.into_iter().next().map(|r| r.id)
     }
 
@@ -211,12 +266,22 @@ impl Cloudflare {
             "ttl": ttl,
         });
         let resp = if let Some(id) = self.find_record_id_typed(&zone_id, fqdn, rtype).await {
-            let url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{id}");
-            c.put(&url).bearer_auth(&self.token).json(&body).send().await
+            let url =
+                format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{id}");
+            c.put(&url)
+                .bearer_auth(&self.token)
+                .json(&body)
+                .send()
+                .await
         } else {
             let url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records");
-            c.post(&url).bearer_auth(&self.token).json(&body).send().await
-        }.map_err(|e| format!("cf {rtype} upsert: {e}"))?;
+            c.post(&url)
+                .bearer_auth(&self.token)
+                .json(&body)
+                .send()
+                .await
+        }
+        .map_err(|e| format!("cf {rtype} upsert: {e}"))?;
         if !resp.status().is_success() {
             let txt = resp.text().await.unwrap_or_default();
             return Err(format!("cf {rtype} upsert non-2xx: {txt}"));
@@ -228,11 +293,15 @@ impl Cloudflare {
 #[async_trait]
 impl DnsRecordWriter for Cloudflare {
     async fn upsert_a(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
-        if !ip.is_ipv4() { return Err(format!("upsert_a got non-v4 address {ip}")); }
+        if !ip.is_ipv4() {
+            return Err(format!("upsert_a got non-v4 address {ip}"));
+        }
         self.upsert(fqdn, "A", &ip.to_string(), ttl).await
     }
     async fn upsert_aaaa(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
-        if !ip.is_ipv6() { return Err(format!("upsert_aaaa got non-v6 address {ip}")); }
+        if !ip.is_ipv6() {
+            return Err(format!("upsert_aaaa got non-v6 address {ip}"));
+        }
         self.upsert(fqdn, "AAAA", &ip.to_string(), ttl).await
     }
 }
@@ -241,7 +310,9 @@ fn urlencoding(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -264,42 +335,67 @@ pub struct Route53 {
 
 impl Route53 {
     fn new(p: &AcmeDnsProvider) -> Result<Self, String> {
-        let access_key = p.api_token.clone()
-            .ok_or_else(|| "Route53 provider missing access key (use api_token field)".to_string())?;
-        let secret_key = p.aws_secret_key.clone()
+        let access_key = p.api_token.clone().ok_or_else(|| {
+            "Route53 provider missing access key (use api_token field)".to_string()
+        })?;
+        let secret_key = p
+            .aws_secret_key
+            .clone()
             .ok_or_else(|| "Route53 provider missing secret access key".to_string())?;
-        let region = p.extra.get("region").and_then(|v| v.as_str())
-            .unwrap_or("us-east-1").to_string();
+        let region = p
+            .extra
+            .get("region")
+            .and_then(|v| v.as_str())
+            .unwrap_or("us-east-1")
+            .to_string();
         let zone_id = tokio::sync::OnceCell::new();
         if let Some(z) = p.extra.get("zone_id").and_then(|v| v.as_str()) {
             let _ = zone_id.set(z.to_string());
         }
-        Ok(Self { access_key, secret_key, region, zone_name: p.zone.clone(), zone_id })
+        Ok(Self {
+            access_key,
+            secret_key,
+            region,
+            zone_name: p.zone.clone(),
+            zone_id,
+        })
     }
 
     async fn client(&self) -> aws_sdk_route53::Client {
-        use aws_credential_types::{provider::SharedCredentialsProvider, Credentials};
+        use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
         let creds = Credentials::new(&self.access_key, &self.secret_key, None, None, "aifw-acme");
         let cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(aws_sdk_route53::config::Region::new(self.region.clone()))
             .credentials_provider(SharedCredentialsProvider::new(creds))
-            .load().await;
+            .load()
+            .await;
         aws_sdk_route53::Client::new(&cfg)
     }
 
     async fn resolve_zone_id(&self) -> Result<String, String> {
-        if let Some(z) = self.zone_id.get() { return Ok(z.clone()); }
+        if let Some(z) = self.zone_id.get() {
+            return Ok(z.clone());
+        }
         let c = self.client().await;
         let target = format!("{}.", self.zone_name.trim_end_matches('.'));
-        let resp = c.list_hosted_zones_by_name()
+        let resp = c
+            .list_hosted_zones_by_name()
             .dns_name(&target)
             .max_items(1)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("route53 list zones: {e}"))?;
-        let zone = resp.hosted_zones.into_iter().next()
+        let zone = resp
+            .hosted_zones
+            .into_iter()
+            .next()
             .ok_or_else(|| format!("Route53: no hosted zone matching '{}'", self.zone_name))?;
         if zone.name() != target {
-            return Err(format!("Route53 returned zone '{}' but configured was '{}'", zone.name(), target));
+            return Err(format!(
+                "Route53 returned zone '{}' but configured was '{}'",
+                zone.name(),
+                target
+            ));
         }
         // Strip the "/hostedzone/" prefix Route53 returns on the zone id.
         let raw = zone.id().trim_start_matches("/hostedzone/").to_string();
@@ -307,8 +403,15 @@ impl Route53 {
         Ok(raw)
     }
 
-    async fn change_txt(&self, fqdn: &str, value: &str, action: aws_sdk_route53::types::ChangeAction) -> Result<(), String> {
-        use aws_sdk_route53::types::{Change, ChangeBatch, ResourceRecord, ResourceRecordSet, RrType};
+    async fn change_txt(
+        &self,
+        fqdn: &str,
+        value: &str,
+        action: aws_sdk_route53::types::ChangeAction,
+    ) -> Result<(), String> {
+        use aws_sdk_route53::types::{
+            Change, ChangeBatch, ResourceRecord, ResourceRecordSet, RrType,
+        };
         let zone_id = self.resolve_zone_id().await?;
         let c = self.client().await;
         let rr_value = format!("\"{}\"", value); // Route53 requires quoted TXT values
@@ -316,8 +419,12 @@ impl Route53 {
             .name(format!("{}.", fqdn.trim_end_matches('.')))
             .r#type(RrType::Txt)
             .ttl(60)
-            .resource_records(ResourceRecord::builder().value(&rr_value).build()
-                .map_err(|e| format!("rr build: {e}"))?)
+            .resource_records(
+                ResourceRecord::builder()
+                    .value(&rr_value)
+                    .build()
+                    .map_err(|e| format!("rr build: {e}"))?,
+            )
             .build()
             .map_err(|e| format!("rrset build: {e}"))?;
         let change = Change::builder()
@@ -332,7 +439,8 @@ impl Route53 {
         c.change_resource_record_sets()
             .hosted_zone_id(zone_id)
             .change_batch(batch)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("route53 ChangeRRSets: {e}"))?;
         Ok(())
     }
@@ -341,24 +449,38 @@ impl Route53 {
 #[async_trait]
 impl DnsSolver for Route53 {
     async fn add_txt(&self, fqdn: &str, value: &str) -> Result<(), String> {
-        self.change_txt(fqdn, value, aws_sdk_route53::types::ChangeAction::Upsert).await
+        self.change_txt(fqdn, value, aws_sdk_route53::types::ChangeAction::Upsert)
+            .await
     }
     async fn remove_txt(&self, fqdn: &str, value: &str) -> Result<(), String> {
-        self.change_txt(fqdn, value, aws_sdk_route53::types::ChangeAction::Delete).await
+        self.change_txt(fqdn, value, aws_sdk_route53::types::ChangeAction::Delete)
+            .await
     }
 }
 
 impl Route53 {
-    async fn upsert_addr(&self, fqdn: &str, rtype: aws_sdk_route53::types::RrType, ip: IpAddr, ttl: u32) -> Result<(), String> {
-        use aws_sdk_route53::types::{Change, ChangeAction, ChangeBatch, ResourceRecord, ResourceRecordSet};
+    async fn upsert_addr(
+        &self,
+        fqdn: &str,
+        rtype: aws_sdk_route53::types::RrType,
+        ip: IpAddr,
+        ttl: u32,
+    ) -> Result<(), String> {
+        use aws_sdk_route53::types::{
+            Change, ChangeAction, ChangeBatch, ResourceRecord, ResourceRecordSet,
+        };
         let zone_id = self.resolve_zone_id().await?;
         let c = self.client().await;
         let rrset = ResourceRecordSet::builder()
             .name(format!("{}.", fqdn.trim_end_matches('.')))
             .r#type(rtype)
             .ttl(ttl as i64)
-            .resource_records(ResourceRecord::builder().value(ip.to_string()).build()
-                .map_err(|e| format!("rr build: {e}"))?)
+            .resource_records(
+                ResourceRecord::builder()
+                    .value(ip.to_string())
+                    .build()
+                    .map_err(|e| format!("rr build: {e}"))?,
+            )
             .build()
             .map_err(|e| format!("rrset build: {e}"))?;
         let change = Change::builder()
@@ -373,7 +495,8 @@ impl Route53 {
         c.change_resource_record_sets()
             .hosted_zone_id(zone_id)
             .change_batch(batch)
-            .send().await
+            .send()
+            .await
             .map_err(|e| format!("route53 ChangeRRSets: {e}"))?;
         Ok(())
     }
@@ -382,12 +505,18 @@ impl Route53 {
 #[async_trait]
 impl DnsRecordWriter for Route53 {
     async fn upsert_a(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
-        if !ip.is_ipv4() { return Err(format!("upsert_a got non-v4 address {ip}")); }
-        self.upsert_addr(fqdn, aws_sdk_route53::types::RrType::A, ip, ttl).await
+        if !ip.is_ipv4() {
+            return Err(format!("upsert_a got non-v4 address {ip}"));
+        }
+        self.upsert_addr(fqdn, aws_sdk_route53::types::RrType::A, ip, ttl)
+            .await
     }
     async fn upsert_aaaa(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
-        if !ip.is_ipv6() { return Err(format!("upsert_aaaa got non-v6 address {ip}")); }
-        self.upsert_addr(fqdn, aws_sdk_route53::types::RrType::Aaaa, ip, ttl).await
+        if !ip.is_ipv6() {
+            return Err(format!("upsert_aaaa got non-v6 address {ip}"));
+        }
+        self.upsert_addr(fqdn, aws_sdk_route53::types::RrType::Aaaa, ip, ttl)
+            .await
     }
 }
 

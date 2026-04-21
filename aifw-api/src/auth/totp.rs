@@ -54,10 +54,12 @@ pub fn verify(secret: &str, code: &str) -> bool {
         if generate_code_at_step(&secret_bytes, current_step + offset) == code_num {
             return true;
         }
-        if offset > 0 && current_step >= offset
-            && generate_code_at_step(&secret_bytes, current_step - offset) == code_num {
-                return true;
-            }
+        if offset > 0
+            && current_step >= offset
+            && generate_code_at_step(&secret_bytes, current_step - offset) == code_num
+        {
+            return true;
+        }
     }
 
     false
@@ -267,7 +269,9 @@ fn base32_decode(encoded: &str) -> Result<Vec<u8>, String> {
 }
 
 fn url_encode(s: &str) -> String {
-    s.replace(' ', "%20").replace(':', "%3A").replace('@', "%40")
+    s.replace(' ', "%20")
+        .replace(':', "%3A")
+        .replace('@', "%40")
 }
 
 // ============================================================
@@ -338,9 +342,9 @@ mod tests {
     #[test]
     fn test_verify_bad_format() {
         let secret = generate_secret();
-        assert!(!verify(&secret, "12345"));    // too short
-        assert!(!verify(&secret, "1234567"));  // too long
-        assert!(!verify(&secret, "abcdef"));   // not numeric
+        assert!(!verify(&secret, "12345")); // too short
+        assert!(!verify(&secret, "1234567")); // too long
+        assert!(!verify(&secret, "abcdef")); // not numeric
     }
 
     #[test]

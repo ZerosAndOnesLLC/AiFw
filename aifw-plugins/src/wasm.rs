@@ -53,16 +53,13 @@ pub struct WasmPlugin {
 
 impl WasmPlugin {
     pub fn new(config: WasmPluginConfig) -> Self {
-        let name = config
-            .name
-            .clone()
-            .unwrap_or_else(|| {
-                config
-                    .wasm_path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unnamed-wasm".to_string())
-            });
+        let name = config.name.clone().unwrap_or_else(|| {
+            config
+                .wasm_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unnamed-wasm".to_string())
+        });
 
         Self {
             info: PluginInfo {

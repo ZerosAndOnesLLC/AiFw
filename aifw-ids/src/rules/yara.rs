@@ -47,7 +47,9 @@ pub fn parse_yara_rules(text: &str, source: RuleSource) -> Vec<CompiledRule> {
 
         // Look for "rule name {"
         let word_start = pos;
-        while pos < chars.len() && chars[pos].is_alphanumeric() || (pos < chars.len() && chars[pos] == '_') {
+        while pos < chars.len() && chars[pos].is_alphanumeric()
+            || (pos < chars.len() && chars[pos] == '_')
+        {
             pos += 1;
         }
         let word: String = chars[word_start..pos].iter().collect();
@@ -106,10 +108,9 @@ pub fn parse_yara_rules(text: &str, source: RuleSource) -> Vec<CompiledRule> {
             let body: String = chars[body_start..pos].iter().collect();
             pos += 1; // skip '}'
 
-            if !is_private
-                && let Ok(rule) = parse_yara_body(&rule_name, &body, source) {
-                    rules.push(rule);
-                }
+            if !is_private && let Ok(rule) = parse_yara_body(&rule_name, &body, source) {
+                rules.push(rule);
+            }
         }
     }
 
@@ -329,8 +330,7 @@ fn parse_yara_hex(hex: &str) -> Option<Vec<u8>> {
         }
 
         // Regular hex byte
-        if i + 1 < chars.len() && chars[i].is_ascii_hexdigit() && chars[i + 1].is_ascii_hexdigit()
-        {
+        if i + 1 < chars.len() && chars[i].is_ascii_hexdigit() && chars[i + 1].is_ascii_hexdigit() {
             let hex_str: String = [chars[i], chars[i + 1]].iter().collect();
             bytes.push(u8::from_str_radix(&hex_str, 16).ok()?);
             i += 2;
@@ -339,11 +339,7 @@ fn parse_yara_hex(hex: &str) -> Option<Vec<u8>> {
         }
     }
 
-    if bytes.is_empty() {
-        None
-    } else {
-        Some(bytes)
-    }
+    if bytes.is_empty() { None } else { Some(bytes) }
 }
 
 #[cfg(test)]

@@ -18,7 +18,12 @@ pub trait MetricsBackend: Send + Sync {
     async fn record(&self, name: &str, value: f64) -> Result<(), String>;
 
     /// Query metric data for a given tier
-    async fn query(&self, name: &str, tier: Tier, last_n: Option<usize>) -> Result<MetricQueryResult, String>;
+    async fn query(
+        &self,
+        name: &str,
+        tier: Tier,
+        last_n: Option<usize>,
+    ) -> Result<MetricQueryResult, String>;
 
     /// Get the latest value for a metric
     async fn latest(&self, name: &str) -> Result<Option<f64>, String>;

@@ -96,12 +96,24 @@ async fn main() -> anyhow::Result<()> {
     let leak_engine = Arc::new(LeakEngine::new(pool.clone(), pf.clone()));
     let sla_engine = Arc::new(SlaEngine::new(pool.clone()));
 
-    if let Err(e) = multiwan_engine.migrate().await { error!("multiwan migrate: {e}"); }
-    if let Err(e) = gateway_engine.migrate().await { error!("gateway migrate: {e}"); }
-    if let Err(e) = group_engine.migrate().await { error!("group migrate: {e}"); }
-    if let Err(e) = policy_engine.migrate().await { error!("policy migrate: {e}"); }
-    if let Err(e) = leak_engine.migrate().await { error!("leak migrate: {e}"); }
-    if let Err(e) = sla_engine.migrate().await { error!("sla migrate: {e}"); }
+    if let Err(e) = multiwan_engine.migrate().await {
+        error!("multiwan migrate: {e}");
+    }
+    if let Err(e) = gateway_engine.migrate().await {
+        error!("gateway migrate: {e}");
+    }
+    if let Err(e) = group_engine.migrate().await {
+        error!("group migrate: {e}");
+    }
+    if let Err(e) = policy_engine.migrate().await {
+        error!("policy migrate: {e}");
+    }
+    if let Err(e) = leak_engine.migrate().await {
+        error!("leak migrate: {e}");
+    }
+    if let Err(e) = sla_engine.migrate().await {
+        error!("sla migrate: {e}");
+    }
 
     // Re-apply policies/leaks from DB state at boot
     let instances = multiwan_engine.list().await.unwrap_or_default();
@@ -113,7 +125,10 @@ async fn main() -> anyhow::Result<()> {
             members.insert(g.id, list);
         }
     }
-    if let Err(e) = policy_engine.apply(&instances, &gateways, &groups, &members).await {
+    if let Err(e) = policy_engine
+        .apply(&instances, &gateways, &groups, &members)
+        .await
+    {
         error!("policy apply at boot: {e}");
     }
     if let Err(e) = leak_engine.apply(&instances).await {
@@ -154,7 +169,11 @@ async fn main() -> anyhow::Result<()> {
                         jitter_avg: g.last_jitter_ms,
                         loss_pct: g.last_loss_pct,
                         mos_avg: g.last_mos,
-                        up_seconds: if g.state == aifw_common::GatewayState::Up { 60 } else { 0 },
+                        up_seconds: if g.state == aifw_common::GatewayState::Up {
+                            60
+                        } else {
+                            0
+                        },
                     };
                     let _ = sla.record(&sample).await;
                 }
@@ -169,7 +188,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Initialize IDS engine (only allocate resources if enabled)
-    aifw_ids::IdsEngine::migrate(&pool).await.unwrap_or_else(|e| error!("IDS migration failed: {e}"));
+    aifw_ids::IdsEngine::migrate(&pool)
+        .await
+        .unwrap_or_else(|e| error!("IDS migration failed: {e}"));
     let ids_engine = match aifw_ids::config::RuntimeConfig::load(&pool).await {
         Ok(cfg) if cfg.config().mode != aifw_common::ids::IdsMode::Disabled => {
             match aifw_ids::IdsEngine::new(pool.clone(), pf.clone()).await {
@@ -211,7 +232,11 @@ async fn main() -> anyhow::Result<()> {
                     if let Err(e) = nix::unistd::setuid(uid) {
                         tracing::warn!(error = %e, "failed to setuid");
                     } else {
-                        info!(uid = uid.as_raw(), gid = gid.as_raw(), "dropped privileges to aifw user");
+                        info!(
+                            uid = uid.as_raw(),
+                            gid = gid.as_raw(),
+                            "dropped privileges to aifw user"
+                        );
                     }
                 }
                 Ok(None) => {
@@ -355,7 +380,12 @@ async fn reconcile_pf_main() {
     }
 
     let auto_heal_disabled = std::env::var("AIFW_NO_PF_AUTO_HEAL")
-        .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("no") && !v.eq_ignore_ascii_case("false"))
+        .map(|v| {
+            !v.is_empty()
+                && v != "0"
+                && !v.eq_ignore_ascii_case("no")
+                && !v.eq_ignore_ascii_case("false")
+        })
         .unwrap_or(false);
 
     if auto_heal_disabled {

@@ -19,9 +19,12 @@ pub fn parse_rule(line: &str, source: RuleSource) -> Result<CompiledRule, String
     }
 
     // Find the options section in parentheses
-    let paren_start = line
-        .find('(')
-        .ok_or_else(|| format!("no options section in rule: {}", &line[..line.len().min(80)]))?;
+    let paren_start = line.find('(').ok_or_else(|| {
+        format!(
+            "no options section in rule: {}",
+            &line[..line.len().min(80)]
+        )
+    })?;
     let paren_end = line
         .rfind(')')
         .ok_or_else(|| "no closing paren".to_string())?;
@@ -175,12 +178,8 @@ pub fn parse_rule(line: &str, source: RuleSource) -> Result<CompiledRule, String
             "http_response_body" | "http.response_body" | "file_data" | "file.data" => {
                 set_last_buffer(&mut contents, "http.response_body")
             }
-            "http_stat_code" | "http.stat_code" => {
-                set_last_buffer(&mut contents, "http.stat_code")
-            }
-            "http_stat_msg" | "http.stat_msg" => {
-                set_last_buffer(&mut contents, "http.stat_msg")
-            }
+            "http_stat_code" | "http.stat_code" => set_last_buffer(&mut contents, "http.stat_code"),
+            "http_stat_msg" | "http.stat_msg" => set_last_buffer(&mut contents, "http.stat_msg"),
             "tls_sni" | "tls.sni" => set_last_buffer(&mut contents, "tls.sni"),
             "ja3_hash" | "ja3.hash" | "tls.ja3" => set_last_buffer(&mut contents, "tls.ja3"),
             "dns_query" | "dns.query" => set_last_buffer(&mut contents, "dns.query"),
@@ -197,7 +196,9 @@ pub fn parse_rule(line: &str, source: RuleSource) -> Result<CompiledRule, String
     let no_prefilter = contents.is_empty() && pcre_patterns.is_empty();
 
     Ok(CompiledRule {
-        id: sid.map(|s| format!("suricata-{s}")).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        id: sid
+            .map(|s| format!("suricata-{s}"))
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         sid,
         msg,
         severity,
@@ -434,23 +435,24 @@ fn parse_pcre_pattern(s: &str) -> Option<String> {
     let s = s.trim().trim_start_matches('!');
     // Format: "/pattern/flags" — extract the pattern
     if s.starts_with('/')
-        && let Some(last_slash) = s[1..].rfind('/') {
-            let pattern = &s[1..last_slash + 1];
-            let flags = &s[last_slash + 2..];
-            // Build regex string with flags
-            let mut regex = String::new();
-            if flags.contains('i') {
-                regex.push_str("(?i)");
-            }
-            if flags.contains('s') {
-                regex.push_str("(?s)");
-            }
-            if flags.contains('m') {
-                regex.push_str("(?m)");
-            }
-            regex.push_str(pattern);
-            return Some(regex);
+        && let Some(last_slash) = s[1..].rfind('/')
+    {
+        let pattern = &s[1..last_slash + 1];
+        let flags = &s[last_slash + 2..];
+        // Build regex string with flags
+        let mut regex = String::new();
+        if flags.contains('i') {
+            regex.push_str("(?i)");
         }
+        if flags.contains('s') {
+            regex.push_str("(?s)");
+        }
+        if flags.contains('m') {
+            regex.push_str("(?m)");
+        }
+        regex.push_str(pattern);
+        return Some(regex);
+    }
     None
 }
 
@@ -536,12 +538,18 @@ fn classtype_severity(classtype: &str) -> IdsSeverity {
     match classtype {
         "trojan-activity" | "exploit-kit" | "attempted-admin" | "successful-admin"
         | "shellcode-detect" => IdsSeverity::CRITICAL,
-        "attempted-user" | "successful-user" | "web-application-attack"
-        | "web-application-activity" | "attempted-dos" | "successful-dos" => IdsSeverity::HIGH,
-        "bad-unknown" | "attempted-recon" | "successful-recon-limited"
-        | "suspicious-filename-detect" | "suspicious-login" | "policy-violation" => {
-            IdsSeverity::MEDIUM
-        }
+        "attempted-user"
+        | "successful-user"
+        | "web-application-attack"
+        | "web-application-activity"
+        | "attempted-dos"
+        | "successful-dos" => IdsSeverity::HIGH,
+        "bad-unknown"
+        | "attempted-recon"
+        | "successful-recon-limited"
+        | "suspicious-filename-detect"
+        | "suspicious-login"
+        | "policy-violation" => IdsSeverity::MEDIUM,
         _ => IdsSeverity::INFO,
     }
 }
@@ -568,7 +576,8 @@ mod tests {
 
     #[test]
     fn test_parse_hex_content() {
-        let rule = r#"alert tcp any any -> any any (msg:"Hex test"; content:"|DE AD BE EF|"; sid:2;)"#;
+        let rule =
+            r#"alert tcp any any -> any any (msg:"Hex test"; content:"|DE AD BE EF|"; sid:2;)"#;
         let compiled = parse_rule(rule, RuleSource::Custom).unwrap();
 
         assert_eq!(compiled.contents[0].pattern, &[0xDE, 0xAD, 0xBE, 0xEF]);
@@ -666,7 +675,10 @@ drop tcp any any -> any any (msg:"Rule 3"; content:"test3"; sid:3;)
     #[test]
     fn test_classtype_severity() {
         assert_eq!(classtype_severity("trojan-activity"), IdsSeverity::CRITICAL);
-        assert_eq!(classtype_severity("web-application-attack"), IdsSeverity::HIGH);
+        assert_eq!(
+            classtype_severity("web-application-attack"),
+            IdsSeverity::HIGH
+        );
         assert_eq!(classtype_severity("attempted-recon"), IdsSeverity::MEDIUM);
         assert_eq!(classtype_severity("unknown-type"), IdsSeverity::INFO);
     }

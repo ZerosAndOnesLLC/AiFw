@@ -1,15 +1,15 @@
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use aifw_common::ids::{
-    IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleset, IdsStats,
-    IdsSuppression, RuleFormat, SuppressType,
+    IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleset, IdsStats, IdsSuppression, RuleFormat,
+    SuppressType,
 };
 
 use crate::AppState;
@@ -130,9 +130,7 @@ pub async fn update_config(
     Ok(Json(ApiResponse { data: config }))
 }
 
-pub async fn reload(
-    State(state): State<AppState>,
-) -> Result<Json<MessageResponse>, StatusCode> {
+pub async fn reload(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
     let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
     let count = mgr
@@ -161,7 +159,8 @@ pub async fn list_alerts(
     State(state): State<AppState>,
     Query(q): Query<AlertsQuery>,
 ) -> Result<Json<ApiResponse<Vec<IdsAlert>>>, StatusCode> {
-    let alerts = state.alert_buffer
+    let alerts = state
+        .alert_buffer
         .query(
             q.severity,
             q.src_ip.as_deref(),
@@ -180,7 +179,11 @@ pub async fn get_alert(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<IdsAlert>>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let alert = state.alert_buffer.get(uuid).await.ok_or(StatusCode::NOT_FOUND)?;
+    let alert = state
+        .alert_buffer
+        .get(uuid)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(ApiResponse { data: alert }))
 }
 
@@ -211,7 +214,10 @@ pub async fn classify_alert(
     if !valid.contains(&req.classification.as_str()) {
         return Err(bad_request());
     }
-    state.alert_buffer.classify(uuid, &req.classification, req.notes.as_deref()).await;
+    state
+        .alert_buffer
+        .classify(uuid, &req.classification, req.notes.as_deref())
+        .await;
     Ok(Json(MessageResponse {
         message: format!("alert classified as {}", req.classification),
     }))
@@ -336,9 +342,10 @@ pub async fn update_ruleset(
                 tracing::info!(count, ruleset = %ruleset.name, "rules downloaded and stored");
                 // Reload the ruleset to get updated rule_count
                 if let Ok(rulesets) = mgr.list_rulesets().await
-                    && let Some(updated) = rulesets.into_iter().find(|r| r.id == uuid) {
-                        ruleset = updated;
-                    }
+                    && let Some(updated) = rulesets.into_iter().find(|r| r.id == uuid)
+                {
+                    ruleset = updated;
+                }
             }
             Err(e) => {
                 tracing::error!(error = %e, ruleset = %ruleset.name, "failed to download rules");
@@ -423,10 +430,19 @@ pub async fn get_rule(
         msg: row.4,
         severity: aifw_common::ids::IdsSeverity(row.5 as u8),
         enabled: row.6,
-        action_override: row.7.and_then(|s| aifw_common::ids::IdsAction::from_str(&s)),
+        action_override: row
+            .7
+            .and_then(|s| aifw_common::ids::IdsAction::from_str(&s)),
         hit_count: row.8 as u64,
-        last_hit: row.9.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
-        created_at: chrono::DateTime::parse_from_rfc3339(&row.10).ok().map(|d| d.with_timezone(&Utc)).unwrap_or_else(Utc::now),
+        last_hit: row.9.and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|d| d.with_timezone(&Utc))
+        }),
+        created_at: chrono::DateTime::parse_from_rfc3339(&row.10)
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now),
     };
     Ok(Json(ApiResponse { data: rule }))
 }
@@ -547,12 +563,7 @@ pub async fn create_suppression(
     .await
     .map_err(|_| internal())?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(ApiResponse {
-            data: suppression,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(ApiResponse { data: suppression })))
 }
 
 pub async fn delete_suppression(
@@ -632,4 +643,3 @@ pub struct IdsStatsResponse {
     pub total_rulesets: u32,
     pub running: bool,
 }
-

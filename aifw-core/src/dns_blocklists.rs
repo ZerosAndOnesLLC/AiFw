@@ -61,8 +61,12 @@ pub struct NewBlocklistSource {
     pub redirect_ip: Option<String>,
 }
 
-fn default_true() -> bool { true }
-fn default_action() -> String { "nxdomain".into() }
+fn default_true() -> bool {
+    true
+}
+fn default_action() -> String {
+    "nxdomain".into()
+}
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateBlocklistSource {
@@ -91,7 +95,12 @@ pub struct BlocklistSchedule {
 
 impl Default for BlocklistSchedule {
     fn default() -> Self {
-        Self { cron: "0 0 3 * * *".into(), on_boot: true, concurrency: 4, enabled: false }
+        Self {
+            cron: "0 0 3 * * *".into(),
+            on_boot: true,
+            concurrency: 4,
+            enabled: false,
+        }
     }
 }
 
@@ -123,7 +132,8 @@ pub struct RefreshOutcome {
 // ============================================================================
 
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS dns_blocklist_source (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             name         TEXT NOT NULL UNIQUE,
@@ -139,9 +149,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             last_error   TEXT,
             built_in     INTEGER NOT NULL DEFAULT 0
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS dns_blocklist_schedule (
             id          INTEGER PRIMARY KEY CHECK (id = 1),
             cron        TEXT NOT NULL DEFAULT '0 0 3 * * *',
@@ -149,30 +163,48 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             concurrency INTEGER NOT NULL DEFAULT 4,
             enabled     INTEGER NOT NULL DEFAULT 0
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
     // Idempotent column add for existing deployments that predate the `enabled` flag.
-    let _ = sqlx::query("ALTER TABLE dns_blocklist_schedule ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0")
-        .execute(pool).await;
-    sqlx::query(r#"
+    let _ = sqlx::query(
+        "ALTER TABLE dns_blocklist_schedule ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await;
+    sqlx::query(
+        r#"
         INSERT OR IGNORE INTO dns_blocklist_schedule (id, cron, on_boot, concurrency, enabled)
         VALUES (1, '0 0 3 * * *', 1, 4, 0)
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS dns_whitelist (
             id      INTEGER PRIMARY KEY AUTOINCREMENT,
             pattern TEXT NOT NULL UNIQUE,
             note    TEXT
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS dns_blocklist_custom (
             id      INTEGER PRIMARY KEY AUTOINCREMENT,
             pattern TEXT NOT NULL UNIQUE,
             note    TEXT
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
     seed_builtin_sources(pool).await?;
     Ok(())
@@ -180,30 +212,106 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
 async fn seed_builtin_sources(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let seeds: &[(&str, &str, &str, &str)] = &[
-        ("StevenBlack Hosts",  "ads",      "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts", "hosts"),
-        ("OISD Big",           "ads",      "https://big.oisd.nl/domainswild",                                  "domains"),
-        ("OISD NSFW",          "adult",    "https://nsfw.oisd.nl/domainswild",                                 "domains"),
-        ("AdGuard DNS",        "ads",      "https://v.firebog.net/hosts/AdguardDNS.txt",                       "domains"),
-        ("EasyList",           "ads",      "https://v.firebog.net/hosts/Easylist.txt",                         "domains"),
-        ("EasyPrivacy",        "tracking", "https://v.firebog.net/hosts/Easyprivacy.txt",                      "domains"),
-        ("Disconnect Tracking","tracking", "https://v.firebog.net/hosts/Disconnect-Tracking.txt",              "domains"),
-        ("URLhaus",            "malware",  "https://urlhaus.abuse.ch/downloads/hostfile/",                     "hosts"),
-        ("DigitalSide Threat", "malware",  "https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt","domains"),
-        ("Phishing Army",      "phishing", "https://phishing.army/download/phishing_army_blocklist_extended.txt","domains"),
-        ("NoCoin Mining",      "crypto",   "https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/hosts.txt","hosts"),
-        ("CoinBlocker",        "crypto",   "https://zerodot1.gitlab.io/CoinBlockerLists/hosts",                "hosts"),
-        ("Smart-TV Tracking",  "tracking", "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/SmartTV.txt","hosts"),
-        ("Facebook (social)",  "social",   "https://raw.githubusercontent.com/jmdugan/blocklists/master/corporations/facebook/all","domains"),
+        (
+            "StevenBlack Hosts",
+            "ads",
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+            "hosts",
+        ),
+        (
+            "OISD Big",
+            "ads",
+            "https://big.oisd.nl/domainswild",
+            "domains",
+        ),
+        (
+            "OISD NSFW",
+            "adult",
+            "https://nsfw.oisd.nl/domainswild",
+            "domains",
+        ),
+        (
+            "AdGuard DNS",
+            "ads",
+            "https://v.firebog.net/hosts/AdguardDNS.txt",
+            "domains",
+        ),
+        (
+            "EasyList",
+            "ads",
+            "https://v.firebog.net/hosts/Easylist.txt",
+            "domains",
+        ),
+        (
+            "EasyPrivacy",
+            "tracking",
+            "https://v.firebog.net/hosts/Easyprivacy.txt",
+            "domains",
+        ),
+        (
+            "Disconnect Tracking",
+            "tracking",
+            "https://v.firebog.net/hosts/Disconnect-Tracking.txt",
+            "domains",
+        ),
+        (
+            "URLhaus",
+            "malware",
+            "https://urlhaus.abuse.ch/downloads/hostfile/",
+            "hosts",
+        ),
+        (
+            "DigitalSide Threat",
+            "malware",
+            "https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt",
+            "domains",
+        ),
+        (
+            "Phishing Army",
+            "phishing",
+            "https://phishing.army/download/phishing_army_blocklist_extended.txt",
+            "domains",
+        ),
+        (
+            "NoCoin Mining",
+            "crypto",
+            "https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/hosts.txt",
+            "hosts",
+        ),
+        (
+            "CoinBlocker",
+            "crypto",
+            "https://zerodot1.gitlab.io/CoinBlockerLists/hosts",
+            "hosts",
+        ),
+        (
+            "Smart-TV Tracking",
+            "tracking",
+            "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/SmartTV.txt",
+            "hosts",
+        ),
+        (
+            "Facebook (social)",
+            "social",
+            "https://raw.githubusercontent.com/jmdugan/blocklists/master/corporations/facebook/all",
+            "domains",
+        ),
     ];
 
     for (name, category, url, format) in seeds {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             INSERT OR IGNORE INTO dns_blocklist_source
                 (name, category, url, format, enabled, action, built_in)
             VALUES (?, ?, ?, ?, 0, 'nxdomain', 1)
-        "#)
-        .bind(name).bind(category).bind(url).bind(format)
-        .execute(pool).await?;
+        "#,
+        )
+        .bind(name)
+        .bind(category)
+        .bind(url)
+        .bind(format)
+        .execute(pool)
+        .await?;
     }
     Ok(())
 }
@@ -219,14 +327,29 @@ pub fn validate_url(url: &str) -> Result<(), String> {
     }
     let lower = url.to_ascii_lowercase();
     for bad in [
-        "://127.", "://localhost", "://0.0.0.0",
-        "://169.254.", "://[::1]", "://10.",
-        "://192.168.", "://172.16.", "://172.17.",
-        "://172.18.", "://172.19.", "://172.20.",
-        "://172.21.", "://172.22.", "://172.23.",
-        "://172.24.", "://172.25.", "://172.26.",
-        "://172.27.", "://172.28.", "://172.29.",
-        "://172.30.", "://172.31.",
+        "://127.",
+        "://localhost",
+        "://0.0.0.0",
+        "://169.254.",
+        "://[::1]",
+        "://10.",
+        "://192.168.",
+        "://172.16.",
+        "://172.17.",
+        "://172.18.",
+        "://172.19.",
+        "://172.20.",
+        "://172.21.",
+        "://172.22.",
+        "://172.23.",
+        "://172.24.",
+        "://172.25.",
+        "://172.26.",
+        "://172.27.",
+        "://172.28.",
+        "://172.29.",
+        "://172.30.",
+        "://172.31.",
     ] {
         if lower.contains(bad) {
             return Err(format!("URL targets a private or loopback address: {bad}"));
@@ -250,7 +373,9 @@ pub fn validate_action(action: &str) -> Result<(), String> {
 }
 
 pub fn validate_redirect_ip(action: &str, ip: Option<&str>) -> Result<(), String> {
-    if action != "redirect" { return Ok(()); }
+    if action != "redirect" {
+        return Ok(());
+    }
     let ip = ip.ok_or_else(|| "redirect_ip required when action=redirect".to_string())?;
     if ip.parse::<std::net::IpAddr>().is_err() {
         return Err("redirect_ip must be a valid IPv4 or IPv6 address".into());
@@ -306,15 +431,21 @@ fn row_to_source(row: &sqlx::sqlite::SqliteRow) -> BlocklistSource {
 pub async fn load_source(pool: &SqlitePool, id: i64) -> Option<BlocklistSource> {
     sqlx::query("SELECT * FROM dns_blocklist_source WHERE id = ?")
         .bind(id)
-        .fetch_optional(pool).await.ok().flatten()
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
         .map(|r| row_to_source(&r))
 }
 
 pub async fn load_all_sources(pool: &SqlitePool) -> Vec<BlocklistSource> {
     sqlx::query("SELECT * FROM dns_blocklist_source ORDER BY category, name")
-        .fetch_all(pool).await
+        .fetch_all(pool)
+        .await
         .unwrap_or_default()
-        .iter().map(row_to_source).collect()
+        .iter()
+        .map(row_to_source)
+        .collect()
 }
 
 pub async fn load_schedule(pool: &SqlitePool) -> BlocklistSchedule {
@@ -336,13 +467,20 @@ pub async fn put_schedule(pool: &SqlitePool, s: &BlocklistSchedule) -> Result<()
     if s.concurrency < 1 || s.concurrency > 32 {
         return Err("concurrency must be 1..32".into());
     }
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         UPDATE dns_blocklist_schedule
            SET cron=?, on_boot=?, concurrency=?, enabled=?
          WHERE id=1
-    "#)
-    .bind(&s.cron).bind(s.on_boot as i64).bind(s.concurrency).bind(s.enabled as i64)
-    .execute(pool).await.map_err(|e| e.to_string())?;
+    "#,
+    )
+    .bind(&s.cron)
+    .bind(s.on_boot as i64)
+    .bind(s.concurrency)
+    .bind(s.enabled as i64)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -352,7 +490,9 @@ pub async fn put_schedule(pool: &SqlitePool, s: &BlocklistSchedule) -> Result<()
 pub async fn set_enabled(pool: &SqlitePool, enabled: bool) -> Result<(), String> {
     sqlx::query("UPDATE dns_blocklist_schedule SET enabled = ? WHERE id = 1")
         .bind(enabled as i64)
-        .execute(pool).await.map_err(|e| e.to_string())?;
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
     if enabled {
         // Kick off a refresh of all enabled sources. Returns the outcomes but
@@ -370,23 +510,32 @@ pub async fn set_enabled(pool: &SqlitePool, enabled: bool) -> Result<(), String>
 
 pub async fn load_whitelist(pool: &SqlitePool) -> Vec<String> {
     sqlx::query_as::<_, (String,)>("SELECT pattern FROM dns_whitelist")
-        .fetch_all(pool).await
+        .fetch_all(pool)
+        .await
         .unwrap_or_default()
-        .into_iter().map(|(p,)| p).collect()
+        .into_iter()
+        .map(|(p,)| p)
+        .collect()
 }
 
 pub async fn load_custom_blocks(pool: &SqlitePool) -> Vec<String> {
     sqlx::query_as::<_, (String,)>("SELECT pattern FROM dns_blocklist_custom")
-        .fetch_all(pool).await
+        .fetch_all(pool)
+        .await
         .unwrap_or_default()
-        .into_iter().map(|(p,)| p).collect()
+        .into_iter()
+        .map(|(p,)| p)
+        .collect()
 }
 
 // ============================================================================
 // CRUD
 // ============================================================================
 
-pub async fn create_source(pool: &SqlitePool, req: NewBlocklistSource) -> Result<BlocklistSource, String> {
+pub async fn create_source(
+    pool: &SqlitePool,
+    req: NewBlocklistSource,
+) -> Result<BlocklistSource, String> {
     validate_url(&req.url)?;
     validate_format(&req.format)?;
     validate_action(&req.action)?;
@@ -394,28 +543,44 @@ pub async fn create_source(pool: &SqlitePool, req: NewBlocklistSource) -> Result
     if req.name.trim().is_empty() {
         return Err("name required".into());
     }
-    let res = sqlx::query(r#"
+    let res = sqlx::query(
+        r#"
         INSERT INTO dns_blocklist_source
             (name, category, url, format, enabled, action, redirect_ip, built_in)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-    "#)
-    .bind(&req.name).bind(&req.category).bind(&req.url).bind(&req.format)
-    .bind(req.enabled as i64).bind(&req.action).bind(&req.redirect_ip)
-    .execute(pool).await
+    "#,
+    )
+    .bind(&req.name)
+    .bind(&req.category)
+    .bind(&req.url)
+    .bind(&req.format)
+    .bind(req.enabled as i64)
+    .bind(&req.action)
+    .bind(&req.redirect_ip)
+    .execute(pool)
+    .await
     .map_err(|e| e.to_string())?;
     let id = res.last_insert_rowid();
-    load_source(pool, id).await.ok_or_else(|| "post-insert read failed".into())
+    load_source(pool, id)
+        .await
+        .ok_or_else(|| "post-insert read failed".into())
 }
 
-pub async fn update_source(pool: &SqlitePool, id: i64, req: UpdateBlocklistSource) -> Result<BlocklistSource, String> {
-    let existing = load_source(pool, id).await.ok_or_else(|| "not found".to_string())?;
+pub async fn update_source(
+    pool: &SqlitePool,
+    id: i64,
+    req: UpdateBlocklistSource,
+) -> Result<BlocklistSource, String> {
+    let existing = load_source(pool, id)
+        .await
+        .ok_or_else(|| "not found".to_string())?;
 
-    let name        = req.name.unwrap_or(existing.name.clone());
-    let category    = req.category.unwrap_or(existing.category.clone());
-    let url         = req.url.unwrap_or(existing.url.clone());
-    let format      = req.format.unwrap_or(existing.format.clone());
-    let enabled     = req.enabled.unwrap_or(existing.enabled);
-    let action      = req.action.unwrap_or(existing.action.clone());
+    let name = req.name.unwrap_or(existing.name.clone());
+    let category = req.category.unwrap_or(existing.category.clone());
+    let url = req.url.unwrap_or(existing.url.clone());
+    let format = req.format.unwrap_or(existing.format.clone());
+    let enabled = req.enabled.unwrap_or(existing.enabled);
+    let action = req.action.unwrap_or(existing.action.clone());
     let redirect_ip = match req.redirect_ip {
         Some(v) if v.is_empty() => None,
         Some(v) => Some(v),
@@ -427,29 +592,46 @@ pub async fn update_source(pool: &SqlitePool, id: i64, req: UpdateBlocklistSourc
     validate_action(&action)?;
     validate_redirect_ip(&action, redirect_ip.as_deref())?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         UPDATE dns_blocklist_source
            SET name=?, category=?, url=?, format=?, enabled=?, action=?, redirect_ip=?
          WHERE id=?
-    "#)
-    .bind(&name).bind(&category).bind(&url).bind(&format)
-    .bind(enabled as i64).bind(&action).bind(&redirect_ip).bind(id)
-    .execute(pool).await.map_err(|e| e.to_string())?;
+    "#,
+    )
+    .bind(&name)
+    .bind(&category)
+    .bind(&url)
+    .bind(&format)
+    .bind(enabled as i64)
+    .bind(&action)
+    .bind(&redirect_ip)
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
     if !enabled {
         remove_blocklist_file(&rpz_path_for(id)).await;
         let _ = trigger_rdns_reload().await;
     }
-    load_source(pool, id).await.ok_or_else(|| "post-update read failed".into())
+    load_source(pool, id)
+        .await
+        .ok_or_else(|| "post-update read failed".into())
 }
 
 pub async fn delete_source(pool: &SqlitePool, id: i64) -> Result<(), String> {
-    let existing = load_source(pool, id).await.ok_or_else(|| "not found".to_string())?;
+    let existing = load_source(pool, id)
+        .await
+        .ok_or_else(|| "not found".to_string())?;
     if existing.built_in {
         return Err("cannot delete built-in source — disable it instead".into());
     }
     sqlx::query("DELETE FROM dns_blocklist_source WHERE id=?")
-        .bind(id).execute(pool).await.map_err(|e| e.to_string())?;
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     remove_blocklist_file(&rpz_path_for(id)).await;
     let _ = trigger_rdns_reload().await;
     Ok(())
@@ -462,25 +644,41 @@ pub async fn delete_source(pool: &SqlitePool, id: i64) -> Result<(), String> {
 pub async fn list_patterns(pool: &SqlitePool, table: &str) -> Vec<PatternEntry> {
     let q = format!("SELECT id, pattern, note FROM {table} ORDER BY pattern");
     sqlx::query_as::<_, (i64, String, Option<String>)>(&q)
-        .fetch_all(pool).await
+        .fetch_all(pool)
+        .await
         .unwrap_or_default()
         .into_iter()
         .map(|(id, pattern, note)| PatternEntry { id, pattern, note })
         .collect()
 }
 
-pub async fn insert_pattern(pool: &SqlitePool, table: &str, req: NewPatternEntry) -> Result<PatternEntry, String> {
+pub async fn insert_pattern(
+    pool: &SqlitePool,
+    table: &str,
+    req: NewPatternEntry,
+) -> Result<PatternEntry, String> {
     validate_pattern(&req.pattern)?;
     let q = format!("INSERT INTO {table} (pattern, note) VALUES (?, ?)");
     let res = sqlx::query(&q)
-        .bind(&req.pattern).bind(&req.note)
-        .execute(pool).await.map_err(|e| e.to_string())?;
-    Ok(PatternEntry { id: res.last_insert_rowid(), pattern: req.pattern, note: req.note })
+        .bind(&req.pattern)
+        .bind(&req.note)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(PatternEntry {
+        id: res.last_insert_rowid(),
+        pattern: req.pattern,
+        note: req.note,
+    })
 }
 
 pub async fn delete_pattern(pool: &SqlitePool, table: &str, id: i64) -> Result<(), String> {
     let q = format!("DELETE FROM {table} WHERE id=?");
-    sqlx::query(&q).bind(id).execute(pool).await.map_err(|e| e.to_string())?;
+    sqlx::query(&q)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -492,15 +690,22 @@ async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let out = tokio::process::Command::new("curl")
         .args([
             "-sfL",
-            "--max-time", &HTTP_TIMEOUT_SECS.to_string(),
-            "--max-filesize", &MAX_DOWNLOAD_BYTES.to_string(),
-            "-A", "AiFw-Blocklist-Updater/1.0",
+            "--max-time",
+            &HTTP_TIMEOUT_SECS.to_string(),
+            "--max-filesize",
+            &MAX_DOWNLOAD_BYTES.to_string(),
+            "-A",
+            "AiFw-Blocklist-Updater/1.0",
             url,
         ])
-        .output().await
+        .output()
+        .await
         .map_err(|e| format!("spawn curl failed: {e}"))?;
     if !out.status.success() {
-        return Err(format!("HTTP fetch failed (curl exit {})", out.status.code().unwrap_or(-1)));
+        return Err(format!(
+            "HTTP fetch failed (curl exit {})",
+            out.status.code().unwrap_or(-1)
+        ));
     }
     if out.stdout.len() > MAX_DOWNLOAD_BYTES {
         return Err(format!("response exceeds {MAX_DOWNLOAD_BYTES} bytes"));
@@ -514,7 +719,9 @@ pub fn parse_body(body: &[u8], format: &str) -> HashSet<String> {
 
     for raw_line in body.lines() {
         let line = raw_line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
 
         let candidates: Vec<&str> = match format {
             "hosts" => {
@@ -540,9 +747,7 @@ pub fn parse_body(body: &[u8], format: &str) -> HashSet<String> {
         };
 
         for c in candidates {
-            let d = c.trim()
-                .trim_end_matches('.')
-                .trim_start_matches("*.");
+            let d = c.trim().trim_end_matches('.').trim_start_matches("*.");
             if d.is_empty() || d == "localhost" || d == "local" || d == "broadcasthost" {
                 continue;
             }
@@ -555,9 +760,16 @@ pub fn parse_body(body: &[u8], format: &str) -> HashSet<String> {
     domains
 }
 
-pub fn build_rpz(domains: &HashSet<String>, action: &str, redirect_ip: Option<&str>, zone: &str) -> String {
+pub fn build_rpz(
+    domains: &HashSet<String>,
+    action: &str,
+    redirect_ip: Option<&str>,
+    zone: &str,
+) -> String {
     let serial = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let mut out = format!(
         "$TTL 300\n@ IN SOA {zone}. admin.{zone}. {serial} 3600 900 604800 300\n  IN NS  localhost.\n"
     );
@@ -573,8 +785,8 @@ pub fn build_rpz(domains: &HashSet<String>, action: &str, redirect_ip: Option<&s
             }
         }
         "nodata" => Box::new(|d| format!("{d} CNAME *.\n")),
-        "drop"   => Box::new(|d| format!("{d} CNAME rpz-drop.\n")),
-        _        => Box::new(|d| format!("{d} CNAME .\n")),
+        "drop" => Box::new(|d| format!("{d} CNAME rpz-drop.\n")),
+        _ => Box::new(|d| format!("{d} CNAME .\n")),
     };
     for d in sorted {
         out.push_str(&action_line(d));
@@ -591,7 +803,8 @@ pub fn build_rpz(domains: &HashSet<String>, action: &str, redirect_ip: Option<&s
 /// `install(1)` is atomic on the destination filesystem.
 async fn atomic_write(path: &std::path::Path, body: &str) -> std::io::Result<()> {
     use tokio::process::Command;
-    let basename = path.file_name()
+    let basename = path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("blocklist.rpz");
     let tmp = format!("/tmp/aifw_blocklist_{basename}.tmp");
@@ -600,15 +813,19 @@ async fn atomic_write(path: &std::path::Path, body: &str) -> std::io::Result<()>
     if let Some(parent) = path.parent() {
         let _ = Command::new("/usr/local/bin/sudo")
             .args(["/bin/mkdir", "-p", parent.to_str().unwrap_or("")])
-            .output().await;
+            .output()
+            .await;
     }
 
     tokio::fs::write(&tmp, body).await?;
 
-    let dest = path.to_str().ok_or_else(|| std::io::Error::other("non-utf8 path"))?;
+    let dest = path
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("non-utf8 path"))?;
     let out = Command::new("/usr/local/bin/sudo")
         .args(["/usr/bin/install", "-m", "0644", &tmp, dest])
-        .output().await?;
+        .output()
+        .await?;
     let _ = tokio::fs::remove_file(&tmp).await;
     if !out.status.success() {
         return Err(std::io::Error::other(format!(
@@ -626,7 +843,8 @@ async fn remove_blocklist_file(path: &std::path::Path) {
     if let Some(p) = path.to_str() {
         let _ = Command::new("/usr/local/bin/sudo")
             .args(["/bin/rm", "-f", p])
-            .output().await;
+            .output()
+            .await;
     }
 }
 
@@ -640,8 +858,12 @@ pub fn custom_rpz_path() -> PathBuf {
 
 pub async fn refresh_source(pool: &SqlitePool, id: i64) -> RefreshOutcome {
     let mut outcome = RefreshOutcome {
-        source_id: id, ok: false, rule_count: 0, bytes: 0,
-        sha256: String::new(), error: None,
+        source_id: id,
+        ok: false,
+        rule_count: 0,
+        bytes: 0,
+        sha256: String::new(),
+        error: None,
     };
 
     let sched = load_schedule(pool).await;
@@ -696,10 +918,13 @@ pub async fn refresh_source(pool: &SqlitePool, id: i64) -> RefreshOutcome {
         build_rpz(&domains, &src.action, src.redirect_ip.as_deref(), &zone)
     };
 
-    let rule_count = zone_body.lines().filter(|l| {
-        let l = l.trim();
-        !l.is_empty() && !l.starts_with(';') && !l.starts_with('$') && !l.starts_with('@')
-    }).count() as i64;
+    let rule_count = zone_body
+        .lines()
+        .filter(|l| {
+            let l = l.trim();
+            !l.is_empty() && !l.starts_with(';') && !l.starts_with('$') && !l.starts_with('@')
+        })
+        .count() as i64;
 
     if let Err(e) = atomic_write(&rpz_path_for(id), &zone_body).await {
         record_error(pool, id, &format!("write rpz: {e}")).await;
@@ -715,24 +940,38 @@ pub async fn refresh_source(pool: &SqlitePool, id: i64) -> RefreshOutcome {
 
 async fn record_success(pool: &SqlitePool, id: i64, rules: i64, sha: &str) {
     let now = chrono::Utc::now().timestamp();
-    let _ = sqlx::query(r#"
+    let _ = sqlx::query(
+        r#"
         UPDATE dns_blocklist_source
            SET last_updated = ?, last_sha256 = ?, rule_count = ?, last_error = NULL
          WHERE id = ?
-    "#).bind(now).bind(sha).bind(rules).bind(id).execute(pool).await;
+    "#,
+    )
+    .bind(now)
+    .bind(sha)
+    .bind(rules)
+    .bind(id)
+    .execute(pool)
+    .await;
 }
 
 async fn record_unchanged(pool: &SqlitePool, id: i64) {
     let now = chrono::Utc::now().timestamp();
     let _ = sqlx::query(
-        "UPDATE dns_blocklist_source SET last_updated = ?, last_error = NULL WHERE id = ?"
-    ).bind(now).bind(id).execute(pool).await;
+        "UPDATE dns_blocklist_source SET last_updated = ?, last_error = NULL WHERE id = ?",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await;
 }
 
 async fn record_error(pool: &SqlitePool, id: i64, err: &str) {
-    let _ = sqlx::query(
-        "UPDATE dns_blocklist_source SET last_error = ? WHERE id = ?"
-    ).bind(err).bind(id).execute(pool).await;
+    let _ = sqlx::query("UPDATE dns_blocklist_source SET last_error = ? WHERE id = ?")
+        .bind(err)
+        .bind(id)
+        .execute(pool)
+        .await;
 }
 
 pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
@@ -748,12 +987,17 @@ pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
     // rebuild.
     let mut implicit: Vec<String> = Vec::new();
     if let Ok(rows) = sqlx::query_as::<_, (String, String)>(
-        "SELECT hostname, domain FROM dns_host_overrides WHERE enabled = 1"
-    ).fetch_all(pool).await {
+        "SELECT hostname, domain FROM dns_host_overrides WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await
+    {
         for (host, domain) in rows {
             let h = host.trim().trim_matches('.');
             let d = domain.trim().trim_matches('.');
-            if h.is_empty() && d.is_empty() { continue; }
+            if h.is_empty() && d.is_empty() {
+                continue;
+            }
             let fqdn = if d.is_empty() {
                 h.to_string()
             } else if h.is_empty() || h == "@" {
@@ -761,12 +1005,16 @@ pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
             } else {
                 format!("{h}.{d}")
             };
-            if !fqdn.is_empty() { implicit.push(fqdn); }
+            if !fqdn.is_empty() {
+                implicit.push(fqdn);
+            }
         }
     }
-    if let Ok(rows) = sqlx::query_as::<_, (String,)>(
-        "SELECT domain FROM dns_domain_overrides WHERE enabled = 1"
-    ).fetch_all(pool).await {
+    if let Ok(rows) =
+        sqlx::query_as::<_, (String,)>("SELECT domain FROM dns_domain_overrides WHERE enabled = 1")
+            .fetch_all(pool)
+            .await
+    {
         for (d,) in rows {
             let d = d.trim().trim_matches('.');
             if !d.is_empty() {
@@ -783,7 +1031,9 @@ pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
     implicit.dedup();
 
     let serial = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let mut out = format!(
         "$TTL 300\n@ IN SOA rpz.custom. admin.rpz.custom. {serial} 3600 900 604800 300\n  IN NS  localhost.\n"
     );
@@ -796,12 +1046,16 @@ pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
     }
     for w in &whitelist {
         let d = w.trim().trim_end_matches('.');
-        if d.is_empty() { continue; }
+        if d.is_empty() {
+            continue;
+        }
         out.push_str(&format!("{d} CNAME rpz-passthru.\n"));
     }
     for c in &custom {
         let d = c.trim().trim_end_matches('.');
-        if d.is_empty() { continue; }
+        if d.is_empty() {
+            continue;
+        }
         out.push_str(&format!("{d} CNAME .\n"));
     }
     atomic_write(&custom_rpz_path(), &out).await?;
@@ -819,7 +1073,9 @@ pub async fn refresh_all(pool: &SqlitePool) -> Vec<RefreshOutcome> {
 
     let mut handles = Vec::new();
     for s in sources {
-        if !s.enabled { continue; }
+        if !s.enabled {
+            continue;
+        }
         let pool = pool.clone();
         let permits = permits.clone();
         handles.push(tokio::spawn(async move {
@@ -830,7 +1086,9 @@ pub async fn refresh_all(pool: &SqlitePool) -> Vec<RefreshOutcome> {
 
     let mut out = Vec::new();
     for h in handles {
-        if let Ok(o) = h.await { out.push(o); }
+        if let Ok(o) = h.await {
+            out.push(o);
+        }
     }
     if let Err(e) = rebuild_custom_rpz(pool).await {
         tracing::warn!("rebuild custom.rpz failed: {}", e);

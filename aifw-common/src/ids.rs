@@ -18,7 +18,6 @@ pub enum IdsMode {
     Disabled,
 }
 
-
 impl std::fmt::Display for IdsMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -265,7 +264,11 @@ impl Default for IdsConfig {
     fn default() -> Self {
         Self {
             mode: IdsMode::Disabled,
-            home_net: vec!["10.0.0.0/8".into(), "172.16.0.0/12".into(), "192.168.0.0/16".into()],
+            home_net: vec![
+                "10.0.0.0/8".into(),
+                "172.16.0.0/12".into(),
+                "192.168.0.0/16".into(),
+            ],
             external_net: vec!["!$HOME_NET".into()],
             interfaces: Vec::new(),
             alert_retention_days: 30,

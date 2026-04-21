@@ -195,9 +195,10 @@ impl PolicyEngine {
             match p.action_kind.as_str() {
                 "set_instance" => {
                     if let Some(inst) = inst_by_id.get(&p.target_id)
-                        && let Some(line) = emit_set_instance(p, inst, &label) {
-                            pbr.push(line);
-                        }
+                        && let Some(line) = emit_set_instance(p, inst, &label)
+                    {
+                        pbr.push(line);
+                    }
                 }
                 "set_gateway" => {
                     if let Some(gw) = gw_by_id.get(&p.target_id) {
@@ -211,9 +212,7 @@ impl PolicyEngine {
                         let empty = Vec::new();
                         let members = group_members.get(&group.id).unwrap_or(&empty);
                         let sel = select(group, members, gateways);
-                        if let Some((out, rep)) =
-                            emit_set_group(p, group, sel, &gw_by_id, &label)
-                        {
+                        if let Some((out, rep)) = emit_set_group(p, group, sel, &gw_by_id, &label) {
                             pbr.push(out);
                             reply.push(rep);
                         }
@@ -349,9 +348,7 @@ fn emit_set_group(
             if group.sticky == StickyMode::Src {
                 out.push_str(" sticky-address");
             }
-            out.push_str(&format!(
-                " keep state (if-bound) label \"{label}:grp\""
-            ));
+            out.push_str(&format!(" keep state (if-bound) label \"{label}:grp\""));
 
             // Reply: use first healthy gw as return path
             let first = gw_by_id.get(&list[0].0)?;
@@ -405,23 +402,14 @@ fn row_to_policy(r: &sqlx::sqlite::SqliteRow) -> PolicyRule {
         geoip_country: r.get("geoip_country"),
         schedule_id: r.get("schedule_id"),
         action_kind: r.get("action_kind"),
-        target_id: r
-            .get::<String, _>("target_id")
-            .parse()
-            .unwrap_or_default(),
+        target_id: r.get::<String, _>("target_id").parse().unwrap_or_default(),
         sticky: StickyMode::parse(&r.get::<String, _>("sticky")).unwrap_or(StickyMode::None),
         fallback_target_id: r
             .get::<Option<String>, _>("fallback_target_id")
             .and_then(|s| s.parse().ok()),
         description: r.get("description"),
-        created_at: r
-            .get::<String, _>("created_at")
-            .parse()
-            .unwrap_or_default(),
-        updated_at: r
-            .get::<String, _>("updated_at")
-            .parse()
-            .unwrap_or_default(),
+        created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
+        updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
     }
 }
 

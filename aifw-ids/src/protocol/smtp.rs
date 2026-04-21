@@ -31,7 +31,11 @@ impl ProtocolParser for SmtpParser {
                 }
             }
             FlowDirection::ToServer => {
-                let upper: Vec<u8> = payload.iter().take(8).map(|b| b.to_ascii_uppercase()).collect();
+                let upper: Vec<u8> = payload
+                    .iter()
+                    .take(8)
+                    .map(|b| b.to_ascii_uppercase())
+                    .collect();
                 if upper.starts_with(b"EHLO ")
                     || upper.starts_with(b"HELO ")
                     || upper.starts_with(b"MAIL ")
@@ -91,19 +95,20 @@ impl SmtpParser {
     fn parse_response(&self, text: &str, buffers: &mut StickyBuffers) -> ParseResult {
         // SMTP response: "NNN text" or "NNN-text" for multiline
         if let Some(line) = text.lines().next()
-            && line.len() >= 3 {
-                let code = &line[..3];
-                if code.bytes().all(|b| b.is_ascii_digit()) {
-                    buffers.insert("smtp.reply_code".into(), code.as_bytes().to_vec());
-                    if line.len() > 4 {
-                        buffers.insert("smtp.reply_msg".into(), line[4..].as_bytes().to_vec());
-                    }
-                    // Greeting banner
-                    if code == "220" {
-                        buffers.insert("smtp.banner".into(), line[4..].trim().as_bytes().to_vec());
-                    }
+            && line.len() >= 3
+        {
+            let code = &line[..3];
+            if code.bytes().all(|b| b.is_ascii_digit()) {
+                buffers.insert("smtp.reply_code".into(), code.as_bytes().to_vec());
+                if line.len() > 4 {
+                    buffers.insert("smtp.reply_msg".into(), line[4..].as_bytes().to_vec());
+                }
+                // Greeting banner
+                if code == "220" {
+                    buffers.insert("smtp.banner".into(), line[4..].trim().as_bytes().to_vec());
                 }
             }
+        }
 
         ParseResult::Ok
     }
@@ -114,9 +119,10 @@ fn extract_angle_bracket(s: &str) -> String {
     let trimmed = s.trim();
     if let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.find('>')
-            && end > start {
-                return trimmed[start + 1..end].to_string();
-            }
+        && end > start
+    {
+        return trimmed[start + 1..end].to_string();
+    }
     trimmed.to_string()
 }
 
@@ -159,7 +165,10 @@ mod tests {
 
         assert!(matches!(result, ParseResult::Ok));
         assert_eq!(buffers.get("smtp.helo").unwrap(), b"client.example.com");
-        assert_eq!(buffers.get("smtp.mail_from").unwrap(), b"sender@example.com");
+        assert_eq!(
+            buffers.get("smtp.mail_from").unwrap(),
+            b"sender@example.com"
+        );
         assert_eq!(buffers.get("smtp.rcpt_to").unwrap(), b"rcpt@example.org");
     }
 
@@ -183,7 +192,10 @@ mod tests {
     #[test]
     fn test_extract_angle_bracket() {
         assert_eq!(extract_angle_bracket("<user@domain>"), "user@domain");
-        assert_eq!(extract_angle_bracket("  <test@test.com>  "), "test@test.com");
+        assert_eq!(
+            extract_angle_bracket("  <test@test.com>  "),
+            "test@test.com"
+        );
         assert_eq!(extract_angle_bracket("bare@domain"), "bare@domain");
     }
 
@@ -193,7 +205,9 @@ mod tests {
         let key = FlowKey::from_packet(
             "10.0.0.1".parse().unwrap(),
             "10.0.0.2".parse().unwrap(),
-            1234, 25, 6,
+            1234,
+            25,
+            6,
         );
         let pkt = crate::decode::DecodedPacket {
             timestamp_us: 0,

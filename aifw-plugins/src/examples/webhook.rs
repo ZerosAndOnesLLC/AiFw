@@ -101,7 +101,11 @@ impl Plugin for WebhookPlugin {
     async fn on_hook(&self, event: &HookEvent, _ctx: &PluginContext) -> HookAction {
         match &event.data {
             HookEventData::Rule {
-                action, src_ip, dst_ip, protocol, ..
+                action,
+                src_ip,
+                dst_ip,
+                protocol,
+                ..
             } => {
                 if self.notify_on_block && action == "block" {
                     self.queue_notification(
@@ -117,12 +121,20 @@ impl Plugin for WebhookPlugin {
                 }
             }
             HookEventData::Connection {
-                src_ip, dst_ip, src_port, dst_port, protocol, ..
+                src_ip,
+                dst_ip,
+                src_port,
+                dst_port,
+                protocol,
+                ..
             } => {
                 if self.notify_on_connection {
                     self.queue_notification(
                         "new_connection",
-                        &format!("{}:{} -> {}:{} ({})", src_ip, src_port, dst_ip, dst_port, protocol),
+                        &format!(
+                            "{}:{} -> {}:{} ({})",
+                            src_ip, src_port, dst_ip, dst_port, protocol
+                        ),
                         serde_json::json!({
                             "src_ip": src_ip.to_string(),
                             "dst_ip": dst_ip.to_string(),
@@ -134,7 +146,9 @@ impl Plugin for WebhookPlugin {
                     .await;
                 }
             }
-            HookEventData::Log { action, details, .. } => {
+            HookEventData::Log {
+                action, details, ..
+            } => {
                 self.queue_notification(
                     "audit",
                     &format!("{}: {}", action, details),

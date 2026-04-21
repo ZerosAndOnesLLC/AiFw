@@ -334,10 +334,7 @@ impl GatewayEngine {
             .iter()
             .map(|r| GatewayEvent {
                 id: r.get("id"),
-                gateway_id: r
-                    .get::<String, _>("gateway_id")
-                    .parse()
-                    .unwrap_or_default(),
+                gateway_id: r.get::<String, _>("gateway_id").parse().unwrap_or_default(),
                 ts: r.get::<String, _>("ts").parse().unwrap_or_default(),
                 from_state: r
                     .get::<Option<String>, _>("from_state")
@@ -452,7 +449,10 @@ impl GatewayEngine {
         let engine = Arc::clone(self);
         let spec = ProbeSpec {
             kind: ProbeKind::parse(&gw.monitor_kind).unwrap_or(ProbeKind::Icmp),
-            target: gw.monitor_target.clone().unwrap_or_else(|| gw.next_hop.clone()),
+            target: gw
+                .monitor_target
+                .clone()
+                .unwrap_or_else(|| gw.next_hop.clone()),
             port: gw.monitor_port,
             expect: gw.monitor_expect.clone(),
             timeout_ms: gw.timeout_ms,
@@ -512,9 +512,7 @@ fn row_to_gw(r: &sqlx::sqlite::SqliteRow) -> Gateway {
         timeout_ms: r.get::<i64, _>("timeout_ms") as u64,
         loss_pct_down: r.get("loss_pct_down"),
         loss_pct_up: r.get("loss_pct_up"),
-        latency_ms_down: r
-            .get::<Option<i64>, _>("latency_ms_down")
-            .map(|v| v as u64),
+        latency_ms_down: r.get::<Option<i64>, _>("latency_ms_down").map(|v| v as u64),
         latency_ms_up: r.get::<Option<i64>, _>("latency_ms_up").map(|v| v as u64),
         consec_fail_down: r.get::<i64, _>("consec_fail_down") as u32,
         consec_ok_up: r.get::<i64, _>("consec_ok_up") as u32,
@@ -522,8 +520,7 @@ fn row_to_gw(r: &sqlx::sqlite::SqliteRow) -> Gateway {
         dampening_secs: r.get::<i64, _>("dampening_secs") as u32,
         dscp_tag: r.get::<Option<i64>, _>("dscp_tag").map(|v| v as u8),
         enabled: r.get::<i64, _>("enabled") != 0,
-        state: GatewayState::parse(&r.get::<String, _>("state"))
-            .unwrap_or(GatewayState::Unknown),
+        state: GatewayState::parse(&r.get::<String, _>("state")).unwrap_or(GatewayState::Unknown),
         last_rtt_ms: r.get("last_rtt_ms"),
         last_jitter_ms: r.get("last_jitter_ms"),
         last_loss_pct: r.get("last_loss_pct"),
@@ -531,14 +528,8 @@ fn row_to_gw(r: &sqlx::sqlite::SqliteRow) -> Gateway {
         last_probe_ts: r
             .get::<Option<String>, _>("last_probe_ts")
             .and_then(|s| s.parse().ok()),
-        created_at: r
-            .get::<String, _>("created_at")
-            .parse()
-            .unwrap_or_default(),
-        updated_at: r
-            .get::<String, _>("updated_at")
-            .parse()
-            .unwrap_or_default(),
+        created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
+        updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
     }
 }
 

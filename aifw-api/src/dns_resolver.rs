@@ -1,4 +1,8 @@
-use axum::{extract::{Path, State}, http::StatusCode, Json};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
@@ -22,27 +26,25 @@ fn build_soa_root_query() -> Vec<u8> {
     let id: u16 = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
-        .unwrap_or(0xBEEF) & 0xFFFF) as u16;
+        .unwrap_or(0xBEEF)
+        & 0xFFFF) as u16;
     let mut q = Vec::with_capacity(17);
-    q.extend_from_slice(&id.to_be_bytes());    // transaction id
+    q.extend_from_slice(&id.to_be_bytes()); // transaction id
     q.extend_from_slice(&0x0100u16.to_be_bytes()); // flags: std query, RD=1
-    q.extend_from_slice(&1u16.to_be_bytes());  // QDCOUNT
-    q.extend_from_slice(&0u16.to_be_bytes());  // ANCOUNT
-    q.extend_from_slice(&0u16.to_be_bytes());  // NSCOUNT
-    q.extend_from_slice(&0u16.to_be_bytes());  // ARCOUNT
-    q.push(0x00);                              // QNAME = . (root)
-    q.extend_from_slice(&6u16.to_be_bytes());  // QTYPE = SOA
-    q.extend_from_slice(&1u16.to_be_bytes());  // QCLASS = IN
+    q.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+    q.extend_from_slice(&0u16.to_be_bytes()); // ANCOUNT
+    q.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+    q.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
+    q.push(0x00); // QNAME = . (root)
+    q.extend_from_slice(&6u16.to_be_bytes()); // QTYPE = SOA
+    q.extend_from_slice(&1u16.to_be_bytes()); // QCLASS = IN
     q
 }
 
 /// A valid DNS response echoes our transaction id in the first 2 bytes
 /// and has the QR (response) bit set in the flags.
 fn response_matches(query: &[u8], resp: &[u8]) -> bool {
-    resp.len() >= 12
-        && resp[0] == query[0]
-        && resp[1] == query[1]
-        && (resp[2] & 0x80) != 0
+    resp.len() >= 12 && resp[0] == query[0] && resp[1] == query[1] && (resp[2] & 0x80) != 0
 }
 
 /// Single UDP probe against `addr` (e.g. "127.0.0.1:53") with the given timeout.
@@ -75,7 +77,9 @@ pub(crate) async fn probe_dns_tcp_at(addr: &str, timeout: std::time::Duration) -
         let mut len_buf = [0u8; 2];
         stream.read_exact(&mut len_buf).await.ok()?;
         let rlen = u16::from_be_bytes(len_buf) as usize;
-        if rlen == 0 || rlen > 4096 { return Some(false); }
+        if rlen == 0 || rlen > 4096 {
+            return Some(false);
+        }
         let mut buf = vec![0u8; rlen];
         stream.read_exact(&mut buf).await.ok()?;
         Some(response_matches(&q, &buf))
@@ -95,10 +99,18 @@ pub(crate) async fn wait_for_dns_ready(deadline: std::time::Duration) -> (bool, 
     let mut udp_ok = false;
     let mut tcp_ok = false;
     while start.elapsed() < deadline {
-        if !udp_ok { udp_ok = probe_dns_udp(per_try).await; }
-        if !tcp_ok { tcp_ok = probe_dns_tcp(per_try).await; }
-        if udp_ok && tcp_ok { break; }
-        if udp_ok && start.elapsed() + per_try >= deadline { break; }
+        if !udp_ok {
+            udp_ok = probe_dns_udp(per_try).await;
+        }
+        if !tcp_ok {
+            tcp_ok = probe_dns_tcp(per_try).await;
+        }
+        if udp_ok && tcp_ok {
+            break;
+        }
+        if udp_ok && start.elapsed() + per_try >= deadline {
+            break;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     (udp_ok, tcp_ok)
@@ -108,13 +120,24 @@ pub(crate) async fn wait_for_dns_ready(deadline: std::time::Duration) -> (bool, 
 async fn run_cmd_timeout(program: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
     tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        Command::new(program).args(args).output()
-    ).await.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "command timed out")))
+        Command::new(program).args(args).output(),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "command timed out",
+        ))
+    })
 }
 
 /// Run a service command with timeout (no shell interpolation).
 async fn service_cmd(service: &str, action: &str) {
-    let _ = run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/service", service, action]).await;
+    let _ = run_cmd_timeout(
+        "/usr/local/bin/sudo",
+        &["/usr/sbin/service", service, action],
+    )
+    .await;
 }
 
 /// Run sysrc safely without shell interpolation.
@@ -124,7 +147,9 @@ async fn sysrc(setting: &str) {
 
 /// Read a sysrc value — returns the raw value without the "key: " prefix.
 async fn sysrc_get(key: &str) -> Option<String> {
-    let out = run_cmd_timeout("/usr/sbin/sysrc", &["-n", key]).await.ok()?;
+    let out = run_cmd_timeout("/usr/sbin/sysrc", &["-n", key])
+        .await
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -156,7 +181,9 @@ async fn sudo_copy(src: &str, dest: &str) {
 fn validate_domain(domain: &str) -> bool {
     !domain.is_empty()
         && domain.len() <= 253
-        && domain.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        && domain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
         && !domain.contains("..")
         && !domain.starts_with('-')
         && !domain.starts_with('.')
@@ -175,15 +202,15 @@ fn sanitize_zone_filename(name: &str) -> String {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResolverConfig {
-    pub backend: String,  // "unbound" or "rdns"
+    pub backend: String, // "unbound" or "rdns"
     pub enabled: bool,
     pub listen_interfaces: Vec<String>,
     pub port: u16,
     pub dnssec: bool,
     pub dns64: bool,
     pub register_dhcp: bool,
-    pub dhcp_domain: String,  // domain for DHCP lease DNS registration (e.g. "local")
-    pub local_zone_type: String,  // transparent, static, redirect, etc.
+    pub dhcp_domain: String, // domain for DHCP lease DNS registration (e.g. "local")
+    pub local_zone_type: String, // transparent, static, redirect, etc.
     pub outgoing_interface: Option<String>,
     // Advanced
     pub num_threads: u32,
@@ -208,16 +235,16 @@ pub struct ResolverConfig {
     pub private_addresses: Vec<String>,
     // Forwarding
     pub forwarding_enabled: bool,
-    pub forwarding_servers: Vec<String>,   // plain upstream DNS IPs (e.g. "8.8.8.8", "1.1.1.1")
-    pub use_system_nameservers: bool,      // also forward to /etc/resolv.conf nameservers
+    pub forwarding_servers: Vec<String>, // plain upstream DNS IPs (e.g. "8.8.8.8", "1.1.1.1")
+    pub use_system_nameservers: bool,    // also forward to /etc/resolv.conf nameservers
     // DoT
     pub dot_enabled: bool,
-    pub dot_upstream: Vec<String>,  // "1.1.1.1@853#cloudflare-dns.com"
+    pub dot_upstream: Vec<String>, // "1.1.1.1@853#cloudflare-dns.com"
     // Blocklists
     pub blocklists_enabled: bool,
     pub blocklist_urls: Vec<String>,
     pub whitelist: Vec<String>,
-    pub blocklist_action: String,  // "nxdomain" | "redirect"
+    pub blocklist_action: String, // "nxdomain" | "redirect"
     pub blocklist_redirect_ip: Option<String>,
     // Custom
     pub custom_options: String,
@@ -229,7 +256,9 @@ pub struct ResolverConfig {
     pub probe_enabled: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for ResolverConfig {
     fn default() -> Self {
@@ -261,8 +290,12 @@ impl Default for ResolverConfig {
             hide_version: true,
             rebind_protection: true,
             private_addresses: vec![
-                "10.0.0.0/8".into(), "172.16.0.0/12".into(), "192.168.0.0/16".into(),
-                "169.254.0.0/16".into(), "fd00::/8".into(), "fe80::/10".into(),
+                "10.0.0.0/8".into(),
+                "172.16.0.0/12".into(),
+                "192.168.0.0/16".into(),
+                "169.254.0.0/16".into(),
+                "fd00::/8".into(),
+                "fe80::/10".into(),
             ],
             // Default ON. Iterative recursion in rDNS 1.12.8 returns referrals
             // instead of following them to completion, leaving clients with
@@ -294,8 +327,8 @@ pub struct HostOverride {
     pub id: String,
     pub hostname: String,
     pub domain: String,
-    pub record_type: String,  // A, AAAA, MX, CNAME
-    pub value: String,        // IP address or target
+    pub record_type: String, // A, AAAA, MX, CNAME
+    pub value: String,       // IP address or target
     pub mx_priority: Option<u16>,
     pub description: Option<String>,
     pub enabled: bool,
@@ -317,7 +350,7 @@ pub struct CreateHostOverride {
 pub struct DomainOverride {
     pub id: String,
     pub domain: String,
-    pub server: String,       // IP:port of upstream DNS
+    pub server: String, // IP:port of upstream DNS
     pub description: Option<String>,
     pub enabled: bool,
     pub created_at: String,
@@ -334,8 +367,8 @@ pub struct CreateDomainOverride {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AccessListEntry {
     pub id: String,
-    pub network: String,      // CIDR
-    pub action: String,       // allow, deny, refuse, allow_snoop
+    pub network: String, // CIDR
+    pub action: String,  // allow, deny, refuse, allow_snoop
     pub description: Option<String>,
     pub created_at: String,
 }
@@ -373,12 +406,20 @@ pub struct ResolverStatus {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ApiResponse<T: Serialize> { pub data: T }
+pub struct ApiResponse<T: Serialize> {
+    pub data: T,
+}
 #[derive(Debug, Serialize)]
-pub struct MessageResponse { pub message: String }
+pub struct MessageResponse {
+    pub message: String,
+}
 
-fn internal() -> StatusCode { StatusCode::INTERNAL_SERVER_ERROR }
-fn bad_request() -> StatusCode { StatusCode::BAD_REQUEST }
+fn internal() -> StatusCode {
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+fn bad_request() -> StatusCode {
+    StatusCode::BAD_REQUEST
+}
 
 // ============================================================
 // DB Migration
@@ -388,28 +429,40 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query(r#"CREATE TABLE IF NOT EXISTS dns_resolver_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)"#)
         .execute(pool).await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS dns_host_overrides (
             id TEXT PRIMARY KEY, hostname TEXT NOT NULL, domain TEXT NOT NULL,
             record_type TEXT NOT NULL DEFAULT 'A', value TEXT NOT NULL,
             mx_priority INTEGER, description TEXT,
             enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS dns_domain_overrides (
             id TEXT PRIMARY KEY, domain TEXT NOT NULL, server TEXT NOT NULL,
             description TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS dns_access_lists (
             id TEXT PRIMARY KEY, network TEXT NOT NULL, action TEXT NOT NULL,
             description TEXT, created_at TEXT NOT NULL
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
     // Upgrade heal (v5.57.5): if forwarding is disabled but forwarding_servers
     // is populated, flip forwarding on. rDNS 1.12.8 has broken iterative
@@ -422,12 +475,23 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // non-empty). If an operator intentionally cleared both fields to
     // disable DNS entirely, we don't touch it.
     let fwd_enabled = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_enabled'"
-    ).fetch_optional(pool).await.ok().flatten();
+        "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_enabled'",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
     let fwd_servers = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'"
-    ).fetch_optional(pool).await.ok().flatten();
-    let servers_set = fwd_servers.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let servers_set = fwd_servers
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
     if fwd_enabled.as_deref() == Some("false") && servers_set {
         let _ = sqlx::query(
             "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('forwarding_enabled', 'true')"
@@ -447,20 +511,30 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
 async fn load_config(pool: &SqlitePool) -> ResolverConfig {
     let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM dns_resolver_config")
-        .fetch_all(pool).await.unwrap_or_default();
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
     let mut c = ResolverConfig::default();
     for (k, v) in rows {
         match k.as_str() {
             "backend" => c.backend = v,
             "enabled" => c.enabled = v == "true",
             "dhcp_domain" => c.dhcp_domain = v,
-            "listen_interfaces" => c.listen_interfaces = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "listen_interfaces" => {
+                c.listen_interfaces = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
             "port" => c.port = v.parse().unwrap_or(53),
             "dnssec" => c.dnssec = v == "true",
             "dns64" => c.dns64 = v == "true",
             "register_dhcp" => c.register_dhcp = v == "true",
             "local_zone_type" => c.local_zone_type = v,
-            "outgoing_interface" => c.outgoing_interface = if v.is_empty() { None } else { Some(v) },
+            "outgoing_interface" => {
+                c.outgoing_interface = if v.is_empty() { None } else { Some(v) }
+            }
             "num_threads" => c.num_threads = v.parse().unwrap_or(2),
             "msg_cache_size" => c.msg_cache_size = v,
             "rrset_cache_size" => c.rrset_cache_size = v,
@@ -477,17 +551,49 @@ async fn load_config(pool: &SqlitePool) -> ResolverConfig {
             "hide_identity" => c.hide_identity = v == "true",
             "hide_version" => c.hide_version = v == "true",
             "rebind_protection" => c.rebind_protection = v == "true",
-            "private_addresses" => c.private_addresses = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "private_addresses" => {
+                c.private_addresses = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
             "forwarding_enabled" => c.forwarding_enabled = v == "true",
-            "forwarding_servers" => c.forwarding_servers = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "forwarding_servers" => {
+                c.forwarding_servers = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
             "use_system_nameservers" => c.use_system_nameservers = v == "true",
             "dot_enabled" => c.dot_enabled = v == "true",
-            "dot_upstream" => c.dot_upstream = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "dot_upstream" => {
+                c.dot_upstream = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
             "blocklists_enabled" => c.blocklists_enabled = v == "true",
-            "blocklist_urls" => c.blocklist_urls = v.split('\n').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
-            "whitelist" => c.whitelist = v.split('\n').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "blocklist_urls" => {
+                c.blocklist_urls = v
+                    .split('\n')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
+            "whitelist" => {
+                c.whitelist = v
+                    .split('\n')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
             "blocklist_action" => c.blocklist_action = v,
-            "blocklist_redirect_ip" => c.blocklist_redirect_ip = if v.is_empty() { None } else { Some(v) },
+            "blocklist_redirect_ip" => {
+                c.blocklist_redirect_ip = if v.is_empty() { None } else { Some(v) }
+            }
             "custom_options" => c.custom_options = v,
             "probe_enabled" => c.probe_enabled = v == "true",
             _ => {}
@@ -498,22 +604,36 @@ async fn load_config(pool: &SqlitePool) -> ResolverConfig {
 
 async fn save_key(pool: &SqlitePool, key: &str, value: &str) {
     let _ = sqlx::query("INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES (?1, ?2)")
-        .bind(key).bind(value).execute(pool).await;
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await;
 }
 
 async fn load_key(pool: &SqlitePool, key: &str) -> Option<String> {
     sqlx::query_as::<_, (String,)>("SELECT value FROM dns_resolver_config WHERE key = ?1")
-        .bind(key).fetch_optional(pool).await.ok().flatten().map(|(v,)| v)
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|(v,)| v)
 }
 
-fn bool_str(b: bool) -> &'static str { if b { "true" } else { "false" } }
+fn bool_str(b: bool) -> &'static str {
+    if b { "true" } else { "false" }
+}
 
 /// Generate unbound.conf from config + DB data
 async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     let c = load_config(pool).await;
 
-    let interfaces: String = c.listen_interfaces.iter()
-        .map(|i| format!("    interface: {}", i)).collect::<Vec<_>>().join("\n");
+    let interfaces: String = c
+        .listen_interfaces
+        .iter()
+        .map(|i| format!("    interface: {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     // chroot is intentionally empty — FreeBSD's local-unbound chroot dir is
     // created with only root.key/unbound.conf. Populating dev/ etc/ for a
@@ -546,26 +666,43 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
         format!("    do-ip6: yes"),
         format!("    do-udp: yes"),
         format!("    do-tcp: yes"),
-        format!("    hide-identity: {}", if c.hide_identity { "yes" } else { "no" }),
-        format!("    hide-version: {}", if c.hide_version { "yes" } else { "no" }),
+        format!(
+            "    hide-identity: {}",
+            if c.hide_identity { "yes" } else { "no" }
+        ),
+        format!(
+            "    hide-version: {}",
+            if c.hide_version { "yes" } else { "no" }
+        ),
         format!("    prefetch: {}", if c.prefetch { "yes" } else { "no" }),
-        format!("    prefetch-key: {}", if c.prefetch_key { "yes" } else { "no" }),
+        format!(
+            "    prefetch-key: {}",
+            if c.prefetch_key { "yes" } else { "no" }
+        ),
         format!("    num-threads: {}", c.num_threads),
         format!("    msg-cache-size: {}", c.msg_cache_size),
         format!("    rrset-cache-size: {}", c.rrset_cache_size),
         format!("    cache-max-ttl: {}", c.cache_max_ttl),
         format!("    cache-min-ttl: {}", c.cache_min_ttl),
         format!("    infra-host-ttl: {}", c.infra_host_ttl),
-        format!("    unwanted-reply-threshold: {}", c.unwanted_reply_threshold),
+        format!(
+            "    unwanted-reply-threshold: {}",
+            c.unwanted_reply_threshold
+        ),
         format!("    verbosity: {}", c.log_verbosity),
     ];
 
     if c.dnssec {
-        server_lines.push("    auto-trust-anchor-file: /usr/local/etc/unbound/root.key".to_string());
+        server_lines
+            .push("    auto-trust-anchor-file: /usr/local/etc/unbound/root.key".to_string());
     }
 
-    if c.log_queries { server_lines.push("    log-queries: yes".to_string()); }
-    if c.log_replies { server_lines.push("    log-replies: yes".to_string()); }
+    if c.log_queries {
+        server_lines.push("    log-queries: yes".to_string());
+    }
+    if c.log_replies {
+        server_lines.push("    log-replies: yes".to_string());
+    }
 
     if c.rebind_protection {
         for addr in &c.private_addresses {
@@ -579,8 +716,11 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
 
     // Access lists from DB
     let acls = sqlx::query_as::<_, (String, String)>(
-        "SELECT network, action FROM dns_access_lists ORDER BY rowid ASC"
-    ).fetch_all(pool).await.unwrap_or_default();
+        "SELECT network, action FROM dns_access_lists ORDER BY rowid ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
     for (network, action) in &acls {
         server_lines.push(format!("    access-control: {} {}", network, action));
     }
@@ -592,19 +732,38 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
 
     let mut local_data_lines = Vec::new();
     for (hostname, domain, rtype, value, mx_pri) in &hosts {
-        let fqdn = if domain.is_empty() { hostname.clone() } else { format!("{}.{}", hostname, domain) };
+        let fqdn = if domain.is_empty() {
+            hostname.clone()
+        } else {
+            format!("{}.{}", hostname, domain)
+        };
         match rtype.as_str() {
-            "A" | "AAAA" => local_data_lines.push(format!("    local-data: \"{} IN {} {}\"", fqdn, rtype, value)),
-            "MX" => local_data_lines.push(format!("    local-data: \"{} IN MX {} {}\"", fqdn, mx_pri.unwrap_or(10), value)),
-            "CNAME" => local_data_lines.push(format!("    local-data: \"{} IN CNAME {}\"", fqdn, value)),
-            "TXT" => local_data_lines.push(format!("    local-data: '{} IN TXT \"{}\"'", fqdn, value)),
+            "A" | "AAAA" => local_data_lines.push(format!(
+                "    local-data: \"{} IN {} {}\"",
+                fqdn, rtype, value
+            )),
+            "MX" => local_data_lines.push(format!(
+                "    local-data: \"{} IN MX {} {}\"",
+                fqdn,
+                mx_pri.unwrap_or(10),
+                value
+            )),
+            "CNAME" => {
+                local_data_lines.push(format!("    local-data: \"{} IN CNAME {}\"", fqdn, value))
+            }
+            "TXT" => {
+                local_data_lines.push(format!("    local-data: '{} IN TXT \"{}\"'", fqdn, value))
+            }
             _ => {}
         }
         // Also add PTR for A records
         if rtype == "A" {
             let octets: Vec<&str> = value.split('.').collect();
             if octets.len() == 4 {
-                let ptr = format!("{}.{}.{}.{}.in-addr.arpa", octets[3], octets[2], octets[1], octets[0]);
+                let ptr = format!(
+                    "{}.{}.{}.{}.in-addr.arpa",
+                    octets[3], octets[2], octets[1], octets[0]
+                );
                 local_data_lines.push(format!("    local-data-ptr: \"{} {}\"", value, fqdn));
                 let _ = ptr;
             }
@@ -614,53 +773,67 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     // DHCP lease registration (query rDHCP API for active leases)
     if c.register_dhcp
         && let Ok(output) = tokio::process::Command::new("curl")
-            .args(["-sf", "--max-time", "3", "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000"])
-            .output().await
-            && output.status.success() {
-                let body = String::from_utf8_lossy(&output.stdout);
-                if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
-                    for lease in &leases {
-                        let ip = lease["ip"].as_str().unwrap_or("");
-                        let hostname = lease["hostname"].as_str().unwrap_or("");
-                        if !ip.is_empty() && !hostname.is_empty() {
-                            local_data_lines.push(format!("    local-data: \"{} IN A {}\"", hostname, ip));
-                            local_data_lines.push(format!("    local-data-ptr: \"{} {}\"", ip, hostname));
-                        }
-                    }
+            .args([
+                "-sf",
+                "--max-time",
+                "3",
+                "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000",
+            ])
+            .output()
+            .await
+        && output.status.success()
+    {
+        let body = String::from_utf8_lossy(&output.stdout);
+        if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
+            for lease in &leases {
+                let ip = lease["ip"].as_str().unwrap_or("");
+                let hostname = lease["hostname"].as_str().unwrap_or("");
+                if !ip.is_empty() && !hostname.is_empty() {
+                    local_data_lines.push(format!("    local-data: \"{} IN A {}\"", hostname, ip));
+                    local_data_lines.push(format!("    local-data-ptr: \"{} {}\"", ip, hostname));
                 }
             }
+        }
+    }
 
     // Domain overrides (forward zones)
     let domains = sqlx::query_as::<_, (String, String)>(
-        "SELECT domain, server FROM dns_domain_overrides WHERE enabled = 1"
-    ).fetch_all(pool).await.unwrap_or_default();
+        "SELECT domain, server FROM dns_domain_overrides WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
     let mut forward_zones = Vec::new();
     if c.dot_enabled && !c.dot_upstream.is_empty() {
         // Forward all queries via DoT
-        let mut zone = String::from("forward-zone:\n    name: \".\"\n    forward-tls-upstream: yes\n");
+        let mut zone =
+            String::from("forward-zone:\n    name: \".\"\n    forward-tls-upstream: yes\n");
         for upstream in &c.dot_upstream {
             zone.push_str(&format!("    forward-addr: {}\n", upstream));
         }
         forward_zones.push(zone);
     } else if c.forwarding_enabled {
         // Plain DNS forwarding
-        let mut addrs: Vec<String> = c.forwarding_servers.iter()
+        let mut addrs: Vec<String> = c
+            .forwarding_servers
+            .iter()
             .filter(|s| !s.is_empty())
             .cloned()
             .collect();
         if c.use_system_nameservers
-            && let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf") {
-                for line in resolv.lines() {
-                    let line = line.trim();
-                    if let Some(ns) = line.strip_prefix("nameserver") {
-                        let ns = ns.trim();
-                        if ns != "127.0.0.1" && ns != "::1" && !addrs.contains(&ns.to_string()) {
-                            addrs.push(ns.to_string());
-                        }
+            && let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf")
+        {
+            for line in resolv.lines() {
+                let line = line.trim();
+                if let Some(ns) = line.strip_prefix("nameserver") {
+                    let ns = ns.trim();
+                    if ns != "127.0.0.1" && ns != "::1" && !addrs.contains(&ns.to_string()) {
+                        addrs.push(ns.to_string());
                     }
                 }
             }
+        }
         if !addrs.is_empty() {
             let mut zone = String::from("forward-zone:\n    name: \".\"\n    forward-first: yes\n");
             for addr in &addrs {
@@ -671,11 +844,25 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     }
 
     for (domain, server) in &domains {
-        forward_zones.push(format!("forward-zone:\n    name: \"{}\"\n    forward-addr: {}\n", domain, server));
+        forward_zones.push(format!(
+            "forward-zone:\n    name: \"{}\"\n    forward-addr: {}\n",
+            domain, server
+        ));
     }
 
     // Custom options
-    let custom = if c.custom_options.is_empty() { String::new() } else { format!("\n    # Custom options\n{}", c.custom_options.lines().map(|l| format!("    {}", l)).collect::<Vec<_>>().join("\n")) };
+    let custom = if c.custom_options.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n    # Custom options\n{}",
+            c.custom_options
+                .lines()
+                .map(|l| format!("    {}", l))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
 
     // remote-control over a unix socket in /var/unbound (owned by the unbound
     // user) — needed so FreeBSD's rc.d poststart `unbound-control status`
@@ -683,7 +870,8 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     // "giving up" even though the daemon is running fine.
     let remote_control = "\nremote-control:\n    control-enable: yes\n    control-interface: /var/unbound/unbound.ctl\n";
 
-    format!("# AiFw Unbound Configuration — Auto-generated\n# Do not edit manually\n\nserver:\n{}\n{}{}\n{}\n{}\n",
+    format!(
+        "# AiFw Unbound Configuration — Auto-generated\n# Do not edit manually\n\nserver:\n{}\n{}{}\n{}\n{}\n",
         server_lines.join("\n"),
         local_data_lines.join("\n"),
         custom,
@@ -700,11 +888,19 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
 async fn generate_rdns_conf(pool: &SqlitePool) -> String {
     let c = load_config(pool).await;
 
-    let hosts_count = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_host_overrides WHERE enabled=1")
-        .fetch_one(pool).await.map(|r| r.0).unwrap_or(0);
+    let hosts_count =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_host_overrides WHERE enabled=1")
+            .fetch_one(pool)
+            .await
+            .map(|r| r.0)
+            .unwrap_or(0);
     let need_auth = hosts_count > 0 || c.register_dhcp;
 
-    let listen_udp: Vec<String> = c.listen_interfaces.iter().map(|i| format!("\"{}:{}\"", i, c.port)).collect();
+    let listen_udp: Vec<String> = c
+        .listen_interfaces
+        .iter()
+        .map(|i| format!("\"{}:{}\"", i, c.port))
+        .collect();
     let listen_tcp = listen_udp.clone();
 
     let mode = if need_auth { "both" } else { "resolver" };
@@ -713,37 +909,64 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
 
     // [server]
     // PID file managed by daemon(8) wrapper — rDNS internal pidfile disabled
-    toml.push_str(&format!("[server]\nmode = \"{}\"\nuser = \"rdns\"\ngroup = \"rdns\"\npidfile = \"/dev/null\"\n\n", mode));
+    toml.push_str(&format!(
+        "[server]\nmode = \"{}\"\nuser = \"rdns\"\ngroup = \"rdns\"\npidfile = \"/dev/null\"\n\n",
+        mode
+    ));
 
     // [listeners]
-    toml.push_str(&format!("[listeners]\nudp = [{}]\ntcp = [{}]\n\n", listen_udp.join(", "), listen_tcp.join(", ")));
+    toml.push_str(&format!(
+        "[listeners]\nudp = [{}]\ntcp = [{}]\n\n",
+        listen_udp.join(", "),
+        listen_tcp.join(", ")
+    ));
 
     // [cache]
-    toml.push_str(&format!("[cache]\nmax_entries = 1000000\nmax_ttl = {}\nmin_ttl = {}\nnegative_ttl = 300\n\n", c.cache_max_ttl, c.cache_min_ttl));
+    toml.push_str(&format!(
+        "[cache]\nmax_entries = 1000000\nmax_ttl = {}\nmin_ttl = {}\nnegative_ttl = 300\n\n",
+        c.cache_max_ttl, c.cache_min_ttl
+    ));
 
     // [resolver]
     toml.push_str("[resolver]\n");
     if c.forwarding_enabled && !c.forwarding_servers.is_empty() {
-        let fwd: Vec<String> = c.forwarding_servers.iter().map(|s| format!("\"{}\"", s)).collect();
+        let fwd: Vec<String> = c
+            .forwarding_servers
+            .iter()
+            .map(|s| format!("\"{}\"", s))
+            .collect();
         toml.push_str(&format!("forwarders = [{}]\n", fwd.join(", ")));
     } else {
         toml.push_str("forwarders = []\n");
     }
-    toml.push_str(&format!("dnssec = {}\nqname_minimization = true\n", c.dnssec));
+    toml.push_str(&format!(
+        "dnssec = {}\nqname_minimization = true\n",
+        c.dnssec
+    ));
     if c.query_timeout_ms > 0 {
         toml.push_str(&format!("query_timeout_ms = {}\n", c.query_timeout_ms));
     }
 
     // Per-domain forward zones
     let domains = sqlx::query_as::<_, (String, String)>(
-        "SELECT domain, server FROM dns_domain_overrides WHERE enabled = 1"
-    ).fetch_all(pool).await.unwrap_or_default();
+        "SELECT domain, server FROM dns_domain_overrides WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
     if !domains.is_empty() {
         toml.push('\n');
         for (domain, server) in &domains {
             // Extract IP from "IP:port" or just "IP"
-            let ip = if server.contains(':') { server.split(':').next().unwrap_or(server) } else { server.as_str() };
-            toml.push_str(&format!("[[resolver.forward_zones]]\nname = \"{}\"\nforwarders = [\"{}\"]\n\n", domain, ip));
+            let ip = if server.contains(':') {
+                server.split(':').next().unwrap_or(server)
+            } else {
+                server.as_str()
+            };
+            toml.push_str(&format!(
+                "[[resolver.forward_zones]]\nname = \"{}\"\nforwarders = [\"{}\"]\n\n",
+                domain, ip
+            ));
         }
     }
     toml.push('\n');
@@ -764,7 +987,11 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
     // [logging] — query_log emits one INFO line per query from rDNS'
     // listeners (src/qname/qtype/rcode/transport). This is separate from
     // raising level=debug, which only exposes resolver-internal diagnostics.
-    let level = if c.log_verbosity >= 2 { "debug" } else { "info" };
+    let level = if c.log_verbosity >= 2 {
+        "debug"
+    } else {
+        "info"
+    };
     toml.push_str(&format!(
         "[logging]\nlevel = \"{}\"\nformat = \"text\"\nquery_log = {}\n\n",
         level,
@@ -775,11 +1002,16 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
     toml.push_str("[security]\nsandbox = false\nrate_limit = 1000\n\n");
 
     // [rpz] — host overrides (rewrites) + blocklists
-    let host_count: i64 = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM dns_host_overrides WHERE enabled = 1"
-    ).fetch_one(pool).await.map(|r| r.0).unwrap_or(0);
+    let host_count: i64 =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_host_overrides WHERE enabled = 1")
+            .fetch_one(pool)
+            .await
+            .map(|r| r.0)
+            .unwrap_or(0);
     if host_count > 0 {
-        toml.push_str("[[rpz.zones]]\nname = \"rpz.hosts\"\nfile = \"/usr/local/etc/rdns/rpz/hosts.rpz\"\n\n");
+        toml.push_str(
+            "[[rpz.zones]]\nname = \"rpz.hosts\"\nfile = \"/usr/local/etc/rdns/rpz/hosts.rpz\"\n\n",
+        );
     }
     if c.blocklists_enabled && !c.blocklist_urls.is_empty() {
         toml.push_str("[[rpz.zones]]\nname = \"rpz.blocklist\"\nfile = \"/usr/local/etc/rdns/rpz/blocklist.rpz\"\n\n");
@@ -793,33 +1025,62 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
 async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
     let c = load_config(pool).await;
     let mut zones = Vec::new();
-    let serial = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let serial = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
     // Collect host overrides grouped by domain
     let hosts = sqlx::query_as::<_, (String, String, String, String, Option<i64>)>(
         "SELECT hostname, domain, record_type, value, mx_priority FROM dns_host_overrides WHERE enabled = 1"
     ).fetch_all(pool).await.unwrap_or_default();
 
-    let mut domain_records: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut domain_records: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     let mut ptr_records: Vec<String> = Vec::new();
 
     for (hostname, domain, rtype, value, mx_pri) in &hosts {
-        let domain_key = if domain.is_empty() { "local".to_string() } else { domain.clone() };
+        let domain_key = if domain.is_empty() {
+            "local".to_string()
+        } else {
+            domain.clone()
+        };
         let entry = domain_records.entry(domain_key.clone()).or_default();
-        let name = if domain.is_empty() { hostname.clone() } else { hostname.clone() };
+        let name = if domain.is_empty() {
+            hostname.clone()
+        } else {
+            hostname.clone()
+        };
         match rtype.as_str() {
             "A" => {
                 entry.push(format!("{:<24} IN A       {}", name, value));
                 // PTR record
                 let octets: Vec<&str> = value.split('.').collect();
                 if octets.len() == 4 {
-                    let fqdn = if domain.is_empty() { hostname.clone() } else { format!("{}.{}", hostname, domain) };
-                    ptr_records.push(format!("{}.{}.{}.{}.in-addr.arpa. IN PTR {}.{}.", octets[3], octets[2], octets[1], octets[0], fqdn, if fqdn.ends_with('.') { "" } else { "." }));
+                    let fqdn = if domain.is_empty() {
+                        hostname.clone()
+                    } else {
+                        format!("{}.{}", hostname, domain)
+                    };
+                    ptr_records.push(format!(
+                        "{}.{}.{}.{}.in-addr.arpa. IN PTR {}.{}.",
+                        octets[3],
+                        octets[2],
+                        octets[1],
+                        octets[0],
+                        fqdn,
+                        if fqdn.ends_with('.') { "" } else { "." }
+                    ));
                 }
             }
             "AAAA" => entry.push(format!("{:<24} IN AAAA    {}", name, value)),
             "CNAME" => entry.push(format!("{:<24} IN CNAME   {}", name, value)),
-            "MX" => entry.push(format!("{:<24} IN MX      {} {}", name, mx_pri.unwrap_or(10), value)),
+            "MX" => entry.push(format!(
+                "{:<24} IN MX      {} {}",
+                name,
+                mx_pri.unwrap_or(10),
+                value
+            )),
             "TXT" => entry.push(format!("{:<24} IN TXT     \"{}\"", name, value)),
             _ => {}
         }
@@ -833,39 +1094,60 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
 
     // DHCP lease zone
     if c.register_dhcp {
-        let dhcp_domain = if c.dhcp_domain.is_empty() { "local".to_string() } else { c.dhcp_domain.clone() };
+        let dhcp_domain = if c.dhcp_domain.is_empty() {
+            "local".to_string()
+        } else {
+            c.dhcp_domain.clone()
+        };
         if let Ok(output) = tokio::process::Command::new("curl")
-            .args(["-sf", "--max-time", "3", "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000"])
-            .output().await
-            && output.status.success() {
-                let body = String::from_utf8_lossy(&output.stdout);
-                if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
-                    let mut zone = format!(
-                        "$TTL 60\n$ORIGIN {}.\n@ IN SOA ns1.{d}. admin.{d}. {s} 3600 900 604800 60\n  IN NS  ns1.{d}.\n",
-                        dhcp_domain, d = dhcp_domain, s = serial
-                    );
-                    for lease in &leases {
-                        let ip = lease["ip"].as_str().unwrap_or("");
-                        let hostname = lease["hostname"].as_str().unwrap_or("");
-                        if !ip.is_empty() && !hostname.is_empty() {
-                            // Sanitize hostname (no dots, lowercase)
-                            let safe_host = hostname.split('.').next().unwrap_or(hostname).to_lowercase();
-                            zone.push_str(&format!("{:<24} IN A       {}\n", safe_host, ip));
-                            // PTR
-                            let octets: Vec<&str> = ip.split('.').collect();
-                            if octets.len() == 4 {
-                                ptr_records.push(format!("{}.{}.{}.{}.in-addr.arpa. IN PTR {}.{}.", octets[3], octets[2], octets[1], octets[0], safe_host, dhcp_domain));
-                            }
+            .args([
+                "-sf",
+                "--max-time",
+                "3",
+                "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000",
+            ])
+            .output()
+            .await
+            && output.status.success()
+        {
+            let body = String::from_utf8_lossy(&output.stdout);
+            if let Ok(leases) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
+                let mut zone = format!(
+                    "$TTL 60\n$ORIGIN {}.\n@ IN SOA ns1.{d}. admin.{d}. {s} 3600 900 604800 60\n  IN NS  ns1.{d}.\n",
+                    dhcp_domain,
+                    d = dhcp_domain,
+                    s = serial
+                );
+                for lease in &leases {
+                    let ip = lease["ip"].as_str().unwrap_or("");
+                    let hostname = lease["hostname"].as_str().unwrap_or("");
+                    if !ip.is_empty() && !hostname.is_empty() {
+                        // Sanitize hostname (no dots, lowercase)
+                        let safe_host = hostname
+                            .split('.')
+                            .next()
+                            .unwrap_or(hostname)
+                            .to_lowercase();
+                        zone.push_str(&format!("{:<24} IN A       {}\n", safe_host, ip));
+                        // PTR
+                        let octets: Vec<&str> = ip.split('.').collect();
+                        if octets.len() == 4 {
+                            ptr_records.push(format!(
+                                "{}.{}.{}.{}.in-addr.arpa. IN PTR {}.{}.",
+                                octets[3], octets[2], octets[1], octets[0], safe_host, dhcp_domain
+                            ));
                         }
                     }
-                    zones.push((format!("dhcp.{}.zone", dhcp_domain), zone));
                 }
+                zones.push((format!("dhcp.{}.zone", dhcp_domain), zone));
             }
+        }
     }
 
     // Reverse (PTR) zone — group by /24 subnet
     if !ptr_records.is_empty() {
-        let mut reverse_zones: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut reverse_zones: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         for ptr in &ptr_records {
             // ptr looks like "X.C.B.A.in-addr.arpa. IN PTR host.domain."
             let parts: Vec<&str> = ptr.split('.').collect();
@@ -884,7 +1166,9 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
                 let parts: Vec<&str> = record.splitn(2, ".in-addr.arpa").collect();
                 if let Some(host_part) = parts.first() {
                     let zone_origin = format!(".{}", zone_name);
-                    let relative = host_part.strip_suffix(&zone_origin.replace(".in-addr.arpa", "")).unwrap_or(host_part);
+                    let relative = host_part
+                        .strip_suffix(&zone_origin.replace(".in-addr.arpa", ""))
+                        .unwrap_or(host_part);
                     // Just write the full record
                     zone.push_str(record);
                     zone.push('\n');
@@ -903,21 +1187,31 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
 /// Queries for unlisted names fall through to forwarders / recursion.
 async fn generate_rdns_hosts_rpz(pool: &SqlitePool) -> Option<String> {
     let hosts = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT hostname, domain, record_type, value FROM dns_host_overrides WHERE enabled = 1"
-    ).fetch_all(pool).await.unwrap_or_default();
+        "SELECT hostname, domain, record_type, value FROM dns_host_overrides WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
     if hosts.is_empty() {
         return None;
     }
 
-    let serial = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let serial = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let mut zone = format!(
         "$TTL 60\n@ IN SOA localhost. admin.localhost. {} 3600 900 604800 60\n  IN NS  localhost.\n",
         serial
     );
 
     for (hostname, domain, rtype, value) in &hosts {
-        let fqdn = if domain.is_empty() { hostname.clone() } else { format!("{}.{}", hostname, domain) };
+        let fqdn = if domain.is_empty() {
+            hostname.clone()
+        } else {
+            format!("{}.{}", hostname, domain)
+        };
         match rtype.as_str() {
             "A" => zone.push_str(&format!("{} A {}\n", fqdn, value)),
             "AAAA" => zone.push_str(&format!("{} AAAA {}\n", fqdn, value)),
@@ -938,7 +1232,10 @@ async fn generate_rdns_rpz(pool: &SqlitePool) -> Option<String> {
         return None;
     }
 
-    let serial = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let serial = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let mut zone = format!(
         "$TTL 300\n@ IN SOA localhost. admin.localhost. {} 3600 900 604800 300\n  IN NS  localhost.\n",
         serial
@@ -954,33 +1251,41 @@ async fn generate_rdns_rpz(pool: &SqlitePool) -> Option<String> {
 
     // Download and parse blocklists
     for url in &c.blocklist_urls {
-        if url.trim().is_empty() { continue; }
+        if url.trim().is_empty() {
+            continue;
+        }
         let output = tokio::process::Command::new("curl")
             .args(["-sf", "--max-time", "30", url.trim()])
-            .output().await;
+            .output()
+            .await;
         if let Ok(o) = output
-            && o.status.success() {
-                let body = String::from_utf8_lossy(&o.stdout);
-                for line in body.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') || line.starts_with('!') { continue; }
-                    // hosts file format: "0.0.0.0 domain" or "127.0.0.1 domain" or just "domain"
-                    let domain = if line.starts_with("0.0.0.0") || line.starts_with("127.0.0.1") {
-                        line.split_whitespace().nth(1).unwrap_or("")
-                    } else {
-                        line.split_whitespace().next().unwrap_or("")
-                    };
-                    let domain = domain.trim().trim_end_matches('.');
-                    if domain.is_empty() || domain == "localhost" || domain == "local" { continue; }
-                    match c.blocklist_action.as_str() {
-                        "redirect" => {
-                            let ip = c.blocklist_redirect_ip.as_deref().unwrap_or("0.0.0.0");
-                            zone.push_str(&format!("{} A {}\n", domain, ip));
-                        }
-                        _ => zone.push_str(&format!("{} CNAME .\n", domain)),
+            && o.status.success()
+        {
+            let body = String::from_utf8_lossy(&o.stdout);
+            for line in body.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
+                    continue;
+                }
+                // hosts file format: "0.0.0.0 domain" or "127.0.0.1 domain" or just "domain"
+                let domain = if line.starts_with("0.0.0.0") || line.starts_with("127.0.0.1") {
+                    line.split_whitespace().nth(1).unwrap_or("")
+                } else {
+                    line.split_whitespace().next().unwrap_or("")
+                };
+                let domain = domain.trim().trim_end_matches('.');
+                if domain.is_empty() || domain == "localhost" || domain == "local" {
+                    continue;
+                }
+                match c.blocklist_action.as_str() {
+                    "redirect" => {
+                        let ip = c.blocklist_redirect_ip.as_deref().unwrap_or("0.0.0.0");
+                        zone.push_str(&format!("{} A {}\n", domain, ip));
                     }
+                    _ => zone.push_str(&format!("{} CNAME .\n", domain)),
                 }
             }
+        }
     }
 
     Some(zone)
@@ -997,8 +1302,12 @@ pub async fn resolver_status(
     let is_rdns = config.backend == "rdns";
 
     let service_name = if is_rdns { "rdns" } else { "local_unbound" };
-    let running = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/service", service_name, "status"]).output().await
-        .map(|o| o.status.success()).unwrap_or(false);
+    let running = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/sbin/service", service_name, "status"])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
     let version = if is_rdns {
         // rDNS doesn't accept `--version` (errors with "unexpected argument").
@@ -1010,41 +1319,72 @@ pub async fn resolver_status(
             let stream = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 tokio::net::UnixStream::connect("/var/run/rdns/control.sock"),
-            ).await.ok()?.ok()?;
+            )
+            .await
+            .ok()?
+            .ok()?;
             let (reader, mut writer) = stream.into_split();
             writer.write_all(b"version\n").await.ok()?;
             writer.flush().await.ok()?;
             let mut br = BufReader::new(reader);
             let mut line = String::new();
-            let _: usize = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                br.read_line(&mut line),
-            ).await.ok()?.ok()?;
+            let _: usize =
+                tokio::time::timeout(std::time::Duration::from_secs(2), br.read_line(&mut line))
+                    .await
+                    .ok()?
+                    .ok()?;
             let v = line.trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         }
-        rdns_version_via_socket().await.unwrap_or_else(|| "rDNS".to_string())
+        rdns_version_via_socket()
+            .await
+            .unwrap_or_else(|| "rDNS".to_string())
     } else {
-        let v = Command::new("unbound").arg("-V").output().await
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string())
+        let v = Command::new("unbound")
+            .arg("-V")
+            .output()
+            .await
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            })
             .unwrap_or_default();
-        if v.is_empty() { "Unbound".to_string() } else { v }
+        if v.is_empty() {
+            "Unbound".to_string()
+        } else {
+            v
+        }
     };
 
     let hosts = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_host_overrides")
-        .fetch_one(&state.pool).await.map(|r| r.0 as usize).unwrap_or(0);
+        .fetch_one(&state.pool)
+        .await
+        .map(|r| r.0 as usize)
+        .unwrap_or(0);
     let domains = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_domain_overrides")
-        .fetch_one(&state.pool).await.map(|r| r.0 as usize).unwrap_or(0);
+        .fetch_one(&state.pool)
+        .await
+        .map(|r| r.0 as usize)
+        .unwrap_or(0);
     let acls = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dns_access_lists")
-        .fetch_one(&state.pool).await.map(|r| r.0 as usize).unwrap_or(0);
+        .fetch_one(&state.pool)
+        .await
+        .map(|r| r.0 as usize)
+        .unwrap_or(0);
 
     let (cache_hits, cache_misses, queries_total) = if is_rdns {
         // rDNS stats via control socket
         Command::new("/usr/local/sbin/rdns-control")
-            .args(["--socket", "/var/run/rdns/control.sock", "stats"]).output().await
+            .args(["--socket", "/var/run/rdns/control.sock", "stats"])
+            .output()
+            .await
             .map(|o| {
                 let s = String::from_utf8_lossy(&o.stdout);
-                let mut hits = 0u64; let mut misses = 0u64;
+                let mut hits = 0u64;
+                let mut misses = 0u64;
                 for line in s.lines() {
                     let parts: Vec<&str> = line.split('=').collect();
                     if parts.len() == 2 {
@@ -1057,20 +1397,44 @@ pub async fn resolver_status(
                     }
                 }
                 (hits, misses, hits + misses)
-            }).unwrap_or((0, 0, 0))
+            })
+            .unwrap_or((0, 0, 0))
     } else {
         Command::new("/usr/local/bin/sudo")
-            .args(["/usr/local/sbin/unbound-control", "stats_noreset"]).output().await
+            .args(["/usr/local/sbin/unbound-control", "stats_noreset"])
+            .output()
+            .await
             .map(|o| {
                 let s = String::from_utf8_lossy(&o.stdout);
-                let mut hits = 0u64; let mut misses = 0u64; let mut total = 0u64;
+                let mut hits = 0u64;
+                let mut misses = 0u64;
+                let mut total = 0u64;
                 for line in s.lines() {
-                    if line.starts_with("total.num.cachehits=") { hits = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
-                    if line.starts_with("total.num.cachemiss=") { misses = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
-                    if line.starts_with("total.num.queries=") { total = line.split('=').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0); }
+                    if line.starts_with("total.num.cachehits=") {
+                        hits = line
+                            .split('=')
+                            .nth(1)
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0);
+                    }
+                    if line.starts_with("total.num.cachemiss=") {
+                        misses = line
+                            .split('=')
+                            .nth(1)
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0);
+                    }
+                    if line.starts_with("total.num.queries=") {
+                        total = line
+                            .split('=')
+                            .nth(1)
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0);
+                    }
                 }
                 (hits, misses, total)
-            }).unwrap_or((0, 0, 0))
+            })
+            .unwrap_or((0, 0, 0))
     };
 
     // Live port-53 probe (short per-attempt timeout — status is called often).
@@ -1085,21 +1449,32 @@ pub async fn resolver_status(
         (running, running) // best available signal — service-running
     };
 
-    let last_applied = load_key(&state.pool, "last_applied_backend").await
+    let last_applied = load_key(&state.pool, "last_applied_backend")
+        .await
         .filter(|s| !s.is_empty());
     let last_switch_at = load_key(&state.pool, "last_switch_at").await;
     let last_switch_result = load_key(&state.pool, "last_switch_result").await;
 
     // Report the backend that's actually running. Fall back to the DB's
     // desired value if we've never applied.
-    let backend_reported = last_applied.clone().unwrap_or_else(|| config.backend.clone());
+    let backend_reported = last_applied
+        .clone()
+        .unwrap_or_else(|| config.backend.clone());
 
     Ok(Json(ResolverStatus {
-        running, version, total_hosts: hosts, total_domains: domains, total_acls: acls,
-        cache_hits, cache_misses, queries_total,
+        running,
+        version,
+        total_hosts: hosts,
+        total_domains: domains,
+        total_acls: acls,
+        cache_hits,
+        cache_misses,
+        queries_total,
         backend: backend_reported,
-        listening_udp, listening_tcp,
-        last_switch_at, last_switch_result,
+        listening_udp,
+        listening_tcp,
+        last_switch_at,
+        last_switch_result,
         probe_enabled: config.probe_enabled,
     }))
 }
@@ -1124,7 +1499,12 @@ pub async fn update_config_handler(
     save_key(pool, "dns64", bool_str(c.dns64)).await;
     save_key(pool, "register_dhcp", bool_str(c.register_dhcp)).await;
     save_key(pool, "local_zone_type", &c.local_zone_type).await;
-    save_key(pool, "outgoing_interface", c.outgoing_interface.as_deref().unwrap_or("")).await;
+    save_key(
+        pool,
+        "outgoing_interface",
+        c.outgoing_interface.as_deref().unwrap_or(""),
+    )
+    .await;
     save_key(pool, "num_threads", &c.num_threads.to_string()).await;
     save_key(pool, "msg_cache_size", &c.msg_cache_size).await;
     save_key(pool, "rrset_cache_size", &c.rrset_cache_size).await;
@@ -1133,7 +1513,12 @@ pub async fn update_config_handler(
     save_key(pool, "prefetch", bool_str(c.prefetch)).await;
     save_key(pool, "prefetch_key", bool_str(c.prefetch_key)).await;
     save_key(pool, "infra_host_ttl", &c.infra_host_ttl.to_string()).await;
-    save_key(pool, "unwanted_reply_threshold", &c.unwanted_reply_threshold.to_string()).await;
+    save_key(
+        pool,
+        "unwanted_reply_threshold",
+        &c.unwanted_reply_threshold.to_string(),
+    )
+    .await;
     save_key(pool, "log_queries", bool_str(c.log_queries)).await;
     save_key(pool, "log_replies", bool_str(c.log_replies)).await;
     save_key(pool, "log_verbosity", &c.log_verbosity.to_string()).await;
@@ -1144,18 +1529,30 @@ pub async fn update_config_handler(
     save_key(pool, "private_addresses", &c.private_addresses.join(",")).await;
     save_key(pool, "forwarding_enabled", bool_str(c.forwarding_enabled)).await;
     save_key(pool, "forwarding_servers", &c.forwarding_servers.join(",")).await;
-    save_key(pool, "use_system_nameservers", bool_str(c.use_system_nameservers)).await;
+    save_key(
+        pool,
+        "use_system_nameservers",
+        bool_str(c.use_system_nameservers),
+    )
+    .await;
     save_key(pool, "dot_enabled", bool_str(c.dot_enabled)).await;
     save_key(pool, "dot_upstream", &c.dot_upstream.join(",")).await;
     save_key(pool, "blocklists_enabled", bool_str(c.blocklists_enabled)).await;
     save_key(pool, "blocklist_urls", &c.blocklist_urls.join("\n")).await;
     save_key(pool, "whitelist", &c.whitelist.join("\n")).await;
     save_key(pool, "blocklist_action", &c.blocklist_action).await;
-    save_key(pool, "blocklist_redirect_ip", c.blocklist_redirect_ip.as_deref().unwrap_or("")).await;
+    save_key(
+        pool,
+        "blocklist_redirect_ip",
+        c.blocklist_redirect_ip.as_deref().unwrap_or(""),
+    )
+    .await;
     save_key(pool, "custom_options", &c.custom_options).await;
     save_key(pool, "probe_enabled", bool_str(c.probe_enabled)).await;
     state.set_pending(|p| p.dns = true).await;
-    Ok(Json(MessageResponse { message: "DNS resolver config saved".to_string() }))
+    Ok(Json(MessageResponse {
+        message: "DNS resolver config saved".to_string(),
+    }))
 }
 
 // ============================================================
@@ -1164,7 +1561,7 @@ pub async fn update_config_handler(
 
 #[derive(Debug, Serialize)]
 pub struct ApplyReport {
-    pub backend: String,          // what's actually running now
+    pub backend: String, // what's actually running now
     pub enabled: bool,
     pub probe_udp: bool,
     pub probe_tcp: bool,
@@ -1187,19 +1584,29 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
         "unbound" => {
             let conf = generate_unbound_conf(&state.pool).await;
             let tmp_path = "/tmp/aifw_unbound.conf";
-            tokio::fs::write(tmp_path, &conf).await.map_err(|_| internal())?;
+            tokio::fs::write(tmp_path, &conf)
+                .await
+                .map_err(|_| internal())?;
             sudo_copy(tmp_path, "/var/unbound/unbound.conf").await;
             let _ = tokio::fs::remove_file(tmp_path).await;
             let _ = Command::new("/usr/local/bin/sudo")
                 .args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"])
-                .output().await;
+                .output()
+                .await;
             Ok(())
         }
         "rdns" => {
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["mkdir", "-p", "/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz",
-                       "/var/run/rdns", "/var/log/rdns"])
-                .output().await;
+                .args([
+                    "mkdir",
+                    "-p",
+                    "/usr/local/etc/rdns/zones",
+                    "/usr/local/etc/rdns/rpz",
+                    "/var/run/rdns",
+                    "/var/log/rdns",
+                ])
+                .output()
+                .await;
 
             let conf = generate_rdns_conf(&state.pool).await;
             let tmp = "/tmp/aifw_rdns.toml";
@@ -1209,14 +1616,25 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
 
             let zones = generate_rdns_zones(&state.pool).await;
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/usr/bin/find", "/usr/local/etc/rdns/zones", "-name", "*.zone", "-delete"])
-                .output().await;
+                .args([
+                    "/usr/bin/find",
+                    "/usr/local/etc/rdns/zones",
+                    "-name",
+                    "*.zone",
+                    "-delete",
+                ])
+                .output()
+                .await;
             for (filename, content) in &zones {
                 let safe_name = sanitize_zone_filename(filename);
-                if safe_name.is_empty() { continue; }
+                if safe_name.is_empty() {
+                    continue;
+                }
                 let tmp_zone = format!("/tmp/aifw_zone_{}", safe_name);
                 let dest_zone = format!("/usr/local/etc/rdns/zones/{}", safe_name);
-                tokio::fs::write(&tmp_zone, content).await.map_err(|_| internal())?;
+                tokio::fs::write(&tmp_zone, content)
+                    .await
+                    .map_err(|_| internal())?;
                 sudo_copy(&tmp_zone, &dest_zone).await;
                 let _ = tokio::fs::remove_file(&tmp_zone).await;
             }
@@ -1224,17 +1642,23 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
             let hosts_rpz_path = "/usr/local/etc/rdns/rpz/hosts.rpz";
             if let Some(rpz_content) = generate_rdns_hosts_rpz(&state.pool).await {
                 let tmp_rpz = "/tmp/aifw_rpz_hosts.rpz";
-                tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
+                tokio::fs::write(tmp_rpz, &rpz_content)
+                    .await
+                    .map_err(|_| internal())?;
                 sudo_copy(tmp_rpz, hosts_rpz_path).await;
                 let _ = tokio::fs::remove_file(tmp_rpz).await;
             } else {
                 let _ = Command::new("/usr/local/bin/sudo")
-                    .args(["/bin/rm", "-f", hosts_rpz_path]).output().await;
+                    .args(["/bin/rm", "-f", hosts_rpz_path])
+                    .output()
+                    .await;
             }
 
             if let Some(rpz_content) = generate_rdns_rpz(&state.pool).await {
                 let tmp_rpz = "/tmp/aifw_rpz_blocklist.rpz";
-                tokio::fs::write(tmp_rpz, &rpz_content).await.map_err(|_| internal())?;
+                tokio::fs::write(tmp_rpz, &rpz_content)
+                    .await
+                    .map_err(|_| internal())?;
                 sudo_copy(tmp_rpz, "/usr/local/etc/rdns/rpz/blocklist.rpz").await;
                 let _ = tokio::fs::remove_file(tmp_rpz).await;
             }
@@ -1246,7 +1670,9 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
 
 /// Stop a backend's service and set its sysrc enable flag to NO.
 async fn stop_backend(backend: &str) {
-    let Some((svc, key)) = backend_service(backend) else { return };
+    let Some((svc, key)) = backend_service(backend) else {
+        return;
+    };
     service_cmd(svc, "stop").await;
     sysrc_set_if_different(key, "NO").await;
 }
@@ -1258,12 +1684,25 @@ async fn start_backend(backend: &str) -> Result<String, String> {
         return Err(format!("unknown backend: {backend}"));
     };
     sysrc_set_if_different(key, "YES").await;
-    match run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/service", svc, "restart"]).await {
+    match run_cmd_timeout(
+        "/usr/local/bin/sudo",
+        &["/usr/sbin/service", svc, "restart"],
+    )
+    .await
+    {
         Ok(o) => {
-            let out = format!("{}{}",
+            let out = format!(
+                "{}{}",
                 String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr)).trim().to_string();
-            if o.status.success() { Ok(out) } else { Err(out) }
+                String::from_utf8_lossy(&o.stderr)
+            )
+            .trim()
+            .to_string();
+            if o.status.success() {
+                Ok(out)
+            } else {
+                Err(out)
+            }
         }
         Err(e) => Err(e.to_string()),
     }
@@ -1271,8 +1710,13 @@ async fn start_backend(backend: &str) -> Result<String, String> {
 
 /// Core switch primitive. Stops the previously-running backend, starts
 /// the target, probes :53, and on failure rolls back to the previous.
-pub(crate) async fn switch_backend(state: &AppState, target: &str, config: &ResolverConfig) -> ApplyReport {
-    let previous = load_key(&state.pool, "last_applied_backend").await
+pub(crate) async fn switch_backend(
+    state: &AppState,
+    target: &str,
+    config: &ResolverConfig,
+) -> ApplyReport {
+    let previous = load_key(&state.pool, "last_applied_backend")
+        .await
         .filter(|p| p == "rdns" || p == "unbound");
     let now_iso = Utc::now().to_rfc3339();
 
@@ -1280,47 +1724,66 @@ pub(crate) async fn switch_backend(state: &AppState, target: &str, config: &Reso
     if !config.enabled {
         for b in ["rdns", "unbound"] {
             if let Some((_, key)) = backend_service(b)
-                && sysrc_get(key).await.as_deref() == Some("YES") {
-                    stop_backend(b).await;
-                }
+                && sysrc_get(key).await.as_deref() == Some("YES")
+            {
+                stop_backend(b).await;
+            }
         }
         save_key(&state.pool, "last_applied_backend", "none").await;
         save_key(&state.pool, "last_switch_at", &now_iso).await;
         save_key(&state.pool, "last_switch_result", "ok_disabled").await;
         state.set_pending(|p| p.dns = false).await;
         return ApplyReport {
-            backend: target.to_string(), enabled: false,
-            probe_udp: false, probe_tcp: false, rolled_back: false,
-            previous, message: "DNS resolver stopped".to_string(),
+            backend: target.to_string(),
+            enabled: false,
+            probe_udp: false,
+            probe_tcp: false,
+            rolled_back: false,
+            previous,
+            message: "DNS resolver stopped".to_string(),
         };
     }
 
     // Sanity-check the target backend is known.
     if backend_service(target).is_none() {
         return ApplyReport {
-            backend: previous.clone().unwrap_or_else(|| "none".into()), enabled: true,
-            probe_udp: false, probe_tcp: false, rolled_back: false,
-            previous, message: format!("unknown backend: {target}"),
+            backend: previous.clone().unwrap_or_else(|| "none".into()),
+            enabled: true,
+            probe_udp: false,
+            probe_tcp: false,
+            rolled_back: false,
+            previous,
+            message: format!("unknown backend: {target}"),
         };
     }
 
     // Generate target config files first; if they fail, nothing has been torn down.
     if let Err(code) = write_backend_config_files(state, target).await {
         save_key(&state.pool, "last_switch_at", &now_iso).await;
-        save_key(&state.pool, "last_switch_result", "failed: config generation error").await;
+        save_key(
+            &state.pool,
+            "last_switch_result",
+            "failed: config generation error",
+        )
+        .await;
         return ApplyReport {
-            backend: previous.clone().unwrap_or_else(|| "none".into()), enabled: true,
-            probe_udp: false, probe_tcp: false, rolled_back: false,
-            previous, message: format!("config generation failed ({code})"),
+            backend: previous.clone().unwrap_or_else(|| "none".into()),
+            enabled: true,
+            probe_udp: false,
+            probe_tcp: false,
+            rolled_back: false,
+            previous,
+            message: format!("config generation failed ({code})"),
         };
     }
 
     // Stop the other backend if it's currently enabled in rc.conf.
     let other = if target == "rdns" { "unbound" } else { "rdns" };
     if let Some((_, key)) = backend_service(other)
-        && sysrc_get(key).await.as_deref() == Some("YES") {
-            stop_backend(other).await;
-        }
+        && sysrc_get(key).await.as_deref() == Some("YES")
+    {
+        stop_backend(other).await;
+    }
 
     // Start target.
     let start_result = start_backend(target).await;
@@ -1338,12 +1801,20 @@ pub(crate) async fn switch_backend(state: &AppState, target: &str, config: &Reso
         save_key(&state.pool, "last_switch_at", &now_iso).await;
         save_key(&state.pool, "last_switch_result", "ok").await;
         state.set_pending(|p| p.dns = false).await;
-        let extra = start_result.as_ref().ok().filter(|s| !s.is_empty())
-            .map(|s| format!(": {s}")).unwrap_or_default();
+        let extra = start_result
+            .as_ref()
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(": {s}"))
+            .unwrap_or_default();
         return ApplyReport {
-            backend: target.to_string(), enabled: true,
-            probe_udp: true, probe_tcp: tcp_ok, rolled_back: false,
-            previous, message: format!("{target} applied and healthy{extra}"),
+            backend: target.to_string(),
+            enabled: true,
+            probe_udp: true,
+            probe_tcp: tcp_ok,
+            rolled_back: false,
+            previous,
+            message: format!("{target} applied and healthy{extra}"),
         };
     }
 
@@ -1357,15 +1828,25 @@ pub(crate) async fn switch_backend(state: &AppState, target: &str, config: &Reso
     let Some(prev) = previous.clone() else {
         // No previous to roll back to — leave the target stopped and report.
         stop_backend(target).await;
-        let reason = format!("{target} failed to start ({start_err}); no previous backend to restore");
+        let reason =
+            format!("{target} failed to start ({start_err}); no previous backend to restore");
         save_key(&state.pool, "last_applied_backend", "none").await;
         save_key(&state.pool, "last_switch_at", &now_iso).await;
-        save_key(&state.pool, "last_switch_result", &format!("failed: {reason}")).await;
+        save_key(
+            &state.pool,
+            "last_switch_result",
+            &format!("failed: {reason}"),
+        )
+        .await;
         state.set_pending(|p| p.dns = false).await;
         return ApplyReport {
-            backend: "none".to_string(), enabled: true,
-            probe_udp: false, probe_tcp: tcp_ok, rolled_back: false,
-            previous: None, message: reason,
+            backend: "none".to_string(),
+            enabled: true,
+            probe_udp: false,
+            probe_tcp: tcp_ok,
+            rolled_back: false,
+            previous: None,
+            message: reason,
         };
     };
 
@@ -1379,15 +1860,28 @@ pub(crate) async fn switch_backend(state: &AppState, target: &str, config: &Reso
     save_key(&state.pool, "backend", &prev).await;
     save_key(&state.pool, "last_applied_backend", &prev).await;
     save_key(&state.pool, "last_switch_at", &now_iso).await;
-    let rb_suffix = if prev_udp { "" } else { " (WARNING: previous backend also not responding)" };
+    let rb_suffix = if prev_udp {
+        ""
+    } else {
+        " (WARNING: previous backend also not responding)"
+    };
     let reason = format!("{target} failed probe ({start_err}); rolled back to {prev}{rb_suffix}");
-    save_key(&state.pool, "last_switch_result", &format!("rolled_back: {reason}")).await;
+    save_key(
+        &state.pool,
+        "last_switch_result",
+        &format!("rolled_back: {reason}"),
+    )
+    .await;
     state.set_pending(|p| p.dns = false).await;
 
     ApplyReport {
-        backend: prev.clone(), enabled: true,
-        probe_udp: prev_udp, probe_tcp: prev_tcp, rolled_back: true,
-        previous: Some(prev), message: reason,
+        backend: prev.clone(),
+        enabled: true,
+        probe_udp: prev_udp,
+        probe_tcp: prev_tcp,
+        rolled_back: true,
+        previous: Some(prev),
+        message: reason,
     }
 }
 
@@ -1403,7 +1897,9 @@ pub async fn apply_resolver(
 // backend if it's actually enabled, and only rewrites rc.conf values that
 // are changing (see #154 — unconditional writes silently flipped rdns_enable
 // on reboot).
-pub async fn resolver_start(State(state): State<AppState>) -> Result<Json<ApplyReport>, StatusCode> {
+pub async fn resolver_start(
+    State(state): State<AppState>,
+) -> Result<Json<ApplyReport>, StatusCode> {
     let mut config = load_config(&state.pool).await;
     config.enabled = true;
     let target = config.backend.clone();
@@ -1417,7 +1913,9 @@ pub async fn resolver_stop(State(state): State<AppState>) -> Result<Json<ApplyRe
     Ok(Json(switch_backend(&state, &target, &config).await))
 }
 
-pub async fn resolver_restart(State(state): State<AppState>) -> Result<Json<ApplyReport>, StatusCode> {
+pub async fn resolver_restart(
+    State(state): State<AppState>,
+) -> Result<Json<ApplyReport>, StatusCode> {
     let mut config = load_config(&state.pool).await;
     config.enabled = true;
     let target = config.backend.clone();
@@ -1425,31 +1923,59 @@ pub async fn resolver_restart(State(state): State<AppState>) -> Result<Json<Appl
 }
 
 // Host overrides CRUD
-pub async fn list_hosts(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec<HostOverride>>>, StatusCode> {
+pub async fn list_hosts(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<HostOverride>>>, StatusCode> {
     let rows = sqlx::query_as::<_, (String,String,String,String,String,Option<i64>,Option<String>,bool,String)>(
         "SELECT id, hostname, domain, record_type, value, mx_priority, description, enabled, created_at FROM dns_host_overrides ORDER BY hostname ASC"
     ).fetch_all(&state.pool).await.map_err(|_| internal())?;
-    let hosts: Vec<HostOverride> = rows.into_iter().map(|(id,h,d,rt,v,mx,desc,en,ca)| HostOverride {
-        id, hostname: h, domain: d, record_type: rt, value: v, mx_priority: mx.map(|v| v as u16),
-        description: desc, enabled: en, created_at: ca,
-    }).collect();
+    let hosts: Vec<HostOverride> = rows
+        .into_iter()
+        .map(|(id, h, d, rt, v, mx, desc, en, ca)| HostOverride {
+            id,
+            hostname: h,
+            domain: d,
+            record_type: rt,
+            value: v,
+            mx_priority: mx.map(|v| v as u16),
+            description: desc,
+            enabled: en,
+            created_at: ca,
+        })
+        .collect();
     Ok(Json(ApiResponse { data: hosts }))
 }
 
 fn validate_dns_value(record_type: &str, value: &str) -> Result<(), StatusCode> {
     match record_type {
-        "A" => { value.parse::<std::net::Ipv4Addr>().map_err(|_| bad_request())?; }
-        "AAAA" => { value.parse::<std::net::Ipv6Addr>().map_err(|_| bad_request())?; }
+        "A" => {
+            value
+                .parse::<std::net::Ipv4Addr>()
+                .map_err(|_| bad_request())?;
+        }
+        "AAAA" => {
+            value
+                .parse::<std::net::Ipv6Addr>()
+                .map_err(|_| bad_request())?;
+        }
         "CNAME" | "NS" | "PTR" => {
-            if !validate_domain(value) { return Err(bad_request()); }
+            if !validate_domain(value) {
+                return Err(bad_request());
+            }
         }
         "MX" => {
-            if !validate_domain(value) { return Err(bad_request()); }
+            if !validate_domain(value) {
+                return Err(bad_request());
+            }
         }
         "TXT" => {
-            if value.len() > 4096 { return Err(bad_request()); }
+            if value.len() > 4096 {
+                return Err(bad_request());
+            }
         }
-        _ => { return Err(bad_request()); }
+        _ => {
+            return Err(bad_request());
+        }
     }
     Ok(())
 }
@@ -1460,20 +1986,23 @@ fn validate_acl_action(action: &str) -> bool {
 
 fn validate_cidr_network(s: &str) -> bool {
     if let Some((ip_str, prefix_str)) = s.split_once('/') {
-        ip_str.parse::<std::net::IpAddr>().is_ok()
-            && prefix_str.parse::<u8>().is_ok()
+        ip_str.parse::<std::net::IpAddr>().is_ok() && prefix_str.parse::<u8>().is_ok()
     } else {
         s.parse::<std::net::IpAddr>().is_ok()
     }
 }
 
-pub async fn create_host(State(state): State<AppState>, Json(req): Json<CreateHostOverride>) -> Result<(StatusCode, Json<ApiResponse<HostOverride>>), StatusCode> {
+pub async fn create_host(
+    State(state): State<AppState>,
+    Json(req): Json<CreateHostOverride>,
+) -> Result<(StatusCode, Json<ApiResponse<HostOverride>>), StatusCode> {
     if !validate_domain(&req.hostname) || !validate_domain(&req.domain) {
         return Err(bad_request());
     }
     let rt_str = req.record_type.as_deref().unwrap_or("A");
     validate_dns_value(rt_str, &req.value)?;
-    let id = Uuid::new_v4().to_string(); let now = Utc::now().to_rfc3339();
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     let rt = req.record_type.unwrap_or_else(|| "A".to_string());
     let enabled = req.enabled.unwrap_or(true);
     sqlx::query("INSERT INTO dns_host_overrides (id, hostname, domain, record_type, value, mx_priority, description, enabled, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
@@ -1482,10 +2011,29 @@ pub async fn create_host(State(state): State<AppState>, Json(req): Json<CreateHo
         .execute(&state.pool).await.map_err(|_| bad_request())?;
     state.set_pending(|p| p.dns = true).await;
     refresh_implicit_whitelist(&state).await;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: HostOverride { id, hostname: req.hostname, domain: req.domain, record_type: rt, value: req.value, mx_priority: req.mx_priority, description: req.description, enabled, created_at: now } })))
+    Ok((
+        StatusCode::CREATED,
+        Json(ApiResponse {
+            data: HostOverride {
+                id,
+                hostname: req.hostname,
+                domain: req.domain,
+                record_type: rt,
+                value: req.value,
+                mx_priority: req.mx_priority,
+                description: req.description,
+                enabled,
+                created_at: now,
+            },
+        }),
+    ))
 }
 
-pub async fn update_host(State(state): State<AppState>, Path(id): Path<String>, Json(req): Json<CreateHostOverride>) -> Result<Json<ApiResponse<HostOverride>>, StatusCode> {
+pub async fn update_host(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateHostOverride>,
+) -> Result<Json<ApiResponse<HostOverride>>, StatusCode> {
     if !validate_domain(&req.hostname) || !validate_domain(&req.domain) {
         return Err(bad_request());
     }
@@ -1497,60 +2045,139 @@ pub async fn update_host(State(state): State<AppState>, Path(id): Path<String>, 
         .bind(&id).bind(&req.hostname).bind(&req.domain).bind(&rt).bind(&req.value)
         .bind(req.mx_priority.map(|v| v as i64)).bind(req.description.as_deref()).bind(enabled)
         .execute(&state.pool).await.map_err(|_| internal())?;
-    if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    if r.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
     state.set_pending(|p| p.dns = true).await;
     refresh_implicit_whitelist(&state).await;
-    Ok(Json(ApiResponse { data: HostOverride { id, hostname: req.hostname, domain: req.domain, record_type: rt, value: req.value, mx_priority: req.mx_priority, description: req.description, enabled, created_at: Utc::now().to_rfc3339() } }))
+    Ok(Json(ApiResponse {
+        data: HostOverride {
+            id,
+            hostname: req.hostname,
+            domain: req.domain,
+            record_type: rt,
+            value: req.value,
+            mx_priority: req.mx_priority,
+            description: req.description,
+            enabled,
+            created_at: Utc::now().to_rfc3339(),
+        },
+    }))
 }
 
-pub async fn delete_host(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<MessageResponse>, StatusCode> {
-    let r = sqlx::query("DELETE FROM dns_host_overrides WHERE id=?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
-    if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+pub async fn delete_host(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let r = sqlx::query("DELETE FROM dns_host_overrides WHERE id=?1")
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| internal())?;
+    if r.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
     state.set_pending(|p| p.dns = true).await;
     refresh_implicit_whitelist(&state).await;
-    Ok(Json(MessageResponse { message: "Host override deleted".to_string() }))
+    Ok(Json(MessageResponse {
+        message: "Host override deleted".to_string(),
+    }))
 }
 
 // Domain overrides CRUD
-pub async fn list_domains(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec<DomainOverride>>>, StatusCode> {
+pub async fn list_domains(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<DomainOverride>>>, StatusCode> {
     let rows = sqlx::query_as::<_, (String,String,String,Option<String>,bool,String)>(
         "SELECT id, domain, server, description, enabled, created_at FROM dns_domain_overrides ORDER BY domain ASC"
     ).fetch_all(&state.pool).await.map_err(|_| internal())?;
-    let domains: Vec<DomainOverride> = rows.into_iter().map(|(id,d,s,desc,en,ca)| DomainOverride { id, domain: d, server: s, description: desc, enabled: en, created_at: ca }).collect();
+    let domains: Vec<DomainOverride> = rows
+        .into_iter()
+        .map(|(id, d, s, desc, en, ca)| DomainOverride {
+            id,
+            domain: d,
+            server: s,
+            description: desc,
+            enabled: en,
+            created_at: ca,
+        })
+        .collect();
     Ok(Json(ApiResponse { data: domains }))
 }
 
-pub async fn create_domain(State(state): State<AppState>, Json(req): Json<CreateDomainOverride>) -> Result<(StatusCode, Json<ApiResponse<DomainOverride>>), StatusCode> {
+pub async fn create_domain(
+    State(state): State<AppState>,
+    Json(req): Json<CreateDomainOverride>,
+) -> Result<(StatusCode, Json<ApiResponse<DomainOverride>>), StatusCode> {
     if !validate_domain(&req.domain) {
         return Err(bad_request());
     }
-    let id = Uuid::new_v4().to_string(); let now = Utc::now().to_rfc3339();
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     let enabled = req.enabled.unwrap_or(true);
     sqlx::query("INSERT INTO dns_domain_overrides (id, domain, server, description, enabled, created_at) VALUES (?1,?2,?3,?4,?5,?6)")
         .bind(&id).bind(&req.domain).bind(&req.server).bind(req.description.as_deref()).bind(enabled).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
     state.set_pending(|p| p.dns = true).await;
     refresh_implicit_whitelist(&state).await;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: DomainOverride { id, domain: req.domain, server: req.server, description: req.description, enabled, created_at: now } })))
+    Ok((
+        StatusCode::CREATED,
+        Json(ApiResponse {
+            data: DomainOverride {
+                id,
+                domain: req.domain,
+                server: req.server,
+                description: req.description,
+                enabled,
+                created_at: now,
+            },
+        }),
+    ))
 }
 
-pub async fn update_domain(State(state): State<AppState>, Path(id): Path<String>, Json(req): Json<CreateDomainOverride>) -> Result<Json<ApiResponse<DomainOverride>>, StatusCode> {
+pub async fn update_domain(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateDomainOverride>,
+) -> Result<Json<ApiResponse<DomainOverride>>, StatusCode> {
     let enabled = req.enabled.unwrap_or(true);
     let r = sqlx::query("UPDATE dns_domain_overrides SET domain=?2, server=?3, description=?4, enabled=?5 WHERE id=?1")
         .bind(&id).bind(&req.domain).bind(&req.server).bind(req.description.as_deref()).bind(enabled)
         .execute(&state.pool).await.map_err(|_| internal())?;
-    if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+    if r.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
     state.set_pending(|p| p.dns = true).await;
     refresh_implicit_whitelist(&state).await;
-    Ok(Json(ApiResponse { data: DomainOverride { id, domain: req.domain, server: req.server, description: req.description, enabled, created_at: Utc::now().to_rfc3339() } }))
+    Ok(Json(ApiResponse {
+        data: DomainOverride {
+            id,
+            domain: req.domain,
+            server: req.server,
+            description: req.description,
+            enabled,
+            created_at: Utc::now().to_rfc3339(),
+        },
+    }))
 }
 
-pub async fn delete_domain(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<MessageResponse>, StatusCode> {
-    let r = sqlx::query("DELETE FROM dns_domain_overrides WHERE id=?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
-    if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
+pub async fn delete_domain(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let r = sqlx::query("DELETE FROM dns_domain_overrides WHERE id=?1")
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| internal())?;
+    if r.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
     state.set_pending(|p| p.dns = true).await;
     refresh_implicit_whitelist(&state).await;
-    Ok(Json(MessageResponse { message: "Domain override deleted".to_string() }))
+    Ok(Json(MessageResponse {
+        message: "Domain override deleted".to_string(),
+    }))
 }
 
 /// Re-emit `custom.rpz` so the implicit override-passthroughs reflect the
@@ -1569,28 +2196,69 @@ async fn refresh_implicit_whitelist(state: &AppState) {
 }
 
 // Access lists CRUD
-pub async fn list_acls(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec<AccessListEntry>>>, StatusCode> {
+pub async fn list_acls(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<AccessListEntry>>>, StatusCode> {
     let rows = sqlx::query_as::<_, (String,String,String,Option<String>,String)>(
         "SELECT id, network, action, description, created_at FROM dns_access_lists ORDER BY rowid ASC"
     ).fetch_all(&state.pool).await.map_err(|_| internal())?;
-    let acls: Vec<AccessListEntry> = rows.into_iter().map(|(id,n,a,d,c)| AccessListEntry { id, network: n, action: a, description: d, created_at: c }).collect();
+    let acls: Vec<AccessListEntry> = rows
+        .into_iter()
+        .map(|(id, n, a, d, c)| AccessListEntry {
+            id,
+            network: n,
+            action: a,
+            description: d,
+            created_at: c,
+        })
+        .collect();
     Ok(Json(ApiResponse { data: acls }))
 }
 
-pub async fn create_acl(State(state): State<AppState>, Json(req): Json<CreateAccessListEntry>) -> Result<(StatusCode, Json<ApiResponse<AccessListEntry>>), StatusCode> {
-    if !validate_cidr_network(&req.network) { return Err(bad_request()); }
-    if !validate_acl_action(&req.action) { return Err(bad_request()); }
-    let id = Uuid::new_v4().to_string(); let now = Utc::now().to_rfc3339();
+pub async fn create_acl(
+    State(state): State<AppState>,
+    Json(req): Json<CreateAccessListEntry>,
+) -> Result<(StatusCode, Json<ApiResponse<AccessListEntry>>), StatusCode> {
+    if !validate_cidr_network(&req.network) {
+        return Err(bad_request());
+    }
+    if !validate_acl_action(&req.action) {
+        return Err(bad_request());
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1,?2,?3,?4,?5)")
         .bind(&id).bind(&req.network).bind(&req.action).bind(req.description.as_deref()).bind(&now)
         .execute(&state.pool).await.map_err(|_| bad_request())?;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: AccessListEntry { id, network: req.network, action: req.action, description: req.description, created_at: now } })))
+    Ok((
+        StatusCode::CREATED,
+        Json(ApiResponse {
+            data: AccessListEntry {
+                id,
+                network: req.network,
+                action: req.action,
+                description: req.description,
+                created_at: now,
+            },
+        }),
+    ))
 }
 
-pub async fn delete_acl(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<MessageResponse>, StatusCode> {
-    let r = sqlx::query("DELETE FROM dns_access_lists WHERE id=?1").bind(&id).execute(&state.pool).await.map_err(|_| internal())?;
-    if r.rows_affected() == 0 { return Err(StatusCode::NOT_FOUND); }
-    Ok(Json(MessageResponse { message: "ACL entry deleted".to_string() }))
+pub async fn delete_acl(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let r = sqlx::query("DELETE FROM dns_access_lists WHERE id=?1")
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| internal())?;
+    if r.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(Json(MessageResponse {
+        message: "ACL entry deleted".to_string(),
+    }))
 }
 
 // Query log — backend-aware.
@@ -1601,7 +2269,9 @@ pub async fn delete_acl(State(state): State<AppState>, Path(id): Path<String>) -
 // each candidate file (bounded read), then `grep` for the backend's tag
 // inside the shell pipeline so the filter happens BEFORE we ever copy the
 // bytes to user space, and finally cap at 200 lines for the response.
-pub async fn resolver_logs(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
+pub async fn resolver_logs(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
     let config = load_config(&state.pool).await;
     let is_rdns = config.backend == "rdns";
     // rDNS' rc.d script runs under daemon(8) with -o /var/log/rdns/rdns.log,
@@ -1617,7 +2287,8 @@ pub async fn resolver_logs(State(state): State<AppState>) -> Result<Json<ApiResp
         Some(filter_term),
         5000,
         200,
-    ).await;
+    )
+    .await;
     Ok(Json(ApiResponse { data: lines }))
 }
 
@@ -1676,10 +2347,15 @@ mod tests {
         tokio::spawn(async move {
             let mut buf = [0u8; 512];
             loop {
-                let Ok((n, peer)) = sock.recv_from(&mut buf).await else { return };
-                if n < 2 { continue; }
+                let Ok((n, peer)) = sock.recv_from(&mut buf).await else {
+                    return;
+                };
+                if n < 2 {
+                    continue;
+                }
                 let mut resp = vec![0u8; 12];
-                resp[0] = buf[0]; resp[1] = buf[1];
+                resp[0] = buf[0];
+                resp[1] = buf[1];
                 resp[2] = 0x80; // QR
                 let _ = sock.send_to(&resp, peer).await;
             }
@@ -1704,14 +2380,22 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
             let mut len_buf = [0u8; 2];
-            if stream.read_exact(&mut len_buf).await.is_err() { return }
+            if stream.read_exact(&mut len_buf).await.is_err() {
+                return;
+            }
             let n = u16::from_be_bytes(len_buf) as usize;
             let mut q = vec![0u8; n];
-            if stream.read_exact(&mut q).await.is_err() { return }
+            if stream.read_exact(&mut q).await.is_err() {
+                return;
+            }
             let mut resp = vec![0u8; 12];
-            resp[0] = q[0]; resp[1] = q[1]; resp[2] = 0x80;
+            resp[0] = q[0];
+            resp[1] = q[1];
+            resp[2] = 0x80;
             let rlen = (resp.len() as u16).to_be_bytes();
             let _ = stream.write_all(&rlen).await;
             let _ = stream.write_all(&resp).await;

@@ -48,8 +48,13 @@ impl Detector for C2BeaconDetector {
             return Vec::new(); // Large payloads unlikely for beaconing
         }
 
-        let variance_score = (1.0 - features.duration_variance / self.max_duration_variance).max(0.0) * 0.5;
-        let regularity_score = if features.unique_dst_ips == 1 { 0.3 } else { 0.1 };
+        let variance_score =
+            (1.0 - features.duration_variance / self.max_duration_variance).max(0.0) * 0.5;
+        let regularity_score = if features.unique_dst_ips == 1 {
+            0.3
+        } else {
+            0.1
+        };
         let score = ThreatScore::new(variance_score + regularity_score);
 
         if score.value() < 0.3 {

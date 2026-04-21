@@ -15,20 +15,58 @@ pub struct ApplyReport {
 }
 
 impl ApplyReport {
-    pub fn ok() -> Self { Self { ok: true, requires_reboot: false, requires_service_restart: None, warning: None } }
-    pub fn ok_requires_reboot() -> Self { Self { ok: true, requires_reboot: true, requires_service_restart: None, warning: None } }
-    pub fn ok_requires_restart(service: &str) -> Self { Self { ok: true, requires_reboot: false, requires_service_restart: Some(service.to_string()), warning: None } }
-    pub fn warn(msg: impl Into<String>) -> Self { Self { ok: true, requires_reboot: false, requires_service_restart: None, warning: Some(msg.into()) } }
+    pub fn ok() -> Self {
+        Self {
+            ok: true,
+            requires_reboot: false,
+            requires_service_restart: None,
+            warning: None,
+        }
+    }
+    pub fn ok_requires_reboot() -> Self {
+        Self {
+            ok: true,
+            requires_reboot: true,
+            requires_service_restart: None,
+            warning: None,
+        }
+    }
+    pub fn ok_requires_restart(service: &str) -> Self {
+        Self {
+            ok: true,
+            requires_reboot: false,
+            requires_service_restart: Some(service.to_string()),
+            warning: None,
+        }
+    }
+    pub fn warn(msg: impl Into<String>) -> Self {
+        Self {
+            ok: true,
+            requires_reboot: false,
+            requires_service_restart: None,
+            warning: Some(msg.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct GeneralInput { pub hostname: String, pub domain: String, pub timezone: String }
+pub struct GeneralInput {
+    pub hostname: String,
+    pub domain: String,
+    pub timezone: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct BannerInput { pub login_banner: String, pub motd: String }
+pub struct BannerInput {
+    pub login_banner: String,
+    pub motd: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ConsoleInput { pub kind: crate::config::ConsoleKind, pub baud: u32 }
+pub struct ConsoleInput {
+    pub kind: crate::config::ConsoleKind,
+    pub baud: u32,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SshInput {
@@ -57,21 +95,32 @@ pub struct SystemInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CpuTemp { pub core: u32, pub celsius: f32 }
+pub struct CpuTemp {
+    pub core: u32,
+    pub celsius: f32,
+}
 
 // ----- Linux/WSL (dev): no-op apply, stub info -----
 
 #[cfg(not(target_os = "freebsd"))]
-pub async fn apply_general(_i: &GeneralInput) -> ApplyReport { ApplyReport::ok() }
+pub async fn apply_general(_i: &GeneralInput) -> ApplyReport {
+    ApplyReport::ok()
+}
 
 #[cfg(not(target_os = "freebsd"))]
-pub async fn apply_banner(_i: &BannerInput) -> ApplyReport { ApplyReport::ok() }
+pub async fn apply_banner(_i: &BannerInput) -> ApplyReport {
+    ApplyReport::ok()
+}
 
 #[cfg(not(target_os = "freebsd"))]
-pub async fn apply_console(_i: &ConsoleInput) -> ApplyReport { ApplyReport::ok_requires_reboot() }
+pub async fn apply_console(_i: &ConsoleInput) -> ApplyReport {
+    ApplyReport::ok_requires_reboot()
+}
 
 #[cfg(not(target_os = "freebsd"))]
-pub async fn apply_ssh(_i: &SshInput) -> ApplyReport { ApplyReport::ok_requires_restart("sshd") }
+pub async fn apply_ssh(_i: &SshInput) -> ApplyReport {
+    ApplyReport::ok_requires_restart("sshd")
+}
 
 #[cfg(not(target_os = "freebsd"))]
 pub async fn collect_info() -> SystemInfo {
@@ -95,18 +144,27 @@ pub async fn collect_info() -> SystemInfo {
 
 #[cfg(not(target_os = "freebsd"))]
 fn hostname_stub() -> String {
-    std::env::var("HOSTNAME").ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
+    std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
         .unwrap_or_else(|| "dev".to_string())
 }
 
 #[cfg(not(target_os = "freebsd"))]
 fn num_cpus() -> u32 {
-    std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
 }
 
 #[cfg(not(target_os = "freebsd"))]
-pub async fn motd_user_edited_marker_set() -> bool { false }
+pub async fn motd_user_edited_marker_set() -> bool {
+    false
+}
 
 // ----- FreeBSD: real apply (bodies filled in Tasks 5–9) -----
 
@@ -117,6 +175,6 @@ mod freebsd_impl;
 
 #[cfg(target_os = "freebsd")]
 pub use freebsd_impl::{
-    apply_general, apply_banner, apply_console, apply_ssh, collect_info,
+    apply_banner, apply_console, apply_general, apply_ssh, collect_info,
     motd_user_edited_marker_set,
 };

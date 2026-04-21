@@ -58,7 +58,10 @@ impl PfBackend for PfMock {
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), PfError> {
         tracing::debug!(anchor, rule, "mock: add_rule");
         let mut rules = self.rules.write().await;
-        rules.entry(anchor.to_string()).or_default().push(rule.to_string());
+        rules
+            .entry(anchor.to_string())
+            .or_default()
+            .push(rule.to_string());
         Ok(())
     }
 
@@ -187,10 +190,7 @@ impl PfBackend for PfMock {
                 "fib {fib} out of range (net.fibs={fib_count})"
             )));
         }
-        self.iface_fibs
-            .write()
-            .await
-            .insert(iface.to_string(), fib);
+        self.iface_fibs.write().await.insert(iface.to_string(), fib);
         Ok(())
     }
 

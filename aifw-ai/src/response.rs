@@ -158,8 +158,8 @@ impl AutoResponder {
                     .await;
             }
             ResponseAction::TempBlock => {
-                let expires = Utc::now()
-                    + Duration::seconds(self.config.temp_block_duration_secs as i64);
+                let expires =
+                    Utc::now() + Duration::seconds(self.config.temp_block_duration_secs as i64);
 
                 tracing::warn!(
                     threat_type = %threat.threat_type,

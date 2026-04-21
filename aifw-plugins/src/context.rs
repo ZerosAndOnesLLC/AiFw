@@ -30,7 +30,10 @@ impl PluginContext {
 
     /// Store a value in the shared plugin store
     pub async fn store_set(&self, key: &str, value: &str) {
-        self.store.write().await.insert(key.to_string(), value.to_string());
+        self.store
+            .write()
+            .await
+            .insert(key.to_string(), value.to_string());
     }
 
     /// Get a value from the shared plugin store
@@ -41,7 +44,9 @@ impl PluginContext {
     /// Add an IP to a pf table (restricted to plugin_ prefixed tables)
     pub async fn add_to_table(&self, table: &str, ip: std::net::IpAddr) -> Result<(), String> {
         if !Self::is_table_allowed(table) {
-            return Err(format!("plugins can only modify tables with prefix '{PLUGIN_ALLOWED_TABLE_PREFIX}'"));
+            return Err(format!(
+                "plugins can only modify tables with prefix '{PLUGIN_ALLOWED_TABLE_PREFIX}'"
+            ));
         }
         self.pf
             .add_table_entry(table, ip)
@@ -52,7 +57,9 @@ impl PluginContext {
     /// Remove an IP from a pf table (restricted to plugin_ prefixed tables)
     pub async fn remove_from_table(&self, table: &str, ip: std::net::IpAddr) -> Result<(), String> {
         if !Self::is_table_allowed(table) {
-            return Err(format!("plugins can only modify tables with prefix '{PLUGIN_ALLOWED_TABLE_PREFIX}'"));
+            return Err(format!(
+                "plugins can only modify tables with prefix '{PLUGIN_ALLOWED_TABLE_PREFIX}'"
+            ));
         }
         self.pf
             .remove_table_entry(table, ip)

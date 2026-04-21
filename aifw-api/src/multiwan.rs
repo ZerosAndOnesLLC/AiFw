@@ -62,11 +62,7 @@ pub struct FibInfo {
 pub async fn list_instances(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<RoutingInstance>>>, StatusCode> {
-    let list = state
-        .multiwan_engine
-        .list()
-        .await
-        .map_err(|_| internal())?;
+    let list = state.multiwan_engine.list().await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: list }))
 }
 
@@ -208,11 +204,7 @@ pub async fn list_fibs(
         .available_fibs()
         .await
         .map_err(|_| internal())?;
-    let instances = state
-        .multiwan_engine
-        .list()
-        .await
-        .map_err(|_| internal())?;
+    let instances = state.multiwan_engine.list().await.map_err(|_| internal())?;
     let used = instances.into_iter().map(|i| i.fib_number).collect();
     Ok(Json(ApiResponse {
         data: FibInfo { net_fibs, used },
@@ -286,11 +278,7 @@ fn req_to_gateway(req: CreateGatewayRequest, id: Option<Uuid>) -> Result<Gateway
 pub async fn list_gateways(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<Gateway>>>, StatusCode> {
-    let list = state
-        .gateway_engine
-        .list()
-        .await
-        .map_err(|_| internal())?;
+    let list = state.gateway_engine.list().await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: list }))
 }
 
@@ -406,8 +394,6 @@ pub async fn probe_now(
     Ok(Json(ApiResponse { data: gw }))
 }
 
-
-
 // ============================================================
 // Gateway groups (Phase 3)
 // ============================================================
@@ -498,7 +484,11 @@ pub async fn update_group(
         created_at: existing.created_at,
         updated_at: Utc::now(),
     };
-    let g = state.group_engine.update(g).await.map_err(|_| bad_request())?;
+    let g = state
+        .group_engine
+        .update(g)
+        .await
+        .map_err(|_| bad_request())?;
     Ok(Json(ApiResponse { data: g }))
 }
 
@@ -543,7 +533,11 @@ pub async fn add_group_member(
         tier: req.tier.unwrap_or(1),
         weight: req.weight.unwrap_or(1),
     };
-    let m = state.group_engine.add_member(m).await.map_err(|_| bad_request())?;
+    let m = state
+        .group_engine
+        .add_member(m)
+        .await
+        .map_err(|_| bad_request())?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: m })))
 }
 
@@ -582,9 +576,10 @@ pub async fn group_active(
     let sel = aifw_core::multiwan::select(&group, &members, &gateways);
     let (kind, ids) = match sel {
         aifw_core::multiwan::Selection::Single(id) => ("single".to_string(), vec![id]),
-        aifw_core::multiwan::Selection::WeightedList(l) => {
-            ("weighted".to_string(), l.into_iter().map(|(id, _)| id).collect())
-        }
+        aifw_core::multiwan::Selection::WeightedList(l) => (
+            "weighted".to_string(),
+            l.into_iter().map(|(id, _)| id).collect(),
+        ),
         aifw_core::multiwan::Selection::None => ("none".to_string(), vec![]),
     };
     Ok(Json(ApiResponse {
@@ -672,7 +667,11 @@ pub async fn create_policy(
     Json(req): Json<CreatePolicyRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<aifw_common::PolicyRule>>), StatusCode> {
     let p = req_to_policy(req, None, None)?;
-    let p = state.policy_engine.add(p).await.map_err(|_| bad_request())?;
+    let p = state
+        .policy_engine
+        .add(p)
+        .await
+        .map_err(|_| bad_request())?;
     let _ = apply_all(&state).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: p })))
 }
@@ -689,7 +688,11 @@ pub async fn update_policy(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let p = req_to_policy(req, Some(uuid), Some(existing.created_at))?;
-    let p = state.policy_engine.update(p).await.map_err(|_| bad_request())?;
+    let p = state
+        .policy_engine
+        .update(p)
+        .await
+        .map_err(|_| bad_request())?;
     let _ = apply_all(&state).await;
     Ok(Json(ApiResponse { data: p }))
 }
@@ -845,13 +848,19 @@ pub async fn preview_policies(
     for g in &groups {
         members.insert(
             g.id,
-            state.group_engine.list_members(g.id).await.map_err(|_| internal())?,
+            state
+                .group_engine
+                .list_members(g.id)
+                .await
+                .map_err(|_| internal())?,
         );
     }
 
     let report = state
         .preflight_engine
-        .preview(&current, &proposed, &instances, &gateways, &groups, &members)
+        .preview(
+            &current, &proposed, &instances, &gateways, &groups, &members,
+        )
         .await
         .map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: report }))
@@ -1107,8 +1116,16 @@ pub async fn toggle_policy(
         .get(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    p.status = if req.enabled { "active".into() } else { "disabled".into() };
-    let p = state.policy_engine.update(p).await.map_err(|_| internal())?;
+    p.status = if req.enabled {
+        "active".into()
+    } else {
+        "disabled".into()
+    };
+    let p = state
+        .policy_engine
+        .update(p)
+        .await
+        .map_err(|_| internal())?;
     let _ = apply_all(&state).await;
     Ok(Json(ApiResponse { data: p }))
 }

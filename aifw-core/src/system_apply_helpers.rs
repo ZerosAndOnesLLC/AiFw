@@ -46,7 +46,9 @@ pub fn replace_managed_block(content: &str, marker: &str, new_block: &str) -> St
             out.push_str(&begin_line);
             out.push('\n');
             out.push_str(new_block);
-            if !new_block.ends_with('\n') { out.push('\n'); }
+            if !new_block.ends_with('\n') {
+                out.push('\n');
+            }
             out.push_str(&end_line);
             out.push('\n');
             for line in &lines[e + 1..] {
@@ -61,11 +63,15 @@ pub fn replace_managed_block(content: &str, marker: &str, new_block: &str) -> St
                 content.len() + new_block.len() + begin_line.len() + end_line.len() + 8,
             );
             out.push_str(content);
-            if !content.is_empty() && !content.ends_with('\n') { out.push('\n'); }
+            if !content.is_empty() && !content.ends_with('\n') {
+                out.push('\n');
+            }
             out.push_str(&begin_line);
             out.push('\n');
             out.push_str(new_block);
-            if !new_block.ends_with('\n') { out.push('\n'); }
+            if !new_block.ends_with('\n') {
+                out.push('\n');
+            }
             out.push_str(&end_line);
             out.push('\n');
             out
@@ -74,35 +80,49 @@ pub fn replace_managed_block(content: &str, marker: &str, new_block: &str) -> St
 }
 
 pub fn validate_hostname(s: &str) -> Result<(), String> {
-    if s.is_empty() { return Err("hostname must not be empty".into()); }
-    if s.len() > 63 { return Err("hostname must be ≤ 63 characters (RFC 1123)".into()); }
+    if s.is_empty() {
+        return Err("hostname must not be empty".into());
+    }
+    if s.len() > 63 {
+        return Err("hostname must be ≤ 63 characters (RFC 1123)".into());
+    }
     let bytes = s.as_bytes();
     if !bytes[0].is_ascii_alphanumeric() {
         return Err("hostname must start with a letter or digit".into());
     }
     for &b in bytes {
         if !(b.is_ascii_alphanumeric() || b == b'-') {
-            return Err(format!("hostname contains invalid character: {:?}", b as char));
+            return Err(format!(
+                "hostname contains invalid character: {:?}",
+                b as char
+            ));
         }
     }
     Ok(())
 }
 
 pub fn validate_domain(s: &str) -> Result<(), String> {
-    if s.is_empty() { return Ok(()); }
+    if s.is_empty() {
+        return Ok(());
+    }
     if s.starts_with('.') || s.ends_with('.') {
         return Err("domain must not start or end with a dot".into());
     }
     for b in s.bytes() {
         if !(b.is_ascii_alphanumeric() || b == b'-' || b == b'.') {
-            return Err(format!("domain contains invalid character: {:?}", b as char));
+            return Err(format!(
+                "domain contains invalid character: {:?}",
+                b as char
+            ));
         }
     }
     Ok(())
 }
 
 pub fn validate_ssh_port(port: u16) -> Result<(), String> {
-    if port == 0 { return Err("ssh port must be 1–65535".into()); }
+    if port == 0 {
+        return Err("ssh port must be 1–65535".into());
+    }
     Ok(())
 }
 

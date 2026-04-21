@@ -66,7 +66,27 @@ impl SqliteOutput {
             "SELECT id, timestamp, signature_id, signature_msg, severity, src_ip, src_port, dst_ip, dst_port, protocol, action, rule_source, payload_excerpt, metadata, acknowledged, COALESCE(classification, 'unreviewed') || '|' || COALESCE(analyst_notes, '') FROM ids_alerts{where_clause} ORDER BY timestamp DESC LIMIT {limit} OFFSET {offset}"
         );
 
-        let mut query = sqlx::query_as::<_, (String, String, Option<i64>, String, i64, String, Option<i64>, String, Option<i64>, String, String, String, Option<String>, Option<String>, bool, String)>(&sql);
+        let mut query = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<i64>,
+                String,
+                i64,
+                String,
+                Option<i64>,
+                String,
+                Option<i64>,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                bool,
+                String,
+            ),
+        >(&sql);
 
         for val in &bind_values {
             query = query.bind(val);
@@ -102,7 +122,13 @@ impl SqliteOutput {
                     classification: row.15.split('|').next().unwrap_or("unreviewed").to_string(),
                     analyst_notes: {
                         let packed = &row.15;
-                        packed.split_once('|').and_then(|(_, n)| if n.is_empty() { None } else { Some(n.to_string()) })
+                        packed.split_once('|').and_then(|(_, n)| {
+                            if n.is_empty() {
+                                None
+                            } else {
+                                Some(n.to_string())
+                            }
+                        })
                     },
                     flow_id: None,
                 })
@@ -147,14 +173,25 @@ impl SqliteOutput {
                 classification: row.15.split('|').next().unwrap_or("unreviewed").to_string(),
                 analyst_notes: {
                     let packed = &row.15;
-                    packed.split_once('|').and_then(|(_, n)| if n.is_empty() { None } else { Some(n.to_string()) })
+                    packed.split_once('|').and_then(|(_, n)| {
+                        if n.is_empty() {
+                            None
+                        } else {
+                            Some(n.to_string())
+                        }
+                    })
                 },
             })
         }))
     }
 
     /// Classify an alert (confirmed, false_positive, investigating, unreviewed).
-    pub async fn classify(&self, id: uuid::Uuid, classification: &str, notes: Option<&str>) -> Result<()> {
+    pub async fn classify(
+        &self,
+        id: uuid::Uuid,
+        classification: &str,
+        notes: Option<&str>,
+    ) -> Result<()> {
         sqlx::query("UPDATE ids_alerts SET classification = ?, analyst_notes = ?, acknowledged = 1 WHERE id = ?")
             .bind(classification)
             .bind(notes)
@@ -285,7 +322,10 @@ mod tests {
         let alert = test_alert();
         output.emit(&alert).await.unwrap();
 
-        let alerts = output.query_alerts(None, None, None, None, None, 100, 0).await.unwrap();
+        let alerts = output
+            .query_alerts(None, None, None, None, None, 100, 0)
+            .await
+            .unwrap();
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].signature_msg, "Test alert");
     }

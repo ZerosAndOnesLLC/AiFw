@@ -2,7 +2,6 @@
 ///
 /// The heavy lifting is done by `CompiledRuleset::prefilter()` in `rules/mod.rs`.
 /// This module provides additional helpers for batch matching and case handling.
-
 use aho_corasick::AhoCorasick;
 
 /// Build an Aho-Corasick automaton from a list of patterns.
@@ -30,10 +29,7 @@ mod tests {
 
     #[test]
     fn test_build_automaton() {
-        let patterns = vec![
-            b"hello".to_vec(),
-            b"world".to_vec(),
-        ];
+        let patterns = vec![b"hello".to_vec(), b"world".to_vec()];
         let ac = build_automaton(&patterns).unwrap();
 
         let matches = find_all_matches(&ac, b"hello world");
@@ -44,10 +40,7 @@ mod tests {
 
     #[test]
     fn test_overlapping_matches() {
-        let patterns = vec![
-            b"ab".to_vec(),
-            b"bc".to_vec(),
-        ];
+        let patterns = vec![b"ab".to_vec(), b"bc".to_vec()];
         let ac = build_automaton(&patterns).unwrap();
 
         let matches = find_all_matches(&ac, b"abc");

@@ -32,7 +32,9 @@ impl QueueType {
             "codel" => Ok(QueueType::Codel),
             "hfsc" => Ok(QueueType::Hfsc),
             "priq" | "priority" => Ok(QueueType::Priq),
-            _ => Err(crate::AifwError::Validation(format!("unknown queue type: {s}"))),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown queue type: {s}"
+            ))),
         }
     }
 }
@@ -68,7 +70,9 @@ impl TrafficClass {
             "interactive" => Ok(TrafficClass::Interactive),
             "default" => Ok(TrafficClass::Default),
             "bulk" => Ok(TrafficClass::Bulk),
-            _ => Err(crate::AifwError::Validation(format!("unknown traffic class: {s}"))),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown traffic class: {s}"
+            ))),
         }
     }
 
@@ -211,7 +215,9 @@ impl QueueConfig {
         }
 
         match self.queue_type {
-            QueueType::Codel => parts.push("flows 1024 quantum 1514 target 5 interval 100".to_string()),
+            QueueType::Codel => {
+                parts.push("flows 1024 quantum 1514 target 5 interval 100".to_string())
+            }
             QueueType::Hfsc => {}
             QueueType::Priq => parts.push(format!("priority {}", self.traffic_class.priority())),
         }
@@ -221,10 +227,7 @@ impl QueueConfig {
 
     /// Generate the parent queue line for the interface
     pub fn to_pf_parent_queue(&self) -> String {
-        format!(
-            "queue on {} bandwidth {}",
-            self.interface, self.bandwidth
-        )
+        format!("queue on {} bandwidth {}", self.interface, self.bandwidth)
     }
 }
 
@@ -319,7 +322,11 @@ impl RateLimitRule {
 
         // State tracking with overload
         let rate = format!("{}/{}", self.max_connections, self.window_secs);
-        let flush = if self.flush_states { " flush global" } else { "" };
+        let flush = if self.flush_states {
+            " flush global"
+        } else {
+            ""
+        };
         parts.push(format!(
             "keep state (max-src-conn {}, max-src-conn-rate {rate}, overload <{}>{})",
             self.max_connections, self.overload_table, flush
@@ -361,7 +368,11 @@ impl SynFloodConfig {
         let block = format!("block in quick from <{}>", self.overload_table);
         let pass = format!(
             "pass in on {} proto tcp keep state (max-src-conn {}, max-src-conn-rate {}/{}, overload <{}> flush global)",
-            self.interface, self.max_src_conn, self.max_src_conn_rate, self.rate_window_secs, self.overload_table
+            self.interface,
+            self.max_src_conn,
+            self.max_src_conn_rate,
+            self.rate_window_secs,
+            self.overload_table
         );
         vec![table, block, pass]
     }

@@ -117,7 +117,8 @@ pub async fn issue_token_pair(
     role_name: &str,
     settings: &AuthSettings,
 ) -> Result<TokenPair, String> {
-    let (access_token, access_expires) = create_access_token(user_id, username, permissions, role_name, settings)?;
+    let (access_token, access_expires) =
+        create_access_token(user_id, username, permissions, role_name, settings)?;
     let (refresh_token, refresh_expires) = create_refresh_token(pool, user_id, settings).await?;
 
     Ok(TokenPair {
@@ -210,13 +211,14 @@ pub async fn rotate_refresh_token(
     .map_err(|e| format!("db error: {e}"))?;
 
     // Get username, enabled, and role for permission resolution
-    let (username, enabled, role, role_id) = sqlx::query_as::<_, (String, bool, String, Option<String>)>(
-        "SELECT username, enabled, role, role_id FROM users WHERE id = ?1",
-    )
-    .bind(&user_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| format!("db error: {e}"))?;
+    let (username, enabled, role, role_id) =
+        sqlx::query_as::<_, (String, bool, String, Option<String>)>(
+            "SELECT username, enabled, role, role_id FROM users WHERE id = ?1",
+        )
+        .bind(&user_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("db error: {e}"))?;
 
     if !enabled {
         return Err("user account is disabled".to_string());
@@ -225,7 +227,8 @@ pub async fn rotate_refresh_token(
     // Resolve permissions from role
     let (perm_bits, role_name) = resolve_token_permissions(pool, &role, role_id.as_deref()).await?;
 
-    let (access_token, access_expires) = create_access_token(&user_id, &username, perm_bits, &role_name, settings)?;
+    let (access_token, access_expires) =
+        create_access_token(&user_id, &username, perm_bits, &role_name, settings)?;
 
     Ok(TokenPair {
         access_token,
@@ -274,13 +277,12 @@ pub async fn resolve_token_permissions(
 
     // Try new role_id system first
     if let Some(rid) = role_id {
-        let row = sqlx::query_as::<_, (i64, String)>(
-            "SELECT permissions, name FROM roles WHERE id = ?1",
-        )
-        .bind(rid)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| format!("db error: {e}"))?;
+        let row =
+            sqlx::query_as::<_, (i64, String)>("SELECT permissions, name FROM roles WHERE id = ?1")
+                .bind(rid)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| format!("db error: {e}"))?;
 
         if let Some((bits, name)) = row {
             return Ok((bits as u64, name));

@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{info, warn};
 
-const GITHUB_API_URL: &str =
-    "https://api.github.com/repos/ZerosAndOnesLLC/AiFw/releases/latest";
+const GITHUB_API_URL: &str = "https://api.github.com/repos/ZerosAndOnesLLC/AiFw/releases/latest";
 const VERSION_FILE: &str = "/usr/local/share/aifw/version";
 const BACKUP_DIR: &str = "/usr/local/share/aifw/backup";
 const BIN_DIR: &str = "/usr/local/sbin";
@@ -143,7 +142,10 @@ pub async fn check_for_update() -> Result<AifwUpdateInfo, UpdaterError> {
 /// Download, verify, and install an AiFw update.
 pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, UpdaterError> {
     let tarball_url = info.tarball_url.as_deref().ok_or(UpdaterError::NoTarball)?;
-    let checksum_url = info.checksum_url.as_deref().ok_or(UpdaterError::NoTarball)?;
+    let checksum_url = info
+        .checksum_url
+        .as_deref()
+        .ok_or(UpdaterError::NoTarball)?;
 
     let tmp_dir = "/tmp/aifw-update";
     let tarball_path = format!("{}/update.tar.xz", tmp_dir);
@@ -224,13 +226,18 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
                 .map_err(|e| UpdaterError::Install(format!("Failed to install {}: {}", bin, e)))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(UpdaterError::Install(format!("Failed to install {}: {}", bin, stderr)));
+                return Err(UpdaterError::Install(format!(
+                    "Failed to install {}: {}",
+                    bin, stderr
+                )));
             }
             installed += 1;
         }
     }
     if installed == 0 {
-        return Err(UpdaterError::Install("No binaries found in update tarball".to_string()));
+        return Err(UpdaterError::Install(
+            "No binaries found in update tarball".to_string(),
+        ));
     }
     info!(count = installed, "binaries installed");
 
@@ -248,8 +255,10 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             .await
             .map_err(|e| UpdaterError::Install(format!("Failed to install UI: {}", e)))?;
         if !output.status.success() {
-            return Err(UpdaterError::Install(format!("Failed to install UI: {}",
-                String::from_utf8_lossy(&output.stderr))));
+            return Err(UpdaterError::Install(format!(
+                "Failed to install UI: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
     }
 
@@ -257,19 +266,17 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     {
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
         if let Ok(content) = tokio::fs::read_to_string(sudoers_path).await
-            && !content.contains("/usr/bin/wg") {
-                let patched = format!("{content}aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *\n");
-                let _ = tokio::fs::write(sudoers_path, patched).await;
-                info!("Added wg to sudoers for aifw user");
-            }
+            && !content.contains("/usr/bin/wg")
+        {
+            let patched = format!("{content}aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *\n");
+            let _ = tokio::fs::write(sudoers_path, patched).await;
+            info!("Added wg to sudoers for aifw user");
+        }
     }
 
     // Ensure required packages are installed (older installs may be missing curl)
     for pkg in &["curl"] {
-        let check = Command::new("pkg")
-            .args(["info", "-q", pkg])
-            .output()
-            .await;
+        let check = Command::new("pkg").args(["info", "-q", pkg]).output().await;
         let installed = check.map(|o| o.status.success()).unwrap_or(false);
         if !installed {
             info!(package = pkg, "Installing missing dependency");
@@ -331,7 +338,10 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             .await
             .map_err(|e| UpdaterError::Install(format!("Failed to update version file: {}", e)))?;
         if !output.status.success() {
-            warn!("Failed to update version file: {}", String::from_utf8_lossy(&output.stderr));
+            warn!(
+                "Failed to update version file: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 
@@ -467,7 +477,12 @@ async fn backup_current() -> Result<(), UpdaterError> {
         .output()
         .await;
     let _ = Command::new("/usr/local/bin/sudo")
-        .args(["/bin/mkdir", "-p", &format!("{}/bin", BACKUP_DIR), &format!("{}/rc.d", BACKUP_DIR)])
+        .args([
+            "/bin/mkdir",
+            "-p",
+            &format!("{}/bin", BACKUP_DIR),
+            &format!("{}/rc.d", BACKUP_DIR),
+        ])
         .output()
         .await;
 
@@ -475,7 +490,12 @@ async fn backup_current() -> Result<(), UpdaterError> {
         let src = format!("{}/{}", BIN_DIR, bin);
         if std::path::Path::new(&src).exists() {
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/bin/cp", "-p", &src, &format!("{}/bin/{}", BACKUP_DIR, bin)])
+                .args([
+                    "/bin/cp",
+                    "-p",
+                    &src,
+                    &format!("{}/bin/{}", BACKUP_DIR, bin),
+                ])
                 .output()
                 .await;
         }
@@ -487,7 +507,12 @@ async fn backup_current() -> Result<(), UpdaterError> {
         let src = format!("/usr/local/etc/rc.d/{}", script);
         if std::path::Path::new(&src).exists() {
             let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/bin/cp", "-p", &src, &format!("{}/rc.d/{}", BACKUP_DIR, script)])
+                .args([
+                    "/bin/cp",
+                    "-p",
+                    &src,
+                    &format!("{}/rc.d/{}", BACKUP_DIR, script),
+                ])
                 .output()
                 .await;
         }
@@ -519,9 +544,7 @@ async fn get_backup_info() -> (bool, Option<String>) {
 }
 
 fn version_newer(current: &str, latest: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> {
-        v.split('.').filter_map(|s| s.parse().ok()).collect()
-    };
+    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
     parse(latest) > parse(current)
 }
 
@@ -537,13 +560,11 @@ fn extract_hash(checksum_content: &str) -> String {
 
 async fn http_get(url: &str) -> Result<String, UpdaterError> {
     // Try fetch (FreeBSD) first, fall back to curl
-    if let Ok(o) = Command::new("fetch")
-        .args(["-qo", "-", url])
-        .output()
-        .await
-        && o.status.success() {
-            return Ok(String::from_utf8_lossy(&o.stdout).to_string());
-        }
+    if let Ok(o) = Command::new("fetch").args(["-qo", "-", url]).output().await
+        && o.status.success()
+    {
+        return Ok(String::from_utf8_lossy(&o.stdout).to_string());
+    }
 
     let output = Command::new("curl")
         .args(["-sL", "-H", "User-Agent: AiFw-Updater", url])
@@ -566,9 +587,10 @@ async fn http_download(url: &str, dest: &str) -> Result<(), UpdaterError> {
         .args(["-qo", dest, url])
         .output()
         .await
-        && o.status.success() {
-            return Ok(());
-        }
+        && o.status.success()
+    {
+        return Ok(());
+    }
 
     let output = Command::new("curl")
         .args(["-sL", "-H", "User-Agent: AiFw-Updater", "-o", dest, url])
@@ -589,10 +611,11 @@ async fn http_download(url: &str, dest: &str) -> Result<(), UpdaterError> {
 async fn verify_sha256(file: &str, expected: &str) -> Result<bool, UpdaterError> {
     // Try sha256 -q (FreeBSD)
     if let Ok(o) = Command::new("sha256").args(["-q", file]).output().await
-        && o.status.success() {
-            let hash = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            return Ok(hash == expected);
-        }
+        && o.status.success()
+    {
+        let hash = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        return Ok(hash == expected);
+    }
 
     // Fall back to sha256sum (Linux)
     let output = Command::new("sha256sum")

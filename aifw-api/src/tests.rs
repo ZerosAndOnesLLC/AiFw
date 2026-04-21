@@ -2,7 +2,7 @@
 mod tests {
     use axum::http::StatusCode;
     use axum_test::TestServer;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use crate::auth::AuthSettings;
 
@@ -286,7 +286,10 @@ mod tests {
         resp.assert_status_ok();
         let body: Value = resp.json();
         // On non-FreeBSD, VLAN apply fails so we get "Partial reload" or "Changes applied"
-        assert!(body["message"].as_str().unwrap().contains("applied") || body["message"].as_str().unwrap().contains("reload"));
+        assert!(
+            body["message"].as_str().unwrap().contains("applied")
+                || body["message"].as_str().unwrap().contains("reload")
+        );
     }
 
     #[tokio::test]
@@ -355,10 +358,7 @@ mod tests {
         let id = body["data"]["id"].as_str().unwrap().to_string();
 
         // List NAT rules
-        let resp = server
-            .get("/api/v1/nat")
-            .authorization_bearer(&token)
-            .await;
+        let resp = server.get("/api/v1/nat").authorization_bearer(&token).await;
 
         resp.assert_status_ok();
         let body: Value = resp.json();
@@ -422,7 +422,10 @@ mod tests {
             .await;
 
         let body: Value = resp.json();
-        let old_refresh = body["tokens"]["refresh_token"].as_str().unwrap().to_string();
+        let old_refresh = body["tokens"]["refresh_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         // Use it once (valid)
         server
@@ -455,7 +458,10 @@ mod tests {
 
         let body: Value = resp.json();
         let access = body["tokens"]["access_token"].as_str().unwrap().to_string();
-        let refresh = body["tokens"]["refresh_token"].as_str().unwrap().to_string();
+        let refresh = body["tokens"]["refresh_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         // Logout
         let resp = server
@@ -489,7 +495,12 @@ mod tests {
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert!(body["secret"].as_str().is_some());
-        assert!(body["provisioning_uri"].as_str().unwrap().starts_with("otpauth://"));
+        assert!(
+            body["provisioning_uri"]
+                .as_str()
+                .unwrap()
+                .starts_with("otpauth://")
+        );
         let recovery_codes = body["recovery_codes"].as_array().unwrap();
         assert_eq!(recovery_codes.len(), 8);
 
@@ -660,10 +671,22 @@ mod tests {
     #[tokio::test]
     async fn test_missing_auth_returns_401() {
         let (server, _) = test_app().await;
-        server.get("/api/v1/rules").await.assert_status(StatusCode::UNAUTHORIZED);
-        server.get("/api/v1/status").await.assert_status(StatusCode::UNAUTHORIZED);
-        server.get("/api/v1/connections").await.assert_status(StatusCode::UNAUTHORIZED);
-        server.get("/api/v1/metrics").await.assert_status(StatusCode::UNAUTHORIZED);
+        server
+            .get("/api/v1/rules")
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+        server
+            .get("/api/v1/status")
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+        server
+            .get("/api/v1/connections")
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+        server
+            .get("/api/v1/metrics")
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -682,21 +705,39 @@ mod tests {
         let (admin_token, viewer_token) = create_admin_and_viewer(&server).await;
 
         // Viewer can access rules
-        server.get("/api/v1/rules").authorization_bearer(&viewer_token).await.assert_status_ok();
+        server
+            .get("/api/v1/rules")
+            .authorization_bearer(&viewer_token)
+            .await
+            .assert_status_ok();
 
         // Admin disables viewer
-        let resp = server.get("/api/v1/auth/users").authorization_bearer(&admin_token).await;
+        let resp = server
+            .get("/api/v1/auth/users")
+            .authorization_bearer(&admin_token)
+            .await;
         let body: Value = resp.json();
-        let viewer_id = body["data"].as_array().unwrap().iter()
-            .find(|u| u["username"] == "viewer").unwrap()["id"].as_str().unwrap().to_string();
+        let viewer_id = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["username"] == "viewer")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
-        server.put(&format!("/api/v1/auth/users/{viewer_id}"))
+        server
+            .put(&format!("/api/v1/auth/users/{viewer_id}"))
             .authorization_bearer(&admin_token)
             .json(&json!({"enabled": false}))
             .await;
 
         // Viewer's token should now be rejected
-        server.get("/api/v1/rules").authorization_bearer(&viewer_token).await
+        server
+            .get("/api/v1/rules")
+            .authorization_bearer(&viewer_token)
+            .await
             .assert_status(StatusCode::UNAUTHORIZED);
     }
 
@@ -705,21 +746,36 @@ mod tests {
         let (server, _) = test_app().await;
         create_user_and_login(&server).await;
 
-        let resp = server.post("/api/v1/auth/login")
-            .json(&json!({"username": "admin", "password": "TestPass123"})).await;
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username": "admin", "password": "TestPass123"}))
+            .await;
         let body: Value = resp.json();
         let access = body["tokens"]["access_token"].as_str().unwrap().to_string();
-        let refresh = body["tokens"]["refresh_token"].as_str().unwrap().to_string();
+        let refresh = body["tokens"]["refresh_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         // Token works
-        server.get("/api/v1/rules").authorization_bearer(&access).await.assert_status_ok();
+        server
+            .get("/api/v1/rules")
+            .authorization_bearer(&access)
+            .await
+            .assert_status_ok();
 
         // Logout (revokes access token)
-        server.post("/api/v1/auth/logout").authorization_bearer(&access)
-            .json(&json!({"refresh_token": &refresh})).await;
+        server
+            .post("/api/v1/auth/logout")
+            .authorization_bearer(&access)
+            .json(&json!({"refresh_token": &refresh}))
+            .await;
 
         // Token should be revoked
-        server.get("/api/v1/rules").authorization_bearer(&access).await
+        server
+            .get("/api/v1/rules")
+            .authorization_bearer(&access)
+            .await
             .assert_status(StatusCode::UNAUTHORIZED);
     }
 
@@ -767,8 +823,11 @@ mod tests {
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // Clean interface — should succeed
-        let resp = server.post("/api/v1/rules").authorization_bearer(&token)
-            .json(&json!({"action":"block","direction":"in","protocol":"tcp","interface":"em0"})).await;
+        let resp = server
+            .post("/api/v1/rules")
+            .authorization_bearer(&token)
+            .json(&json!({"action":"block","direction":"in","protocol":"tcp","interface":"em0"}))
+            .await;
         resp.assert_status(StatusCode::CREATED);
     }
 
@@ -788,13 +847,21 @@ mod tests {
         let token = create_user_and_login(&server).await;
 
         // Invalid time format
-        let resp = server.post("/api/v1/schedules").authorization_bearer(&token)
-            .json(&json!({"name":"bad","time_ranges":"not-a-time"})).await;
+        let resp = server
+            .post("/api/v1/schedules")
+            .authorization_bearer(&token)
+            .json(&json!({"name":"bad","time_ranges":"not-a-time"}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // Invalid days
-        let resp = server.post("/api/v1/schedules").authorization_bearer(&token)
-            .json(&json!({"name":"bad2","time_ranges":"08:00-17:00","days_of_week":"monday,notaday"})).await;
+        let resp = server
+            .post("/api/v1/schedules")
+            .authorization_bearer(&token)
+            .json(
+                &json!({"name":"bad2","time_ranges":"08:00-17:00","days_of_week":"monday,notaday"}),
+            )
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // Valid schedule
@@ -808,28 +875,38 @@ mod tests {
         let (server, _) = test_app().await;
 
         // Too short
-        let resp = server.post("/api/v1/auth/register")
-            .json(&json!({"username":"u1","password":"Ab1"})).await;
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username":"u1","password":"Ab1"}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // No uppercase
-        let resp = server.post("/api/v1/auth/register")
-            .json(&json!({"username":"u2","password":"testpass123"})).await;
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username":"u2","password":"testpass123"}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // No lowercase
-        let resp = server.post("/api/v1/auth/register")
-            .json(&json!({"username":"u3","password":"TESTPASS123"})).await;
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username":"u3","password":"TESTPASS123"}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // No digit
-        let resp = server.post("/api/v1/auth/register")
-            .json(&json!({"username":"u4","password":"TestPasswd"})).await;
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username":"u4","password":"TestPasswd"}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // Valid
-        let resp = server.post("/api/v1/auth/register")
-            .json(&json!({"username":"u5","password":"GoodPass1"})).await;
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username":"u5","password":"GoodPass1"}))
+            .await;
         resp.assert_status(StatusCode::CREATED);
     }
 
@@ -839,18 +916,27 @@ mod tests {
         let token = create_user_and_login(&server).await;
 
         // Invalid destination
-        let resp = server.post("/api/v1/routes").authorization_bearer(&token)
-            .json(&json!({"destination":"not-an-ip","gateway":"10.0.0.1"})).await;
+        let resp = server
+            .post("/api/v1/routes")
+            .authorization_bearer(&token)
+            .json(&json!({"destination":"not-an-ip","gateway":"10.0.0.1"}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // Invalid gateway
-        let resp = server.post("/api/v1/routes").authorization_bearer(&token)
-            .json(&json!({"destination":"10.0.0.0/8","gateway":"not-an-ip"})).await;
+        let resp = server
+            .post("/api/v1/routes")
+            .authorization_bearer(&token)
+            .json(&json!({"destination":"10.0.0.0/8","gateway":"not-an-ip"}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // Valid
-        let resp = server.post("/api/v1/routes").authorization_bearer(&token)
-            .json(&json!({"destination":"10.0.0.0/8","gateway":"192.168.1.1"})).await;
+        let resp = server
+            .post("/api/v1/routes")
+            .authorization_bearer(&token)
+            .json(&json!({"destination":"10.0.0.0/8","gateway":"192.168.1.1"}))
+            .await;
         resp.assert_status(StatusCode::CREATED);
     }
 
@@ -860,19 +946,28 @@ mod tests {
         let token = create_user_and_login(&server).await;
 
         // Name with spaces
-        let resp = server.post("/api/v1/aliases").authorization_bearer(&token)
-            .json(&json!({"name":"bad name","alias_type":"address","entries":["1.2.3.4"]})).await;
+        let resp = server
+            .post("/api/v1/aliases")
+            .authorization_bearer(&token)
+            .json(&json!({"name":"bad name","alias_type":"address","entries":["1.2.3.4"]}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // Name too long (>31)
         let long_name = "a".repeat(32);
-        let resp = server.post("/api/v1/aliases").authorization_bearer(&token)
-            .json(&json!({"name":long_name,"alias_type":"address","entries":["1.2.3.4"]})).await;
+        let resp = server
+            .post("/api/v1/aliases")
+            .authorization_bearer(&token)
+            .json(&json!({"name":long_name,"alias_type":"address","entries":["1.2.3.4"]}))
+            .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
 
         // Valid name + valid type/entries
-        let resp = server.post("/api/v1/aliases").authorization_bearer(&token)
-            .json(&json!({"name":"trusted","alias_type":"host","entries":["1.2.3.4"]})).await;
+        let resp = server
+            .post("/api/v1/aliases")
+            .authorization_bearer(&token)
+            .json(&json!({"name":"trusted","alias_type":"host","entries":["1.2.3.4"]}))
+            .await;
         // 201 or 400 from engine internals — the key test is that bad names above got 400
         // If this also returns 400, it's an engine issue not a name validation issue
         let _ = resp.status_code(); // just ensure no panic
@@ -887,18 +982,24 @@ mod tests {
 
         // 5 failed attempts
         for _ in 0..5 {
-            server.post("/api/v1/auth/login")
-                .json(&json!({"username":"admin","password":"WrongPass1"})).await;
+            server
+                .post("/api/v1/auth/login")
+                .json(&json!({"username":"admin","password":"WrongPass1"}))
+                .await;
         }
 
         // 6th attempt should be rate limited
-        let resp = server.post("/api/v1/auth/login")
-            .json(&json!({"username":"admin","password":"WrongPass1"})).await;
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username":"admin","password":"WrongPass1"}))
+            .await;
         resp.assert_status(StatusCode::TOO_MANY_REQUESTS);
 
         // Even correct password should be blocked
-        let resp = server.post("/api/v1/auth/login")
-            .json(&json!({"username":"admin","password":"TestPass123"})).await;
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username":"admin","password":"TestPass123"}))
+            .await;
         resp.assert_status(StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -910,11 +1011,20 @@ mod tests {
         let (_admin_token, viewer_token) = create_admin_and_viewer(&server).await;
 
         // Admin-only routes should return 403 for viewer
-        server.get("/api/v1/auth/users").authorization_bearer(&viewer_token).await
+        server
+            .get("/api/v1/auth/users")
+            .authorization_bearer(&viewer_token)
+            .await
             .assert_status(StatusCode::FORBIDDEN);
-        server.get("/api/v1/auth/settings").authorization_bearer(&viewer_token).await
+        server
+            .get("/api/v1/auth/settings")
+            .authorization_bearer(&viewer_token)
+            .await
             .assert_status(StatusCode::FORBIDDEN);
-        server.get("/api/v1/auth/audit").authorization_bearer(&viewer_token).await
+        server
+            .get("/api/v1/auth/audit")
+            .authorization_bearer(&viewer_token)
+            .await
             .assert_status(StatusCode::FORBIDDEN);
     }
 
@@ -924,9 +1034,21 @@ mod tests {
         let (_admin_token, viewer_token) = create_admin_and_viewer(&server).await;
 
         // Viewer should be able to read rules, status, connections
-        server.get("/api/v1/rules").authorization_bearer(&viewer_token).await.assert_status_ok();
-        server.get("/api/v1/status").authorization_bearer(&viewer_token).await.assert_status_ok();
-        server.get("/api/v1/connections").authorization_bearer(&viewer_token).await.assert_status_ok();
+        server
+            .get("/api/v1/rules")
+            .authorization_bearer(&viewer_token)
+            .await
+            .assert_status_ok();
+        server
+            .get("/api/v1/status")
+            .authorization_bearer(&viewer_token)
+            .await
+            .assert_status_ok();
+        server
+            .get("/api/v1/connections")
+            .authorization_bearer(&viewer_token)
+            .await
+            .assert_status_ok();
     }
 
     #[tokio::test]
@@ -934,8 +1056,16 @@ mod tests {
         let (server, _) = test_app().await;
         let (admin_token, _viewer_token) = create_admin_and_viewer(&server).await;
 
-        server.get("/api/v1/auth/users").authorization_bearer(&admin_token).await.assert_status_ok();
-        server.get("/api/v1/auth/settings").authorization_bearer(&admin_token).await.assert_status_ok();
+        server
+            .get("/api/v1/auth/users")
+            .authorization_bearer(&admin_token)
+            .await
+            .assert_status_ok();
+        server
+            .get("/api/v1/auth/settings")
+            .authorization_bearer(&admin_token)
+            .await
+            .assert_status_ok();
     }
 
     // --- #107: Registration security tests ---
@@ -945,13 +1075,17 @@ mod tests {
         let (server, _) = test_app().await;
 
         // First registration succeeds
-        let resp = server.post("/api/v1/auth/register")
-            .json(&json!({"username":"admin","password":"TestPass123"})).await;
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username":"admin","password":"TestPass123"}))
+            .await;
         resp.assert_status(StatusCode::CREATED);
 
         // Second registration fails
-        let resp = server.post("/api/v1/auth/register")
-            .json(&json!({"username":"attacker","password":"HackPass1"})).await;
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username":"attacker","password":"HackPass1"}))
+            .await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
@@ -960,8 +1094,10 @@ mod tests {
         let (server, _) = test_app().await;
 
         // Register with explicit "viewer" role — should be overridden to admin
-        let resp = server.post("/api/v1/auth/register")
-            .json(&json!({"username":"admin","password":"TestPass123","role":"viewer"})).await;
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username":"admin","password":"TestPass123","role":"viewer"}))
+            .await;
         resp.assert_status(StatusCode::CREATED);
         let body: Value = resp.json();
         assert_eq!(body["data"]["role"], "admin");
@@ -972,7 +1108,10 @@ mod tests {
         let (server, _) = test_app().await;
         let token = create_user_and_login(&server).await;
 
-        let resp = server.get("/api/v1/auth/settings").authorization_bearer(&token).await;
+        let resp = server
+            .get("/api/v1/auth/settings")
+            .authorization_bearer(&token)
+            .await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         // jwt_secret should NOT be present (skip_serializing)
@@ -1075,8 +1214,10 @@ mod tests {
     async fn get_system_general_returns_defaults() {
         let (server, _) = test_app().await;
         let token = create_user_and_login(&server).await;
-        let resp = server.get("/api/v1/system/general")
-            .authorization_bearer(&token).await;
+        let resp = server
+            .get("/api/v1/system/general")
+            .authorization_bearer(&token)
+            .await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["timezone"], "UTC");
@@ -1089,16 +1230,21 @@ mod tests {
         let (server, _) = test_app().await;
         let token = create_user_and_login(&server).await;
 
-        let resp = server.put("/api/v1/system/general")
+        let resp = server
+            .put("/api/v1/system/general")
             .authorization_bearer(&token)
-            .json(&json!({ "hostname": "myfw", "domain": "home.lan", "timezone": "America/Chicago" }))
+            .json(
+                &json!({ "hostname": "myfw", "domain": "home.lan", "timezone": "America/Chicago" }),
+            )
             .await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["ok"], true);
 
-        let resp2 = server.get("/api/v1/system/general")
-            .authorization_bearer(&token).await;
+        let resp2 = server
+            .get("/api/v1/system/general")
+            .authorization_bearer(&token)
+            .await;
         let back: Value = resp2.json();
         assert_eq!(back["hostname"], "myfw");
         assert_eq!(back["domain"], "home.lan");
@@ -1109,7 +1255,8 @@ mod tests {
     async fn put_system_general_rejects_invalid_hostname() {
         let (server, _) = test_app().await;
         let token = create_user_and_login(&server).await;
-        let resp = server.put("/api/v1/system/general")
+        let resp = server
+            .put("/api/v1/system/general")
             .authorization_bearer(&token)
             .json(&json!({ "hostname": "has.dot", "domain": "", "timezone": "UTC" }))
             .await;
@@ -1281,7 +1428,11 @@ mod tests {
         // Axum's JSON extractor returns 422 for unknown enum variants at deserialize time.
         // Both 400 and 422 are acceptable for bad JSON shape.
         let status = resp.status_code().as_u16();
-        assert!(status == 400 || status == 422, "expected 400 or 422, got {}", status);
+        assert!(
+            status == 400 || status == 422,
+            "expected 400 or 422, got {}",
+            status
+        );
     }
 
     #[tokio::test]

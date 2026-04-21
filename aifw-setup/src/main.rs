@@ -46,7 +46,9 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
 
-        apply::apply(&config, &[]).await.map_err(|e| anyhow::anyhow!(e))?;
+        apply::apply(&config, &[])
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
         return Ok(());
     }
 
@@ -60,7 +62,9 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    apply::apply(&result.config, &result.tuning).await.map_err(|e| anyhow::anyhow!(e))?;
+    apply::apply(&result.config, &result.tuning)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     Ok(())
 }

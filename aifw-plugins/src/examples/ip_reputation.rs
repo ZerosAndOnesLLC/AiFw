@@ -62,15 +62,17 @@ impl Plugin for IpReputationPlugin {
 
         // Load any pre-configured blocked IPs from config
         if let Some(ips) = config.settings.get("blocklist")
-            && let Some(arr) = ips.as_array() {
-                let mut blocklist = self.blocklist.write().await;
-                for v in arr {
-                    if let Some(s) = v.as_str()
-                        && let Ok(ip) = s.parse::<IpAddr>() {
-                            blocklist.insert(ip);
-                        }
+            && let Some(arr) = ips.as_array()
+        {
+            let mut blocklist = self.blocklist.write().await;
+            for v in arr {
+                if let Some(s) = v.as_str()
+                    && let Ok(ip) = s.parse::<IpAddr>()
+                {
+                    blocklist.insert(ip);
                 }
             }
+        }
 
         let bl_size = self.blocklist.read().await.len();
         tracing::info!(
@@ -83,7 +85,9 @@ impl Plugin for IpReputationPlugin {
 
     async fn on_hook(&self, event: &HookEvent, ctx: &PluginContext) -> HookAction {
         match &event.data {
-            HookEventData::Rule { src_ip: Some(ip), .. }
+            HookEventData::Rule {
+                src_ip: Some(ip), ..
+            }
             | HookEventData::Connection { src_ip: ip, .. } => {
                 if self.is_blocked(*ip).await {
                     tracing::warn!(%ip, "blocked by IP reputation");

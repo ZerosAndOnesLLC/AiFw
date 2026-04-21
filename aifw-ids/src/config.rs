@@ -65,10 +65,9 @@ impl RuntimeConfig {
     async fn read_from_db(pool: &SqlitePool) -> Result<IdsConfig> {
         let mut cfg = IdsConfig::default();
 
-        let rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT key, value FROM ids_config")
-                .fetch_all(pool)
-                .await?;
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM ids_config")
+            .fetch_all(pool)
+            .await?;
 
         for (key, value) in rows {
             match key.as_str() {
@@ -119,9 +118,18 @@ impl RuntimeConfig {
     async fn write_to_db(pool: &SqlitePool, cfg: &IdsConfig) -> Result<()> {
         let pairs: Vec<(&str, String)> = vec![
             ("mode", cfg.mode.to_string()),
-            ("home_net", serde_json::to_string(&cfg.home_net).unwrap_or_default()),
-            ("external_net", serde_json::to_string(&cfg.external_net).unwrap_or_default()),
-            ("interfaces", serde_json::to_string(&cfg.interfaces).unwrap_or_default()),
+            (
+                "home_net",
+                serde_json::to_string(&cfg.home_net).unwrap_or_default(),
+            ),
+            (
+                "external_net",
+                serde_json::to_string(&cfg.external_net).unwrap_or_default(),
+            ),
+            (
+                "interfaces",
+                serde_json::to_string(&cfg.interfaces).unwrap_or_default(),
+            ),
             ("alert_retention_days", cfg.alert_retention_days.to_string()),
             ("eve_log_enabled", cfg.eve_log_enabled.to_string()),
         ];

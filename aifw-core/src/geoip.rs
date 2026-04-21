@@ -1,6 +1,5 @@
 use aifw_common::{
-    AifwError, CountryCode, GeoIpAction, GeoIpLookupResult, GeoIpRule,
-    GeoIpRuleStatus, Result,
+    AifwError, CountryCode, GeoIpAction, GeoIpLookupResult, GeoIpRule, GeoIpRuleStatus, Result,
 };
 use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
@@ -87,11 +86,10 @@ impl GeoIpEngine {
     }
 
     pub async fn list_rules(&self) -> Result<Vec<GeoIpRule>> {
-        let rows = sqlx::query_as::<_, GeoIpRuleRow>(
-            "SELECT * FROM geoip_rules ORDER BY country ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query_as::<_, GeoIpRuleRow>("SELECT * FROM geoip_rules ORDER BY country ASC")
+                .fetch_all(&self.pool)
+                .await?;
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
@@ -120,7 +118,10 @@ impl GeoIpEngine {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
-            return Err(AifwError::NotFound(format!("geo-ip rule {} not found", rule.id)));
+            return Err(AifwError::NotFound(format!(
+                "geo-ip rule {} not found",
+                rule.id
+            )));
         }
         tracing::info!(id = %rule.id, "geo-ip rule updated");
         Ok(())
@@ -143,11 +144,7 @@ impl GeoIpEngine {
     /// Load a GeoLite2 database from CSV files into the in-memory index.
     /// `blocks_csv` is the content of GeoLite2-Country-Blocks-IPv4.csv (or IPv6)
     /// `locations_csv` is the content of GeoLite2-Country-Locations-en.csv
-    pub async fn load_database(
-        &self,
-        blocks_csv: &str,
-        locations_csv: &str,
-    ) -> Result<usize> {
+    pub async fn load_database(&self, blocks_csv: &str, locations_csv: &str) -> Result<usize> {
         let locations = aifw_common::geoip::parse_geolite2_locations_csv(locations_csv);
         let blocks = aifw_common::geoip::parse_geolite2_blocks_csv(blocks_csv);
 
@@ -206,7 +203,10 @@ impl GeoIpEngine {
     /// Get all CIDRs for a specific country
     pub async fn get_country_cidrs(&self, country: &str) -> Vec<(IpAddr, u8)> {
         let index = self.index.read().await;
-        index.get(&country.to_uppercase()).cloned().unwrap_or_default()
+        index
+            .get(&country.to_uppercase())
+            .cloned()
+            .unwrap_or_default()
     }
 
     // --- Apply to pf ---
@@ -238,10 +238,7 @@ impl GeoIpEngine {
             }
         }
 
-        tracing::info!(
-            count = active.len(),
-            "applying geo-ip rules to pf"
-        );
+        tracing::info!(count = active.len(), "applying geo-ip rules to pf");
 
         self.pf
             .load_rules(&self.anchor, &pf_lines)

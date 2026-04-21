@@ -36,14 +36,21 @@ pub async fn tail_filtered(
         // missing file; that just adds a sudo invocation per poll.
         let exists = Command::new("/usr/local/bin/sudo")
             .args(["/usr/bin/test", "-r", path])
-            .status().await.map(|s| s.success()).unwrap_or(false);
-        if !exists { continue; }
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !exists {
+            continue;
+        }
 
         let pipeline = match needle {
             Some(n) => {
                 let safe = sanitize_needle(n);
                 if safe.is_empty() {
-                    format!("/usr/local/bin/sudo /usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/tail -n {take}")
+                    format!(
+                        "/usr/local/bin/sudo /usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/tail -n {take}"
+                    )
                 } else {
                     format!(
                         "/usr/local/bin/sudo /usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/grep -iF -- '{safe}' | /usr/bin/tail -n {take}"
@@ -55,13 +62,18 @@ pub async fn tail_filtered(
             ),
         };
 
-        let out = Command::new("/bin/sh").args(["-c", &pipeline]).output().await;
+        let out = Command::new("/bin/sh")
+            .args(["-c", &pipeline])
+            .output()
+            .await;
         if let Ok(out) = out
             && !out.stdout.is_empty()
         {
             let text = String::from_utf8_lossy(&out.stdout);
             let lines: Vec<String> = text.lines().rev().map(String::from).collect();
-            if !lines.is_empty() { return lines; }
+            if !lines.is_empty() {
+                return lines;
+            }
         }
     }
     Vec::new()

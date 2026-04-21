@@ -17,8 +17,7 @@ pub enum FlowDirection {
 }
 
 /// TCP connection state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowState {
     #[default]
     New,
@@ -28,7 +27,6 @@ pub enum FlowState {
     FinWait,
     Closed,
 }
-
 
 /// Canonical flow key — ordered so both directions map to the same flow.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -120,7 +118,9 @@ pub struct Flow {
 
 impl Flow {
     pub fn new(key: FlowKey, packet: &DecodedPacket, max_stream_depth: usize) -> Self {
-        let src_ip = packet.src_ip.unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        let src_ip = packet
+            .src_ip
+            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
         let src_port = packet.src_port.unwrap_or(0);
 
         // Determine initial TCP state from first packet flags
@@ -176,7 +176,8 @@ impl Flow {
                 if self.toserver_buf.len() < self.max_stream_depth {
                     let remaining = self.max_stream_depth - self.toserver_buf.len();
                     let to_copy = remaining.min(packet.payload.len());
-                    self.toserver_buf.extend_from_slice(&packet.payload[..to_copy]);
+                    self.toserver_buf
+                        .extend_from_slice(&packet.payload[..to_copy]);
                 }
             }
             FlowDirection::ToClient => {
@@ -185,7 +186,8 @@ impl Flow {
                 if self.toclient_buf.len() < self.max_stream_depth {
                     let remaining = self.max_stream_depth - self.toclient_buf.len();
                     let to_copy = remaining.min(packet.payload.len());
-                    self.toclient_buf.extend_from_slice(&packet.payload[..to_copy]);
+                    self.toclient_buf
+                        .extend_from_slice(&packet.payload[..to_copy]);
                 }
             }
         }
@@ -202,9 +204,7 @@ impl Flow {
             (FlowState::SynSent, FlowDirection::ToClient) if flags.is_syn_ack() => {
                 FlowState::SynAckSeen
             }
-            (FlowState::SynAckSeen, FlowDirection::ToServer) if flags.ack => {
-                FlowState::Established
-            }
+            (FlowState::SynAckSeen, FlowDirection::ToServer) if flags.ack => FlowState::Established,
             (FlowState::Established, _) if flags.fin => FlowState::FinWait,
             (FlowState::FinWait, _) if flags.fin || flags.ack => FlowState::Closed,
             (_, _) if flags.rst => FlowState::Closed,
@@ -330,7 +330,10 @@ mod tests {
         let k1 = FlowKey::from_packet(ip1, ip2, 12345, 80, 6);
         let k2 = FlowKey::from_packet(ip2, ip1, 80, 12345, 6);
 
-        assert_eq!(k1, k2, "canonical key should be the same regardless of direction");
+        assert_eq!(
+            k1, k2,
+            "canonical key should be the same regardless of direction"
+        );
     }
 
     #[test]

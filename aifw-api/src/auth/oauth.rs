@@ -126,29 +126,36 @@ pub async fn list_providers(pool: &SqlitePool) -> Result<Vec<OAuthProvider>, Str
 
     Ok(rows
         .into_iter()
-        .map(|(id, name, pt, ci, cs, au, tu, uu, sc, en, ca)| OAuthProvider {
-            id: Uuid::parse_str(&id).unwrap_or_default(),
-            name,
-            provider_type: match pt.as_str() {
-                "google" => OAuthProviderType::Google,
-                "github" => OAuthProviderType::Github,
-                _ => OAuthProviderType::Oidc,
+        .map(
+            |(id, name, pt, ci, cs, au, tu, uu, sc, en, ca)| OAuthProvider {
+                id: Uuid::parse_str(&id).unwrap_or_default(),
+                name,
+                provider_type: match pt.as_str() {
+                    "google" => OAuthProviderType::Google,
+                    "github" => OAuthProviderType::Github,
+                    _ => OAuthProviderType::Oidc,
+                },
+                client_id: ci,
+                client_secret: cs,
+                auth_url: au,
+                token_url: tu,
+                userinfo_url: uu,
+                scopes: sc,
+                enabled: en,
+                created_at: ca,
             },
-            client_id: ci,
-            client_secret: cs,
-            auth_url: au,
-            token_url: tu,
-            userinfo_url: uu,
-            scopes: sc,
-            enabled: en,
-            created_at: ca,
-        })
+        )
         .collect())
 }
 
-pub async fn get_provider_by_name(pool: &SqlitePool, name: &str) -> Result<Option<OAuthProvider>, String> {
+pub async fn get_provider_by_name(
+    pool: &SqlitePool,
+    name: &str,
+) -> Result<Option<OAuthProvider>, String> {
     let providers = list_providers(pool).await?;
-    Ok(providers.into_iter().find(|p| p.name.to_lowercase() == name.to_lowercase()))
+    Ok(providers
+        .into_iter()
+        .find(|p| p.name.to_lowercase() == name.to_lowercase()))
 }
 
 pub async fn delete_provider(pool: &SqlitePool, id: Uuid) -> Result<(), String> {

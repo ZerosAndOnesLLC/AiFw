@@ -78,15 +78,18 @@ pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
         key: "net.pf.states_hashsize".into(),
         value: states_hashsize.to_string(),
         target: TuningTarget::LoaderConf,
-        reason: format!("pf state hash table size (scaled for {} MB RAM)", profile.memory.total_mb),
+        reason: format!(
+            "pf state hash table size (scaled for {} MB RAM)",
+            profile.memory.total_mb
+        ),
         enabled: true,
     });
 
     // ── Socket Buffers (scale with RAM) ──────────────────────
     let maxsockbuf = match profile.memory.total_mb {
-        0..=2048 => 2097152,     // 2 MB
-        2049..=8192 => 4194304,  // 4 MB
-        _ => 16777216,           // 16 MB
+        0..=2048 => 2097152,    // 2 MB
+        2049..=8192 => 4194304, // 4 MB
+        _ => 16777216,          // 16 MB
     };
     items.push(TuningItem {
         key: "kern.ipc.maxsockbuf".into(),
@@ -118,7 +121,10 @@ pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
             key: "net.isr.dispatch".into(),
             value: "deferred".into(),
             target: TuningTarget::Sysctl,
-            reason: format!("Parallel netisr dispatch ({} cores detected)", profile.cpu.cores),
+            reason: format!(
+                "Parallel netisr dispatch ({} cores detected)",
+                profile.cpu.cores
+            ),
             enabled: true,
         });
         items.push(TuningItem {
@@ -210,7 +216,10 @@ pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
                 key: format!("ifconfig_{}_tso", nic.name),
                 value: format!("ifconfig {} -tso", nic.name),
                 target: TuningTarget::NicConfig,
-                reason: format!("{}: disable TSO (interferes with pf packet rewriting)", nic.name),
+                reason: format!(
+                    "{}: disable TSO (interferes with pf packet rewriting)",
+                    nic.name
+                ),
                 enabled: true,
             });
         }
@@ -233,7 +242,10 @@ pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
                 key: format!("hw.{}.num_queues", nic.driver),
                 value: queues.to_string(),
                 target: TuningTarget::Sysctl,
-                reason: format!("{}: RSS with {} queues (matched to {} cores)", nic.name, queues, profile.cpu.cores),
+                reason: format!(
+                    "{}: RSS with {} queues (matched to {} cores)",
+                    nic.name, queues, profile.cpu.cores
+                ),
                 enabled: true,
             });
         }
@@ -281,15 +293,23 @@ pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
     // Show recommendations summary
     let enabled_count = items.iter().filter(|i| i.enabled).count();
     let disabled_count = items.iter().filter(|i| !i.enabled).count();
-    console::info(&format!("{} tuning recommendations ({} enabled, {} optional):",
-        items.len(), enabled_count, disabled_count));
+    console::info(&format!(
+        "{} tuning recommendations ({} enabled, {} optional):",
+        items.len(),
+        enabled_count,
+        disabled_count
+    ));
     println!();
 
     for (i, item) in items.iter().enumerate() {
         let status = if item.enabled { "[x]" } else { "[ ]" };
         console::info(&format!(
             "  {:2}. {} {:<40} = {:<12}  ({})",
-            i + 1, status, item.key, item.value, item.reason
+            i + 1,
+            status,
+            item.key,
+            item.value,
+            item.reason
         ));
     }
     println!();
@@ -320,12 +340,14 @@ pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
                 }
                 for part in input.split_whitespace() {
                     if let Ok(num) = part.parse::<usize>()
-                        && num >= 1 && num <= items.len() {
-                            items[num - 1].enabled = !items[num - 1].enabled;
-                            let item = &items[num - 1];
-                            let state = if item.enabled { "ENABLED" } else { "DISABLED" };
-                            console::info(&format!("  {} — {}", item.key, state));
-                        }
+                        && num >= 1
+                        && num <= items.len()
+                    {
+                        items[num - 1].enabled = !items[num - 1].enabled;
+                        let item = &items[num - 1];
+                        let state = if item.enabled { "ENABLED" } else { "DISABLED" };
+                        console::info(&format!("  {} — {}", item.key, state));
+                    }
                 }
             }
             let final_count = items.iter().filter(|i| i.enabled).count();
@@ -346,11 +368,17 @@ pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
 pub fn generate_sysctl_conf(items: &[TuningItem]) -> String {
     let mut lines = vec![
         "# AiFw — Generated sysctl.conf".to_string(),
-        format!("# Generated by aifw-setup on {}", chrono::Utc::now().to_rfc3339()),
+        format!(
+            "# Generated by aifw-setup on {}",
+            chrono::Utc::now().to_rfc3339()
+        ),
         String::new(),
     ];
 
-    for item in items.iter().filter(|i| i.enabled && i.target == TuningTarget::Sysctl) {
+    for item in items
+        .iter()
+        .filter(|i| i.enabled && i.target == TuningTarget::Sysctl)
+    {
         lines.push(format!("# {}", item.reason));
         lines.push(format!("{}={}", item.key, item.value));
     }
@@ -362,11 +390,17 @@ pub fn generate_sysctl_conf(items: &[TuningItem]) -> String {
 pub fn generate_loader_conf(items: &[TuningItem]) -> String {
     let mut lines = vec![
         "# AiFw — Generated loader.conf".to_string(),
-        format!("# Generated by aifw-setup on {}", chrono::Utc::now().to_rfc3339()),
+        format!(
+            "# Generated by aifw-setup on {}",
+            chrono::Utc::now().to_rfc3339()
+        ),
         String::new(),
     ];
 
-    for item in items.iter().filter(|i| i.enabled && i.target == TuningTarget::LoaderConf) {
+    for item in items
+        .iter()
+        .filter(|i| i.enabled && i.target == TuningTarget::LoaderConf)
+    {
         lines.push(format!("# {}", item.reason));
         lines.push(format!("{}=\"{}\"", item.key, item.value));
     }

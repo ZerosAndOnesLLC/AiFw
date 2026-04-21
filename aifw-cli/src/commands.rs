@@ -183,7 +183,10 @@ pub async fn status(db_path: &Path) -> anyhow::Result<()> {
 
     println!("AiFw Status");
     println!("===========");
-    println!("pf running:     {}", if stats.running { "yes" } else { "no" });
+    println!(
+        "pf running:     {}",
+        if stats.running { "yes" } else { "no" }
+    );
     println!("pf states:      {}", stats.states_count);
     println!("pf rules (pf):  {}", stats.rules_count);
     println!("aifw rules:     {} ({} active)", rules.len(), active_rules);
@@ -192,7 +195,9 @@ pub async fn status(db_path: &Path) -> anyhow::Result<()> {
         Some(false) => println!("pf anchor hooks: MISSING (run `aifw reconcile`)"),
         None => println!("pf anchor hooks: unknown (pfctl probe failed)"),
     }
-    if let Ok(pool) = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await {
+    if let Ok(pool) =
+        sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await
+    {
         match check_dns_backend_drift(&pool).await {
             Some(msg) => println!("dns backend:    DRIFT — {msg}"),
             None => println!("dns backend:    ok"),
@@ -343,7 +348,9 @@ pub async fn reconcile(db_path: &Path) -> anyhow::Result<()> {
     }
 
     // 3. Fix rc.conf DNS backend flags to match DB.
-    if let Ok(pool) = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await {
+    if let Ok(pool) =
+        sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await
+    {
         let backend = sqlx::query_scalar::<_, String>(
             "SELECT value FROM dns_resolver_config WHERE key = 'backend'",
         )
@@ -715,7 +722,10 @@ pub async fn vpn_wg_peer_add(
     let peer = engine.add_wg_peer(peer).await?;
     println!("Added WireGuard peer {}", peer.id);
     println!("  Name:     {}", peer.name);
-    println!("  Endpoint: {}", peer.endpoint.as_deref().unwrap_or("(none)"));
+    println!(
+        "  Endpoint: {}",
+        peer.endpoint.as_deref().unwrap_or("(none)")
+    );
     Ok(())
 }
 
@@ -806,7 +816,11 @@ pub async fn vpn_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
                         p.name,
                         &p.public_key[..12],
                         p.endpoint.as_deref().unwrap_or("(none)"),
-                        p.allowed_ips.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(","),
+                        p.allowed_ips
+                            .iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(","),
                     );
                 }
             }
@@ -912,7 +926,12 @@ pub async fn geoip_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
         );
     }
 
-    println!("\n{} rule(s) | DB: {} countries, {} CIDRs loaded", rules.len(), countries, entries);
+    println!(
+        "\n{} rule(s) | DB: {} countries, {} CIDRs loaded",
+        rules.len(),
+        countries,
+        entries
+    );
     Ok(())
 }
 
@@ -975,10 +994,17 @@ pub async fn config_import(db_path: &Path, file: &str) -> anyhow::Result<()> {
     println!("Importing config: {} resources", config.resource_count());
 
     // Save and mark as applied (no pf apply on CLI import — use 'aifw reload' after)
-    let version = mgr.save_version(&config, "cli-import", Some(&format!("imported from {file}")))
+    let version = mgr
+        .save_version(
+            &config,
+            "cli-import",
+            Some(&format!("imported from {file}")),
+        )
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    mgr.mark_applied(version).await.map_err(|e| anyhow::anyhow!(e))?;
+    mgr.mark_applied(version)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     println!("Imported as config version {version}");
     println!("Run 'aifw reload' to apply to pf");
@@ -994,7 +1020,10 @@ pub async fn config_history(db_path: &Path, limit: i64) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{:<8} {:<10} {:<12} {:<22} {:<10} COMMENT", "VERSION", "STATUS", "RESOURCES", "CREATED", "BY");
+    println!(
+        "{:<8} {:<10} {:<12} {:<22} {:<10} COMMENT",
+        "VERSION", "STATUS", "RESOURCES", "CREATED", "BY"
+    );
     println!("{}", "-".repeat(90));
 
     for v in &versions {
@@ -1047,8 +1076,20 @@ pub async fn config_diff(db_path: &Path, v1: i64, v2: i64) -> anyhow::Result<()>
         println!("  Hash v{}: {}", diff.v1, &diff.v1_hash[..16]);
         println!("  Hash v{}: {}", diff.v2, &diff.v2_hash[..16]);
         println!();
-        println!("  Rules:     {} -> {} (+{} -{})", diff.rules_diff.v1_count, diff.rules_diff.v2_count, diff.rules_diff.added, diff.rules_diff.removed);
-        println!("  NAT:       {} -> {} (+{} -{})", diff.nat_diff.v1_count, diff.nat_diff.v2_count, diff.nat_diff.added, diff.nat_diff.removed);
+        println!(
+            "  Rules:     {} -> {} (+{} -{})",
+            diff.rules_diff.v1_count,
+            diff.rules_diff.v2_count,
+            diff.rules_diff.added,
+            diff.rules_diff.removed
+        );
+        println!(
+            "  NAT:       {} -> {} (+{} -{})",
+            diff.nat_diff.v1_count,
+            diff.nat_diff.v2_count,
+            diff.nat_diff.added,
+            diff.nat_diff.removed
+        );
         println!("  Total:     {} -> {}", diff.total_v1, diff.total_v2);
     }
     Ok(())
@@ -1058,7 +1099,14 @@ pub async fn config_diff(db_path: &Path, v1: i64, v2: i64) -> anyhow::Result<()>
 // Static routes
 // ============================================================
 
-pub async fn routes_add(db_path: &Path, dest: &str, gateway: &str, interface: Option<&str>, metric: i32, desc: Option<&str>) -> anyhow::Result<()> {
+pub async fn routes_add(
+    db_path: &Path,
+    dest: &str,
+    gateway: &str,
+    interface: Option<&str>,
+    metric: i32,
+    desc: Option<&str>,
+) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
 
@@ -1090,13 +1138,21 @@ pub async fn routes_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let pool = db.pool();
     let row = sqlx::query_as::<_, (String, String, bool)>(
         "SELECT destination, gateway, enabled FROM static_routes WHERE id = ?1",
-    ).bind(id).fetch_optional(pool).await?;
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
 
     if let Some((dest, gw, enabled)) = row {
         if enabled {
-            let _ = std::process::Command::new("route").args(["delete", &dest, &gw]).output();
+            let _ = std::process::Command::new("route")
+                .args(["delete", &dest, &gw])
+                .output();
         }
-        sqlx::query("DELETE FROM static_routes WHERE id = ?1").bind(id).execute(pool).await?;
+        sqlx::query("DELETE FROM static_routes WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
         println!("Removed route: {} via {}", dest, gw);
     } else {
         anyhow::bail!("Route {} not found", id);
@@ -1128,17 +1184,30 @@ pub async fn routes_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{:<36} {:<20} {:<16} {:<8} {:<8} Status", "ID", "Destination", "Gateway", "Iface", "Metric");
+    println!(
+        "{:<36} {:<20} {:<16} {:<8} {:<8} Status",
+        "ID", "Destination", "Gateway", "Iface", "Metric"
+    );
     println!("{}", "-".repeat(100));
     for (id, dest, gw, iface, metric, enabled, _desc) in &rows {
         let status = if *enabled { "active" } else { "disabled" };
-        println!("{:<36} {:<20} {:<16} {:<8} {:<8} {}", id, dest, gw, iface.as_deref().unwrap_or("-"), metric, status);
+        println!(
+            "{:<36} {:<20} {:<16} {:<8} {:<8} {}",
+            id,
+            dest,
+            gw,
+            iface.as_deref().unwrap_or("-"),
+            metric,
+            status
+        );
     }
     Ok(())
 }
 
 pub async fn routes_system() -> anyhow::Result<()> {
-    let output = std::process::Command::new("netstat").args(["-rn"]).output()?;
+    let output = std::process::Command::new("netstat")
+        .args(["-rn"])
+        .output()?;
     println!("{}", String::from_utf8_lossy(&output.stdout));
     Ok(())
 }
@@ -1149,7 +1218,8 @@ pub async fn routes_system() -> anyhow::Result<()> {
 
 pub async fn dns_list() -> anyhow::Result<()> {
     let content = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
-    let servers: Vec<&str> = content.lines()
+    let servers: Vec<&str> = content
+        .lines()
         .filter_map(|l| l.strip_prefix("nameserver").map(|s| s.trim()))
         .collect();
 
@@ -1166,7 +1236,11 @@ pub async fn dns_list() -> anyhow::Result<()> {
 
 pub async fn dns_set(servers_str: &str) -> anyhow::Result<()> {
     let servers: Vec<&str> = servers_str.split(',').map(|s| s.trim()).collect();
-    let content: String = servers.iter().map(|s| format!("nameserver {s}")).collect::<Vec<_>>().join("\n");
+    let content: String = servers
+        .iter()
+        .map(|s| format!("nameserver {s}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     std::fs::write("/etc/resolv.conf", &content)?;
     println!("DNS servers updated:");
     for s in &servers {
@@ -1177,20 +1251,36 @@ pub async fn dns_set(servers_str: &str) -> anyhow::Result<()> {
 
 pub async fn dns_probe_set(db_path: &Path, enabled: bool) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
-    sqlx::query("INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('probe_enabled', ?1)")
-        .bind(if enabled { "true" } else { "false" })
-        .execute(db.pool()).await?;
-    println!("DNS resolver probe: {}", if enabled { "ENABLED (auto-rollback on :53 silence)" } else { "DISABLED (trust service restart exit code only)" });
+    sqlx::query(
+        "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('probe_enabled', ?1)",
+    )
+    .bind(if enabled { "true" } else { "false" })
+    .execute(db.pool())
+    .await?;
+    println!(
+        "DNS resolver probe: {}",
+        if enabled {
+            "ENABLED (auto-rollback on :53 silence)"
+        } else {
+            "DISABLED (trust service restart exit code only)"
+        }
+    );
     println!("Takes effect on the next apply/start/restart of the resolver.");
     Ok(())
 }
 
 pub async fn dns_probe_status(db_path: &Path) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
-    let row = sqlx::query_as::<_, (String,)>("SELECT value FROM dns_resolver_config WHERE key = 'probe_enabled'")
-        .fetch_optional(db.pool()).await?;
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM dns_resolver_config WHERE key = 'probe_enabled'",
+    )
+    .fetch_optional(db.pool())
+    .await?;
     let enabled = row.map(|(v,)| v == "true").unwrap_or(true); // default ON
-    println!("DNS resolver probe: {}", if enabled { "enabled" } else { "disabled" });
+    println!(
+        "DNS resolver probe: {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     Ok(())
 }
 
@@ -1203,7 +1293,10 @@ pub async fn users_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let pool = db.pool();
     let rows = sqlx::query_as::<_, (String, String, String, bool, bool)>(
         "SELECT id, username, role, totp_enabled, enabled FROM users ORDER BY created_at ASC",
-    ).fetch_all(pool).await.unwrap_or_default();
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
     if json {
         let users: Vec<serde_json::Value> = rows.iter().map(|(id, u, r, mfa, e)| {
@@ -1218,25 +1311,39 @@ pub async fn users_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{:<36} {:<16} {:<10} {:<6} Status", "ID", "Username", "Role", "MFA");
+    println!(
+        "{:<36} {:<16} {:<10} {:<6} Status",
+        "ID", "Username", "Role", "MFA"
+    );
     println!("{}", "-".repeat(80));
     for (id, username, role, mfa, enabled) in &rows {
         let status = if *enabled { "active" } else { "disabled" };
         let mfa_str = if *mfa { "yes" } else { "no" };
-        println!("{:<36} {:<16} {:<10} {:<6} {}", id, username, role, mfa_str, status);
+        println!(
+            "{:<36} {:<16} {:<10} {:<6} {}",
+            id, username, role, mfa_str, status
+        );
     }
     Ok(())
 }
 
-pub async fn users_add(db_path: &Path, username: &str, password: &str, role: &str) -> anyhow::Result<()> {
+pub async fn users_add(
+    db_path: &Path,
+    username: &str,
+    password: &str,
+    role: &str,
+) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
-    use argon2::{Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng};
+    use argon2::{
+        Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng,
+    };
     let salt = SaltString::generate(&mut OsRng);
-    let pw_hash = Argon2::default().hash_password(password.as_bytes(), &salt)
+    let pw_hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
         .map_err(|e| anyhow::anyhow!("hash error: {e}"))?;
 
@@ -1244,20 +1351,37 @@ pub async fn users_add(db_path: &Path, username: &str, password: &str, role: &st
         .bind(&id).bind(username).bind(&pw_hash).bind(role).bind(&now)
         .execute(pool).await?;
 
-    println!("Created user: {} (role: {}, id: {})", username, role, &id[..8]);
+    println!(
+        "Created user: {} (role: {}, id: {})",
+        username,
+        role,
+        &id[..8]
+    );
     Ok(())
 }
 
 pub async fn users_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
-    let result = sqlx::query("DELETE FROM users WHERE id = ?1").bind(id).execute(pool).await?;
+    let result = sqlx::query("DELETE FROM users WHERE id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
     if result.rows_affected() == 0 {
         anyhow::bail!("User {} not found", id);
     }
-    let _ = sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?1").bind(id).execute(pool).await;
-    let _ = sqlx::query("DELETE FROM recovery_codes WHERE user_id = ?1").bind(id).execute(pool).await;
-    let _ = sqlx::query("DELETE FROM api_keys WHERE user_id = ?1").bind(id).execute(pool).await;
+    let _ = sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM recovery_codes WHERE user_id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM api_keys WHERE user_id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await;
     println!("Deleted user {}", id);
     Ok(())
 }
@@ -1265,11 +1389,19 @@ pub async fn users_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
 pub async fn users_set_enabled(db_path: &Path, id: &str, enabled: bool) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
-    let result = sqlx::query("UPDATE users SET enabled = ?2 WHERE id = ?1").bind(id).bind(enabled).execute(pool).await?;
+    let result = sqlx::query("UPDATE users SET enabled = ?2 WHERE id = ?1")
+        .bind(id)
+        .bind(enabled)
+        .execute(pool)
+        .await?;
     if result.rows_affected() == 0 {
         anyhow::bail!("User {} not found", id);
     }
-    println!("User {} {}", id, if enabled { "enabled" } else { "disabled" });
+    println!(
+        "User {} {}",
+        id,
+        if enabled { "enabled" } else { "disabled" }
+    );
     Ok(())
 }
 
@@ -1281,7 +1413,10 @@ pub async fn interfaces_list() -> anyhow::Result<()> {
     let output = std::process::Command::new("ifconfig").output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    println!("{:<12} {:<18} {:<18} {:<6}", "Interface", "IPv4", "MAC", "Status");
+    println!(
+        "{:<12} {:<18} {:<18} {:<6}",
+        "Interface", "IPv4", "MAC", "Status"
+    );
     println!("{}", "-".repeat(60));
 
     let mut name = String::new();
@@ -1318,15 +1453,24 @@ pub async fn interfaces_list() -> anyhow::Result<()> {
 // ============================================================
 
 pub async fn dhcp_status(db_path: &Path) -> anyhow::Result<()> {
-    let running = std::process::Command::new("service").args(["rdhcpd", "status"]).output()
-        .map(|o| o.status.success()).unwrap_or(false);
+    let running = std::process::Command::new("service")
+        .args(["rdhcpd", "status"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
     let db = Database::new(db_path).await?;
     let pool = db.pool();
 
     let subnets: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dhcp_subnets")
-        .fetch_one(pool).await.map(|r| r.0).unwrap_or(0);
+        .fetch_one(pool)
+        .await
+        .map(|r| r.0)
+        .unwrap_or(0);
     let reservations: i64 = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM dhcp_reservations")
-        .fetch_one(pool).await.map(|r| r.0).unwrap_or(0);
+        .fetch_one(pool)
+        .await
+        .map(|r| r.0)
+        .unwrap_or(0);
 
     println!("DHCP Server Status:");
     println!("  Running:      {}", if running { "yes" } else { "no" });
@@ -1350,16 +1494,40 @@ pub async fn dhcp_subnets(db_path: &Path, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if rows.is_empty() { println!("No DHCP subnets."); return Ok(()); }
-    println!("{:<36} {:<20} {:<16} {:<16} {:<16} Status", "ID", "Network", "Pool Start", "Pool End", "Gateway");
+    if rows.is_empty() {
+        println!("No DHCP subnets.");
+        return Ok(());
+    }
+    println!(
+        "{:<36} {:<20} {:<16} {:<16} {:<16} Status",
+        "ID", "Network", "Pool Start", "Pool End", "Gateway"
+    );
     println!("{}", "-".repeat(110));
     for (id, net, ps, pe, gw, en) in &rows {
-        println!("{:<36} {:<20} {:<16} {:<16} {:<16} {}", id, net, ps, pe, gw, if *en { "active" } else { "disabled" });
+        println!(
+            "{:<36} {:<20} {:<16} {:<16} {:<16} {}",
+            id,
+            net,
+            ps,
+            pe,
+            gw,
+            if *en { "active" } else { "disabled" }
+        );
     }
     Ok(())
 }
 
-pub async fn dhcp_subnet_add(db_path: &Path, network: &str, pool_start: &str, pool_end: &str, gateway: &str, dns: Option<&str>, domain: Option<&str>, lease_time: Option<u32>, desc: Option<&str>) -> anyhow::Result<()> {
+pub async fn dhcp_subnet_add(
+    db_path: &Path,
+    network: &str,
+    pool_start: &str,
+    pool_end: &str,
+    gateway: &str,
+    dns: Option<&str>,
+    domain: Option<&str>,
+    lease_time: Option<u32>,
+    desc: Option<&str>,
+) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
     let id = Uuid::new_v4().to_string();
@@ -1374,8 +1542,13 @@ pub async fn dhcp_subnet_add(db_path: &Path, network: &str, pool_start: &str, po
 
 pub async fn dhcp_subnet_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
-    let result = sqlx::query("DELETE FROM dhcp_subnets WHERE id = ?1").bind(id).execute(db.pool()).await?;
-    if result.rows_affected() == 0 { anyhow::bail!("Subnet {} not found", id); }
+    let result = sqlx::query("DELETE FROM dhcp_subnets WHERE id = ?1")
+        .bind(id)
+        .execute(db.pool())
+        .await?;
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Subnet {} not found", id);
+    }
     println!("Removed DHCP subnet {}", id);
     Ok(())
 }
@@ -1387,23 +1560,40 @@ pub async fn dhcp_reservations(db_path: &Path, json: bool) -> anyhow::Result<()>
     ).fetch_all(db.pool()).await?;
 
     if json {
-        let data: Vec<serde_json::Value> = rows.iter().map(|(id,mac,ip,hn)| {
-            serde_json::json!({"id":id,"mac":mac,"ip":ip,"hostname":hn})
-        }).collect();
+        let data: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(id, mac, ip, hn)| serde_json::json!({"id":id,"mac":mac,"ip":ip,"hostname":hn}))
+            .collect();
         println!("{}", serde_json::to_string_pretty(&data)?);
         return Ok(());
     }
 
-    if rows.is_empty() { println!("No DHCP reservations."); return Ok(()); }
+    if rows.is_empty() {
+        println!("No DHCP reservations.");
+        return Ok(());
+    }
     println!("{:<36} {:<20} {:<16} Hostname", "ID", "MAC", "IP");
     println!("{}", "-".repeat(80));
     for (id, mac, ip, hn) in &rows {
-        println!("{:<36} {:<20} {:<16} {}", id, mac, ip, hn.as_deref().unwrap_or("-"));
+        println!(
+            "{:<36} {:<20} {:<16} {}",
+            id,
+            mac,
+            ip,
+            hn.as_deref().unwrap_or("-")
+        );
     }
     Ok(())
 }
 
-pub async fn dhcp_reservation_add(db_path: &Path, mac: &str, ip: &str, hostname: Option<&str>, subnet: Option<&str>, desc: Option<&str>) -> anyhow::Result<()> {
+pub async fn dhcp_reservation_add(
+    db_path: &Path,
+    mac: &str,
+    ip: &str,
+    hostname: Option<&str>,
+    subnet: Option<&str>,
+    desc: Option<&str>,
+) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -1416,8 +1606,13 @@ pub async fn dhcp_reservation_add(db_path: &Path, mac: &str, ip: &str, hostname:
 
 pub async fn dhcp_reservation_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
-    let result = sqlx::query("DELETE FROM dhcp_reservations WHERE id = ?1").bind(id).execute(db.pool()).await?;
-    if result.rows_affected() == 0 { anyhow::bail!("Reservation {} not found", id); }
+    let result = sqlx::query("DELETE FROM dhcp_reservations WHERE id = ?1")
+        .bind(id)
+        .execute(db.pool())
+        .await?;
+    if result.rows_affected() == 0 {
+        anyhow::bail!("Reservation {} not found", id);
+    }
     println!("Removed reservation {}", id);
     Ok(())
 }
@@ -1425,12 +1620,20 @@ pub async fn dhcp_reservation_remove(db_path: &Path, id: &str) -> anyhow::Result
 pub async fn dhcp_leases(json: bool) -> anyhow::Result<()> {
     // Query rDHCP management API for active leases
     let output = std::process::Command::new("curl")
-        .args(["-sf", "--max-time", "3", "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000"])
+        .args([
+            "-sf",
+            "--max-time",
+            "3",
+            "http://127.0.0.1:9967/api/v1/leases?state=bound&limit=10000",
+        ])
         .output();
 
     let body = match output {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => { println!("No active DHCP leases (rDHCP may not be running)."); return Ok(()); }
+        _ => {
+            println!("No active DHCP leases (rDHCP may not be running).");
+            return Ok(());
+        }
     };
 
     if json {
@@ -1444,9 +1647,15 @@ pub async fn dhcp_leases(json: bool) -> anyhow::Result<()> {
     }
 
     let leases: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap_or_default();
-    if leases.is_empty() { println!("No active DHCP leases."); return Ok(()); }
+    if leases.is_empty() {
+        println!("No active DHCP leases.");
+        return Ok(());
+    }
 
-    println!("{:<16} {:<20} {:<20} {:<20} State", "IP", "MAC", "Hostname", "Subnet");
+    println!(
+        "{:<16} {:<20} {:<20} {:<20} State",
+        "IP", "MAC", "Hostname", "Subnet"
+    );
     println!("{}", "-".repeat(90));
     for lease in &leases {
         let ip = lease["ip"].as_str().unwrap_or("-");
@@ -1505,7 +1714,10 @@ pub async fn update_install() -> anyhow::Result<()> {
     let info = updater::check_for_update().await?;
 
     if !info.update_available {
-        println!("Already running the latest version (v{}).", info.current_version);
+        println!(
+            "Already running the latest version (v{}).",
+            info.current_version
+        );
         return Ok(());
     }
 
@@ -1551,7 +1763,11 @@ pub async fn update_os_check() -> anyhow::Result<()> {
     }
 
     let os = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/freebsd-update", "fetch", "--not-running-from-cron"])
+        .args([
+            "/usr/sbin/freebsd-update",
+            "fetch",
+            "--not-running-from-cron",
+        ])
         .output()
         .await?;
     if os.status.success() {
@@ -1559,7 +1775,10 @@ pub async fn update_os_check() -> anyhow::Result<()> {
     } else {
         println!(
             "  OS update check: {}",
-            String::from_utf8_lossy(&os.stderr).lines().next().unwrap_or("")
+            String::from_utf8_lossy(&os.stderr)
+                .lines()
+                .next()
+                .unwrap_or("")
         );
     }
 
@@ -1633,17 +1852,29 @@ pub async fn rp_status(db_path: &Path) -> anyhow::Result<()> {
 
     // Count entities
     let eps: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_entrypoints WHERE enabled = 1")
-        .fetch_one(pool).await.unwrap_or((0,));
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
     let hr: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_http_routers WHERE enabled = 1")
-        .fetch_one(pool).await.unwrap_or((0,));
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
     let hs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_http_services WHERE enabled = 1")
-        .fetch_one(pool).await.unwrap_or((0,));
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
     let hm: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_http_middlewares WHERE enabled = 1")
-        .fetch_one(pool).await.unwrap_or((0,));
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
     let tr: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_tcp_routers WHERE enabled = 1")
-        .fetch_one(pool).await.unwrap_or((0,));
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
     let ur: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tc_udp_routers WHERE enabled = 1")
-        .fetch_one(pool).await.unwrap_or((0,));
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
 
     println!("  Entrypoints:     {}", eps.0);
     println!("  HTTP Routers:    {}", hr.0);
@@ -1751,11 +1982,25 @@ pub async fn rp_routers(db_path: &Path, json: bool) -> anyhow::Result<()> {
         }).collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        println!("{:<20} {:<40} {:<20} {:<5} ENABLED", "NAME", "RULE", "SERVICE", "PRI");
+        println!(
+            "{:<20} {:<40} {:<20} {:<5} ENABLED",
+            "NAME", "RULE", "SERVICE", "PRI"
+        );
         println!("{}", "-".repeat(95));
         for (n, r, s, _, p, e) in &rows {
-            let rule_display = if r.len() > 38 { format!("{}...", &r[..35]) } else { r.clone() };
-            println!("{:<20} {:<40} {:<20} {:<5} {}", n, rule_display, s, p, if *e == 1 { "yes" } else { "no" });
+            let rule_display = if r.len() > 38 {
+                format!("{}...", &r[..35])
+            } else {
+                r.clone()
+            };
+            println!(
+                "{:<20} {:<40} {:<20} {:<5} {}",
+                n,
+                rule_display,
+                s,
+                p,
+                if *e == 1 { "yes" } else { "no" }
+            );
         }
     }
     Ok(())
@@ -1765,13 +2010,16 @@ pub async fn rp_services(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
     let rows = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT name, service_type, enabled FROM tc_http_services ORDER BY name"
-    ).fetch_all(pool).await?;
+        "SELECT name, service_type, enabled FROM tc_http_services ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await?;
 
     if json {
-        let items: Vec<serde_json::Value> = rows.iter().map(|(n, t, e)| {
-            serde_json::json!({"name": n, "type": t, "enabled": *e == 1})
-        }).collect();
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(n, t, e)| serde_json::json!({"name": n, "type": t, "enabled": *e == 1}))
+            .collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
         println!("{:<30} {:<20} ENABLED", "NAME", "TYPE");
@@ -1787,13 +2035,16 @@ pub async fn rp_middlewares(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
     let rows = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT name, middleware_type, enabled FROM tc_http_middlewares ORDER BY name"
-    ).fetch_all(pool).await?;
+        "SELECT name, middleware_type, enabled FROM tc_http_middlewares ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await?;
 
     if json {
-        let items: Vec<serde_json::Value> = rows.iter().map(|(n, t, e)| {
-            serde_json::json!({"name": n, "type": t, "enabled": *e == 1})
-        }).collect();
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(n, t, e)| serde_json::json!({"name": n, "type": t, "enabled": *e == 1}))
+            .collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
         println!("{:<30} {:<25} ENABLED", "NAME", "TYPE");
@@ -1809,13 +2060,16 @@ pub async fn rp_entrypoints(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
     let rows = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT name, address, enabled FROM tc_entrypoints ORDER BY name"
-    ).fetch_all(pool).await?;
+        "SELECT name, address, enabled FROM tc_entrypoints ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await?;
 
     if json {
-        let items: Vec<serde_json::Value> = rows.iter().map(|(n, a, e)| {
-            serde_json::json!({"name": n, "address": a, "enabled": *e == 1})
-        }).collect();
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(n, a, e)| serde_json::json!({"name": n, "address": a, "enabled": *e == 1}))
+            .collect();
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
         println!("{:<20} {:<20} ENABLED", "NAME", "ADDRESS");
@@ -1843,8 +2097,10 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
 
     // Entry points
     let eps = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, address, config_json FROM tc_entrypoints WHERE enabled = 1"
-    ).fetch_all(pool).await?;
+        "SELECT name, address, config_json FROM tc_entrypoints WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await?;
     if !eps.is_empty() {
         let mut map = serde_json::Map::new();
         for (name, addr, cfg) in &eps {
@@ -1867,19 +2123,30 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
             let eps: Vec<String> = serde_json::from_str(ep_json).unwrap_or_default();
             let mws: Vec<String> = serde_json::from_str(mw_json).unwrap_or_default();
             let mut rv = json!({"rule": rule, "service": svc});
-            if !eps.is_empty() { rv["entryPoints"] = json!(eps); }
-            if !mws.is_empty() { rv["middlewares"] = json!(mws); }
-            if *pri != 0 { rv["priority"] = json!(pri); }
+            if !eps.is_empty() {
+                rv["entryPoints"] = json!(eps);
+            }
+            if !mws.is_empty() {
+                rv["middlewares"] = json!(mws);
+            }
+            if *pri != 0 {
+                rv["priority"] = json!(pri);
+            }
             if let Some(t) = tls
-                && let Ok(tv) = serde_json::from_str::<serde_json::Value>(t) { rv["tls"] = tv; }
+                && let Ok(tv) = serde_json::from_str::<serde_json::Value>(t)
+            {
+                rv["tls"] = tv;
+            }
             map.insert(name.clone(), rv);
         }
         http.insert("routers".to_string(), json!(map));
     }
 
     let services = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, service_type, config_json FROM tc_http_services WHERE enabled = 1"
-    ).fetch_all(pool).await?;
+        "SELECT name, service_type, config_json FROM tc_http_services WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await?;
     if !services.is_empty() {
         let mut map = serde_json::Map::new();
         for (name, stype, cfg) in &services {
@@ -1892,8 +2159,10 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
     }
 
     let middlewares = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, middleware_type, config_json FROM tc_http_middlewares WHERE enabled = 1"
-    ).fetch_all(pool).await?;
+        "SELECT name, middleware_type, config_json FROM tc_http_middlewares WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await?;
     if !middlewares.is_empty() {
         let mut map = serde_json::Map::new();
         for (name, mtype, cfg) in &middlewares {
@@ -1905,7 +2174,9 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
         http.insert("middlewares".to_string(), json!(map));
     }
 
-    if !http.is_empty() { root.insert("http".to_string(), json!(http)); }
+    if !http.is_empty() {
+        root.insert("http".to_string(), json!(http));
+    }
 
     // TCP
     let mut tcp = serde_json::Map::new();
@@ -1917,17 +2188,26 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
         for (name, rule, svc, ep_json, pri, tls) in &tcp_routers {
             let eps: Vec<String> = serde_json::from_str(ep_json).unwrap_or_default();
             let mut rv = json!({"rule": rule, "service": svc});
-            if !eps.is_empty() { rv["entryPoints"] = json!(eps); }
-            if *pri != 0 { rv["priority"] = json!(pri); }
+            if !eps.is_empty() {
+                rv["entryPoints"] = json!(eps);
+            }
+            if *pri != 0 {
+                rv["priority"] = json!(pri);
+            }
             if let Some(t) = tls
-                && let Ok(tv) = serde_json::from_str::<serde_json::Value>(t) { rv["tls"] = tv; }
+                && let Ok(tv) = serde_json::from_str::<serde_json::Value>(t)
+            {
+                rv["tls"] = tv;
+            }
             map.insert(name.clone(), rv);
         }
         tcp.insert("routers".to_string(), json!(map));
     }
     let tcp_services = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, service_type, config_json FROM tc_tcp_services WHERE enabled = 1"
-    ).fetch_all(pool).await?;
+        "SELECT name, service_type, config_json FROM tc_tcp_services WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await?;
     if !tcp_services.is_empty() {
         let mut map = serde_json::Map::new();
         for (name, stype, cfg) in &tcp_services {
@@ -1938,27 +2218,37 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
         }
         tcp.insert("services".to_string(), json!(map));
     }
-    if !tcp.is_empty() { root.insert("tcp".to_string(), json!(tcp)); }
+    if !tcp.is_empty() {
+        root.insert("tcp".to_string(), json!(tcp));
+    }
 
     // UDP
     let mut udp = serde_json::Map::new();
     let udp_routers = sqlx::query_as::<_, (String, String, String, String, i32)>(
-        "SELECT name, rule, service, entry_points, priority FROM tc_udp_routers WHERE enabled = 1"
-    ).fetch_all(pool).await?;
+        "SELECT name, rule, service, entry_points, priority FROM tc_udp_routers WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await?;
     if !udp_routers.is_empty() {
         let mut map = serde_json::Map::new();
         for (name, rule, svc, ep_json, pri) in &udp_routers {
             let eps: Vec<String> = serde_json::from_str(ep_json).unwrap_or_default();
             let mut rv = json!({"rule": rule, "service": svc});
-            if !eps.is_empty() { rv["entryPoints"] = json!(eps); }
-            if *pri != 0 { rv["priority"] = json!(pri); }
+            if !eps.is_empty() {
+                rv["entryPoints"] = json!(eps);
+            }
+            if *pri != 0 {
+                rv["priority"] = json!(pri);
+            }
             map.insert(name.clone(), rv);
         }
         udp.insert("routers".to_string(), json!(map));
     }
     let udp_services = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT name, service_type, config_json FROM tc_udp_services WHERE enabled = 1"
-    ).fetch_all(pool).await?;
+        "SELECT name, service_type, config_json FROM tc_udp_services WHERE enabled = 1",
+    )
+    .fetch_all(pool)
+    .await?;
     if !udp_services.is_empty() {
         let mut map = serde_json::Map::new();
         for (name, stype, cfg) in &udp_services {
@@ -1969,19 +2259,24 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
         }
         udp.insert("services".to_string(), json!(map));
     }
-    if !udp.is_empty() { root.insert("udp".to_string(), json!(udp)); }
+    if !udp.is_empty() {
+        root.insert("udp".to_string(), json!(udp));
+    }
 
     // TLS
-    let tls_certs = sqlx::query_as::<_, (String, String)>(
-        "SELECT cert_file, key_file FROM tc_tls_certs"
-    ).fetch_all(pool).await?;
-    let tls_opts = sqlx::query_as::<_, (String, String)>(
-        "SELECT name, config_json FROM tc_tls_options"
-    ).fetch_all(pool).await?;
+    let tls_certs =
+        sqlx::query_as::<_, (String, String)>("SELECT cert_file, key_file FROM tc_tls_certs")
+            .fetch_all(pool)
+            .await?;
+    let tls_opts =
+        sqlx::query_as::<_, (String, String)>("SELECT name, config_json FROM tc_tls_options")
+            .fetch_all(pool)
+            .await?;
     if !tls_certs.is_empty() || !tls_opts.is_empty() {
         let mut tls = serde_json::Map::new();
         if !tls_certs.is_empty() {
-            let certs: Vec<serde_json::Value> = tls_certs.iter()
+            let certs: Vec<serde_json::Value> = tls_certs
+                .iter()
                 .map(|(c, k)| json!({"certFile": c, "keyFile": k}))
                 .collect();
             tls.insert("certificates".to_string(), json!(certs));
@@ -1998,9 +2293,10 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
     }
 
     // Certificate resolvers
-    let resolvers = sqlx::query_as::<_, (String, String)>(
-        "SELECT name, config_json FROM tc_cert_resolvers"
-    ).fetch_all(pool).await?;
+    let resolvers =
+        sqlx::query_as::<_, (String, String)>("SELECT name, config_json FROM tc_cert_resolvers")
+            .fetch_all(pool)
+            .await?;
     if !resolvers.is_empty() {
         let mut map = serde_json::Map::new();
         for (name, cfg) in &resolvers {
@@ -2011,33 +2307,46 @@ async fn rp_generate_config(pool: &sqlx::SqlitePool) -> anyhow::Result<String> {
     }
 
     // Global config (log, accessLog, api, metrics)
-    let kv = sqlx::query_as::<_, (String, String)>(
-        "SELECT key, value FROM tc_config"
-    ).fetch_all(pool).await.unwrap_or_default();
+    let kv = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM tc_config")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
 
-    let get = |key: &str| -> Option<String> {
-        kv.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
-    };
+    let get =
+        |key: &str| -> Option<String> { kv.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()) };
 
     let log_level = get("log_level").unwrap_or_else(|| "info".to_string());
-    root.insert("log".to_string(), json!({
-        "level": log_level,
-        "filePath": "/var/log/trafficcop/trafficcop.log"
-    }));
+    root.insert(
+        "log".to_string(),
+        json!({
+            "level": log_level,
+            "filePath": "/var/log/trafficcop/trafficcop.log"
+        }),
+    );
 
     if get("access_log_enabled").as_deref() != Some("false") {
-        let path = get("access_log_path").unwrap_or_else(|| "/var/log/trafficcop/access.log".to_string());
+        let path =
+            get("access_log_path").unwrap_or_else(|| "/var/log/trafficcop/access.log".to_string());
         let fmt = get("access_log_format").unwrap_or_else(|| "json".to_string());
-        root.insert("accessLog".to_string(), json!({"filePath": path, "format": fmt}));
+        root.insert(
+            "accessLog".to_string(),
+            json!({"filePath": path, "format": fmt}),
+        );
     }
 
     if get("api_dashboard").as_deref() != Some("false") {
-        root.insert("api".to_string(), json!({"dashboard": true, "insecure": true}));
+        root.insert(
+            "api".to_string(),
+            json!({"dashboard": true, "insecure": true}),
+        );
     }
 
     if get("metrics_enabled").as_deref() == Some("true") {
         let addr = get("metrics_address").unwrap_or_else(|| ":9090".to_string());
-        root.insert("metrics".to_string(), json!({"prometheus": {"address": addr}}));
+        root.insert(
+            "metrics".to_string(),
+            json!({"prometheus": {"address": addr}}),
+        );
     }
 
     let yaml = serde_yaml_ng::to_string(&root)?;
@@ -2059,7 +2368,10 @@ pub async fn multiwan_instances(db_path: &Path) -> anyhow::Result<()> {
     let engine = InstanceEngine::new(pool, pf);
     engine.migrate().await?;
     let list = engine.list().await?;
-    println!("{:<36} {:<16} {:<6} {:<8} STATUS", "ID", "NAME", "FIB", "MGMT");
+    println!(
+        "{:<36} {:<16} {:<6} {:<8} STATUS",
+        "ID", "NAME", "FIB", "MGMT"
+    );
     for i in list {
         println!(
             "{:<36} {:<16} {:<6} {:<8} {}",
@@ -2108,7 +2420,10 @@ pub async fn multiwan_groups(db_path: &Path) -> anyhow::Result<()> {
     let engine = GroupEngine::new(pool);
     engine.migrate().await?;
     let list = engine.list().await?;
-    println!("{:<36} {:<16} {:<14} {:<8} STICKY", "ID", "NAME", "POLICY", "PREEMPT");
+    println!(
+        "{:<36} {:<16} {:<14} {:<8} STICKY",
+        "ID", "NAME", "POLICY", "PREEMPT"
+    );
     for g in list {
         let members = engine.list_members(g.id).await.unwrap_or_default();
         println!(
@@ -2261,7 +2576,11 @@ pub async fn multiwan_probe(db_path: &Path, id: &str, outcome: &str) -> anyhow::
     let sample = aifw_core::multiwan::ProbeOutcome {
         success,
         rtt_ms: if success { Some(10.0) } else { None },
-        error: if success { None } else { Some("cli-fail".into()) },
+        error: if success {
+            None
+        } else {
+            Some("cli-fail".into())
+        },
     };
     engine.inject_sample(uuid, sample).await?;
     let gw = engine.get(uuid).await?;

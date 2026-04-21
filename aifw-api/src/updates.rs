@@ -1,5 +1,5 @@
 use aifw_core::updater::{self, AifwUpdateInfo};
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
@@ -22,8 +22,8 @@ pub struct UpdateStatus {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MaintenanceWindow {
     pub enabled: bool,
-    pub day_of_week: String,   // mon,tue,wed...
-    pub time: String,           // HH:MM (24h)
+    pub day_of_week: String, // mon,tue,wed...
+    pub time: String,        // HH:MM (24h)
     pub auto_install: bool,
     pub auto_reboot: bool,
     pub auto_check: bool,
@@ -55,25 +55,36 @@ pub struct UpdateHistoryEntry {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ApiResponse<T: Serialize> { pub data: T }
+pub struct ApiResponse<T: Serialize> {
+    pub data: T,
+}
 #[derive(Debug, Serialize)]
-pub struct MessageResponse { pub message: String }
+pub struct MessageResponse {
+    pub message: String,
+}
 
-fn internal() -> StatusCode { StatusCode::INTERNAL_SERVER_ERROR }
+fn internal() -> StatusCode {
+    StatusCode::INTERNAL_SERVER_ERROR
+}
 
 // ============================================================
 // DB
 // ============================================================
 
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS update_config (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS update_history (
             id TEXT PRIMARY KEY,
             action TEXT NOT NULL,
@@ -81,7 +92,10 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             status TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
     Ok(())
 }
@@ -96,7 +110,9 @@ async fn log_update(pool: &SqlitePool, action: &str, details: &str, status: &str
 
 async fn load_schedule(pool: &SqlitePool) -> MaintenanceWindow {
     let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM update_config")
-        .fetch_all(pool).await.unwrap_or_default();
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
     let mut mw = MaintenanceWindow::default();
     for (k, v) in rows {
         match k.as_str() {
@@ -115,7 +131,10 @@ async fn load_schedule(pool: &SqlitePool) -> MaintenanceWindow {
 
 async fn save_config(pool: &SqlitePool, key: &str, value: &str) {
     let _ = sqlx::query("INSERT OR REPLACE INTO update_config (key, value) VALUES (?1, ?2)")
-        .bind(key).bind(value).execute(pool).await;
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await;
 }
 
 // ============================================================
@@ -125,16 +144,25 @@ async fn save_config(pool: &SqlitePool, key: &str, value: &str) {
 pub async fn update_status(
     State(state): State<AppState>,
 ) -> Result<Json<UpdateStatus>, StatusCode> {
-    let os_version = Command::new("freebsd-version").output().await
+    let os_version = Command::new("freebsd-version")
+        .output()
+        .await
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    let last_check = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM update_config WHERE key = 'last_check'"
-    ).fetch_optional(&state.pool).await.ok().flatten().map(|r| r.0);
+    let last_check =
+        sqlx::query_as::<_, (String,)>("SELECT value FROM update_config WHERE key = 'last_check'")
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.0);
 
     // Check for pending pkg updates
-    let pkg_out = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/pkg", "upgrade", "-n"]).output().await
+    let pkg_out = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/sbin/pkg", "upgrade", "-n"])
+        .output()
+        .await
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
@@ -145,7 +173,9 @@ pub async fn update_status(
             in_list = true;
             continue;
         }
-        if in_list && line.trim().is_empty() { in_list = false; }
+        if in_list && line.trim().is_empty() {
+            in_list = false;
+        }
         if in_list {
             let trimmed = line.trim();
             if !trimmed.is_empty() {
@@ -154,12 +184,20 @@ pub async fn update_status(
         }
     }
 
-    let pending_os = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/freebsd-update", "updatesready"]).output().await
-        .map(|o| o.status.success()).unwrap_or(false);
+    let pending_os = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/sbin/freebsd-update", "updatesready"])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
     let needs_reboot = std::path::Path::new("/var/run/reboot-required").exists()
-        || Command::new("/usr/local/bin/sudo").args(["/usr/sbin/freebsd-update", "updatesready"]).output().await
-            .map(|o| o.status.success()).unwrap_or(false);
+        || Command::new("/usr/local/bin/sudo")
+            .args(["/usr/sbin/freebsd-update", "updatesready"])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
     Ok(Json(UpdateStatus {
         os_version,
@@ -180,25 +218,50 @@ pub async fn check_updates(
     save_config(&state.pool, "last_check", &now).await;
 
     // Check pkg updates
-    let pkg_result = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/pkg", "update"]).output().await;
+    let pkg_result = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/sbin/pkg", "update"])
+        .output()
+        .await;
     let pkg_msg = match pkg_result {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
             if o.status.success() {
-                format!("Package catalog updated. {}", stdout.lines().last().unwrap_or(""))
+                format!(
+                    "Package catalog updated. {}",
+                    stdout.lines().last().unwrap_or("")
+                )
             } else {
-                format!("Package update failed: {}", String::from_utf8_lossy(&o.stderr))
+                format!(
+                    "Package update failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                )
             }
         }
         Err(e) => format!("Failed to check packages: {}", e),
     };
 
     // Check OS updates
-    let os_result = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/freebsd-update", "fetch", "--not-running-from-cron"]).output().await;
+    let os_result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/sbin/freebsd-update",
+            "fetch",
+            "--not-running-from-cron",
+        ])
+        .output()
+        .await;
     let os_msg = match os_result {
         Ok(o) => {
-            if o.status.success() { "OS update check complete.".to_string() }
-            else { format!("OS update check: {}", String::from_utf8_lossy(&o.stderr).lines().next().unwrap_or("")) }
+            if o.status.success() {
+                "OS update check complete.".to_string()
+            } else {
+                format!(
+                    "OS update check: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                )
+            }
         }
         Err(e) => format!("OS update check failed: {}", e),
     };
@@ -215,18 +278,27 @@ pub async fn install_updates(
     let mut results = Vec::new();
 
     // Install pkg updates
-    let pkg_result = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/pkg", "upgrade", "-y"]).output().await;
+    let pkg_result = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/sbin/pkg", "upgrade", "-y"])
+        .output()
+        .await;
     match pkg_result {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
-            let count = stdout.lines().filter(|l| l.contains("Upgrading") || l.contains("Installing")).count();
+            let count = stdout
+                .lines()
+                .filter(|l| l.contains("Upgrading") || l.contains("Installing"))
+                .count();
             results.push(format!("{} packages updated", count));
         }
         Err(e) => results.push(format!("pkg upgrade failed: {}", e)),
     }
 
     // Install OS updates
-    let os_result = Command::new("/usr/local/bin/sudo").args(["/usr/sbin/freebsd-update", "install"]).output().await;
+    let os_result = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/sbin/freebsd-update", "install"])
+        .output()
+        .await;
     match os_result {
         Ok(o) => {
             if o.status.success() {
@@ -246,14 +318,29 @@ pub async fn install_updates(
 
 pub async fn reboot_system() -> Result<Json<MessageResponse>, StatusCode> {
     // Schedule reboot in 10 seconds
-    let _ = Command::new("/usr/local/bin/sudo").args(["/sbin/shutdown", "-r", "+10s", "AiFw scheduled reboot for updates"]).output().await;
-    Ok(Json(MessageResponse { message: "System rebooting in 10 seconds".to_string() }))
+    let _ = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/sbin/shutdown",
+            "-r",
+            "+10s",
+            "AiFw scheduled reboot for updates",
+        ])
+        .output()
+        .await;
+    Ok(Json(MessageResponse {
+        message: "System rebooting in 10 seconds".to_string(),
+    }))
 }
 
 pub async fn shutdown_system() -> Result<Json<MessageResponse>, StatusCode> {
     // Schedule power-off in 10 seconds
     let _ = Command::new("/usr/local/bin/sudo")
-        .args(["/sbin/shutdown", "-p", "+10s", "AiFw shutdown requested via admin UI"])
+        .args([
+            "/sbin/shutdown",
+            "-p",
+            "+10s",
+            "AiFw shutdown requested via admin UI",
+        ])
         .output()
         .await;
     Ok(Json(MessageResponse {
@@ -271,13 +358,38 @@ pub async fn update_schedule(
     State(state): State<AppState>,
     Json(mw): Json<MaintenanceWindow>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    save_config(&state.pool, "mw_enabled", if mw.enabled { "true" } else { "false" }).await;
+    save_config(
+        &state.pool,
+        "mw_enabled",
+        if mw.enabled { "true" } else { "false" },
+    )
+    .await;
     save_config(&state.pool, "mw_day", &mw.day_of_week).await;
     save_config(&state.pool, "mw_time", &mw.time).await;
-    save_config(&state.pool, "mw_auto_install", if mw.auto_install { "true" } else { "false" }).await;
-    save_config(&state.pool, "mw_auto_reboot", if mw.auto_reboot { "true" } else { "false" }).await;
-    save_config(&state.pool, "mw_auto_check", if mw.auto_check { "true" } else { "false" }).await;
-    save_config(&state.pool, "mw_auto_update_aifw", if mw.auto_update_aifw { "true" } else { "false" }).await;
+    save_config(
+        &state.pool,
+        "mw_auto_install",
+        if mw.auto_install { "true" } else { "false" },
+    )
+    .await;
+    save_config(
+        &state.pool,
+        "mw_auto_reboot",
+        if mw.auto_reboot { "true" } else { "false" },
+    )
+    .await;
+    save_config(
+        &state.pool,
+        "mw_auto_check",
+        if mw.auto_check { "true" } else { "false" },
+    )
+    .await;
+    save_config(
+        &state.pool,
+        "mw_auto_update_aifw",
+        if mw.auto_update_aifw { "true" } else { "false" },
+    )
+    .await;
 
     // Write cron job if enabled
     if mw.enabled {
@@ -285,15 +397,22 @@ pub async fn update_schedule(
         let hour = parts.first().unwrap_or(&"3");
         let minute = parts.get(1).unwrap_or(&"0");
         let dow = match mw.day_of_week.to_lowercase().as_str() {
-            "mon" => "1", "tue" => "2", "wed" => "3", "thu" => "4",
-            "fri" => "5", "sat" => "6", "sun" | _ => "0",
+            "mon" => "1",
+            "tue" => "2",
+            "wed" => "3",
+            "thu" => "4",
+            "fri" => "5",
+            "sat" => "6",
+            "sun" | _ => "0",
         };
         let mut cron_cmd = String::from("/usr/local/sbin/aifw update os-check");
         if mw.auto_install {
             cron_cmd.push_str(" && /usr/local/sbin/aifw update os-install");
         }
         if mw.auto_update_aifw {
-            cron_cmd.push_str("; /usr/local/sbin/aifw update check && /usr/local/sbin/aifw update install");
+            cron_cmd.push_str(
+                "; /usr/local/sbin/aifw update check && /usr/local/sbin/aifw update install",
+            );
         }
         if mw.auto_reboot {
             cron_cmd.push_str(" && /sbin/shutdown -r +1m 'AiFw maintenance reboot'");
@@ -304,8 +423,20 @@ pub async fn update_schedule(
         let _ = tokio::fs::remove_file("/var/cron/tabs/aifw-updates").await;
     }
 
-    log_update(&state.pool, "schedule", &format!("Maintenance window {} ({})", if mw.enabled { "enabled" } else { "disabled" }, mw.day_of_week), "configured").await;
-    Ok(Json(MessageResponse { message: "Maintenance window updated".to_string() }))
+    log_update(
+        &state.pool,
+        "schedule",
+        &format!(
+            "Maintenance window {} ({})",
+            if mw.enabled { "enabled" } else { "disabled" },
+            mw.day_of_week
+        ),
+        "configured",
+    )
+    .await;
+    Ok(Json(MessageResponse {
+        message: "Maintenance window updated".to_string(),
+    }))
 }
 
 pub async fn update_history(
@@ -314,9 +445,16 @@ pub async fn update_history(
     let rows = sqlx::query_as::<_, (String,String,String,String,String)>(
         "SELECT id, action, details, status, created_at FROM update_history ORDER BY created_at DESC LIMIT 50"
     ).fetch_all(&state.pool).await.map_err(|_| internal())?;
-    let entries: Vec<UpdateHistoryEntry> = rows.into_iter().map(|(id,a,d,s,c)| UpdateHistoryEntry {
-        id, action: a, details: d, status: s, created_at: c
-    }).collect();
+    let entries: Vec<UpdateHistoryEntry> = rows
+        .into_iter()
+        .map(|(id, a, d, s, c)| UpdateHistoryEntry {
+            id,
+            action: a,
+            details: d,
+            status: s,
+            created_at: c,
+        })
+        .collect();
     Ok(Json(ApiResponse { data: entries }))
 }
 
@@ -329,15 +467,20 @@ pub async fn aifw_update_status(
 ) -> Result<Json<AifwUpdateInfo>, StatusCode> {
     // Return cached info if we have it, otherwise just show current version
     let cached = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM update_config WHERE key = 'aifw_cached_info'"
-    ).fetch_optional(&state.pool).await.ok().flatten();
+        "SELECT value FROM update_config WHERE key = 'aifw_cached_info'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
 
     if let Some((json,)) = cached
-        && let Ok(mut info) = serde_json::from_str::<AifwUpdateInfo>(&json) {
-            // Refresh current version and backup info
-            info.current_version = updater::get_current_version().await;
-            return Ok(Json(info));
-        }
+        && let Ok(mut info) = serde_json::from_str::<AifwUpdateInfo>(&json)
+    {
+        // Refresh current version and backup info
+        info.current_version = updater::get_current_version().await;
+        return Ok(Json(info));
+    }
 
     Ok(Json(AifwUpdateInfo {
         current_version: updater::get_current_version().await,
@@ -349,7 +492,9 @@ pub async fn aifw_update_status(
         checksum_url: None,
         has_backup: std::path::Path::new("/usr/local/share/aifw/backup/version").exists(),
         backup_version: tokio::fs::read_to_string("/usr/local/share/aifw/backup/version")
-            .await.ok().map(|v| v.trim().to_string()),
+            .await
+            .ok()
+            .map(|v| v.trim().to_string()),
     }))
 }
 
@@ -368,7 +513,10 @@ pub async fn aifw_check_update(
     save_config(&state.pool, "aifw_last_check", &Utc::now().to_rfc3339()).await;
 
     let status = if info.update_available {
-        format!("v{} available (current: v{})", info.latest_version, info.current_version)
+        format!(
+            "v{} available (current: v{})",
+            info.latest_version, info.current_version
+        )
     } else {
         format!("v{} is the latest", info.current_version)
     };
@@ -382,8 +530,12 @@ pub async fn aifw_install_update(
 ) -> Result<Json<MessageResponse>, StatusCode> {
     // Get cached update info
     let cached = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM update_config WHERE key = 'aifw_cached_info'"
-    ).fetch_optional(&state.pool).await.ok().flatten();
+        "SELECT value FROM update_config WHERE key = 'aifw_cached_info'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
 
     let info = if let Some((json,)) = cached {
         serde_json::from_str::<AifwUpdateInfo>(&json).map_err(|_| internal())?
@@ -396,7 +548,9 @@ pub async fn aifw_install_update(
     };
 
     if !info.update_available {
-        return Ok(Json(MessageResponse { message: "Already running the latest version".to_string() }));
+        return Ok(Json(MessageResponse {
+            message: "Already running the latest version".to_string(),
+        }));
     }
 
     let msg = updater::download_and_install(&info).await.map_err(|e| {
@@ -417,7 +571,9 @@ pub async fn aifw_install_update(
     // Schedule service restart (background, so the response is sent first)
     updater::restart_services().await;
 
-    Ok(Json(MessageResponse { message: format!("{}. Services restarting...", msg) }))
+    Ok(Json(MessageResponse {
+        message: format!("{}. Services restarting...", msg),
+    }))
 }
 
 pub async fn aifw_rollback(
@@ -434,5 +590,7 @@ pub async fn aifw_rollback(
     // Schedule service restart
     updater::restart_services().await;
 
-    Ok(Json(MessageResponse { message: format!("{}. Services restarting...", msg) }))
+    Ok(Json(MessageResponse {
+        message: format!("{}. Services restarting...", msg),
+    }))
 }

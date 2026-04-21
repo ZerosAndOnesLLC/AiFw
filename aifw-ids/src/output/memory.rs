@@ -1,7 +1,7 @@
 use aifw_common::ids::IdsAlert;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::RwLock;
 
 use super::AlertOutput;
@@ -90,16 +90,30 @@ impl AlertBuffer {
         let buf = self.alerts.read().await;
         let iter = buf.iter().rev().filter(|a| {
             if let Some(sev) = severity
-                && a.severity.0 != sev { return false; }
+                && a.severity.0 != sev
+            {
+                return false;
+            }
             if let Some(ip) = src_ip
-                && a.src_ip.to_string() != ip { return false; }
+                && a.src_ip.to_string() != ip
+            {
+                return false;
+            }
             if let Some(sid) = signature_id
-                && a.signature_id != Some(sid) { return false; }
+                && a.signature_id != Some(sid)
+            {
+                return false;
+            }
             if let Some(ack) = acknowledged
-                && a.acknowledged != ack { return false; }
+                && a.acknowledged != ack
+            {
+                return false;
+            }
             if let Some(cls) = classification {
                 if cls == "reviewed" {
-                    if a.classification == "unreviewed" { return false; }
+                    if a.classification == "unreviewed" {
+                        return false;
+                    }
                 } else if a.classification != cls {
                     return false;
                 }
@@ -117,7 +131,12 @@ impl AlertBuffer {
     }
 
     /// Classify an alert.
-    pub async fn classify(&self, id: uuid::Uuid, classification: &str, notes: Option<&str>) -> bool {
+    pub async fn classify(
+        &self,
+        id: uuid::Uuid,
+        classification: &str,
+        notes: Option<&str>,
+    ) -> bool {
         let mut buf = self.alerts.write().await;
         if let Some(alert) = buf.iter_mut().find(|a| a.id == id) {
             alert.classification = classification.to_string();
@@ -132,7 +151,12 @@ impl AlertBuffer {
     }
 
     /// Classify all alerts with a given signature_id.
-    pub async fn classify_by_signature(&self, sig_id: u32, classification: &str, notes: &str) -> usize {
+    pub async fn classify_by_signature(
+        &self,
+        sig_id: u32,
+        classification: &str,
+        notes: &str,
+    ) -> usize {
         let mut buf = self.alerts.write().await;
         let mut count = 0;
         for alert in buf.iter_mut() {
@@ -188,7 +212,11 @@ impl AlertBuffer {
             count,
             estimated_mb: estimated_bytes as f64 / (1024.0 * 1024.0),
             max_mb: max_bytes as f64 / (1024.0 * 1024.0),
-            usage_pct: if max_bytes > 0 { (estimated_bytes as f64 / max_bytes as f64 * 100.0).min(100.0) } else { 0.0 },
+            usage_pct: if max_bytes > 0 {
+                (estimated_bytes as f64 / max_bytes as f64 * 100.0).min(100.0)
+            } else {
+                0.0
+            },
             oldest,
             newest,
             max_age_secs: self.max_age_secs.load(Ordering::Relaxed),

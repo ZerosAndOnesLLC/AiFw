@@ -1,6 +1,5 @@
 use aifw_core::system_apply_helpers::{
-    replace_managed_block, validate_hostname, validate_domain, validate_ssh_port,
-    validate_baud,
+    replace_managed_block, validate_baud, validate_domain, validate_hostname, validate_ssh_port,
 };
 
 #[test]
@@ -15,7 +14,8 @@ fn replace_managed_block_inserts_when_absent() {
 
 #[test]
 fn replace_managed_block_overwrites_existing() {
-    let original = "keepme\n# BEGIN AiFw console\nconsole=\"vidconsole\"\n# END AiFw console\ntail\n";
+    let original =
+        "keepme\n# BEGIN AiFw console\nconsole=\"vidconsole\"\n# END AiFw console\ntail\n";
     let out = replace_managed_block(original, "AiFw console", "console=\"comconsole\"\n");
     assert!(out.contains("console=\"comconsole\""));
     assert!(!out.contains("console=\"vidconsole\""));
@@ -90,8 +90,14 @@ fn replace_managed_block_ignores_marker_inside_comment_line() {
     // A real managed block was appended (not inserted into the comment)
     assert!(out.contains("console=\"comconsole\""));
     // Exactly one real BEGIN line (the appended one)
-    let real_begin_lines = out.lines().filter(|l| l.trim_start().starts_with("# BEGIN AiFw console")).count();
-    assert_eq!(real_begin_lines, 1, "exactly one line starts with # BEGIN AiFw console; comment line must not count");
+    let real_begin_lines = out
+        .lines()
+        .filter(|l| l.trim_start().starts_with("# BEGIN AiFw console"))
+        .count();
+    assert_eq!(
+        real_begin_lines, 1,
+        "exactly one line starts with # BEGIN AiFw console; comment line must not count"
+    );
     // real_setting line preserved
     assert!(out.contains("real_setting=1"));
 }
@@ -109,8 +115,14 @@ fn replace_managed_block_handles_begin_after_end_gracefully() {
     assert!(out.contains("middle"));
     assert!(out.contains("tail"));
     // Must not contain more than one well-formed BEGIN/END pair
-    let begin_count = out.lines().filter(|l| l.trim_start() == "# BEGIN AiFw console").count();
-    let end_count = out.lines().filter(|l| l.trim_start() == "# END AiFw console").count();
+    let begin_count = out
+        .lines()
+        .filter(|l| l.trim_start() == "# BEGIN AiFw console")
+        .count();
+    let end_count = out
+        .lines()
+        .filter(|l| l.trim_start() == "# END AiFw console")
+        .count();
     // At most one well-formed pair (not counting the pre-existing bare markers)
     assert!(begin_count <= 2 && end_count <= 2);
 }

@@ -54,12 +54,10 @@ impl AuthSettings {
     pub async fn load(pool: &SqlitePool) -> Self {
         let mut settings = Self::default();
 
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT key, value FROM auth_config",
-        )
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+        let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM auth_config")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
 
         for (key, value) in rows {
             match key.as_str() {
@@ -76,7 +74,9 @@ impl AuthSettings {
                 "require_totp_for_oauth" => settings.require_totp_for_oauth = value == "true",
                 "auto_create_oauth_users" => settings.auto_create_oauth_users = value == "true",
                 "max_login_attempts" => settings.max_login_attempts = value.parse().unwrap_or(5),
-                "lockout_duration_secs" => settings.lockout_duration_secs = value.parse().unwrap_or(300),
+                "lockout_duration_secs" => {
+                    settings.lockout_duration_secs = value.parse().unwrap_or(300)
+                }
                 "allow_registration" => settings.allow_registration = value == "true",
                 "password_min_length" => settings.password_min_length = value.parse().unwrap_or(8),
                 _ => {}
@@ -88,14 +88,12 @@ impl AuthSettings {
 
     /// Save a setting to DB
     pub async fn save_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), String> {
-        sqlx::query(
-            "INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)",
-        )
-        .bind(key)
-        .bind(value)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("db error: {e}"))?;
+        sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)")
+            .bind(key)
+            .bind(value)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("db error: {e}"))?;
         Ok(())
     }
 }

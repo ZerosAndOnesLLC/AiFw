@@ -42,7 +42,9 @@ fn set_root_password() {
         if pass1.len() < 8 {
             console::error("Password must be at least 8 characters.");
             if attempt == max_attempts {
-                console::warn("Max attempts reached. Skipping root password — set it manually later.");
+                console::warn(
+                    "Max attempts reached. Skipping root password — set it manually later.",
+                );
                 return;
             }
             continue;
@@ -78,7 +80,9 @@ fn set_root_password() {
                         return;
                     }
                     _ => {
-                        console::error("Failed to set root password via 'pw'. You may need to set it manually.");
+                        console::error(
+                            "Failed to set root password via 'pw'. You may need to set it manually.",
+                        );
                         return;
                     }
                 }
@@ -103,18 +107,42 @@ pub struct WizardResult {
 fn splash_screen() {
     println!();
     println!("  \x1b[1;34m╔══════════════════════════════════════════════════╗\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m      \x1b[1;36m█████╗ ██╗\x1b[0m\x1b[1;37m███████╗██╗    ██╗\x1b[0m            \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m██╔══██╗██║\x1b[0m\x1b[1;37m██╔════╝██║    ██║\x1b[0m            \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m███████║██║\x1b[0m\x1b[1;37m█████╗  ██║ █╗ ██║\x1b[0m            \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m██╔══██║██║\x1b[0m\x1b[1;37m██╔══╝  ██║███╗██║\x1b[0m            \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m██║  ██║██║\x1b[0m\x1b[1;37m██║     ╚███╔███╔╝\x1b[0m            \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;36m╚═╝  ╚═╝╚═╝\x1b[0m\x1b[1;37m╚═╝      ╚══╝╚══╝\x1b[0m             \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m     \x1b[1;37mAI-Powered Firewall for FreeBSD\x1b[0m               \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m     \x1b[0;90mBuilt in Rust  •  MIT License\x1b[0m                 \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m     \x1b[0;90mgithub.com/ZerosAndOnesLLC/AiFw\x1b[0m                \x1b[1;34m║\x1b[0m");
-    println!("  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m");
+    println!(
+        "  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m      \x1b[1;36m█████╗ ██╗\x1b[0m\x1b[1;37m███████╗██╗    ██╗\x1b[0m            \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m     \x1b[1;36m██╔══██╗██║\x1b[0m\x1b[1;37m██╔════╝██║    ██║\x1b[0m            \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m     \x1b[1;36m███████║██║\x1b[0m\x1b[1;37m█████╗  ██║ █╗ ██║\x1b[0m            \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m     \x1b[1;36m██╔══██║██║\x1b[0m\x1b[1;37m██╔══╝  ██║███╗██║\x1b[0m            \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m     \x1b[1;36m██║  ██║██║\x1b[0m\x1b[1;37m██║     ╚███╔███╔╝\x1b[0m            \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m     \x1b[1;36m╚═╝  ╚═╝╚═╝\x1b[0m\x1b[1;37m╚═╝      ╚══╝╚══╝\x1b[0m             \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m     \x1b[1;37mAI-Powered Firewall for FreeBSD\x1b[0m               \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m     \x1b[0;90mBuilt in Rust  •  MIT License\x1b[0m                 \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m     \x1b[0;90mgithub.com/ZerosAndOnesLLC/AiFw\x1b[0m                \x1b[1;34m║\x1b[0m"
+    );
+    println!(
+        "  \x1b[1;34m║\x1b[0m                                                  \x1b[1;34m║\x1b[0m"
+    );
     println!("  \x1b[1;34m╚══════════════════════════════════════════════════╝\x1b[0m");
     println!();
 }
@@ -161,7 +189,11 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         ],
         0,
     );
-    config.ssh_auth_method = if ssh_method_idx == 1 { SshAuthMethod::Password } else { SshAuthMethod::KeyOnly };
+    config.ssh_auth_method = if ssh_method_idx == 1 {
+        SshAuthMethod::Password
+    } else {
+        SshAuthMethod::KeyOnly
+    };
 
     if config.ssh_auth_method == SshAuthMethod::KeyOnly {
         console::info("You can import SSH keys from your GitHub account.");
@@ -170,13 +202,18 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             console::info(&format!("Fetching keys from github.com/{github_user}..."));
             match fetch_github_keys(&github_user) {
                 Ok(keys) if !keys.is_empty() => {
-                    console::success(&format!("Found {} SSH key(s) for {github_user}.", keys.len()));
+                    console::success(&format!(
+                        "Found {} SSH key(s) for {github_user}.",
+                        keys.len()
+                    ));
                     config.ssh_github_user = Some(github_user);
                     config.ssh_authorized_keys = keys;
                 }
                 Ok(_) => {
                     console::warn("No SSH keys found for that GitHub user.");
-                    console::info("You can add keys manually later via /root/.ssh/authorized_keys.");
+                    console::info(
+                        "You can add keys manually later via /root/.ssh/authorized_keys.",
+                    );
                 }
                 Err(e) => {
                     console::warn(&format!("Could not fetch keys: {e}"));
@@ -188,7 +225,9 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         if config.ssh_authorized_keys.is_empty() {
             console::info("You can paste an SSH public key now (or press Enter to skip).");
             let key = console::prompt("SSH public key", "");
-            if !key.is_empty() && (key.starts_with("ssh-") || key.starts_with("ecdsa-") || key.starts_with("sk-")) {
+            if !key.is_empty()
+                && (key.starts_with("ssh-") || key.starts_with("ecdsa-") || key.starts_with("sk-"))
+            {
                 config.ssh_authorized_keys.push(key);
                 console::success("Key added.");
             } else if !key.is_empty() {
@@ -207,11 +246,17 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     loop {
         config.hostname = console::prompt("Hostname", &config.hostname);
         // Basic RFC 1123 validation
-        if config.hostname.is_empty() || config.hostname.len() > 63
-            || !config.hostname.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        if config.hostname.is_empty()
+            || config.hostname.len() > 63
+            || !config
+                .hostname
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
             || config.hostname.starts_with('-')
         {
-            console::warn("Invalid hostname. Use letters, numbers, hyphens, and dots (max 63 chars).");
+            console::warn(
+                "Invalid hostname. Use letters, numbers, hyphens, and dots (max 63 chars).",
+            );
             config.hostname = "aifw".to_string();
             continue;
         }
@@ -240,7 +285,10 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
         if interfaces.len() == 1 {
             config.wan_interface = interfaces[0].clone();
-            console::success(&format!("Single interface detected: {}", config.wan_interface));
+            console::success(&format!(
+                "Single interface detected: {}",
+                config.wan_interface
+            ));
             println!();
             console::warn("Single NIC mode — NAT is not available.");
             console::info("The firewall will operate in filtering mode only.");
@@ -325,7 +373,10 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     loop {
         config.admin_username = console::prompt("Admin username", "admin");
-        if config.admin_username.is_empty() || config.admin_username.contains(' ') || config.admin_username.len() > 32 {
+        if config.admin_username.is_empty()
+            || config.admin_username.contains(' ')
+            || config.admin_username.len() > 32
+        {
             console::warn("Username must be 1-32 characters with no spaces.");
             continue;
         }
@@ -356,8 +407,13 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     loop {
         let port_str = console::prompt("API port", &config.api_port.to_string());
         match port_str.parse::<u16>() {
-            Ok(p) if p > 0 => { config.api_port = p; break; }
-            _ => { console::warn("Invalid port number. Enter 1-65535."); }
+            Ok(p) if p > 0 => {
+                config.api_port = p;
+                break;
+            }
+            _ => {
+                console::warn("Invalid port number. Enter 1-65535.");
+            }
         }
     }
     config.ui_enabled = console::confirm("Enable web UI?", true);
@@ -366,7 +422,11 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     step(10, "DNS Servers");
     loop {
         let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8");
-        let servers: Vec<String> = dns.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let servers: Vec<String> = dns
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         let all_valid = servers.iter().all(|s| console::validate_ip(s));
         if servers.is_empty() || !all_valid {
             console::warn("Enter valid IP addresses separated by commas.");
@@ -397,7 +457,10 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     console::header("Configuration Summary");
     println!();
     console::info(&format!("  Hostname:       {}", config.hostname));
-    console::info(&format!("  WAN:            {} ({})", config.wan_interface, config.wan_mode));
+    console::info(&format!(
+        "  WAN:            {} ({})",
+        config.wan_interface, config.wan_mode
+    ));
     if let Some(ref ip) = config.wan_ip {
         console::info(&format!("    IP:           {ip}"));
     }
@@ -412,23 +475,62 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
     console::info(&format!("  SSH:            {}", config.ssh_auth_method));
     if let Some(ref gh) = config.ssh_github_user {
-        console::info(&format!("    GitHub keys:  {gh} ({} key(s))", config.ssh_authorized_keys.len()));
+        console::info(&format!(
+            "    GitHub keys:  {gh} ({} key(s))",
+            config.ssh_authorized_keys.len()
+        ));
     } else if !config.ssh_authorized_keys.is_empty() {
-        console::info(&format!("    Keys:         {} manual key(s)", config.ssh_authorized_keys.len()));
+        console::info(&format!(
+            "    Keys:         {} manual key(s)",
+            config.ssh_authorized_keys.len()
+        ));
     }
     console::info(&format!("  Admin:          {}", config.admin_username));
-    console::info(&format!("  API:            {}:{}", config.api_listen, config.api_port));
-    console::info(&format!("  Web UI:         {}", if config.ui_enabled { "enabled" } else { "disabled" }));
-    console::info(&format!("  NAT:            {}", if config.nat_enabled { "enabled" } else { "disabled" }));
-    console::info(&format!("  DHCP:           {}", if config.dhcp_enabled { "enabled (LAN)" } else { "disabled" }));
-    console::info(&format!("  DNS:            {}", config.dns_servers.join(", ")));
+    console::info(&format!(
+        "  API:            {}:{}",
+        config.api_listen, config.api_port
+    ));
+    console::info(&format!(
+        "  Web UI:         {}",
+        if config.ui_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
+    console::info(&format!(
+        "  NAT:            {}",
+        if config.nat_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
+    console::info(&format!(
+        "  DHCP:           {}",
+        if config.dhcp_enabled {
+            "enabled (LAN)"
+        } else {
+            "disabled"
+        }
+    ));
+    console::info(&format!(
+        "  DNS:            {}",
+        config.dns_servers.join(", ")
+    ));
     console::info(&format!("  Policy:         {}", config.default_policy));
     let tuning_enabled = tuning_items.iter().filter(|t| t.enabled).count();
-    console::info(&format!("  Tuning:         {} optimizations", tuning_enabled));
+    console::info(&format!(
+        "  Tuning:         {} optimizations",
+        tuning_enabled
+    ));
     println!();
 
     if console::confirm("Apply this configuration?", true) {
-        Some(WizardResult { config, tuning: tuning_items })
+        Some(WizardResult {
+            config,
+            tuning: tuning_items,
+        })
     } else {
         console::info("Setup cancelled.");
         None
@@ -464,7 +566,9 @@ fn fetch_github_keys(username: &str) -> Result<Vec<String>, String> {
 }
 
 fn hash_password(password: &str) -> String {
-    use argon2::{Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng};
+    use argon2::{
+        Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng,
+    };
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)

@@ -21,12 +21,16 @@ use std::net::IpAddr;
 /// - loopback, private (RFC1918), link-local, CGNAT, ULA, multicast,
 ///   reserved, unspecified, and IPv4-mapped-private addresses are refused
 pub async fn validate_outbound_url(url_str: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(url_str)
-        .map_err(|e| format!("invalid URL: {e}"))?;
+    let url = reqwest::Url::parse(url_str).map_err(|e| format!("invalid URL: {e}"))?;
     if url.scheme() != "https" {
-        return Err(format!("only https:// URLs are allowed (got {})", url.scheme()));
+        return Err(format!(
+            "only https:// URLs are allowed (got {})",
+            url.scheme()
+        ));
     }
-    let host = url.host_str().ok_or_else(|| "URL has no host".to_string())?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "URL has no host".to_string())?;
 
     if let Ok(ip) = host.parse::<IpAddr>() {
         return ensure_public(ip);
@@ -155,24 +159,32 @@ mod tests {
 
     #[test]
     fn allows_public_v6() {
-        assert!(!is_blocked(IpAddr::V6("2606:4700:4700::1111".parse().unwrap())));
+        assert!(!is_blocked(IpAddr::V6(
+            "2606:4700:4700::1111".parse().unwrap()
+        )));
     }
 
     #[tokio::test]
     async fn rejects_http_scheme() {
-        let err = validate_outbound_url("http://example.com/").await.unwrap_err();
+        let err = validate_outbound_url("http://example.com/")
+            .await
+            .unwrap_err();
         assert!(err.contains("https"));
     }
 
     #[tokio::test]
     async fn rejects_literal_loopback() {
-        let err = validate_outbound_url("https://127.0.0.1/").await.unwrap_err();
+        let err = validate_outbound_url("https://127.0.0.1/")
+            .await
+            .unwrap_err();
         assert!(err.contains("not a public"));
     }
 
     #[tokio::test]
     async fn rejects_literal_metadata_ip() {
-        let err = validate_outbound_url("https://169.254.169.254/latest/meta-data/").await.unwrap_err();
+        let err = validate_outbound_url("https://169.254.169.254/latest/meta-data/")
+            .await
+            .unwrap_err();
         assert!(err.contains("not a public"));
     }
 }

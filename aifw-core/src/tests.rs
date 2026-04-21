@@ -17,10 +17,7 @@ mod tests {
                 src_addr: Address::Any,
                 src_port: None,
                 dst_addr: Address::Any,
-                dst_port: Some(PortRange {
-                    start: 22,
-                    end: 22,
-                }),
+                dst_port: Some(PortRange { start: 22, end: 22 }),
             },
         )
     }
@@ -67,8 +64,10 @@ mod tests {
     #[test]
     fn test_validate_invalid_prefix() {
         let mut rule = make_test_rule();
-        rule.rule_match.src_addr =
-            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 0)), 33);
+        rule.rule_match.src_addr = Address::Network(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 0)),
+            33,
+        );
         assert!(validate_rule(&rule).is_err());
     }
 
@@ -343,7 +342,9 @@ mod tests {
             Interface("em0".to_string()),
             Protocol::Tcp,
             Address::Any,
-            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 1))),
+            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                203, 0, 113, 1,
+            ))),
             NatRedirect {
                 address: Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
                     192, 168, 1, 10,
@@ -354,10 +355,7 @@ mod tests {
                 }),
             },
         );
-        rule.dst_port = Some(PortRange {
-            start: 80,
-            end: 80,
-        });
+        rule.dst_port = Some(PortRange { start: 80, end: 80 });
         rule.label = Some("web-redirect".to_string());
         let id = rule.id;
 
@@ -419,9 +417,7 @@ mod tests {
             Address::Any,
             Address::Any,
             NatRedirect {
-                address: Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
-                    1, 2, 3, 4,
-                ))),
+                address: Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4))),
                 port: None,
             },
         );
@@ -445,7 +441,10 @@ mod tests {
         let q = QueueConfig::new(
             Interface("em0".to_string()),
             QueueType::Codel,
-            Bandwidth { value: 100, unit: BandwidthUnit::Mbps },
+            Bandwidth {
+                value: 100,
+                unit: BandwidthUnit::Mbps,
+            },
             "test_queue".to_string(),
             TrafficClass::Default,
         );
@@ -467,7 +466,10 @@ mod tests {
         let mut q = QueueConfig::new(
             Interface("em0".to_string()),
             QueueType::Priq,
-            Bandwidth { value: 1, unit: BandwidthUnit::Gbps },
+            Bandwidth {
+                value: 1,
+                unit: BandwidthUnit::Gbps,
+            },
             "voip".to_string(),
             TrafficClass::Voip,
         );
@@ -493,13 +495,19 @@ mod tests {
         let engine = crate::shaping::ShapingEngine::new(db.pool().clone(), pf);
         engine.migrate().await.unwrap();
 
-        engine.add_queue(QueueConfig::new(
-            Interface("em0".to_string()),
-            QueueType::Codel,
-            Bandwidth { value: 100, unit: BandwidthUnit::Mbps },
-            "default_q".to_string(),
-            TrafficClass::Default,
-        )).await.unwrap();
+        engine
+            .add_queue(QueueConfig::new(
+                Interface("em0".to_string()),
+                QueueType::Codel,
+                Bandwidth {
+                    value: 100,
+                    unit: BandwidthUnit::Mbps,
+                },
+                "default_q".to_string(),
+                TrafficClass::Default,
+            ))
+            .await
+            .unwrap();
 
         engine.apply_queues().await.unwrap();
 
@@ -583,13 +591,16 @@ mod tests {
         let engine = crate::shaping::ShapingEngine::new(db.pool().clone(), pf);
         engine.migrate().await.unwrap();
 
-        engine.add_rate_limit(RateLimitRule::new(
-            "ssh".to_string(),
-            Protocol::Tcp,
-            5,
-            30,
-            "bruteforce".to_string(),
-        )).await.unwrap();
+        engine
+            .add_rate_limit(RateLimitRule::new(
+                "ssh".to_string(),
+                Protocol::Tcp,
+                5,
+                30,
+                "bruteforce".to_string(),
+            ))
+            .await
+            .unwrap();
 
         engine.apply_rate_limits().await.unwrap();
 
@@ -618,7 +629,10 @@ mod tests {
             "wg0".to_string(),
             Interface("wg0".to_string()),
             51820,
-            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)), 24),
+            Address::Network(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                24,
+            ),
         );
         let id = tunnel.id;
         engine.add_wg_tunnel(tunnel).await.unwrap();
@@ -640,7 +654,10 @@ mod tests {
             "office".to_string(),
             Interface("wg1".to_string()),
             51821,
-            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 16, 0, 1)), 24),
+            Address::Network(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 16, 0, 1)),
+                24,
+            ),
         );
         tunnel.dns = Some("1.1.1.1".to_string());
         tunnel.mtu = Some(1420);
@@ -664,16 +681,20 @@ mod tests {
             "wg0".to_string(),
             Interface("wg0".to_string()),
             51820,
-            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)), 24),
+            Address::Network(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                24,
+            ),
         );
         let tid = tunnel.id;
         engine.add_wg_tunnel(tunnel).await.unwrap();
 
         let mut peer = WgPeer::new(tid, "laptop".to_string(), "fakepubkey123".to_string());
         peer.endpoint = Some("1.2.3.4:51820".to_string());
-        peer.allowed_ips = vec![
-            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)), 32),
-        ];
+        peer.allowed_ips = vec![Address::Network(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            32,
+        )];
         peer.persistent_keepalive = Some(25);
         let pid = peer.id;
         engine.add_wg_peer(peer).await.unwrap();
@@ -718,8 +739,12 @@ mod tests {
 
         let sa = IpsecSa::new(
             "office".to_string(),
-            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 1))),
-            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 1))),
+            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                203, 0, 113, 1,
+            ))),
+            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                198, 51, 100, 1,
+            ))),
             IpsecProtocol::Esp,
             IpsecMode::Tunnel,
         );
@@ -744,20 +769,29 @@ mod tests {
         let engine = crate::vpn::VpnEngine::new(db.pool().clone(), pf);
         engine.migrate().await.unwrap();
 
-        engine.add_wg_tunnel(WgTunnel::new(
-            "wg0".to_string(),
-            Interface("wg0".to_string()),
-            51820,
-            Address::Network(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)), 24),
-        )).await.unwrap();
+        engine
+            .add_wg_tunnel(WgTunnel::new(
+                "wg0".to_string(),
+                Interface("wg0".to_string()),
+                51820,
+                Address::Network(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                    24,
+                ),
+            ))
+            .await
+            .unwrap();
 
-        engine.add_ipsec_sa(IpsecSa::new(
-            "ipsec0".to_string(),
-            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4))),
-            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(5, 6, 7, 8))),
-            IpsecProtocol::Esp,
-            IpsecMode::Tunnel,
-        )).await.unwrap();
+        engine
+            .add_ipsec_sa(IpsecSa::new(
+                "ipsec0".to_string(),
+                Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4))),
+                Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(5, 6, 7, 8))),
+                IpsecProtocol::Esp,
+                IpsecMode::Tunnel,
+            ))
+            .await
+            .unwrap();
 
         engine.apply_vpn_rules().await.unwrap();
 
@@ -851,15 +885,21 @@ mod tests {
         let engine = crate::geoip::GeoIpEngine::new(db.pool().clone(), pf);
         engine.migrate().await.unwrap();
 
-        engine.add_rule(GeoIpRule::new(
-            CountryCode::new("RU").unwrap(),
-            GeoIpAction::Block,
-        )).await.unwrap();
+        engine
+            .add_rule(GeoIpRule::new(
+                CountryCode::new("RU").unwrap(),
+                GeoIpAction::Block,
+            ))
+            .await
+            .unwrap();
 
-        engine.add_rule(GeoIpRule::new(
-            CountryCode::new("US").unwrap(),
-            GeoIpAction::Allow,
-        )).await.unwrap();
+        engine
+            .add_rule(GeoIpRule::new(
+                CountryCode::new("US").unwrap(),
+                GeoIpAction::Allow,
+            ))
+            .await
+            .unwrap();
 
         engine.apply_rules().await.unwrap();
 
@@ -901,10 +941,19 @@ mod tests {
     async fn test_sni_check() {
         let engine = create_tls_engine().await;
 
-        engine.add_sni_rule(SniRule::new("*.evil.com".to_string(), SniAction::Block)).await.unwrap();
-        engine.add_sni_rule(SniRule::new("good.com".to_string(), SniAction::Allow)).await.unwrap();
+        engine
+            .add_sni_rule(SniRule::new("*.evil.com".to_string(), SniAction::Block))
+            .await
+            .unwrap();
+        engine
+            .add_sni_rule(SniRule::new("good.com".to_string(), SniAction::Allow))
+            .await
+            .unwrap();
 
-        assert_eq!(engine.check_sni("sub.evil.com").await, Some(SniAction::Block));
+        assert_eq!(
+            engine.check_sni("sub.evil.com").await,
+            Some(SniAction::Block)
+        );
         assert_eq!(engine.check_sni("evil.com").await, Some(SniAction::Block));
         assert_eq!(engine.check_sni("good.com").await, Some(SniAction::Allow));
         assert_eq!(engine.check_sni("unknown.com").await, None);
@@ -921,8 +970,14 @@ mod tests {
     async fn test_ja3_blocklist() {
         let engine = create_tls_engine().await;
 
-        engine.add_ja3_block("abc123", "known malware").await.unwrap();
-        engine.add_ja3_block("def456", "suspicious client").await.unwrap();
+        engine
+            .add_ja3_block("abc123", "known malware")
+            .await
+            .unwrap();
+        engine
+            .add_ja3_block("def456", "suspicious client")
+            .await
+            .unwrap();
 
         assert!(engine.is_ja3_blocked("abc123").await);
         assert!(engine.is_ja3_blocked("def456").await);
@@ -949,8 +1004,7 @@ mod tests {
             ..Default::default()
         };
 
-        let engine = crate::tls::TlsEngine::new(db.pool().clone(), pf)
-            .with_mitm_config(mitm);
+        let engine = crate::tls::TlsEngine::new(db.pool().clone(), pf).with_mitm_config(mitm);
         engine.migrate().await.unwrap();
 
         engine.apply_rules().await.unwrap();
@@ -998,11 +1052,23 @@ mod tests {
         let engine = create_cluster_engine().await;
 
         // VHID 0 should fail
-        let vip = CarpVip::new(0, "10.0.0.1".parse().unwrap(), 24, Interface("em0".into()), "pw".into());
+        let vip = CarpVip::new(
+            0,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("em0".into()),
+            "pw".into(),
+        );
         assert!(engine.add_carp_vip(vip).await.is_err());
 
         // Empty password should fail
-        let vip = CarpVip::new(1, "10.0.0.1".parse().unwrap(), 24, Interface("em0".into()), String::new());
+        let vip = CarpVip::new(
+            1,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("em0".into()),
+            String::new(),
+        );
         assert!(engine.add_carp_vip(vip).await.is_err());
     }
 
@@ -1038,7 +1104,10 @@ mod tests {
         assert_eq!(nodes[0].health, NodeHealth::Unknown);
 
         // Update health
-        engine.update_node_health(id, NodeHealth::Healthy).await.unwrap();
+        engine
+            .update_node_health(id, NodeHealth::Healthy)
+            .await
+            .unwrap();
         let nodes = engine.list_nodes().await.unwrap();
         assert_eq!(nodes[0].health, NodeHealth::Healthy);
 
@@ -1075,10 +1144,16 @@ mod tests {
         let engine = crate::ha::ClusterEngine::new(db.pool().clone(), pf);
         engine.migrate().await.unwrap();
 
-        engine.add_carp_vip(CarpVip::new(
-            1, "10.0.0.100".parse().unwrap(), 24,
-            Interface("em0".into()), "pw".into(),
-        )).await.unwrap();
+        engine
+            .add_carp_vip(CarpVip::new(
+                1,
+                "10.0.0.100".parse().unwrap(),
+                24,
+                Interface("em0".into()),
+                "pw".into(),
+            ))
+            .await
+            .unwrap();
 
         let mut pfsync = PfsyncConfig::new(Interface("em1".into()));
         pfsync.sync_peer = Some("10.0.0.2".parse().unwrap());
@@ -1133,10 +1208,22 @@ mod tests {
         assert_eq!(config.resource_count(), 0);
 
         config.rules.push(crate::config::RuleConfig {
-            id: "1".into(), priority: 10, action: "pass".into(), direction: "in".into(),
-            protocol: "tcp".into(), interface: None, src_addr: None, src_port_start: None,
-            src_port_end: None, dst_addr: None, dst_port_start: Some(443), dst_port_end: Some(443),
-            log: false, quick: true, label: Some("https".into()), state_tracking: "keep_state".into(),
+            id: "1".into(),
+            priority: 10,
+            action: "pass".into(),
+            direction: "in".into(),
+            protocol: "tcp".into(),
+            interface: None,
+            src_addr: None,
+            src_port_start: None,
+            src_port_end: None,
+            dst_addr: None,
+            dst_port_start: Some(443),
+            dst_port_end: Some(443),
+            log: false,
+            quick: true,
+            label: Some("https".into()),
+            state_tracking: "keep_state".into(),
             status: "active".into(),
         });
         assert_eq!(config.resource_count(), 1);
@@ -1147,7 +1234,10 @@ mod tests {
         let mgr = create_config_mgr().await;
         let config = FirewallConfig::default();
 
-        let v = mgr.save_version(&config, "test", Some("initial")).await.unwrap();
+        let v = mgr
+            .save_version(&config, "test", Some("initial"))
+            .await
+            .unwrap();
         assert_eq!(v, 1);
 
         mgr.mark_applied(v).await.unwrap();
@@ -1162,12 +1252,18 @@ mod tests {
 
         let mut c1 = FirewallConfig::default();
         c1.system.hostname = "v1".into();
-        let v1 = mgr.save_version(&c1, "test", Some("version 1")).await.unwrap();
+        let v1 = mgr
+            .save_version(&c1, "test", Some("version 1"))
+            .await
+            .unwrap();
         mgr.mark_applied(v1).await.unwrap();
 
         let mut c2 = FirewallConfig::default();
         c2.system.hostname = "v2".into();
-        let v2 = mgr.save_version(&c2, "test", Some("version 2")).await.unwrap();
+        let v2 = mgr
+            .save_version(&c2, "test", Some("version 2"))
+            .await
+            .unwrap();
         mgr.mark_applied(v2).await.unwrap();
 
         // Active should be v2
@@ -1209,8 +1305,10 @@ mod tests {
         let mgr = create_config_mgr().await;
         let config = FirewallConfig::default();
 
-        let v = mgr.save_and_apply(&config, "test", Some("success"), |_| async { Ok(()) })
-            .await.unwrap();
+        let v = mgr
+            .save_and_apply(&config, "test", Some("success"), |_| async { Ok(()) })
+            .await
+            .unwrap();
 
         let (active_v, _) = mgr.get_active().await.unwrap().unwrap();
         assert_eq!(active_v, v);
@@ -1221,9 +1319,11 @@ mod tests {
         let mgr = create_config_mgr().await;
         let config = FirewallConfig::default();
 
-        let result = mgr.save_and_apply(&config, "test", Some("fail"), |_| async {
-            Err("pf apply failed".to_string())
-        }).await;
+        let result = mgr
+            .save_and_apply(&config, "test", Some("fail"), |_| async {
+                Err("pf apply failed".to_string())
+            })
+            .await;
 
         assert!(result.is_err());
         // No active config since apply failed
@@ -1237,7 +1337,10 @@ mod tests {
         for i in 0..5 {
             let mut c = FirewallConfig::default();
             c.system.hostname = format!("host-{i}");
-            let v = mgr.save_version(&c, "test", Some(&format!("v{i}"))).await.unwrap();
+            let v = mgr
+                .save_version(&c, "test", Some(&format!("v{i}")))
+                .await
+                .unwrap();
             mgr.mark_applied(v).await.unwrap();
         }
 
@@ -1257,10 +1360,22 @@ mod tests {
 
         let mut c2 = FirewallConfig::default();
         c2.rules.push(crate::config::RuleConfig {
-            id: "1".into(), priority: 10, action: "block".into(), direction: "in".into(),
-            protocol: "any".into(), interface: None, src_addr: None, src_port_start: None,
-            src_port_end: None, dst_addr: None, dst_port_start: None, dst_port_end: None,
-            log: false, quick: true, label: None, state_tracking: "keep_state".into(),
+            id: "1".into(),
+            priority: 10,
+            action: "block".into(),
+            direction: "in".into(),
+            protocol: "any".into(),
+            interface: None,
+            src_addr: None,
+            src_port_start: None,
+            src_port_end: None,
+            dst_addr: None,
+            dst_port_start: None,
+            dst_port_end: None,
+            log: false,
+            quick: true,
+            label: None,
+            state_tracking: "keep_state".into(),
             status: "active".into(),
         });
         let v2 = mgr.save_version(&c2, "test", None).await.unwrap();

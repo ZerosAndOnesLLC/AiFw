@@ -1,5 +1,5 @@
 use aifw_common::{NatRule, QueueConfig, RateLimitRule, Rule};
-use aifw_conntrack::{ConntrackStats, ConnectionTracker};
+use aifw_conntrack::{ConnectionTracker, ConntrackStats};
 use aifw_core::{Database, NatEngine, RuleEngine, ShapingEngine};
 use aifw_pf::{PfBackend, PfState, PfStats};
 use std::sync::Arc;
@@ -215,4 +215,3 @@ impl App {
         }
     }
 }
-

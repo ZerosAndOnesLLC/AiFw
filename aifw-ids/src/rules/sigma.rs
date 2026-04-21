@@ -334,10 +334,7 @@ detection:
         assert_eq!(rule.contents.len(), 2);
         assert_eq!(rule.contents[0].pattern, b"evil.com");
         assert!(rule.contents[0].nocase);
-        assert_eq!(
-            rule.contents[0].buffer,
-            Some("dns.query".to_string())
-        );
+        assert_eq!(rule.contents[0].buffer, Some("dns.query".to_string()));
     }
 
     #[test]

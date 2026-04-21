@@ -52,29 +52,28 @@ async fn main() -> anyhow::Result<()> {
         // Poll for events with timeout
         if event::poll(Duration::from_millis(250))?
             && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => app.running = false,
-                        KeyCode::Tab | KeyCode::Right => app.tab = app.tab.next(),
-                        KeyCode::BackTab | KeyCode::Left => app.tab = app.tab.prev(),
-                        KeyCode::Char('1') => app.tab = Tab::Dashboard,
-                        KeyCode::Char('2') => app.tab = Tab::Rules,
-                        KeyCode::Char('3') => app.tab = Tab::Nat,
-                        KeyCode::Char('4') => app.tab = Tab::Connections,
-                        KeyCode::Char('5') => app.tab = Tab::Logs,
-                        KeyCode::Up | KeyCode::Char('k') => app.select_up(),
-                        KeyCode::Down | KeyCode::Char('j') => app.select_down(),
-                        KeyCode::Char('r') => app.refresh().await,
-                        KeyCode::Char('d') | KeyCode::Delete => {
-                            match app.tab {
-                                Tab::Rules => app.delete_selected_rule().await,
-                                Tab::Nat => app.delete_selected_nat().await,
-                                _ => {}
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => app.running = false,
+                KeyCode::Tab | KeyCode::Right => app.tab = app.tab.next(),
+                KeyCode::BackTab | KeyCode::Left => app.tab = app.tab.prev(),
+                KeyCode::Char('1') => app.tab = Tab::Dashboard,
+                KeyCode::Char('2') => app.tab = Tab::Rules,
+                KeyCode::Char('3') => app.tab = Tab::Nat,
+                KeyCode::Char('4') => app.tab = Tab::Connections,
+                KeyCode::Char('5') => app.tab = Tab::Logs,
+                KeyCode::Up | KeyCode::Char('k') => app.select_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.select_down(),
+                KeyCode::Char('r') => app.refresh().await,
+                KeyCode::Char('d') | KeyCode::Delete => match app.tab {
+                    Tab::Rules => app.delete_selected_rule().await,
+                    Tab::Nat => app.delete_selected_nat().await,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
 
         // Auto-refresh
         if last_refresh.elapsed() >= refresh_dur {

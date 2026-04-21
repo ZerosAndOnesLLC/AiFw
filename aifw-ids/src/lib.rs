@@ -8,8 +8,8 @@ pub mod output;
 pub mod protocol;
 pub mod rules;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use aifw_common::ids::{IdsAlert, IdsConfig, IdsMode, IdsStats};
 use aifw_pf::PfBackend;
@@ -222,10 +222,14 @@ impl IdsEngine {
         .await?;
 
         // Alert classification and analyst notes (added for threat investigation workflow)
-        let _ = sqlx::query("ALTER TABLE ids_alerts ADD COLUMN classification TEXT NOT NULL DEFAULT 'unreviewed'")
-            .execute(pool).await;
+        let _ = sqlx::query(
+            "ALTER TABLE ids_alerts ADD COLUMN classification TEXT NOT NULL DEFAULT 'unreviewed'",
+        )
+        .execute(pool)
+        .await;
         let _ = sqlx::query("ALTER TABLE ids_alerts ADD COLUMN analyst_notes TEXT")
-            .execute(pool).await;
+            .execute(pool)
+            .await;
 
         // AI analysis audit log
         sqlx::query(
@@ -243,12 +247,16 @@ impl IdsEngine {
                 duration_ms INTEGER,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )"#,
-        ).execute(pool).await?;
+        )
+        .execute(pool)
+        .await?;
 
         // Track which signature_ids have already been analyzed by AI
         // to avoid duplicate queries for the same rule
-        let _ = sqlx::query("ALTER TABLE ids_alerts ADD COLUMN ai_analyzed INTEGER NOT NULL DEFAULT 0")
-            .execute(pool).await;
+        let _ =
+            sqlx::query("ALTER TABLE ids_alerts ADD COLUMN ai_analyzed INTEGER NOT NULL DEFAULT 0")
+                .execute(pool)
+                .await;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ids_alerts_ts ON ids_alerts(timestamp)")
             .execute(pool)
@@ -293,14 +301,22 @@ impl IdsEngine {
 
         // Migrate old non-UUID IDs to proper UUIDs (idempotent)
         sqlx::query("UPDATE ids_rulesets SET id = ?1 WHERE id = 'et-open-default'")
-            .bind(et_uuid).execute(pool).await?;
+            .bind(et_uuid)
+            .execute(pool)
+            .await?;
         sqlx::query("UPDATE ids_rulesets SET id = ?1 WHERE id = 'abuse-ch-default'")
-            .bind(abuse_uuid).execute(pool).await?;
+            .bind(abuse_uuid)
+            .execute(pool)
+            .await?;
         // Also migrate any rules that referenced the old IDs
         sqlx::query("UPDATE ids_rules SET ruleset_id = ?1 WHERE ruleset_id = 'et-open-default'")
-            .bind(et_uuid).execute(pool).await?;
+            .bind(et_uuid)
+            .execute(pool)
+            .await?;
         sqlx::query("UPDATE ids_rules SET ruleset_id = ?1 WHERE ruleset_id = 'abuse-ch-default'")
-            .bind(abuse_uuid).execute(pool).await?;
+            .bind(abuse_uuid)
+            .execute(pool)
+            .await?;
 
         sqlx::query(
             r#"INSERT OR IGNORE INTO ids_rulesets (id, name, source_url, rule_format, enabled, auto_update, update_interval_hours)
@@ -390,7 +406,9 @@ impl IdsEngine {
             let iface_name = iface.clone();
 
             std::thread::spawn(move || {
-                capture_interface_worker(&iface, &detection, &alert_tx, &counters, &running, is_ips);
+                capture_interface_worker(
+                    &iface, &detection, &alert_tx, &counters, &running, is_ips,
+                );
             });
             info!(interface = %iface_name, "capture worker started");
         }
@@ -584,7 +602,9 @@ fn capture_interface_worker(
         while running.load(Ordering::Relaxed) {
             if let Some(pkt) = cap.next_packet() {
                 counters.packets_inspected.fetch_add(1, Ordering::Relaxed);
-                counters.bytes_total.fetch_add(pkt.data.len() as u64, Ordering::Relaxed);
+                counters
+                    .bytes_total
+                    .fetch_add(pkt.data.len() as u64, Ordering::Relaxed);
 
                 if let Some(decoded) = decode::decode_packet(&pkt.data, pkt.timestamp_us) {
                     let alerts = detection.detect(&decoded);
@@ -632,11 +652,10 @@ mod tests {
         let pool = test_pool().await;
         IdsEngine::migrate(&pool).await.unwrap();
         // Verify tables exist
-        let row: (i64,) =
-            sqlx::query_as("SELECT count(*) FROM ids_config")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let row: (i64,) = sqlx::query_as("SELECT count(*) FROM ids_config")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(row.0, 0);
     }
 

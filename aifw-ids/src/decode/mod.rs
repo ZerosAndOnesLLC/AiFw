@@ -131,19 +131,30 @@ pub fn decode_packet(data: &[u8], timestamp_us: i64) -> Option<DecodedPacket> {
                 udp.payload().to_vec(),
             )
         }
-        Some(TransportSlice::Icmpv4(icmp)) => {
-            (None, None, PacketProtocol::Icmpv4, None, icmp.payload().to_vec())
-        }
-        Some(TransportSlice::Icmpv6(icmp)) => {
-            (None, None, PacketProtocol::Icmpv6, None, icmp.payload().to_vec())
-        }
+        Some(TransportSlice::Icmpv4(icmp)) => (
+            None,
+            None,
+            PacketProtocol::Icmpv4,
+            None,
+            icmp.payload().to_vec(),
+        ),
+        Some(TransportSlice::Icmpv6(icmp)) => (
+            None,
+            None,
+            PacketProtocol::Icmpv6,
+            None,
+            icmp.payload().to_vec(),
+        ),
         _ => {
             let proto = match &sliced.net {
                 Some(NetSlice::Ipv4(ipv4)) => PacketProtocol::Other(ipv4.header().protocol().0),
                 Some(NetSlice::Ipv6(ipv6)) => PacketProtocol::Other(ipv6.header().next_header().0),
                 _ => PacketProtocol::Other(0),
             };
-            let pl = sliced.ip_payload().map(|p| p.payload.to_vec()).unwrap_or_default();
+            let pl = sliced
+                .ip_payload()
+                .map(|p| p.payload.to_vec())
+                .unwrap_or_default();
             (None, None, proto, None, pl)
         }
     };
@@ -166,7 +177,13 @@ mod tests {
     use super::*;
 
     /// Build a minimal valid IPv4+TCP packet for testing
-    fn build_tcp_packet(src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+    fn build_tcp_packet(
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
         use etherparse::PacketBuilder;
 
         let builder = PacketBuilder::ethernet2([0; 6], [0; 6])
@@ -178,7 +195,13 @@ mod tests {
         buf
     }
 
-    fn build_udp_packet(src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+    fn build_udp_packet(
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
         use etherparse::PacketBuilder;
 
         let builder = PacketBuilder::ethernet2([0; 6], [0; 6])
@@ -192,11 +215,23 @@ mod tests {
 
     #[test]
     fn test_decode_tcp() {
-        let pkt = build_tcp_packet([10, 0, 0, 1], [10, 0, 0, 2], 12345, 80, b"GET / HTTP/1.1\r\n");
+        let pkt = build_tcp_packet(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            12345,
+            80,
+            b"GET / HTTP/1.1\r\n",
+        );
         let decoded = decode_packet(&pkt, 1000).unwrap();
 
-        assert_eq!(decoded.src_ip.unwrap(), IpAddr::V4("10.0.0.1".parse().unwrap()));
-        assert_eq!(decoded.dst_ip.unwrap(), IpAddr::V4("10.0.0.2".parse().unwrap()));
+        assert_eq!(
+            decoded.src_ip.unwrap(),
+            IpAddr::V4("10.0.0.1".parse().unwrap())
+        );
+        assert_eq!(
+            decoded.dst_ip.unwrap(),
+            IpAddr::V4("10.0.0.2".parse().unwrap())
+        );
         assert_eq!(decoded.src_port, Some(12345));
         assert_eq!(decoded.dst_port, Some(80));
         assert_eq!(decoded.protocol, PacketProtocol::Tcp);

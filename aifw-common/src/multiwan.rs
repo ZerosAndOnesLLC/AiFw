@@ -225,7 +225,7 @@ pub struct PolicyRule {
     pub id: Uuid,
     pub priority: i64,
     pub name: String,
-    pub status: String, // active | disabled
+    pub status: String,     // active | disabled
     pub ip_version: String, // v4 | v6 | both
     pub iface_in: Option<String>,
     pub src_addr: String,

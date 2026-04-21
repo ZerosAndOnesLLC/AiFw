@@ -227,7 +227,9 @@ impl ConfigManager {
             }
             Err(e) => {
                 tracing::error!(version, error = %e, "config v{version} apply failed — not applied");
-                Err(format!("apply failed (v{version} saved but not applied): {e}"))
+                Err(format!(
+                    "apply failed (v{version} saved but not applied): {e}"
+                ))
             }
         }
     }
@@ -264,11 +266,7 @@ impl ConfigManager {
     }
 
     /// Rollback to a specific version
-    pub async fn rollback<F, Fut>(
-        &self,
-        version: i64,
-        apply_fn: F,
-    ) -> Result<(), String>
+    pub async fn rollback<F, Fut>(&self, version: i64, apply_fn: F) -> Result<(), String>
     where
         F: FnOnce(FirewallConfig) -> Fut,
         Fut: std::future::Future<Output = Result<(), String>>,
@@ -302,7 +300,9 @@ impl ConfigManager {
         .map_err(|e| format!("db error: {e}"))?;
 
         let mut versions = Vec::new();
-        for (version, hash, applied, applied_at, rolled_back, created_by, created_at, comment) in rows {
+        for (version, hash, applied, applied_at, rolled_back, created_by, created_at, comment) in
+            rows
+        {
             // Get resource count from the config JSON
             let rc = sqlx::query_as::<_, (String,)>(
                 "SELECT config_json FROM config_versions WHERE version = ?1",

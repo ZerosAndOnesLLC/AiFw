@@ -273,9 +273,7 @@ pub fn builtin_role_permissions(role: &str) -> Vec<Permission> {
                 (s.ends_with(":read") || s.ends_with(":view"))
                     && !matches!(
                         p,
-                        Permission::UsersRead
-                            | Permission::SettingsRead
-                            | Permission::BackupRead
+                        Permission::UsersRead | Permission::SettingsRead | Permission::BackupRead
                     )
             })
             .copied()
@@ -357,8 +355,14 @@ mod tests {
 
     #[test]
     fn test_permission_from_str() {
-        assert_eq!(Permission::from_str("rules:read"), Some(Permission::RulesRead));
-        assert_eq!(Permission::from_str("system:reboot"), Some(Permission::SystemReboot));
+        assert_eq!(
+            Permission::from_str("rules:read"),
+            Some(Permission::RulesRead)
+        );
+        assert_eq!(
+            Permission::from_str("system:reboot"),
+            Some(Permission::SystemReboot)
+        );
         assert_eq!(Permission::from_str("invalid"), None);
     }
 

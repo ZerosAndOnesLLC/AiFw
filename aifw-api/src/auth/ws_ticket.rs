@@ -48,11 +48,7 @@ impl WsTicketStore {
     pub async fn issue(&self, user_id: &str) -> String {
         // 256 bits of entropy from two v4 UUIDs. Hex is URL-safe so we
         // don't need percent-decoding on the way back in.
-        let id = format!(
-            "{}{}",
-            Uuid::new_v4().simple(),
-            Uuid::new_v4().simple()
-        );
+        let id = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let now = Instant::now();
         let mut map = self.inner.lock().await;
         map.retain(|_, t| t.expires_at > now);

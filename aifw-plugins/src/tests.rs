@@ -214,7 +214,12 @@ mod tests {
         plugin.init(&default_config(), &ctx).await.unwrap();
 
         plugin.on_hook(&make_log_event(), &ctx).await;
-        plugin.on_hook(&make_rule_event(IpAddr::V4(Ipv4Addr::LOCALHOST), "pass"), &ctx).await;
+        plugin
+            .on_hook(
+                &make_rule_event(IpAddr::V4(Ipv4Addr::LOCALHOST), "pass"),
+                &ctx,
+            )
+            .await;
 
         assert_eq!(plugin.entry_count().await, 2);
         let entries = plugin.get_entries().await;

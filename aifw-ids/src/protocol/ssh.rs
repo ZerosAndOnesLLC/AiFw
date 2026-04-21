@@ -130,7 +130,9 @@ mod tests {
         let key = FlowKey::from_packet(
             "10.0.0.1".parse().unwrap(),
             "10.0.0.2".parse().unwrap(),
-            1234, 22, 6,
+            1234,
+            22,
+            6,
         );
         let pkt = crate::decode::DecodedPacket {
             timestamp_us: 0,

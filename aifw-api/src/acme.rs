@@ -10,11 +10,20 @@ use aifw_core::acme::{
     ExportTargetKind, LE_PRODUCTION,
 };
 use aifw_core::{acme_dns, acme_engine, acme_export};
-use axum::{extract::{Path, State}, http::{header, StatusCode}, response::IntoResponse, Json};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::{StatusCode, header},
+    response::IntoResponse,
+};
 use serde::{Deserialize, Serialize};
 
-fn bad(e: impl std::fmt::Display) -> (StatusCode, String) { (StatusCode::BAD_REQUEST, e.to_string()) }
-fn server(e: impl std::fmt::Display) -> (StatusCode, String) { (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()) }
+fn bad(e: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, e.to_string())
+}
+fn server(e: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
 
 // =============================================================================
 // Account
@@ -63,7 +72,8 @@ pub async fn put_account(
     // the first cert issue. Lets the operator configure the account
     // before they know which cert they want.
     acme::save_account(&state.pool, &dir, &req.contact_email, None)
-        .await.map_err(server)?;
+        .await
+        .map_err(server)?;
     Ok(get_account(State(state)).await)
 }
 
@@ -112,14 +122,21 @@ impl From<AcmeCert> for CertSummary {
 }
 
 pub async fn list_certs(State(state): State<AppState>) -> Json<Vec<CertSummary>> {
-    Json(acme::load_all_certs(&state.pool).await.into_iter().map(Into::into).collect())
+    Json(
+        acme::load_all_certs(&state.pool)
+            .await
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    )
 }
 
 pub async fn get_cert(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<CertSummary>, (StatusCode, String)> {
-    let c = acme::load_cert(&state.pool, id).await
+    let c = acme::load_cert(&state.pool, id)
+        .await
         .ok_or_else(|| (StatusCode::NOT_FOUND, "not found".into()))?;
     Ok(Json(c.into()))
 }
@@ -138,38 +155,51 @@ pub struct NewCertRequest {
     pub renew_days_before_expiry: i32,
 }
 
-fn default_challenge() -> String { "dns-01".into() }
-fn default_true() -> bool { true }
-fn default_renew_days() -> i32 { 30 }
+fn default_challenge() -> String {
+    "dns-01".into()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_renew_days() -> i32 {
+    30
+}
 
 pub async fn create_cert(
     State(state): State<AppState>,
     Json(req): Json<NewCertRequest>,
 ) -> Result<Json<CertSummary>, (StatusCode, String)> {
     acme::validate_dns_name(&req.common_name).map_err(bad)?;
-    for s in &req.sans { acme::validate_dns_name(s).map_err(bad)?; }
+    for s in &req.sans {
+        acme::validate_dns_name(s).map_err(bad)?;
+    }
     let challenge = ChallengeType::from_str(&req.challenge_type);
     if challenge == ChallengeType::Dns01 && req.dns_provider_id.is_none() {
         return Err(bad("dns_provider_id required for DNS-01 certs"));
     }
 
     let sans_json = serde_json::to_string(&req.sans).map_err(server)?;
-    let res = sqlx::query(r#"
+    let res = sqlx::query(
+        r#"
         INSERT INTO acme_cert
             (common_name, sans, challenge_type, dns_provider_id,
              auto_renew, renew_days_before_expiry, status)
         VALUES (?, ?, ?, ?, ?, ?, 'pending')
-    "#)
+    "#,
+    )
     .bind(&req.common_name)
     .bind(&sans_json)
     .bind(challenge.as_str())
     .bind(req.dns_provider_id)
     .bind(req.auto_renew as i64)
     .bind(req.renew_days_before_expiry as i64)
-    .execute(&state.pool).await.map_err(server)?;
+    .execute(&state.pool)
+    .await
+    .map_err(server)?;
     let id = res.last_insert_rowid();
 
-    let cert = acme::load_cert(&state.pool, id).await
+    let cert = acme::load_cert(&state.pool, id)
+        .await
         .ok_or_else(|| server("post-insert read failed"))?;
     Ok(Json(cert.into()))
 }
@@ -178,8 +208,11 @@ pub async fn delete_cert(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    sqlx::query("DELETE FROM acme_cert WHERE id = ?").bind(id)
-        .execute(&state.pool).await.map_err(server)?;
+    sqlx::query("DELETE FROM acme_cert WHERE id = ?")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(server)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -190,10 +223,7 @@ pub struct IssueResponse {
     pub expires_at: Option<String>,
 }
 
-pub async fn renew_now(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-) -> Json<IssueResponse> {
+pub async fn renew_now(State(state): State<AppState>, Path(id): Path<i64>) -> Json<IssueResponse> {
     let outcome = acme_engine::issue(&state.pool, id).await;
     Json(IssueResponse {
         ok: outcome.ok,
@@ -207,20 +237,32 @@ pub async fn publish_now(
     Path(id): Path<i64>,
 ) -> Json<IssueResponse> {
     acme_export::publish_all(&state.pool, id).await;
-    Json(IssueResponse { ok: true, message: "publish ran; check per-target status".into(), expires_at: None })
+    Json(IssueResponse {
+        ok: true,
+        message: "publish ran; check per-target status".into(),
+        expires_at: None,
+    })
 }
 
 pub async fn download_cert_pem(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
-    let c = acme::load_cert(&state.pool, id).await
+    let c = acme::load_cert(&state.pool, id)
+        .await
         .ok_or_else(|| (StatusCode::NOT_FOUND, "not found".into()))?;
-    let body = format!("{}\n{}", c.cert_pem.unwrap_or_default(), c.chain_pem.unwrap_or_default());
+    let body = format!(
+        "{}\n{}",
+        c.cert_pem.unwrap_or_default(),
+        c.chain_pem.unwrap_or_default()
+    );
     let disp = format!("attachment; filename=\"{}.pem\"", c.common_name);
     let mut resp = body.into_response();
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, "application/x-pem-file".parse().unwrap());
+    h.insert(
+        header::CONTENT_TYPE,
+        "application/x-pem-file".parse().unwrap(),
+    );
     h.insert(header::CONTENT_DISPOSITION, disp.parse().unwrap());
     Ok(resp)
 }
@@ -229,13 +271,17 @@ pub async fn download_key_pem(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
-    let c = acme::load_cert(&state.pool, id).await
+    let c = acme::load_cert(&state.pool, id)
+        .await
         .ok_or_else(|| (StatusCode::NOT_FOUND, "not found".into()))?;
     let body = c.key_pem.unwrap_or_default();
     let disp = format!("attachment; filename=\"{}.key\"", c.common_name);
     let mut resp = body.into_response();
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, "application/x-pem-file".parse().unwrap());
+    h.insert(
+        header::CONTENT_TYPE,
+        "application/x-pem-file".parse().unwrap(),
+    );
     h.insert(header::CONTENT_DISPOSITION, disp.parse().unwrap());
     Ok(resp)
 }
@@ -270,7 +316,13 @@ impl From<AcmeDnsProvider> for DnsProviderResponse {
 }
 
 pub async fn list_providers(State(state): State<AppState>) -> Json<Vec<DnsProviderResponse>> {
-    Json(acme::load_all_providers(&state.pool).await.into_iter().map(Into::into).collect())
+    Json(
+        acme::load_all_providers(&state.pool)
+            .await
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    )
 }
 
 #[derive(Deserialize)]
@@ -289,18 +341,29 @@ pub async fn create_provider(
     Json(req): Json<PutProviderRequest>,
 ) -> Result<Json<DnsProviderResponse>, (StatusCode, String)> {
     DnsProviderKind::from_str(&req.kind).ok_or_else(|| bad("invalid kind"))?;
-    if req.name.trim().is_empty() { return Err(bad("name required")); }
+    if req.name.trim().is_empty() {
+        return Err(bad("name required"));
+    }
     let extra_str = serde_json::to_string(&req.extra).map_err(server)?;
-    let res = sqlx::query(r#"
+    let res = sqlx::query(
+        r#"
         INSERT INTO acme_dns_provider (name, kind, api_token, aws_secret_key, zone, extra)
         VALUES (?, ?, ?, ?, ?, ?)
-    "#)
-    .bind(&req.name).bind(&req.kind)
-    .bind(&req.api_token).bind(&req.aws_secret_key)
-    .bind(&req.zone).bind(&extra_str)
-    .execute(&state.pool).await.map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    "#,
+    )
+    .bind(&req.name)
+    .bind(&req.kind)
+    .bind(&req.api_token)
+    .bind(&req.aws_secret_key)
+    .bind(&req.zone)
+    .bind(&extra_str)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
     let id = res.last_insert_rowid();
-    Ok(Json(acme::load_provider(&state.pool, id).await.unwrap().into()))
+    Ok(Json(
+        acme::load_provider(&state.pool, id).await.unwrap().into(),
+    ))
 }
 
 pub async fn update_provider(
@@ -308,7 +371,8 @@ pub async fn update_provider(
     Path(id): Path<i64>,
     Json(req): Json<PutProviderRequest>,
 ) -> Result<Json<DnsProviderResponse>, (StatusCode, String)> {
-    let existing = acme::load_provider(&state.pool, id).await
+    let existing = acme::load_provider(&state.pool, id)
+        .await
         .ok_or_else(|| (StatusCode::NOT_FOUND, "not found".into()))?;
     DnsProviderKind::from_str(&req.kind).ok_or_else(|| bad("invalid kind"))?;
     // None / empty-string secret semantics same as s3_backup / smtp_notify.
@@ -323,52 +387,84 @@ pub async fn update_provider(
         Some(v) => Some(v.to_string()),
     };
     let extra_str = serde_json::to_string(&req.extra).map_err(server)?;
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         UPDATE acme_dns_provider
            SET name = ?, kind = ?, api_token = ?, aws_secret_key = ?, zone = ?, extra = ?
          WHERE id = ?
-    "#)
-    .bind(&req.name).bind(&req.kind)
-    .bind(&api_token).bind(&aws_secret)
-    .bind(&req.zone).bind(&extra_str)
+    "#,
+    )
+    .bind(&req.name)
+    .bind(&req.kind)
+    .bind(&api_token)
+    .bind(&aws_secret)
+    .bind(&req.zone)
+    .bind(&extra_str)
     .bind(id)
-    .execute(&state.pool).await.map_err(server)?;
-    Ok(Json(acme::load_provider(&state.pool, id).await.unwrap().into()))
+    .execute(&state.pool)
+    .await
+    .map_err(server)?;
+    Ok(Json(
+        acme::load_provider(&state.pool, id).await.unwrap().into(),
+    ))
 }
 
 pub async fn delete_provider(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    sqlx::query("DELETE FROM acme_dns_provider WHERE id = ?").bind(id)
-        .execute(&state.pool).await.map_err(server)?;
+    sqlx::query("DELETE FROM acme_dns_provider WHERE id = ?")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(server)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]
-pub struct ProviderTestResponse { pub ok: bool, pub message: String }
+pub struct ProviderTestResponse {
+    pub ok: bool,
+    pub message: String,
+}
 
 pub async fn test_provider(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Json<ProviderTestResponse> {
     let Some(p) = acme::load_provider(&state.pool, id).await else {
-        return Json(ProviderTestResponse { ok: false, message: "not found".into() });
+        return Json(ProviderTestResponse {
+            ok: false,
+            message: "not found".into(),
+        });
     };
     let solver = match acme_dns::build_solver(&p) {
         Ok(s) => s,
-        Err(e) => return Json(ProviderTestResponse { ok: false, message: e }),
+        Err(e) => {
+            return Json(ProviderTestResponse {
+                ok: false,
+                message: e,
+            });
+        }
     };
     // Add+remove a synthetic TXT to prove credentials + perms.
     let test_fqdn = format!("_acme-aifw-test.{}", p.zone.trim_end_matches('.'));
     let test_value = format!("aifw-test-{}", chrono::Utc::now().timestamp());
     if let Err(e) = solver.add_txt(&test_fqdn, &test_value).await {
-        return Json(ProviderTestResponse { ok: false, message: format!("add_txt: {e}") });
+        return Json(ProviderTestResponse {
+            ok: false,
+            message: format!("add_txt: {e}"),
+        });
     }
     if let Err(e) = solver.remove_txt(&test_fqdn, &test_value).await {
-        return Json(ProviderTestResponse { ok: false, message: format!("add ok, remove failed: {e}") });
+        return Json(ProviderTestResponse {
+            ok: false,
+            message: format!("add ok, remove failed: {e}"),
+        });
     }
-    Json(ProviderTestResponse { ok: true, message: "TXT add+remove OK".into() })
+    Json(ProviderTestResponse {
+        ok: true,
+        message: "TXT add+remove OK".into(),
+    })
 }
 
 // =============================================================================
@@ -389,7 +485,8 @@ pub struct ExportTargetResponse {
 impl From<AcmeExportTarget> for ExportTargetResponse {
     fn from(t: AcmeExportTarget) -> Self {
         ExportTargetResponse {
-            id: t.id, cert_id: t.cert_id,
+            id: t.id,
+            cert_id: t.cert_id,
             kind: t.kind.as_str().into(),
             config: t.config,
             last_run_at: t.last_run_at.map(|x| x.to_rfc3339()),
@@ -403,7 +500,13 @@ pub async fn list_targets(
     State(state): State<AppState>,
     Path(cert_id): Path<i64>,
 ) -> Json<Vec<ExportTargetResponse>> {
-    Json(acme::load_targets_for_cert(&state.pool, cert_id).await.into_iter().map(Into::into).collect())
+    Json(
+        acme::load_targets_for_cert(&state.pool, cert_id)
+            .await
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    )
 }
 
 #[derive(Deserialize)]
@@ -420,14 +523,22 @@ pub async fn create_target(
 ) -> Result<Json<ExportTargetResponse>, (StatusCode, String)> {
     ExportTargetKind::from_str(&req.kind).ok_or_else(|| bad("invalid kind"))?;
     let cfg_str = serde_json::to_string(&req.config).map_err(server)?;
-    let res = sqlx::query(r#"
+    let res = sqlx::query(
+        r#"
         INSERT INTO acme_export_target (cert_id, kind, config) VALUES (?, ?, ?)
-    "#)
-    .bind(cert_id).bind(&req.kind).bind(&cfg_str)
-    .execute(&state.pool).await.map_err(server)?;
+    "#,
+    )
+    .bind(cert_id)
+    .bind(&req.kind)
+    .bind(&cfg_str)
+    .execute(&state.pool)
+    .await
+    .map_err(server)?;
     let id = res.last_insert_rowid();
-    let t = acme::load_targets_for_cert(&state.pool, cert_id).await
-        .into_iter().find(|t| t.id == id)
+    let t = acme::load_targets_for_cert(&state.pool, cert_id)
+        .await
+        .into_iter()
+        .find(|t| t.id == id)
         .ok_or_else(|| server("post-insert read failed"))?;
     Ok(Json(t.into()))
 }
@@ -436,8 +547,11 @@ pub async fn delete_target(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    sqlx::query("DELETE FROM acme_export_target WHERE id = ?").bind(id)
-        .execute(&state.pool).await.map_err(server)?;
+    sqlx::query("DELETE FROM acme_export_target WHERE id = ?")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(server)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -467,8 +581,10 @@ pub struct DdnsRecordResponse {
 }
 
 async fn record_to_response(state: &AppState, r: ddns::DdnsRecord) -> DdnsRecordResponse {
-    let provider_name = aifw_core::acme::load_provider(&state.pool, r.provider_id).await
-        .map(|p| p.name).unwrap_or_else(|| format!("#{}", r.provider_id));
+    let provider_name = aifw_core::acme::load_provider(&state.pool, r.provider_id)
+        .await
+        .map(|p| p.name)
+        .unwrap_or_else(|| format!("#{}", r.provider_id));
     DdnsRecordResponse {
         id: r.id,
         provider_id: r.provider_id,
@@ -513,10 +629,18 @@ pub struct PutDdnsRequest {
     pub enabled: bool,
 }
 
-fn default_record_type() -> String { "a".into() }
-fn default_ip_source() -> String { "auto-public".into() }
-fn default_ttl() -> i32 { 60 }
-fn default_true_ddns() -> bool { true }
+fn default_record_type() -> String {
+    "a".into()
+}
+fn default_ip_source() -> String {
+    "auto-public".into()
+}
+fn default_ttl() -> i32 {
+    60
+}
+fn default_true_ddns() -> bool {
+    true
+}
 
 pub async fn create_ddns(
     State(state): State<AppState>,
@@ -526,11 +650,13 @@ pub async fn create_ddns(
     if !(60..=86400).contains(&req.ttl) {
         return Err(bad("ttl must be 60..86400"));
     }
-    let res = sqlx::query(r#"
+    let res = sqlx::query(
+        r#"
         INSERT INTO ddns_record
             (provider_id, hostname, record_type, source, interface, explicit_ip, ttl, enabled)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    "#)
+    "#,
+    )
     .bind(req.provider_id)
     .bind(&req.hostname)
     .bind(&req.record_type)
@@ -539,10 +665,12 @@ pub async fn create_ddns(
     .bind(&req.explicit_ip)
     .bind(req.ttl as i64)
     .bind(req.enabled as i64)
-    .execute(&state.pool).await
+    .execute(&state.pool)
+    .await
     .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
     let id = res.last_insert_rowid();
-    let rec = ddns::load_record(&state.pool, id).await
+    let rec = ddns::load_record(&state.pool, id)
+        .await
         .ok_or_else(|| server("post-insert read failed"))?;
     Ok(Json(record_to_response(&state, rec).await))
 }
@@ -553,11 +681,13 @@ pub async fn update_ddns(
     Json(req): Json<PutDdnsRequest>,
 ) -> Result<Json<DdnsRecordResponse>, (StatusCode, String)> {
     aifw_core::acme::validate_dns_name(&req.hostname).map_err(bad)?;
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         UPDATE ddns_record SET provider_id = ?, hostname = ?, record_type = ?, source = ?,
             interface = ?, explicit_ip = ?, ttl = ?, enabled = ?
          WHERE id = ?
-    "#)
+    "#,
+    )
     .bind(req.provider_id)
     .bind(&req.hostname)
     .bind(&req.record_type)
@@ -567,8 +697,11 @@ pub async fn update_ddns(
     .bind(req.ttl as i64)
     .bind(req.enabled as i64)
     .bind(id)
-    .execute(&state.pool).await.map_err(server)?;
-    let rec = ddns::load_record(&state.pool, id).await
+    .execute(&state.pool)
+    .await
+    .map_err(server)?;
+    let rec = ddns::load_record(&state.pool, id)
+        .await
         .ok_or_else(|| (StatusCode::NOT_FOUND, "not found".into()))?;
     Ok(Json(record_to_response(&state, rec).await))
 }
@@ -578,20 +711,32 @@ pub async fn delete_ddns(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     sqlx::query("DELETE FROM ddns_record WHERE id = ?")
-        .bind(id).execute(&state.pool).await.map_err(server)?;
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(server)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]
-pub struct DdnsUpdateResponse { pub ok: bool, pub message: String }
+pub struct DdnsUpdateResponse {
+    pub ok: bool,
+    pub message: String,
+}
 
 pub async fn force_update_ddns(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Json<DdnsUpdateResponse> {
     match ddns::update_record(&state.pool, id).await {
-        Ok(outcome) => Json(DdnsUpdateResponse { ok: true, message: format!("{outcome:?}") }),
-        Err(e) => Json(DdnsUpdateResponse { ok: false, message: e }),
+        Ok(outcome) => Json(DdnsUpdateResponse {
+            ok: true,
+            message: format!("{outcome:?}"),
+        }),
+        Err(e) => Json(DdnsUpdateResponse {
+            ok: false,
+            message: e,
+        }),
     }
 }
 

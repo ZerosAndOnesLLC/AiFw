@@ -33,16 +33,14 @@ pub const MAX_STATES: u64 = 4_000_000;
 /// Read the configured max-states value (the operator's wish), falling
 /// back to [`DEFAULT_MAX_STATES`].
 pub async fn configured_max_states(pool: &SqlitePool) -> u64 {
-    sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM auth_config WHERE key = 'pf_max_states'",
-    )
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
-    .and_then(|(v,)| v.parse::<u64>().ok())
-    .filter(|n| (MIN_STATES..=MAX_STATES).contains(n))
-    .unwrap_or(DEFAULT_MAX_STATES)
+    sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'pf_max_states'")
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|(v,)| v.parse::<u64>().ok())
+        .filter(|n| (MIN_STATES..=MAX_STATES).contains(n))
+        .unwrap_or(DEFAULT_MAX_STATES)
 }
 
 /// Persist + apply a new max-states value. Returns the (possibly clamped)

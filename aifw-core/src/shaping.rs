@@ -86,11 +86,10 @@ impl ShapingEngine {
     }
 
     pub async fn list_queues(&self) -> Result<Vec<QueueConfig>> {
-        let rows = sqlx::query_as::<_, QueueRow>(
-            "SELECT * FROM queue_configs ORDER BY created_at ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query_as::<_, QueueRow>("SELECT * FROM queue_configs ORDER BY created_at ASC")
+                .fetch_all(&self.pool)
+                .await?;
         rows.into_iter().map(|r| r.into_queue()).collect()
     }
 
@@ -136,13 +135,17 @@ impl ShapingEngine {
 
     pub async fn add_rate_limit(&self, rule: RateLimitRule) -> Result<RateLimitRule> {
         if rule.max_connections == 0 {
-            return Err(AifwError::Validation("max_connections must be > 0".to_string()));
+            return Err(AifwError::Validation(
+                "max_connections must be > 0".to_string(),
+            ));
         }
         if rule.window_secs == 0 {
             return Err(AifwError::Validation("window_secs must be > 0".to_string()));
         }
         if rule.overload_table.is_empty() {
-            return Err(AifwError::Validation("overload_table name required".to_string()));
+            return Err(AifwError::Validation(
+                "overload_table name required".to_string(),
+            ));
         }
         self.insert_rate_limit(&rule).await?;
         tracing::info!(id = %rule.id, name = %rule.name, "rate limit rule added");
@@ -347,7 +350,10 @@ impl RateLimitRow {
             src_addr: Address::parse(&self.src_addr)?,
             dst_addr: Address::parse(&self.dst_addr)?,
             dst_port: match (self.dst_port_start, self.dst_port_end) {
-                (Some(s), Some(e)) => Some(PortRange { start: s as u16, end: e as u16 }),
+                (Some(s), Some(e)) => Some(PortRange {
+                    start: s as u16,
+                    end: e as u16,
+                }),
                 _ => None,
             },
             max_connections: self.max_connections as u32,

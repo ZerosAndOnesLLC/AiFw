@@ -83,25 +83,35 @@ impl Plugin for LoggingPlugin {
     async fn on_hook(&self, event: &HookEvent, _ctx: &PluginContext) -> HookAction {
         let msg = match &event.data {
             HookEventData::Rule {
-                src_ip, dst_ip, protocol, action, ..
+                src_ip,
+                dst_ip,
+                protocol,
+                action,
+                ..
             } => {
                 format!(
                     "rule: {} {:?} -> {:?} proto={}",
-                    action,
-                    src_ip,
-                    dst_ip,
-                    protocol
+                    action, src_ip, dst_ip, protocol
                 )
             }
             HookEventData::Connection {
-                src_ip, dst_ip, src_port, dst_port, protocol, state,
+                src_ip,
+                dst_ip,
+                src_port,
+                dst_port,
+                protocol,
+                state,
             } => {
                 format!(
                     "conn: {}:{} -> {}:{} proto={} state={}",
                     src_ip, src_port, dst_ip, dst_port, protocol, state
                 )
             }
-            HookEventData::Log { action, details, source } => {
+            HookEventData::Log {
+                action,
+                details,
+                source,
+            } => {
                 format!("log: {} - {} ({})", action, details, source)
             }
             HookEventData::Api { method, path, .. } => {

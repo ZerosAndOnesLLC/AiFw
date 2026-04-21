@@ -49,7 +49,7 @@ pub struct AcmeAccount {
 /// Default to Let's Encrypt production. The UI presents a dropdown:
 /// production / staging / custom.
 pub const LE_PRODUCTION: &str = "https://acme-v02.api.letsencrypt.org/directory";
-pub const LE_STAGING:    &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+pub const LE_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -60,10 +60,16 @@ pub enum ChallengeType {
 
 impl ChallengeType {
     pub fn as_str(self) -> &'static str {
-        match self { ChallengeType::Dns01 => "dns-01", ChallengeType::Http01 => "http-01" }
+        match self {
+            ChallengeType::Dns01 => "dns-01",
+            ChallengeType::Http01 => "http-01",
+        }
     }
     pub fn from_str(s: &str) -> ChallengeType {
-        match s { "http-01" => ChallengeType::Http01, _ => ChallengeType::Dns01 }
+        match s {
+            "http-01" => ChallengeType::Http01,
+            _ => ChallengeType::Dns01,
+        }
     }
 }
 
@@ -80,20 +86,20 @@ pub enum CertStatus {
 impl CertStatus {
     pub fn as_str(self) -> &'static str {
         match self {
-            CertStatus::Pending  => "pending",
-            CertStatus::Active   => "active",
-            CertStatus::Failed   => "failed",
+            CertStatus::Pending => "pending",
+            CertStatus::Active => "active",
+            CertStatus::Failed => "failed",
             CertStatus::Renewing => "renewing",
-            CertStatus::Expired  => "expired",
+            CertStatus::Expired => "expired",
         }
     }
     pub fn from_str(s: &str) -> CertStatus {
         match s {
-            "active"   => CertStatus::Active,
-            "failed"   => CertStatus::Failed,
+            "active" => CertStatus::Active,
+            "failed" => CertStatus::Failed,
             "renewing" => CertStatus::Renewing,
-            "expired"  => CertStatus::Expired,
-            _          => CertStatus::Pending,
+            "expired" => CertStatus::Expired,
+            _ => CertStatus::Pending,
         }
     }
 }
@@ -135,7 +141,9 @@ impl AcmeCert {
 
     /// True when within the renew window OR already expired.
     pub fn needs_renewal(&self) -> bool {
-        if !self.auto_renew { return false; }
+        if !self.auto_renew {
+            return false;
+        }
         match self.expires_at {
             None => false,
             Some(t) => (t - Utc::now()).num_days() <= self.renew_days_before_expiry as i64,
@@ -156,20 +164,20 @@ pub enum DnsProviderKind {
 impl DnsProviderKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            DnsProviderKind::Cloudflare   => "cloudflare",
-            DnsProviderKind::Route53      => "route53",
+            DnsProviderKind::Cloudflare => "cloudflare",
+            DnsProviderKind::Route53 => "route53",
             DnsProviderKind::DigitalOcean => "digitalocean",
-            DnsProviderKind::Rfc2136      => "rfc2136",
-            DnsProviderKind::Manual       => "manual",
+            DnsProviderKind::Rfc2136 => "rfc2136",
+            DnsProviderKind::Manual => "manual",
         }
     }
     pub fn from_str(s: &str) -> Option<DnsProviderKind> {
         Some(match s {
-            "cloudflare"   => DnsProviderKind::Cloudflare,
-            "route53"      => DnsProviderKind::Route53,
+            "cloudflare" => DnsProviderKind::Cloudflare,
+            "route53" => DnsProviderKind::Route53,
             "digitalocean" => DnsProviderKind::DigitalOcean,
-            "rfc2136"      => DnsProviderKind::Rfc2136,
-            "manual"       => DnsProviderKind::Manual,
+            "rfc2136" => DnsProviderKind::Rfc2136,
+            "manual" => DnsProviderKind::Manual,
             _ => return None,
         })
     }
@@ -209,15 +217,15 @@ pub enum ExportTargetKind {
 impl ExportTargetKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            ExportTargetKind::File          => "file",
-            ExportTargetKind::Webhook       => "webhook",
+            ExportTargetKind::File => "file",
+            ExportTargetKind::Webhook => "webhook",
             ExportTargetKind::LocalTlsStore => "local-tls-store",
         }
     }
     pub fn from_str(s: &str) -> Option<ExportTargetKind> {
         Some(match s {
-            "file"            => ExportTargetKind::File,
-            "webhook"         => ExportTargetKind::Webhook,
+            "file" => ExportTargetKind::File,
+            "webhook" => ExportTargetKind::Webhook,
             "local-tls-store" => ExportTargetKind::LocalTlsStore,
             _ => return None,
         })
@@ -245,7 +253,8 @@ pub struct AcmeExportTarget {
 // =============================================================================
 
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS acme_account (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             directory_url   TEXT    NOT NULL,
@@ -254,9 +263,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             created_at      TEXT    NOT NULL,
             UNIQUE (directory_url, contact_email)
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS acme_dns_provider (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             name           TEXT    NOT NULL UNIQUE,
@@ -266,9 +279,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             zone           TEXT    NOT NULL,
             extra          TEXT    NOT NULL DEFAULT '{}'
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS acme_cert (
             id                       INTEGER PRIMARY KEY AUTOINCREMENT,
             common_name              TEXT    NOT NULL,
@@ -286,9 +303,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             chain_pem                TEXT,
             key_pem                  TEXT
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS acme_export_target (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             cert_id         INTEGER NOT NULL REFERENCES acme_cert(id) ON DELETE CASCADE,
@@ -298,12 +319,19 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             last_run_ok     INTEGER NOT NULL DEFAULT 0,
             last_run_error  TEXT
         )
-    "#).execute(pool).await?;
+    "#,
+    )
+    .execute(pool)
+    .await?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_acme_export_target_cert ON acme_export_target(cert_id)")
-        .execute(pool).await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_acme_export_target_cert ON acme_export_target(cert_id)",
+    )
+    .execute(pool)
+    .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_acme_cert_expires ON acme_cert(expires_at)")
-        .execute(pool).await?;
+        .execute(pool)
+        .await?;
 
     Ok(())
 }
@@ -313,7 +341,8 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 // =============================================================================
 
 fn parse_dt(s: Option<String>) -> Option<DateTime<Utc>> {
-    s.and_then(|x| DateTime::parse_from_rfc3339(&x).ok()).map(|d| d.with_timezone(&Utc))
+    s.and_then(|x| DateTime::parse_from_rfc3339(&x).ok())
+        .map(|d| d.with_timezone(&Utc))
 }
 
 fn row_to_account(row: &sqlx::sqlite::SqliteRow) -> AcmeAccount {
@@ -322,42 +351,64 @@ fn row_to_account(row: &sqlx::sqlite::SqliteRow) -> AcmeAccount {
         directory_url: row.get("directory_url"),
         contact_email: row.get("contact_email"),
         key_pem: row.get("key_pem"),
-        created_at: parse_dt(row.get("created_at"))
-            .unwrap_or_else(Utc::now),
+        created_at: parse_dt(row.get("created_at")).unwrap_or_else(Utc::now),
     }
 }
 
 pub async fn load_account(pool: &SqlitePool, id: i64) -> Option<AcmeAccount> {
     sqlx::query("SELECT * FROM acme_account WHERE id = ?")
         .bind(id)
-        .fetch_optional(pool).await.ok().flatten()
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
         .map(|r| row_to_account(&r))
 }
 
 pub async fn load_default_account(pool: &SqlitePool) -> Option<AcmeAccount> {
     sqlx::query("SELECT * FROM acme_account ORDER BY id LIMIT 1")
-        .fetch_optional(pool).await.ok().flatten()
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
         .map(|r| row_to_account(&r))
 }
 
-pub async fn save_account(pool: &SqlitePool, directory_url: &str, contact_email: &str, key_pem: Option<&str>) -> Result<i64, String> {
+pub async fn save_account(
+    pool: &SqlitePool,
+    directory_url: &str,
+    contact_email: &str,
+    key_pem: Option<&str>,
+) -> Result<i64, String> {
     let now = Utc::now().to_rfc3339();
-    let res = sqlx::query(r#"
+    let res = sqlx::query(
+        r#"
         INSERT INTO acme_account (directory_url, contact_email, key_pem, created_at)
              VALUES (?, ?, ?, ?)
         ON CONFLICT(directory_url, contact_email)
         DO UPDATE SET key_pem = COALESCE(excluded.key_pem, acme_account.key_pem)
-    "#)
-    .bind(directory_url).bind(contact_email).bind(key_pem).bind(&now)
-    .execute(pool).await.map_err(|e| e.to_string())?;
+    "#,
+    )
+    .bind(directory_url)
+    .bind(contact_email)
+    .bind(key_pem)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     if res.last_insert_rowid() != 0 {
         return Ok(res.last_insert_rowid());
     }
     // ON CONFLICT path returned 0 rowid — look up the existing one.
     sqlx::query_as::<_, (i64,)>(
-        "SELECT id FROM acme_account WHERE directory_url = ? AND contact_email = ?"
-    ).bind(directory_url).bind(contact_email)
-    .fetch_one(pool).await.map(|(id,)| id).map_err(|e| e.to_string())
+        "SELECT id FROM acme_account WHERE directory_url = ? AND contact_email = ?",
+    )
+    .bind(directory_url)
+    .bind(contact_email)
+    .fetch_one(pool)
+    .await
+    .map(|(id,)| id)
+    .map_err(|e| e.to_string())
 }
 
 fn row_to_cert(row: &sqlx::sqlite::SqliteRow) -> AcmeCert {
@@ -385,18 +436,26 @@ fn row_to_cert(row: &sqlx::sqlite::SqliteRow) -> AcmeCert {
 pub async fn load_cert(pool: &SqlitePool, id: i64) -> Option<AcmeCert> {
     sqlx::query("SELECT * FROM acme_cert WHERE id = ?")
         .bind(id)
-        .fetch_optional(pool).await.ok().flatten()
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
         .map(|r| row_to_cert(&r))
 }
 
 pub async fn load_all_certs(pool: &SqlitePool) -> Vec<AcmeCert> {
     sqlx::query("SELECT * FROM acme_cert ORDER BY common_name")
-        .fetch_all(pool).await.unwrap_or_default()
-        .iter().map(row_to_cert).collect()
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(row_to_cert)
+        .collect()
 }
 
 pub async fn certs_due_for_renewal(pool: &SqlitePool) -> Vec<AcmeCert> {
-    load_all_certs(pool).await
+    load_all_certs(pool)
+        .await
         .into_iter()
         .filter(|c| c.needs_renewal())
         .collect()
@@ -404,7 +463,8 @@ pub async fn certs_due_for_renewal(pool: &SqlitePool) -> Vec<AcmeCert> {
 
 fn row_to_provider(row: &sqlx::sqlite::SqliteRow) -> AcmeDnsProvider {
     let extra_str: String = row.get("extra");
-    let extra: serde_json::Value = serde_json::from_str(&extra_str).unwrap_or(serde_json::json!({}));
+    let extra: serde_json::Value =
+        serde_json::from_str(&extra_str).unwrap_or(serde_json::json!({}));
     AcmeDnsProvider {
         id: row.get("id"),
         name: row.get("name"),
@@ -420,14 +480,21 @@ fn row_to_provider(row: &sqlx::sqlite::SqliteRow) -> AcmeDnsProvider {
 pub async fn load_provider(pool: &SqlitePool, id: i64) -> Option<AcmeDnsProvider> {
     sqlx::query("SELECT * FROM acme_dns_provider WHERE id = ?")
         .bind(id)
-        .fetch_optional(pool).await.ok().flatten()
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
         .map(|r| row_to_provider(&r))
 }
 
 pub async fn load_all_providers(pool: &SqlitePool) -> Vec<AcmeDnsProvider> {
     sqlx::query("SELECT * FROM acme_dns_provider ORDER BY name")
-        .fetch_all(pool).await.unwrap_or_default()
-        .iter().map(row_to_provider).collect()
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(row_to_provider)
+        .collect()
 }
 
 fn row_to_target(row: &sqlx::sqlite::SqliteRow) -> AcmeExportTarget {
@@ -448,8 +515,12 @@ fn row_to_target(row: &sqlx::sqlite::SqliteRow) -> AcmeExportTarget {
 pub async fn load_targets_for_cert(pool: &SqlitePool, cert_id: i64) -> Vec<AcmeExportTarget> {
     sqlx::query("SELECT * FROM acme_export_target WHERE cert_id = ? ORDER BY id")
         .bind(cert_id)
-        .fetch_all(pool).await.unwrap_or_default()
-        .iter().map(row_to_target).collect()
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(row_to_target)
+        .collect()
 }
 
 // =============================================================================
@@ -489,10 +560,10 @@ mod tests {
         assert!(validate_dns_name("example.com").is_ok());
         assert!(validate_dns_name("*.example.com").is_ok());
         assert!(validate_dns_name("sub.example.com").is_ok());
-        assert!(validate_dns_name("nope").is_err());          // no dot
-        assert!(validate_dns_name("-bad.com").is_err());      // leading hyphen
-        assert!(validate_dns_name("bad-.com").is_err());      // trailing hyphen
-        assert!(validate_dns_name("bad..com").is_err());      // empty label
+        assert!(validate_dns_name("nope").is_err()); // no dot
+        assert!(validate_dns_name("-bad.com").is_err()); // leading hyphen
+        assert!(validate_dns_name("bad-.com").is_err()); // trailing hyphen
+        assert!(validate_dns_name("bad..com").is_err()); // empty label
         assert!(validate_dns_name("").is_err());
     }
 
@@ -501,8 +572,13 @@ mod tests {
         for c in [ChallengeType::Dns01, ChallengeType::Http01] {
             assert_eq!(ChallengeType::from_str(c.as_str()), c);
         }
-        for s in [CertStatus::Pending, CertStatus::Active, CertStatus::Failed,
-                  CertStatus::Renewing, CertStatus::Expired] {
+        for s in [
+            CertStatus::Pending,
+            CertStatus::Active,
+            CertStatus::Failed,
+            CertStatus::Renewing,
+            CertStatus::Expired,
+        ] {
             assert_eq!(CertStatus::from_str(s.as_str()), s);
         }
     }
@@ -510,14 +586,21 @@ mod tests {
     #[test]
     fn needs_renewal_logic() {
         let mut c = AcmeCert {
-            id: 1, common_name: "x.test".into(), sans: vec![],
-            challenge_type: ChallengeType::Dns01, dns_provider_id: None,
-            auto_renew: true, renew_days_before_expiry: 30,
+            id: 1,
+            common_name: "x.test".into(),
+            sans: vec![],
+            challenge_type: ChallengeType::Dns01,
+            dns_provider_id: None,
+            auto_renew: true,
+            renew_days_before_expiry: 30,
             status: CertStatus::Active,
             issued_at: Some(Utc::now()),
             expires_at: Some(Utc::now() + chrono::Duration::days(20)),
-            last_renew_attempt: None, last_renew_error: None,
-            cert_pem: None, chain_pem: None, key_pem: None,
+            last_renew_attempt: None,
+            last_renew_error: None,
+            cert_pem: None,
+            chain_pem: None,
+            key_pem: None,
         };
         assert!(c.needs_renewal(), "20 days < 30 day window");
 

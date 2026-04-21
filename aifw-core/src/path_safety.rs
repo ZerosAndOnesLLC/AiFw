@@ -107,8 +107,9 @@ mod tests {
 
     #[test]
     fn rejects_dotdot() {
-        assert!(validate_export_path("/usr/local/etc/aifw/../../root/.ssh/authorized_keys")
-            .is_err());
+        assert!(
+            validate_export_path("/usr/local/etc/aifw/../../root/.ssh/authorized_keys").is_err()
+        );
     }
 
     #[test]

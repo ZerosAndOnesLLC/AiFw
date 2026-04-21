@@ -156,14 +156,8 @@ impl GroupEngine {
         Ok(rows
             .iter()
             .map(|r| GroupMember {
-                group_id: r
-                    .get::<String, _>("group_id")
-                    .parse()
-                    .unwrap_or_default(),
-                gateway_id: r
-                    .get::<String, _>("gateway_id")
-                    .parse()
-                    .unwrap_or_default(),
+                group_id: r.get::<String, _>("group_id").parse().unwrap_or_default(),
+                gateway_id: r.get::<String, _>("gateway_id").parse().unwrap_or_default(),
                 tier: r.get::<i64, _>("tier") as u32,
                 weight: r.get::<i64, _>("weight") as u32,
             })
@@ -186,14 +180,13 @@ impl GroupEngine {
     }
 
     pub async fn remove_member(&self, group_id: Uuid, gateway_id: Uuid) -> Result<()> {
-        let res = sqlx::query(
-            "DELETE FROM multiwan_group_members WHERE group_id=?1 AND gateway_id=?2",
-        )
-        .bind(group_id.to_string())
-        .bind(gateway_id.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(|e| AifwError::Database(e.to_string()))?;
+        let res =
+            sqlx::query("DELETE FROM multiwan_group_members WHERE group_id=?1 AND gateway_id=?2")
+                .bind(group_id.to_string())
+                .bind(gateway_id.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| AifwError::Database(e.to_string()))?;
         if res.rows_affected() == 0 {
             return Err(AifwError::NotFound("member not in group".into()));
         }
@@ -203,11 +196,7 @@ impl GroupEngine {
 
 /// Pure selection logic — given a group, its members, and current gateway states,
 /// produce the Selection for rule emission. No I/O.
-pub fn select(
-    group: &GatewayGroup,
-    members: &[GroupMember],
-    gateways: &[Gateway],
-) -> Selection {
+pub fn select(group: &GatewayGroup, members: &[GroupMember], gateways: &[Gateway]) -> Selection {
     use std::collections::HashMap;
     let gw_by_id: HashMap<Uuid, &Gateway> = gateways.iter().map(|g| (g.id, g)).collect();
 
@@ -275,20 +264,13 @@ fn row_to_group(r: &sqlx::sqlite::SqliteRow) -> GatewayGroup {
     GatewayGroup {
         id: r.get::<String, _>("id").parse().unwrap_or_default(),
         name: r.get("name"),
-        policy: GroupPolicy::parse(&r.get::<String, _>("policy"))
-            .unwrap_or(GroupPolicy::Failover),
+        policy: GroupPolicy::parse(&r.get::<String, _>("policy")).unwrap_or(GroupPolicy::Failover),
         preempt: r.get::<i64, _>("preempt") != 0,
         sticky: StickyMode::parse(&r.get::<String, _>("sticky")).unwrap_or(StickyMode::None),
         hysteresis_ms: r.get::<i64, _>("hysteresis_ms") as u32,
         kill_states_on_failover: r.get::<i64, _>("kill_states_on_failover") != 0,
-        created_at: r
-            .get::<String, _>("created_at")
-            .parse()
-            .unwrap_or_default(),
-        updated_at: r
-            .get::<String, _>("updated_at")
-            .parse()
-            .unwrap_or_default(),
+        created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
+        updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
     }
 }
 
@@ -456,7 +438,10 @@ mod tests {
             Selection::WeightedList(l) => {
                 let w1 = l.iter().find(|(id, _)| *id == gw1.id).unwrap().1;
                 let w2 = l.iter().find(|(id, _)| *id == gw2.id).unwrap().1;
-                assert!(w1 > w2, "gw1 (mos 4.4) should weigh more than gw2 (mos 1.5)");
+                assert!(
+                    w1 > w2,
+                    "gw1 (mos 4.4) should weigh more than gw2 (mos 1.5)"
+                );
             }
             _ => panic!(),
         }

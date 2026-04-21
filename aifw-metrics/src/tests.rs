@@ -3,10 +3,10 @@ mod tests {
     use std::sync::Arc;
 
     use crate::backend::MetricsBackend;
+    use crate::collector::MetricsCollector;
     use crate::ring::RingBuffer;
     use crate::series::*;
     use crate::store::MetricsStore;
-    use crate::collector::MetricsCollector;
 
     // --- RingBuffer tests ---
 
@@ -119,7 +119,11 @@ mod tests {
 
     #[test]
     fn test_aggregate_last() {
-        let points = vec![MetricPoint::new(1.0), MetricPoint::new(2.0), MetricPoint::new(3.0)];
+        let points = vec![
+            MetricPoint::new(1.0),
+            MetricPoint::new(2.0),
+            MetricPoint::new(3.0),
+        ];
         assert_eq!(aggregate(&points, Aggregation::Last).unwrap().value, 3.0);
     }
 

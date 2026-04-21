@@ -137,9 +137,11 @@ pub fn select(label: &str, options: &[&str], default: usize) -> usize {
     loop {
         let input = prompt("Choice", &(default + 1).to_string());
         if let Ok(n) = input.parse::<usize>()
-            && n >= 1 && n <= options.len() {
-                return n - 1;
-            }
+            && n >= 1
+            && n <= options.len()
+        {
+            return n - 1;
+        }
         warn(&format!("Please enter 1-{}", options.len()));
     }
 }

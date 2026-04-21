@@ -6,7 +6,11 @@
 
 use aifw_core::s3_backup as s3;
 use aifw_core::smtp_notify as smtp;
-use axum::{extract::{Path, State}, http::StatusCode, Json};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -58,9 +62,14 @@ pub async fn put_s3_config(
     Json(cfg): Json<s3::S3Config>,
 ) -> Result<Json<S3ConfigResponse>, (StatusCode, String)> {
     if cfg.enabled && cfg.bucket.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "bucket is required when enabled".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "bucket is required when enabled".into(),
+        ));
     }
-    s3::save(&state.pool, &cfg).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    s3::save(&state.pool, &cfg)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(s3::load(&state.pool).await.into()))
 }
 
@@ -134,19 +143,27 @@ pub async fn import_s3(
     let json = s3::fetch(&cfg, &req.key)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
-    let fw_cfg: aifw_core::config::FirewallConfig = serde_json::from_str(&json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("not a valid config JSON: {e}")))?;
+    let fw_cfg: aifw_core::config::FirewallConfig = serde_json::from_str(&json).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("not a valid config JSON: {e}"),
+        )
+    })?;
 
     let mgr = aifw_core::config_manager::ConfigManager::new(state.pool.clone());
     mgr.migrate().await.map_err(internal)?;
-    let comment = req.comment.unwrap_or_else(|| format!("imported from s3://{}/{}", cfg.bucket, req.key));
+    let comment = req
+        .comment
+        .unwrap_or_else(|| format!("imported from s3://{}/{}", cfg.bucket, req.key));
     let version = mgr
         .save_version(&fw_cfg, "s3-import", Some(&comment))
         .await
         .map_err(internal)?;
     Ok(Json(ImportResponse {
         version,
-        message: format!("Imported as version {version}. Review via /backup then restore if desired."),
+        message: format!(
+            "Imported as version {version}. Review via /backup then restore if desired."
+        ),
     }))
 }
 
@@ -169,14 +186,14 @@ pub struct SmtpConfigResponse {
 
 fn events_to_vec(mask: u32) -> Vec<String> {
     let all = [
-        ("backup_saved",       smtp::Event::BackupSaved),
-        ("s3_upload_ok",       smtp::Event::S3UploadOk),
-        ("s3_upload_failed",   smtp::Event::S3UploadFailed),
-        ("restore_ok",         smtp::Event::RestoreOk),
-        ("restore_failed",     smtp::Event::RestoreFailed),
-        ("pruned",             smtp::Event::Pruned),
-        ("cert_renewed_ok",    smtp::Event::CertRenewedOk),
-        ("cert_renew_failed",  smtp::Event::CertRenewFailed),
+        ("backup_saved", smtp::Event::BackupSaved),
+        ("s3_upload_ok", smtp::Event::S3UploadOk),
+        ("s3_upload_failed", smtp::Event::S3UploadFailed),
+        ("restore_ok", smtp::Event::RestoreOk),
+        ("restore_failed", smtp::Event::RestoreFailed),
+        ("pruned", smtp::Event::Pruned),
+        ("cert_renewed_ok", smtp::Event::CertRenewedOk),
+        ("cert_renew_failed", smtp::Event::CertRenewFailed),
         ("cert_expiring_soon", smtp::Event::CertExpiringSoon),
     ];
     all.iter()
@@ -201,7 +218,8 @@ impl From<smtp::SmtpConfig> for SmtpConfigResponse {
                 smtp::TlsMode::None => "none",
                 smtp::TlsMode::StartTls => "starttls",
                 smtp::TlsMode::ImplicitTls => "implicit",
-            }.into(),
+            }
+            .into(),
             username: c.username,
             has_password: c.password.is_some(),
             from_address: c.from_address,
@@ -237,7 +255,9 @@ pub struct SmtpConfigRequest {
     pub enabled_events: Vec<String>,
 }
 
-fn default_port() -> u16 { 587 }
+fn default_port() -> u16 {
+    587
+}
 
 fn tls_from_str(s: &str) -> smtp::TlsMode {
     match s.to_ascii_lowercase().as_str() {
@@ -251,14 +271,14 @@ fn events_to_mask(events: &[String]) -> u32 {
     let mut mask = 0u32;
     for e in events {
         mask |= match e.as_str() {
-            "backup_saved"       => 1 << 0,
-            "s3_upload_ok"       => 1 << 1,
-            "s3_upload_failed"   => 1 << 2,
-            "restore_ok"         => 1 << 3,
-            "restore_failed"     => 1 << 4,
-            "pruned"             => 1 << 5,
-            "cert_renewed_ok"    => 1 << 6,
-            "cert_renew_failed"  => 1 << 7,
+            "backup_saved" => 1 << 0,
+            "s3_upload_ok" => 1 << 1,
+            "s3_upload_failed" => 1 << 2,
+            "restore_ok" => 1 << 3,
+            "restore_failed" => 1 << 4,
+            "pruned" => 1 << 5,
+            "cert_renewed_ok" => 1 << 6,
+            "cert_renew_failed" => 1 << 7,
             "cert_expiring_soon" => 1 << 8,
             _ => 0,
         };
@@ -274,7 +294,11 @@ fn request_to_smtp(req: SmtpConfigRequest) -> smtp::SmtpConfig {
         tls: tls_from_str(&req.tls),
         username: req.username,
         password: req.password,
-        from_address: if req.from_address.is_empty() { "aifw@localhost".into() } else { req.from_address },
+        from_address: if req.from_address.is_empty() {
+            "aifw@localhost".into()
+        } else {
+            req.from_address
+        },
         recipients: req.recipients,
         enabled_events: events_to_mask(&req.enabled_events),
     }
@@ -287,13 +311,21 @@ pub async fn put_smtp_config(
     let cfg = request_to_smtp(req);
     if cfg.enabled {
         if cfg.host.trim().is_empty() {
-            return Err((StatusCode::BAD_REQUEST, "host is required when enabled".into()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "host is required when enabled".into(),
+            ));
         }
         if cfg.recipients.trim().is_empty() {
-            return Err((StatusCode::BAD_REQUEST, "at least one recipient is required".into()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "at least one recipient is required".into(),
+            ));
         }
     }
-    smtp::save(&state.pool, &cfg).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    smtp::save(&state.pool, &cfg)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(smtp::load(&state.pool).await.into()))
 }
 
@@ -319,8 +351,14 @@ pub async fn test_smtp(
         _ => smtp::load(&state.pool).await,
     };
     match smtp::test_send(&cfg).await {
-        Ok(_) => Json(TestResponse { ok: true, message: "test email sent".into() }),
-        Err(e) => Json(TestResponse { ok: false, message: e }),
+        Ok(_) => Json(TestResponse {
+            ok: true,
+            message: "test email sent".into(),
+        }),
+        Err(e) => Json(TestResponse {
+            ok: false,
+            message: e,
+        }),
     }
 }
 

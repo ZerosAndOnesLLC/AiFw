@@ -22,18 +22,20 @@ impl<'de> Deserialize<'de> for Address {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let v = serde_json::Value::deserialize(deserializer)?;
         match v {
-            serde_json::Value::String(s) => {
-                Address::parse(&s).map_err(serde::de::Error::custom)
-            }
+            serde_json::Value::String(s) => Address::parse(&s).map_err(serde::de::Error::custom),
             // Legacy: {"Network":["10.0.0.0",8]} / {"Single":"1.2.3.4"} / "Any"
             serde_json::Value::Object(ref map) => {
                 if let Some(arr) = map.get("Network").and_then(|v| v.as_array())
-                    && arr.len() == 2 {
-                        let ip: IpAddr = arr[0].as_str().unwrap_or("0.0.0.0").parse()
-                            .map_err(serde::de::Error::custom)?;
-                        let prefix = arr[1].as_u64().unwrap_or(32) as u8;
-                        return Ok(Address::Network(ip, prefix));
-                    }
+                    && arr.len() == 2
+                {
+                    let ip: IpAddr = arr[0]
+                        .as_str()
+                        .unwrap_or("0.0.0.0")
+                        .parse()
+                        .map_err(serde::de::Error::custom)?;
+                    let prefix = arr[1].as_u64().unwrap_or(32) as u8;
+                    return Ok(Address::Network(ip, prefix));
+                }
                 if let Some(s) = map.get("Single").and_then(|v| v.as_str()) {
                     let ip: IpAddr = s.parse().map_err(serde::de::Error::custom)?;
                     return Ok(Address::Single(ip));

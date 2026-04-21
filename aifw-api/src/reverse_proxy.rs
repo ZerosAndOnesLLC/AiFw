@@ -1,4 +1,8 @@
-use axum::{extract::{Path, Query, State}, http::StatusCode, Json};
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -334,16 +338,19 @@ fn default_load_balancer() -> String {
 // ============================================================
 
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_config (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_entrypoints (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -352,11 +359,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_http_routers (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -369,11 +378,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_http_services (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -382,11 +393,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_http_middlewares (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -395,11 +408,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_tcp_routers (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -411,11 +426,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_tcp_services (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -424,11 +441,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_udp_routers (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -439,11 +458,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_udp_services (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -452,11 +473,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_tls_certs (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -465,29 +488,34 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             stores_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_tls_options (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
             config_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS tc_cert_resolvers (
             id TEXT PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
             config_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-    "#)
+    "#,
+    )
     .execute(pool)
     .await?;
 
@@ -776,7 +804,10 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
         let mut access_log = serde_json::Map::new();
         access_log.insert("filePath".to_string(), json!(global.access_log_path));
         access_log.insert("format".to_string(), json!(global.access_log_format));
-        root.insert("accessLog".to_string(), serde_json::Value::Object(access_log));
+        root.insert(
+            "accessLog".to_string(),
+            serde_json::Value::Object(access_log),
+        );
     }
 
     // --- Global: api ---
@@ -793,14 +824,18 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
         prometheus.insert("entryPoint".to_string(), json!("metrics"));
         prometheus.insert("addEntryPointsLabels".to_string(), json!(true));
         prometheus.insert("addServicesLabels".to_string(), json!(true));
-        metrics.insert("prometheus".to_string(), serde_json::Value::Object(prometheus));
+        metrics.insert(
+            "prometheus".to_string(),
+            serde_json::Value::Object(prometheus),
+        );
         root.insert("metrics".to_string(), serde_json::Value::Object(metrics));
     }
 
     // --- Entry points ---
     let mut eps = serde_json::Map::new();
     for ep in &entrypoints {
-        let mut ep_val: serde_json::Value = serde_json::from_str(&ep.config_json).unwrap_or(json!({}));
+        let mut ep_val: serde_json::Value =
+            serde_json::from_str(&ep.config_json).unwrap_or(json!({}));
         ep_val["address"] = json!(ep.address);
         eps.insert(ep.name.clone(), ep_val);
     }
@@ -836,9 +871,10 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
             rv["priority"] = json!(r.priority);
         }
         if let Some(tls) = &r.tls_json
-            && let Ok(tls_val) = serde_json::from_str::<serde_json::Value>(tls) {
-                rv["tls"] = tls_val;
-            }
+            && let Ok(tls_val) = serde_json::from_str::<serde_json::Value>(tls)
+        {
+            rv["tls"] = tls_val;
+        }
         routers.insert(r.name.clone(), rv);
     }
     if !routers.is_empty() {
@@ -891,13 +927,17 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
             rv["priority"] = json!(r.priority);
         }
         if let Some(tls) = &r.tls_json
-            && let Ok(tls_val) = serde_json::from_str::<serde_json::Value>(tls) {
-                rv["tls"] = tls_val;
-            }
+            && let Ok(tls_val) = serde_json::from_str::<serde_json::Value>(tls)
+        {
+            rv["tls"] = tls_val;
+        }
         tcp_router_map.insert(r.name.clone(), rv);
     }
     if !tcp_router_map.is_empty() {
-        tcp.insert("routers".to_string(), serde_json::Value::Object(tcp_router_map));
+        tcp.insert(
+            "routers".to_string(),
+            serde_json::Value::Object(tcp_router_map),
+        );
     }
 
     // TCP services
@@ -909,7 +949,10 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
         tcp_service_map.insert(s.name.clone(), serde_json::Value::Object(sv));
     }
     if !tcp_service_map.is_empty() {
-        tcp.insert("services".to_string(), serde_json::Value::Object(tcp_service_map));
+        tcp.insert(
+            "services".to_string(),
+            serde_json::Value::Object(tcp_service_map),
+        );
     }
 
     if !tcp.is_empty() {
@@ -936,7 +979,10 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
         udp_router_map.insert(r.name.clone(), rv);
     }
     if !udp_router_map.is_empty() {
-        udp.insert("routers".to_string(), serde_json::Value::Object(udp_router_map));
+        udp.insert(
+            "routers".to_string(),
+            serde_json::Value::Object(udp_router_map),
+        );
     }
 
     // UDP services
@@ -948,7 +994,10 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
         udp_service_map.insert(s.name.clone(), serde_json::Value::Object(sv));
     }
     if !udp_service_map.is_empty() {
-        udp.insert("services".to_string(), serde_json::Value::Object(udp_service_map));
+        udp.insert(
+            "services".to_string(),
+            serde_json::Value::Object(udp_service_map),
+        );
     }
 
     if !udp.is_empty() {
@@ -1002,8 +1051,8 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
         );
     }
 
-    let yaml =
-        serde_yaml_ng::to_string(&serde_json::Value::Object(root)).unwrap_or_else(|_| "{}".to_string());
+    let yaml = serde_yaml_ng::to_string(&serde_json::Value::Object(root))
+        .unwrap_or_else(|_| "{}".to_string());
 
     Ok(yaml)
 }
@@ -1024,7 +1073,12 @@ async fn run_trafficcop_service(action: &str) -> Json<MessageResponse> {
             let msg = if o.status.success() {
                 format!("TrafficCop {}: {}", action, stdout.trim())
             } else {
-                format!("TrafficCop {} failed: {} {}", action, stdout.trim(), stderr.trim())
+                format!(
+                    "TrafficCop {} failed: {} {}",
+                    action,
+                    stdout.trim(),
+                    stderr.trim()
+                )
             };
             Json(MessageResponse { message: msg })
         }
@@ -1050,57 +1104,55 @@ pub async fn rp_status(
         .output()
         .await
         .ok()
-        .and_then(|o| o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string()))
+        .and_then(|o| {
+            o.status
+                .success()
+                .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
         .and_then(|s| s.split_whitespace().nth(1).map(str::to_string))
         .unwrap_or_else(|| "unknown".to_string());
 
-    let entrypoints = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM tc_entrypoints WHERE enabled = 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map(|r| r.0 as u32)
-    .unwrap_or(0);
+    let entrypoints =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM tc_entrypoints WHERE enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .map(|r| r.0 as u32)
+            .unwrap_or(0);
 
-    let http_routers = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM tc_http_routers WHERE enabled = 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map(|r| r.0 as u32)
-    .unwrap_or(0);
+    let http_routers =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM tc_http_routers WHERE enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .map(|r| r.0 as u32)
+            .unwrap_or(0);
 
-    let http_services = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM tc_http_services WHERE enabled = 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map(|r| r.0 as u32)
-    .unwrap_or(0);
+    let http_services =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM tc_http_services WHERE enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .map(|r| r.0 as u32)
+            .unwrap_or(0);
 
-    let http_middlewares = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM tc_http_middlewares WHERE enabled = 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map(|r| r.0 as u32)
-    .unwrap_or(0);
+    let http_middlewares =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM tc_http_middlewares WHERE enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .map(|r| r.0 as u32)
+            .unwrap_or(0);
 
-    let tcp_routers = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM tc_tcp_routers WHERE enabled = 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map(|r| r.0 as u32)
-    .unwrap_or(0);
+    let tcp_routers =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM tc_tcp_routers WHERE enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .map(|r| r.0 as u32)
+            .unwrap_or(0);
 
-    let udp_routers = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM tc_udp_routers WHERE enabled = 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .map(|r| r.0 as u32)
-    .unwrap_or(0);
+    let udp_routers =
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM tc_udp_routers WHERE enabled = 1")
+            .fetch_one(&state.pool)
+            .await
+            .map(|r| r.0 as u32)
+            .unwrap_or(0);
 
     Ok(Json(ReverseProxyStatus {
         running,
@@ -1130,9 +1182,7 @@ pub async fn rp_restart() -> Result<Json<MessageResponse>, StatusCode> {
 // Config handlers
 // ============================================================
 
-pub async fn get_config(
-    State(state): State<AppState>,
-) -> Result<Json<GlobalConfig>, StatusCode> {
+pub async fn get_config(State(state): State<AppState>) -> Result<Json<GlobalConfig>, StatusCode> {
     Ok(Json(load_global_config(&state.pool).await))
 }
 
@@ -1140,14 +1190,46 @@ pub async fn update_config(
     State(state): State<AppState>,
     Json(config): Json<GlobalConfig>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    save_config_key(&state.pool, "enabled", if config.enabled { "true" } else { "false" }).await;
+    save_config_key(
+        &state.pool,
+        "enabled",
+        if config.enabled { "true" } else { "false" },
+    )
+    .await;
     save_config_key(&state.pool, "log_level", &config.log_level).await;
-    save_config_key(&state.pool, "access_log_enabled", if config.access_log_enabled { "true" } else { "false" }).await;
+    save_config_key(
+        &state.pool,
+        "access_log_enabled",
+        if config.access_log_enabled {
+            "true"
+        } else {
+            "false"
+        },
+    )
+    .await;
     save_config_key(&state.pool, "access_log_path", &config.access_log_path).await;
     save_config_key(&state.pool, "access_log_format", &config.access_log_format).await;
-    save_config_key(&state.pool, "metrics_enabled", if config.metrics_enabled { "true" } else { "false" }).await;
+    save_config_key(
+        &state.pool,
+        "metrics_enabled",
+        if config.metrics_enabled {
+            "true"
+        } else {
+            "false"
+        },
+    )
+    .await;
     save_config_key(&state.pool, "metrics_address", &config.metrics_address).await;
-    save_config_key(&state.pool, "api_dashboard", if config.api_dashboard { "true" } else { "false" }).await;
+    save_config_key(
+        &state.pool,
+        "api_dashboard",
+        if config.api_dashboard {
+            "true"
+        } else {
+            "false"
+        },
+    )
+    .await;
     Ok(Json(MessageResponse {
         message: "TrafficCop config updated".to_string(),
     }))
@@ -1246,12 +1328,13 @@ pub async fn validate_config(
 // Logs handler
 // ============================================================
 
-pub async fn rp_logs(
-    Query(params): Query<LogParams>,
-) -> Result<Json<Vec<String>>, StatusCode> {
+pub async fn rp_logs(Query(params): Query<LogParams>) -> Result<Json<Vec<String>>, StatusCode> {
     let lines_param = params.lines.unwrap_or(200);
     let search = params.search.clone().unwrap_or_default();
-    let log_type = params.log_type.clone().unwrap_or_else(|| "access".to_string());
+    let log_type = params
+        .log_type
+        .clone()
+        .unwrap_or_else(|| "access".to_string());
 
     let log_path = if log_type == "server" {
         "/var/log/trafficcop/trafficcop.log"
@@ -1261,10 +1344,15 @@ pub async fn rp_logs(
 
     let log_lines = crate::log_tail::tail_filtered(
         &[log_path],
-        if search.is_empty() { None } else { Some(&search) },
+        if search.is_empty() {
+            None
+        } else {
+            Some(&search)
+        },
         5000,
         lines_param,
-    ).await;
+    )
+    .await;
 
     Ok(Json(log_lines))
 }
@@ -1285,14 +1373,16 @@ pub async fn list_entrypoints(
 
     let items: Vec<EntryPointRow> = rows
         .into_iter()
-        .map(|(id, name, address, config_json, enabled, created_at)| EntryPointRow {
-            id,
-            name,
-            address,
-            config_json,
-            enabled,
-            created_at,
-        })
+        .map(
+            |(id, name, address, config_json, enabled, created_at)| EntryPointRow {
+                id,
+                name,
+                address,
+                config_json,
+                enabled,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -1389,18 +1479,31 @@ pub async fn list_http_routers(
 
     let items: Vec<HttpRouterRow> = rows
         .into_iter()
-        .map(|(id, name, rule, service, entry_points, middlewares, priority, tls_json, enabled, created_at)| HttpRouterRow {
-            id,
-            name,
-            rule,
-            service,
-            entry_points,
-            middlewares,
-            priority,
-            tls_json,
-            enabled,
-            created_at,
-        })
+        .map(
+            |(
+                id,
+                name,
+                rule,
+                service,
+                entry_points,
+                middlewares,
+                priority,
+                tls_json,
+                enabled,
+                created_at,
+            )| HttpRouterRow {
+                id,
+                name,
+                rule,
+                service,
+                entry_points,
+                middlewares,
+                priority,
+                tls_json,
+                enabled,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -1509,14 +1612,16 @@ pub async fn list_http_services(
 
     let items: Vec<HttpServiceRow> = rows
         .into_iter()
-        .map(|(id, name, service_type, config_json, enabled, created_at)| HttpServiceRow {
-            id,
-            name,
-            service_type,
-            config_json,
-            enabled,
-            created_at,
-        })
+        .map(
+            |(id, name, service_type, config_json, enabled, created_at)| HttpServiceRow {
+                id,
+                name,
+                service_type,
+                config_json,
+                enabled,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -1613,14 +1718,16 @@ pub async fn list_http_middlewares(
 
     let items: Vec<HttpMiddlewareRow> = rows
         .into_iter()
-        .map(|(id, name, middleware_type, config_json, enabled, created_at)| HttpMiddlewareRow {
-            id,
-            name,
-            middleware_type,
-            config_json,
-            enabled,
-            created_at,
-        })
+        .map(
+            |(id, name, middleware_type, config_json, enabled, created_at)| HttpMiddlewareRow {
+                id,
+                name,
+                middleware_type,
+                config_json,
+                enabled,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -1717,17 +1824,21 @@ pub async fn list_tcp_routers(
 
     let items: Vec<TcpRouterRow> = rows
         .into_iter()
-        .map(|(id, name, rule, service, entry_points, priority, tls_json, enabled, created_at)| TcpRouterRow {
-            id,
-            name,
-            rule,
-            service,
-            entry_points,
-            priority,
-            tls_json,
-            enabled,
-            created_at,
-        })
+        .map(
+            |(id, name, rule, service, entry_points, priority, tls_json, enabled, created_at)| {
+                TcpRouterRow {
+                    id,
+                    name,
+                    rule,
+                    service,
+                    entry_points,
+                    priority,
+                    tls_json,
+                    enabled,
+                    created_at,
+                }
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -1833,14 +1944,16 @@ pub async fn list_tcp_services(
 
     let items: Vec<TcpServiceRow> = rows
         .into_iter()
-        .map(|(id, name, service_type, config_json, enabled, created_at)| TcpServiceRow {
-            id,
-            name,
-            service_type,
-            config_json,
-            enabled,
-            created_at,
-        })
+        .map(
+            |(id, name, service_type, config_json, enabled, created_at)| TcpServiceRow {
+                id,
+                name,
+                service_type,
+                config_json,
+                enabled,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -1937,16 +2050,18 @@ pub async fn list_udp_routers(
 
     let items: Vec<UdpRouterRow> = rows
         .into_iter()
-        .map(|(id, name, rule, service, entry_points, priority, enabled, created_at)| UdpRouterRow {
-            id,
-            name,
-            rule,
-            service,
-            entry_points,
-            priority,
-            enabled,
-            created_at,
-        })
+        .map(
+            |(id, name, rule, service, entry_points, priority, enabled, created_at)| UdpRouterRow {
+                id,
+                name,
+                rule,
+                service,
+                entry_points,
+                priority,
+                enabled,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -2049,14 +2164,16 @@ pub async fn list_udp_services(
 
     let items: Vec<UdpServiceRow> = rows
         .into_iter()
-        .map(|(id, name, service_type, config_json, enabled, created_at)| UdpServiceRow {
-            id,
-            name,
-            service_type,
-            config_json,
-            enabled,
-            created_at,
-        })
+        .map(
+            |(id, name, service_type, config_json, enabled, created_at)| UdpServiceRow {
+                id,
+                name,
+                service_type,
+                config_json,
+                enabled,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -2153,14 +2270,16 @@ pub async fn list_tls_certs(
 
     let items: Vec<TlsCertRow> = rows
         .into_iter()
-        .map(|(id, name, cert_file, key_file, stores_json, created_at)| TlsCertRow {
-            id,
-            name,
-            cert_file,
-            key_file,
-            stores_json,
-            created_at,
-        })
+        .map(
+            |(id, name, cert_file, key_file, stores_json, created_at)| TlsCertRow {
+                id,
+                name,
+                cert_file,
+                key_file,
+                stores_json,
+                created_at,
+            },
+        )
         .collect();
 
     Ok(Json(items))
@@ -2299,15 +2418,13 @@ pub async fn update_tls_option(
     Path(id): Path<String>,
     Json(req): Json<TlsOptionsReq>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let result = sqlx::query(
-        "UPDATE tc_tls_options SET name=?1, config_json=?2 WHERE id=?3",
-    )
-    .bind(&req.name)
-    .bind(&req.config_json)
-    .bind(&id)
-    .execute(&state.pool)
-    .await
-    .map_err(|_| internal())?;
+    let result = sqlx::query("UPDATE tc_tls_options SET name=?1, config_json=?2 WHERE id=?3")
+        .bind(&req.name)
+        .bind(&req.config_json)
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| internal())?;
 
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
@@ -2395,15 +2512,13 @@ pub async fn update_cert_resolver(
     Path(id): Path<String>,
     Json(req): Json<CertResolverReq>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let result = sqlx::query(
-        "UPDATE tc_cert_resolvers SET name=?1, config_json=?2 WHERE id=?3",
-    )
-    .bind(&req.name)
-    .bind(&req.config_json)
-    .bind(&id)
-    .execute(&state.pool)
-    .await
-    .map_err(|_| internal())?;
+    let result = sqlx::query("UPDATE tc_cert_resolvers SET name=?1, config_json=?2 WHERE id=?3")
+        .bind(&req.name)
+        .bind(&req.config_json)
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| internal())?;
 
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);

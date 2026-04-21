@@ -176,8 +176,16 @@ mod tests {
                 has_rss: true,
                 rss_queues: 4,
             }],
-            disk: DiskInfo { is_ssd: true, root_device: "/dev/nvd0".to_string() },
-            crypto: CryptoInfo { has_aesni: aesni, has_sha_ni: false, has_qat: false, has_arm_crypto: false },
+            disk: DiskInfo {
+                is_ssd: true,
+                root_device: "/dev/nvd0".to_string(),
+            },
+            crypto: CryptoInfo {
+                has_aesni: aesni,
+                has_sha_ni: false,
+                has_qat: false,
+                has_arm_crypto: false,
+            },
         }
     }
 
@@ -200,16 +208,32 @@ mod tests {
     fn test_recommendations_include_forwarding() {
         let profile = mock_profile(1, 1024, false);
         let items = tuning::generate_recommendations(&profile);
-        assert!(items.iter().any(|i| i.key == "net.inet.ip.forwarding" && i.value == "1"));
-        assert!(items.iter().any(|i| i.key == "net.inet.tcp.syncookies" && i.value == "1"));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key == "net.inet.ip.forwarding" && i.value == "1")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key == "net.inet.tcp.syncookies" && i.value == "1")
+        );
     }
 
     #[test]
     fn test_recommendations_aesni_detected() {
         let profile = mock_profile(4, 8192, true);
         let items = tuning::generate_recommendations(&profile);
-        assert!(items.iter().any(|i| i.key == "aesni" && i.target == tuning::TuningTarget::KernelModule));
-        assert!(items.iter().any(|i| i.key == "aesni_load" && i.value == "YES"));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key == "aesni" && i.target == tuning::TuningTarget::KernelModule)
+        );
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key == "aesni_load" && i.value == "YES")
+        );
     }
 
     #[test]
@@ -223,8 +247,16 @@ mod tests {
     fn test_recommendations_multicore_netisr() {
         let profile = mock_profile(8, 16384, true);
         let items = tuning::generate_recommendations(&profile);
-        assert!(items.iter().any(|i| i.key == "net.isr.dispatch" && i.value == "deferred"));
-        assert!(items.iter().any(|i| i.key == "net.isr.maxthreads" && i.value == "8"));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key == "net.isr.dispatch" && i.value == "deferred")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key == "net.isr.maxthreads" && i.value == "8")
+        );
     }
 
     #[test]
@@ -239,15 +271,25 @@ mod tests {
         let profile = mock_profile(2, 4096, false);
         let items = tuning::generate_recommendations(&profile);
         // TSO and LRO should be disabled for firewall
-        assert!(items.iter().any(|i| i.key.contains("tso") && i.value.contains("-tso")));
-        assert!(items.iter().any(|i| i.key.contains("lro") && i.value.contains("-lro")));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key.contains("tso") && i.value.contains("-tso"))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key.contains("lro") && i.value.contains("-lro"))
+        );
     }
 
     #[test]
     fn test_recommendations_ht_disabled_by_default() {
         let profile = mock_profile(4, 8192, false); // has_hyperthreading = true (threads > cores)
         let items = tuning::generate_recommendations(&profile);
-        let ht = items.iter().find(|i| i.key == "machdep.hyperthreading_allowed");
+        let ht = items
+            .iter()
+            .find(|i| i.key == "machdep.hyperthreading_allowed");
         assert!(ht.is_some());
         assert!(!ht.unwrap().enabled); // disabled by default — user must opt in
     }
@@ -293,6 +335,10 @@ mod tests {
     fn test_ssd_zfs_trim() {
         let profile = mock_profile(1, 1024, false);
         let items = tuning::generate_recommendations(&profile);
-        assert!(items.iter().any(|i| i.key == "vfs.zfs.trim.enabled" && i.value == "1"));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key == "vfs.zfs.trim.enabled" && i.value == "1")
+        );
     }
 }

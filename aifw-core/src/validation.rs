@@ -52,7 +52,8 @@ pub fn validate_interface_name(name: &str) -> Result<()> {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
     {
         return Err(AifwError::Validation(
-            "interface name contains invalid characters (allowed: alphanumeric, _, -, .)".to_string(),
+            "interface name contains invalid characters (allowed: alphanumeric, _, -, .)"
+                .to_string(),
         ));
     }
     Ok(())

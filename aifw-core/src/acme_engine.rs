@@ -16,10 +16,8 @@
 //! Renewal calls the same `issue()` — ACME orders are independent; renewing
 //! is just "issue a new cert for the same identifiers".
 
-use crate::acme::{
-    self, AcmeAccount, AcmeCert, CertStatus, ChallengeType,
-};
-use crate::acme_dns::{build_solver, DnsSolver};
+use crate::acme::{self, AcmeAccount, AcmeCert, CertStatus, ChallengeType};
+use crate::acme_dns::{DnsSolver, build_solver};
 use chrono::{DateTime, Utc};
 use instant_acme::{
     Account, AuthorizationStatus, ChallengeType as InstantChallengeType, Identifier,
@@ -44,9 +42,13 @@ pub struct IssueOutcome {
 pub async fn issue(pool: &SqlitePool, cert_id: i64) -> IssueOutcome {
     let mut cert = match acme::load_cert(pool, cert_id).await {
         Some(c) => c,
-        None => return IssueOutcome {
-            ok: false, message: format!("cert {cert_id} not found"), expires_at: None,
-        },
+        None => {
+            return IssueOutcome {
+                ok: false,
+                message: format!("cert {cert_id} not found"),
+                expires_at: None,
+            };
+        }
     };
     mark_status(pool, cert_id, CertStatus::Renewing, None).await;
 
@@ -55,12 +57,20 @@ pub async fn issue(pool: &SqlitePool, cert_id: i64) -> IssueOutcome {
             // Fan out to export targets — best effort, individual failures
             // are recorded on the target row but don't fail the issue.
             crate::acme_export::publish_all(pool, cert_id).await;
-            IssueOutcome { ok: true, message: format!("issued, expires {expires_at}"), expires_at: Some(expires_at) }
+            IssueOutcome {
+                ok: true,
+                message: format!("issued, expires {expires_at}"),
+                expires_at: Some(expires_at),
+            }
         }
         Err(e) => {
             tracing::warn!(cert_id, error = %e, "ACME issue failed");
             mark_status(pool, cert_id, CertStatus::Failed, Some(&e)).await;
-            IssueOutcome { ok: false, message: e, expires_at: None }
+            IssueOutcome {
+                ok: false,
+                message: e,
+                expires_at: None,
+            }
         }
     }
 }
@@ -77,16 +87,27 @@ pub async fn renew_due(pool: &SqlitePool) -> Vec<(i64, IssueOutcome)> {
             crate::smtp_notify::send_event(
                 pool,
                 crate::smtp_notify::Event::CertRenewedOk,
-                &format!("Cert {} (id {}) renewed; expires {}.",
-                    c.common_name, c.id,
-                    outcome.expires_at.map(|t| t.to_rfc3339()).unwrap_or_default()),
-            ).await;
+                &format!(
+                    "Cert {} (id {}) renewed; expires {}.",
+                    c.common_name,
+                    c.id,
+                    outcome
+                        .expires_at
+                        .map(|t| t.to_rfc3339())
+                        .unwrap_or_default()
+                ),
+            )
+            .await;
         } else {
             crate::smtp_notify::send_event(
                 pool,
                 crate::smtp_notify::Event::CertRenewFailed,
-                &format!("Cert {} (id {}) renewal failed: {}", c.common_name, c.id, outcome.message),
-            ).await;
+                &format!(
+                    "Cert {} (id {}) renewal failed: {}",
+                    c.common_name, c.id, outcome.message
+                ),
+            )
+            .await;
         }
         out.push((c.id, outcome));
     }
@@ -98,21 +119,32 @@ pub async fn renew_due(pool: &SqlitePool) -> Vec<(i64, IssueOutcome)> {
 /// operator has visibility before auto-renewal kicks in (or in case of a
 /// manual cert that won't auto-renew).
 pub async fn warn_expiring(pool: &SqlitePool) {
-    use crate::smtp_notify::{send_event, Event};
+    use crate::smtp_notify::{Event, send_event};
     const WARN_DAYS: i64 = 14;
     for c in acme::load_all_certs(pool).await {
-        let Some(days) = c.days_until_expiry() else { continue };
-        if days > WARN_DAYS || days < 0 { continue; }
+        let Some(days) = c.days_until_expiry() else {
+            continue;
+        };
+        if days > WARN_DAYS || days < 0 {
+            continue;
+        }
         // Suppress noise: only warn if last attempt > 23h ago (or never).
-        let too_recent = c.last_renew_attempt
+        let too_recent = c
+            .last_renew_attempt
             .map(|t| (Utc::now() - t).num_hours() < 23)
             .unwrap_or(false);
-        if too_recent { continue; }
+        if too_recent {
+            continue;
+        }
         send_event(
             pool,
             Event::CertExpiringSoon,
-            &format!("Cert {} (id {}) expires in {} days.", c.common_name, c.id, days),
-        ).await;
+            &format!(
+                "Cert {} (id {}) expires in {} days.",
+                c.common_name, c.id, days
+            ),
+        )
+        .await;
     }
 }
 
@@ -143,7 +175,11 @@ pub fn spawn_scheduler(pool: SqlitePool) {
 
 /// Get-or-create the singleton account row for the configured directory URL
 /// + email, registering with the CA on first use.
-pub async fn ensure_account(pool: &SqlitePool, directory_url: &str, contact_email: &str) -> Result<(AcmeAccount, Account), String> {
+pub async fn ensure_account(
+    pool: &SqlitePool,
+    directory_url: &str,
+    contact_email: &str,
+) -> Result<(AcmeAccount, Account), String> {
     let row = acme::load_default_account(pool).await;
     if let Some(row) = row {
         if let Some(ref pem) = row.key_pem {
@@ -152,7 +188,8 @@ pub async fn ensure_account(pool: &SqlitePool, directory_url: &str, contact_emai
             // private key + URLs in one blob).
             let creds: instant_acme::AccountCredentials =
                 serde_json::from_str(pem).map_err(|e| format!("acct creds parse: {e}"))?;
-            let account = Account::from_credentials(creds).await
+            let account = Account::from_credentials(creds)
+                .await
                 .map_err(|e| format!("acct from creds: {e}"))?;
             return Ok((row, account));
         }
@@ -165,7 +202,8 @@ pub async fn ensure_account(pool: &SqlitePool, directory_url: &str, contact_emai
         terms_of_service_agreed: true,
         only_return_existing: false,
     };
-    let (account, creds) = Account::create(&new_account, directory_url, None).await
+    let (account, creds) = Account::create(&new_account, directory_url, None)
+        .await
         .map_err(|e| format!("ACME account create: {e}"))?;
     let creds_json = serde_json::to_string(&creds).map_err(|e| format!("creds serialize: {e}"))?;
 
@@ -196,16 +234,20 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
 
     // The account row defaults to Let's Encrypt production with the email
     // from the cert's CN domain admin if no explicit account is configured.
-    let acct = acme::load_default_account(pool).await
-        .ok_or_else(|| "no ACME account configured — set one in Settings → ACME first".to_string())?;
-    let (_acct_row, account) = ensure_account(pool, &acct.directory_url, &acct.contact_email).await?;
+    let acct = acme::load_default_account(pool).await.ok_or_else(|| {
+        "no ACME account configured — set one in Settings → ACME first".to_string()
+    })?;
+    let (_acct_row, account) =
+        ensure_account(pool, &acct.directory_url, &acct.contact_email).await?;
 
     // Build the identifier list — CN + every SAN, deduped, lowercased.
     let mut identifiers: Vec<Identifier> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for n in std::iter::once(cert.common_name.clone()).chain(cert.sans.iter().cloned()) {
         let n = n.trim().to_ascii_lowercase();
-        if n.is_empty() || !seen.insert(n.clone()) { continue; }
+        if n.is_empty() || !seen.insert(n.clone()) {
+            continue;
+        }
         acme::validate_dns_name(&n)?;
         identifiers.push(Identifier::Dns(n));
     }
@@ -214,15 +256,19 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
     }
 
     // Pick the DNS provider.
-    let provider_id = cert.dns_provider_id
+    let provider_id = cert
+        .dns_provider_id
         .ok_or_else(|| "DNS-01 cert has no dns_provider_id set".to_string())?;
-    let provider = acme::load_provider(pool, provider_id).await
+    let provider = acme::load_provider(pool, provider_id)
+        .await
         .ok_or_else(|| format!("dns provider {provider_id} not found"))?;
     let solver = build_solver(&provider)?;
 
     // Place the order.
     let mut order: Order = account
-        .new_order(&NewOrder { identifiers: &identifiers })
+        .new_order(&NewOrder {
+            identifiers: &identifiers,
+        })
         .await
         .map_err(|e| format!("new_order: {e}"))?;
 
@@ -244,15 +290,24 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
     // Generate key + CSR locally. rcgen lets the operator avoid trusting any
     // cloud-side key generation; the private key never leaves the appliance.
     let mut params = rcgen::CertificateParams::new(
-        identifiers.iter().map(|Identifier::Dns(d)| d.clone()).collect::<Vec<_>>()
-    ).map_err(|e| format!("rcgen params: {e}"))?;
+        identifiers
+            .iter()
+            .map(|Identifier::Dns(d)| d.clone())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| format!("rcgen params: {e}"))?;
     params.distinguished_name = rcgen::DistinguishedName::new();
-    params.distinguished_name.push(rcgen::DnType::CommonName, cert.common_name.clone());
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, cert.common_name.clone());
     let key = rcgen::KeyPair::generate().map_err(|e| format!("keygen: {e}"))?;
-    let csr = params.serialize_request(&key)
+    let csr = params
+        .serialize_request(&key)
         .map_err(|e| format!("csr build: {e}"))?;
 
-    order.finalize(csr.der()).await
+    order
+        .finalize(csr.der())
+        .await
         .map_err(|e| format!("finalize: {e}"))?;
 
     // Wait for the cert to be ready and download it.
@@ -270,7 +325,8 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
     let issued_at = Utc::now();
 
     // Persist everything atomically.
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
         UPDATE acme_cert
            SET status = ?,
                cert_pem = ?,
@@ -281,7 +337,8 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
                last_renew_attempt = ?,
                last_renew_error = NULL
          WHERE id = ?
-    "#)
+    "#,
+    )
     .bind(CertStatus::Active.as_str())
     .bind(&leaf_pem)
     .bind(&chain_pem)
@@ -290,7 +347,8 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
     .bind(expires_at.to_rfc3339())
     .bind(Utc::now().to_rfc3339())
     .bind(cert.id)
-    .execute(pool).await
+    .execute(pool)
+    .await
     .map_err(|e| format!("persist cert: {e}"))?;
 
     cert.status = CertStatus::Active;
@@ -307,7 +365,9 @@ async fn solve_all_authorizations(
     solver: &dyn DnsSolver,
     planted: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
-    let authorizations = order.authorizations().await
+    let authorizations = order
+        .authorizations()
+        .await
         .map_err(|e| format!("authorizations: {e}"))?;
 
     // Plant every TXT first, then ask the CA to validate them all in
@@ -315,8 +375,12 @@ async fn solve_all_authorizations(
     // delay across SANs.
     let mut to_signal: Vec<String> = Vec::new();
     for auth in &authorizations {
-        if !matches!(auth.status, AuthorizationStatus::Pending) { continue; }
-        let challenge = auth.challenges.iter()
+        if !matches!(auth.status, AuthorizationStatus::Pending) {
+            continue;
+        }
+        let challenge = auth
+            .challenges
+            .iter()
             .find(|c| c.r#type == InstantChallengeType::Dns01)
             .ok_or_else(|| format!("no DNS-01 challenge for {:?}", auth.identifier))?;
         let key_auth: KeyAuthorization = order.key_authorization(challenge);
@@ -328,7 +392,9 @@ async fn solve_all_authorizations(
         let base = host.strip_prefix("*.").unwrap_or(&host);
         let fqdn = format!("_acme-challenge.{base}");
 
-        solver.add_txt(&fqdn, &dns_value).await
+        solver
+            .add_txt(&fqdn, &dns_value)
+            .await
             .map_err(|e| format!("TXT add for {fqdn}: {e}"))?;
         planted.push((fqdn.clone(), dns_value.clone()));
         to_signal.push(challenge.url.clone());
@@ -337,7 +403,9 @@ async fn solve_all_authorizations(
     // Tell CA every challenge is ready. instant-acme caps at one signal per
     // call so we loop.
     for url in &to_signal {
-        order.set_challenge_ready(url).await
+        order
+            .set_challenge_ready(url)
+            .await
             .map_err(|e| format!("set_challenge_ready({url}): {e}"))?;
     }
 
@@ -351,7 +419,10 @@ async fn poll_for_order_ready(order: &mut Order, timeout: Duration) -> Result<()
     let deadline = std::time::Instant::now() + timeout;
     let mut delay = Duration::from_millis(500);
     loop {
-        let state = order.refresh().await.map_err(|e| format!("order refresh: {e}"))?;
+        let state = order
+            .refresh()
+            .await
+            .map_err(|e| format!("order refresh: {e}"))?;
         match state.status {
             OrderStatus::Ready | OrderStatus::Valid => return Ok(()),
             OrderStatus::Invalid => return Err(format!("order invalid: {state:?}")),
@@ -407,8 +478,12 @@ fn split_pem_bundle(bundle: &str) -> (String, String) {
         starts.push(i + off);
         i = i + off + BEGIN.len();
     }
-    if starts.is_empty() { return (String::new(), String::new()); }
-    if starts.len() == 1 { return (bundle.trim().to_string(), String::new()); }
+    if starts.is_empty() {
+        return (String::new(), String::new());
+    }
+    if starts.len() == 1 {
+        return (bundle.trim().to_string(), String::new());
+    }
     let leaf = bundle[starts[0]..starts[1]].trim_end().to_string();
     let chain = bundle[starts[1]..].trim().to_string();
     (leaf, chain)
@@ -432,11 +507,20 @@ fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
     let mut in_block = false;
     for line in pem.lines() {
         let l = line.trim();
-        if l == "-----BEGIN CERTIFICATE-----" { in_block = true; continue; }
-        if l == "-----END CERTIFICATE-----" { break; }
-        if in_block { acc.push_str(l); }
+        if l == "-----BEGIN CERTIFICATE-----" {
+            in_block = true;
+            continue;
+        }
+        if l == "-----END CERTIFICATE-----" {
+            break;
+        }
+        if in_block {
+            acc.push_str(l);
+        }
     }
-    if acc.is_empty() { return None; }
+    if acc.is_empty() {
+        return None;
+    }
     base64_decode_no_pad(&acc)
 }
 
@@ -458,7 +542,10 @@ fn base64_decode_no_pad(s: &str) -> Option<Vec<u8>> {
         };
         buf = (buf << 6) | v;
         bits += 6;
-        if bits >= 8 { bits -= 8; out.push(((buf >> bits) & 0xFF) as u8); }
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xFF) as u8);
+        }
     }
     Some(out)
 }
@@ -475,11 +562,12 @@ fn asn1_extract_not_after(der: &[u8]) -> Option<DateTime<Utc>> {
     // SEQUENCE signature, then SEQUENCE issuer.
     let mut p = tbs;
     if !p.is_empty() && p[0] == 0xA0 {
-        let (_, after) = asn1_take_tlv(p)?; p = after;
+        let (_, after) = asn1_take_tlv(p)?;
+        p = after;
     }
-    let (_, p2) = asn1_take_tlv(p)?;        // serialNumber INTEGER
-    let (_, p3) = asn1_take_tlv(p2)?;       // signature   SEQUENCE
-    let (_, p4) = asn1_take_tlv(p3)?;       // issuer      SEQUENCE
+    let (_, p2) = asn1_take_tlv(p)?; // serialNumber INTEGER
+    let (_, p3) = asn1_take_tlv(p2)?; // signature   SEQUENCE
+    let (_, p4) = asn1_take_tlv(p3)?; // issuer      SEQUENCE
     let (validity, _) = asn1_take_seq(p4)?; // validity    SEQUENCE
     // validity := SEQUENCE { notBefore Time, notAfter Time }
     let (_, after_nb) = asn1_take_tlv(validity)?;
@@ -493,27 +581,38 @@ fn asn1_extract_not_after(der: &[u8]) -> Option<DateTime<Utc>> {
 
 /// Read a TLV; return (value_bytes, rest_after_this_tlv).
 fn asn1_take_tlv(buf: &[u8]) -> Option<(&[u8], &[u8])> {
-    if buf.len() < 2 { return None; }
+    if buf.len() < 2 {
+        return None;
+    }
     let tag = buf[0];
     let _ = tag;
     let mut idx = 1;
-    let len_byte = buf[idx]; idx += 1;
+    let len_byte = buf[idx];
+    idx += 1;
     let len = if len_byte & 0x80 == 0 {
         len_byte as usize
     } else {
         let n = (len_byte & 0x7F) as usize;
-        if idx + n > buf.len() { return None; }
+        if idx + n > buf.len() {
+            return None;
+        }
         let mut l = 0usize;
-        for b in &buf[idx..idx + n] { l = (l << 8) | (*b as usize); }
+        for b in &buf[idx..idx + n] {
+            l = (l << 8) | (*b as usize);
+        }
         idx += n;
         l
     };
-    if idx + len > buf.len() { return None; }
+    if idx + len > buf.len() {
+        return None;
+    }
     Some((&buf[idx..idx + len], &buf[idx + len..]))
 }
 
 fn asn1_take_seq(buf: &[u8]) -> Option<(&[u8], &[u8])> {
-    if buf.is_empty() || buf[0] != 0x30 { return None; }
+    if buf.is_empty() || buf[0] != 0x30 {
+        return None;
+    }
     asn1_take_tlv(buf)
 }
 

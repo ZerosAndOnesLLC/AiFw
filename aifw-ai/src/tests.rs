@@ -26,7 +26,9 @@ mod tests {
                 packets_out: 1,
                 bytes_in: 0,
                 bytes_out: 60,
-                age_secs: 1, iface: None, rtable: None,
+                age_secs: 1,
+                iface: None,
+                rtable: None,
             })
             .collect()
     }
@@ -45,7 +47,9 @@ mod tests {
                 packets_out: 1,
                 bytes_in: 0,
                 bytes_out: 60,
-                age_secs: 1, iface: None, rtable: None,
+                age_secs: 1,
+                iface: None,
+                rtable: None,
             })
             .collect()
     }
@@ -64,7 +68,9 @@ mod tests {
                 packets_out: 3,
                 bytes_in: 200,
                 bytes_out: 200,
-                age_secs: 2, iface: None, rtable: None,
+                age_secs: 2,
+                iface: None,
+                rtable: None,
             })
             .collect()
     }
@@ -83,7 +89,9 @@ mod tests {
                 packets_out: 2,
                 bytes_in: 100,
                 bytes_out: 50,
-                age_secs: 60, iface: None, rtable: None, // regular interval
+                age_secs: 60,
+                iface: None,
+                rtable: None, // regular interval
             })
             .collect()
     }
@@ -102,7 +110,9 @@ mod tests {
                 packets_out: 1,
                 bytes_in: 500,
                 bytes_out: 200,
-                age_secs: 1, iface: None, rtable: None,
+                age_secs: 1,
+                iface: None,
+                rtable: None,
             })
             .collect()
     }
@@ -148,7 +158,10 @@ mod tests {
         let states = make_ddos_states();
         let features = features::extract_features(&states, 10);
         let detector = detectors::ddos::DdosDetector::new();
-        let f = features.iter().find(|f| f.source_ip == IpAddr::V4(Ipv4Addr::new(10, 0, 0, 200))).unwrap();
+        let f = features
+            .iter()
+            .find(|f| f.source_ip == IpAddr::V4(Ipv4Addr::new(10, 0, 0, 200)))
+            .unwrap();
         let threats = detector.analyze(f).await;
         assert!(!threats.is_empty());
         assert!(threats.iter().any(|t| t.threat_type == ThreatType::DDoS));
@@ -210,7 +223,9 @@ mod tests {
                 packets_out: 50,
                 bytes_in: 50000,
                 bytes_out: 5000,
-                age_secs: 300, iface: None, rtable: None,
+                age_secs: 300,
+                iface: None,
+                rtable: None,
             })
             .collect();
 
@@ -231,12 +246,16 @@ mod tests {
         assert!(backend.model_info().loaded);
 
         // Normal traffic features
-        let normal = vec![5.0, 1.0, 1.0, 5000.0, 50000.0, 150.0, 0.0, 0.0, 0.02, 10000.0, 0.0, 100.0, 0.0];
+        let normal = vec![
+            5.0, 1.0, 1.0, 5000.0, 50000.0, 150.0, 0.0, 0.0, 0.02, 10000.0, 0.0, 100.0, 0.0,
+        ];
         let score = backend.predict(&normal).await.unwrap();
         assert!(score < 0.5);
 
         // Suspicious features (high rate, many ports, many SYNs)
-        let suspicious = vec![200.0, 50.0, 50.0, 10000.0, 0.0, 200.0, 50.0, 0.9, 20.0, 60.0, 0.0, 1.0, 0.5];
+        let suspicious = vec![
+            200.0, 50.0, 50.0, 10000.0, 0.0, 200.0, 50.0, 0.9, 20.0, 60.0, 0.0, 1.0, 0.5,
+        ];
         let score = backend.predict(&suspicious).await.unwrap();
         assert!(score > 0.5);
     }
@@ -273,19 +292,36 @@ mod tests {
         let pf: Arc<dyn PfBackend> = Arc::new(PfMock::new());
         let responder = AutoResponder::new(pf, ResponseConfig::default());
 
-        let make_threat = |score: f64| Threat::new(
-            ThreatType::PortScan,
-            ThreatScore::new(score),
-            IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
-            "test".to_string(),
-            ThreatEvidence::new("test"),
-        );
+        let make_threat = |score: f64| {
+            Threat::new(
+                ThreatType::PortScan,
+                ThreatScore::new(score),
+                IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+                "test".to_string(),
+                ThreatEvidence::new("test"),
+            )
+        };
 
-        assert_eq!(responder.determine_action(&make_threat(0.2)), ResponseAction::Alert);
-        assert_eq!(responder.determine_action(&make_threat(0.3)), ResponseAction::Alert);
-        assert_eq!(responder.determine_action(&make_threat(0.6)), ResponseAction::RateLimit);
-        assert_eq!(responder.determine_action(&make_threat(0.8)), ResponseAction::TempBlock);
-        assert_eq!(responder.determine_action(&make_threat(0.96)), ResponseAction::PermBlock);
+        assert_eq!(
+            responder.determine_action(&make_threat(0.2)),
+            ResponseAction::Alert
+        );
+        assert_eq!(
+            responder.determine_action(&make_threat(0.3)),
+            ResponseAction::Alert
+        );
+        assert_eq!(
+            responder.determine_action(&make_threat(0.6)),
+            ResponseAction::RateLimit
+        );
+        assert_eq!(
+            responder.determine_action(&make_threat(0.8)),
+            ResponseAction::TempBlock
+        );
+        assert_eq!(
+            responder.determine_action(&make_threat(0.96)),
+            ResponseAction::PermBlock
+        );
     }
 
     #[tokio::test]

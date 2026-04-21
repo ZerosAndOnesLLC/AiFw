@@ -13,7 +13,6 @@ pub enum IpVersion {
     Both,
 }
 
-
 impl std::fmt::Display for IpVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -30,7 +29,9 @@ impl IpVersion {
             "inet" | "ipv4" | "4" => Ok(IpVersion::Inet),
             "inet6" | "ipv6" | "6" => Ok(IpVersion::Inet6),
             "both" | "any" | "*" | "" => Ok(IpVersion::Both),
-            _ => Err(crate::AifwError::Validation(format!("unknown ip version: {s}"))),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown ip version: {s}"
+            ))),
         }
     }
 }
@@ -144,7 +145,6 @@ pub enum StateTracking {
     /// SYN proxy state (proxy TCP handshake)
     SynproxyState,
 }
-
 
 impl std::fmt::Display for StateTracking {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -333,7 +333,10 @@ impl Rule {
                 state_part.push_str(&format!(" ({policy})"));
             }
             if let Some(ref adaptive) = self.state_options.adaptive_timeouts {
-                state_part.push_str(&format!(" (adaptive.start {}, adaptive.end {})", adaptive.start, adaptive.end));
+                state_part.push_str(&format!(
+                    " (adaptive.start {}, adaptive.end {})",
+                    adaptive.start, adaptive.end
+                ));
             }
             parts.push(state_part);
         }

@@ -47,7 +47,9 @@ impl GeoIpAction {
         match s.to_lowercase().as_str() {
             "allow" | "pass" => Ok(GeoIpAction::Allow),
             "block" | "deny" => Ok(GeoIpAction::Block),
-            _ => Err(crate::AifwError::Validation(format!("unknown geo-ip action: {s}"))),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown geo-ip action: {s}"
+            ))),
         }
     }
 }
@@ -181,9 +183,10 @@ pub fn aggregate_cidrs(mut entries: Vec<(IpAddr, u8)>) -> Vec<(IpAddr, u8)> {
     let mut result: Vec<(IpAddr, u8)> = Vec::new();
     for entry in &entries {
         if let Some(last) = result.last()
-            && is_subnet_of(entry.0, entry.1, last.0, last.1) {
-                continue; // already covered
-            }
+            && is_subnet_of(entry.0, entry.1, last.0, last.1)
+        {
+            continue; // already covered
+        }
         result.push(*entry);
     }
 
@@ -201,7 +204,10 @@ pub fn aggregate_cidrs(mut entries: Vec<(IpAddr, u8)>) -> Vec<(IpAddr, u8)> {
                 let parent_mask = !((1u128 << (128 - prefix + 1)) - 1);
                 if (a_val & parent_mask) == (b_val & parent_mask) {
                     // Can merge into parent
-                    merged.push((u128_to_ip(a_val & parent_mask, result[i].0.is_ipv4()), prefix - 1));
+                    merged.push((
+                        u128_to_ip(a_val & parent_mask, result[i].0.is_ipv4()),
+                        prefix - 1,
+                    ));
                     i += 2;
                     changed = true;
                     continue;

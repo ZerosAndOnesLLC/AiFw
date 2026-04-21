@@ -1,4 +1,4 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
 
@@ -40,26 +40,37 @@ pub async fn list_plugins(
     let running = mgr.running_count();
     let total = mgr.count();
 
-    let plugins: Vec<PluginListEntry> = list.iter().map(|(info, pstate)| {
-        PluginListEntry {
+    let plugins: Vec<PluginListEntry> = list
+        .iter()
+        .map(|(info, pstate)| PluginListEntry {
             name: info.name.clone(),
             version: info.version.clone(),
             description: info.description.clone(),
             author: info.author.clone(),
             state: pstate.to_string(),
             hooks: info.hooks.iter().map(|h| h.to_string()).collect(),
-        }
-    }).collect();
+        })
+        .collect();
 
-    Ok(Json(PluginsResponse { plugins, total, running }))
+    Ok(Json(PluginsResponse {
+        plugins,
+        total,
+        running,
+    }))
 }
 
 pub async fn enable_plugin(
     State(state): State<AppState>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let name = payload.get("name").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
-    let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let name = payload
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let enabled = payload
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     // Persist to DB
     let _ = sqlx::query("INSERT INTO plugin_config (name, enabled) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET enabled=excluded.enabled")
@@ -70,7 +81,9 @@ pub async fn enable_plugin(
 
     if !enabled {
         let _ = mgr.unload(name).await;
-        Ok(Json(MessageResponse { message: format!("Plugin '{name}' disabled.") }))
+        Ok(Json(MessageResponse {
+            message: format!("Plugin '{name}' disabled."),
+        }))
     } else {
         // Re-register with enabled=true — need to create a new instance
         let plugin: Option<Box<dyn aifw_plugins::Plugin>> = match name {
@@ -82,10 +95,22 @@ pub async fn enable_plugin(
         if let Some(p) = plugin {
             // Unload old instance if exists
             let _ = mgr.unload(name).await;
-            let _ = mgr.register(p, aifw_plugins::PluginConfig { enabled: true, ..Default::default() }).await;
-            Ok(Json(MessageResponse { message: format!("Plugin '{name}' enabled and running.") }))
+            let _ = mgr
+                .register(
+                    p,
+                    aifw_plugins::PluginConfig {
+                        enabled: true,
+                        ..Default::default()
+                    },
+                )
+                .await;
+            Ok(Json(MessageResponse {
+                message: format!("Plugin '{name}' enabled and running."),
+            }))
         } else {
-            Ok(Json(MessageResponse { message: format!("Unknown plugin '{name}'.") }))
+            Ok(Json(MessageResponse {
+                message: format!("Unknown plugin '{name}'."),
+            }))
         }
     }
 }
@@ -95,8 +120,12 @@ pub async fn get_plugin_config(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let row = sqlx::query_as::<_, (i32, Option<String>)>(
-        "SELECT enabled, settings FROM plugin_config WHERE name = ?1"
-    ).bind(&name).fetch_optional(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        "SELECT enabled, settings FROM plugin_config WHERE name = ?1",
+    )
+    .bind(&name)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let (enabled, settings) = row.unwrap_or((0, None));
     let settings_json: serde_json::Value = settings
@@ -115,14 +144,19 @@ pub async fn update_plugin_config(
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let settings = payload.get("settings").cloned().unwrap_or(serde_json::json!({}));
+    let settings = payload
+        .get("settings")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     let settings_str = serde_json::to_string(&settings).unwrap_or_default();
 
     let _ = sqlx::query(
         "INSERT INTO plugin_config (name, enabled, settings) VALUES (?1, 0, ?2) ON CONFLICT(name) DO UPDATE SET settings=excluded.settings"
     ).bind(&name).bind(&settings_str).execute(&state.pool).await;
 
-    Ok(Json(MessageResponse { message: format!("Plugin '{name}' config updated.") }))
+    Ok(Json(MessageResponse {
+        message: format!("Plugin '{name}' config updated."),
+    }))
 }
 
 pub async fn get_plugin_logs(
@@ -136,7 +170,9 @@ pub async fn get_plugin_logs(
     // Check if plugin exists and is the logging plugin
     let found = list.iter().any(|(info, _)| info.name == name);
     if !found {
-        return Ok(Json(serde_json::json!({ "entries": [], "message": "Plugin not found" })));
+        return Ok(Json(
+            serde_json::json!({ "entries": [], "message": "Plugin not found" }),
+        ));
     }
 
     // We can't directly access plugin internals through the trait,
@@ -161,7 +197,10 @@ pub async fn discover_plugins() -> Result<Json<serde_json::Value>, StatusCode> {
 
 /// Dispatch a hook event to all plugins (called internally by other modules)
 #[allow(dead_code)]
-pub async fn dispatch_hook(state: &AppState, event: aifw_plugins::HookEvent) -> Vec<aifw_plugins::HookAction> {
+pub async fn dispatch_hook(
+    state: &AppState,
+    event: aifw_plugins::HookEvent,
+) -> Vec<aifw_plugins::HookAction> {
     let mgr = state.plugin_manager.read().await;
     mgr.dispatch(&event).await
 }

@@ -57,13 +57,8 @@ impl PreflightEngine {
         groups: &[GatewayGroup],
         group_members: &HashMap<Uuid, Vec<GroupMember>>,
     ) -> Result<BlastRadiusReport> {
-        let current = PolicyEngine::compile(
-            current_policies,
-            instances,
-            gateways,
-            groups,
-            group_members,
-        );
+        let current =
+            PolicyEngine::compile(current_policies, instances, gateways, groups, group_members);
         let proposed = PolicyEngine::compile(
             proposed_policies,
             instances,
@@ -92,11 +87,7 @@ impl PreflightEngine {
         let affected_flows = derive_affected_flows(&states, &new_rules);
 
         let mut validation = Vec::new();
-        let would_strand_mgmt = validate_mgmt_safety(
-            proposed_policies,
-            instances,
-            &mut validation,
-        );
+        let would_strand_mgmt = validate_mgmt_safety(proposed_policies, instances, &mut validation);
 
         Ok(BlastRadiusReport {
             affected_flows,
@@ -149,11 +140,7 @@ mod tests {
         }
     }
 
-    fn make_policy(
-        target: Uuid,
-        src: &str,
-        status: &str,
-    ) -> PolicyRule {
+    fn make_policy(target: Uuid, src: &str, status: &str) -> PolicyRule {
         PolicyRule {
             id: Uuid::new_v4(),
             priority: 100,
@@ -238,17 +225,19 @@ fn validate_mgmt_safety(
     // could move management traffic. Flag it.
     let mut strand = false;
     for p in proposed.iter().filter(|p| p.status == "active") {
-        if p.action_kind == "set_instance" && p.target_id != mgmt.id
-            && (p.src_addr == "any" || p.src_addr == "0.0.0.0/0") {
-                findings.push(ValidationFinding {
-                    severity: "error".into(),
-                    message: format!(
-                        "Policy '{}' with src=any moves ALL traffic away from mgmt FIB",
-                        p.name
-                    ),
-                });
-                strand = true;
-            }
+        if p.action_kind == "set_instance"
+            && p.target_id != mgmt.id
+            && (p.src_addr == "any" || p.src_addr == "0.0.0.0/0")
+        {
+            findings.push(ValidationFinding {
+                severity: "error".into(),
+                message: format!(
+                    "Policy '{}' with src=any moves ALL traffic away from mgmt FIB",
+                    p.name
+                ),
+            });
+            strand = true;
+        }
     }
     strand
 }

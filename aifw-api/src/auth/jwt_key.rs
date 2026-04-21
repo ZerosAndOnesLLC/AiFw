@@ -17,10 +17,7 @@ use std::path::Path;
 use tokio::fs;
 
 /// Resolve the JWT signing secret, creating the key file on first run.
-pub async fn load_or_create(
-    path: &Path,
-    pool: &sqlx::SqlitePool,
-) -> Result<String, String> {
+pub async fn load_or_create(path: &Path, pool: &sqlx::SqlitePool) -> Result<String, String> {
     if let Ok(contents) = fs::read_to_string(path).await {
         let secret = contents.trim().to_string();
         if !secret.is_empty() {
@@ -34,12 +31,11 @@ pub async fn load_or_create(
 
     // Migration path: adopt the DB-stored secret if present so existing
     // JWTs remain valid after the upgrade.
-    let legacy: Option<(String,)> = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM auth_config WHERE key = 'jwt_secret'",
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("read legacy jwt_secret: {e}"))?;
+    let legacy: Option<(String,)> =
+        sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'jwt_secret'")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("read legacy jwt_secret: {e}"))?;
 
     let secret = match legacy {
         Some((s,)) if !s.is_empty() => s,
@@ -105,12 +101,10 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        sqlx::query(
-            "CREATE TABLE auth_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("CREATE TABLE auth_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
         pool
     }
 

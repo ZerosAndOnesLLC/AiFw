@@ -180,7 +180,9 @@ mod tests {
     fn test_registry_detect_dns() {
         let reg = ProtocolRegistry::new();
         // Minimal DNS query header: ID=0x1234, flags=0x0100 (standard query), 1 question
-        let payload = &[0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let payload = &[
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
         let result = reg.detect(payload, 53, FlowDirection::ToServer);
         assert_eq!(result, Some(AppProto::Dns));
     }

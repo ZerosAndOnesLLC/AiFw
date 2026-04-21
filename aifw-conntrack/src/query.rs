@@ -16,37 +16,45 @@ pub struct ConnectionFilter {
 impl ConnectionFilter {
     pub fn matches(&self, s: &PfState) -> bool {
         if let Some(ref proto) = self.protocol
-            && !s.protocol.eq_ignore_ascii_case(proto) {
-                return false;
-            }
+            && !s.protocol.eq_ignore_ascii_case(proto)
+        {
+            return false;
+        }
         if let Some(addr) = self.src_addr
-            && s.src_addr != addr {
-                return false;
-            }
+            && s.src_addr != addr
+        {
+            return false;
+        }
         if let Some(addr) = self.dst_addr
-            && s.dst_addr != addr {
-                return false;
-            }
+            && s.dst_addr != addr
+        {
+            return false;
+        }
         if let Some(port) = self.src_port
-            && s.src_port != port {
-                return false;
-            }
+            && s.src_port != port
+        {
+            return false;
+        }
         if let Some(port) = self.dst_port
-            && s.dst_port != port {
-                return false;
-            }
+            && s.dst_port != port
+        {
+            return false;
+        }
         if let Some(ref state) = self.state
-            && !s.state.eq_ignore_ascii_case(state) {
-                return false;
-            }
+            && !s.state.eq_ignore_ascii_case(state)
+        {
+            return false;
+        }
         if let Some(min) = self.min_age_secs
-            && s.age_secs < min {
-                return false;
-            }
+            && s.age_secs < min
+        {
+            return false;
+        }
         if let Some(max) = self.max_age_secs
-            && s.age_secs > max {
-                return false;
-            }
+            && s.age_secs > max
+        {
+            return false;
+        }
         true
     }
 }
@@ -55,7 +63,11 @@ pub struct ConnectionQuery;
 
 impl ConnectionQuery {
     pub fn filter(states: &[PfState], filter: &ConnectionFilter) -> Vec<PfState> {
-        states.iter().filter(|s| filter.matches(s)).cloned().collect()
+        states
+            .iter()
+            .filter(|s| filter.matches(s))
+            .cloned()
+            .collect()
     }
 
     pub fn count(states: &[PfState], filter: &ConnectionFilter) -> usize {

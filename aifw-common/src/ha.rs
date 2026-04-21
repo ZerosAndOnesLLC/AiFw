@@ -71,24 +71,29 @@ impl CarpVip {
 
     /// Generate ifconfig commands to create the CARP VIP
     pub fn to_ifconfig_cmds(&self) -> Vec<String> {
-        let af = if self.virtual_ip.is_ipv4() { "inet" } else { "inet6" };
-        vec![
-            format!(
-                "ifconfig {} vhid {} advskew {} advbase {} pass {} {af} {}/{} alias",
-                self.interface, self.vhid, self.advskew, self.advbase,
-                self.password, self.virtual_ip, self.prefix,
-            ),
-        ]
+        let af = if self.virtual_ip.is_ipv4() {
+            "inet"
+        } else {
+            "inet6"
+        };
+        vec![format!(
+            "ifconfig {} vhid {} advskew {} advbase {} pass {} {af} {}/{} alias",
+            self.interface,
+            self.vhid,
+            self.advskew,
+            self.advbase,
+            self.password,
+            self.virtual_ip,
+            self.prefix,
+        )]
     }
 
     /// Generate pf rules to allow CARP protocol traffic
     pub fn to_pf_rules(&self) -> Vec<String> {
-        vec![
-            format!(
-                "pass quick proto carp keep state label \"carp-vhid-{}\"",
-                self.vhid
-            ),
-        ]
+        vec![format!(
+            "pass quick proto carp keep state label \"carp-vhid-{}\"",
+            self.vhid
+        )]
     }
 }
 
@@ -148,12 +153,10 @@ impl PfsyncConfig {
         if !self.enabled {
             return Vec::new();
         }
-        let mut rules = vec![
-            format!(
-                "pass on {} proto pfsync keep state label \"pfsync\"",
-                self.sync_interface
-            ),
-        ];
+        let mut rules = vec![format!(
+            "pass on {} proto pfsync keep state label \"pfsync\"",
+            self.sync_interface
+        )];
         if let Some(ref peer) = self.sync_peer {
             rules.push(format!(
                 "pass quick proto pfsync from {} keep state label \"pfsync-peer\"",
@@ -192,7 +195,9 @@ impl ClusterRole {
             "primary" | "master" => Ok(ClusterRole::Primary),
             "secondary" | "backup" | "slave" => Ok(ClusterRole::Secondary),
             "standalone" => Ok(ClusterRole::Standalone),
-            _ => Err(crate::AifwError::Validation(format!("unknown cluster role: {s}"))),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown cluster role: {s}"
+            ))),
         }
     }
 }
@@ -299,7 +304,9 @@ impl HealthCheckType {
             "tcp" | "tcp_port" => Ok(HealthCheckType::TcpPort),
             "http" | "http_get" => Ok(HealthCheckType::HttpGet),
             "pf" | "pf_status" => Ok(HealthCheckType::PfStatus),
-            _ => Err(crate::AifwError::Validation(format!("unknown health check type: {s}"))),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown health check type: {s}"
+            ))),
         }
     }
 }
@@ -336,7 +343,13 @@ pub struct ConfigSnapshot {
 }
 
 impl ConfigSnapshot {
-    pub fn new(version: u64, node_id: Uuid, rules_hash: String, nat_hash: String, data: String) -> Self {
+    pub fn new(
+        version: u64,
+        node_id: Uuid,
+        rules_hash: String,
+        nat_hash: String,
+        data: String,
+    ) -> Self {
         Self {
             version,
             node_id,

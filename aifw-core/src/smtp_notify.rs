@@ -5,7 +5,7 @@
 //! is per-event configurable via a bitfield so operators can subscribe
 //! to failures only (the default) and opt into success noise separately.
 
-use lettre::message::{header::ContentType, Mailbox};
+use lettre::message::{Mailbox, header::ContentType};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use serde::{Deserialize, Serialize};
@@ -34,42 +34,42 @@ pub enum Event {
 impl Event {
     fn bit(self) -> u32 {
         match self {
-            Event::BackupSaved      => 1 << 0,
-            Event::S3UploadOk       => 1 << 1,
-            Event::S3UploadFailed   => 1 << 2,
-            Event::RestoreOk        => 1 << 3,
-            Event::RestoreFailed    => 1 << 4,
-            Event::Pruned           => 1 << 5,
-            Event::CertRenewedOk    => 1 << 6,
-            Event::CertRenewFailed  => 1 << 7,
+            Event::BackupSaved => 1 << 0,
+            Event::S3UploadOk => 1 << 1,
+            Event::S3UploadFailed => 1 << 2,
+            Event::RestoreOk => 1 << 3,
+            Event::RestoreFailed => 1 << 4,
+            Event::Pruned => 1 << 5,
+            Event::CertRenewedOk => 1 << 6,
+            Event::CertRenewFailed => 1 << 7,
             Event::CertExpiringSoon => 1 << 8,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Event::BackupSaved      => "Config snapshot saved",
-            Event::S3UploadOk       => "S3 upload succeeded",
-            Event::S3UploadFailed   => "S3 upload failed",
-            Event::RestoreOk        => "Restore succeeded",
-            Event::RestoreFailed    => "Restore failed",
-            Event::Pruned           => "Versions pruned",
-            Event::CertRenewedOk    => "ACME cert renewed",
-            Event::CertRenewFailed  => "ACME cert renewal failed",
+            Event::BackupSaved => "Config snapshot saved",
+            Event::S3UploadOk => "S3 upload succeeded",
+            Event::S3UploadFailed => "S3 upload failed",
+            Event::RestoreOk => "Restore succeeded",
+            Event::RestoreFailed => "Restore failed",
+            Event::Pruned => "Versions pruned",
+            Event::CertRenewedOk => "ACME cert renewed",
+            Event::CertRenewFailed => "ACME cert renewal failed",
             Event::CertExpiringSoon => "ACME cert expiring soon",
         }
     }
 
     pub fn subject(self) -> &'static str {
         match self {
-            Event::BackupSaved      => "AiFw: config snapshot saved",
-            Event::S3UploadOk       => "AiFw: S3 backup uploaded",
-            Event::S3UploadFailed   => "AiFw: S3 backup FAILED",
-            Event::RestoreOk        => "AiFw: config restored",
-            Event::RestoreFailed    => "AiFw: config restore FAILED",
-            Event::Pruned           => "AiFw: versions pruned",
-            Event::CertRenewedOk    => "AiFw: TLS cert renewed",
-            Event::CertRenewFailed  => "AiFw: TLS cert renewal FAILED",
+            Event::BackupSaved => "AiFw: config snapshot saved",
+            Event::S3UploadOk => "AiFw: S3 backup uploaded",
+            Event::S3UploadFailed => "AiFw: S3 backup FAILED",
+            Event::RestoreOk => "AiFw: config restored",
+            Event::RestoreFailed => "AiFw: config restore FAILED",
+            Event::Pruned => "AiFw: versions pruned",
+            Event::CertRenewedOk => "AiFw: TLS cert renewed",
+            Event::CertRenewFailed => "AiFw: TLS cert renewal FAILED",
             Event::CertExpiringSoon => "AiFw: TLS cert expiring soon",
         }
     }
@@ -98,19 +98,18 @@ pub enum TlsMode {
     ImplicitTls,
 }
 
-
 impl TlsMode {
     fn from_str(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
-            "none"        => TlsMode::None,
-            "implicit"|"implicittls"|"tls" => TlsMode::ImplicitTls,
-            _             => TlsMode::StartTls,
+            "none" => TlsMode::None,
+            "implicit" | "implicittls" | "tls" => TlsMode::ImplicitTls,
+            _ => TlsMode::StartTls,
         }
     }
     fn as_str(self) -> &'static str {
         match self {
-            TlsMode::None        => "none",
-            TlsMode::StartTls    => "starttls",
+            TlsMode::None => "none",
+            TlsMode::StartTls => "starttls",
             TlsMode::ImplicitTls => "implicit",
         }
     }
@@ -260,8 +259,10 @@ fn build_transport(cfg: &SmtpConfig) -> Result<AsyncSmtpTransport<Tokio1Executor
     .port(cfg.port)
     .timeout(Some(Duration::from_secs(20)));
 
-    if let (Some(user), Some(pass)) = (cfg.username.as_deref().filter(|s| !s.is_empty()),
-                                       cfg.password.as_deref().filter(|s| !s.is_empty())) {
+    if let (Some(user), Some(pass)) = (
+        cfg.username.as_deref().filter(|s| !s.is_empty()),
+        cfg.password.as_deref().filter(|s| !s.is_empty()),
+    ) {
         builder = builder.credentials(Credentials::new(user.into(), pass.into()));
     }
     Ok(builder.build())
@@ -302,7 +303,10 @@ pub async fn test_send(cfg: &SmtpConfig) -> Result<(), String> {
             chrono::Utc::now().to_rfc3339(),
         ),
     )?;
-    transport.send(msg).await.map_err(|e| format!("send: {e}"))?;
+    transport
+        .send(msg)
+        .await
+        .map_err(|e| format!("send: {e}"))?;
     Ok(())
 }
 
@@ -323,11 +327,17 @@ pub async fn send_event(pool: &SqlitePool, ev: Event, summary: &str) {
     );
     let transport = match build_transport(&cfg) {
         Ok(t) => t,
-        Err(e) => { tracing::warn!("smtp: transport build: {e}"); return; }
+        Err(e) => {
+            tracing::warn!("smtp: transport build: {e}");
+            return;
+        }
     };
     let msg = match build_message(&cfg, ev.subject(), &body) {
         Ok(m) => m,
-        Err(e) => { tracing::warn!("smtp: message build: {e}"); return; }
+        Err(e) => {
+            tracing::warn!("smtp: message build: {e}");
+            return;
+        }
     };
     if let Err(e) = transport.send(msg).await {
         tracing::warn!(event = ?ev, "smtp send failed: {e}");

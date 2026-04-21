@@ -93,14 +93,8 @@ impl SlaEngine {
         Ok(rows
             .iter()
             .map(|r| SlaSample {
-                gateway_id: r
-                    .get::<String, _>("gateway_id")
-                    .parse()
-                    .unwrap_or_default(),
-                bucket_ts: r
-                    .get::<String, _>("bucket_ts")
-                    .parse()
-                    .unwrap_or_default(),
+                gateway_id: r.get::<String, _>("gateway_id").parse().unwrap_or_default(),
+                bucket_ts: r.get::<String, _>("bucket_ts").parse().unwrap_or_default(),
                 samples: r.get::<i64, _>("samples") as u64,
                 rtt_avg: r.get("rtt_avg"),
                 rtt_p95: r.get("rtt_p95"),

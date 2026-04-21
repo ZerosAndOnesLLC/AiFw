@@ -11,11 +11,11 @@
 //! is used. Stored-in-DB secrets are returned masked via the API.
 
 use aws_config::BehaviorVersion;
-use aws_credential_types::provider::SharedCredentialsProvider;
 use aws_credential_types::Credentials;
+use aws_credential_types::provider::SharedCredentialsProvider;
+use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::Object;
-use aws_sdk_s3::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
@@ -87,11 +87,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
-    sqlx::query(
-        "INSERT OR IGNORE INTO s3_backup_config (id) VALUES (1)",
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT OR IGNORE INTO s3_backup_config (id) VALUES (1)")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -160,8 +158,12 @@ async fn client(cfg: &S3Config) -> Result<Client, String> {
     // Explicit creds override the default chain. Otherwise AWS SDK walks
     // env -> profile -> instance role / container role -> SSO etc.
     if let (Some(ak), Some(sk)) = (
-        cfg.access_key_id.as_deref().filter(|s| !s.trim().is_empty()),
-        cfg.secret_access_key.as_deref().filter(|s| !s.trim().is_empty()),
+        cfg.access_key_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty()),
+        cfg.secret_access_key
+            .as_deref()
+            .filter(|s| !s.trim().is_empty()),
     ) {
         let creds = Credentials::new(ak, sk, None, None, APP_TAG);
         loader = loader.credentials_provider(SharedCredentialsProvider::new(creds));
@@ -189,7 +191,11 @@ fn hostname() -> String {
 
 fn normalize_prefix(p: &str) -> String {
     let p = p.trim().trim_matches('/');
-    if p.is_empty() { String::new() } else { format!("{p}/") }
+    if p.is_empty() {
+        String::new()
+    } else {
+        format!("{p}/")
+    }
 }
 
 pub fn object_key(prefix: &str, version: i64, created_at: &str) -> String {
@@ -197,9 +203,25 @@ pub fn object_key(prefix: &str, version: i64, created_at: &str) -> String {
     // returns newest-last (or reverse via `start-after`).
     let safe_ts: String = created_at
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else if c == ':' { '-' } else if c == 'T' { 'T' } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else if c == ':' {
+                '-'
+            } else if c == 'T' {
+                'T'
+            } else {
+                '_'
+            }
+        })
         .collect();
-    format!("{}{}/{}-v{:06}.json", normalize_prefix(prefix), hostname(), safe_ts, version)
+    format!(
+        "{}{}/{}-v{:06}.json",
+        normalize_prefix(prefix),
+        hostname(),
+        safe_ts,
+        version
+    )
 }
 
 // ============================================================================
@@ -222,12 +244,26 @@ pub struct TestResult {
 /// prefix. Each step is reported independently so the UI can explain which
 /// IAM permission is missing.
 pub async fn test_connection(cfg: &S3Config) -> TestResult {
-    let mut r = TestResult { ok: false, message: String::new(), write: false, read: false, delete: false };
+    let mut r = TestResult {
+        ok: false,
+        message: String::new(),
+        write: false,
+        read: false,
+        delete: false,
+    };
     let c = match client(cfg).await {
         Ok(c) => c,
-        Err(e) => { r.message = format!("config error: {e}"); return r; }
+        Err(e) => {
+            r.message = format!("config error: {e}");
+            return r;
+        }
     };
-    let key = format!("{}{}{}", normalize_prefix(&cfg.prefix), hostname(), TEST_KEY_SUFFIX);
+    let key = format!(
+        "{}{}{}",
+        normalize_prefix(&cfg.prefix),
+        hostname(),
+        TEST_KEY_SUFFIX
+    );
     let payload = format!(
         "aifw-connectivity-test host={} ts={}\n",
         hostname(),
@@ -251,15 +287,13 @@ pub async fn test_connection(cfg: &S3Config) -> TestResult {
     }
 
     match c.get_object().bucket(&cfg.bucket).key(&key).send().await {
-        Ok(obj) => {
-            match obj.body.collect().await {
-                Ok(_) => r.read = true,
-                Err(e) => {
-                    r.message = format!("read drain failed: {e}");
-                    return r;
-                }
+        Ok(obj) => match obj.body.collect().await {
+            Ok(_) => r.read = true,
+            Err(e) => {
+                r.message = format!("read drain failed: {e}");
+                return r;
             }
-        }
+        },
         Err(e) => {
             r.message = format!("read failed: {}", summarize_sdk_error(&e));
             return r;
@@ -275,7 +309,10 @@ pub async fn test_connection(cfg: &S3Config) -> TestResult {
     }
 
     r.ok = true;
-    r.message = format!("S3 connectivity OK (wrote, read, and deleted s3://{}/{})", cfg.bucket, key);
+    r.message = format!(
+        "S3 connectivity OK (wrote, read, and deleted s3://{}/{})",
+        cfg.bucket, key
+    );
     r
 }
 
@@ -299,11 +336,21 @@ pub async fn list(cfg: &S3Config, max: usize) -> Result<Vec<RemoteObject>, Strin
     let mut token: Option<String> = None;
     loop {
         let mut req = c.list_objects_v2().bucket(&cfg.bucket).prefix(&prefix);
-        if let Some(t) = token.as_ref() { req = req.continuation_token(t); }
+        if let Some(t) = token.as_ref() {
+            req = req.continuation_token(t);
+        }
         let resp = req.send().await.map_err(|e| summarize_sdk_error(&e))?;
-        for Object { key: k, size, last_modified, .. } in resp.contents.unwrap_or_default() {
+        for Object {
+            key: k,
+            size,
+            last_modified,
+            ..
+        } in resp.contents.unwrap_or_default()
+        {
             if let Some(k) = k {
-                if k.ends_with(TEST_KEY_SUFFIX) { continue; }
+                if k.ends_with(TEST_KEY_SUFFIX) {
+                    continue;
+                }
                 out.push(RemoteObject {
                     key: k,
                     size: size.unwrap_or(0),
@@ -311,7 +358,9 @@ pub async fn list(cfg: &S3Config, max: usize) -> Result<Vec<RemoteObject>, Strin
                 });
             }
         }
-        if out.len() >= max { break; }
+        if out.len() >= max {
+            break;
+        }
         if resp.is_truncated.unwrap_or(false) {
             token = resp.next_continuation_token;
         } else {
@@ -365,15 +414,18 @@ pub async fn upload_version(
 
 mod hostname_fallback {
     pub fn gethostname() -> Option<String> {
-        std::env::var("HOSTNAME").ok().filter(|s| !s.is_empty()).or_else(|| {
-            std::process::Command::new("hostname")
-                .output()
-                .ok()
-                .and_then(|o| {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if s.is_empty() { None } else { Some(s) }
-                })
-        })
+        std::env::var("HOSTNAME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                std::process::Command::new("hostname")
+                    .output()
+                    .ok()
+                    .and_then(|o| {
+                        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                        if s.is_empty() { None } else { Some(s) }
+                    })
+            })
     }
 }
 

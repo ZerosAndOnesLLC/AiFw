@@ -23,7 +23,9 @@ mod tests {
                 packets_out: 50,
                 bytes_in: 50000,
                 bytes_out: 5000,
-                age_secs: 120, iface: None, rtable: None,
+                age_secs: 120,
+                iface: None,
+                rtable: None,
             },
             PfState {
                 id: 2,
@@ -37,7 +39,9 @@ mod tests {
                 packets_out: 100,
                 bytes_in: 100000,
                 bytes_out: 10000,
-                age_secs: 60, iface: None, rtable: None,
+                age_secs: 60,
+                iface: None,
+                rtable: None,
             },
             PfState {
                 id: 3,
@@ -51,7 +55,9 @@ mod tests {
                 packets_out: 1,
                 bytes_in: 100,
                 bytes_out: 50,
-                age_secs: 5, iface: None, rtable: None,
+                age_secs: 5,
+                iface: None,
+                rtable: None,
             },
             PfState {
                 id: 4,
@@ -65,7 +71,9 @@ mod tests {
                 packets_out: 1,
                 bytes_in: 64,
                 bytes_out: 64,
-                age_secs: 7200, iface: None, rtable: None,
+                age_secs: 7200,
+                iface: None,
+                rtable: None,
             },
         ]
     }

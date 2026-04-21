@@ -8,8 +8,10 @@ use crate::AppState;
 use aifw_core::dns_blocklists as bl;
 use axum::{
     Json,
-    extract::{Path, Query, State, WebSocketUpgrade,
-        ws::{Message as WsMessage, WebSocket}},
+    extract::{
+        Path, Query, State, WebSocketUpgrade,
+        ws::{Message as WsMessage, WebSocket},
+    },
     http::StatusCode,
     response::Response,
 };
@@ -48,7 +50,8 @@ pub async fn get_source(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<bl::BlocklistSource>, StatusCode> {
-    bl::load_source(&state.pool, id).await
+    bl::load_source(&state.pool, id)
+        .await
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
 }
@@ -57,7 +60,8 @@ pub async fn create_source(
     State(state): State<AppState>,
     Json(req): Json<bl::NewBlocklistSource>,
 ) -> Result<Json<bl::BlocklistSource>, (StatusCode, String)> {
-    bl::create_source(&state.pool, req).await
+    bl::create_source(&state.pool, req)
+        .await
         .map(Json)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
@@ -67,7 +71,8 @@ pub async fn update_source(
     Path(id): Path<i64>,
     Json(req): Json<bl::UpdateBlocklistSource>,
 ) -> Result<Json<bl::BlocklistSource>, (StatusCode, String)> {
-    bl::update_source(&state.pool, id, req).await
+    bl::update_source(&state.pool, id, req)
+        .await
         .map(Json)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
@@ -76,7 +81,8 @@ pub async fn delete_source(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    bl::delete_source(&state.pool, id).await
+    bl::delete_source(&state.pool, id)
+        .await
         .map(|_| StatusCode::NO_CONTENT)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
@@ -104,7 +110,8 @@ pub async fn put_schedule(
     State(state): State<AppState>,
     Json(req): Json<bl::BlocklistSchedule>,
 ) -> Result<Json<bl::BlocklistSchedule>, (StatusCode, String)> {
-    bl::put_schedule(&state.pool, &req).await
+    bl::put_schedule(&state.pool, &req)
+        .await
         .map(|_| Json(req))
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
@@ -118,7 +125,8 @@ pub async fn set_enabled(
     State(state): State<AppState>,
     Json(req): Json<EnabledReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    bl::set_enabled(&state.pool, req.enabled).await
+    bl::set_enabled(&state.pool, req.enabled)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(serde_json::json!({ "enabled": req.enabled })))
 }
@@ -133,7 +141,8 @@ pub async fn create_whitelist(
     State(state): State<AppState>,
     Json(req): Json<bl::NewPatternEntry>,
 ) -> Result<Json<bl::PatternEntry>, (StatusCode, String)> {
-    let entry = bl::insert_pattern(&state.pool, "dns_whitelist", req).await
+    let entry = bl::insert_pattern(&state.pool, "dns_whitelist", req)
+        .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let _ = bl::rebuild_custom_rpz(&state.pool).await;
     let _ = bl::trigger_rdns_reload().await;
@@ -144,7 +153,8 @@ pub async fn delete_whitelist(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    bl::delete_pattern(&state.pool, "dns_whitelist", id).await
+    bl::delete_pattern(&state.pool, "dns_whitelist", id)
+        .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let _ = bl::rebuild_custom_rpz(&state.pool).await;
     let _ = bl::trigger_rdns_reload().await;
@@ -159,7 +169,8 @@ pub async fn create_customblock(
     State(state): State<AppState>,
     Json(req): Json<bl::NewPatternEntry>,
 ) -> Result<Json<bl::PatternEntry>, (StatusCode, String)> {
-    let entry = bl::insert_pattern(&state.pool, "dns_blocklist_custom", req).await
+    let entry = bl::insert_pattern(&state.pool, "dns_blocklist_custom", req)
+        .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let _ = bl::rebuild_custom_rpz(&state.pool).await;
     let _ = bl::trigger_rdns_reload().await;
@@ -170,7 +181,8 @@ pub async fn delete_customblock(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    bl::delete_pattern(&state.pool, "dns_blocklist_custom", id).await
+    bl::delete_pattern(&state.pool, "dns_blocklist_custom", id)
+        .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let _ = bl::rebuild_custom_rpz(&state.pool).await;
     let _ = bl::trigger_rdns_reload().await;
@@ -179,13 +191,18 @@ pub async fn delete_customblock(
 
 // ---- stats / live stream ----
 
-pub async fn get_stats_snapshot(_state: State<AppState>)
-    -> Result<Json<serde_json::Value>, (StatusCode, String)>
-{
-    let line = control_request("stats-json").await
+pub async fn get_stats_snapshot(
+    _state: State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let line = control_request("stats-json")
+        .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("rdns control: {e}")))?;
-    let v: serde_json::Value = serde_json::from_str(&line)
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("invalid json from rdns: {e}")))?;
+    let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("invalid json from rdns: {e}"),
+        )
+    })?;
     Ok(Json(v))
 }
 
@@ -206,10 +223,7 @@ async fn control_request(cmd: &str) -> std::io::Result<String> {
 /// `{ "type": "stats" | "block" | "error", "data": ... }`.
 ///
 /// Auth is enforced by the route-layer middleware (dns:read).
-pub async fn stream_metrics(
-    State(_state): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+pub async fn stream_metrics(State(_state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(handle_stream_socket)
 }
 
@@ -224,10 +238,19 @@ async fn handle_stream_socket(socket: WebSocket) {
     //      arrived, doubles its reconnect delay. Closing immediately after
     //      an error frame used to confuse the client into thinking a frame
     //      meant success, producing a 1 Hz reconnect loop.
-    async fn short_lived_error(mut tx: futures_util::stream::SplitSink<WebSocket, WsMessage>, reason: String) {
-        let _ = tx.send(WsMessage::Text(
-            format!("{{\"type\":\"error\",\"error\":{}}}", serde_json::Value::String(reason)).into()
-        )).await;
+    async fn short_lived_error(
+        mut tx: futures_util::stream::SplitSink<WebSocket, WsMessage>,
+        reason: String,
+    ) {
+        let _ = tx
+            .send(WsMessage::Text(
+                format!(
+                    "{{\"type\":\"error\",\"error\":{}}}",
+                    serde_json::Value::String(reason)
+                )
+                .into(),
+            ))
+            .await;
         tokio::time::sleep(Duration::from_secs(5)).await;
         let _ = tx.close().await;
     }
@@ -250,8 +273,12 @@ async fn handle_stream_socket(socket: WebSocket) {
     let (stats_r, mut stats_w) = stats_stream.into_split();
     let (blocks_r, mut blocks_w) = blocks_stream.into_split();
 
-    if stats_w.write_all(b"watch 1\n").await.is_err() { return; }
-    if blocks_w.write_all(b"tail-blocks 50\n").await.is_err() { return; }
+    if stats_w.write_all(b"watch 1\n").await.is_err() {
+        return;
+    }
+    if blocks_w.write_all(b"tail-blocks 50\n").await.is_err() {
+        return;
+    }
 
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel::<String>(256);
 
@@ -266,9 +293,13 @@ async fn handle_stream_socket(socket: WebSocket) {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         let body = line.trim();
-                        if body.is_empty() { continue; }
+                        if body.is_empty() {
+                            continue;
+                        }
                         let framed = format!("{{\"type\":\"stats\",\"data\":{body}}}");
-                        if frame_tx.send(framed).await.is_err() { break; }
+                        if frame_tx.send(framed).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
@@ -286,9 +317,13 @@ async fn handle_stream_socket(socket: WebSocket) {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         let body = line.trim();
-                        if body.is_empty() { continue; }
+                        if body.is_empty() {
+                            continue;
+                        }
                         let framed = format!("{{\"type\":\"block\",\"data\":{body}}}");
-                        if frame_tx.send(framed).await.is_err() { break; }
+                        if frame_tx.send(framed).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }

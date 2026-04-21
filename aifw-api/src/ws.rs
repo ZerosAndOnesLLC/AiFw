@@ -1,5 +1,8 @@
 use axum::{
-    extract::{State, WebSocketUpgrade, ws::{Message, WebSocket}},
+    extract::{
+        State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
     response::Response,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -217,10 +220,7 @@ struct IdsHistoryPayload {
     running: bool,
 }
 
-pub async fn ws_handler(
-    State(state): State<AppState>,
-    ws: WebSocketUpgrade,
-) -> Response {
+pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -240,7 +240,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             let skip = history.len().saturating_sub(INITIAL_HISTORY_SAMPLES);
             format!(
                 "{{\"type\":\"history\",\"data\":[{}]}}",
-                history.iter().skip(skip).map(|s| s.as_str()).collect::<Vec<_>>().join(",")
+                history
+                    .iter()
+                    .skip(skip)
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
             )
         };
         let _ = sender.send(Message::Text(batch.into())).await;
@@ -255,7 +260,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             match build_update(&push_state).await {
                 Ok((live_msg, history_msg)) => {
                     // Store slim version in server-side ring buffer (no blocked/connections)
-                    let max = push_state.metrics_history_max.load(std::sync::atomic::Ordering::Relaxed);
+                    let max = push_state
+                        .metrics_history_max
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     {
                         let mut buf = push_state.metrics_history.write().await;
                         while buf.len() >= max {
@@ -268,8 +275,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     if let Some(ref redis) = push_state.redis {
                         let mut conn = redis.clone();
                         let _: Result<(), _> = redis::pipe()
-                            .cmd("LPUSH").arg("aifw:metrics:history").arg(&history_msg)
-                            .cmd("LTRIM").arg("aifw:metrics:history").arg(0i64).arg(max as i64 - 1)
+                            .cmd("LPUSH")
+                            .arg("aifw:metrics:history")
+                            .arg(&history_msg)
+                            .cmd("LTRIM")
+                            .arg("aifw:metrics:history")
+                            .arg(0i64)
+                            .arg(max as i64 - 1)
                             .query_async(&mut conn)
                             .await;
                     }
@@ -305,9 +317,20 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
 async fn build_update(state: &AppState) -> Result<(String, String), String> {
     let stats = state.pf.get_stats().await.map_err(|e| e.to_string())?;
-    let rules = state.rule_engine.list_rules().await.map_err(|e| e.to_string())?;
-    let active = rules.iter().filter(|r| r.status == RuleStatus::Active).count();
-    let nat_rules = state.nat_engine.list_rules().await.map_err(|e| e.to_string())?;
+    let rules = state
+        .rule_engine
+        .list_rules()
+        .await
+        .map_err(|e| e.to_string())?;
+    let active = rules
+        .iter()
+        .filter(|r| r.status == RuleStatus::Active)
+        .count();
+    let nat_rules = state
+        .nat_engine
+        .list_rules()
+        .await
+        .map_err(|e| e.to_string())?;
 
     state.conntrack.refresh().await.map_err(|e| e.to_string())?;
     let conns = state.conntrack.get_connections().await;
@@ -315,24 +338,39 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     // Dispatch plugin hooks for new/closed connections
     {
         use std::collections::HashSet;
-        static PREV_CONNS: std::sync::OnceLock<tokio::sync::RwLock<HashSet<String>>> = std::sync::OnceLock::new();
+        static PREV_CONNS: std::sync::OnceLock<tokio::sync::RwLock<HashSet<String>>> =
+            std::sync::OnceLock::new();
         let prev_lock = PREV_CONNS.get_or_init(|| tokio::sync::RwLock::new(HashSet::new()));
 
-        let current_keys: HashSet<String> = conns.iter().map(|c| format!("{}:{}:{}:{}", c.src_addr, c.src_port, c.dst_addr, c.dst_port)).collect();
+        let current_keys: HashSet<String> = conns
+            .iter()
+            .map(|c| {
+                format!(
+                    "{}:{}:{}:{}",
+                    c.src_addr, c.src_port, c.dst_addr, c.dst_port
+                )
+            })
+            .collect();
         let prev_keys = prev_lock.read().await.clone();
 
         // New connections
         let mgr = state.plugin_manager.read().await;
         if mgr.running_count() > 0 {
             for c in &conns {
-                let key = format!("{}:{}:{}:{}", c.src_addr, c.src_port, c.dst_addr, c.dst_port);
+                let key = format!(
+                    "{}:{}:{}:{}",
+                    c.src_addr, c.src_port, c.dst_addr, c.dst_port
+                );
                 if !prev_keys.contains(&key) {
                     let event = aifw_plugins::HookEvent {
                         hook: aifw_plugins::HookPoint::ConnectionNew,
                         data: aifw_plugins::hooks::HookEventData::Connection {
-                            src_ip: c.src_addr, dst_ip: c.dst_addr,
-                            src_port: c.src_port, dst_port: c.dst_port,
-                            protocol: c.protocol.clone(), state: c.state.clone(),
+                            src_ip: c.src_addr,
+                            dst_ip: c.dst_addr,
+                            src_port: c.src_port,
+                            dst_port: c.dst_port,
+                            protocol: c.protocol.clone(),
+                            state: c.state.clone(),
                         },
                     };
                     let actions = mgr.dispatch(&event).await;
@@ -351,11 +389,16 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                         let event = aifw_plugins::HookEvent {
                             hook: aifw_plugins::HookPoint::ConnectionClosed,
                             data: aifw_plugins::hooks::HookEventData::Connection {
-                                src_ip: parts[0].parse().unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
-                                dst_ip: parts[2].parse().unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+                                src_ip: parts[0].parse().unwrap_or(std::net::IpAddr::V4(
+                                    std::net::Ipv4Addr::UNSPECIFIED,
+                                )),
+                                dst_ip: parts[2].parse().unwrap_or(std::net::IpAddr::V4(
+                                    std::net::Ipv4Addr::UNSPECIFIED,
+                                )),
                                 src_port: parts[1].parse().unwrap_or(0),
                                 dst_port: parts[3].parse().unwrap_or(0),
-                                protocol: String::new(), state: "closed".to_string(),
+                                protocol: String::new(),
+                                state: "closed".to_string(),
                             },
                         };
                         let _ = mgr.dispatch(&event).await;
@@ -366,23 +409,29 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         *prev_lock.write().await = current_keys;
     }
 
-    let connections: Vec<ConnectionPayload> = conns.iter().map(|c| ConnectionPayload {
-        protocol: c.protocol.clone(),
-        src_addr: c.src_addr.to_string(),
-        src_port: c.src_port,
-        dst_addr: c.dst_addr.to_string(),
-        dst_port: c.dst_port,
-        state: c.state.clone(),
-        bytes_in: c.bytes_in,
-        bytes_out: c.bytes_out,
-    }).collect();
+    let connections: Vec<ConnectionPayload> = conns
+        .iter()
+        .map(|c| ConnectionPayload {
+            protocol: c.protocol.clone(),
+            src_addr: c.src_addr.to_string(),
+            src_port: c.src_port,
+            dst_addr: c.dst_addr.to_string(),
+            dst_port: c.dst_port,
+            state: c.state.clone(),
+            bytes_in: c.bytes_in,
+            bytes_out: c.bytes_out,
+        })
+        .collect();
 
     // --- System metrics ---
     let mut system = collect_system_metrics().await;
 
     // Memory breakdown — refreshed every 10 ticks (~10s)
-    static MEM_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Option<MemoryBreakdown>>> = tokio::sync::OnceCell::const_new();
-    let mem_cache = MEM_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(None) }).await;
+    static MEM_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Option<MemoryBreakdown>>> =
+        tokio::sync::OnceCell::const_new();
+    let mem_cache = MEM_CACHE
+        .get_or_init(|| async { tokio::sync::RwLock::new(None) })
+        .await;
     static MEM_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let mem_tick = MEM_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if mem_tick.is_multiple_of(10) {
@@ -403,18 +452,29 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
 
     // Load interface roles (cached every 30 ticks)
     static IFACE_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    static ROLE_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<std::collections::HashMap<String, String>>> = tokio::sync::OnceCell::const_new();
-    let role_cache = ROLE_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(std::collections::HashMap::new()) }).await;
+    static ROLE_CACHE: tokio::sync::OnceCell<
+        tokio::sync::RwLock<std::collections::HashMap<String, String>>,
+    > = tokio::sync::OnceCell::const_new();
+    let role_cache = ROLE_CACHE
+        .get_or_init(|| async { tokio::sync::RwLock::new(std::collections::HashMap::new()) })
+        .await;
     let iface_tick = IFACE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if iface_tick.is_multiple_of(30) {
-        let roles: Vec<(String, String)> = sqlx::query_as("SELECT interface_name, role FROM interface_roles")
-            .fetch_all(&state.pool).await.unwrap_or_default();
+        let roles: Vec<(String, String)> =
+            sqlx::query_as("SELECT interface_name, role FROM interface_roles")
+                .fetch_all(&state.pool)
+                .await
+                .unwrap_or_default();
         *role_cache.write().await = roles.into_iter().collect();
     }
     let roles = role_cache.read().await;
 
     for iface_name in ifconfig_out.split_whitespace() {
-        if iface_name.starts_with("lo") || iface_name.starts_with("pflog") || iface_name.starts_with("enc") || iface_name.starts_with("pfsync") {
+        if iface_name.starts_with("lo")
+            || iface_name.starts_with("pflog")
+            || iface_name.starts_with("enc")
+            || iface_name.starts_with("pfsync")
+        {
             continue;
         }
 
@@ -435,14 +495,29 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                     if !parts.is_empty() {
                         addr = Some(parts[0].to_string());
                         // Convert hex netmask to CIDR subnet
-                        if let Some(mask_hex) = parts.iter().position(|&p| p == "netmask").and_then(|i| parts.get(i + 1))
-                            && let Ok(mask) = u32::from_str_radix(mask_hex.trim_start_matches("0x"), 16) {
-                                let cidr = mask.count_ones();
-                                let ip: u32 = parts[0].split('.').filter_map(|o| o.parse::<u32>().ok())
-                                    .enumerate().fold(0u32, |acc, (i, o)| acc | (o << (24 - i * 8)));
-                                let net = ip & mask;
-                                sn = Some(format!("{}.{}.{}.{}/{}", net >> 24, (net >> 16) & 0xff, (net >> 8) & 0xff, net & 0xff, cidr));
-                            }
+                        if let Some(mask_hex) = parts
+                            .iter()
+                            .position(|&p| p == "netmask")
+                            .and_then(|i| parts.get(i + 1))
+                            && let Ok(mask) =
+                                u32::from_str_radix(mask_hex.trim_start_matches("0x"), 16)
+                        {
+                            let cidr = mask.count_ones();
+                            let ip: u32 = parts[0]
+                                .split('.')
+                                .filter_map(|o| o.parse::<u32>().ok())
+                                .enumerate()
+                                .fold(0u32, |acc, (i, o)| acc | (o << (24 - i * 8)));
+                            let net = ip & mask;
+                            sn = Some(format!(
+                                "{}.{}.{}.{}/{}",
+                                net >> 24,
+                                (net >> 16) & 0xff,
+                                (net >> 8) & 0xff,
+                                net & 0xff,
+                                cidr
+                            ));
+                        }
                     }
                     break;
                 }
@@ -502,8 +577,11 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
 
     // VPN status — refresh every 10 ticks (~10s) to avoid running wg show every second
     static VPN_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    static VPN_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Vec<VpnTunnelStatus>>> = tokio::sync::OnceCell::const_new();
-    let vpn_cache = VPN_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(Vec::new()) }).await;
+    static VPN_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Vec<VpnTunnelStatus>>> =
+        tokio::sync::OnceCell::const_new();
+    let vpn_cache = VPN_CACHE
+        .get_or_init(|| async { tokio::sync::RwLock::new(Vec::new()) })
+        .await;
     let tick = VPN_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let vpn = if tick.is_multiple_of(10) {
         let tunnels = state.vpn_engine.list_wg_tunnels().await.unwrap_or_default();
@@ -511,15 +589,28 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         for t in &tunnels {
             if t.status == aifw_common::VpnStatus::Up {
                 if let Ok(st) = state.vpn_engine.tunnel_status(t.id).await {
-                    let peers: Vec<VpnPeerStatus> = st.get("peers").and_then(|p| p.as_array()).map(|arr| {
-                        arr.iter().filter_map(|p| Some(VpnPeerStatus {
-                            public_key: p.get("public_key")?.as_str()?.to_string(),
-                            endpoint: p.get("endpoint").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                            latest_handshake_secs_ago: p.get("latest_handshake_secs_ago")?.as_i64()?,
-                            transfer_rx: p.get("transfer_rx")?.as_u64()?,
-                            transfer_tx: p.get("transfer_tx")?.as_u64()?,
-                        })).collect()
-                    }).unwrap_or_default();
+                    let peers: Vec<VpnPeerStatus> = st
+                        .get("peers")
+                        .and_then(|p| p.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|p| {
+                                    Some(VpnPeerStatus {
+                                        public_key: p.get("public_key")?.as_str()?.to_string(),
+                                        endpoint: p
+                                            .get("endpoint")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string()),
+                                        latest_handshake_secs_ago: p
+                                            .get("latest_handshake_secs_ago")?
+                                            .as_i64()?,
+                                        transfer_rx: p.get("transfer_rx")?.as_u64()?,
+                                        transfer_tx: p.get("transfer_tx")?.as_u64()?,
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     vpn_status.push(VpnTunnelStatus {
                         id: t.id.to_string(),
                         name: t.name.clone(),
@@ -530,8 +621,11 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                 }
             } else {
                 vpn_status.push(VpnTunnelStatus {
-                    id: t.id.to_string(), name: t.name.clone(), interface_name: t.interface.0.clone(),
-                    running: false, peers: vec![],
+                    id: t.id.to_string(),
+                    name: t.name.clone(),
+                    interface_name: t.interface.0.clone(),
+                    running: false,
+                    peers: vec![],
                 });
             }
         }
@@ -539,31 +633,44 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         Some(vpn_status)
     } else {
         let cached = vpn_cache.read().await;
-        if cached.is_empty() { None } else { Some(cached.clone()) }
+        if cached.is_empty() {
+            None
+        } else {
+            Some(cached.clone())
+        }
     };
 
     // IDS status — refresh every 5 ticks (~5s) to avoid querying alerts every second
-    static IDS_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Option<IdsStatusPayload>>> = tokio::sync::OnceCell::const_new();
-    let ids_cache = IDS_CACHE.get_or_init(|| async { tokio::sync::RwLock::new(None) }).await;
+    static IDS_CACHE: tokio::sync::OnceCell<tokio::sync::RwLock<Option<IdsStatusPayload>>> =
+        tokio::sync::OnceCell::const_new();
+    let ids_cache = IDS_CACHE
+        .get_or_init(|| async { tokio::sync::RwLock::new(None) })
+        .await;
     let ids = if tick.is_multiple_of(5) {
         let payload = if let Some(ref engine) = state.ids_engine {
             let stats = engine.stats();
-            let mode = engine.load_config().await
+            let mode = engine
+                .load_config()
+                .await
                 .map(|c| c.mode.to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
             let running = engine.is_running();
             let loaded_rules = engine.rule_db().rule_count() as u32;
-            let recent = state.alert_buffer
+            let recent = state
+                .alert_buffer
                 .query(None, None, None, None, None, 5, 0)
                 .await;
-            let recent_alerts: Vec<IdsAlertSummary> = recent.into_iter().map(|a| IdsAlertSummary {
-                severity: a.severity.0,
-                signature_msg: a.signature_msg.clone(),
-                src_ip: a.src_ip.to_string(),
-                dst_ip: a.dst_ip.to_string(),
-                protocol: a.protocol.clone(),
-                timestamp: a.timestamp.to_rfc3339(),
-            }).collect();
+            let recent_alerts: Vec<IdsAlertSummary> = recent
+                .into_iter()
+                .map(|a| IdsAlertSummary {
+                    severity: a.severity.0,
+                    signature_msg: a.signature_msg.clone(),
+                    src_ip: a.src_ip.to_string(),
+                    dst_ip: a.dst_ip.to_string(),
+                    protocol: a.protocol.clone(),
+                    timestamp: a.timestamp.to_rfc3339(),
+                })
+                .collect();
             Some(IdsStatusPayload {
                 running,
                 mode,
@@ -631,20 +738,34 @@ async fn collect_system_metrics() -> SystemPayload {
         use std::sync::Mutex;
         static PREV_CP: Mutex<Option<[u64; 5]>> = Mutex::new(None);
 
-        let out = Command::new("sysctl").args(["-n", "kern.cp_time"]).output().await.ok();
+        let out = Command::new("sysctl")
+            .args(["-n", "kern.cp_time"])
+            .output()
+            .await
+            .ok();
         let cur: Option<[u64; 5]> = out.and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout);
-            let v: Vec<u64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            if v.len() >= 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None }
+            let v: Vec<u64> = s
+                .split_whitespace()
+                .filter_map(|x| x.parse().ok())
+                .collect();
+            if v.len() >= 5 {
+                Some([v[0], v[1], v[2], v[3], v[4]])
+            } else {
+                None
+            }
         });
 
-        
         if let Some(cur) = cur {
             let mut prev_lock = PREV_CP.lock().unwrap();
             let pct = if let Some(prev) = *prev_lock {
                 let d: Vec<u64> = (0..5).map(|i| cur[i].saturating_sub(prev[i])).collect();
                 let total: u64 = d.iter().sum();
-                if total > 0 { ((total - d[4]) as f64 / total as f64) * 100.0 } else { 0.0 }
+                if total > 0 {
+                    ((total - d[4]) as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                }
             } else {
                 0.0
             };
@@ -657,31 +778,78 @@ async fn collect_system_metrics() -> SystemPayload {
 
     // Memory via sysctl
     let (mem_total, mem_used, mem_pct) = async {
-        let total_out = Command::new("sysctl").args(["-n", "hw.physmem"]).output().await.ok()?;
-        let total: u64 = String::from_utf8_lossy(&total_out.stdout).trim().parse().ok()?;
+        let total_out = Command::new("sysctl")
+            .args(["-n", "hw.physmem"])
+            .output()
+            .await
+            .ok()?;
+        let total: u64 = String::from_utf8_lossy(&total_out.stdout)
+            .trim()
+            .parse()
+            .ok()?;
 
-        let page_size_out = Command::new("sysctl").args(["-n", "hw.pagesize"]).output().await.ok()?;
-        let page_size: u64 = String::from_utf8_lossy(&page_size_out.stdout).trim().parse().ok()?;
+        let page_size_out = Command::new("sysctl")
+            .args(["-n", "hw.pagesize"])
+            .output()
+            .await
+            .ok()?;
+        let page_size: u64 = String::from_utf8_lossy(&page_size_out.stdout)
+            .trim()
+            .parse()
+            .ok()?;
 
-        let free_out = Command::new("sysctl").args(["-n", "vm.stats.vm.v_free_count"]).output().await.ok()?;
-        let free_pages: u64 = String::from_utf8_lossy(&free_out.stdout).trim().parse().ok()?;
+        let free_out = Command::new("sysctl")
+            .args(["-n", "vm.stats.vm.v_free_count"])
+            .output()
+            .await
+            .ok()?;
+        let free_pages: u64 = String::from_utf8_lossy(&free_out.stdout)
+            .trim()
+            .parse()
+            .ok()?;
 
-        let inactive_out = Command::new("sysctl").args(["-n", "vm.stats.vm.v_inactive_count"]).output().await.ok()?;
-        let inactive_pages: u64 = String::from_utf8_lossy(&inactive_out.stdout).trim().parse().ok()?;
+        let inactive_out = Command::new("sysctl")
+            .args(["-n", "vm.stats.vm.v_inactive_count"])
+            .output()
+            .await
+            .ok()?;
+        let inactive_pages: u64 = String::from_utf8_lossy(&inactive_out.stdout)
+            .trim()
+            .parse()
+            .ok()?;
 
-        let cache_out = Command::new("sysctl").args(["-n", "vm.stats.vm.v_cache_count"]).output().await.ok().and_then(|o| {
-            String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()
-        }).unwrap_or(0);
+        let cache_out = Command::new("sysctl")
+            .args(["-n", "vm.stats.vm.v_cache_count"])
+            .output()
+            .await
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .unwrap_or(0);
 
         let available = (free_pages + inactive_pages + cache_out) * page_size;
         let used = total.saturating_sub(available);
-        let pct = if total > 0 { (used as f64 / total as f64) * 100.0 } else { 0.0 };
+        let pct = if total > 0 {
+            (used as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
         Some((total, used, pct))
-    }.await.unwrap_or((0, 0, 0.0));
+    }
+    .await
+    .unwrap_or((0, 0, 0.0));
 
     // Disk usage via df
     let disks = async {
-        let out = Command::new("df").args(["-k", "-t", "ufs,zfs"]).output().await.ok()?;
+        let out = Command::new("df")
+            .args(["-k", "-t", "ufs,zfs"])
+            .output()
+            .await
+            .ok()?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let mut disks = Vec::new();
         for line in stdout.lines().skip(1) {
@@ -694,44 +862,71 @@ async fn collect_system_metrics() -> SystemPayload {
                 disks.push(DiskPayload {
                     filesystem: parts[0].to_string(),
                     mount: parts[5].to_string(),
-                    total, used, pct,
+                    total,
+                    used,
+                    pct,
                 });
             }
         }
         Some(disks)
-    }.await.unwrap_or_default();
+    }
+    .await
+    .unwrap_or_default();
 
     // Uptime
     let uptime_secs = async {
-        let out = Command::new("sysctl").args(["-n", "kern.boottime"]).output().await.ok()?;
+        let out = Command::new("sysctl")
+            .args(["-n", "kern.boottime"])
+            .output()
+            .await
+            .ok()?;
         let s = String::from_utf8_lossy(&out.stdout);
         // Format: "{ sec = 1711561045, usec = 123456 } Thu Mar 27..."
         let sec_str = s.split("sec = ").nth(1)?.split(',').next()?;
         let boot: u64 = sec_str.trim().parse().ok()?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
         Some(now.saturating_sub(boot))
-    }.await.unwrap_or(0);
+    }
+    .await
+    .unwrap_or(0);
 
     // Hostname
     let hostname = async {
         let out = Command::new("hostname").output().await.ok()?;
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }.await.unwrap_or_else(|| "aifw".to_string());
+    }
+    .await
+    .unwrap_or_else(|| "aifw".to_string());
 
     // OS version
     let os_version = async {
         let out = Command::new("freebsd-version").output().await.ok()?;
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }.await.unwrap_or_else(|| "FreeBSD".to_string());
+    }
+    .await
+    .unwrap_or_else(|| "FreeBSD".to_string());
 
     // DNS servers
-    let dns_servers = tokio::fs::read_to_string("/etc/resolv.conf").await.ok()
-        .map(|c| c.lines().filter_map(|l| l.strip_prefix("nameserver").map(|s| s.trim().to_string())).collect())
+    let dns_servers = tokio::fs::read_to_string("/etc/resolv.conf")
+        .await
+        .ok()
+        .map(|c| {
+            c.lines()
+                .filter_map(|l| l.strip_prefix("nameserver").map(|s| s.trim().to_string()))
+                .collect()
+        })
         .unwrap_or_default();
 
     // Default gateway + route count
     let (default_gateway, route_count) = async {
-        let out = Command::new("netstat").args(["-rn", "-f", "inet"]).output().await.ok()?;
+        let out = Command::new("netstat")
+            .args(["-rn", "-f", "inet"])
+            .output()
+            .await
+            .ok()?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let mut gw = String::new();
         let mut count = 0;
@@ -745,11 +940,17 @@ async fn collect_system_metrics() -> SystemPayload {
             }
         }
         Some((gw, count))
-    }.await.unwrap_or_default();
+    }
+    .await
+    .unwrap_or_default();
 
     // Disk I/O via gstat
     let disk_io = async {
-        let out = Command::new("gstat").args(["-b", "-p"]).output().await.ok()?;
+        let out = Command::new("gstat")
+            .args(["-b", "-p"])
+            .output()
+            .await
+            .ok()?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let mut total = DiskIoPayload::default();
         for line in stdout.lines().skip(1) {
@@ -758,7 +959,9 @@ async fn collect_system_metrics() -> SystemPayload {
             if parts.len() >= 10 {
                 let name = parts[9];
                 // Only count whole disks, not partitions
-                if name.contains('p') || name.starts_with("cd") { continue; }
+                if name.contains('p') || name.starts_with("cd") {
+                    continue;
+                }
                 total.reads_per_sec += parts[2].parse::<f64>().unwrap_or(0.0);
                 total.read_kbps += parts[3].parse::<f64>().unwrap_or(0.0);
                 total.writes_per_sec += parts[5].parse::<f64>().unwrap_or(0.0);
@@ -766,14 +969,29 @@ async fn collect_system_metrics() -> SystemPayload {
             }
         }
         Some(total)
-    }.await.unwrap_or_default();
+    }
+    .await
+    .unwrap_or_default();
 
-    let cpu_cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+    let cpu_cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
 
     SystemPayload {
-        cpu_usage, cpu_cores, memory_total: mem_total, memory_used: mem_used, memory_pct: mem_pct,
+        cpu_usage,
+        cpu_cores,
+        memory_total: mem_total,
+        memory_used: mem_used,
+        memory_pct: mem_pct,
         memory_breakdown: None,
-        disks, disk_io, uptime_secs, hostname, os_version, dns_servers, default_gateway, route_count,
+        disks,
+        disk_io,
+        uptime_secs,
+        hostname,
+        os_version,
+        dns_servers,
+        default_gateway,
+        route_count,
     }
 }
 
@@ -783,17 +1001,38 @@ pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
 
     // OS-level memory categories via sysctl (FreeBSD page-based)
     let page_size = async {
-        let out = Command::new("sysctl").args(["-n", "hw.pagesize"]).output().await.ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()
-    }.await.unwrap_or(4096);
-    let pages_to_mb = |key: &str| -> std::pin::Pin<Box<dyn std::future::Future<Output = f64> + Send + '_>> {
-        let key = key.to_string();
-        Box::pin(async move {
-            let out = Command::new("sysctl").args(["-n", &key]).output().await.ok();
-            let pages = out.and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()).unwrap_or(0);
-            (pages * page_size) as f64 / (1024.0 * 1024.0)
-        })
-    };
+        let out = Command::new("sysctl")
+            .args(["-n", "hw.pagesize"])
+            .output()
+            .await
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()
+    }
+    .await
+    .unwrap_or(4096);
+    let pages_to_mb =
+        |key: &str| -> std::pin::Pin<Box<dyn std::future::Future<Output = f64> + Send + '_>> {
+            let key = key.to_string();
+            Box::pin(async move {
+                let out = Command::new("sysctl")
+                    .args(["-n", &key])
+                    .output()
+                    .await
+                    .ok();
+                let pages = out
+                    .and_then(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .trim()
+                            .parse::<u64>()
+                            .ok()
+                    })
+                    .unwrap_or(0);
+                (pages * page_size) as f64 / (1024.0 * 1024.0)
+            })
+        };
     let active_mb = pages_to_mb("vm.stats.vm.v_active_count").await;
     let inactive_mb = pages_to_mb("vm.stats.vm.v_inactive_count").await;
     let wired_mb = pages_to_mb("vm.stats.vm.v_wire_count").await;
@@ -801,25 +1040,26 @@ pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
     let free_mb = pages_to_mb("vm.stats.vm.v_free_count").await;
 
     // Process RSS via ps (lightweight)
-    let get_rss = |pid_name: &str| -> std::pin::Pin<Box<dyn std::future::Future<Output = f64> + Send + '_>> {
-        let pid_name = pid_name.to_string();
-        Box::pin(async move {
-            let out = Command::new("ps").args(["aux"]).output().await.ok();
-            if let Some(out) = out {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                for line in stdout.lines() {
-                    if line.contains(&pid_name) && !line.contains("grep") {
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 6 {
-                            // RSS is in KB in column 5 (0-indexed)
-                            return parts[5].parse::<f64>().unwrap_or(0.0) / 1024.0;
+    let get_rss =
+        |pid_name: &str| -> std::pin::Pin<Box<dyn std::future::Future<Output = f64> + Send + '_>> {
+            let pid_name = pid_name.to_string();
+            Box::pin(async move {
+                let out = Command::new("ps").args(["aux"]).output().await.ok();
+                if let Some(out) = out {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    for line in stdout.lines() {
+                        if line.contains(&pid_name) && !line.contains("grep") {
+                            let parts: Vec<&str> = line.split_whitespace().collect();
+                            if parts.len() >= 6 {
+                                // RSS is in KB in column 5 (0-indexed)
+                                return parts[5].parse::<f64>().unwrap_or(0.0) / 1024.0;
+                            }
                         }
                     }
                 }
-            }
-            0.0
-        })
-    };
+                0.0
+            })
+        };
     let api_rss_mb = get_rss("aifw-api").await;
     let daemon_rss_mb = get_rss("aifw-daemon").await;
 
@@ -849,28 +1089,51 @@ pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
                 }
             }
             None
-        }.await.unwrap_or(100_000);
+        }
+        .await
+        .unwrap_or(100_000);
         (s.states_count, max)
     };
 
     // DB file size
-    let db_size_mb = tokio::fs::metadata("/var/db/aifw/aifw.db").await
-        .map(|m| m.len() as f64 / (1024.0 * 1024.0)).unwrap_or(0.0);
+    let db_size_mb = tokio::fs::metadata("/var/db/aifw/aifw.db")
+        .await
+        .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
 
     // ZFS ARC
     let arc_mb = async {
-        let out = Command::new("sysctl").args(["-n", "kstat.zfs.misc.arcstats.size"]).output().await.ok()?;
-        let bytes = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()?;
+        let out = Command::new("sysctl")
+            .args(["-n", "kstat.zfs.misc.arcstats.size"])
+            .output()
+            .await
+            .ok()?;
+        let bytes = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()?;
         Some(bytes as f64 / (1024.0 * 1024.0))
-    }.await.unwrap_or(0.0);
+    }
+    .await
+    .unwrap_or(0.0);
 
     MemoryBreakdown {
-        active_mb, inactive_mb, wired_mb, cached_mb, free_mb,
-        api_rss_mb, daemon_rss_mb,
-        ids_buffer_mb, ids_buffer_max_mb, ids_buffer_count,
-        metrics_history_count, metrics_history_mb,
-        pf_states, pf_states_max,
-        db_size_mb, arc_mb,
+        active_mb,
+        inactive_mb,
+        wired_mb,
+        cached_mb,
+        free_mb,
+        api_rss_mb,
+        daemon_rss_mb,
+        ids_buffer_mb,
+        ids_buffer_max_mb,
+        ids_buffer_count,
+        metrics_history_count,
+        metrics_history_mb,
+        pf_states,
+        pf_states_max,
+        db_size_mb,
+        arc_mb,
     }
 }
 
@@ -878,9 +1141,13 @@ pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
 const PFLOG_MAX_ENTRIES: usize = 10_000;
 
 fn parse_pflog_line(line: &str) -> Option<BlockedPayload> {
-    let action = if line.contains(": block ") { "block" }
-        else if line.contains(": pass ") { "pass" }
-        else { return None };
+    let action = if line.contains(": block ") {
+        "block"
+    } else if line.contains(": pass ") {
+        "pass"
+    } else {
+        return None;
+    };
 
     // -tttt format: "2026-04-01 13:09:28.475326 rule ..."
     let mut words = line.split_whitespace();
@@ -891,18 +1158,29 @@ fn parse_pflog_line(line: &str) -> Option<BlockedPayload> {
     let mut entry = BlockedPayload {
         timestamp,
         action: action.to_string(),
-        direction: String::new(), interface: String::new(),
+        direction: String::new(),
+        interface: String::new(),
         protocol: String::new(),
-        src_addr: String::new(), src_port: 0,
-        dst_addr: String::new(), dst_port: 0,
+        src_addr: String::new(),
+        src_port: 0,
+        dst_addr: String::new(),
+        dst_port: 0,
     };
 
-    let marker = if action == "block" { ": block " } else { ": pass " };
+    let marker = if action == "block" {
+        ": block "
+    } else {
+        ": pass "
+    };
     if let Some(pos) = line.find(marker) {
         let rest = &line[pos + 2..];
         let parts: Vec<&str> = rest.split_whitespace().collect();
         entry.direction = parts.get(1).unwrap_or(&"").to_string();
-        entry.interface = parts.get(3).map(|s| s.trim_end_matches(':')).unwrap_or("").to_string();
+        entry.interface = parts
+            .get(3)
+            .map(|s| s.trim_end_matches(':'))
+            .unwrap_or("")
+            .to_string();
     }
 
     if let Some(gt_pos) = line.find(" > ") {
@@ -941,15 +1219,25 @@ fn parse_pflog_line(line: &str) -> Option<BlockedPayload> {
     }
 
     let lower = line.to_lowercase();
-    if line.contains("Flags [") || lower.contains(" tcp ") { entry.protocol = "tcp".to_string(); }
-    else if lower.contains(" udp ") { entry.protocol = "udp".to_string(); }
-    else if lower.contains("icmp") { entry.protocol = "icmp".to_string(); }
-    else if lower.contains(" esp ") || lower.contains("esp(") { entry.protocol = "esp".to_string(); }
-    else if lower.contains(" ah ") || lower.contains("ah(") { entry.protocol = "ah".to_string(); }
-    else if lower.contains(" gre ") || lower.contains("gre(") { entry.protocol = "gre".to_string(); }
-    else if lower.contains("igmp") { entry.protocol = "igmp".to_string(); }
+    if line.contains("Flags [") || lower.contains(" tcp ") {
+        entry.protocol = "tcp".to_string();
+    } else if lower.contains(" udp ") {
+        entry.protocol = "udp".to_string();
+    } else if lower.contains("icmp") {
+        entry.protocol = "icmp".to_string();
+    } else if lower.contains(" esp ") || lower.contains("esp(") {
+        entry.protocol = "esp".to_string();
+    } else if lower.contains(" ah ") || lower.contains("ah(") {
+        entry.protocol = "ah".to_string();
+    } else if lower.contains(" gre ") || lower.contains("gre(") {
+        entry.protocol = "gre".to_string();
+    } else if lower.contains("igmp") {
+        entry.protocol = "igmp".to_string();
+    }
 
-    if entry.src_addr.is_empty() { return None; }
+    if entry.src_addr.is_empty() {
+        return None;
+    }
     Some(entry)
 }
 
@@ -962,33 +1250,51 @@ fn blocked_buffer() -> &'static BlockedBuffer {
 
 /// Call once on API startup to bootstrap from pflog file and start live capture.
 /// Both bootstrap and live capture run in a background task so the API starts immediately.
-pub fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw_plugins::PluginManager>>) {
+pub fn start_pflog_collector(
+    plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw_plugins::PluginManager>>,
+) {
     let buf = blocked_buffer().clone();
     let buf2 = buf.clone();
     let pmgr = plugin_mgr.clone();
     tokio::spawn(async move {
         // Bootstrap: load historical entries from /var/log/pflog (non-blocking)
         if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-r", "/var/log/pflog"])
-            .output().await
-            && output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let mut entries: Vec<BlockedPayload> = stdout.lines()
-                    .filter_map(parse_pflog_line)
-                    .collect();
-                if entries.len() > PFLOG_MAX_ENTRIES {
-                    entries.drain(..entries.len() - PFLOG_MAX_ENTRIES);
-                }
-                let count = entries.len();
-                *buf.write().await = entries;
-                tracing::info!(count, "pflog bootstrap complete");
+            .args([
+                "/usr/sbin/tcpdump",
+                "-tttt",
+                "-n",
+                "-e",
+                "-r",
+                "/var/log/pflog",
+            ])
+            .output()
+            .await
+            && output.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut entries: Vec<BlockedPayload> =
+                stdout.lines().filter_map(parse_pflog_line).collect();
+            if entries.len() > PFLOG_MAX_ENTRIES {
+                entries.drain(..entries.len() - PFLOG_MAX_ENTRIES);
             }
+            let count = entries.len();
+            *buf.write().await = entries;
+            tracing::info!(count, "pflog bootstrap complete");
+        }
 
         // Live capture: persistent tcpdump on pflog0 interface
         use tokio::io::{AsyncBufReadExt, BufReader};
         loop {
             let child = tokio::process::Command::new("/usr/local/bin/sudo")
-                .args(["/usr/sbin/tcpdump", "-tttt", "-n", "-e", "-l", "-i", "pflog0"])
+                .args([
+                    "/usr/sbin/tcpdump",
+                    "-tttt",
+                    "-n",
+                    "-e",
+                    "-l",
+                    "-i",
+                    "pflog0",
+                ])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
                 .spawn();
@@ -1007,8 +1313,16 @@ pub fn start_pflog_collector(plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw
                                         data: aifw_plugins::hooks::HookEventData::Rule {
                                             src_ip: entry.src_addr.parse().ok(),
                                             dst_ip: entry.dst_addr.parse().ok(),
-                                            src_port: if entry.src_port > 0 { Some(entry.src_port) } else { None },
-                                            dst_port: if entry.dst_port > 0 { Some(entry.dst_port) } else { None },
+                                            src_port: if entry.src_port > 0 {
+                                                Some(entry.src_port)
+                                            } else {
+                                                None
+                                            },
+                                            dst_port: if entry.dst_port > 0 {
+                                                Some(entry.dst_port)
+                                            } else {
+                                                None
+                                            },
                                             protocol: entry.protocol.clone(),
                                             action: entry.action.clone(),
                                             rule_id: None,
@@ -1051,7 +1365,8 @@ async fn collect_services() -> Vec<ServiceStatusPayload> {
     use tokio::sync::RwLock;
 
     static TICK: AtomicU64 = AtomicU64::new(0);
-    static CACHE: std::sync::OnceLock<RwLock<Vec<ServiceStatusPayload>>> = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<RwLock<Vec<ServiceStatusPayload>>> =
+        std::sync::OnceLock::new();
 
     let cache = CACHE.get_or_init(|| RwLock::new(Vec::new()));
     let tick = TICK.fetch_add(1, Ordering::Relaxed);
@@ -1059,16 +1374,29 @@ async fn collect_services() -> Vec<ServiceStatusPayload> {
     // Refresh every 10 seconds
     if tick.is_multiple_of(10) {
         let mut svcs = Vec::new();
-        for (name, svc_name) in [("rDNS", "rdns"), ("rDHCP", "rdhcpd"), ("rTIME", "rtime"), ("TrafficCop", "trafficcop")] {
+        for (name, svc_name) in [
+            ("rDNS", "rdns"),
+            ("rDHCP", "rdhcpd"),
+            ("rTIME", "rtime"),
+            ("TrafficCop", "trafficcop"),
+        ] {
             let running = tokio::process::Command::new("/usr/local/bin/sudo")
                 .args(["/usr/sbin/service", svc_name, "status"])
-                .output().await
-                .map(|o| o.status.success()).unwrap_or(false);
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false);
             let enabled = tokio::process::Command::new("/usr/local/bin/sudo")
                 .args(["/usr/sbin/sysrc", "-n", &format!("{svc_name}_enable")])
-                .output().await
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES").unwrap_or(false);
-            svcs.push(ServiceStatusPayload { name: name.to_string(), running, enabled });
+                .output()
+                .await
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")
+                .unwrap_or(false);
+            svcs.push(ServiceStatusPayload {
+                name: name.to_string(),
+                running,
+                enabled,
+            });
         }
         *cache.write().await = svcs;
     }

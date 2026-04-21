@@ -29,10 +29,10 @@ impl SyslogOutput {
 
     fn severity_to_syslog(severity: u8) -> u8 {
         match severity {
-            1 => 1,     // Critical → Alert
-            2 => 2,     // High → Critical
-            3 => 4,     // Medium → Warning
-            _ => 6,     // Info → Informational
+            1 => 1, // Critical → Alert
+            2 => 2, // High → Critical
+            3 => 4, // Medium → Warning
+            _ => 6, // Info → Informational
         }
     }
 }

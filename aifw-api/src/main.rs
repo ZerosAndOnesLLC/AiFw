@@ -1,16 +1,16 @@
+mod acme;
 mod ai_analysis;
 mod aliases;
 mod auth;
 mod backup;
-mod ca;
-mod acme;
 mod backup_s3;
+mod ca;
 mod dhcp;
-mod log_tail;
 mod dns_blocklists;
 mod dns_resolver;
-mod iface;
 mod ids;
+mod iface;
+mod log_tail;
 mod metrics_series;
 mod multiwan;
 mod plugins;
@@ -31,8 +31,7 @@ use aifw_core::{
 };
 use aifw_pf::PfBackend;
 use axum::{
-    Router,
-    middleware,
+    Router, middleware,
     routing::{delete, get, post, put},
 };
 use clap::Parser;
@@ -240,7 +239,11 @@ struct Args {
     allow_plaintext_external: bool,
 
     /// Valkey/Redis URL for metrics persistence (optional)
-    #[arg(long, env = "AIFW_VALKEY_URL", default_value = "redis://127.0.0.1:6379")]
+    #[arg(
+        long,
+        env = "AIFW_VALKEY_URL",
+        default_value = "redis://127.0.0.1:6379"
+    )]
     valkey_url: String,
 
     /// Log level
@@ -276,8 +279,14 @@ pub fn build_router(
         .route("/api/v1/auth/login", post(routes::login))
         .route("/api/v1/auth/totp/login", post(routes::totp_login))
         .route("/api/v1/auth/refresh", post(routes::refresh_token))
-        .route("/api/v1/auth/oauth/{provider}/authorize", get(routes::oauth_authorize))
-        .route("/api/v1/auth/oauth/{provider}/callback", get(routes::oauth_callback))
+        .route(
+            "/api/v1/auth/oauth/{provider}/authorize",
+            get(routes::oauth_authorize),
+        )
+        .route(
+            "/api/v1/auth/oauth/{provider}/callback",
+            get(routes::oauth_callback),
+        )
         .route("/api/v1/auth/register", post(routes::register));
 
     use aifw_common::Permission;
@@ -321,12 +330,21 @@ pub fn build_router(
     // rules:write
     let rules_write = Router::new()
         .route("/api/v1/rules", post(routes::create_rule))
-        .route("/api/v1/rules/{id}", put(routes::update_rule).delete(routes::delete_rule))
+        .route(
+            "/api/v1/rules/{id}",
+            put(routes::update_rule).delete(routes::delete_rule),
+        )
         .route("/api/v1/rules/reorder", put(routes::reorder_rules))
-        .route("/api/v1/rules/block-logging", post(routes::toggle_block_logging))
+        .route(
+            "/api/v1/rules/block-logging",
+            post(routes::toggle_block_logging),
+        )
         .route("/api/v1/reload", post(routes::reload))
         .route("/api/v1/schedules", post(routes::create_schedule))
-        .route("/api/v1/schedules/{id}", put(routes::update_schedule).delete(routes::delete_schedule))
+        .route(
+            "/api/v1/schedules/{id}",
+            put(routes::update_schedule).delete(routes::delete_schedule),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::RulesWrite)));
 
     // nat:read
@@ -338,7 +356,10 @@ pub fn build_router(
     // nat:write
     let nat_write = Router::new()
         .route("/api/v1/nat", post(routes::create_nat_rule))
-        .route("/api/v1/nat/{id}", put(routes::update_nat_rule).delete(routes::delete_nat_rule))
+        .route(
+            "/api/v1/nat/{id}",
+            put(routes::update_nat_rule).delete(routes::delete_nat_rule),
+        )
         .route("/api/v1/nat/reorder", put(routes::reorder_nat_rules))
         .layer(middleware::from_fn(perm_check!(Permission::NatWrite)));
 
@@ -346,8 +367,14 @@ pub fn build_router(
     let vpn_read = Router::new()
         .route("/api/v1/vpn/wg", get(routes::list_wg_tunnels))
         .route("/api/v1/vpn/wg/{id}/peers", get(routes::list_wg_peers))
-        .route("/api/v1/vpn/wg/{id}/peers/next-ip", get(routes::next_wg_peer_ip))
-        .route("/api/v1/vpn/wg/{tid}/peers/{pid}/config", get(routes::get_peer_config))
+        .route(
+            "/api/v1/vpn/wg/{id}/peers/next-ip",
+            get(routes::next_wg_peer_ip),
+        )
+        .route(
+            "/api/v1/vpn/wg/{tid}/peers/{pid}/config",
+            get(routes::get_peer_config),
+        )
         .route("/api/v1/vpn/wg/{id}/status", get(routes::wg_tunnel_status))
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas))
         .layer(middleware::from_fn(perm_check!(Permission::VpnRead)));
@@ -355,11 +382,17 @@ pub fn build_router(
     // vpn:write
     let vpn_write = Router::new()
         .route("/api/v1/vpn/wg", post(routes::create_wg_tunnel))
-        .route("/api/v1/vpn/wg/{id}", put(routes::update_wg_tunnel).delete(routes::delete_wg_tunnel))
+        .route(
+            "/api/v1/vpn/wg/{id}",
+            put(routes::update_wg_tunnel).delete(routes::delete_wg_tunnel),
+        )
         .route("/api/v1/vpn/wg/{id}/start", post(routes::start_wg_tunnel))
         .route("/api/v1/vpn/wg/{id}/stop", post(routes::stop_wg_tunnel))
         .route("/api/v1/vpn/wg/{id}/peers", post(routes::create_wg_peer))
-        .route("/api/v1/vpn/wg/{tid}/peers/{pid}", put(routes::update_wg_peer).delete(routes::delete_wg_peer))
+        .route(
+            "/api/v1/vpn/wg/{tid}/peers/{pid}",
+            put(routes::update_wg_peer).delete(routes::delete_wg_peer),
+        )
         .route("/api/v1/vpn/ipsec", post(routes::create_ipsec_sa))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
         .layer(middleware::from_fn(perm_check!(Permission::VpnWrite)));
@@ -373,7 +406,10 @@ pub fn build_router(
     // geoip:write
     let geoip_write = Router::new()
         .route("/api/v1/geoip", post(routes::create_geoip_rule))
-        .route("/api/v1/geoip/{id}", put(routes::update_geoip_rule).delete(routes::delete_geoip_rule))
+        .route(
+            "/api/v1/geoip/{id}",
+            put(routes::update_geoip_rule).delete(routes::delete_geoip_rule),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::GeoipWrite)));
 
     // ids:read
@@ -387,7 +423,10 @@ pub fn build_router(
         .route("/api/v1/ids/rules/search", get(ids::search_rules))
         .route("/api/v1/ids/suppressions", get(ids::list_suppressions))
         .route("/api/v1/ids/stats", get(ids::get_stats))
-        .route("/api/v1/ids/alerts/buffer-stats", get(ids::alert_buffer_stats))
+        .route(
+            "/api/v1/ids/alerts/buffer-stats",
+            get(ids::alert_buffer_stats),
+        )
         .route("/api/v1/ai/audit-log", get(ai_analysis::get_audit_log))
         .layer(middleware::from_fn(perm_check!(Permission::IdsRead)));
 
@@ -395,13 +434,22 @@ pub fn build_router(
     let ids_write = Router::new()
         .route("/api/v1/ids/config", put(ids::update_config))
         .route("/api/v1/ids/alerts", delete(ids::purge_alerts))
-        .route("/api/v1/ids/alerts/{id}/acknowledge", put(ids::acknowledge_alert))
+        .route(
+            "/api/v1/ids/alerts/{id}/acknowledge",
+            put(ids::acknowledge_alert),
+        )
         .route("/api/v1/ids/alerts/{id}/classify", put(ids::classify_alert))
         .route("/api/v1/ids/rulesets", post(ids::create_ruleset))
-        .route("/api/v1/ids/rulesets/{id}", put(ids::update_ruleset).delete(ids::delete_ruleset))
+        .route(
+            "/api/v1/ids/rulesets/{id}",
+            put(ids::update_ruleset).delete(ids::delete_ruleset),
+        )
         .route("/api/v1/ids/rules/{id}", put(ids::update_rule))
         .route("/api/v1/ids/suppressions", post(ids::create_suppression))
-        .route("/api/v1/ids/suppressions/{id}", delete(ids::delete_suppression))
+        .route(
+            "/api/v1/ids/suppressions/{id}",
+            delete(ids::delete_suppression),
+        )
         .route("/api/v1/ids/reload", post(ids::reload))
         .route("/api/v1/ai/analyze", post(ai_analysis::trigger_analysis))
         .layer(middleware::from_fn(perm_check!(Permission::IdsWrite)));
@@ -409,17 +457,38 @@ pub fn build_router(
     // dns:read
     let dns_read = Router::new()
         .route("/api/v1/dns", get(routes::get_dns))
-        .route("/api/v1/dns/resolver/status", get(dns_resolver::resolver_status))
-        .route("/api/v1/dns/resolver/config", get(dns_resolver::get_config_handler))
+        .route(
+            "/api/v1/dns/resolver/status",
+            get(dns_resolver::resolver_status),
+        )
+        .route(
+            "/api/v1/dns/resolver/config",
+            get(dns_resolver::get_config_handler),
+        )
         .route("/api/v1/dns/resolver/hosts", get(dns_resolver::list_hosts))
-        .route("/api/v1/dns/resolver/domains", get(dns_resolver::list_domains))
+        .route(
+            "/api/v1/dns/resolver/domains",
+            get(dns_resolver::list_domains),
+        )
         .route("/api/v1/dns/resolver/acls", get(dns_resolver::list_acls))
-        .route("/api/v1/dns/resolver/logs", get(dns_resolver::resolver_logs))
+        .route(
+            "/api/v1/dns/resolver/logs",
+            get(dns_resolver::resolver_logs),
+        )
         .route("/api/v1/dns/blocklists", get(dns_blocklists::list_sources))
-        .route("/api/v1/dns/blocklists/{id}", get(dns_blocklists::get_source))
-        .route("/api/v1/dns/blocklists/schedule", get(dns_blocklists::get_schedule))
+        .route(
+            "/api/v1/dns/blocklists/{id}",
+            get(dns_blocklists::get_source),
+        )
+        .route(
+            "/api/v1/dns/blocklists/schedule",
+            get(dns_blocklists::get_schedule),
+        )
         .route("/api/v1/dns/whitelist", get(dns_blocklists::list_whitelist))
-        .route("/api/v1/dns/customblocks", get(dns_blocklists::list_customblocks))
+        .route(
+            "/api/v1/dns/customblocks",
+            get(dns_blocklists::list_customblocks),
+        )
         .route("/api/v1/dns/stats", get(dns_blocklists::get_stats_snapshot))
         .route("/api/v1/dns/stream", get(dns_blocklists::stream_metrics))
         .layer(middleware::from_fn(perm_check!(Permission::DnsRead)));
@@ -427,27 +496,87 @@ pub fn build_router(
     // dns:write
     let dns_write = Router::new()
         .route("/api/v1/dns", put(routes::update_dns))
-        .route("/api/v1/dns/resolver/config", put(dns_resolver::update_config_handler))
-        .route("/api/v1/dns/resolver/hosts", post(dns_resolver::create_host))
-        .route("/api/v1/dns/resolver/hosts/{id}", put(dns_resolver::update_host).delete(dns_resolver::delete_host))
-        .route("/api/v1/dns/resolver/domains", post(dns_resolver::create_domain))
-        .route("/api/v1/dns/resolver/domains/{id}", put(dns_resolver::update_domain).delete(dns_resolver::delete_domain))
+        .route(
+            "/api/v1/dns/resolver/config",
+            put(dns_resolver::update_config_handler),
+        )
+        .route(
+            "/api/v1/dns/resolver/hosts",
+            post(dns_resolver::create_host),
+        )
+        .route(
+            "/api/v1/dns/resolver/hosts/{id}",
+            put(dns_resolver::update_host).delete(dns_resolver::delete_host),
+        )
+        .route(
+            "/api/v1/dns/resolver/domains",
+            post(dns_resolver::create_domain),
+        )
+        .route(
+            "/api/v1/dns/resolver/domains/{id}",
+            put(dns_resolver::update_domain).delete(dns_resolver::delete_domain),
+        )
         .route("/api/v1/dns/resolver/acls", post(dns_resolver::create_acl))
-        .route("/api/v1/dns/resolver/acls/{id}", delete(dns_resolver::delete_acl))
-        .route("/api/v1/dns/resolver/apply", post(dns_resolver::apply_resolver))
-        .route("/api/v1/dns/resolver/start", post(dns_resolver::resolver_start))
-        .route("/api/v1/dns/resolver/stop", post(dns_resolver::resolver_stop))
-        .route("/api/v1/dns/resolver/restart", post(dns_resolver::resolver_restart))
-        .route("/api/v1/dns/blocklists", post(dns_blocklists::create_source))
-        .route("/api/v1/dns/blocklists/{id}", put(dns_blocklists::update_source).delete(dns_blocklists::delete_source))
-        .route("/api/v1/dns/blocklists/{id}/refresh", post(dns_blocklists::refresh_one))
-        .route("/api/v1/dns/blocklists/refresh-all", post(dns_blocklists::refresh_everything))
-        .route("/api/v1/dns/blocklists/schedule", put(dns_blocklists::put_schedule))
-        .route("/api/v1/dns/blocklists/enabled", put(dns_blocklists::set_enabled))
-        .route("/api/v1/dns/whitelist", post(dns_blocklists::create_whitelist))
-        .route("/api/v1/dns/whitelist/{id}", delete(dns_blocklists::delete_whitelist))
-        .route("/api/v1/dns/customblocks", post(dns_blocklists::create_customblock))
-        .route("/api/v1/dns/customblocks/{id}", delete(dns_blocklists::delete_customblock))
+        .route(
+            "/api/v1/dns/resolver/acls/{id}",
+            delete(dns_resolver::delete_acl),
+        )
+        .route(
+            "/api/v1/dns/resolver/apply",
+            post(dns_resolver::apply_resolver),
+        )
+        .route(
+            "/api/v1/dns/resolver/start",
+            post(dns_resolver::resolver_start),
+        )
+        .route(
+            "/api/v1/dns/resolver/stop",
+            post(dns_resolver::resolver_stop),
+        )
+        .route(
+            "/api/v1/dns/resolver/restart",
+            post(dns_resolver::resolver_restart),
+        )
+        .route(
+            "/api/v1/dns/blocklists",
+            post(dns_blocklists::create_source),
+        )
+        .route(
+            "/api/v1/dns/blocklists/{id}",
+            put(dns_blocklists::update_source).delete(dns_blocklists::delete_source),
+        )
+        .route(
+            "/api/v1/dns/blocklists/{id}/refresh",
+            post(dns_blocklists::refresh_one),
+        )
+        .route(
+            "/api/v1/dns/blocklists/refresh-all",
+            post(dns_blocklists::refresh_everything),
+        )
+        .route(
+            "/api/v1/dns/blocklists/schedule",
+            put(dns_blocklists::put_schedule),
+        )
+        .route(
+            "/api/v1/dns/blocklists/enabled",
+            put(dns_blocklists::set_enabled),
+        )
+        .route(
+            "/api/v1/dns/whitelist",
+            post(dns_blocklists::create_whitelist),
+        )
+        .route(
+            "/api/v1/dns/whitelist/{id}",
+            delete(dns_blocklists::delete_whitelist),
+        )
+        .route(
+            "/api/v1/dns/customblocks",
+            post(dns_blocklists::create_customblock),
+        )
+        .route(
+            "/api/v1/dns/customblocks/{id}",
+            delete(dns_blocklists::delete_customblock),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::DnsWrite)));
 
     // dhcp:read
@@ -472,9 +601,18 @@ pub fn build_router(
         .route("/api/v1/dhcp/restart", post(dhcp::dhcp_restart))
         .route("/api/v1/dhcp/v4/config", put(dhcp::update_config))
         .route("/api/v1/dhcp/v4/subnets", post(dhcp::create_subnet))
-        .route("/api/v1/dhcp/v4/subnets/{id}", put(dhcp::update_subnet).delete(dhcp::delete_subnet))
-        .route("/api/v1/dhcp/v4/reservations", post(dhcp::create_reservation))
-        .route("/api/v1/dhcp/v4/reservations/{id}", put(dhcp::update_reservation).delete(dhcp::delete_reservation))
+        .route(
+            "/api/v1/dhcp/v4/subnets/{id}",
+            put(dhcp::update_subnet).delete(dhcp::delete_subnet),
+        )
+        .route(
+            "/api/v1/dhcp/v4/reservations",
+            post(dhcp::create_reservation),
+        )
+        .route(
+            "/api/v1/dhcp/v4/reservations/{id}",
+            put(dhcp::update_reservation).delete(dhcp::delete_reservation),
+        )
         .route("/api/v1/dhcp/v4/leases/{ip}", delete(dhcp::release_lease))
         .route("/api/v1/dhcp/v4/apply", post(dhcp::apply_config))
         .route("/api/v1/dhcp/ddns", put(dhcp::update_ddns_config))
@@ -490,15 +628,24 @@ pub fn build_router(
     // aliases:write
     let aliases_write = Router::new()
         .route("/api/v1/aliases", post(aliases::create_alias))
-        .route("/api/v1/aliases/{id}", put(aliases::update_alias).delete(aliases::delete_alias))
+        .route(
+            "/api/v1/aliases/{id}",
+            put(aliases::update_alias).delete(aliases::delete_alias),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::AliasesWrite)));
 
     // interfaces:read
     let ifaces_read = Router::new()
         .route("/api/v1/interfaces", get(routes::list_interfaces))
-        .route("/api/v1/interfaces/detailed", get(iface::list_interfaces_detailed))
+        .route(
+            "/api/v1/interfaces/detailed",
+            get(iface::list_interfaces_detailed),
+        )
         .route("/api/v1/interfaces/roles", get(iface::list_interface_roles))
-        .route("/api/v1/interfaces/{name}/stats", get(routes::get_interface_stats))
+        .route(
+            "/api/v1/interfaces/{name}/stats",
+            get(routes::get_interface_stats),
+        )
         .route("/api/v1/vlans", get(iface::list_vlans))
         .route("/api/v1/routes", get(routes::list_static_routes))
         .route("/api/v1/routes/system", get(routes::get_system_routes))
@@ -506,19 +653,35 @@ pub fn build_router(
 
     // interfaces:write
     let ifaces_write = Router::new()
-        .route("/api/v1/interfaces/{name}/role", put(iface::set_interface_role).delete(iface::delete_interface_role))
-        .route("/api/v1/interfaces/config/{name}", put(iface::configure_interface))
+        .route(
+            "/api/v1/interfaces/{name}/role",
+            put(iface::set_interface_role).delete(iface::delete_interface_role),
+        )
+        .route(
+            "/api/v1/interfaces/config/{name}",
+            put(iface::configure_interface),
+        )
         .route("/api/v1/vlans", post(iface::create_vlan))
-        .route("/api/v1/vlans/{id}", put(iface::update_vlan).delete(iface::delete_vlan))
+        .route(
+            "/api/v1/vlans/{id}",
+            put(iface::update_vlan).delete(iface::delete_vlan),
+        )
         .route("/api/v1/routes", post(routes::create_static_route))
-        .route("/api/v1/routes/{id}", put(routes::update_static_route).delete(routes::delete_static_route))
-        .layer(middleware::from_fn(perm_check!(Permission::InterfacesWrite)));
+        .route(
+            "/api/v1/routes/{id}",
+            put(routes::update_static_route).delete(routes::delete_static_route),
+        )
+        .layer(middleware::from_fn(perm_check!(
+            Permission::InterfacesWrite
+        )));
 
     // connections:view
     let connections_view = Router::new()
         .route("/api/v1/connections", get(routes::list_connections))
         .route("/api/v1/blocked", get(routes::list_blocked_traffic))
-        .layer(middleware::from_fn(perm_check!(Permission::ConnectionsView)));
+        .layer(middleware::from_fn(perm_check!(
+            Permission::ConnectionsView
+        )));
 
     // logs:view
     let logs_view = Router::new()
@@ -537,22 +700,40 @@ pub fn build_router(
     // users:write
     let users_write = Router::new()
         .route("/api/v1/auth/users", post(routes::create_user))
-        .route("/api/v1/auth/users/{id}", put(routes::update_user).delete(routes::delete_user_handler))
+        .route(
+            "/api/v1/auth/users/{id}",
+            put(routes::update_user).delete(routes::delete_user_handler),
+        )
         .route("/api/v1/auth/api-keys", post(routes::create_api_key))
         .route("/api/v1/auth/roles", post(routes::create_role))
-        .route("/api/v1/auth/roles/{id}", put(routes::update_role).delete(routes::delete_role))
+        .route(
+            "/api/v1/auth/roles/{id}",
+            put(routes::update_role).delete(routes::delete_role),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::UsersWrite)));
 
     // settings:read
     let settings_read = Router::new()
         .route("/api/v1/auth/settings", get(routes::get_auth_settings))
-        .route("/api/v1/auth/oauth/providers", get(routes::list_oauth_providers))
+        .route(
+            "/api/v1/auth/oauth/providers",
+            get(routes::list_oauth_providers),
+        )
         .route("/api/v1/settings/tls", get(routes::get_tls_settings))
         .route("/api/v1/settings/valkey", get(routes::get_valkey_settings))
-        .route("/api/v1/settings/dashboard-history", get(routes::get_dashboard_history_settings))
-        .route("/api/v1/settings/ids-alerts", get(routes::get_ids_alert_settings))
+        .route(
+            "/api/v1/settings/dashboard-history",
+            get(routes::get_dashboard_history_settings),
+        )
+        .route(
+            "/api/v1/settings/ids-alerts",
+            get(routes::get_ids_alert_settings),
+        )
         .route("/api/v1/settings/pf-tuning", get(routes::get_pf_tuning))
-        .route("/api/v1/settings/{section}", get(routes::get_generic_settings))
+        .route(
+            "/api/v1/settings/{section}",
+            get(routes::get_generic_settings),
+        )
         .route("/api/v1/settings/ai", get(routes::get_ai_settings))
         .route("/api/v1/settings/ai/models", get(routes::list_ai_models))
         .route("/api/v1/ca", get(ca::get_ca_info))
@@ -565,27 +746,51 @@ pub fn build_router(
         .route("/api/v1/time/config", get(time_service::get_config))
         .route("/api/v1/time/sources", get(time_service::list_sources))
         .route("/api/v1/time/logs", get(time_service::time_logs))
-        .route("/api/v1/acme/account",                  get(acme::get_account))
-        .route("/api/v1/acme/certs",                    get(acme::list_certs))
-        .route("/api/v1/acme/certs/{id}",               get(acme::get_cert))
-        .route("/api/v1/acme/certs/{id}/cert.pem",      get(acme::download_cert_pem))
-        .route("/api/v1/acme/dns-providers",            get(acme::list_providers))
-        .route("/api/v1/acme/certs/{cert_id}/targets",  get(acme::list_targets))
-        .route("/api/v1/ddns/records",                  get(acme::list_ddns))
-        .route("/api/v1/ddns/config",                   get(acme::get_ddns_config))
+        .route("/api/v1/acme/account", get(acme::get_account))
+        .route("/api/v1/acme/certs", get(acme::list_certs))
+        .route("/api/v1/acme/certs/{id}", get(acme::get_cert))
+        .route(
+            "/api/v1/acme/certs/{id}/cert.pem",
+            get(acme::download_cert_pem),
+        )
+        .route("/api/v1/acme/dns-providers", get(acme::list_providers))
+        .route(
+            "/api/v1/acme/certs/{cert_id}/targets",
+            get(acme::list_targets),
+        )
+        .route("/api/v1/ddns/records", get(acme::list_ddns))
+        .route("/api/v1/ddns/config", get(acme::get_ddns_config))
         .layer(middleware::from_fn(perm_check!(Permission::SettingsRead)));
 
     // settings:write
     let settings_write = Router::new()
         .route("/api/v1/auth/settings", put(routes::update_auth_settings))
-        .route("/api/v1/auth/oauth/providers", post(routes::create_oauth_provider))
-        .route("/api/v1/auth/oauth/providers/{id}", delete(routes::delete_oauth_provider))
+        .route(
+            "/api/v1/auth/oauth/providers",
+            post(routes::create_oauth_provider),
+        )
+        .route(
+            "/api/v1/auth/oauth/providers/{id}",
+            delete(routes::delete_oauth_provider),
+        )
         .route("/api/v1/settings/tls", put(routes::update_tls_settings))
-        .route("/api/v1/settings/valkey", put(routes::update_valkey_settings))
-        .route("/api/v1/settings/dashboard-history", put(routes::update_dashboard_history_settings))
-        .route("/api/v1/settings/ids-alerts", put(routes::update_ids_alert_settings))
+        .route(
+            "/api/v1/settings/valkey",
+            put(routes::update_valkey_settings),
+        )
+        .route(
+            "/api/v1/settings/dashboard-history",
+            put(routes::update_dashboard_history_settings),
+        )
+        .route(
+            "/api/v1/settings/ids-alerts",
+            put(routes::update_ids_alert_settings),
+        )
         .route("/api/v1/settings/pf-tuning", put(routes::put_pf_tuning))
-        .route("/api/v1/settings/{section}", put(routes::update_generic_settings))
+        .route(
+            "/api/v1/settings/{section}",
+            put(routes::update_generic_settings),
+        )
         .route("/api/v1/settings/ai", put(routes::update_ai_settings))
         .route("/api/v1/settings/ai/test", post(routes::test_ai_provider))
         .route("/api/v1/ca", post(ca::generate_ca))
@@ -595,40 +800,70 @@ pub fn build_router(
         .route("/api/v1/ca/certs/{id}/revoke", post(ca::revoke_cert))
         .route("/api/v1/time/config", put(time_service::update_config))
         .route("/api/v1/time/sources", post(time_service::create_source))
-        .route("/api/v1/time/sources/{id}", put(time_service::update_source).delete(time_service::delete_source))
+        .route(
+            "/api/v1/time/sources/{id}",
+            put(time_service::update_source).delete(time_service::delete_source),
+        )
         .route("/api/v1/time/start", post(time_service::time_start))
         .route("/api/v1/time/stop", post(time_service::time_stop))
         .route("/api/v1/time/restart", post(time_service::time_restart))
         .route("/api/v1/time/apply", post(time_service::apply_config))
-        .route("/api/v1/acme/account",                       put(acme::put_account))
-        .route("/api/v1/acme/certs",                         post(acme::create_cert))
-        .route("/api/v1/acme/certs/{id}",                    delete(acme::delete_cert))
-        .route("/api/v1/acme/certs/{id}/renew",              post(acme::renew_now))
-        .route("/api/v1/acme/certs/{id}/publish",            post(acme::publish_now))
-        .route("/api/v1/acme/certs/{id}/key.pem",            get(acme::download_key_pem))
-        .route("/api/v1/acme/dns-providers",                 post(acme::create_provider))
-        .route("/api/v1/acme/dns-providers/{id}",            put(acme::update_provider).delete(acme::delete_provider))
-        .route("/api/v1/acme/dns-providers/{id}/test",       post(acme::test_provider))
-        .route("/api/v1/acme/certs/{cert_id}/targets",       post(acme::create_target))
-        .route("/api/v1/acme/export-targets/{id}",           delete(acme::delete_target))
-        .route("/api/v1/ddns/records",                       post(acme::create_ddns))
-        .route("/api/v1/ddns/records/{id}",                  put(acme::update_ddns).delete(acme::delete_ddns))
-        .route("/api/v1/ddns/records/{id}/update",           post(acme::force_update_ddns))
-        .route("/api/v1/ddns/config",                        put(acme::put_ddns_config))
+        .route("/api/v1/acme/account", put(acme::put_account))
+        .route("/api/v1/acme/certs", post(acme::create_cert))
+        .route("/api/v1/acme/certs/{id}", delete(acme::delete_cert))
+        .route("/api/v1/acme/certs/{id}/renew", post(acme::renew_now))
+        .route("/api/v1/acme/certs/{id}/publish", post(acme::publish_now))
+        .route(
+            "/api/v1/acme/certs/{id}/key.pem",
+            get(acme::download_key_pem),
+        )
+        .route("/api/v1/acme/dns-providers", post(acme::create_provider))
+        .route(
+            "/api/v1/acme/dns-providers/{id}",
+            put(acme::update_provider).delete(acme::delete_provider),
+        )
+        .route(
+            "/api/v1/acme/dns-providers/{id}/test",
+            post(acme::test_provider),
+        )
+        .route(
+            "/api/v1/acme/certs/{cert_id}/targets",
+            post(acme::create_target),
+        )
+        .route(
+            "/api/v1/acme/export-targets/{id}",
+            delete(acme::delete_target),
+        )
+        .route("/api/v1/ddns/records", post(acme::create_ddns))
+        .route(
+            "/api/v1/ddns/records/{id}",
+            put(acme::update_ddns).delete(acme::delete_ddns),
+        )
+        .route(
+            "/api/v1/ddns/records/{id}/update",
+            post(acme::force_update_ddns),
+        )
+        .route("/api/v1/ddns/config", put(acme::put_ddns_config))
         .layer(middleware::from_fn(perm_check!(Permission::SettingsWrite)));
 
     // plugins:read
     let plugins_read = Router::new()
         .route("/api/v1/plugins", get(plugins::list_plugins))
         .route("/api/v1/plugins/{name}/logs", get(plugins::get_plugin_logs))
-        .route("/api/v1/plugins/{name}/config", get(plugins::get_plugin_config))
+        .route(
+            "/api/v1/plugins/{name}/config",
+            get(plugins::get_plugin_config),
+        )
         .route("/api/v1/plugins/discover", get(plugins::discover_plugins))
         .layer(middleware::from_fn(perm_check!(Permission::PluginsRead)));
 
     // plugins:write
     let plugins_write = Router::new()
         .route("/api/v1/plugins/toggle", post(plugins::enable_plugin))
-        .route("/api/v1/plugins/{name}/config", put(plugins::update_plugin_config))
+        .route(
+            "/api/v1/plugins/{name}/config",
+            put(plugins::update_plugin_config),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::PluginsWrite)));
 
     // updates:read
@@ -637,16 +872,28 @@ pub fn build_router(
         .route("/api/v1/updates/check", post(updates::check_updates))
         .route("/api/v1/updates/schedule", get(updates::get_schedule))
         .route("/api/v1/updates/history", get(updates::update_history))
-        .route("/api/v1/updates/aifw/status", get(updates::aifw_update_status))
-        .route("/api/v1/updates/aifw/check", post(updates::aifw_check_update))
+        .route(
+            "/api/v1/updates/aifw/status",
+            get(updates::aifw_update_status),
+        )
+        .route(
+            "/api/v1/updates/aifw/check",
+            post(updates::aifw_check_update),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesRead)));
 
     // updates:install
     let updates_install = Router::new()
         .route("/api/v1/updates/install", post(updates::install_updates))
         .route("/api/v1/updates/schedule", put(updates::update_schedule))
-        .route("/api/v1/updates/aifw/install", post(updates::aifw_install_update))
-        .route("/api/v1/updates/aifw/rollback", post(updates::aifw_rollback))
+        .route(
+            "/api/v1/updates/aifw/install",
+            post(updates::aifw_install_update),
+        )
+        .route(
+            "/api/v1/updates/aifw/rollback",
+            post(updates::aifw_rollback),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
 
     // backup:read
@@ -656,29 +903,56 @@ pub fn build_router(
         .route("/api/v1/config/diff", get(backup::diff_versions))
         .route("/api/v1/config/check", get(backup::check_config))
         .route("/api/v1/config/export", get(routes::export_config))
-        .route("/api/v1/config/preview-opnsense", post(backup::preview_opnsense))
-        .route("/api/v1/config/import-preview", post(backup::preview_import))
-        .route("/api/v1/config/restore-preview", get(backup::preview_restore))
-        .route("/api/v1/config/commit-confirm/status", get(backup::commit_confirm_status))
+        .route(
+            "/api/v1/config/preview-opnsense",
+            post(backup::preview_opnsense),
+        )
+        .route(
+            "/api/v1/config/import-preview",
+            post(backup::preview_import),
+        )
+        .route(
+            "/api/v1/config/restore-preview",
+            get(backup::preview_restore),
+        )
+        .route(
+            "/api/v1/config/commit-confirm/status",
+            get(backup::commit_confirm_status),
+        )
         .route("/api/v1/config/retention", get(backup::get_retention))
         .route("/api/v1/backup/s3/config", get(backup_s3::get_s3_config))
         .route("/api/v1/backup/s3/list", get(backup_s3::list_s3))
-        .route("/api/v1/notify/smtp/config", get(backup_s3::get_smtp_config))
+        .route(
+            "/api/v1/notify/smtp/config",
+            get(backup_s3::get_smtp_config),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::BackupRead)));
 
     // backup:write
     let backup_write = Router::new()
         .route("/api/v1/config/import", post(routes::import_config))
         .route("/api/v1/config/restore", post(backup::restore_version))
-        .route("/api/v1/config/import-opnsense", post(backup::import_opnsense))
+        .route(
+            "/api/v1/config/import-opnsense",
+            post(backup::import_opnsense),
+        )
         .route("/api/v1/config/save", post(backup::save_version))
-        .route("/api/v1/config/commit-confirm", post(backup::commit_confirm_start))
-        .route("/api/v1/config/commit-confirm/confirm", post(backup::commit_confirm_accept))
+        .route(
+            "/api/v1/config/commit-confirm",
+            post(backup::commit_confirm_start),
+        )
+        .route(
+            "/api/v1/config/commit-confirm/confirm",
+            post(backup::commit_confirm_accept),
+        )
         .route("/api/v1/config/retention", put(backup::put_retention))
         .route("/api/v1/backup/s3/config", put(backup_s3::put_s3_config))
         .route("/api/v1/backup/s3/test", post(backup_s3::test_s3))
         .route("/api/v1/backup/s3/import", post(backup_s3::import_s3))
-        .route("/api/v1/notify/smtp/config", put(backup_s3::put_smtp_config))
+        .route(
+            "/api/v1/notify/smtp/config",
+            put(backup_s3::put_smtp_config),
+        )
         .route("/api/v1/notify/smtp/test", post(backup_s3::test_smtp))
         .layer(middleware::from_fn(perm_check!(Permission::BackupWrite)));
 
@@ -708,66 +982,199 @@ pub fn build_router(
 
     // proxy:read
     let proxy_read = Router::new()
-        .route("/api/v1/reverse-proxy/status", get(reverse_proxy::rp_status))
-        .route("/api/v1/reverse-proxy/config", get(reverse_proxy::get_config))
+        .route(
+            "/api/v1/reverse-proxy/status",
+            get(reverse_proxy::rp_status),
+        )
+        .route(
+            "/api/v1/reverse-proxy/config",
+            get(reverse_proxy::get_config),
+        )
         .route("/api/v1/reverse-proxy/logs", get(reverse_proxy::rp_logs))
-        .route("/api/v1/reverse-proxy/entrypoints", get(reverse_proxy::list_entrypoints))
-        .route("/api/v1/reverse-proxy/http/routers", get(reverse_proxy::list_http_routers))
-        .route("/api/v1/reverse-proxy/http/services", get(reverse_proxy::list_http_services))
-        .route("/api/v1/reverse-proxy/http/middlewares", get(reverse_proxy::list_http_middlewares))
-        .route("/api/v1/reverse-proxy/tcp/routers", get(reverse_proxy::list_tcp_routers))
-        .route("/api/v1/reverse-proxy/tcp/services", get(reverse_proxy::list_tcp_services))
-        .route("/api/v1/reverse-proxy/udp/routers", get(reverse_proxy::list_udp_routers))
-        .route("/api/v1/reverse-proxy/udp/services", get(reverse_proxy::list_udp_services))
-        .route("/api/v1/reverse-proxy/tls/certs", get(reverse_proxy::list_tls_certs))
-        .route("/api/v1/reverse-proxy/tls/options", get(reverse_proxy::list_tls_options))
-        .route("/api/v1/reverse-proxy/cert-resolvers", get(reverse_proxy::list_cert_resolvers))
+        .route(
+            "/api/v1/reverse-proxy/entrypoints",
+            get(reverse_proxy::list_entrypoints),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/routers",
+            get(reverse_proxy::list_http_routers),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/services",
+            get(reverse_proxy::list_http_services),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/middlewares",
+            get(reverse_proxy::list_http_middlewares),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tcp/routers",
+            get(reverse_proxy::list_tcp_routers),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tcp/services",
+            get(reverse_proxy::list_tcp_services),
+        )
+        .route(
+            "/api/v1/reverse-proxy/udp/routers",
+            get(reverse_proxy::list_udp_routers),
+        )
+        .route(
+            "/api/v1/reverse-proxy/udp/services",
+            get(reverse_proxy::list_udp_services),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tls/certs",
+            get(reverse_proxy::list_tls_certs),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tls/options",
+            get(reverse_proxy::list_tls_options),
+        )
+        .route(
+            "/api/v1/reverse-proxy/cert-resolvers",
+            get(reverse_proxy::list_cert_resolvers),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::ProxyRead)));
 
     // proxy:write
     let proxy_write = Router::new()
-        .route("/api/v1/reverse-proxy/config", put(reverse_proxy::update_config))
-        .route("/api/v1/reverse-proxy/validate", post(reverse_proxy::validate_config))
-        .route("/api/v1/reverse-proxy/entrypoints", post(reverse_proxy::create_entrypoint))
-        .route("/api/v1/reverse-proxy/entrypoints/{id}", put(reverse_proxy::update_entrypoint).delete(reverse_proxy::delete_entrypoint))
-        .route("/api/v1/reverse-proxy/http/routers", post(reverse_proxy::create_http_router))
-        .route("/api/v1/reverse-proxy/http/routers/{id}", put(reverse_proxy::update_http_router).delete(reverse_proxy::delete_http_router))
-        .route("/api/v1/reverse-proxy/http/services", post(reverse_proxy::create_http_service))
-        .route("/api/v1/reverse-proxy/http/services/{id}", put(reverse_proxy::update_http_service).delete(reverse_proxy::delete_http_service))
-        .route("/api/v1/reverse-proxy/http/middlewares", post(reverse_proxy::create_http_middleware))
-        .route("/api/v1/reverse-proxy/http/middlewares/{id}", put(reverse_proxy::update_http_middleware).delete(reverse_proxy::delete_http_middleware))
-        .route("/api/v1/reverse-proxy/tcp/routers", post(reverse_proxy::create_tcp_router))
-        .route("/api/v1/reverse-proxy/tcp/routers/{id}", put(reverse_proxy::update_tcp_router).delete(reverse_proxy::delete_tcp_router))
-        .route("/api/v1/reverse-proxy/tcp/services", post(reverse_proxy::create_tcp_service))
-        .route("/api/v1/reverse-proxy/tcp/services/{id}", put(reverse_proxy::update_tcp_service).delete(reverse_proxy::delete_tcp_service))
-        .route("/api/v1/reverse-proxy/udp/routers", post(reverse_proxy::create_udp_router))
-        .route("/api/v1/reverse-proxy/udp/routers/{id}", put(reverse_proxy::update_udp_router).delete(reverse_proxy::delete_udp_router))
-        .route("/api/v1/reverse-proxy/udp/services", post(reverse_proxy::create_udp_service))
-        .route("/api/v1/reverse-proxy/udp/services/{id}", put(reverse_proxy::update_udp_service).delete(reverse_proxy::delete_udp_service))
-        .route("/api/v1/reverse-proxy/tls/certs", post(reverse_proxy::create_tls_cert))
-        .route("/api/v1/reverse-proxy/tls/certs/{id}", put(reverse_proxy::update_tls_cert).delete(reverse_proxy::delete_tls_cert))
-        .route("/api/v1/reverse-proxy/tls/options", post(reverse_proxy::create_tls_option))
-        .route("/api/v1/reverse-proxy/tls/options/{id}", put(reverse_proxy::update_tls_option).delete(reverse_proxy::delete_tls_option))
-        .route("/api/v1/reverse-proxy/cert-resolvers", post(reverse_proxy::create_cert_resolver))
-        .route("/api/v1/reverse-proxy/cert-resolvers/{id}", put(reverse_proxy::update_cert_resolver).delete(reverse_proxy::delete_cert_resolver))
+        .route(
+            "/api/v1/reverse-proxy/config",
+            put(reverse_proxy::update_config),
+        )
+        .route(
+            "/api/v1/reverse-proxy/validate",
+            post(reverse_proxy::validate_config),
+        )
+        .route(
+            "/api/v1/reverse-proxy/entrypoints",
+            post(reverse_proxy::create_entrypoint),
+        )
+        .route(
+            "/api/v1/reverse-proxy/entrypoints/{id}",
+            put(reverse_proxy::update_entrypoint).delete(reverse_proxy::delete_entrypoint),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/routers",
+            post(reverse_proxy::create_http_router),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/routers/{id}",
+            put(reverse_proxy::update_http_router).delete(reverse_proxy::delete_http_router),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/services",
+            post(reverse_proxy::create_http_service),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/services/{id}",
+            put(reverse_proxy::update_http_service).delete(reverse_proxy::delete_http_service),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/middlewares",
+            post(reverse_proxy::create_http_middleware),
+        )
+        .route(
+            "/api/v1/reverse-proxy/http/middlewares/{id}",
+            put(reverse_proxy::update_http_middleware)
+                .delete(reverse_proxy::delete_http_middleware),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tcp/routers",
+            post(reverse_proxy::create_tcp_router),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tcp/routers/{id}",
+            put(reverse_proxy::update_tcp_router).delete(reverse_proxy::delete_tcp_router),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tcp/services",
+            post(reverse_proxy::create_tcp_service),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tcp/services/{id}",
+            put(reverse_proxy::update_tcp_service).delete(reverse_proxy::delete_tcp_service),
+        )
+        .route(
+            "/api/v1/reverse-proxy/udp/routers",
+            post(reverse_proxy::create_udp_router),
+        )
+        .route(
+            "/api/v1/reverse-proxy/udp/routers/{id}",
+            put(reverse_proxy::update_udp_router).delete(reverse_proxy::delete_udp_router),
+        )
+        .route(
+            "/api/v1/reverse-proxy/udp/services",
+            post(reverse_proxy::create_udp_service),
+        )
+        .route(
+            "/api/v1/reverse-proxy/udp/services/{id}",
+            put(reverse_proxy::update_udp_service).delete(reverse_proxy::delete_udp_service),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tls/certs",
+            post(reverse_proxy::create_tls_cert),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tls/certs/{id}",
+            put(reverse_proxy::update_tls_cert).delete(reverse_proxy::delete_tls_cert),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tls/options",
+            post(reverse_proxy::create_tls_option),
+        )
+        .route(
+            "/api/v1/reverse-proxy/tls/options/{id}",
+            put(reverse_proxy::update_tls_option).delete(reverse_proxy::delete_tls_option),
+        )
+        .route(
+            "/api/v1/reverse-proxy/cert-resolvers",
+            post(reverse_proxy::create_cert_resolver),
+        )
+        .route(
+            "/api/v1/reverse-proxy/cert-resolvers/{id}",
+            put(reverse_proxy::update_cert_resolver).delete(reverse_proxy::delete_cert_resolver),
+        )
         .route("/api/v1/reverse-proxy/start", post(reverse_proxy::rp_start))
         .route("/api/v1/reverse-proxy/stop", post(reverse_proxy::rp_stop))
-        .route("/api/v1/reverse-proxy/restart", post(reverse_proxy::rp_restart))
-        .route("/api/v1/reverse-proxy/apply", post(reverse_proxy::apply_config))
+        .route(
+            "/api/v1/reverse-proxy/restart",
+            post(reverse_proxy::rp_restart),
+        )
+        .route(
+            "/api/v1/reverse-proxy/apply",
+            post(reverse_proxy::apply_config),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::ProxyWrite)));
 
     // multiwan:read
     let multiwan_read = Router::new()
         .route("/api/v1/multiwan/instances", get(multiwan::list_instances))
-        .route("/api/v1/multiwan/instances/{id}", get(multiwan::get_instance))
-        .route("/api/v1/multiwan/instances/{id}/members", get(multiwan::list_members))
+        .route(
+            "/api/v1/multiwan/instances/{id}",
+            get(multiwan::get_instance),
+        )
+        .route(
+            "/api/v1/multiwan/instances/{id}/members",
+            get(multiwan::list_members),
+        )
         .route("/api/v1/multiwan/fibs", get(multiwan::list_fibs))
         .route("/api/v1/multiwan/gateways", get(multiwan::list_gateways))
         .route("/api/v1/multiwan/gateways/{id}", get(multiwan::get_gateway))
-        .route("/api/v1/multiwan/gateways/{id}/events", get(multiwan::list_gateway_events))
+        .route(
+            "/api/v1/multiwan/gateways/{id}/events",
+            get(multiwan::list_gateway_events),
+        )
         .route("/api/v1/multiwan/groups", get(multiwan::list_groups))
-        .route("/api/v1/multiwan/groups/{id}/members", get(multiwan::list_group_members))
-        .route("/api/v1/multiwan/groups/{id}/active", get(multiwan::group_active))
+        .route(
+            "/api/v1/multiwan/groups/{id}/members",
+            get(multiwan::list_group_members),
+        )
+        .route(
+            "/api/v1/multiwan/groups/{id}/active",
+            get(multiwan::group_active),
+        )
         .route("/api/v1/multiwan/policies", get(multiwan::list_policies))
         .route("/api/v1/multiwan/leaks", get(multiwan::list_leaks))
         .route("/api/v1/multiwan/flows", get(multiwan::list_flows))
@@ -777,12 +1184,18 @@ pub fn build_router(
 
     // multiwan:write
     let multiwan_write = Router::new()
-        .route("/api/v1/multiwan/instances", post(multiwan::create_instance))
+        .route(
+            "/api/v1/multiwan/instances",
+            post(multiwan::create_instance),
+        )
         .route(
             "/api/v1/multiwan/instances/{id}",
             put(multiwan::update_instance).delete(multiwan::delete_instance),
         )
-        .route("/api/v1/multiwan/instances/{id}/members", post(multiwan::add_member))
+        .route(
+            "/api/v1/multiwan/instances/{id}/members",
+            post(multiwan::add_member),
+        )
         .route(
             "/api/v1/multiwan/instances/{id}/members/{iface}",
             delete(multiwan::remove_member),
@@ -792,13 +1205,19 @@ pub fn build_router(
             "/api/v1/multiwan/gateways/{id}",
             put(multiwan::update_gateway).delete(multiwan::delete_gateway),
         )
-        .route("/api/v1/multiwan/gateways/{id}/probe-now", post(multiwan::probe_now))
+        .route(
+            "/api/v1/multiwan/gateways/{id}/probe-now",
+            post(multiwan::probe_now),
+        )
         .route("/api/v1/multiwan/groups", post(multiwan::create_group))
         .route(
             "/api/v1/multiwan/groups/{id}",
             put(multiwan::update_group).delete(multiwan::delete_group),
         )
-        .route("/api/v1/multiwan/groups/{id}/members", post(multiwan::add_group_member))
+        .route(
+            "/api/v1/multiwan/groups/{id}/members",
+            post(multiwan::add_group_member),
+        )
         .route(
             "/api/v1/multiwan/groups/{id}/members/{gw}",
             delete(multiwan::remove_group_member),
@@ -809,14 +1228,29 @@ pub fn build_router(
             put(multiwan::update_policy).delete(multiwan::delete_policy),
         )
         .route("/api/v1/multiwan/apply", post(multiwan::apply_policies))
-        .route("/api/v1/multiwan/policies/reorder", put(multiwan::reorder_policies))
-        .route("/api/v1/multiwan/policies/{id}/duplicate", post(multiwan::duplicate_policy))
-        .route("/api/v1/multiwan/policies/{id}/toggle", put(multiwan::toggle_policy))
+        .route(
+            "/api/v1/multiwan/policies/reorder",
+            put(multiwan::reorder_policies),
+        )
+        .route(
+            "/api/v1/multiwan/policies/{id}/duplicate",
+            post(multiwan::duplicate_policy),
+        )
+        .route(
+            "/api/v1/multiwan/policies/{id}/toggle",
+            put(multiwan::toggle_policy),
+        )
         .route("/api/v1/multiwan/leaks", post(multiwan::create_leak))
         .route("/api/v1/multiwan/leaks/{id}", delete(multiwan::delete_leak))
-        .route("/api/v1/multiwan/leaks/seed-mgmt", post(multiwan::seed_mgmt_escapes))
+        .route(
+            "/api/v1/multiwan/leaks/seed-mgmt",
+            post(multiwan::seed_mgmt_escapes),
+        )
         .route("/api/v1/multiwan/preview", post(multiwan::preview_policies))
-        .route("/api/v1/multiwan/flows/{label}/migrate", post(multiwan::migrate_flow))
+        .route(
+            "/api/v1/multiwan/flows/{label}/migrate",
+            post(multiwan::migrate_flow),
+        )
         .route("/api/v1/multiwan/apply-yaml", post(multiwan::import_config))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
@@ -824,31 +1258,51 @@ pub fn build_router(
     let protected_routes = Router::new()
         .merge(self_service)
         .merge(dashboard_view)
-        .merge(rules_read).merge(rules_write)
-        .merge(nat_read).merge(nat_write)
-        .merge(vpn_read).merge(vpn_write)
-        .merge(geoip_read).merge(geoip_write)
-        .merge(ids_read).merge(ids_write)
-        .merge(dns_read).merge(dns_write)
-        .merge(dhcp_read).merge(dhcp_write)
-        .merge(aliases_read).merge(aliases_write)
-        .merge(ifaces_read).merge(ifaces_write)
+        .merge(rules_read)
+        .merge(rules_write)
+        .merge(nat_read)
+        .merge(nat_write)
+        .merge(vpn_read)
+        .merge(vpn_write)
+        .merge(geoip_read)
+        .merge(geoip_write)
+        .merge(ids_read)
+        .merge(ids_write)
+        .merge(dns_read)
+        .merge(dns_write)
+        .merge(dhcp_read)
+        .merge(dhcp_write)
+        .merge(aliases_read)
+        .merge(aliases_write)
+        .merge(ifaces_read)
+        .merge(ifaces_write)
         .merge(connections_view)
         .merge(logs_view)
-        .merge(users_read).merge(users_write)
-        .merge(settings_read).merge(settings_write)
-        .merge(plugins_read).merge(plugins_write)
-        .merge(updates_read).merge(updates_install)
-        .merge(backup_read).merge(backup_write)
+        .merge(users_read)
+        .merge(users_write)
+        .merge(settings_read)
+        .merge(settings_write)
+        .merge(plugins_read)
+        .merge(plugins_write)
+        .merge(updates_read)
+        .merge(updates_install)
+        .merge(backup_read)
+        .merge(backup_write)
         .merge(system_reboot)
-        .merge(proxy_read).merge(proxy_write)
-        .merge(multiwan_read).merge(multiwan_write)
-        .merge(system_read).merge(system_write)
+        .merge(proxy_read)
+        .merge(proxy_write)
+        .merge(multiwan_read)
+        .merge(multiwan_write)
+        .merge(system_read)
+        .merge(system_write)
         // Auto-snapshot every successful mutation. Middleware is applied
         // before the auth layer so it runs AFTER auth in the request chain;
         // save_if_changed() de-dupes by hash so no-op writes don't pollute
         // history, and retention pruning keeps the table bounded.
-        .layer(middleware::from_fn_with_state(state.clone(), backup::auto_snapshot_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            backup::auto_snapshot_middleware,
+        ))
         .layer(auth_layer);
 
     let mut app = Router::new()
@@ -889,18 +1343,26 @@ pub fn build_router(
     //   content-hashes those filenames), short for everything else,
     //   and `no-cache` for HTML so updates are seen immediately.
     if let Some(dir) = ui_dir
-        && dir.exists() {
-            let index = dir.join("index.html");
-            let serve = ServeDir::new(dir)
-                .precompressed_br()
-                .precompressed_gzip()
-                .fallback(ServeFile::new(index).precompressed_br().precompressed_gzip());
-            let layered = tower::ServiceBuilder::new()
-                .layer(axum::middleware::from_fn(ui_cache_headers))
-                .service(serve);
-            app = app.fallback_service(layered);
-            info!("Serving web UI from {} (precompressed + cache headers enabled)", dir.display());
-        }
+        && dir.exists()
+    {
+        let index = dir.join("index.html");
+        let serve = ServeDir::new(dir)
+            .precompressed_br()
+            .precompressed_gzip()
+            .fallback(
+                ServeFile::new(index)
+                    .precompressed_br()
+                    .precompressed_gzip(),
+            );
+        let layered = tower::ServiceBuilder::new()
+            .layer(axum::middleware::from_fn(ui_cache_headers))
+            .service(serve);
+        app = app.fallback_service(layered);
+        info!(
+            "Serving web UI from {} (precompressed + cache headers enabled)",
+            dir.display()
+        );
+    }
 
     app
 }
@@ -912,7 +1374,7 @@ async fn ui_cache_headers(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    use axum::http::header::{HeaderValue, CACHE_CONTROL};
+    use axum::http::header::{CACHE_CONTROL, HeaderValue};
 
     // Decide the policy from the request path. Header insertion happens
     // after the inner service runs so it overrides anything ServeDir set
@@ -922,7 +1384,9 @@ async fn ui_cache_headers(
         // Next.js content-hashes these filenames. Safe to cache for a year
         // and let the browser skip the validate round-trip entirely.
         "public, max-age=31536000, immutable"
-    } else if path == "/" || path == "/index.html" || path.ends_with("/index.html")
+    } else if path == "/"
+        || path == "/index.html"
+        || path.ends_with("/index.html")
         || (!path.contains('.') && !path.starts_with("/api/"))
     {
         // SPA shell + Next-routed pages without a file extension: must
@@ -970,27 +1434,44 @@ async fn create_state_from_db(
     // In-memory metrics RRD store + 1s collector tied to pf.
     // Lives for the lifetime of the process; tier retention is 30 min / 6 h / 7 d / 30 d.
     let metrics_store = Arc::new(aifw_metrics::MetricsStore::new());
-    let _metrics_task = aifw_metrics::MetricsCollector::new(pf.clone(), metrics_store.clone()).start();
+    let _metrics_task =
+        aifw_metrics::MetricsCollector::new(pf.clone(), metrics_store.clone()).start();
 
     auth::migrate(&pool).await?;
 
     let rule_engine = Arc::new(RuleEngine::new(db, pf.clone()));
-    let nat_engine = Arc::new(NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string()));
+    let nat_engine =
+        Arc::new(NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string()));
     nat_engine.migrate().await?;
     let vpn_engine = Arc::new(VpnEngine::new(pool.clone(), pf.clone()));
     vpn_engine.migrate().await?;
     let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
     geoip_engine.migrate().await?;
     let multiwan_engine = Arc::new(InstanceEngine::new(pool.clone(), pf.clone()));
-    multiwan_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    multiwan_engine
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let gateway_engine = Arc::new(GatewayEngine::new(pool.clone()));
-    gateway_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    gateway_engine
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let group_engine = Arc::new(GroupEngine::new(pool.clone()));
-    group_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    group_engine
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let policy_engine = Arc::new(PolicyEngine::new(pool.clone(), pf.clone()));
-    policy_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    policy_engine
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let leak_engine = Arc::new(LeakEngine::new(pool.clone(), pf.clone()));
-    leak_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    leak_engine
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let preflight_engine = Arc::new(PreflightEngine::new(pf.clone()));
     let sla_engine = Arc::new(SlaEngine::new(pool.clone()));
     sla_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
@@ -1008,41 +1489,69 @@ async fn create_state_from_db(
     system::migrate(&pool).await?;
     time_service::migrate(&pool).await?;
     plugins::migrate(&pool).await?;
-    aifw_core::config_manager::ConfigManager::new(pool.clone()).migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    aifw_core::config_manager::ConfigManager::new(pool.clone())
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let alias_engine = Arc::new(AliasEngine::new(pool.clone(), pf.clone()));
-    alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    alias_engine
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
     // Initialize IDS engine — always create so API endpoints work,
     // but the engine itself only starts capture/detection if mode != Disabled
     // Initialize IDS alert buffer (in-memory, replaces SQLite for alert storage)
     let ids_max_mb: usize = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_mb'"
-    ).fetch_optional(&pool).await.ok().flatten()
-    .and_then(|r| r.0.parse().ok()).unwrap_or(64);
+        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_mb'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.0.parse().ok())
+    .unwrap_or(64);
     let ids_max_age: usize = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_age_secs'"
-    ).fetch_optional(&pool).await.ok().flatten()
-    .and_then(|r| r.0.parse().ok()).unwrap_or(86400);
-    let alert_buffer = Arc::new(aifw_ids::output::memory::AlertBuffer::new(ids_max_mb, ids_max_age));
+        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_age_secs'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.0.parse().ok())
+    .unwrap_or(86400);
+    let alert_buffer = Arc::new(aifw_ids::output::memory::AlertBuffer::new(
+        ids_max_mb,
+        ids_max_age,
+    ));
 
-    aifw_ids::IdsEngine::migrate(&pool).await.map_err(|e| anyhow::anyhow!(e))?;
-    let ids_engine = match aifw_ids::IdsEngine::with_alert_buffer(pool.clone(), pf.clone(), Some(alert_buffer.clone())).await {
+    aifw_ids::IdsEngine::migrate(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let ids_engine = match aifw_ids::IdsEngine::with_alert_buffer(
+        pool.clone(),
+        pf.clone(),
+        Some(alert_buffer.clone()),
+    )
+    .await
+    {
         Ok(engine) => {
             tracing::info!("IDS engine initialized");
             let arc = Arc::new(engine);
             // Auto-start if mode != disabled, and compile rules
             if let Ok(cfg) = arc.load_config().await
-                && cfg.mode != aifw_common::ids::IdsMode::Disabled {
-                    let mgr = aifw_ids::rules::manager::RulesetManager::new(arc.pool().clone());
-                    match mgr.compile_rules(arc.rule_db()).await {
-                        Ok(count) => tracing::info!(count, "IDS rules compiled on startup"),
-                        Err(e) => tracing::warn!("IDS rule compilation failed: {e}"),
-                    }
-                    if let Err(e) = arc.start().await {
-                        tracing::warn!("IDS engine failed to start: {e}");
-                    }
+                && cfg.mode != aifw_common::ids::IdsMode::Disabled
+            {
+                let mgr = aifw_ids::rules::manager::RulesetManager::new(arc.pool().clone());
+                match mgr.compile_rules(arc.rule_db()).await {
+                    Ok(count) => tracing::info!(count, "IDS rules compiled on startup"),
+                    Err(e) => tracing::warn!("IDS rule compilation failed: {e}"),
                 }
+                if let Err(e) = arc.start().await {
+                    tracing::warn!("IDS engine failed to start: {e}");
+                }
+            }
             Some(arc)
         }
         Err(e) => {
@@ -1056,22 +1565,40 @@ async fn create_state_from_db(
     let mut plugin_mgr = aifw_plugins::PluginManager::new(plugin_ctx);
 
     // Register built-in plugins (disabled by default — user enables via UI)
-    let _ = plugin_mgr.register(
-        Box::new(aifw_plugins::examples::LoggingPlugin::new()),
-        aifw_plugins::PluginConfig { enabled: false, ..Default::default() },
-    ).await;
-    let _ = plugin_mgr.register(
-        Box::new(aifw_plugins::examples::IpReputationPlugin::new()),
-        aifw_plugins::PluginConfig { enabled: false, ..Default::default() },
-    ).await;
-    let _ = plugin_mgr.register(
-        Box::new(aifw_plugins::examples::WebhookPlugin::new()),
-        aifw_plugins::PluginConfig { enabled: false, ..Default::default() },
-    ).await;
+    let _ = plugin_mgr
+        .register(
+            Box::new(aifw_plugins::examples::LoggingPlugin::new()),
+            aifw_plugins::PluginConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        )
+        .await;
+    let _ = plugin_mgr
+        .register(
+            Box::new(aifw_plugins::examples::IpReputationPlugin::new()),
+            aifw_plugins::PluginConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        )
+        .await;
+    let _ = plugin_mgr
+        .register(
+            Box::new(aifw_plugins::examples::WebhookPlugin::new()),
+            aifw_plugins::PluginConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        )
+        .await;
 
     // Load persisted plugin enable states from DB
-    let enabled_plugins: Vec<(String,)> = sqlx::query_as("SELECT name FROM plugin_config WHERE enabled = 1")
-        .fetch_all(&pool).await.unwrap_or_default();
+    let enabled_plugins: Vec<(String,)> =
+        sqlx::query_as("SELECT name FROM plugin_config WHERE enabled = 1")
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
     for (name,) in &enabled_plugins {
         // Unload disabled version and re-register as enabled
         let _ = plugin_mgr.unload(name).await;
@@ -1082,15 +1609,27 @@ async fn create_state_from_db(
             _ => None,
         };
         if let Some(p) = plugin {
-            let _ = plugin_mgr.register(p, aifw_plugins::PluginConfig { enabled: true, ..Default::default() }).await;
+            let _ = plugin_mgr
+                .register(
+                    p,
+                    aifw_plugins::PluginConfig {
+                        enabled: true,
+                        ..Default::default()
+                    },
+                )
+                .await;
         }
     }
 
-    tracing::info!(plugins = plugin_mgr.count(), running = plugin_mgr.running_count(), "plugin system initialized");
+    tracing::info!(
+        plugins = plugin_mgr.count(),
+        running = plugin_mgr.running_count(),
+        "plugin system initialized"
+    );
 
     // Load configurable dashboard history size from DB (default 30 min = 1800 entries)
     let history_max = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM auth_config WHERE key = 'dashboard_history_seconds'"
+        "SELECT value FROM auth_config WHERE key = 'dashboard_history_seconds'",
     )
     .fetch_optional(&pool)
     .await
@@ -1170,7 +1709,10 @@ fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> a
         std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
     }
 
-    info!("Self-signed TLS certificate generated: {}", cert_path.display());
+    info!(
+        "Self-signed TLS certificate generated: {}",
+        cert_path.display()
+    );
     Ok(())
 }
 
@@ -1189,7 +1731,9 @@ fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> a
 ///   warning and leave the original file untouched.
 async fn ensure_rdr_anchor() {
     let pf_path = "/usr/local/etc/aifw/pf.conf.aifw";
-    let Ok(content) = tokio::fs::read_to_string(pf_path).await else { return };
+    let Ok(content) = tokio::fs::read_to_string(pf_path).await else {
+        return;
+    };
 
     let lines: Vec<&str> = content.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + 8);
@@ -1359,38 +1903,46 @@ async fn main() -> anyhow::Result<()> {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(3),
                 redis::aio::ConnectionManager::new(client),
-            ).await {
-            Ok(inner) => match inner {
-                Ok(mut conn) => {
-                    info!("Connected to Valkey for metrics persistence");
-                    let max = state.metrics_history_max.load(std::sync::atomic::Ordering::Relaxed) as i64;
-                    let history: Vec<String> = redis::cmd("LRANGE")
-                        .arg("aifw:metrics:history")
-                        .arg(0i64)
-                        .arg(max - 1)
-                        .query_async(&mut conn)
-                        .await
-                        .unwrap_or_default();
-                    if !history.is_empty() {
-                        let mut buf = state.metrics_history.write().await;
-                        for entry in history.into_iter().rev() {
-                            buf.push_back(entry);
+            )
+            .await
+            {
+                Ok(inner) => match inner {
+                    Ok(mut conn) => {
+                        info!("Connected to Valkey for metrics persistence");
+                        let max = state
+                            .metrics_history_max
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                            as i64;
+                        let history: Vec<String> = redis::cmd("LRANGE")
+                            .arg("aifw:metrics:history")
+                            .arg(0i64)
+                            .arg(max - 1)
+                            .query_async(&mut conn)
+                            .await
+                            .unwrap_or_default();
+                        if !history.is_empty() {
+                            let mut buf = state.metrics_history.write().await;
+                            for entry in history.into_iter().rev() {
+                                buf.push_back(entry);
+                            }
+                            info!("Loaded {} historical metrics from Valkey", buf.len());
                         }
-                        info!("Loaded {} historical metrics from Valkey", buf.len());
+                        state.redis = Some(conn);
                     }
-                    state.redis = Some(conn);
+                    Err(e) => {
+                        info!("Valkey not available ({}), using in-memory metrics only", e);
+                    }
+                },
+                Err(_) => {
+                    info!("Valkey connection timed out, using in-memory metrics only");
                 }
-                Err(e) => {
-                    info!("Valkey not available ({}), using in-memory metrics only", e);
-                }
-            },
-            Err(_) => {
-                info!("Valkey connection timed out, using in-memory metrics only");
-            }
             }
         }
         Err(e) => {
-            info!("Valkey not configured ({}), using in-memory metrics only", e);
+            info!(
+                "Valkey not configured ({}), using in-memory metrics only",
+                e
+            );
         }
     }
 
@@ -1398,26 +1950,32 @@ async fn main() -> anyhow::Result<()> {
     routes::apply_all_routes(&state.pool).await;
 
     // Restore DNS servers from DB to /etc/resolv.conf (survives DHCP renewal)
-    if let Ok(Some((dns_json,))) = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM auth_config WHERE key = 'dns_servers'"
-    ).fetch_optional(&state.pool).await
+    if let Ok(Some((dns_json,))) =
+        sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'dns_servers'")
+            .fetch_optional(&state.pool)
+            .await
         && let Ok(servers) = serde_json::from_str::<Vec<String>>(&dns_json)
-            && !servers.is_empty() {
-                let content: String = servers.iter().map(|s| format!("nameserver {s}")).collect::<Vec<_>>().join("\n");
-                if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
-                    .args(["tee", "/etc/resolv.conf"])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::null())
-                    .spawn()
-                {
-                    if let Some(ref mut stdin) = child.stdin {
-                        let _ = tokio::io::AsyncWriteExt::write_all(stdin, content.as_bytes()).await;
-                    }
-                    drop(child.stdin.take());
-                    let _ = child.wait().await;
-                    info!("DNS servers restored from DB: {}", servers.join(", "));
-                }
+        && !servers.is_empty()
+    {
+        let content: String = servers
+            .iter()
+            .map(|s| format!("nameserver {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
+            .args(["tee", "/etc/resolv.conf"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+        {
+            if let Some(ref mut stdin) = child.stdin {
+                let _ = tokio::io::AsyncWriteExt::write_all(stdin, content.as_bytes()).await;
             }
+            drop(child.stdin.take());
+            let _ = child.wait().await;
+            info!("DNS servers restored from DB: {}", servers.join(", "));
+        }
+    }
 
     // Ensure rdr-anchor exists in pf.conf (required for DNAT/port forwarding)
     ensure_rdr_anchor().await;
@@ -1473,7 +2031,8 @@ async fn main() -> anyhow::Result<()> {
                         data: aifw_plugins::hooks::HookEventData::Tick {
                             timestamp: std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default().as_secs(),
+                                .unwrap_or_default()
+                                .as_secs(),
                         },
                     };
                     let _ = mgr.dispatch(&event).await;
@@ -1509,7 +2068,8 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-                    .execute(&pool).await;
+                    .execute(&pool)
+                    .await;
             }
         });
     }
@@ -1525,22 +2085,44 @@ async fn main() -> anyhow::Result<()> {
                 interval.tick().await;
                 let alert = mem_state.alert_buffer.stats().await;
                 let hist_entries = mem_state.metrics_history.read().await.len();
-                let hist_bytes: usize = mem_state.metrics_history.read().await.iter().map(|s| s.len()).sum();
-                let pf_states = mem_state.pf.get_stats().await
-                    .map(|s| s.states_count).unwrap_or(0);
+                let hist_bytes: usize = mem_state
+                    .metrics_history
+                    .read()
+                    .await
+                    .iter()
+                    .map(|s| s.len())
+                    .sum();
+                let pf_states = mem_state
+                    .pf
+                    .get_stats()
+                    .await
+                    .map(|s| s.states_count)
+                    .unwrap_or(0);
                 let conns = mem_state.conntrack.get_connections().await.len();
                 let pmgr = mem_state.plugin_manager.read().await;
                 let plugins_total = pmgr.count();
                 let plugins_running = pmgr.running_count();
                 drop(pmgr);
-                let ids_rules = mem_state.ids_engine.as_ref()
-                    .map(|e| e.rule_db().rule_count()).unwrap_or(0);
+                let ids_rules = mem_state
+                    .ids_engine
+                    .as_ref()
+                    .map(|e| e.rule_db().rule_count())
+                    .unwrap_or(0);
                 let (ids_alerts_db,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ids_alerts")
-                    .fetch_one(&mem_state.pool).await.unwrap_or((0,));
+                    .fetch_one(&mem_state.pool)
+                    .await
+                    .unwrap_or((0,));
                 let rss_kb = tokio::process::Command::new("ps")
                     .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-                    .output().await.ok()
-                    .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+                    .output()
+                    .await
+                    .ok()
+                    .and_then(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .trim()
+                            .parse::<u64>()
+                            .ok()
+                    })
                     .unwrap_or(0);
 
                 tracing::info!(
@@ -1564,7 +2146,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let tls_enabled = !args.no_tls;
-    let app = build_router(state, args.ui_dir.as_deref(), &args.cors_origins, tls_enabled);
+    let app = build_router(
+        state,
+        args.ui_dir.as_deref(),
+        &args.cors_origins,
+        tls_enabled,
+    );
 
     if args.no_tls {
         // Refuse to serve plaintext on a reachable address unless the
@@ -1590,11 +2177,9 @@ async fn main() -> anyhow::Result<()> {
         axum::serve(listener, app).await?;
     } else {
         ensure_tls_cert(&args.tls_cert, &args.tls_key)?;
-        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-            &args.tls_cert,
-            &args.tls_key,
-        )
-        .await?;
+        let tls_config =
+            axum_server::tls_rustls::RustlsConfig::from_pem_file(&args.tls_cert, &args.tls_key)
+                .await?;
         let addr: std::net::SocketAddr = args.listen.parse()?;
         info!("AiFw API listening on https://{}", addr);
         axum_server::bind_rustls(addr, tls_config)

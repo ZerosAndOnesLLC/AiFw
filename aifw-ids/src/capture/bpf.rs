@@ -19,8 +19,8 @@ const BIOCGBLEN: libc::c_ulong = 0x40044266; // _IOR('B', 102, u_int)
 /// Total header size is 32 bytes on 64-bit, 20 bytes on 32-bit.
 #[repr(C)]
 struct BpfHeader {
-    bh_tstamp_sec: libc::c_long,   // 8 bytes on 64-bit
-    bh_tstamp_usec: libc::c_long,  // 8 bytes on 64-bit
+    bh_tstamp_sec: libc::c_long,  // 8 bytes on 64-bit
+    bh_tstamp_usec: libc::c_long, // 8 bytes on 64-bit
     bh_caplen: u32,
     bh_datalen: u32,
     bh_hdrlen: u16,
@@ -98,11 +98,15 @@ impl CaptureBackend for BpfCapture {
 
         // Enable immediate mode (don't wait for buffer to fill)
         let enable: libc::c_uint = 1;
-        unsafe { libc::ioctl(fd, BIOCIMMEDIATE, &enable); }
+        unsafe {
+            libc::ioctl(fd, BIOCIMMEDIATE, &enable);
+        }
 
         // Enable promiscuous mode if requested
         if config.promiscuous {
-            unsafe { libc::ioctl(fd, BIOCPROMISC); }
+            unsafe {
+                libc::ioctl(fd, BIOCPROMISC);
+            }
         }
 
         // Set read timeout
@@ -110,7 +114,9 @@ impl CaptureBackend for BpfCapture {
             tv_sec: 0,
             tv_usec: (config.timeout_ms as libc::c_long) * 1000,
         };
-        unsafe { libc::ioctl(fd, BIOCSRTIMEOUT, &timeout); }
+        unsafe {
+            libc::ioctl(fd, BIOCSRTIMEOUT, &timeout);
+        }
 
         // Apply BPF filter if specified (compile-time filter for performance)
         if let Some(ref _filter) = config.bpf_filter {
@@ -142,7 +148,11 @@ impl CaptureBackend for BpfCapture {
         // If we've consumed all packets in the current buffer, read more
         if self.buf_pos >= self.buf_read {
             let n = unsafe {
-                libc::read(self.fd, self.buffer.as_mut_ptr() as *mut libc::c_void, self.buf_len)
+                libc::read(
+                    self.fd,
+                    self.buffer.as_mut_ptr() as *mut libc::c_void,
+                    self.buf_len,
+                )
             };
             if n <= 0 {
                 return None; // Timeout or error
@@ -157,9 +167,7 @@ impl CaptureBackend for BpfCapture {
             return None;
         }
 
-        let hdr = unsafe {
-            &*(self.buffer.as_ptr().add(self.buf_pos) as *const BpfHeader)
-        };
+        let hdr = unsafe { &*(self.buffer.as_ptr().add(self.buf_pos) as *const BpfHeader) };
 
         let caplen = hdr.bh_caplen as usize;
         let hdrlen = hdr.bh_hdrlen as usize;
@@ -180,7 +188,10 @@ impl CaptureBackend for BpfCapture {
         // Skip the 14-byte Ethernet header to get raw IP.
         let eth_hdr_len = 14;
         let (pkt_data, orig_len) = if caplen > eth_hdr_len {
-            (&self.buffer[data_start + eth_hdr_len..data_end], datalen.saturating_sub(eth_hdr_len))
+            (
+                &self.buffer[data_start + eth_hdr_len..data_end],
+                datalen.saturating_sub(eth_hdr_len),
+            )
         } else {
             (&self.buffer[data_start..data_end], datalen)
         };
@@ -203,7 +214,10 @@ impl CaptureBackend for BpfCapture {
     fn stats(&self) -> CaptureStats {
         let mut stats = self.stats.clone();
         // Read kernel stats
-        let mut bpf_stats = BpfStat { bs_recv: 0, bs_drop: 0 };
+        let mut bpf_stats = BpfStat {
+            bs_recv: 0,
+            bs_drop: 0,
+        };
         unsafe {
             if libc::ioctl(self.fd, BIOCGSTATS, &mut bpf_stats) == 0 {
                 stats.packets_received = bpf_stats.bs_recv as u64;
@@ -215,7 +229,9 @@ impl CaptureBackend for BpfCapture {
 
     fn close(&mut self) {
         if self.fd >= 0 {
-            unsafe { libc::close(self.fd); }
+            unsafe {
+                libc::close(self.fd);
+            }
             self.fd = -1;
             tracing::info!(interface = %self.interface, "BPF capture closed");
         }

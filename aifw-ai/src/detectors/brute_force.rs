@@ -45,8 +45,7 @@ impl Detector for BruteForceDetector {
         }
 
         let score = ThreatScore::new(
-            (features.connection_count as f64 / (self.max_auth_connections as f64 * 10.0))
-                .min(0.5)
+            (features.connection_count as f64 / (self.max_auth_connections as f64 * 10.0)).min(0.5)
                 + features.failed_conn_ratio * 0.5,
         );
 

@@ -28,20 +28,29 @@ impl RulesetManager {
 
         Ok(rows
             .into_iter()
-            .map(|(id, name, url, fmt, enabled, auto_update, interval, last, count, created)| {
-                IdsRuleset {
-                    id: Uuid::parse_str(&id).unwrap_or_default(),
-                    name,
-                    source_url: url,
-                    rule_format: RuleFormat::from_str(&fmt).unwrap_or(RuleFormat::Suricata),
-                    enabled,
-                    auto_update,
-                    update_interval_hours: interval as u32,
-                    last_updated: last.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
-                    rule_count: count as u32,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&created).ok().map(|d| d.with_timezone(&Utc)).unwrap_or_else(Utc::now),
-                }
-            })
+            .map(
+                |(id, name, url, fmt, enabled, auto_update, interval, last, count, created)| {
+                    IdsRuleset {
+                        id: Uuid::parse_str(&id).unwrap_or_default(),
+                        name,
+                        source_url: url,
+                        rule_format: RuleFormat::from_str(&fmt).unwrap_or(RuleFormat::Suricata),
+                        enabled,
+                        auto_update,
+                        update_interval_hours: interval as u32,
+                        last_updated: last.and_then(|s| {
+                            chrono::DateTime::parse_from_rfc3339(&s)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        }),
+                        rule_count: count as u32,
+                        created_at: chrono::DateTime::parse_from_rfc3339(&created)
+                            .ok()
+                            .map(|d| d.with_timezone(&Utc))
+                            .unwrap_or_else(Utc::now),
+                    }
+                },
+            )
             .collect())
     }
 
@@ -126,14 +135,12 @@ impl RulesetManager {
         }
 
         // Update ruleset rule count and last_updated
-        sqlx::query(
-            "UPDATE ids_rulesets SET rule_count = ?, last_updated = ? WHERE id = ?",
-        )
-        .bind(rules.len() as i64)
-        .bind(Utc::now().to_rfc3339())
-        .bind(&rs_id)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("UPDATE ids_rulesets SET rule_count = ?, last_updated = ? WHERE id = ?")
+            .bind(rules.len() as i64)
+            .bind(Utc::now().to_rfc3339())
+            .bind(&rs_id)
+            .execute(&mut *tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -143,9 +150,10 @@ impl RulesetManager {
     /// Download rules from a ruleset's source_url, parse, and store them.
     /// Returns the number of rules stored.
     pub async fn download_and_store_rules(&self, ruleset: &IdsRuleset) -> Result<usize> {
-        let url = ruleset.source_url.as_deref().ok_or_else(|| {
-            crate::IdsError::Config("Ruleset has no source URL".into())
-        })?;
+        let url = ruleset
+            .source_url
+            .as_deref()
+            .ok_or_else(|| crate::IdsError::Config("Ruleset has no source URL".into()))?;
 
         tracing::info!(url, ruleset = %ruleset.name, "downloading ruleset");
 
@@ -153,7 +161,8 @@ impl RulesetManager {
         let tmp = format!("/tmp/aifw-ids-{}.rules", ruleset.id);
         let downloaded = if let Ok(o) = Command::new("fetch")
             .args(["-qo", &tmp, url])
-            .output().await
+            .output()
+            .await
         {
             o.status.success()
         } else {
@@ -163,18 +172,21 @@ impl RulesetManager {
         if !downloaded {
             let output = Command::new("curl")
                 .args(["-sL", "-o", &tmp, url])
-                .output().await
+                .output()
+                .await
                 .map_err(|e| crate::IdsError::Config(format!("download failed: {e}")))?;
             if !output.status.success() {
                 let _ = tokio::fs::remove_file(&tmp).await;
                 return Err(crate::IdsError::Config(format!(
-                    "download failed: {}", String::from_utf8_lossy(&output.stderr)
+                    "download failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
                 )));
             }
         }
 
         // Read and parse
-        let content = tokio::fs::read_to_string(&tmp).await
+        let content = tokio::fs::read_to_string(&tmp)
+            .await
             .map_err(crate::IdsError::Io)?;
         let _ = tokio::fs::remove_file(&tmp).await;
 
@@ -188,10 +200,15 @@ impl RulesetManager {
             // Extract SID and msg from the rule text
             let sid = extract_sid(trimmed);
             let msg = extract_msg(trimmed);
-            let severity = if trimmed.contains("priority:1") { IdsSeverity::CRITICAL }
-                else if trimmed.contains("priority:2") { IdsSeverity::HIGH }
-                else if trimmed.contains("priority:3") { IdsSeverity::MEDIUM }
-                else { IdsSeverity::INFO };
+            let severity = if trimmed.contains("priority:1") {
+                IdsSeverity::CRITICAL
+            } else if trimmed.contains("priority:2") {
+                IdsSeverity::HIGH
+            } else if trimmed.contains("priority:3") {
+                IdsSeverity::MEDIUM
+            } else {
+                IdsSeverity::INFO
+            };
 
             rules.push(IdsRule {
                 id: Uuid::new_v4(),
@@ -227,7 +244,7 @@ impl RulesetManager {
         offset: u32,
     ) -> Result<Vec<IdsRule>> {
         let mut sql = String::from(
-            "SELECT id, ruleset_id, sid, rule_text, msg, severity, enabled, action_override, hit_count, last_hit, created_at FROM ids_rules WHERE 1=1"
+            "SELECT id, ruleset_id, sid, rule_text, msg, severity, enabled, action_override, hit_count, last_hit, created_at FROM ids_rules WHERE 1=1",
         );
         let mut binds: Vec<String> = Vec::new();
 
@@ -241,7 +258,22 @@ impl RulesetManager {
         sql.push_str(" ORDER BY sid ASC, created_at ASC");
         sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
 
-        let mut query = sqlx::query_as::<_, (String, String, Option<i64>, String, Option<String>, i64, bool, Option<String>, i64, Option<String>, String)>(&sql);
+        let mut query = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<i64>,
+                String,
+                Option<String>,
+                i64,
+                bool,
+                Option<String>,
+                i64,
+                Option<String>,
+                String,
+            ),
+        >(&sql);
 
         for bind in &binds {
             query = query.bind(bind);
@@ -251,21 +283,43 @@ impl RulesetManager {
 
         Ok(rows
             .into_iter()
-            .map(|(id, rs_id, sid, text, msg, sev, enabled, action_override, hits, last_hit, created)| {
-                IdsRule {
-                    id: Uuid::parse_str(&id).unwrap_or_default(),
-                    ruleset_id: Uuid::parse_str(&rs_id).unwrap_or_default(),
-                    sid: sid.map(|s| s as u32),
-                    rule_text: text,
+            .map(
+                |(
+                    id,
+                    rs_id,
+                    sid,
+                    text,
                     msg,
-                    severity: IdsSeverity(sev as u8),
+                    sev,
                     enabled,
-                    action_override: action_override.and_then(|s| aifw_common::ids::IdsAction::from_str(&s)),
-                    hit_count: hits as u64,
-                    last_hit: last_hit.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
-                    created_at: chrono::DateTime::parse_from_rfc3339(&created).ok().map(|d| d.with_timezone(&Utc)).unwrap_or_else(Utc::now),
-                }
-            })
+                    action_override,
+                    hits,
+                    last_hit,
+                    created,
+                )| {
+                    IdsRule {
+                        id: Uuid::parse_str(&id).unwrap_or_default(),
+                        ruleset_id: Uuid::parse_str(&rs_id).unwrap_or_default(),
+                        sid: sid.map(|s| s as u32),
+                        rule_text: text,
+                        msg,
+                        severity: IdsSeverity(sev as u8),
+                        enabled,
+                        action_override: action_override
+                            .and_then(|s| aifw_common::ids::IdsAction::from_str(&s)),
+                        hit_count: hits as u64,
+                        last_hit: last_hit.and_then(|s| {
+                            chrono::DateTime::parse_from_rfc3339(&s)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        }),
+                        created_at: chrono::DateTime::parse_from_rfc3339(&created)
+                            .ok()
+                            .map(|d| d.with_timezone(&Utc))
+                            .unwrap_or_else(Utc::now),
+                    }
+                },
+            )
             .collect())
     }
 
@@ -280,11 +334,7 @@ impl RulesetManager {
     }
 
     /// Override a rule's action.
-    pub async fn override_rule_action(
-        &self,
-        rule_id: Uuid,
-        action: Option<&str>,
-    ) -> Result<()> {
+    pub async fn override_rule_action(&self, rule_id: Uuid, action: Option<&str>) -> Result<()> {
         sqlx::query("UPDATE ids_rules SET action_override = ? WHERE id = ?")
             .bind(action)
             .bind(rule_id.to_string())
@@ -343,7 +393,10 @@ impl RulesetManager {
             || trimmed.starts_with("pass ")
         {
             RuleFormat::Suricata
-        } else if trimmed.starts_with("title:") || trimmed.starts_with("id:") || trimmed.contains("detection:") {
+        } else if trimmed.starts_with("title:")
+            || trimmed.starts_with("id:")
+            || trimmed.contains("detection:")
+        {
             RuleFormat::Sigma
         } else if trimmed.starts_with("rule ") || trimmed.starts_with("private rule ") {
             RuleFormat::Yara
@@ -353,14 +406,13 @@ impl RulesetManager {
     }
 
     async fn guess_source(&self, ruleset_id: &Uuid) -> RuleSource {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT rule_format FROM ids_rulesets WHERE id = ?"
-        )
-        .bind(ruleset_id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten();
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT rule_format FROM ids_rulesets WHERE id = ?")
+                .bind(ruleset_id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
 
         match row {
             Some((fmt,)) => match fmt.as_str() {
@@ -374,19 +426,17 @@ impl RulesetManager {
 }
 
 fn extract_sid(rule: &str) -> Option<u32> {
-    rule.find("sid:")
-        .and_then(|pos| {
-            let rest = &rule[pos + 4..];
-            rest.split(';').next()?.trim().parse().ok()
-        })
+    rule.find("sid:").and_then(|pos| {
+        let rest = &rule[pos + 4..];
+        rest.split(';').next()?.trim().parse().ok()
+    })
 }
 
 fn extract_msg(rule: &str) -> Option<String> {
-    rule.find("msg:\"")
-        .and_then(|pos| {
-            let rest = &rule[pos + 5..];
-            rest.find('"').map(|end| rest[..end].to_string())
-        })
+    rule.find("msg:\"").and_then(|pos| {
+        let rest = &rule[pos + 5..];
+        rest.find('"').map(|end| rest[..end].to_string())
+    })
 }
 
 #[cfg(test)]
@@ -407,7 +457,9 @@ mod tests {
         let rs = IdsRuleset {
             id: Uuid::new_v4(),
             name: "ET Open".into(),
-            source_url: Some("https://rules.emergingthreats.net/open/suricata-7.0/emerging-all.rules".into()),
+            source_url: Some(
+                "https://rules.emergingthreats.net/open/suricata-7.0/emerging-all.rules".into(),
+            ),
             rule_format: RuleFormat::Suricata,
             enabled: true,
             auto_update: true,
@@ -448,21 +500,20 @@ mod tests {
         };
         mgr.add_ruleset(&rs).await.unwrap();
 
-        let rules = vec![
-            IdsRule {
-                id: Uuid::new_v4(),
-                ruleset_id: rs_id,
-                sid: Some(1001),
-                rule_text: r#"alert tcp any any -> any any (msg:"Test"; content:"test"; sid:1001;)"#.into(),
-                msg: Some("Test".into()),
-                severity: IdsSeverity::MEDIUM,
-                enabled: true,
-                action_override: None,
-                hit_count: 0,
-                last_hit: None,
-                created_at: Utc::now(),
-            },
-        ];
+        let rules = vec![IdsRule {
+            id: Uuid::new_v4(),
+            ruleset_id: rs_id,
+            sid: Some(1001),
+            rule_text: r#"alert tcp any any -> any any (msg:"Test"; content:"test"; sid:1001;)"#
+                .into(),
+            msg: Some("Test".into()),
+            severity: IdsSeverity::MEDIUM,
+            enabled: true,
+            action_override: None,
+            hit_count: 0,
+            last_hit: None,
+            created_at: Utc::now(),
+        }];
 
         mgr.store_rules(rs_id, &rules).await.unwrap();
         let loaded = mgr.list_rules(Some(rs_id), true, 100, 0).await.unwrap();

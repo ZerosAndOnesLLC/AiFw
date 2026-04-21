@@ -60,11 +60,9 @@ impl NatEngine {
         .execute(&self.pool)
         .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_nat_rules_status ON nat_rules(status);",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_nat_rules_status ON nat_rules(status);")
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }
@@ -150,7 +148,10 @@ impl NatEngine {
         .await?;
 
         if result.rows_affected() == 0 {
-            return Err(AifwError::NotFound(format!("NAT rule {} not found", rule.id)));
+            return Err(AifwError::NotFound(format!(
+                "NAT rule {} not found",
+                rule.id
+            )));
         }
 
         self.audit
@@ -207,7 +208,11 @@ impl NatEngine {
             .log(
                 AuditAction::RulesApplied,
                 None,
-                &format!("{} NAT rules applied to anchor {}", pf_rules.len(), self.anchor),
+                &format!(
+                    "{} NAT rules applied to anchor {}",
+                    pf_rules.len(),
+                    self.anchor
+                ),
                 "nat_engine",
             )
             .await?;
@@ -279,10 +284,7 @@ fn validate_nat_rule(rule: &NatRule) -> Result<()> {
     }
 
     // DNAT requires a destination port or redirect port
-    if rule.nat_type == NatType::Dnat
-        && rule.dst_port.is_none()
-        && rule.redirect.port.is_none()
-    {
+    if rule.nat_type == NatType::Dnat && rule.dst_port.is_none() && rule.redirect.port.is_none() {
         return Err(AifwError::Validation(
             "DNAT/RDR rule requires a destination port or redirect port".to_string(),
         ));

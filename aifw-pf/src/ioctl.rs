@@ -13,7 +13,8 @@ fn parse_addr_port(s: &str) -> (IpAddr, u16) {
     if let Some(idx) = s.rfind(':') {
         let addr_str = &s[..idx];
         let port_str = &s[idx + 1..];
-        let addr = addr_str.trim_matches(|c| c == '[' || c == ']')
+        let addr = addr_str
+            .trim_matches(|c| c == '[' || c == ']')
             .parse::<IpAddr>()
             .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
         let port = port_str.parse::<u16>().unwrap_or(0);
@@ -99,7 +100,8 @@ impl PfBackend for PfIoctl {
 
         // Write to temp file then load — avoids shell quoting issues with echo
         let tmp = format!("/tmp/aifw_pf_{}.conf", anchor.replace('/', "_"));
-        tokio::fs::write(&tmp, &ruleset).await
+        tokio::fs::write(&tmp, &ruleset)
+            .await
             .map_err(|e| PfError::Rule(format!("failed to write temp rules: {e}")))?;
 
         let output = Command::new("/usr/local/bin/sudo")
@@ -119,7 +121,11 @@ impl PfBackend for PfIoctl {
 
     async fn get_rules(&self, anchor: &str) -> Result<Vec<String>, PfError> {
         let out = pfctl(&["-a", anchor, "-sr"]).await?;
-        Ok(out.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+        Ok(out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect())
     }
 
     async fn get_states(&self) -> Result<Vec<PfState>, PfError> {
@@ -131,11 +137,15 @@ impl PfBackend for PfIoctl {
         let mut current: Option<PfState> = None;
 
         for line in out.lines() {
-            if line.is_empty() || line.starts_with("No ") { continue; }
+            if line.is_empty() || line.starts_with("No ") {
+                continue;
+            }
 
             if !line.starts_with(' ') && !line.starts_with('\t') {
                 // New state line — save previous if any
-                if let Some(s) = current.take() { states.push(s); }
+                if let Some(s) = current.take() {
+                    states.push(s);
+                }
 
                 // Anchor on the direction arrow (`->` or `<-`). pfctl's
                 // header line shape is:
@@ -146,10 +156,14 @@ impl PfBackend for PfIoctl {
                 // "<right>" / "<state>". Find the arrow first; everything
                 // hangs off that.
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() < 5 { continue; }
+                if parts.len() < 5 {
+                    continue;
+                }
                 let arrow_idx = parts.iter().position(|p| *p == "->" || *p == "<-");
                 let Some(ai) = arrow_idx else { continue };
-                if ai + 2 >= parts.len() { continue; }
+                if ai + 2 >= parts.len() {
+                    continue;
+                }
 
                 let proto = parts.get(1).unwrap_or(&"").to_string();
                 let arrow = parts[ai];
@@ -162,23 +176,37 @@ impl PfBackend for PfIoctl {
                 // right side is the originator and the left is the dst.
                 // Either way, src_addr is whoever opened the connection.
                 let (lhs, rhs) = (parts[2], parts[ai + 1]);
-                let (src, dst) = if arrow == "->" { (lhs, rhs) } else { (rhs, lhs) };
+                let (src, dst) = if arrow == "->" {
+                    (lhs, rhs)
+                } else {
+                    (rhs, lhs)
+                };
 
                 let (src_addr, src_port) = parse_addr_port(src);
                 let (dst_addr, dst_port) = parse_addr_port(dst);
 
                 // First field is the interface in verbose output ("em0",
                 // "vtnet0"); "all"/"in"/"out" mean no interface tag.
-                let iface = parts.first().filter(|s| {
-                    let s = *s;
-                    !matches!(*s, "all" | "in" | "out") && s.chars().any(|c| c.is_ascii_digit())
-                }).map(|s| s.to_string());
+                let iface = parts
+                    .first()
+                    .filter(|s| {
+                        let s = *s;
+                        !matches!(*s, "all" | "in" | "out") && s.chars().any(|c| c.is_ascii_digit())
+                    })
+                    .map(|s| s.to_string());
                 current = Some(PfState {
-                    id: 0, protocol: proto,
-                    src_addr, src_port, dst_addr, dst_port,
+                    id: 0,
+                    protocol: proto,
+                    src_addr,
+                    src_port,
+                    dst_addr,
+                    dst_port,
                     state: state_str,
-                    packets_in: 0, packets_out: 0,
-                    bytes_in: 0, bytes_out: 0, age_secs: 0,
+                    packets_in: 0,
+                    packets_out: 0,
+                    bytes_in: 0,
+                    bytes_out: 0,
+                    age_secs: 0,
                     iface,
                     rtable: None,
                 });
@@ -189,7 +217,11 @@ impl PfBackend for PfIoctl {
                 if let Some(pkts_pos) = trimmed.find(" pkts,") {
                     // Walk back to find the pkts pair
                     let before_pkts = &trimmed[..pkts_pos];
-                    if let Some(pair) = before_pkts.rsplit(", ").next().or(before_pkts.rsplit(' ').next()) {
+                    if let Some(pair) = before_pkts
+                        .rsplit(", ")
+                        .next()
+                        .or(before_pkts.rsplit(' ').next())
+                    {
                         let pair = pair.trim().trim_start_matches(", ");
                         if let Some((a, b)) = pair.split_once(':') {
                             s.packets_in = a.trim().parse().unwrap_or(0);
@@ -200,10 +232,11 @@ impl PfBackend for PfIoctl {
                 if let Some(bytes_pos) = trimmed.find(" bytes") {
                     let before_bytes = &trimmed[..bytes_pos];
                     if let Some(pair) = before_bytes.rsplit(", ").next()
-                        && let Some((a, b)) = pair.split_once(':') {
-                            s.bytes_in = a.trim().parse().unwrap_or(0);
-                            s.bytes_out = b.trim().parse().unwrap_or(0);
-                        }
+                        && let Some((a, b)) = pair.split_once(':')
+                    {
+                        s.bytes_in = a.trim().parse().unwrap_or(0);
+                        s.bytes_out = b.trim().parse().unwrap_or(0);
+                    }
                 }
                 // Parse age
                 if let Some(age_pos) = trimmed.find("age ") {
@@ -221,7 +254,9 @@ impl PfBackend for PfIoctl {
                 }
             }
         }
-        if let Some(s) = current { states.push(s); }
+        if let Some(s) = current {
+            states.push(s);
+        }
         Ok(states)
     }
 
@@ -260,7 +295,10 @@ impl PfBackend for PfIoctl {
                 current_iface = trimmed.trim_end_matches(" (skip)").to_string();
             }
             // Skip loopback, pflog, and "all" aggregate
-            if current_iface == "all" || current_iface.starts_with("lo") || current_iface.starts_with("pflog") {
+            if current_iface == "all"
+                || current_iface.starts_with("lo")
+                || current_iface.starts_with("pflog")
+            {
                 continue;
             }
             // Parse: In4/Pass:    [ Packets: 390261             Bytes: 430240864          ]
@@ -306,11 +344,21 @@ impl PfBackend for PfIoctl {
             .lines()
             .filter_map(|line| {
                 let line = line.trim();
-                if line.is_empty() { return None; }
+                if line.is_empty() {
+                    return None;
+                }
                 let addr: IpAddr = line.split('/').next()?.parse().ok()?;
-                let prefix: u8 = line.split('/').nth(1).and_then(|p| p.parse().ok())
+                let prefix: u8 = line
+                    .split('/')
+                    .nth(1)
+                    .and_then(|p| p.parse().ok())
                     .unwrap_or(if addr.is_ipv4() { 32 } else { 128 });
-                Some(PfTableEntry { addr, prefix, packets: 0, bytes: 0 })
+                Some(PfTableEntry {
+                    addr,
+                    prefix,
+                    packets: 0,
+                    bytes: 0,
+                })
             })
             .collect();
         Ok(entries)
@@ -329,7 +377,8 @@ impl PfBackend for PfIoctl {
         tracing::debug!(anchor, rules = %ruleset, "loading pf NAT rules");
 
         let tmp = format!("/tmp/aifw_pf_nat_{}.conf", anchor.replace('/', "_"));
-        tokio::fs::write(&tmp, &ruleset).await
+        tokio::fs::write(&tmp, &ruleset)
+            .await
             .map_err(|e| PfError::Rule(format!("failed to write temp NAT rules: {e}")))?;
 
         let output = Command::new("/usr/local/bin/sudo")
@@ -349,7 +398,11 @@ impl PfBackend for PfIoctl {
 
     async fn get_nat_rules(&self, anchor: &str) -> Result<Vec<String>, PfError> {
         let out = pfctl(&["-a", anchor, "-sn"]).await?;
-        Ok(out.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+        Ok(out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect())
     }
 
     async fn flush_nat_rules(&self, anchor: &str) -> Result<(), PfError> {
@@ -363,7 +416,8 @@ impl PfBackend for PfIoctl {
         }
         let ruleset = queues.join("\n");
         let tmp = format!("/tmp/aifw_pf_queue_{}.conf", anchor.replace('/', "_"));
-        tokio::fs::write(&tmp, &ruleset).await
+        tokio::fs::write(&tmp, &ruleset)
+            .await
             .map_err(|e| PfError::Rule(format!("failed to write temp queue rules: {e}")))?;
         let _ = Command::new("/usr/local/bin/sudo")
             .args(["/sbin/pfctl", "-a", anchor, "-f", &tmp])
@@ -376,7 +430,11 @@ impl PfBackend for PfIoctl {
 
     async fn get_queues(&self, anchor: &str) -> Result<Vec<String>, PfError> {
         let out = pfctl(&["-a", anchor, "-sq"]).await?;
-        Ok(out.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+        Ok(out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect())
     }
 
     async fn flush_queues(&self, anchor: &str) -> Result<(), PfError> {
@@ -411,11 +469,12 @@ impl PfBackend for PfIoctl {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             if let Some(idx) = line.find("fib: ")
-                && let Some(fib) = line[idx + 5..].split_whitespace().next() {
-                    return fib
-                        .parse()
-                        .map_err(|e| PfError::Other(format!("parse fib: {e}")));
-                }
+                && let Some(fib) = line[idx + 5..].split_whitespace().next()
+            {
+                return fib
+                    .parse()
+                    .map_err(|e| PfError::Other(format!("parse fib: {e}")));
+            }
         }
         Ok(0)
     }
@@ -453,12 +512,13 @@ impl PfBackend for PfIoctl {
                 current = parse_state_endpoints(line);
             } else if (trimmed.contains(&format!("label \"{label}\""))
                 || trimmed.contains(&format!("@0 {label}")))
-                && let Some((src, dst)) = current.as_ref() {
-                    if pfctl(&["-k", src, "-k", dst]).await.is_ok() {
-                        killed += 1;
-                    }
-                    current = None;
+                && let Some((src, dst)) = current.as_ref()
+            {
+                if pfctl(&["-k", src, "-k", dst]).await.is_ok() {
+                    killed += 1;
                 }
+                current = None;
+            }
         }
         Ok(killed)
     }
@@ -468,9 +528,10 @@ fn parse_killed_count(s: &str) -> u64 {
     // pfctl prints "killed N states" on success
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("killed ")
-            && let Some(n_str) = rest.split_whitespace().next() {
-                return n_str.parse().unwrap_or(0);
-            }
+            && let Some(n_str) = rest.split_whitespace().next()
+        {
+            return n_str.parse().unwrap_or(0);
+        }
     }
     0
 }
@@ -481,7 +542,9 @@ fn parse_state_endpoints(line: &str) -> Option<(String, String)> {
     let fields: Vec<&str> = line.split_whitespace().collect();
     // Expected shape: proto iface src <dir> dst (state)
     // Direction is one of -> <- <->
-    let arrow_idx = fields.iter().position(|f| matches!(*f, "->" | "<-" | "<->"))?;
+    let arrow_idx = fields
+        .iter()
+        .position(|f| matches!(*f, "->" | "<-" | "<->"))?;
     if arrow_idx < 2 || arrow_idx + 1 >= fields.len() {
         return None;
     }
@@ -497,9 +560,7 @@ fn strip_port(s: &str) -> String {
     }
     // IPv4 x.y.z.w:port
     match s.rfind(':') {
-        Some(i) if s[..i].chars().all(|c| c.is_ascii_digit() || c == '.') => {
-            s[..i].to_string()
-        }
+        Some(i) if s[..i].chars().all(|c| c.is_ascii_digit() || c == '.') => s[..i].to_string(),
         _ => s.to_string(),
     }
 }

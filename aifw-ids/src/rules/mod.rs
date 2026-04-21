@@ -190,7 +190,9 @@ impl CompiledRuleset {
             for pcre in &rule.pcre_patterns {
                 if let Ok(re) = regex::Regex::new(&pcre.pattern) {
                     // Check if we already have this regex
-                    let existing = regex_patterns.iter_mut().find(|(r, _)| r.as_str() == pcre.pattern);
+                    let existing = regex_patterns
+                        .iter_mut()
+                        .find(|(r, _)| r.as_str() == pcre.pattern);
                     if let Some((_, rule_list)) = existing {
                         rule_list.push(rule_idx);
                     } else {

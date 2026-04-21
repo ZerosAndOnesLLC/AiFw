@@ -1,7 +1,7 @@
 //! AI-assisted alert analysis — reviews critical/high IDS alerts using the
 //! configured LLM provider and classifies them automatically.
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -9,21 +9,35 @@ use crate::AppState;
 
 /// Run AI analysis on unreviewed critical/high alerts.
 /// Called periodically by a background task or manually via API.
-pub async fn run_analysis(pool: &SqlitePool, alert_buf: Option<&aifw_ids::output::memory::AlertBuffer>) -> Result<u32, String> {
+pub async fn run_analysis(
+    pool: &SqlitePool,
+    alert_buf: Option<&aifw_ids::output::memory::AlertBuffer>,
+) -> Result<u32, String> {
     // 1. Check if AI is enabled and get active provider
-    let enabled = get_config(pool, "ai_enabled").await.map(|v| v == "true").unwrap_or(false);
+    let enabled = get_config(pool, "ai_enabled")
+        .await
+        .map(|v| v == "true")
+        .unwrap_or(false);
     if !enabled {
         return Ok(0);
     }
 
-    let provider = get_config(pool, "ai_active_provider").await.unwrap_or_default();
+    let provider = get_config(pool, "ai_active_provider")
+        .await
+        .unwrap_or_default();
     if provider.is_empty() {
         return Err("No active AI provider configured".into());
     }
 
-    let api_key = get_config(pool, &format!("ai_{provider}_api_key")).await.unwrap_or_default();
-    let endpoint = get_config(pool, &format!("ai_{provider}_endpoint")).await.unwrap_or_default();
-    let model = get_config(pool, &format!("ai_{provider}_model")).await.unwrap_or_default();
+    let api_key = get_config(pool, &format!("ai_{provider}_api_key"))
+        .await
+        .unwrap_or_default();
+    let endpoint = get_config(pool, &format!("ai_{provider}_endpoint"))
+        .await
+        .unwrap_or_default();
+    let model = get_config(pool, &format!("ai_{provider}_model"))
+        .await
+        .unwrap_or_default();
 
     if endpoint.is_empty() {
         return Err("AI provider endpoint not configured".into());
@@ -31,7 +45,8 @@ pub async fn run_analysis(pool: &SqlitePool, alert_buf: Option<&aifw_ids::output
 
     // 2. Get unreviewed critical/high alerts from the in-memory buffer
     let raw_alerts = if let Some(buf) = alert_buf {
-        buf.query(Some(2), None, None, None, Some("unreviewed"), 20, 0).await
+        buf.query(Some(2), None, None, None, Some("unreviewed"), 20, 0)
+            .await
     } else {
         // Fallback to SQLite if no buffer (shouldn't happen in production)
         return Ok(0);
@@ -51,9 +66,15 @@ pub async fn run_analysis(pool: &SqlitePool, alert_buf: Option<&aifw_ids::output
         let sig_msg = &alert_obj.signature_msg;
         let severity = alert_obj.severity.0 as i64;
         let src_ip = &alert_obj.src_ip.to_string();
-        let src_port = alert_obj.src_port.map(|p| p.to_string()).unwrap_or_default();
+        let src_port = alert_obj
+            .src_port
+            .map(|p| p.to_string())
+            .unwrap_or_default();
         let dst_ip = &alert_obj.dst_ip.to_string();
-        let dst_port = alert_obj.dst_port.map(|p| p.to_string()).unwrap_or_default();
+        let dst_port = alert_obj
+            .dst_port
+            .map(|p| p.to_string())
+            .unwrap_or_default();
         let protocol = &alert_obj.protocol;
         let payload = alert_obj.payload_excerpt.as_deref().unwrap_or("(none)");
 
@@ -98,13 +119,18 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
                 // 6. Parse the response (strip thinking tags, extract JSON)
                 let (classification, reason) = parse_ai_response(&ai_response);
                 // Store clean reason (not the full thinking chain)
-                let clean_reason = if reason.len() > 300 { format!("{}...", &reason[..297]) } else { reason.clone() };
+                let clean_reason = if reason.len() > 300 {
+                    format!("{}...", &reason[..297])
+                } else {
+                    reason.clone()
+                };
 
                 // 7. Apply classification to this alert and all alerts with same signature
                 let notes_str = format!("AI ({provider}): {clean_reason}");
                 if let Some(buf) = alert_buf {
                     if sig_id > 0 {
-                        buf.classify_by_signature(sig_id, &classification, &notes_str).await;
+                        buf.classify_by_signature(sig_id, &classification, &notes_str)
+                            .await;
                         analyzed_sigs.insert(sig_id);
                     } else if let Ok(uuid) = Uuid::parse_str(alert_id) {
                         buf.classify(uuid, &classification, Some(&notes_str)).await;
@@ -157,7 +183,13 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
 }
 
 /// Call the AI provider's chat completion API.
-async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: &str, prompt: &str) -> Result<String, String> {
+async fn call_ai_provider(
+    provider: &str,
+    endpoint: &str,
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+) -> Result<String, String> {
     let (url, body) = match provider {
         "openai" | "lm_studio" => {
             let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
@@ -194,16 +226,23 @@ async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: 
 
     let mut args = vec![
         "-sk".to_string(),
-        "--connect-timeout".to_string(), "30".to_string(),
-        "-m".to_string(), "300".to_string(),
-        "-X".to_string(), "POST".to_string(),
-        "-H".to_string(), "Content-Type: application/json".to_string(),
+        "--connect-timeout".to_string(),
+        "30".to_string(),
+        "-m".to_string(),
+        "300".to_string(),
+        "-X".to_string(),
+        "POST".to_string(),
+        "-H".to_string(),
+        "Content-Type: application/json".to_string(),
     ];
 
     match provider {
         "claude" => {
             args.extend(["-H".to_string(), format!("x-api-key: {api_key}")]);
-            args.extend(["-H".to_string(), "anthropic-version: 2023-06-01".to_string()]);
+            args.extend([
+                "-H".to_string(),
+                "anthropic-version: 2023-06-01".to_string(),
+            ]);
         }
         "openai" | "lm_studio" if !api_key.is_empty() => {
             args.extend(["-H".to_string(), format!("Authorization: Bearer {api_key}")]);
@@ -220,17 +259,25 @@ async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: 
         .map_err(|e| format!("curl failed: {e}"))?;
 
     if !output.status.success() {
-        return Err(format!("HTTP error: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "HTTP error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let response_body = String::from_utf8_lossy(&output.stdout).to_string();
 
     // Extract the text content from the response
-    let json: serde_json::Value = serde_json::from_str(&response_body)
-        .map_err(|e| format!("JSON parse error: {e} — body: {}", &response_body[..200.min(response_body.len())]))?;
+    let json: serde_json::Value = serde_json::from_str(&response_body).map_err(|e| {
+        format!(
+            "JSON parse error: {e} — body: {}",
+            &response_body[..200.min(response_body.len())]
+        )
+    })?;
 
     // OpenAI / LM Studio format: { choices: [{ message: { content: "..." } }] }
-    if let Some(content) = json.get("choices")
+    if let Some(content) = json
+        .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("message"))
         .and_then(|m| m.get("content"))
@@ -240,7 +287,8 @@ async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: 
     }
 
     // Claude format: { content: [{ text: "..." }] }
-    if let Some(content) = json.get("content")
+    if let Some(content) = json
+        .get("content")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("text"))
         .and_then(|t| t.as_str())
@@ -249,14 +297,18 @@ async fn call_ai_provider(provider: &str, endpoint: &str, api_key: &str, model: 
     }
 
     // Ollama format: { message: { content: "..." } }
-    if let Some(content) = json.get("message")
+    if let Some(content) = json
+        .get("message")
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
     {
         return Ok(content.to_string());
     }
 
-    Err(format!("Could not extract content from response: {}", &response_body[..300.min(response_body.len())]))
+    Err(format!(
+        "Could not extract content from response: {}",
+        &response_body[..300.min(response_body.len())]
+    ))
 }
 
 /// Parse the AI response to extract classification and reason.
@@ -269,14 +321,20 @@ fn parse_ai_response(response: &str) -> (String, String) {
     };
 
     // Try to parse as JSON
-    let cleaned = without_think.trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+    let cleaned = without_think
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
 
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(cleaned) {
-        let classification = json.get("classification")
+        let classification = json
+            .get("classification")
             .and_then(|c| c.as_str())
             .unwrap_or("investigating")
             .to_string();
-        let reason = json.get("reason")
+        let reason = json
+            .get("reason")
             .and_then(|r| r.as_str())
             .unwrap_or("AI analysis completed")
             .to_string();
@@ -294,12 +352,27 @@ fn parse_ai_response(response: &str) -> (String, String) {
 
     // Fallback: try to extract from plain text
     let lower = response.to_lowercase();
-    if lower.contains("false_positive") || lower.contains("false positive") || lower.contains("benign") {
-        ("false_positive".to_string(), response.chars().take(200).collect())
-    } else if lower.contains("confirmed") || lower.contains("malicious") || lower.contains("suspicious") {
-        ("confirmed".to_string(), response.chars().take(200).collect())
+    if lower.contains("false_positive")
+        || lower.contains("false positive")
+        || lower.contains("benign")
+    {
+        (
+            "false_positive".to_string(),
+            response.chars().take(200).collect(),
+        )
+    } else if lower.contains("confirmed")
+        || lower.contains("malicious")
+        || lower.contains("suspicious")
+    {
+        (
+            "confirmed".to_string(),
+            response.chars().take(200).collect(),
+        )
     } else {
-        ("investigating".to_string(), response.chars().take(200).collect())
+        (
+            "investigating".to_string(),
+            response.chars().take(200).collect(),
+        )
     }
 }
 
@@ -337,7 +410,10 @@ pub async fn get_audit_log(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let limit = q.get("limit").and_then(|v| v.parse::<u32>().ok()).unwrap_or(50);
+    let limit = q
+        .get("limit")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(50);
 
     let rows: Vec<(String, Option<String>, Option<i64>, String, String, String, String, String, Option<String>, Option<i64>, String)> = sqlx::query_as(
         "SELECT id, alert_id, signature_id, signature_msg, provider, model, prompt, response, classification, duration_ms, created_at FROM ai_audit_log ORDER BY created_at DESC LIMIT ?"
@@ -347,21 +423,24 @@ pub async fn get_audit_log(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let entries: Vec<serde_json::Value> = rows.into_iter().map(|r| {
-        serde_json::json!({
-            "id": r.0,
-            "alert_id": r.1,
-            "signature_id": r.2,
-            "signature_msg": r.3,
-            "provider": r.4,
-            "model": r.5,
-            "prompt_preview": r.6.chars().take(100).collect::<String>(),
-            "response": r.7,
-            "classification": r.8,
-            "duration_ms": r.9,
-            "created_at": r.10,
+    let entries: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.0,
+                "alert_id": r.1,
+                "signature_id": r.2,
+                "signature_msg": r.3,
+                "provider": r.4,
+                "model": r.5,
+                "prompt_preview": r.6.chars().take(100).collect::<String>(),
+                "response": r.7,
+                "classification": r.8,
+                "duration_ms": r.9,
+                "created_at": r.10,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(serde_json::json!({ "entries": entries })))
 }

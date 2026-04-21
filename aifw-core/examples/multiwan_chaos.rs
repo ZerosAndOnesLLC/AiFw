@@ -154,9 +154,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!(
         "[chaos] done. {} ticks × {} gateways → {} transitions",
-        args.iterations,
-        args.gateways,
-        total_transitions
+        args.iterations, args.gateways, total_transitions
     );
 
     // Sanity check events table is populated
@@ -164,10 +162,7 @@ async fn main() -> anyhow::Result<()> {
         let events = gateway_engine.list_events(*gw_id, 1000).await?;
         // Monotonic timestamps
         for w in events.windows(2) {
-            assert!(
-                w[0].ts >= w[1].ts,
-                "events not monotonic for gw {gw_id}"
-            );
+            assert!(w[0].ts >= w[1].ts, "events not monotonic for gw {gw_id}");
         }
     }
 

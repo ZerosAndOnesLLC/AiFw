@@ -135,11 +135,9 @@ impl ClusterEngine {
     }
 
     pub async fn list_carp_vips(&self) -> Result<Vec<CarpVip>> {
-        let rows = sqlx::query_as::<_, CarpVipRow>(
-            "SELECT * FROM carp_vips ORDER BY vhid ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query_as::<_, CarpVipRow>("SELECT * FROM carp_vips ORDER BY vhid ASC")
+            .fetch_all(&self.pool)
+            .await?;
         rows.into_iter().map(|r| r.into_vip()).collect()
     }
 
@@ -160,7 +158,9 @@ impl ClusterEngine {
 
     pub async fn set_pfsync(&self, config: PfsyncConfig) -> Result<PfsyncConfig> {
         // Replace any existing config
-        sqlx::query("DELETE FROM pfsync_config").execute(&self.pool).await?;
+        sqlx::query("DELETE FROM pfsync_config")
+            .execute(&self.pool)
+            .await?;
 
         sqlx::query(
             "INSERT INTO pfsync_config (id, sync_interface, sync_peer, defer_mode, enabled, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -179,11 +179,9 @@ impl ClusterEngine {
     }
 
     pub async fn get_pfsync(&self) -> Result<Option<PfsyncConfig>> {
-        let row = sqlx::query_as::<_, PfsyncRow>(
-            "SELECT * FROM pfsync_config LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query_as::<_, PfsyncRow>("SELECT * FROM pfsync_config LIMIT 1")
+            .fetch_optional(&self.pool)
+            .await?;
         row.map(|r| r.into_config()).transpose()
     }
 
@@ -218,11 +216,10 @@ impl ClusterEngine {
     }
 
     pub async fn list_nodes(&self) -> Result<Vec<ClusterNode>> {
-        let rows = sqlx::query_as::<_, ClusterNodeRow>(
-            "SELECT * FROM cluster_nodes ORDER BY name ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query_as::<_, ClusterNodeRow>("SELECT * FROM cluster_nodes ORDER BY name ASC")
+                .fetch_all(&self.pool)
+                .await?;
         rows.into_iter().map(|r| r.into_node()).collect()
     }
 
@@ -276,11 +273,10 @@ impl ClusterEngine {
     }
 
     pub async fn list_health_checks(&self) -> Result<Vec<HealthCheck>> {
-        let rows = sqlx::query_as::<_, HealthCheckRow>(
-            "SELECT * FROM health_checks ORDER BY name ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query_as::<_, HealthCheckRow>("SELECT * FROM health_checks ORDER BY name ASC")
+                .fetch_all(&self.pool)
+                .await?;
         rows.into_iter().map(|r| r.into_check()).collect()
     }
 
@@ -349,7 +345,10 @@ impl CarpVipRow {
         Ok(CarpVip {
             id: Uuid::parse_str(&self.id).map_err(|e| AifwError::Database(format!("{e}")))?,
             vhid: self.vhid as u8,
-            virtual_ip: self.virtual_ip.parse().map_err(|e| AifwError::Database(format!("{e}")))?,
+            virtual_ip: self
+                .virtual_ip
+                .parse()
+                .map_err(|e| AifwError::Database(format!("{e}")))?,
             prefix: self.prefix as u8,
             interface: Interface(self.interface),
             advskew: self.advskew as u8,
@@ -382,7 +381,11 @@ impl PfsyncRow {
         Ok(PfsyncConfig {
             id: Uuid::parse_str(&self.id).map_err(|e| AifwError::Database(format!("{e}")))?,
             sync_interface: Interface(self.sync_interface),
-            sync_peer: self.sync_peer.map(|s| s.parse()).transpose().map_err(|e| AifwError::Database(format!("{e}")))?,
+            sync_peer: self
+                .sync_peer
+                .map(|s| s.parse())
+                .transpose()
+                .map_err(|e| AifwError::Database(format!("{e}")))?,
             defer: self.defer_mode,
             enabled: self.enabled,
             created_at: parse_dt(&self.created_at)?,
@@ -407,7 +410,10 @@ impl ClusterNodeRow {
         Ok(ClusterNode {
             id: Uuid::parse_str(&self.id).map_err(|e| AifwError::Database(format!("{e}")))?,
             name: self.name,
-            address: self.address.parse().map_err(|e| AifwError::Database(format!("{e}")))?,
+            address: self
+                .address
+                .parse()
+                .map_err(|e| AifwError::Database(format!("{e}")))?,
             role: ClusterRole::parse(&self.role)?,
             health: match self.health.as_str() {
                 "healthy" => NodeHealth::Healthy,

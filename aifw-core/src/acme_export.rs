@@ -49,28 +49,44 @@ pub async fn publish_all(pool: &SqlitePool, cert_id: i64) {
 
 async fn run_target(cert: &AcmeCert, t: &AcmeExportTarget) -> (bool, Option<String>) {
     match t.kind {
-        ExportTargetKind::File          => match run_file(cert, &t.config).await { Ok(_) => (true, None), Err(e) => (false, Some(e)) },
-        ExportTargetKind::Webhook       => match run_webhook(cert, &t.config).await { Ok(_) => (true, None), Err(e) => (false, Some(e)) },
-        ExportTargetKind::LocalTlsStore => match run_local_tls_store(cert, &t.config).await { Ok(_) => (true, None), Err(e) => (false, Some(e)) },
+        ExportTargetKind::File => match run_file(cert, &t.config).await {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(e)),
+        },
+        ExportTargetKind::Webhook => match run_webhook(cert, &t.config).await {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(e)),
+        },
+        ExportTargetKind::LocalTlsStore => match run_local_tls_store(cert, &t.config).await {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(e)),
+        },
     }
 }
 
 // ---- file -----------------------------------------------------------------
 
 async fn run_file(cert: &AcmeCert, cfg: &serde_json::Value) -> Result<(), String> {
-    let cert_path  = cfg.get("cert_path").and_then(|v| v.as_str())
+    let cert_path = cfg
+        .get("cert_path")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| "file target missing cert_path".to_string())?;
-    let key_path   = cfg.get("key_path").and_then(|v| v.as_str())
+    let key_path = cfg
+        .get("key_path")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| "file target missing key_path".to_string())?;
     let chain_path = cfg.get("chain_path").and_then(|v| v.as_str());
-    let owner      = cfg.get("owner").and_then(|v| v.as_str());
-    let mode_cert  = cfg.get("mode").and_then(|v| v.as_str()).unwrap_or("0644");
-    let mode_key   = cfg.get("key_mode").and_then(|v| v.as_str()).unwrap_or("0600");
+    let owner = cfg.get("owner").and_then(|v| v.as_str());
+    let mode_cert = cfg.get("mode").and_then(|v| v.as_str()).unwrap_or("0644");
+    let mode_key = cfg
+        .get("key_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0600");
 
     // Reject any destination that escapes our allow-listed export roots
     // (blocks writes to /root/.ssh, /etc/rc.conf.d, /etc/sudoers.d, etc).
     let cert_path_ok = crate::path_safety::validate_export_path(cert_path)?;
-    let key_path_ok  = crate::path_safety::validate_export_path(key_path)?;
+    let key_path_ok = crate::path_safety::validate_export_path(key_path)?;
     let chain_path_ok = match chain_path {
         Some(p) => Some(crate::path_safety::validate_export_path(p)?),
         None => None,
@@ -78,10 +94,16 @@ async fn run_file(cert: &AcmeCert, cfg: &serde_json::Value) -> Result<(), String
 
     let leaf = cert.cert_pem.as_deref().unwrap_or("");
     let chain = cert.chain_pem.as_deref().unwrap_or("");
-    let key  = cert.key_pem.as_deref().unwrap_or("");
+    let key = cert.key_pem.as_deref().unwrap_or("");
     let fullchain = format!("{leaf}\n{chain}");
 
-    sudo_install_string(&fullchain, &cert_path_ok.to_string_lossy(), mode_cert, owner).await?;
+    sudo_install_string(
+        &fullchain,
+        &cert_path_ok.to_string_lossy(),
+        mode_cert,
+        owner,
+    )
+    .await?;
     sudo_install_string(key, &key_path_ok.to_string_lossy(), mode_key, owner).await?;
     if let Some(p) = chain_path_ok {
         sudo_install_string(chain, &p.to_string_lossy(), mode_cert, owner).await?;
@@ -108,10 +130,13 @@ async fn sudo_install_string(
     if let Some(parent) = std::path::Path::new(dest).parent() {
         let _ = Command::new(SUDO)
             .args(["/bin/mkdir", "-p", parent.to_str().unwrap_or("")])
-            .output().await;
+            .output()
+            .await;
     }
 
-    tokio::fs::write(&tmp, body).await.map_err(|e| format!("stage tmp: {e}"))?;
+    tokio::fs::write(&tmp, body)
+        .await
+        .map_err(|e| format!("stage tmp: {e}"))?;
 
     let mut args: Vec<String> = vec!["/usr/bin/install".into(), "-m".into(), mode.into()];
     if let Some(o) = owner {
@@ -131,7 +156,10 @@ async fn sudo_install_string(
     args.push(tmp.clone());
     args.push(dest.to_string());
 
-    let out = Command::new(SUDO).args(&args).output().await
+    let out = Command::new(SUDO)
+        .args(&args)
+        .output()
+        .await
         .map_err(|e| format!("spawn sudo install: {e}"))?;
     let _ = tokio::fs::remove_file(&tmp).await;
     if !out.status.success() {
@@ -146,9 +174,14 @@ async fn sudo_install_string(
 // ---- webhook --------------------------------------------------------------
 
 async fn run_webhook(cert: &AcmeCert, cfg: &serde_json::Value) -> Result<(), String> {
-    let url = cfg.get("url").and_then(|v| v.as_str())
+    let url = cfg
+        .get("url")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| "webhook target missing url".to_string())?;
-    let auth = cfg.get("auth_header").and_then(|v| v.as_str()).unwrap_or("");
+    let auth = cfg
+        .get("auth_header")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     crate::net_safety::validate_outbound_url(url).await?;
 
@@ -179,21 +212,29 @@ async fn run_webhook(cert: &AcmeCert, cfg: &serde_json::Value) -> Result<(), Str
 // ---- local TLS store ------------------------------------------------------
 
 async fn run_local_tls_store(cert: &AcmeCert, cfg: &serde_json::Value) -> Result<(), String> {
-    let reload_service = cfg.get("reload_service")
+    let reload_service = cfg
+        .get("reload_service")
         .and_then(|v| v.as_str())
         .unwrap_or("aifw_api");
     let dir = "/usr/local/etc/aifw/tls";
     let leaf = cert.cert_pem.as_deref().unwrap_or("");
     let chain = cert.chain_pem.as_deref().unwrap_or("");
-    let key  = cert.key_pem.as_deref().unwrap_or("");
+    let key = cert.key_pem.as_deref().unwrap_or("");
     let fullchain = format!("{leaf}\n{chain}");
 
-    sudo_install_string(&fullchain, &format!("{dir}/cert.pem"), "0644", Some("root:rdns")).await?;
-    sudo_install_string(key,        &format!("{dir}/key.pem"),  "0640", Some("root:rdns")).await?;
+    sudo_install_string(
+        &fullchain,
+        &format!("{dir}/cert.pem"),
+        "0644",
+        Some("root:rdns"),
+    )
+    .await?;
+    sudo_install_string(key, &format!("{dir}/key.pem"), "0640", Some("root:rdns")).await?;
 
     // Reload the configured service so it picks up the new cert.
     let _ = Command::new(SUDO)
         .args(["/usr/sbin/service", reload_service, "restart"])
-        .output().await;
+        .output()
+        .await;
     Ok(())
 }

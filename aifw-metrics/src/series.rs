@@ -49,7 +49,10 @@ pub fn aggregate(points: &[MetricPoint], method: Aggregation) -> Option<MetricPo
 
     let total_count: u64 = points.iter().map(|p| p.count).sum();
     let min = points.iter().map(|p| p.min).fold(f64::INFINITY, f64::min);
-    let max = points.iter().map(|p| p.max).fold(f64::NEG_INFINITY, f64::max);
+    let max = points
+        .iter()
+        .map(|p| p.max)
+        .fold(f64::NEG_INFINITY, f64::max);
     let ts = points.last().unwrap().timestamp;
 
     let value = match method {
@@ -90,10 +93,10 @@ pub enum Tier {
 impl Tier {
     pub fn capacity(&self) -> usize {
         match self {
-            Tier::Live => 1800,    // 30 min at 1 s
-            Tier::Short => 2160,   // 6 hours at 10 s
-            Tier::Mid => 10080,    // 7 days at 60 s
-            Tier::Long => 8640,    // 30 days at 300 s
+            Tier::Live => 1800,  // 30 min at 1 s
+            Tier::Short => 2160, // 6 hours at 10 s
+            Tier::Mid => 10080,  // 7 days at 60 s
+            Tier::Long => 8640,  // 30 days at 300 s
         }
     }
 
@@ -162,24 +165,27 @@ impl MetricSeries {
 
         self.short_acc.push(point);
         if self.short_acc.len() >= Tier::Short.consolidation_ratio()
-            && let Some(agg) = aggregate(&self.short_acc, self.aggregation) {
-                self.short.push(agg.clone());
-                self.short_acc.clear();
+            && let Some(agg) = aggregate(&self.short_acc, self.aggregation)
+        {
+            self.short.push(agg.clone());
+            self.short_acc.clear();
 
-                self.mid_acc.push(agg);
-                if self.mid_acc.len() >= Tier::Mid.consolidation_ratio()
-                    && let Some(agg) = aggregate(&self.mid_acc, self.aggregation) {
-                        self.mid.push(agg.clone());
-                        self.mid_acc.clear();
+            self.mid_acc.push(agg);
+            if self.mid_acc.len() >= Tier::Mid.consolidation_ratio()
+                && let Some(agg) = aggregate(&self.mid_acc, self.aggregation)
+            {
+                self.mid.push(agg.clone());
+                self.mid_acc.clear();
 
-                        self.long_acc.push(agg);
-                        if self.long_acc.len() >= Tier::Long.consolidation_ratio()
-                            && let Some(agg) = aggregate(&self.long_acc, self.aggregation) {
-                                self.long.push(agg);
-                                self.long_acc.clear();
-                            }
-                    }
+                self.long_acc.push(agg);
+                if self.long_acc.len() >= Tier::Long.consolidation_ratio()
+                    && let Some(agg) = aggregate(&self.long_acc, self.aggregation)
+                {
+                    self.long.push(agg);
+                    self.long_acc.clear();
+                }
             }
+        }
     }
 
     /// Get data points for a given tier

@@ -10,9 +10,7 @@ use aifw_common::ids::IdsAlert;
 use crate::decode::DecodedPacket;
 use crate::flow::{Flow, FlowDirection, FlowTable};
 use crate::protocol::{ProtocolRegistry, StickyBuffers};
-use crate::rules::{
-    CompiledRule, ContentMatch, FlowConstraint, FlowbitOp, RuleDatabase,
-};
+use crate::rules::{CompiledRule, ContentMatch, FlowConstraint, FlowbitOp, RuleDatabase};
 
 use self::threshold::ThresholdTracker;
 
@@ -61,12 +59,15 @@ impl DetectionEngine {
             // Auto-detect protocol on first payload
             if flow.app_proto.is_none() && !packet.payload.is_empty() {
                 let dst_port = packet.dst_port.unwrap_or(0);
-                flow.app_proto = self.protocol_registry.detect(&packet.payload, dst_port, direction);
+                flow.app_proto =
+                    self.protocol_registry
+                        .detect(&packet.payload, dst_port, direction);
             }
 
             // Parse protocol and extract sticky buffers
             if flow.app_proto.is_some() {
-                self.protocol_registry.parse(flow, &packet.payload, direction, &mut sticky_buffers);
+                self.protocol_registry
+                    .parse(flow, &packet.payload, direction, &mut sticky_buffers);
             }
         }
 
@@ -124,7 +125,10 @@ impl DetectionEngine {
                         _ => true,
                     })
                 } else {
-                    !rule.flowbits.iter().any(|fb| matches!(fb, FlowbitOp::IsSet(_)))
+                    !rule
+                        .flowbits
+                        .iter()
+                        .any(|fb| matches!(fb, FlowbitOp::IsSet(_)))
                 };
 
                 if !flowbits_ok {
@@ -137,13 +141,21 @@ impl DetectionEngine {
                 }
 
                 // Step 3f: Check for noalert flowbit
-                if rule.flowbits.iter().any(|fb| matches!(fb, FlowbitOp::NoAlert)) {
+                if rule
+                    .flowbits
+                    .iter()
+                    .any(|fb| matches!(fb, FlowbitOp::NoAlert))
+                {
                     continue;
                 }
 
                 // Build alert
-                let src_ip = packet.src_ip.unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
-                let dst_ip = packet.dst_ip.unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+                let src_ip = packet
+                    .src_ip
+                    .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+                let dst_ip = packet
+                    .dst_ip
+                    .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
                 let mut alert = IdsAlert::new(
                     rule.msg.clone(),
                     rule.severity,
@@ -165,14 +177,21 @@ impl DetectionEngine {
                         alert.payload_excerpt = Some(String::from_utf8_lossy(excerpt).to_string());
                     } else {
                         alert.payload_excerpt = Some(
-                            excerpt.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "),
+                            excerpt
+                                .iter()
+                                .map(|b| format!("{b:02X}"))
+                                .collect::<Vec<_>>()
+                                .join(" "),
                         );
                     }
                 }
 
                 if !rule.metadata.is_empty() {
                     alert.metadata = Some(
-                        rule.metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                        rule.metadata
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
                     );
                 }
 
@@ -197,35 +216,41 @@ impl DetectionEngine {
     ) -> bool {
         // Check protocol
         if let Some(ref proto) = rule.protocol
-            && !self.match_protocol(proto, packet, flow) {
-                return false;
-            }
+            && !self.match_protocol(proto, packet, flow)
+        {
+            return false;
+        }
 
         // Check flow constraint
         if let Some(ref flow_constraint) = rule.flow
-            && !self.match_flow_constraint(flow_constraint, flow, direction) {
-                return false;
-            }
+            && !self.match_flow_constraint(flow_constraint, flow, direction)
+        {
+            return false;
+        }
 
         // Check address constraints
         if let Some(ref src) = rule.src_addr
-            && !self.match_address(src, packet.src_ip) {
-                return false;
-            }
+            && !self.match_address(src, packet.src_ip)
+        {
+            return false;
+        }
         if let Some(ref dst) = rule.dst_addr
-            && !self.match_address(dst, packet.dst_ip) {
-                return false;
-            }
+            && !self.match_address(dst, packet.dst_ip)
+        {
+            return false;
+        }
 
         // Check port constraints
         if let Some(ref port) = rule.src_port
-            && !self.match_port(port, packet.src_port) {
-                return false;
-            }
+            && !self.match_port(port, packet.src_port)
+        {
+            return false;
+        }
         if let Some(ref port) = rule.dst_port
-            && !self.match_port(port, packet.dst_port) {
-                return false;
-            }
+            && !self.match_port(port, packet.dst_port)
+        {
+            return false;
+        }
 
         // Check all content matches
         for content in &rule.contents {
@@ -271,9 +296,9 @@ impl DetectionEngine {
             let data_str = String::from_utf8_lossy(data);
             // Use pre-compiled regex from the ruleset if available, otherwise compile
             let matched = self.rule_db.ruleset().as_ref().is_some_and(|rs| {
-                rs.regex_patterns.iter().any(|(re, _)| {
-                    re.as_str() == pcre.pattern && re.is_match(&data_str)
-                })
+                rs.regex_patterns
+                    .iter()
+                    .any(|(re, _)| re.as_str() == pcre.pattern && re.is_match(&data_str))
             }) || regex::Regex::new(&pcre.pattern)
                 .map(|re| re.is_match(&data_str))
                 .unwrap_or(false);
@@ -355,14 +380,17 @@ impl DetectionEngine {
         // Group [addr1,addr2]
         if constraint.starts_with('[') && constraint.ends_with(']') {
             let inner = &constraint[1..constraint.len() - 1];
-            return inner.split(',').any(|a| self.match_address(a.trim(), Some(ip)));
+            return inner
+                .split(',')
+                .any(|a| self.match_address(a.trim(), Some(ip)));
         }
 
         // CIDR match
         if let Some((net, prefix_str)) = constraint.split_once('/')
-            && let (Ok(net_ip), Ok(prefix)) = (net.parse::<IpAddr>(), prefix_str.parse::<u8>()) {
-                return ip_in_cidr(ip, net_ip, prefix);
-            }
+            && let (Ok(net_ip), Ok(prefix)) = (net.parse::<IpAddr>(), prefix_str.parse::<u8>())
+        {
+            return ip_in_cidr(ip, net_ip, prefix);
+        }
 
         // Exact IP match
         if let Ok(addr) = constraint.parse::<IpAddr>() {
@@ -389,7 +417,9 @@ impl DetectionEngine {
         // Group [port1,port2]
         if constraint.starts_with('[') && constraint.ends_with(']') {
             let inner = &constraint[1..constraint.len() - 1];
-            return inner.split(',').any(|p| self.match_port(p.trim(), Some(port)));
+            return inner
+                .split(',')
+                .any(|p| self.match_port(p.trim(), Some(port)));
         }
 
         // Range
@@ -427,7 +457,6 @@ impl DetectionEngine {
             }
         }
     }
-
 }
 
 /// Check if a content pattern matches data with position constraints.
@@ -504,8 +533,8 @@ impl std::fmt::Debug for DetectionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aifw_common::ids::RuleSource;
     use crate::decode::PacketProtocol;
+    use aifw_common::ids::RuleSource;
 
     fn setup_engine(rules_text: &str) -> DetectionEngine {
         let rule_db = Arc::new(RuleDatabase::new());
@@ -516,7 +545,13 @@ mod tests {
         DetectionEngine::new(rule_db, flow_table)
     }
 
-    fn tcp_packet(src_ip: &str, dst_ip: &str, src_port: u16, dst_port: u16, payload: &[u8]) -> DecodedPacket {
+    fn tcp_packet(
+        src_ip: &str,
+        dst_ip: &str,
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+    ) -> DecodedPacket {
         DecodedPacket {
             timestamp_us: 1000,
             src_ip: Some(src_ip.parse().unwrap()),
@@ -536,7 +571,13 @@ mod tests {
             r#"alert tcp any any -> any any (msg:"Test malware"; content:"malware"; sid:1;)"#,
         );
 
-        let pkt = tcp_packet("10.0.0.1", "10.0.0.2", 12345, 80, b"this contains malware string");
+        let pkt = tcp_packet(
+            "10.0.0.1",
+            "10.0.0.2",
+            12345,
+            80,
+            b"this contains malware string",
+        );
         let alerts = engine.detect(&pkt);
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].signature_msg, "Test malware");
@@ -545,9 +586,8 @@ mod tests {
 
     #[test]
     fn test_detect_no_match() {
-        let engine = setup_engine(
-            r#"alert tcp any any -> any any (msg:"Test"; content:"malware"; sid:1;)"#,
-        );
+        let engine =
+            setup_engine(r#"alert tcp any any -> any any (msg:"Test"; content:"malware"; sid:1;)"#);
 
         let pkt = tcp_packet("10.0.0.1", "10.0.0.2", 12345, 80, b"safe traffic here");
         let alerts = engine.detect(&pkt);
@@ -594,10 +634,26 @@ alert tcp any any -> any any (msg:"Rule 2"; content:"bad"; sid:2;)
 
     #[test]
     fn test_ip_in_cidr() {
-        assert!(ip_in_cidr("10.0.0.1".parse().unwrap(), "10.0.0.0".parse().unwrap(), 8));
-        assert!(ip_in_cidr("10.255.255.255".parse().unwrap(), "10.0.0.0".parse().unwrap(), 8));
-        assert!(!ip_in_cidr("11.0.0.1".parse().unwrap(), "10.0.0.0".parse().unwrap(), 8));
-        assert!(ip_in_cidr("192.168.1.1".parse().unwrap(), "192.168.1.0".parse().unwrap(), 24));
+        assert!(ip_in_cidr(
+            "10.0.0.1".parse().unwrap(),
+            "10.0.0.0".parse().unwrap(),
+            8
+        ));
+        assert!(ip_in_cidr(
+            "10.255.255.255".parse().unwrap(),
+            "10.0.0.0".parse().unwrap(),
+            8
+        ));
+        assert!(!ip_in_cidr(
+            "11.0.0.1".parse().unwrap(),
+            "10.0.0.0".parse().unwrap(),
+            8
+        ));
+        assert!(ip_in_cidr(
+            "192.168.1.1".parse().unwrap(),
+            "192.168.1.0".parse().unwrap(),
+            24
+        ));
     }
 
     #[test]

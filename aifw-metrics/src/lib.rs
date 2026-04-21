@@ -12,5 +12,5 @@ pub use backend::MetricsBackend;
 pub use collector::MetricsCollector;
 pub use config::MetricsConfig;
 pub use ring::RingBuffer;
-pub use series::{MetricPoint, MetricSeries, Aggregation};
+pub use series::{Aggregation, MetricPoint, MetricSeries};
 pub use store::MetricsStore;

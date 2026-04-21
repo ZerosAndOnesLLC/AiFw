@@ -111,8 +111,11 @@ async fn tcp_probe(spec: &ProbeSpec) -> ProbeOutcome {
     let port = spec.port.unwrap_or(443);
     let addr = format!("{}:{port}", spec.target);
     let start = Instant::now();
-    match tokio::time::timeout(Duration::from_millis(spec.timeout_ms), TcpStream::connect(&addr))
-        .await
+    match tokio::time::timeout(
+        Duration::from_millis(spec.timeout_ms),
+        TcpStream::connect(&addr),
+    )
+    .await
     {
         Ok(Ok(_)) => ProbeOutcome {
             success: true,
@@ -257,8 +260,7 @@ mod tests {
 
     #[test]
     fn parse_ping_rtt_works() {
-        let sample =
-            "round-trip min/avg/max/stddev = 0.123/0.456/0.789/0.001 ms";
+        let sample = "round-trip min/avg/max/stddev = 0.123/0.456/0.789/0.001 ms";
         assert_eq!(parse_ping_rtt(sample), Some(0.456));
     }
 }

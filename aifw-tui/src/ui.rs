@@ -13,7 +13,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // tabs
-            Constraint::Min(0),   // content
+            Constraint::Min(0),    // content
             Constraint::Length(1), // status bar
         ])
         .split(f.area());
@@ -36,7 +36,9 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|t| {
             let style = if *t == app.tab {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Gray)
             };
@@ -49,13 +51,21 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let tabs = Tabs::new(titles)
         .block(Block::default().borders(Borders::ALL).title(" AiFw "))
         .select(idx)
-        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_widget(tabs, area);
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let pf_status = if app.pf_stats.running { "pf: UP" } else { "pf: DOWN" };
+    let pf_status = if app.pf_stats.running {
+        "pf: UP"
+    } else {
+        "pf: DOWN"
+    };
     let text = format!(
         " {} | Rules: {} | NAT: {} | Conns: {} | q=quit Tab/1-5=switch r=refresh d=delete",
         pf_status,
@@ -71,7 +81,7 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(9),  // stats
+            Constraint::Length(9), // stats
             Constraint::Min(0),    // top talkers
         ])
         .split(area);
@@ -88,22 +98,28 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("pf status: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 if pf.running { "RUNNING" } else { "STOPPED" },
-                Style::default().fg(if pf.running { Color::Green } else { Color::Red }).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(if pf.running { Color::Green } else { Color::Red })
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(format!("States:       {}", pf.states_count)),
         Line::from(format!("pf Rules:     {}", pf.rules_count)),
-        Line::from(format!("AiFw Rules:   {} ({} active)",
+        Line::from(format!(
+            "AiFw Rules:   {} ({} active)",
             app.rules.len(),
-            app.rules.iter().filter(|r| r.status == aifw_common::RuleStatus::Active).count()
+            app.rules
+                .iter()
+                .filter(|r| r.status == aifw_common::RuleStatus::Active)
+                .count()
         )),
         Line::from(format!("NAT Rules:    {}", app.nat_rules.len())),
         Line::from(format!("Queues:       {}", app.queues.len())),
         Line::from(format!("Rate Limits:  {}", app.rate_limits.len())),
     ];
 
-    let left = Paragraph::new(left_text)
-        .block(Block::default().borders(Borders::ALL).title(" System "));
+    let left =
+        Paragraph::new(left_text).block(Block::default().borders(Borders::ALL).title(" System "));
     f.render_widget(left, stats_chunks[0]);
 
     let cs = &app.conntrack_stats;
@@ -117,44 +133,81 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
         Line::from(format!("Bytes In:     {}", format_bytes(pf.bytes_in))),
     ];
 
-    let right = Paragraph::new(right_text)
-        .block(Block::default().borders(Borders::ALL).title(" Traffic "));
+    let right =
+        Paragraph::new(right_text).block(Block::default().borders(Borders::ALL).title(" Traffic "));
     f.render_widget(right, stats_chunks[1]);
 
     // Top talkers
-    let header = Row::new(vec!["IP Address", "Bytes"])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec!["IP Address", "Bytes"]).style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = app
         .top_talkers
         .iter()
-        .map(|(ip, bytes)| {
-            Row::new(vec![ip.to_string(), format_bytes(*bytes)])
-        })
+        .map(|(ip, bytes)| Row::new(vec![ip.to_string(), format_bytes(*bytes)]))
         .collect();
 
-    let table = Table::new(rows, [Constraint::Percentage(60), Constraint::Percentage(40)])
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Top Talkers "));
+    let table = Table::new(
+        rows,
+        [Constraint::Percentage(60), Constraint::Percentage(40)],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Top Talkers "),
+    );
 
     f.render_widget(table, chunks[1]);
 }
 
 fn draw_rules(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec!["PRI", "ACTION", "DIR", "PROTO", "SOURCE", "DESTINATION", "STATE", "LABEL"])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec![
+        "PRI",
+        "ACTION",
+        "DIR",
+        "PROTO",
+        "SOURCE",
+        "DESTINATION",
+        "STATE",
+        "LABEL",
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = app
         .rules
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let src = format!("{}{}", r.rule_match.src_addr,
-                r.rule_match.src_port.as_ref().map(|p| format!(":{p}")).unwrap_or_default());
-            let dst = format!("{}{}", r.rule_match.dst_addr,
-                r.rule_match.dst_port.as_ref().map(|p| format!(":{p}")).unwrap_or_default());
+            let src = format!(
+                "{}{}",
+                r.rule_match.src_addr,
+                r.rule_match
+                    .src_port
+                    .as_ref()
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_default()
+            );
+            let dst = format!(
+                "{}{}",
+                r.rule_match.dst_addr,
+                r.rule_match
+                    .dst_port
+                    .as_ref()
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_default()
+            );
             let style = if i == app.rules_selected {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else if r.status == aifw_common::RuleStatus::Disabled {
                 Style::default().fg(Color::DarkGray)
             } else {
@@ -188,7 +241,11 @@ fn draw_rules(f: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(" Rules ({}) ", app.rules.len())));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Rules ({}) ", app.rules.len())),
+    );
 
     let mut state = TableState::default();
     state.select(Some(app.rules_selected));
@@ -196,20 +253,46 @@ fn draw_rules(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_nat(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec!["TYPE", "IFACE", "PROTO", "SOURCE", "DESTINATION", "REDIRECT", "LABEL"])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec![
+        "TYPE",
+        "IFACE",
+        "PROTO",
+        "SOURCE",
+        "DESTINATION",
+        "REDIRECT",
+        "LABEL",
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = app
         .nat_rules
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let src = format!("{}{}", r.src_addr,
-                r.src_port.as_ref().map(|p| format!(":{p}")).unwrap_or_default());
-            let dst = format!("{}{}", r.dst_addr,
-                r.dst_port.as_ref().map(|p| format!(":{p}")).unwrap_or_default());
+            let src = format!(
+                "{}{}",
+                r.src_addr,
+                r.src_port
+                    .as_ref()
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_default()
+            );
+            let dst = format!(
+                "{}{}",
+                r.dst_addr,
+                r.dst_port
+                    .as_ref()
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_default()
+            );
             let style = if i == app.nat_selected {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -239,7 +322,11 @@ fn draw_nat(f: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(" NAT Rules ({}) ", app.nat_rules.len())));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" NAT Rules ({}) ", app.nat_rules.len())),
+    );
 
     let mut state = TableState::default();
     state.select(Some(app.nat_selected));
@@ -247,8 +334,21 @@ fn draw_nat(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_connections(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec!["PROTO", "SOURCE", "DESTINATION", "STATE", "AGE", "PKTS IN", "PKTS OUT", "BYTES"])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec![
+        "PROTO",
+        "SOURCE",
+        "DESTINATION",
+        "STATE",
+        "AGE",
+        "PKTS IN",
+        "PKTS OUT",
+        "BYTES",
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = app
         .connections
@@ -256,7 +356,9 @@ fn draw_connections(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, c)| {
             let style = if i == app.conn_selected {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -288,7 +390,11 @@ fn draw_connections(f: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(" Connections ({}) ", app.connections.len())));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Connections ({}) ", app.connections.len())),
+    );
 
     let mut state = TableState::default();
     state.select(Some(app.conn_selected));
@@ -296,8 +402,11 @@ fn draw_connections(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(vec!["TIME", "ACTION", "RULE ID", "DETAILS", "SOURCE"])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec!["TIME", "ACTION", "RULE ID", "DETAILS", "SOURCE"]).style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = app
         .audit_entries
@@ -305,13 +414,18 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, e)| {
             let style = if i == app.log_selected {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
             let time = e.timestamp.format("%H:%M:%S").to_string();
             let action = format!("{:?}", e.action);
-            let rule_id = e.rule_id.map(|id| id.to_string()[..8].to_string()).unwrap_or_default();
+            let rule_id = e
+                .rule_id
+                .map(|id| id.to_string()[..8].to_string())
+                .unwrap_or_default();
             Row::new(vec![
                 Cell::from(time),
                 Cell::from(action),
@@ -334,7 +448,11 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(" Audit Log ({}) ", app.audit_entries.len())));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Audit Log ({}) ", app.audit_entries.len())),
+    );
 
     let mut state = TableState::default();
     state.select(Some(app.log_selected));

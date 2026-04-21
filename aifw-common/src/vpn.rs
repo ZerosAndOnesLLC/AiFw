@@ -56,10 +56,7 @@ impl WgTunnel {
     pub fn to_ifconfig_cmds(&self) -> Vec<String> {
         let mut cmds = vec![
             format!("ifconfig {} create", self.interface),
-            format!(
-                "ifconfig {} inet {} up",
-                self.interface, self.address
-            ),
+            format!("ifconfig {} inet {} up", self.interface, self.address),
         ];
         if let Some(mtu) = self.mtu {
             cmds.push(format!("ifconfig {} mtu {mtu}", self.interface));
@@ -137,7 +134,12 @@ impl WgPeer {
     /// `server_endpoint` is the firewall's public IP or hostname.
     /// `split_tunnel` — if true, only routes the tunnel subnet through the VPN (split VPN).
     ///                   if false, routes all traffic through the VPN (full tunnel).
-    pub fn to_client_config(&self, tunnel: &WgTunnel, server_endpoint: &str, split_tunnel: bool) -> String {
+    pub fn to_client_config(
+        &self,
+        tunnel: &WgTunnel,
+        server_endpoint: &str,
+        split_tunnel: bool,
+    ) -> String {
         let mut conf = String::from("[Interface]\n");
         if let Some(ref pk) = self.client_private_key {
             conf.push_str(&format!("PrivateKey = {pk}\n"));
@@ -149,9 +151,10 @@ impl WgPeer {
             conf.push_str(&format!("Address = {addr}\n"));
         }
         if let Some(ref dns) = tunnel.dns
-            && !dns.is_empty() {
-                conf.push_str(&format!("DNS = {dns}\n"));
-            }
+            && !dns.is_empty()
+        {
+            conf.push_str(&format!("DNS = {dns}\n"));
+        }
         if let Some(mtu) = tunnel.mtu {
             conf.push_str(&format!("MTU = {mtu}\n"));
         }
@@ -188,10 +191,7 @@ impl WgPeer {
 
     /// Generate wg set command for this peer
     pub fn to_wg_cmd(&self, iface: &Interface) -> String {
-        let mut parts = vec![format!(
-            "wg set {} peer {}",
-            iface, self.public_key
-        )];
+        let mut parts = vec![format!("wg set {} peer {}", iface, self.public_key)];
 
         if let Some(ref endpoint) = self.endpoint {
             parts.push(format!("endpoint {endpoint}"));
@@ -242,7 +242,9 @@ impl IpsecProtocol {
             "esp" => Ok(IpsecProtocol::Esp),
             "ah" => Ok(IpsecProtocol::Ah),
             "esp+ah" | "espah" | "esp_ah" => Ok(IpsecProtocol::EspAh),
-            _ => Err(crate::AifwError::Validation(format!("unknown IPsec protocol: {s}"))),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown IPsec protocol: {s}"
+            ))),
         }
     }
 }
@@ -478,30 +480,34 @@ impl std::fmt::Display for VpnType {
 pub fn generate_wg_keypair() -> (String, String) {
     // Try wg genkey first (FreeBSD with wireguard-tools installed)
     if let Ok(output) = std::process::Command::new("wg").arg("genkey").output()
-        && output.status.success() {
-            let privkey = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if privkey.len() >= 40 {
-                // Derive public key from private key
-                if let Ok(pub_output) = std::process::Command::new("wg")
-                    .arg("pubkey")
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .spawn()
-                    .and_then(|mut child| {
-                        use std::io::Write;
-                        if let Some(ref mut stdin) = child.stdin {
-                            let _ = stdin.write_all(privkey.as_bytes());
-                        }
-                        child.wait_with_output()
-                    })
-                    && pub_output.status.success() {
-                        let pubkey = String::from_utf8_lossy(&pub_output.stdout).trim().to_string();
-                        if pubkey.len() >= 40 {
-                            return (privkey, pubkey);
-                        }
+        && output.status.success()
+    {
+        let privkey = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if privkey.len() >= 40 {
+            // Derive public key from private key
+            if let Ok(pub_output) = std::process::Command::new("wg")
+                .arg("pubkey")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    use std::io::Write;
+                    if let Some(ref mut stdin) = child.stdin {
+                        let _ = stdin.write_all(privkey.as_bytes());
                     }
+                    child.wait_with_output()
+                })
+                && pub_output.status.success()
+            {
+                let pubkey = String::from_utf8_lossy(&pub_output.stdout)
+                    .trim()
+                    .to_string();
+                if pubkey.len() >= 40 {
+                    return (privkey, pubkey);
+                }
             }
         }
+    }
 
     // Fallback: generate 32 random bytes for each key
     let mut private_bytes = [0u8; 32];
@@ -521,12 +527,13 @@ pub fn generate_wg_keypair() -> (String, String) {
 pub fn generate_wg_psk() -> String {
     // Try wg genpsk first
     if let Ok(output) = std::process::Command::new("wg").arg("genpsk").output()
-        && output.status.success() {
-            let psk = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if psk.len() >= 40 {
-                return psk;
-            }
+        && output.status.success()
+    {
+        let psk = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if psk.len() >= 40 {
+            return psk;
         }
+    }
     let mut bytes = [0u8; 32];
     let id1 = Uuid::new_v4();
     let id2 = Uuid::new_v4();
@@ -544,8 +551,16 @@ fn base64_encode(data: &[u8]) -> String {
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
         let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
         let triple = (b0 << 16) | (b1 << 8) | b2;
-        let _ = write!(result, "{}", CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        let _ = write!(result, "{}", CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        let _ = write!(
+            result,
+            "{}",
+            CHARS[((triple >> 18) & 0x3F) as usize] as char
+        );
+        let _ = write!(
+            result,
+            "{}",
+            CHARS[((triple >> 12) & 0x3F) as usize] as char
+        );
         if chunk.len() > 1 {
             let _ = write!(result, "{}", CHARS[((triple >> 6) & 0x3F) as usize] as char);
         } else {
@@ -585,11 +600,7 @@ fn address_network_cidr(addr: &crate::types::Address) -> String {
             IpAddr::V6(v6) => {
                 let p = (*prefix).min(128);
                 let bits = u128::from(*v6);
-                let mask: u128 = if p == 0 {
-                    0
-                } else {
-                    u128::MAX << (128 - p)
-                };
+                let mask: u128 = if p == 0 { 0 } else { u128::MAX << (128 - p) };
                 let net = std::net::Ipv6Addr::from(bits & mask);
                 format!("{net}/{p}")
             }

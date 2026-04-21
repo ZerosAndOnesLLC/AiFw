@@ -1,8 +1,8 @@
-use aifw_common::{Alias, AliasType, AifwError, Result};
+use aifw_common::{AifwError, Alias, AliasType, Result};
 use aifw_pf::PfBackend;
 use chrono::Utc;
-use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
+use sqlx::sqlite::SqlitePool;
 use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -21,7 +21,8 @@ impl AliasEngine {
     }
 
     pub async fn migrate(&self) -> Result<()> {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS aliases (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
@@ -32,7 +33,8 @@ impl AliasEngine {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
-        "#)
+        "#,
+        )
         .execute(&self.pool)
         .await
         .map_err(|e| AifwError::Database(e.to_string()))?;
@@ -43,26 +45,31 @@ impl AliasEngine {
         let rows = sqlx::query("SELECT id, name, alias_type, entries, description, enabled, created_at, updated_at FROM aliases ORDER BY name ASC")
             .fetch_all(&self.pool).await.map_err(|e| AifwError::Database(e.to_string()))?;
 
-        Ok(rows.iter().map(|r| {
-            let entries_json: String = r.get("entries");
-            let entries: Vec<String> = serde_json::from_str(&entries_json).unwrap_or_default();
-            let alias_type_str: String = r.get("alias_type");
-            Alias {
-                id: r.get::<String, _>("id").parse().unwrap_or_default(),
-                name: r.get("name"),
-                alias_type: AliasType::parse(&alias_type_str).unwrap_or(AliasType::Host),
-                entries,
-                description: r.get("description"),
-                enabled: r.get("enabled"),
-                created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
-                updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
-            }
-        }).collect())
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let entries_json: String = r.get("entries");
+                let entries: Vec<String> = serde_json::from_str(&entries_json).unwrap_or_default();
+                let alias_type_str: String = r.get("alias_type");
+                Alias {
+                    id: r.get::<String, _>("id").parse().unwrap_or_default(),
+                    name: r.get("name"),
+                    alias_type: AliasType::parse(&alias_type_str).unwrap_or(AliasType::Host),
+                    entries,
+                    description: r.get("description"),
+                    enabled: r.get("enabled"),
+                    created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
+                    updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
+                }
+            })
+            .collect())
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Alias> {
         let aliases = self.list().await?;
-        aliases.into_iter().find(|a| a.id == id)
+        aliases
+            .into_iter()
+            .find(|a| a.id == id)
             .ok_or_else(|| AifwError::NotFound(format!("alias {} not found", id)))
     }
 
@@ -117,7 +124,9 @@ impl AliasEngine {
 
         sqlx::query("DELETE FROM aliases WHERE id=?1")
             .bind(id.to_string())
-            .execute(&self.pool).await.map_err(|e| AifwError::Database(e.to_string()))?;
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AifwError::Database(e.to_string()))?;
 
         tracing::info!(name = %alias.name, "alias deleted");
         Ok(())
@@ -149,7 +158,9 @@ impl AliasEngine {
             AliasType::Host | AliasType::Network => {
                 for entry in &alias.entries {
                     let entry = entry.trim();
-                    if entry.is_empty() { continue; }
+                    if entry.is_empty() {
+                        continue;
+                    }
                     // For networks like "10.0.0.0/8", pf tables accept CIDR
                     // For hosts like "1.2.3.4", parse as IP
                     if let Some((ip_str, _prefix)) = entry.split_once('/') {
@@ -166,18 +177,22 @@ impl AliasEngine {
                 for url in &alias.entries {
                     if let Ok(output) = tokio::process::Command::new("curl")
                         .args(["-sf", "--max-time", "30", url.trim()])
-                        .output().await
-                        && output.status.success() {
-                            let body = String::from_utf8_lossy(&output.stdout);
-                            for line in body.lines() {
-                                let line = line.trim();
-                                if line.is_empty() || line.starts_with('#') { continue; }
-                                let ip_str = line.split_whitespace().next().unwrap_or("");
-                                if let Ok(ip) = ip_str.parse::<IpAddr>() {
-                                    let _ = self.pf.add_table_entry(&alias.name, ip).await;
-                                }
+                        .output()
+                        .await
+                        && output.status.success()
+                    {
+                        let body = String::from_utf8_lossy(&output.stdout);
+                        for line in body.lines() {
+                            let line = line.trim();
+                            if line.is_empty() || line.starts_with('#') {
+                                continue;
+                            }
+                            let ip_str = line.split_whitespace().next().unwrap_or("");
+                            if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                                let _ = self.pf.add_table_entry(&alias.name, ip).await;
                             }
                         }
+                    }
                 }
             }
             AliasType::Port => {
@@ -190,13 +205,23 @@ impl AliasEngine {
 
     fn validate_name(&self, name: &str) -> Result<()> {
         if name.is_empty() || name.len() > 31 {
-            return Err(AifwError::Validation("Alias name must be 1-31 characters".into()));
+            return Err(AifwError::Validation(
+                "Alias name must be 1-31 characters".into(),
+            ));
         }
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-            return Err(AifwError::Validation("Alias name must be alphanumeric (with _ and -)".into()));
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(AifwError::Validation(
+                "Alias name must be alphanumeric (with _ and -)".into(),
+            ));
         }
         if RESERVED_NAMES.contains(&name) {
-            return Err(AifwError::Validation(format!("Name '{}' is reserved", name)));
+            return Err(AifwError::Validation(format!(
+                "Name '{}' is reserved",
+                name
+            )));
         }
         Ok(())
     }

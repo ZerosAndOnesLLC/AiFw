@@ -93,11 +93,9 @@ impl TlsEngine {
     }
 
     pub async fn list_sni_rules(&self) -> Result<Vec<SniRule>> {
-        let rows = sqlx::query_as::<_, SniRuleRow>(
-            "SELECT * FROM sni_rules ORDER BY pattern ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query_as::<_, SniRuleRow>("SELECT * FROM sni_rules ORDER BY pattern ASC")
+            .fetch_all(&self.pool)
+            .await?;
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
@@ -156,14 +154,12 @@ impl TlsEngine {
     }
 
     pub async fn is_ja3_blocked(&self, hash: &str) -> bool {
-        sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM ja3_blocklist WHERE hash = ?1",
-        )
-        .bind(hash)
-        .fetch_one(&self.pool)
-        .await
-        .map(|r| r.0 > 0)
-        .unwrap_or(false)
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM ja3_blocklist WHERE hash = ?1")
+            .bind(hash)
+            .fetch_one(&self.pool)
+            .await
+            .map(|r| r.0 > 0)
+            .unwrap_or(false)
     }
 
     // --- Policy ---

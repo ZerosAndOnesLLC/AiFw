@@ -1,6 +1,6 @@
 use aifw_common::{
-    Action, AdaptiveTimeouts, Address, AifwError, Direction, Interface, PortRange, Protocol, Result,
-    Rule, RuleMatch, RuleStatus, StateOptions, StatePolicy, StateTracking,
+    Action, AdaptiveTimeouts, Address, AifwError, Direction, Interface, PortRange, Protocol,
+    Result, Rule, RuleMatch, RuleStatus, StateOptions, StatePolicy, StateTracking,
 };
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -94,24 +94,23 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_rules_priority ON rules(priority);",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_rules_priority ON rules(priority);")
+            .execute(&self.pool)
+            .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_rules_status ON rules(status);",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_rules_status ON rules(status);")
+            .execute(&self.pool)
+            .await?;
 
         // Audit log table
         let audit_log = crate::audit::AuditLog::new(self.pool.clone());
         audit_log.migrate().await?;
 
         // NAT rules table
-        let nat_engine = crate::nat::NatEngine::new(self.pool.clone(), std::sync::Arc::from(aifw_pf::create_backend()));
+        let nat_engine = crate::nat::NatEngine::new(
+            self.pool.clone(),
+            std::sync::Arc::from(aifw_pf::create_backend()),
+        );
         nat_engine.migrate().await?;
 
         Ok(())
@@ -148,8 +147,18 @@ impl Database {
             StatePolicy::IfBound => "if_bound",
             StatePolicy::Floating => "floating",
         }))
-        .bind(rule.state_options.adaptive_timeouts.as_ref().map(|a| a.start as i64))
-        .bind(rule.state_options.adaptive_timeouts.as_ref().map(|a| a.end as i64))
+        .bind(
+            rule.state_options
+                .adaptive_timeouts
+                .as_ref()
+                .map(|a| a.start as i64),
+        )
+        .bind(
+            rule.state_options
+                .adaptive_timeouts
+                .as_ref()
+                .map(|a| a.end as i64),
+        )
         .bind(rule.state_options.timeout_tcp.map(|t| t as i64))
         .bind(rule.state_options.timeout_udp.map(|t| t as i64))
         .bind(rule.state_options.timeout_icmp.map(|t| t as i64))
@@ -167,12 +176,10 @@ impl Database {
     }
 
     pub async fn get_rule(&self, id: Uuid) -> Result<Option<Rule>> {
-        let row = sqlx::query_as::<_, RuleRow>(
-            "SELECT * FROM rules WHERE id = ?1",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query_as::<_, RuleRow>("SELECT * FROM rules WHERE id = ?1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
 
         row.map(|r| r.into_rule()).transpose()
     }
@@ -231,8 +238,18 @@ impl Database {
             StatePolicy::IfBound => "if_bound",
             StatePolicy::Floating => "floating",
         }))
-        .bind(rule.state_options.adaptive_timeouts.as_ref().map(|a| a.start as i64))
-        .bind(rule.state_options.adaptive_timeouts.as_ref().map(|a| a.end as i64))
+        .bind(
+            rule.state_options
+                .adaptive_timeouts
+                .as_ref()
+                .map(|a| a.start as i64),
+        )
+        .bind(
+            rule.state_options
+                .adaptive_timeouts
+                .as_ref()
+                .map(|a| a.end as i64),
+        )
         .bind(rule.state_options.timeout_tcp.map(|t| t as i64))
         .bind(rule.state_options.timeout_udp.map(|t| t as i64))
         .bind(rule.state_options.timeout_icmp.map(|t| t as i64))

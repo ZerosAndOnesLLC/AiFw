@@ -23,27 +23,16 @@ pub trait PfBackend: Send + Sync {
     async fn get_stats(&self) -> Result<PfStats, crate::PfError>;
 
     /// Add an address to a pf table
-    async fn add_table_entry(
-        &self,
-        table: &str,
-        addr: IpAddr,
-    ) -> Result<(), crate::PfError>;
+    async fn add_table_entry(&self, table: &str, addr: IpAddr) -> Result<(), crate::PfError>;
 
     /// Remove an address from a pf table
-    async fn remove_table_entry(
-        &self,
-        table: &str,
-        addr: IpAddr,
-    ) -> Result<(), crate::PfError>;
+    async fn remove_table_entry(&self, table: &str, addr: IpAddr) -> Result<(), crate::PfError>;
 
     /// Flush all entries from a pf table
     async fn flush_table(&self, table: &str) -> Result<(), crate::PfError>;
 
     /// Get all entries in a pf table
-    async fn get_table_entries(
-        &self,
-        table: &str,
-    ) -> Result<Vec<PfTableEntry>, crate::PfError>;
+    async fn get_table_entries(&self, table: &str) -> Result<Vec<PfTableEntry>, crate::PfError>;
 
     /// Check if pf is enabled and running
     async fn is_running(&self) -> Result<bool, crate::PfError>;

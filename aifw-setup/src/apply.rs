@@ -19,7 +19,10 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // 2. Write config file
     console::info("Writing configuration file...");
     write_config_file(config)?;
-    console::success(&format!("Config written to {}/aifw.conf", config.config_dir));
+    console::success(&format!(
+        "Config written to {}/aifw.conf",
+        config.config_dir
+    ));
 
     // 3. Initialize database
     console::info("Initializing database...");
@@ -29,7 +32,9 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // 3b. Fix DB ownership (DB was created as root, aifw user needs write access)
     #[cfg(target_os = "freebsd")]
     {
-        let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/var/db/aifw"]).output();
+        let _ = std::process::Command::new("chown")
+            .args(["-R", "aifw:aifw", "/var/db/aifw"])
+            .output();
     }
 
     // 4. Generate pf rules
@@ -38,8 +43,20 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     write_file(&format!("{}/pf.conf.aifw", config.config_dir), &pf_rules)?;
     // Create empty anchor files so pfctl doesn't error on load
     let anchors_dir = format!("{}/anchors", config.config_dir);
-    std::fs::create_dir_all(&anchors_dir).map_err(|e| format!("failed to create anchors dir: {e}"))?;
-    for anchor in ["aifw", "aifw-nat", "aifw-ratelimit", "aifw-vpn", "aifw-geoip", "aifw-tls", "aifw-ha", "aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"] {
+    std::fs::create_dir_all(&anchors_dir)
+        .map_err(|e| format!("failed to create anchors dir: {e}"))?;
+    for anchor in [
+        "aifw",
+        "aifw-nat",
+        "aifw-ratelimit",
+        "aifw-vpn",
+        "aifw-geoip",
+        "aifw-tls",
+        "aifw-ha",
+        "aifw-pbr",
+        "aifw-mwan-leak",
+        "aifw-mwan-reply",
+    ] {
         let path = format!("{anchors_dir}/{anchor}");
         if !std::path::Path::new(&path).exists() {
             write_file(&path, "# AiFw managed anchor\n")?;
@@ -122,22 +139,39 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
     // 5c. Setup unbound directory
     console::info("Configuring Unbound DNS resolver...");
     let _ = std::fs::create_dir_all("/var/unbound");
-    let _ = std::process::Command::new("chown").args(["-R", "unbound:unbound", "/var/unbound"]).status();
+    let _ = std::process::Command::new("chown")
+        .args(["-R", "unbound:unbound", "/var/unbound"])
+        .status();
     console::success("Unbound configured");
 
     // 5c2. Setup rDHCP directories
     console::info("Configuring rDHCP DHCP server...");
-    for dir in ["/var/db/rdhcpd/leases", "/var/log/rdhcpd", "/usr/local/etc/rdhcpd"] {
+    for dir in [
+        "/var/db/rdhcpd/leases",
+        "/var/log/rdhcpd",
+        "/usr/local/etc/rdhcpd",
+    ] {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/var/db/rdhcpd"]).status();
-    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/var/log/rdhcpd"]).status();
-    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]).status();
+    let _ = std::process::Command::new("chown")
+        .args(["-R", "aifw:aifw", "/var/db/rdhcpd"])
+        .status();
+    let _ = std::process::Command::new("chown")
+        .args(["-R", "aifw:aifw", "/var/log/rdhcpd"])
+        .status();
+    let _ = std::process::Command::new("chown")
+        .args(["-R", "aifw:aifw", "/usr/local/etc/rdhcpd"])
+        .status();
     console::success("rDHCP configured");
 
     // 5c3. Setup rDNS directories and user
     console::info("Configuring rDNS DNS server...");
-    for dir in ["/usr/local/etc/rdns/zones", "/usr/local/etc/rdns/rpz", "/var/run/rdns", "/var/log/rdns"] {
+    for dir in [
+        "/usr/local/etc/rdns/zones",
+        "/usr/local/etc/rdns/rpz",
+        "/var/run/rdns",
+        "/var/log/rdns",
+    ] {
         let _ = std::fs::create_dir_all(dir);
     }
     // Create rdns user if not exists
@@ -147,7 +181,16 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
         .and_then(|s| {
             if !s.success() {
                 std::process::Command::new("pw")
-                    .args(["useradd", "rdns", "-d", "/nonexistent", "-s", "/usr/sbin/nologin", "-c", "rDNS DNS Server"])
+                    .args([
+                        "useradd",
+                        "rdns",
+                        "-d",
+                        "/nonexistent",
+                        "-s",
+                        "/usr/sbin/nologin",
+                        "-c",
+                        "rDNS DNS Server",
+                    ])
                     .status()
             } else {
                 Ok(s)
@@ -160,8 +203,12 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
     for dir in ["/usr/local/etc/rtime", "/var/run/rtime", "/var/log/rtime"] {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/usr/local/etc/rtime"]).status();
-    let _ = std::process::Command::new("chown").args(["-R", "aifw:aifw", "/var/log/rtime"]).status();
+    let _ = std::process::Command::new("chown")
+        .args(["-R", "aifw:aifw", "/usr/local/etc/rtime"])
+        .status();
+    let _ = std::process::Command::new("chown")
+        .args(["-R", "aifw:aifw", "/var/log/rtime"])
+        .status();
     console::success("rTIME configured");
 
     // 5d. Configure devfs rules for /dev/pf and /dev/bpf* access
@@ -214,7 +261,11 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
     // 7. Write resolv.conf
     if !config.dns_servers.is_empty() {
         console::info("Configuring DNS...");
-        let resolv: Vec<String> = config.dns_servers.iter().map(|s| format!("nameserver {s}")).collect();
+        let resolv: Vec<String> = config
+            .dns_servers
+            .iter()
+            .map(|s| format!("nameserver {s}"))
+            .collect();
         write_file("/etc/resolv.conf.aifw", &resolv.join("\n"))?;
         console::success("DNS configured");
     }
@@ -228,26 +279,38 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
         // WAN interface
         match config.wan_mode {
             crate::config::WanMode::Dhcp => {
-                let _ = Command::new("sysrc").args([&format!("ifconfig_{}=DHCP", config.wan_interface)]).output();
+                let _ = Command::new("sysrc")
+                    .args([&format!("ifconfig_{}=DHCP", config.wan_interface)])
+                    .output();
             }
             crate::config::WanMode::Static => {
                 if let Some(ref ip) = config.wan_ip {
-                    let _ = Command::new("sysrc").args([&format!("ifconfig_{}=inet {}", config.wan_interface, ip)]).output();
+                    let _ = Command::new("sysrc")
+                        .args([&format!("ifconfig_{}=inet {}", config.wan_interface, ip)])
+                        .output();
                 }
                 if let Some(ref gw) = config.wan_gateway {
-                    let _ = Command::new("sysrc").args([&format!("defaultrouter={}", gw)]).output();
+                    let _ = Command::new("sysrc")
+                        .args([&format!("defaultrouter={}", gw)])
+                        .output();
                 }
             }
             crate::config::WanMode::Pppoe => {
-                let _ = Command::new("sysrc").args([&format!("ifconfig_{}=DHCP", config.wan_interface)]).output();
+                let _ = Command::new("sysrc")
+                    .args([&format!("ifconfig_{}=DHCP", config.wan_interface)])
+                    .output();
             }
         }
 
         // LAN interface
         if let (Some(iface), Some(ip)) = (&config.lan_interface, &config.lan_ip) {
-            let _ = Command::new("sysrc").args([&format!("ifconfig_{}=inet {}", iface, ip)]).output();
+            let _ = Command::new("sysrc")
+                .args([&format!("ifconfig_{}=inet {}", iface, ip)])
+                .output();
             // Apply immediately
-            let _ = Command::new("ifconfig").args([iface.as_str(), "inet", ip]).output();
+            let _ = Command::new("ifconfig")
+                .args([iface.as_str(), "inet", ip])
+                .output();
         }
 
         // Gateway forwarding
@@ -269,11 +332,15 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
         // keep re-applying over the daemon's DB-driven updates (v5.57.3 fix).
 
         // Load pf rules
-        let _ = Command::new("pfctl").args(["-f", &format!("{}/pf.conf.aifw", config.config_dir)]).output();
+        let _ = Command::new("pfctl")
+            .args(["-f", &format!("{}/pf.conf.aifw", config.config_dir)])
+            .output();
         console::success("pf rules loaded");
 
         // Start core services
-        let _ = Command::new("service").args(["aifw_daemon", "start"]).output();
+        let _ = Command::new("service")
+            .args(["aifw_daemon", "start"])
+            .output();
         let _ = Command::new("service").args(["aifw_api", "start"]).output();
         console::success("AiFw daemon and API started");
 
@@ -293,15 +360,26 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
     console::info("");
     // Show a usable URL — if listening on 0.0.0.0, show the WAN/LAN IP or hostname
     let display_host = if config.api_listen == "0.0.0.0" || config.api_listen == "::" {
-        config.wan_ip.as_ref()
+        config
+            .wan_ip
+            .as_ref()
             .and_then(|ip| ip.split('/').next().map(String::from))
-            .or(config.lan_ip.as_ref().and_then(|ip| ip.split('/').next().map(String::from)))
+            .or(config
+                .lan_ip
+                .as_ref()
+                .and_then(|ip| ip.split('/').next().map(String::from)))
             .unwrap_or_else(|| config.hostname.clone())
     } else {
         config.api_listen.clone()
     };
-    console::info(&format!("  Web UI:   https://{}:{}/", display_host, config.api_port));
-    console::info(&format!("  API:      https://{}:{}/api/v1/", display_host, config.api_port));
+    console::info(&format!(
+        "  Web UI:   https://{}:{}/",
+        display_host, config.api_port
+    ));
+    console::info(&format!(
+        "  API:      https://{}:{}/api/v1/",
+        display_host, config.api_port
+    ));
     console::info(&format!("  Admin:    {}", config.admin_username));
     console::info(&format!("  SSH:      {}", config.ssh_auth_method));
     console::info("");
@@ -328,12 +406,18 @@ fn create_service_user() -> Result<(), String> {
         // Create user: no login shell, no home, system account
         let out = Command::new("pw")
             .args([
-                "useradd", "aifw",
-                "-u", "470",
-                "-g", "aifw",
-                "-d", "/nonexistent",
-                "-s", "/usr/sbin/nologin",
-                "-c", "AiFw Service Account",
+                "useradd",
+                "aifw",
+                "-u",
+                "470",
+                "-g",
+                "aifw",
+                "-d",
+                "/nonexistent",
+                "-s",
+                "/usr/sbin/nologin",
+                "-c",
+                "AiFw Service Account",
             ])
             .output()
             .map_err(|e| format!("failed to create aifw user: {e}"))?;
@@ -375,9 +459,7 @@ fn configure_devfs() -> Result<(), String> {
             .output();
 
         // Apply immediately
-        let _ = Command::new("service")
-            .args(["devfs", "restart"])
-            .output();
+        let _ = Command::new("service").args(["devfs", "restart"]).output();
     }
     Ok(())
 }
@@ -397,10 +479,21 @@ fn generate_tls_cert() -> Result<(), String> {
     // Generate using openssl CLI (available on FreeBSD base)
     let status = std::process::Command::new("openssl")
         .args([
-            "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-            "-keyout", key_path, "-out", cert_path,
-            "-days", "3650", "-nodes",
-            "-subj", "/CN=AiFw Firewall/O=AiFw",
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-keyout",
+            key_path,
+            "-out",
+            cert_path,
+            "-days",
+            "3650",
+            "-nodes",
+            "-subj",
+            "/CN=AiFw Firewall/O=AiFw",
         ])
         .status()
         .map_err(|e| format!("openssl failed: {e}"))?;
@@ -414,8 +507,12 @@ fn generate_tls_cert() -> Result<(), String> {
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o640));
-        let _ = std::process::Command::new("chown").args(["root:aifw", key_path]).output();
-        let _ = std::process::Command::new("chown").args(["root:aifw", cert_path]).output();
+        let _ = std::process::Command::new("chown")
+            .args(["root:aifw", key_path])
+            .output();
+        let _ = std::process::Command::new("chown")
+            .args(["root:aifw", cert_path])
+            .output();
     }
 
     Ok(())
@@ -428,8 +525,7 @@ fn configure_ssh(config: &SetupConfig) -> Result<(), String> {
     // Write authorized_keys if we have keys
     if !config.ssh_authorized_keys.is_empty() {
         let ssh_dir = "/root/.ssh";
-        std::fs::create_dir_all(ssh_dir)
-            .map_err(|e| format!("failed to create {ssh_dir}: {e}"))?;
+        std::fs::create_dir_all(ssh_dir).map_err(|e| format!("failed to create {ssh_dir}: {e}"))?;
 
         let keys_content = config.ssh_authorized_keys.join("\n") + "\n";
         std::fs::write(format!("{ssh_dir}/authorized_keys"), &keys_content)
@@ -510,14 +606,24 @@ fn create_dirs(config: &SetupConfig) -> Result<(), String> {
     {
         use std::process::Command;
         // Config dir: root owns, aifw group can read
-        let _ = Command::new("chown").args(["root:aifw", &config.config_dir]).output();
-        let _ = Command::new("chmod").args(["750", &config.config_dir]).output();
+        let _ = Command::new("chown")
+            .args(["root:aifw", &config.config_dir])
+            .output();
+        let _ = Command::new("chmod")
+            .args(["750", &config.config_dir])
+            .output();
         // DB dir: aifw owns (API needs write access)
-        let _ = Command::new("chown").args(["-R", "aifw:aifw", "/var/db/aifw"]).output();
+        let _ = Command::new("chown")
+            .args(["-R", "aifw:aifw", "/var/db/aifw"])
+            .output();
         let _ = Command::new("chmod").args(["750", "/var/db/aifw"]).output();
         // Log dir: aifw owns
-        let _ = Command::new("chown").args(["-R", "aifw:aifw", "/var/log/aifw"]).output();
-        let _ = Command::new("chmod").args(["750", "/var/log/aifw"]).output();
+        let _ = Command::new("chown")
+            .args(["-R", "aifw:aifw", "/var/log/aifw"])
+            .output();
+        let _ = Command::new("chmod")
+            .args(["750", "/var/log/aifw"])
+            .output();
     }
 
     Ok(())
@@ -528,8 +634,7 @@ fn write_file(path: &str, content: &str) -> Result<(), String> {
 }
 
 fn write_config_file(config: &SetupConfig) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(config)
-        .map_err(|e| format!("serialize error: {e}"))?;
+    let json = serde_json::to_string_pretty(config).map_err(|e| format!("serialize error: {e}"))?;
     write_file(&format!("{}/aifw.conf", config.config_dir), &json)
 }
 
@@ -590,13 +695,15 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
     // Save recovery codes (hashed)
     for code in &config.recovery_codes {
         let code_hash = hash_for_db(code);
-        sqlx::query("INSERT INTO recovery_codes (id, user_id, code_hash, used) VALUES (?1, ?2, ?3, 0)")
-            .bind(uuid::Uuid::new_v4().to_string())
-            .bind(&user_id)
-            .bind(&code_hash)
-            .execute(&pool)
-            .await
-            .map_err(|e| format!("recovery code error: {e}"))?;
+        sqlx::query(
+            "INSERT INTO recovery_codes (id, user_id, code_hash, used) VALUES (?1, ?2, ?3, 0)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&user_id)
+        .bind(&code_hash)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("recovery code error: {e}"))?;
     }
 
     // Save auth config
@@ -609,22 +716,29 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
     // Auto-size memory caches based on detected RAM
     let ram = config.ram_mb;
     let (ids_alert_mb, dashboard_history_secs) = match ram {
-        0..=1024     => (16,   900),   // 1 GB:  16 MB alerts, 15 min history
-        1025..=2048  => (32,   1800),  // 2 GB:  32 MB alerts, 30 min history
-        2049..=4096  => (48,   1800),  // 4 GB:  48 MB alerts, 30 min history
-        4097..=8192  => (64,   3600),  // 8 GB:  64 MB alerts, 60 min history
-        8193..=16384 => (128,  3600),  // 16 GB: 128 MB alerts, 60 min history
-        _            => (256,  7200),  // 32+ GB: 256 MB alerts, 2 hr history
+        0..=1024 => (16, 900),       // 1 GB:  16 MB alerts, 15 min history
+        1025..=2048 => (32, 1800),   // 2 GB:  32 MB alerts, 30 min history
+        2049..=4096 => (48, 1800),   // 4 GB:  48 MB alerts, 30 min history
+        4097..=8192 => (64, 3600),   // 8 GB:  64 MB alerts, 60 min history
+        8193..=16384 => (128, 3600), // 16 GB: 128 MB alerts, 60 min history
+        _ => (256, 7200),            // 32+ GB: 256 MB alerts, 2 hr history
     };
-    console::info(&format!("RAM: {} MB — IDS alert buffer: {} MB, dashboard history: {}s", ram, ids_alert_mb, dashboard_history_secs));
+    console::info(&format!(
+        "RAM: {} MB — IDS alert buffer: {} MB, dashboard history: {}s",
+        ram, ids_alert_mb, dashboard_history_secs
+    ));
     let cache_settings = [
         ("ids_alert_max_mb", ids_alert_mb.to_string()),
         ("ids_alert_max_age_secs", "86400".to_string()),
-        ("dashboard_history_seconds", dashboard_history_secs.to_string()),
+        (
+            "dashboard_history_seconds",
+            dashboard_history_secs.to_string(),
+        ),
     ];
     for (key, value) in &cache_settings {
         sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)")
-            .bind(key).bind(value)
+            .bind(key)
+            .bind(value)
             .execute(&pool)
             .await
             .map_err(|e| format!("cache config error: {e}"))?;
@@ -651,7 +765,9 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
         .execute(&pool).await.map_err(|e| format!("dns config table: {e}"))?;
 
     let dns_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM dns_resolver_config")
-        .fetch_one(&pool).await.map_err(|e| format!("dns count: {e}"))?;
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| format!("dns count: {e}"))?;
     if dns_count.0 == 0 {
         let dns_defaults = [
             ("backend", "rdns"),
@@ -667,8 +783,13 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
             ("rebind_protection", "true"),
         ];
         for (k, v) in &dns_defaults {
-            let _ = sqlx::query("INSERT OR IGNORE INTO dns_resolver_config (key, value) VALUES (?1, ?2)")
-                .bind(k).bind(v).execute(&pool).await;
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO dns_resolver_config (key, value) VALUES (?1, ?2)",
+            )
+            .bind(k)
+            .bind(v)
+            .execute(&pool)
+            .await;
         }
         // Forward to user's configured DNS servers
         if !config.dns_servers.is_empty() {
@@ -678,8 +799,14 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
     }
 
     // Write default rDNS config file and enable service
-    let fwd_servers = config.dns_servers.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ");
-    let rdns_conf = format!(r#"# AiFw rDNS Configuration — Generated by setup wizard
+    let fwd_servers = config
+        .dns_servers
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rdns_conf = format!(
+        r#"# AiFw rDNS Configuration — Generated by setup wizard
 
 [server]
 mode = "resolver"
@@ -719,7 +846,9 @@ format = "text"
 [security]
 sandbox = false
 rate_limit = 1000
-"#, fwd = fwd_servers);
+"#,
+        fwd = fwd_servers
+    );
 
     let _ = std::fs::create_dir_all("/usr/local/etc/rdns");
     let _ = std::fs::write("/usr/local/etc/rdns/rdns.toml", &rdns_conf);
@@ -727,9 +856,13 @@ rate_limit = 1000
     // Enable rDNS at boot
     #[cfg(target_os = "freebsd")]
     {
-        let _ = std::process::Command::new("sysrc").args(["rdns_enable=YES"]).status();
+        let _ = std::process::Command::new("sysrc")
+            .args(["rdns_enable=YES"])
+            .status();
         // Disable unbound to avoid port conflict
-        let _ = std::process::Command::new("sysrc").args(["local_unbound_enable=NO"]).status();
+        let _ = std::process::Command::new("sysrc")
+            .args(["local_unbound_enable=NO"])
+            .status();
     }
 
     // Seed DNS ACL entries — allow LAN subnet and localhost
@@ -738,7 +871,9 @@ rate_limit = 1000
     ).execute(&pool).await.map_err(|e| format!("dns acl table: {e}"))?;
 
     let acl_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM dns_access_lists")
-        .fetch_one(&pool).await.map_err(|e| format!("acl count: {e}"))?;
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| format!("acl count: {e}"))?;
     if acl_count.0 == 0 {
         let now = chrono::Utc::now().to_rfc3339();
         // Allow localhost
@@ -746,7 +881,12 @@ rate_limit = 1000
             .bind(uuid::Uuid::new_v4().to_string()).bind(&now).execute(&pool).await;
         // Allow LAN subnet if configured
         if let Some(ref lip) = config.lan_ip {
-            let octets: Vec<&str> = lip.split('/').next().unwrap_or("192.168.1.1").split('.').collect();
+            let octets: Vec<&str> = lip
+                .split('/')
+                .next()
+                .unwrap_or("192.168.1.1")
+                .split('.')
+                .collect();
             if octets.len() == 4 {
                 let subnet = format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2]);
                 let _ = sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1, ?2, 'allow', 'LAN subnet', ?3)")
@@ -757,19 +897,26 @@ rate_limit = 1000
 
     // Seed DHCP server config if enabled
     if config.dhcp_enabled
-        && let Some(ref lan_cidr) = config.lan_ip {
-            seed_dhcp_config(&pool, config, lan_cidr).await?;
-        }
+        && let Some(ref lan_cidr) = config.lan_ip
+    {
+        seed_dhcp_config(&pool, config, lan_cidr).await?;
+    }
 
     Ok(())
 }
 
-async fn seed_dhcp_config(pool: &sqlx::SqlitePool, config: &SetupConfig, lan_cidr: &str) -> Result<(), String> {
+async fn seed_dhcp_config(
+    pool: &sqlx::SqlitePool,
+    config: &SetupConfig,
+    lan_cidr: &str,
+) -> Result<(), String> {
     // Parse LAN IP: "192.168.1.1/24" -> ip=192.168.1.1, prefix=24
     let parts: Vec<&str> = lan_cidr.split('/').collect();
     let lan_ip = parts[0];
     let octets: Vec<&str> = lan_ip.split('.').collect();
-    if octets.len() != 4 { return Ok(()); }
+    if octets.len() != 4 {
+        return Ok(());
+    }
     let base = format!("{}.{}.{}", octets[0], octets[1], octets[2]);
     let network = format!("{}.0/24", base);
     let pool_start = format!("{}.20", base);
@@ -777,8 +924,12 @@ async fn seed_dhcp_config(pool: &sqlx::SqlitePool, config: &SetupConfig, lan_cid
     let gateway = lan_ip.to_string();
 
     // Create DHCP config table
-    sqlx::query("CREATE TABLE IF NOT EXISTS dhcp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        .execute(pool).await.map_err(|e| format!("dhcp config table: {e}"))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS dhcp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("dhcp config table: {e}"))?;
 
     let dhcp_defaults = [
         ("enabled", "true"),
@@ -793,16 +944,25 @@ async fn seed_dhcp_config(pool: &sqlx::SqlitePool, config: &SetupConfig, lan_cid
     ];
     for (k, v) in &dhcp_defaults {
         let _ = sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES (?1, ?2)")
-            .bind(k).bind(v).execute(pool).await;
+            .bind(k)
+            .bind(v)
+            .execute(pool)
+            .await;
     }
     // Bind to LAN interface
     if let Some(ref li) = config.lan_interface {
-        let _ = sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES ('interfaces', ?1)")
-            .bind(li).execute(pool).await;
+        let _ =
+            sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES ('interfaces', ?1)")
+                .bind(li)
+                .execute(pool)
+                .await;
     }
     // DNS for scope = LAN IP (rDNS is on the firewall)
-    let _ = sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES ('dns_servers', ?1)")
-        .bind(lan_ip).execute(pool).await;
+    let _ =
+        sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES ('dns_servers', ?1)")
+            .bind(lan_ip)
+            .execute(pool)
+            .await;
 
     // Create subnets table and default pool
     sqlx::query(r#"CREATE TABLE IF NOT EXISTS dhcp_subnets (
@@ -827,7 +987,8 @@ async fn seed_dhcp_config(pool: &sqlx::SqlitePool, config: &SetupConfig, lan_cid
 
     // Write rDHCP config file
     let iface_name = config.lan_interface.as_deref().unwrap_or("em1");
-    let rdhcp_conf = format!(r#"# rDHCP configuration — generated by AiFw setup wizard
+    let rdhcp_conf = format!(
+        r#"# rDHCP configuration — generated by AiFw setup wizard
 
 [global]
 log_level = "info"
@@ -853,8 +1014,14 @@ domain = "local"
 
 [ddns]
 enabled = false
-"#, iface = iface_name, network = network, pool_start = pool_start,
-    pool_end = pool_end, gw = gateway, dns = lan_ip);
+"#,
+        iface = iface_name,
+        network = network,
+        pool_start = pool_start,
+        pool_end = pool_end,
+        gw = gateway,
+        dns = lan_ip
+    );
 
     let _ = std::fs::create_dir_all("/usr/local/etc/rdhcpd");
     let _ = std::fs::create_dir_all("/var/db/rdhcpd/leases");
@@ -864,7 +1031,9 @@ enabled = false
     // Enable rDHCP at boot
     #[cfg(target_os = "freebsd")]
     {
-        let _ = std::process::Command::new("sysrc").args(["rdhcpd_enable=YES"]).status();
+        let _ = std::process::Command::new("sysrc")
+            .args(["rdhcpd_enable=YES"])
+            .status();
     }
 
     Ok(())
@@ -889,12 +1058,18 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, schedule_id TEXT
         )"#,
     )
-    .execute(pool).await.map_err(|e| format!("rules table: {e}"))?;
+    .execute(pool)
+    .await
+    .map_err(|e| format!("rules table: {e}"))?;
 
     // Skip if rules already exist
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM rules")
-        .fetch_one(pool).await.map_err(|e| format!("count: {e}"))?;
-    if count.0 > 0 { return Ok(()); }
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("count: {e}"))?;
+    if count.0 > 0 {
+        return Ok(());
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
     let wan = &config.wan_interface;
@@ -913,8 +1088,19 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
     });
 
     // Helper to insert a rule
-    async fn ins(pool: &sqlx::SqlitePool, pri: i32, action: &str, dir: &str, iface: Option<&str>,
-                 proto: &str, src: &str, dst_port: Option<u16>, log: bool, label: &str, now: &str) -> Result<(), String> {
+    async fn ins(
+        pool: &sqlx::SqlitePool,
+        pri: i32,
+        action: &str,
+        dir: &str,
+        iface: Option<&str>,
+        proto: &str,
+        src: &str,
+        dst_port: Option<u16>,
+        log: bool,
+        label: &str,
+        now: &str,
+    ) -> Result<(), String> {
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO rules (id, priority, action, direction, interface, protocol, src_addr, \
@@ -933,37 +1119,207 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
     match config.default_policy {
         DefaultPolicy::Standard => {
             // Outbound: allow all out on both interfaces
-            ins(pool, 1, "pass", "out", Some(wan), "any", "any", None, false, "Allow outbound (WAN)", &now).await?;
+            ins(
+                pool,
+                1,
+                "pass",
+                "out",
+                Some(wan),
+                "any",
+                "any",
+                None,
+                false,
+                "Allow outbound (WAN)",
+                &now,
+            )
+            .await?;
             if let Some(li) = lan {
-                ins(pool, 2, "pass", "out", Some(li), "any", "any", None, false, "Allow outbound (LAN)", &now).await?;
+                ins(
+                    pool,
+                    2,
+                    "pass",
+                    "out",
+                    Some(li),
+                    "any",
+                    "any",
+                    None,
+                    false,
+                    "Allow outbound (LAN)",
+                    &now,
+                )
+                .await?;
             }
             // LAN inbound: only from configured LAN subnet
             if let Some(ref subnet) = lan_subnet {
-                ins(pool, 3, "pass", "in", lan, "any", subnet, None, false, "Allow LAN subnet", &now).await?;
+                ins(
+                    pool,
+                    3,
+                    "pass",
+                    "in",
+                    lan,
+                    "any",
+                    subnet,
+                    None,
+                    false,
+                    "Allow LAN subnet",
+                    &now,
+                )
+                .await?;
             }
             // DHCP on LAN (src is 0.0.0.0 for discovery, must allow from any)
             if config.dhcp_enabled
-                && let Some(li) = lan {
-                    ins(pool, 4, "pass", "in", Some(li), "udp", "any", Some(67), false, "Allow DHCP server (LAN)", &now).await?;
-                    ins(pool, 5, "pass", "in", Some(li), "udp", "any", Some(68), false, "Allow DHCP client (LAN)", &now).await?;
-                }
+                && let Some(li) = lan
+            {
+                ins(
+                    pool,
+                    4,
+                    "pass",
+                    "in",
+                    Some(li),
+                    "udp",
+                    "any",
+                    Some(67),
+                    false,
+                    "Allow DHCP server (LAN)",
+                    &now,
+                )
+                .await?;
+                ins(
+                    pool,
+                    5,
+                    "pass",
+                    "in",
+                    Some(li),
+                    "udp",
+                    "any",
+                    Some(68),
+                    false,
+                    "Allow DHCP client (LAN)",
+                    &now,
+                )
+                .await?;
+            }
             // Management: SSH + Web UI from LAN subnet only
             let mgmt_src = lan_subnet.as_deref().unwrap_or("any");
-            ins(pool, 20, "pass", "in", None, "tcp", mgmt_src, Some(22), false, "Allow SSH (LAN)", &now).await?;
-            ins(pool, 21, "pass", "in", None, "tcp", mgmt_src, Some(config.api_port), false, "Allow AiFw Web UI (LAN)", &now).await?;
+            ins(
+                pool,
+                20,
+                "pass",
+                "in",
+                None,
+                "tcp",
+                mgmt_src,
+                Some(22),
+                false,
+                "Allow SSH (LAN)",
+                &now,
+            )
+            .await?;
+            ins(
+                pool,
+                21,
+                "pass",
+                "in",
+                None,
+                "tcp",
+                mgmt_src,
+                Some(config.api_port),
+                false,
+                "Allow AiFw Web UI (LAN)",
+                &now,
+            )
+            .await?;
             // ICMP from LAN subnet
-            ins(pool, 10, "pass", "in", None, "icmp", mgmt_src, None, false, "Allow ICMP (LAN)", &now).await?;
+            ins(
+                pool,
+                10,
+                "pass",
+                "in",
+                None,
+                "icmp",
+                mgmt_src,
+                None,
+                false,
+                "Allow ICMP (LAN)",
+                &now,
+            )
+            .await?;
             // Block all inbound (WAN + anything else)
-            ins(pool, 1000, "block", "in", None, "any", "any", None, true, "Default block inbound", &now).await?;
+            ins(
+                pool,
+                1000,
+                "block",
+                "in",
+                None,
+                "any",
+                "any",
+                None,
+                true,
+                "Default block inbound",
+                &now,
+            )
+            .await?;
         }
         DefaultPolicy::Strict => {
             // Only SSH + Web UI on WAN, block everything else
-            ins(pool, 20, "pass", "in", Some(wan), "tcp", "any", Some(22), false, "Allow SSH (WAN)", &now).await?;
-            ins(pool, 21, "pass", "in", Some(wan), "tcp", "any", Some(config.api_port), false, "Allow AiFw Web UI (WAN)", &now).await?;
-            ins(pool, 1000, "block", "any", None, "any", "any", None, true, "Default block all", &now).await?;
+            ins(
+                pool,
+                20,
+                "pass",
+                "in",
+                Some(wan),
+                "tcp",
+                "any",
+                Some(22),
+                false,
+                "Allow SSH (WAN)",
+                &now,
+            )
+            .await?;
+            ins(
+                pool,
+                21,
+                "pass",
+                "in",
+                Some(wan),
+                "tcp",
+                "any",
+                Some(config.api_port),
+                false,
+                "Allow AiFw Web UI (WAN)",
+                &now,
+            )
+            .await?;
+            ins(
+                pool,
+                1000,
+                "block",
+                "any",
+                None,
+                "any",
+                "any",
+                None,
+                true,
+                "Default block all",
+                &now,
+            )
+            .await?;
         }
         DefaultPolicy::Permissive => {
-            ins(pool, 1, "pass", "any", None, "any", "any", None, false, "Allow all (permissive)", &now).await?;
+            ins(
+                pool,
+                1,
+                "pass",
+                "any",
+                None,
+                "any",
+                "any",
+                None,
+                false,
+                "Allow all (permissive)",
+                &now,
+            )
+            .await?;
         }
     }
 
@@ -979,10 +1335,15 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
                 label TEXT, status TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )"#,
-        ).execute(pool).await.map_err(|e| format!("nat table: {e}"))?;
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| format!("nat table: {e}"))?;
 
         let nat_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM nat_rules")
-            .fetch_one(pool).await.map_err(|e| format!("nat count: {e}"))?;
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("nat count: {e}"))?;
         if nat_count.0 == 0 {
             let id = uuid::Uuid::new_v4().to_string();
             let src = if let Some(ref _li) = config.lan_interface {
@@ -1017,9 +1378,14 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
 }
 
 fn hash_for_db(password: &str) -> String {
-    use argon2::{Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng};
+    use argon2::{
+        Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng,
+    };
     let salt = SaltString::generate(&mut OsRng);
-    Argon2::default().hash_password(password.as_bytes(), &salt).map(|h| h.to_string()).unwrap_or_default()
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .unwrap_or_default()
 }
 
 /// Generate a pf.conf based on the setup configuration
@@ -1027,7 +1393,10 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     let mut lines = Vec::new();
 
     lines.push("# AiFw — Generated pf.conf".to_string());
-    lines.push(format!("# Generated by aifw-setup on {}", chrono::Utc::now().to_rfc3339()));
+    lines.push(format!(
+        "# Generated by aifw-setup on {}",
+        chrono::Utc::now().to_rfc3339()
+    ));
     lines.push(String::new());
 
     // Macros
@@ -1088,7 +1457,9 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
         let lan = config.lan_interface.as_deref().unwrap_or("$lan_if");
         lines.push("# DHCP server — allow broadcast requests and replies".to_string());
         lines.push(format!("pass in quick on {lan} proto udp from 0.0.0.0 port 68 to 255.255.255.255 port 67 label \"dhcp-discover\""));
-        lines.push(format!("pass out quick on {lan} proto udp from any port 67 to any port 68 label \"dhcp-reply\""));
+        lines.push(format!(
+            "pass out quick on {lan} proto udp from any port 67 to any port 68 label \"dhcp-reply\""
+        ));
         lines.push(String::new());
     }
 
@@ -1156,7 +1527,10 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
 
     // Allow API/UI access
     lines.push("# AiFw API/UI access".to_string());
-    lines.push(format!("pass in quick proto tcp to any port {} keep state label \"aifw-api\"", config.api_port));
+    lines.push(format!(
+        "pass in quick proto tcp to any port {} keep state label \"aifw-api\"",
+        config.api_port
+    ));
     lines.push(String::new());
 
     // LAN to WAN pass rule
@@ -1168,7 +1542,10 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
         // DHCP on LAN (client sends from 0.0.0.0, must allow from any on LAN)
         if config.dhcp_enabled {
             lines.push("# DHCP on LAN".to_string());
-            lines.push("pass in quick on $lan_if proto udp from any to any port { 67, 68 } keep state".to_string());
+            lines.push(
+                "pass in quick on $lan_if proto udp from any to any port { 67, 68 } keep state"
+                    .to_string(),
+            );
             lines.push(String::new());
         }
     }
@@ -1189,7 +1566,8 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     // the default-block catches inbound traffic, and daemon fills in the
     // pass rules within ~1 second.
     lines.push("# aifw anchor is populated at runtime by aifw-daemon from the DB.".to_string());
-    lines.push("# Do NOT add `load anchor \"aifw\" from ...` here — see v5.57.3 notes.".to_string());
+    lines
+        .push("# Do NOT add `load anchor \"aifw\" from ...` here — see v5.57.3 notes.".to_string());
     lines.push(String::new());
 
     lines.join("\n")
@@ -1197,7 +1575,8 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
 
 /// Write FreeBSD rc.d service scripts
 fn write_rcd_scripts(config: &SetupConfig) -> Result<(), String> {
-    let daemon_script = format!(r#"#!/bin/sh
+    let daemon_script = format!(
+        r#"#!/bin/sh
 # PROVIDE: aifw_daemon
 # REQUIRE: NETWORKING pf devfs
 # KEYWORD: shutdown
@@ -1224,9 +1603,12 @@ aifw_daemon_start()
 load_rc_config $name
 : ${{aifw_daemon_enable:="NO"}}
 run_rc_command "$1"
-"#, db = config.db_path);
+"#,
+        db = config.db_path
+    );
 
-    let api_script = format!(r#"#!/bin/sh
+    let api_script = format!(
+        r#"#!/bin/sh
 # PROVIDE: aifw_api
 # REQUIRE: NETWORKING aifw_daemon
 # KEYWORD: shutdown
@@ -1251,7 +1633,11 @@ aifw_api_start()
 load_rc_config $name
 : ${{aifw_api_enable:="NO"}}
 run_rc_command "$1"
-"#, db = config.db_path, listen = config.api_listen, port = config.api_port);
+"#,
+        db = config.db_path,
+        listen = config.api_listen,
+        port = config.api_port
+    );
 
     let rdhcpd_script = r#"#!/bin/sh
 # PROVIDE: rdhcpd

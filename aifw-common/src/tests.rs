@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod tests {
+    use crate::geoip::*;
+    use crate::ha::*;
     use crate::nat::*;
     use crate::ratelimit::*;
     use crate::rule::*;
-    use crate::types::*;
-    use crate::geoip::*;
-    use crate::ha::*;
     use crate::tls::*;
+    use crate::types::*;
     use crate::vpn::*;
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -28,10 +28,7 @@ mod tests {
     #[test]
     fn test_address_parse_single_ipv6() {
         let addr = Address::parse("::1").unwrap();
-        assert_eq!(
-            addr,
-            Address::Single(IpAddr::V6(Ipv6Addr::LOCALHOST))
-        );
+        assert_eq!(addr, Address::Single(IpAddr::V6(Ipv6Addr::LOCALHOST)));
     }
 
     #[test]
@@ -77,10 +74,7 @@ mod tests {
 
     #[test]
     fn test_port_range_display() {
-        let single = PortRange {
-            start: 80,
-            end: 80,
-        };
+        let single = PortRange { start: 80, end: 80 };
         assert_eq!(single.to_string(), "80");
 
         let range = PortRange {
@@ -100,10 +94,7 @@ mod tests {
                 src_addr: Address::Any,
                 src_port: None,
                 dst_addr: Address::Any,
-                dst_port: Some(PortRange {
-                    start: 22,
-                    end: 22,
-                }),
+                dst_port: Some(PortRange { start: 22, end: 22 }),
             },
         );
         let pf = rule.to_pf_rule("aifw");
@@ -206,7 +197,10 @@ mod tests {
         rule.state_options.tracking = StateTracking::SynproxyState;
         rule.state_options.policy = Some(StatePolicy::IfBound);
         let pf = rule.to_pf_rule("aifw");
-        assert_eq!(pf, "pass in quick proto tcp to any port 80 synproxy state (if-bound)");
+        assert_eq!(
+            pf,
+            "pass in quick proto tcp to any port 80 synproxy state (if-bound)"
+        );
     }
 
     #[test]
@@ -270,7 +264,10 @@ mod tests {
             Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
             NatRedirect {
                 address: Address::Single(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
-                port: Some(PortRange { start: 8080, end: 8080 }),
+                port: Some(PortRange {
+                    start: 8080,
+                    end: 8080,
+                }),
             },
         );
         rule.dst_port = Some(PortRange { start: 80, end: 80 });
@@ -316,10 +313,7 @@ mod tests {
             },
         );
         let pf = rule.to_pf_rule();
-        assert_eq!(
-            pf,
-            "binat on em0 from 192.168.1.10 to any -> 203.0.113.10"
-        );
+        assert_eq!(pf, "binat on em0 from 192.168.1.10 to any -> 203.0.113.10");
     }
 
     #[test]
@@ -377,9 +371,15 @@ mod tests {
 
     #[test]
     fn test_bandwidth_display() {
-        let bw = Bandwidth { value: 10, unit: BandwidthUnit::Mbps };
+        let bw = Bandwidth {
+            value: 10,
+            unit: BandwidthUnit::Mbps,
+        };
         assert_eq!(bw.to_string(), "10Mb");
-        let bw = Bandwidth { value: 1000, unit: BandwidthUnit::Bps };
+        let bw = Bandwidth {
+            value: 1000,
+            unit: BandwidthUnit::Bps,
+        };
         assert_eq!(bw.to_string(), "1000b");
     }
 
@@ -403,7 +403,10 @@ mod tests {
         let mut q = QueueConfig::new(
             Interface("em0".to_string()),
             QueueType::Priq,
-            Bandwidth { value: 100, unit: BandwidthUnit::Mbps },
+            Bandwidth {
+                value: 100,
+                unit: BandwidthUnit::Mbps,
+            },
             "voip_queue".to_string(),
             TrafficClass::Voip,
         );
@@ -420,7 +423,10 @@ mod tests {
         let mut q = QueueConfig::new(
             Interface("em0".to_string()),
             QueueType::Codel,
-            Bandwidth { value: 50, unit: BandwidthUnit::Mbps },
+            Bandwidth {
+                value: 50,
+                unit: BandwidthUnit::Mbps,
+            },
             "std".to_string(),
             TrafficClass::Default,
         );
@@ -434,7 +440,10 @@ mod tests {
         let mut q = QueueConfig::new(
             Interface("em0".to_string()),
             QueueType::Hfsc,
-            Bandwidth { value: 100, unit: BandwidthUnit::Mbps },
+            Bandwidth {
+                value: 100,
+                unit: BandwidthUnit::Mbps,
+            },
             "web".to_string(),
             TrafficClass::Default,
         );
@@ -472,7 +481,10 @@ mod tests {
             "flood".to_string(),
         );
         assert_eq!(rl.to_pf_table(), "table <flood> persist");
-        assert!(rl.to_pf_block_rule().contains("block in quick from <flood>"));
+        assert!(
+            rl.to_pf_block_rule()
+                .contains("block in quick from <flood>")
+        );
     }
 
     #[test]
@@ -547,9 +559,7 @@ mod tests {
             "aBcDeFgHiJkLmNoPqRsTuVwXyZ123456789+/=AAA=".to_string(),
         );
         peer.endpoint = Some("1.2.3.4:51820".to_string());
-        peer.allowed_ips = vec![
-            Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 24),
-        ];
+        peer.allowed_ips = vec![Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 24)];
         peer.persistent_keepalive = Some(25);
 
         let cmd = peer.to_wg_cmd(&Interface("wg0".to_string()));
@@ -592,7 +602,10 @@ mod tests {
     fn test_ipsec_protocol_parse() {
         assert_eq!(IpsecProtocol::parse("esp").unwrap(), IpsecProtocol::Esp);
         assert_eq!(IpsecProtocol::parse("ah").unwrap(), IpsecProtocol::Ah);
-        assert_eq!(IpsecProtocol::parse("esp+ah").unwrap(), IpsecProtocol::EspAh);
+        assert_eq!(
+            IpsecProtocol::parse("esp+ah").unwrap(),
+            IpsecProtocol::EspAh
+        );
         assert!(IpsecProtocol::parse("bogus").is_err());
     }
 
@@ -730,8 +743,14 @@ mod tests {
 
     #[test]
     fn test_tls_version_from_protocol() {
-        assert_eq!(TlsVersion::from_protocol_version(3, 3), Some(TlsVersion::Tls12));
-        assert_eq!(TlsVersion::from_protocol_version(3, 4), Some(TlsVersion::Tls13));
+        assert_eq!(
+            TlsVersion::from_protocol_version(3, 3),
+            Some(TlsVersion::Tls12)
+        );
+        assert_eq!(
+            TlsVersion::from_protocol_version(3, 4),
+            Some(TlsVersion::Tls13)
+        );
         assert_eq!(TlsVersion::from_protocol_version(4, 0), None);
     }
 
@@ -934,9 +953,15 @@ mod tests {
     #[test]
     fn test_cluster_role_parse() {
         assert_eq!(ClusterRole::parse("primary").unwrap(), ClusterRole::Primary);
-        assert_eq!(ClusterRole::parse("secondary").unwrap(), ClusterRole::Secondary);
+        assert_eq!(
+            ClusterRole::parse("secondary").unwrap(),
+            ClusterRole::Secondary
+        );
         assert_eq!(ClusterRole::parse("master").unwrap(), ClusterRole::Primary);
-        assert_eq!(ClusterRole::parse("backup").unwrap(), ClusterRole::Secondary);
+        assert_eq!(
+            ClusterRole::parse("backup").unwrap(),
+            ClusterRole::Secondary
+        );
         assert!(ClusterRole::parse("bogus").is_err());
     }
 
@@ -953,20 +978,50 @@ mod tests {
 
     #[test]
     fn test_health_check_type_parse() {
-        assert_eq!(HealthCheckType::parse("ping").unwrap(), HealthCheckType::Ping);
-        assert_eq!(HealthCheckType::parse("tcp").unwrap(), HealthCheckType::TcpPort);
-        assert_eq!(HealthCheckType::parse("http").unwrap(), HealthCheckType::HttpGet);
-        assert_eq!(HealthCheckType::parse("pf").unwrap(), HealthCheckType::PfStatus);
+        assert_eq!(
+            HealthCheckType::parse("ping").unwrap(),
+            HealthCheckType::Ping
+        );
+        assert_eq!(
+            HealthCheckType::parse("tcp").unwrap(),
+            HealthCheckType::TcpPort
+        );
+        assert_eq!(
+            HealthCheckType::parse("http").unwrap(),
+            HealthCheckType::HttpGet
+        );
+        assert_eq!(
+            HealthCheckType::parse("pf").unwrap(),
+            HealthCheckType::PfStatus
+        );
         assert!(HealthCheckType::parse("bogus").is_err());
     }
 
     #[test]
     fn test_config_snapshot_diff() {
-        let a = ConfigSnapshot::new(1, uuid::Uuid::new_v4(), "hash1".into(), "nat1".into(), "{}".into());
-        let b = ConfigSnapshot::new(2, uuid::Uuid::new_v4(), "hash1".into(), "nat1".into(), "{}".into());
-        let c = ConfigSnapshot::new(2, uuid::Uuid::new_v4(), "hash2".into(), "nat1".into(), "{}".into());
+        let a = ConfigSnapshot::new(
+            1,
+            uuid::Uuid::new_v4(),
+            "hash1".into(),
+            "nat1".into(),
+            "{}".into(),
+        );
+        let b = ConfigSnapshot::new(
+            2,
+            uuid::Uuid::new_v4(),
+            "hash1".into(),
+            "nat1".into(),
+            "{}".into(),
+        );
+        let c = ConfigSnapshot::new(
+            2,
+            uuid::Uuid::new_v4(),
+            "hash2".into(),
+            "nat1".into(),
+            "{}".into(),
+        );
 
         assert!(!a.differs_from(&b)); // same hashes
-        assert!(a.differs_from(&c));  // different rules_hash
+        assert!(a.differs_from(&c)); // different rules_hash
     }
 }

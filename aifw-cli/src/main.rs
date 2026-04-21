@@ -4,7 +4,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "aifw", about = "AiFw — AI-Powered Firewall for FreeBSD", version)]
+#[command(
+    name = "aifw",
+    about = "AiFw — AI-Powered Firewall for FreeBSD",
+    version
+)]
 struct Cli {
     /// Path to the database file
     #[arg(long, default_value = "/var/db/aifw/aifw.db", global = true)]
@@ -135,9 +139,7 @@ enum MultiwanAction {
     /// Export full multi-WAN config as JSON
     Export,
     /// Import multi-WAN config from a JSON file
-    Import {
-        file: String,
-    },
+    Import { file: String },
 }
 
 #[derive(Subcommand)]
@@ -699,8 +701,17 @@ async fn main() -> anyhow::Result<()> {
                 label,
             } => {
                 commands::rules_add(
-                    &cli.db, &action, &direction, &proto, &src, src_port.as_deref(),
-                    &dst, dst_port.as_deref(), interface.as_deref(), priority, log,
+                    &cli.db,
+                    &action,
+                    &direction,
+                    &proto,
+                    &src,
+                    src_port.as_deref(),
+                    &dst,
+                    dst_port.as_deref(),
+                    interface.as_deref(),
+                    priority,
+                    log,
                     label.as_deref(),
                 )
                 .await?;
@@ -758,7 +769,14 @@ async fn main() -> anyhow::Result<()> {
                 default,
             } => {
                 commands::queue_add(
-                    &cli.db, &name, &interface, &queue_type, &bandwidth, &class, pct, default,
+                    &cli.db,
+                    &name,
+                    &interface,
+                    &queue_type,
+                    &bandwidth,
+                    &class,
+                    pct,
+                    default,
                 )
                 .await?;
             }
@@ -801,7 +819,11 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Geoip { action } => match action {
-            GeoIpCmd::Add { country, action, label } => {
+            GeoIpCmd::Add {
+                country,
+                action,
+                label,
+            } => {
                 commands::geoip_add(&cli.db, &country, &action, label.as_deref()).await?;
             }
             GeoIpCmd::Remove { id } => {
@@ -815,16 +837,40 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Vpn { action } => match action {
-            VpnAction::WgAdd { name, interface, port, address } => {
+            VpnAction::WgAdd {
+                name,
+                interface,
+                port,
+                address,
+            } => {
                 commands::vpn_wg_add(&cli.db, &name, &interface, port, &address).await?;
             }
-            VpnAction::WgPeerAdd { tunnel, name, pubkey, endpoint, allowed_ips, keepalive } => {
+            VpnAction::WgPeerAdd {
+                tunnel,
+                name,
+                pubkey,
+                endpoint,
+                allowed_ips,
+                keepalive,
+            } => {
                 commands::vpn_wg_peer_add(
-                    &cli.db, &tunnel, &name, &pubkey, endpoint.as_deref(),
-                    &allowed_ips, keepalive,
-                ).await?;
+                    &cli.db,
+                    &tunnel,
+                    &name,
+                    &pubkey,
+                    endpoint.as_deref(),
+                    &allowed_ips,
+                    keepalive,
+                )
+                .await?;
             }
-            VpnAction::IpsecAdd { name, src, dst, proto, mode } => {
+            VpnAction::IpsecAdd {
+                name,
+                src,
+                dst,
+                proto,
+                mode,
+            } => {
                 commands::vpn_ipsec_add(&cli.db, &name, &src, &dst, &proto, &mode).await?;
             }
             VpnAction::Remove { id } => {
@@ -839,12 +885,28 @@ async fn main() -> anyhow::Result<()> {
             ConfigAction::Export => commands::config_export(&cli.db).await?,
             ConfigAction::Import { file } => commands::config_import(&cli.db, &file).await?,
             ConfigAction::History { limit } => commands::config_history(&cli.db, limit).await?,
-            ConfigAction::Rollback { version } => commands::config_rollback(&cli.db, version).await?,
+            ConfigAction::Rollback { version } => {
+                commands::config_rollback(&cli.db, version).await?
+            }
             ConfigAction::Diff { v1, v2 } => commands::config_diff(&cli.db, v1, v2).await?,
         },
         Commands::Routes { action } => match action {
-            RoutesAction::Add { dest, gateway, interface, metric, desc } => {
-                commands::routes_add(&cli.db, &dest, &gateway, interface.as_deref(), metric, desc.as_deref()).await?;
+            RoutesAction::Add {
+                dest,
+                gateway,
+                interface,
+                metric,
+                desc,
+            } => {
+                commands::routes_add(
+                    &cli.db,
+                    &dest,
+                    &gateway,
+                    interface.as_deref(),
+                    metric,
+                    desc.as_deref(),
+                )
+                .await?;
             }
             RoutesAction::Remove { id } => {
                 commands::routes_remove(&cli.db, &id).await?;
@@ -858,19 +920,70 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Dhcp { action } => match action {
             DhcpAction::Status => commands::dhcp_status(&cli.db).await?,
-            DhcpAction::Start => { let _ = std::process::Command::new("service").args(["rdhcpd", "start"]).output(); println!("DHCP started"); }
-            DhcpAction::Stop => { let _ = std::process::Command::new("service").args(["rdhcpd", "stop"]).output(); println!("DHCP stopped"); }
-            DhcpAction::Restart => { let _ = std::process::Command::new("service").args(["rdhcpd", "restart"]).output(); println!("DHCP restarted"); }
+            DhcpAction::Start => {
+                let _ = std::process::Command::new("service")
+                    .args(["rdhcpd", "start"])
+                    .output();
+                println!("DHCP started");
+            }
+            DhcpAction::Stop => {
+                let _ = std::process::Command::new("service")
+                    .args(["rdhcpd", "stop"])
+                    .output();
+                println!("DHCP stopped");
+            }
+            DhcpAction::Restart => {
+                let _ = std::process::Command::new("service")
+                    .args(["rdhcpd", "restart"])
+                    .output();
+                println!("DHCP restarted");
+            }
             DhcpAction::Subnets { json } => commands::dhcp_subnets(&cli.db, json).await?,
-            DhcpAction::SubnetAdd { network, pool_start, pool_end, gateway, dns, domain, lease_time, desc } => {
-                commands::dhcp_subnet_add(&cli.db, &network, &pool_start, &pool_end, &gateway, dns.as_deref(), domain.as_deref(), lease_time, desc.as_deref()).await?;
+            DhcpAction::SubnetAdd {
+                network,
+                pool_start,
+                pool_end,
+                gateway,
+                dns,
+                domain,
+                lease_time,
+                desc,
+            } => {
+                commands::dhcp_subnet_add(
+                    &cli.db,
+                    &network,
+                    &pool_start,
+                    &pool_end,
+                    &gateway,
+                    dns.as_deref(),
+                    domain.as_deref(),
+                    lease_time,
+                    desc.as_deref(),
+                )
+                .await?;
             }
             DhcpAction::SubnetRemove { id } => commands::dhcp_subnet_remove(&cli.db, &id).await?,
             DhcpAction::Reservations { json } => commands::dhcp_reservations(&cli.db, json).await?,
-            DhcpAction::ReservationAdd { mac, ip, hostname, subnet, desc } => {
-                commands::dhcp_reservation_add(&cli.db, &mac, &ip, hostname.as_deref(), subnet.as_deref(), desc.as_deref()).await?;
+            DhcpAction::ReservationAdd {
+                mac,
+                ip,
+                hostname,
+                subnet,
+                desc,
+            } => {
+                commands::dhcp_reservation_add(
+                    &cli.db,
+                    &mac,
+                    &ip,
+                    hostname.as_deref(),
+                    subnet.as_deref(),
+                    desc.as_deref(),
+                )
+                .await?;
             }
-            DhcpAction::ReservationRemove { id } => commands::dhcp_reservation_remove(&cli.db, &id).await?,
+            DhcpAction::ReservationRemove { id } => {
+                commands::dhcp_reservation_remove(&cli.db, &id).await?
+            }
             DhcpAction::Leases { json } => commands::dhcp_leases(json).await?,
             DhcpAction::Apply => commands::dhcp_apply(&cli.db).await?,
         },
@@ -891,7 +1004,11 @@ async fn main() -> anyhow::Result<()> {
             UsersAction::List { json } => {
                 commands::users_list(&cli.db, json).await?;
             }
-            UsersAction::Add { username, password, role } => {
+            UsersAction::Add {
+                username,
+                password,
+                role,
+            } => {
                 commands::users_add(&cli.db, &username, &password, &role).await?;
             }
             UsersAction::Remove { id } => {
@@ -913,8 +1030,12 @@ async fn main() -> anyhow::Result<()> {
             ReverseProxyAction::Apply => commands::rp_apply(&cli.db).await?,
             ReverseProxyAction::Routers { json } => commands::rp_routers(&cli.db, json).await?,
             ReverseProxyAction::Services { json } => commands::rp_services(&cli.db, json).await?,
-            ReverseProxyAction::Middlewares { json } => commands::rp_middlewares(&cli.db, json).await?,
-            ReverseProxyAction::Entrypoints { json } => commands::rp_entrypoints(&cli.db, json).await?,
+            ReverseProxyAction::Middlewares { json } => {
+                commands::rp_middlewares(&cli.db, json).await?
+            }
+            ReverseProxyAction::Entrypoints { json } => {
+                commands::rp_entrypoints(&cli.db, json).await?
+            }
             ReverseProxyAction::ShowConfig => commands::rp_show_config(&cli.db).await?,
         },
         Commands::Update { action } => match action {
@@ -950,9 +1071,7 @@ async fn main() -> anyhow::Result<()> {
                 commands::multiwan_probe(&cli.db, &id, &outcome).await?
             }
             MultiwanAction::Export => commands::multiwan_export(&cli.db).await?,
-            MultiwanAction::Import { file } => {
-                commands::multiwan_import(&cli.db, &file).await?
-            }
+            MultiwanAction::Import { file } => commands::multiwan_import(&cli.db, &file).await?,
         },
     }
 
