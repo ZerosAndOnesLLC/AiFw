@@ -1,8 +1,8 @@
 //! System settings API — KV-backed persistence + apply hooks.
 
 use crate::AppState;
-use aifw_core::system_apply::{apply_banner, apply_general, ApplyReport, BannerInput, GeneralInput};
-use aifw_core::system_apply_helpers::{validate_domain, validate_hostname};
+use aifw_core::system_apply::{apply_banner, apply_general, apply_ssh, ApplyReport, BannerInput, GeneralInput, SshInput};
+use aifw_core::system_apply_helpers::{validate_domain, validate_hostname, validate_ssh_port};
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -87,9 +87,45 @@ pub async fn put_banner(
     Ok(Json(report))
 }
 
-// ---------- SSH / Console / Info — stubs (filled in Tasks 7-9) ----------
-pub async fn get_ssh() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
-pub async fn put_ssh() -> Result<Json<ApplyReport>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
+// ---------- SSH ----------
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SshDto {
+    pub enabled: bool,
+    pub port: u16,
+    pub password_auth: bool,
+    pub permit_root_login: bool,
+}
+
+pub async fn get_ssh(State(state): State<AppState>) -> Result<Json<SshDto>, StatusCode> {
+    let enabled = get_kv(&state.pool, "ssh_enabled").await.map(|v| v == "true").unwrap_or(true);
+    let port = get_kv(&state.pool, "ssh_port").await.and_then(|v| v.parse().ok()).unwrap_or(22);
+    let password_auth = get_kv(&state.pool, "ssh_password_auth").await.map(|v| v == "true").unwrap_or(false);
+    let permit_root_login = get_kv(&state.pool, "ssh_permit_root_login").await.map(|v| v == "true").unwrap_or(false);
+    Ok(Json(SshDto { enabled, port, password_auth, permit_root_login }))
+}
+
+pub async fn put_ssh(
+    State(state): State<AppState>,
+    Json(req): Json<SshDto>,
+) -> Result<Json<ApplyReport>, (StatusCode, String)> {
+    validate_ssh_port(req.port).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    set_kv(&state.pool, "ssh_enabled", if req.enabled { "true" } else { "false" }).await;
+    set_kv(&state.pool, "ssh_port", &req.port.to_string()).await;
+    set_kv(&state.pool, "ssh_password_auth", if req.password_auth { "true" } else { "false" }).await;
+    set_kv(&state.pool, "ssh_permit_root_login", if req.permit_root_login { "true" } else { "false" }).await;
+
+    let report = apply_ssh(&SshInput {
+        enabled: req.enabled,
+        port: req.port,
+        password_auth: req.password_auth,
+        permit_root_login: req.permit_root_login,
+    }).await;
+    Ok(Json(report))
+}
+
+// ---------- Console / Info — stubs (filled in Tasks 8-9) ----------
 pub async fn get_console() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
 pub async fn put_console() -> Result<Json<ApplyReport>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
 pub async fn get_info() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }

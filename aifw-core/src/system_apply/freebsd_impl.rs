@@ -3,6 +3,7 @@
 
 use super::{ApplyReport, BannerInput, ConsoleInput, GeneralInput, SshInput, SystemInfo};
 use super::freebsd_helpers::{rewrite_hosts_loopback, rewrite_resolv_conf_search};
+use crate::system_apply_helpers::replace_managed_block;
 
 pub async fn apply_general(i: &GeneralInput) -> ApplyReport {
     let mut warnings: Vec<String> = Vec::new();
@@ -81,9 +82,48 @@ pub async fn motd_user_edited_marker_set() -> bool {
     tokio::fs::try_exists("/var/db/aifw/motd.user-edited").await.unwrap_or(false)
 }
 
-// Stubs — filled in Tasks 7-9.
+pub async fn apply_ssh(i: &SshInput) -> ApplyReport {
+    let mut warnings: Vec<String> = Vec::new();
+
+    // --- sysrc sshd_enable=YES|NO ---
+    if let Err(e) = sudo_run("/usr/sbin/sysrc", &[&format!("sshd_enable={}", if i.enabled { "YES" } else { "NO" })]).await {
+        warnings.push(format!("sysrc sshd_enable failed: {}", e));
+    }
+
+    // --- managed block in /etc/ssh/sshd_config ---
+    let path = "/etc/ssh/sshd_config";
+    let existing = read_best_effort(path).await;
+    let block = format!(
+        "Port {}\nPasswordAuthentication {}\nPermitRootLogin {}\n",
+        i.port,
+        if i.password_auth { "yes" } else { "no" },
+        if i.permit_root_login { "yes" } else { "no" },
+    );
+    let updated = replace_managed_block(&existing, "AiFw", &block);
+    if let Err(e) = sudo_install_content(path, updated.as_bytes(), "0644").await {
+        warnings.push(format!("sshd_config write failed: {}", e));
+    }
+
+    // --- service action ---
+    let service_action = if i.enabled { "start" } else { "stop" };
+    if let Err(e) = sudo_run("/usr/sbin/service", &["sshd", service_action]).await {
+        // Ignore "already running" / "not running" style non-zero exits — surface them as hints, not errors.
+        warnings.push(format!("service sshd {} failed: {}", service_action, e));
+    }
+    if i.enabled {
+        // Reload after starting so the config changes take effect without dropping connections unnecessarily.
+        let _ = sudo_run("/usr/sbin/service", &["sshd", "reload"]).await;
+    }
+
+    let mut r = ApplyReport::ok_requires_restart("sshd");
+    if !warnings.is_empty() {
+        r.warning = Some(warnings.join("; "));
+    }
+    r
+}
+
+// Stubs — filled in Tasks 8-9.
 pub async fn apply_console(_i: &ConsoleInput) -> ApplyReport { ApplyReport::ok_requires_reboot() }
-pub async fn apply_ssh(_i: &SshInput) -> ApplyReport { ApplyReport::ok_requires_restart("sshd") }
 pub async fn collect_info() -> SystemInfo { SystemInfo::default() }
 
 // ---------- Privileged helpers ----------

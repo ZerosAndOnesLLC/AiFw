@@ -1173,4 +1173,55 @@ mod tests {
             .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
     }
+
+    #[tokio::test]
+    async fn system_ssh_defaults_on_fresh_install() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .get("/api/v1/system/ssh")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["enabled"], true);
+        assert_eq!(body["port"], 22);
+        assert_eq!(body["password_auth"], false);
+        assert_eq!(body["permit_root_login"], false);
+    }
+
+    #[tokio::test]
+    async fn system_ssh_put_rejects_port_zero() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+        let resp = server
+            .put("/api/v1/system/ssh")
+            .authorization_bearer(&token)
+            .json(&json!({ "enabled": true, "port": 0, "password_auth": false, "permit_root_login": false }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn system_ssh_put_round_trips_and_reports_restart() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .put("/api/v1/system/ssh")
+            .authorization_bearer(&token)
+            .json(&json!({ "enabled": true, "port": 2222, "password_auth": false, "permit_root_login": false }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["requires_service_restart"], "sshd");
+
+        let resp = server
+            .get("/api/v1/system/ssh")
+            .authorization_bearer(&token)
+            .await;
+        let back: Value = resp.json();
+        assert_eq!(back["port"], 2222);
+    }
 }
