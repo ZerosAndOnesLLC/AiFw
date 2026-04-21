@@ -11,7 +11,7 @@ const API = "";
 // as one component (state is shared across many sections — e.g. DNS feeds
 // into the rest of system config) but makes the long scroll navigable.
 const CATEGORIES: { key: string; label: string; sections: string[] }[] = [
-  { key: "system",  label: "System",          sections: ["System Actions", "pf State Table"] },
+  { key: "system",  label: "System",          sections: ["General", "Login Banner & MOTD", "SSH Access", "Console", "System Actions", "pf State Table"] },
   { key: "api",     label: "API & Auth",      sections: ["API Server", "TLS Policy", "Authentication"] },
   { key: "dns",     label: "DNS",             sections: ["DNS Configuration"] },
   { key: "storage", label: "Storage & Metrics", sections: ["Metrics Storage", "Dashboard History", "Metrics Persistence (Valkey)", "IDS Alert Storage"] },
@@ -170,6 +170,35 @@ export default function SettingsPage() {
   const [idsStats, setIdsStats] = useState<{ count: number; estimated_mb: number; max_mb: number; usage_pct: number; oldest: string | null; newest: string | null; by_classification: { classification: string; count: number }[] } | null>(null);
   const [idsFeedback, setIdsFeedback] = useState<SectionFeedback | null>(null);
   const [idsSaving, setIdsSaving] = useState(false);
+
+  // --- System General ---
+  const [sysHostname, setSysHostname] = useState("");
+  const [sysDomain, setSysDomain] = useState("");
+  const [sysTimezone, setSysTimezone] = useState("UTC");
+  const [timezoneList, setTimezoneList] = useState<string[]>([]);
+  const [generalFeedback, setGeneralFeedback] = useState<SectionFeedback | null>(null);
+  const [generalSaving, setGeneralSaving] = useState(false);
+
+  // --- System Banner ---
+  const [loginBanner, setLoginBanner] = useState("");
+  const [motdBody, setMotdBody] = useState("");
+  const [bannerFeedback, setBannerFeedback] = useState<SectionFeedback | null>(null);
+  const [bannerSaving, setBannerSaving] = useState(false);
+
+  // --- System SSH ---
+  const [sshEnabled, setSshEnabled] = useState(true);
+  const [sshPort, setSshPort] = useState(22);
+  const [sshPasswordAuth, setSshPasswordAuth] = useState(false);
+  const [sshPermitRoot, setSshPermitRoot] = useState(false);
+  const [sshFeedback, setSshFeedback] = useState<SectionFeedback | null>(null);
+  const [sshSaving, setSshSaving] = useState(false);
+
+  // --- System Console ---
+  const [consoleKind, setConsoleKind] = useState<"video" | "serial" | "dual">("video");
+  const [consoleBaud, setConsoleBaud] = useState(115200);
+  const [consoleFeedback, setConsoleFeedback] = useState<SectionFeedback | null>(null);
+  const [consoleSaving, setConsoleSaving] = useState(false);
+  const [consoleConfirm, setConsoleConfirm] = useState(false);
 
   // --- AI Providers ---
   const [aiEnabled, setAiEnabled] = useState(false);
@@ -380,6 +409,63 @@ export default function SettingsPage() {
       } catch {
         // endpoint may not exist yet
       }
+    })();
+
+    // Fetch System General
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/system/general`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const d = await res.json();
+        setSysHostname(d.hostname || "");
+        setSysDomain(d.domain || "");
+        setSysTimezone(d.timezone || "UTC");
+      } catch { /* silent */ }
+    })();
+
+    // Fetch timezone list
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/system/timezones`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const d = await res.json();
+        setTimezoneList(Array.isArray(d) ? d : ["UTC"]);
+      } catch { setTimezoneList(["UTC"]); }
+    })();
+
+    // Fetch System Banner
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/system/banner`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const d = await res.json();
+        setLoginBanner(d.login_banner || "");
+        setMotdBody(d.motd || "");
+      } catch { /* silent */ }
+    })();
+
+    // Fetch System SSH
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/system/ssh`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const d = await res.json();
+        if (d.enabled !== undefined) setSshEnabled(d.enabled);
+        if (d.port !== undefined) setSshPort(d.port);
+        if (d.password_auth !== undefined) setSshPasswordAuth(d.password_auth);
+        if (d.permit_root_login !== undefined) setSshPermitRoot(d.permit_root_login);
+      } catch { /* silent */ }
+    })();
+
+    // Fetch System Console
+    (async () => {
+      try {
+        const res = await authFetch(`${API}/api/v1/system/console`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const d = await res.json();
+        if (d.kind) setConsoleKind(d.kind);
+        if (d.baud) setConsoleBaud(d.baud);
+      } catch { /* silent */ }
     })();
   }, []);
 
@@ -787,6 +873,65 @@ export default function SettingsPage() {
     } catch {
       setAiTestResult({ success: false, status_code: "error" });
     } finally { setAiTesting(false); }
+  };
+
+  const saveGeneral = async () => {
+    setGeneralSaving(true); setGeneralFeedback(null);
+    try {
+      const r = await authFetch(`${API}/api/v1/system/general`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ hostname: sysHostname, domain: sysDomain, timezone: sysTimezone }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const res = await r.json();
+      const msg = res.warning ? `Saved (warning: ${res.warning})` : "Saved.";
+      setGeneralFeedback({ type: res.warning ? "error" : "success", message: msg });
+    } catch (e) { setGeneralFeedback({ type: "error", message: String(e) }); }
+    finally { setGeneralSaving(false); }
+  };
+
+  const saveBanner = async () => {
+    setBannerSaving(true); setBannerFeedback(null);
+    try {
+      const r = await authFetch(`${API}/api/v1/system/banner`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ login_banner: loginBanner, motd: motdBody }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      setBannerFeedback({ type: "success", message: "Saved." });
+    } catch (e) { setBannerFeedback({ type: "error", message: String(e) }); }
+    finally { setBannerSaving(false); }
+  };
+
+  const saveSsh = async () => {
+    setSshSaving(true); setSshFeedback(null);
+    try {
+      const r = await authFetch(`${API}/api/v1/system/ssh`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ enabled: sshEnabled, port: sshPort, password_auth: sshPasswordAuth, permit_root_login: sshPermitRoot }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      setSshFeedback({ type: "success", message: `Saved. sshd reloading${sshPort !== 22 ? ` — reconnect on port ${sshPort}` : ""}.` });
+    } catch (e) { setSshFeedback({ type: "error", message: String(e) }); }
+    finally { setSshSaving(false); }
+  };
+
+  const saveConsole = async () => {
+    setConsoleSaving(true); setConsoleFeedback(null);
+    try {
+      const r = await authFetch(`${API}/api/v1/system/console`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ kind: consoleKind, baud: consoleBaud }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      setConsoleFeedback({ type: "success", message: "Saved. Reboot required. Verify console access before rebooting." });
+      setConsoleConfirm(false);
+    } catch (e) { setConsoleFeedback({ type: "error", message: String(e) }); }
+    finally { setConsoleSaving(false); }
   };
 
   const saveValkey = async () => {
@@ -1896,6 +2041,136 @@ export default function SettingsPage() {
                   </div>
                 );
               })}
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* General */}
+      <section className={`${sectionCls} ${inCategory("General") ? "" : "hidden"}`}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-medium">General</h2>
+          <a href="/system/info" className="text-xs text-[var(--accent)] hover:underline">View live system info →</a>
+        </div>
+        <FeedbackBanner feedback={generalFeedback} />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label className={labelCls}>Hostname</label>
+            <input className={inputCls} value={sysHostname} onChange={e => setSysHostname(e.target.value)} />
+          </div>
+          <div>
+            <label className={labelCls}>Domain</label>
+            <input className={inputCls} value={sysDomain} onChange={e => setSysDomain(e.target.value)} placeholder="home.lan" />
+          </div>
+          <div>
+            <label className={labelCls}>Timezone</label>
+            <input
+              list="tz-list"
+              className={inputCls}
+              value={sysTimezone}
+              onChange={e => setSysTimezone(e.target.value)}
+            />
+            <datalist id="tz-list">
+              {timezoneList.map(tz => <option key={tz} value={tz} />)}
+            </datalist>
+          </div>
+        </div>
+        <div className="flex justify-end mt-4">
+          <button onClick={saveGeneral} disabled={generalSaving} className={saveBtnCls}>
+            {generalSaving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </section>
+
+      {/* Login Banner & MOTD */}
+      <section className={`${sectionCls} ${inCategory("Login Banner & MOTD") ? "" : "hidden"}`}>
+        <h2 className="font-medium mb-4">Login Banner &amp; MOTD</h2>
+        <FeedbackBanner feedback={bannerFeedback} />
+        <p className="text-xs text-[var(--text-muted)] mb-3">
+          Banner shows before login (SSH / console). MOTD shows after login.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls}>Login Banner (/etc/issue)</label>
+            <textarea className={`${inputCls} font-mono`} rows={8} value={loginBanner} onChange={e => setLoginBanner(e.target.value)} />
+          </div>
+          <div>
+            <label className={labelCls}>MOTD (/etc/motd.template)</label>
+            <textarea className={`${inputCls} font-mono`} rows={8} value={motdBody} onChange={e => setMotdBody(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex justify-end mt-4">
+          <button onClick={saveBanner} disabled={bannerSaving} className={saveBtnCls}>
+            {bannerSaving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </section>
+
+      {/* SSH Access */}
+      <section className={`${sectionCls} ${inCategory("SSH Access") ? "" : "hidden"}`}>
+        <h2 className="font-medium mb-4">SSH Access</h2>
+        <FeedbackBanner feedback={sshFeedback} />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={sshEnabled} onChange={e => setSshEnabled(e.target.checked)} />
+            <span>SSH enabled</span>
+          </label>
+          <div>
+            <label className={labelCls}>Port {sshPort !== 22 && <span className="text-yellow-400">(non-default)</span>}</label>
+            <input type="number" min={1} max={65535} className={inputCls} value={sshPort} onChange={e => setSshPort(Number(e.target.value) || 22)} />
+          </div>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={sshPasswordAuth} onChange={e => setSshPasswordAuth(e.target.checked)} />
+            <span>Password authentication (insecure)</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={sshPermitRoot} onChange={e => setSshPermitRoot(e.target.checked)} />
+            <span>Permit root login</span>
+          </label>
+        </div>
+        <div className="flex justify-end mt-4">
+          <button onClick={saveSsh} disabled={sshSaving} className={saveBtnCls}>
+            {sshSaving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </section>
+
+      {/* Console */}
+      <section className={`${sectionCls} ${inCategory("Console") ? "" : "hidden"}`}>
+        <h2 className="font-medium mb-4">Console</h2>
+        <FeedbackBanner feedback={consoleFeedback} />
+        <p className="text-xs text-yellow-300 mb-3">
+          Changing the console requires a reboot and can break console access if misconfigured.
+          Verify you have access on the selected device before rebooting.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className={labelCls}>Console</label>
+            <div className="flex gap-4 mt-1">
+              {(["video","serial","dual"] as const).map(k => (
+                <label key={k} className="flex items-center gap-2">
+                  <input type="radio" checked={consoleKind === k} onChange={() => setConsoleKind(k)} />
+                  <span>{k}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>Baud</label>
+            <select className={inputCls} value={consoleBaud} onChange={e => setConsoleBaud(Number(e.target.value))}>
+              {[9600,19200,38400,57600,115200].map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="flex justify-end mt-4 gap-2">
+          {!consoleConfirm ? (
+            <button onClick={() => setConsoleConfirm(true)} className={saveBtnCls}>Apply</button>
+          ) : (
+            <>
+              <button onClick={() => setConsoleConfirm(false)} className="px-3 py-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+              <button onClick={saveConsole} disabled={consoleSaving} className="px-4 py-2 text-sm font-medium rounded-md bg-orange-600 hover:bg-orange-700 text-white">
+                {consoleSaving ? "Saving…" : "Confirm & Save"}
+              </button>
             </>
           )}
         </div>
