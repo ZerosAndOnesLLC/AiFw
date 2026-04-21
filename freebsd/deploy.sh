@@ -233,6 +233,11 @@ chmod 440 /usr/local/etc/sudoers.d/aifw
 
 echo ""
 
+# Strip stale AiFw version from MOTD template (idempotent; respects user customizations via /var/db/aifw/motd.user-edited marker).
+if [ -x /usr/local/libexec/aifw-motd-cleanup.sh ]; then
+    /usr/local/libexec/aifw-motd-cleanup.sh || true
+fi
+
 # --- Restart services ---
 echo "[5/5] Restarting services..."
 service aifw_daemon start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_daemon not configured"

@@ -335,6 +335,16 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         }
     }
 
+    // Strip stale AiFw version from MOTD template. Idempotent and respects
+    // the marker file that `system_apply::apply_banner` sets when the admin
+    // edits MOTD via the UI.
+    #[cfg(target_os = "freebsd")]
+    {
+        let _ = Command::new("/usr/local/libexec/aifw-motd-cleanup.sh")
+            .output()
+            .await;
+    }
+
     // Cleanup temp dir
     let _ = tokio::fs::remove_dir_all(tmp_dir).await;
 
