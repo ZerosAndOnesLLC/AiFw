@@ -21,14 +21,23 @@ pub struct FirewallConfig {
 
     pub system: SystemConfig,
     pub auth: AuthConfig,
+    #[serde(default)]
     pub rules: Vec<RuleConfig>,
+    #[serde(default)]
     pub nat: Vec<NatRuleConfig>,
+    #[serde(default)]
     pub queues: Vec<QueueConfigEntry>,
+    #[serde(default)]
     pub rate_limits: Vec<RateLimitEntry>,
+    #[serde(default)]
     pub vpn: VpnConfig,
+    #[serde(default)]
     pub geoip: Vec<GeoIpEntry>,
+    #[serde(default)]
     pub tls: TlsConfig,
+    #[serde(default)]
     pub ha: HaConfig,
+    #[serde(default)]
     pub tuning: Vec<TuningEntry>,
     /// DHCP subnets, reservations, global config, DDNS, HA. Added in a later
     /// schema rev — `#[serde(default)]` keeps older backups deserialising.
@@ -152,7 +161,22 @@ pub struct SystemConfig {
     pub api_listen: String,
     pub api_port: u16,
     pub ui_enabled: bool,
+
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    #[serde(default)]
+    pub login_banner: String,
+    #[serde(default)]
+    pub motd: String,
+    #[serde(default)]
+    pub console: ConsoleConfig,
+    #[serde(default)]
+    pub ssh: SshAccessConfig,
 }
+
+fn default_timezone() -> String { "UTC".to_string() }
 
 impl Default for SystemConfig {
     fn default() -> Self {
@@ -165,7 +189,50 @@ impl Default for SystemConfig {
             api_listen: "0.0.0.0".to_string(),
             api_port: 8080,
             ui_enabled: true,
+            domain: String::new(),
+            timezone: default_timezone(),
+            login_banner: String::new(),
+            motd: String::new(),
+            console: ConsoleConfig::default(),
+            ssh: SshAccessConfig::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConsoleKind {
+    #[default]
+    Video,
+    Serial,
+    Dual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConsoleConfig {
+    #[serde(default)]
+    pub kind: ConsoleKind,
+    #[serde(default = "default_baud")]
+    pub baud: u32,
+}
+
+fn default_baud() -> u32 { 115200 }
+
+impl Default for ConsoleConfig {
+    fn default() -> Self { Self { kind: ConsoleKind::default(), baud: default_baud() } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SshAccessConfig {
+    pub enabled: bool,
+    pub port: u16,
+    pub password_auth: bool,
+    pub permit_root_login: bool,
+}
+
+impl Default for SshAccessConfig {
+    fn default() -> Self {
+        Self { enabled: true, port: 22, password_auth: false, permit_root_login: false }
     }
 }
 

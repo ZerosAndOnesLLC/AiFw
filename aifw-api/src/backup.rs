@@ -727,6 +727,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             api_listen: "0.0.0.0".to_string(),
             api_port: 8080,
             ui_enabled: true,
+            ..SystemConfig::default()
         },
         auth: AuthConfig {
             access_token_expiry_mins: auth.access_token_expiry_mins,

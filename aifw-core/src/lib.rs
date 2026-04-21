@@ -29,7 +29,7 @@ pub mod vpn;
 
 pub use alias::AliasEngine;
 pub use audit::{AuditAction, AuditLog};
-pub use config::FirewallConfig;
+pub use config::{ConsoleConfig, ConsoleKind, FirewallConfig, SshAccessConfig, SystemConfig};
 pub use config_manager::ConfigManager;
 pub use db::Database;
 pub use engine::RuleEngine;

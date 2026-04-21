@@ -1283,4 +1283,43 @@ mod tests {
         let diff = mgr.diff(v1, v2).await.unwrap();
         assert!(diff.identical);
     }
+
+    #[test]
+    fn system_config_defaults_for_new_fields() {
+        let c = crate::SystemConfig::default();
+        assert_eq!(c.domain, "");
+        assert_eq!(c.timezone, "UTC");
+        assert_eq!(c.login_banner, "");
+        assert_eq!(c.motd, "");
+        assert_eq!(c.console.kind, crate::ConsoleKind::Video);
+        assert_eq!(c.console.baud, 115200);
+        assert!(c.ssh.enabled);
+        assert_eq!(c.ssh.port, 22);
+        assert!(!c.ssh.password_auth);
+        assert!(!c.ssh.permit_root_login);
+    }
+
+    #[test]
+    fn old_config_json_loads_with_defaults() {
+        // JSON from before the new fields existed — must still deserialize.
+        let legacy = r#"{
+            "schema_version": 1,
+            "system": {
+                "hostname": "test",
+                "dns_servers": ["1.1.1.1"],
+                "wan_interface": "em0",
+                "lan_interface": null,
+                "lan_ip": null,
+                "api_listen": "0.0.0.0",
+                "api_port": 8080,
+                "ui_enabled": true
+            },
+            "auth": { "access_token_expiry_mins": 60, "refresh_token_expiry_days": 7, "require_totp": false, "require_totp_for_oauth": false, "auto_create_oauth_users": false }
+        }"#;
+        let c = crate::FirewallConfig::from_json(legacy).expect("legacy JSON must load");
+        assert_eq!(c.system.hostname, "test");
+        assert_eq!(c.system.domain, ""); // default
+        assert_eq!(c.system.timezone, "UTC"); // default
+        assert_eq!(c.system.ssh.port, 22); // default
+    }
 }
