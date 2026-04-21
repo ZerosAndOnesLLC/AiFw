@@ -61,30 +61,60 @@ fn set_root_password() {
 
         #[cfg(target_os = "freebsd")]
         {
+            use std::io::Write;
             use std::process::{Command, Stdio};
-            let mut child = Command::new("pw")
+
+            let spawn = Command::new("/usr/sbin/pw")
                 .args(["usermod", "root", "-h", "0"])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
-                .spawn()
-                .ok();
-            if let Some(ref mut c) = child {
-                use std::io::Write;
-                if let Some(ref mut stdin) = c.stdin {
-                    let _ = stdin.write_all(pass1.as_bytes());
+                .spawn();
+
+            let mut child = match spawn {
+                Ok(c) => c,
+                Err(e) => {
+                    console::error(&format!("Failed to spawn pw: {}", e));
+                    return;
                 }
-                match c.wait() {
-                    Ok(status) if status.success() => {
-                        console::success("Root password set.");
-                        return;
-                    }
-                    _ => {
-                        console::error(
-                            "Failed to set root password via 'pw'. You may need to set it manually.",
-                        );
-                        return;
-                    }
+            };
+
+            // Take ownership of stdin so we can drop it (close the pipe)
+            // before waiting. `pw -h 0` reads a single line from fd 0 and
+            // needs either a newline OR EOF to proceed.
+            let mut stdin = match child.stdin.take() {
+                Some(s) => s,
+                None => {
+                    console::error("pw stdin was not piped (internal error)");
+                    let _ = child.wait();
+                    return;
+                }
+            };
+            let write_res = writeln!(stdin, "{}", pass1);
+            drop(stdin); // close pipe → pw sees EOF, proceeds
+
+            if let Err(e) = write_res {
+                console::error(&format!("Failed to write password to pw stdin: {}", e));
+                let _ = child.wait();
+                return;
+            }
+
+            match child.wait_with_output() {
+                Ok(out) if out.status.success() => {
+                    console::success("Root password set.");
+                    return;
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    console::error(&format!(
+                        "pw usermod failed (exit={:?}): {}",
+                        out.status.code(), stderr.trim()
+                    ));
+                    return;
+                }
+                Err(e) => {
+                    console::error(&format!("Failed to wait for pw: {}", e));
+                    return;
                 }
             }
         }
