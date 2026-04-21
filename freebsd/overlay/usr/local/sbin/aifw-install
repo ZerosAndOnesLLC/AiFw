@@ -384,27 +384,18 @@ LOADER
     fi
 }
 
-# Configure ttys for installed system
+# Configure ttys for installed system: require password login on ttyv0,
+# and make root's shell the AiFw console menu so login(1) → aifw-console.
 fix_ttys() {
-    # ttyv0: auto-login to console menu on physical terminal
-    sed -i '' 's|^ttyv0.*|ttyv0 "/usr/libexec/getty autologin" xterm on secure|' "$INSTALL_ROOT/etc/ttys"
+    # ttyv0: standard getty → login(1) prompts for user+password.
+    sed -i '' 's|^ttyv0.*|ttyv0 "/usr/libexec/getty Pc" xterm on secure|' "$INSTALL_ROOT/etc/ttys"
 
     # Disable unused virtual terminals (ttyv1-ttyv8) — appliance only uses ttyv0
     for vt in ttyv1 ttyv2 ttyv3 ttyv4 ttyv5 ttyv6 ttyv7 ttyv8; do
         sed -i '' "s|^${vt}.*|${vt} \"/usr/libexec/getty Pc\" xterm off secure|" "$INSTALL_ROOT/etc/ttys"
     done
 
-    # Ensure gettytab has autologin entry
-    if ! grep -q 'autologin' "$INSTALL_ROOT/etc/gettytab" 2>/dev/null; then
-        cat >> "$INSTALL_ROOT/etc/gettytab" <<'GETTY'
-
-# Auto-login for AiFw console
-autologin|al|Auto login:\
-    :ht:np:sp#115200:al=root:lo=/usr/local/sbin/aifw-console:
-GETTY
-    fi
-
-    # Ensure aifw-console is in /etc/shells
+    # Ensure aifw-console is in /etc/shells so pw usermod -s accepts it.
     if ! grep -q 'aifw-console' "$INSTALL_ROOT/etc/shells" 2>/dev/null; then
         echo "/usr/local/sbin/aifw-console" >> "$INSTALL_ROOT/etc/shells"
     fi
@@ -473,6 +464,10 @@ cp /etc/resolv.conf "$INSTALL_ROOT/etc/resolv.conf" 2>/dev/null || true
 chroot "$INSTALL_ROOT" /usr/local/sbin/aifw-setup
 
 umount "$INSTALL_ROOT/dev" 2>/dev/null || true
+
+# Set root's login shell to the AiFw console menu. login(1) will prompt
+# for root's password (just set by aifw-setup), then launch the menu.
+chroot "$INSTALL_ROOT" /usr/sbin/pw usermod root -s /usr/local/sbin/aifw-console || true
 
 # If setup succeeded, enable services in the installed rc.conf
 if [ -f "$INSTALL_ROOT/usr/local/etc/aifw/aifw.conf" ]; then

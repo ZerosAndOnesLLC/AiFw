@@ -355,6 +355,15 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             .await;
     }
 
+    // One-shot migration: enforce password-protected console login on
+    // existing installs that were shipped with autologin. Idempotent.
+    #[cfg(target_os = "freebsd")]
+    {
+        let _ = Command::new("/usr/local/libexec/aifw-login-migrate.sh")
+            .output()
+            .await;
+    }
+
     // Cleanup temp dir
     let _ = tokio::fs::remove_dir_all(tmp_dir).await;
 
