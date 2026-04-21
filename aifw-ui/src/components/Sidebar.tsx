@@ -138,6 +138,7 @@ const navItems: NavItem[] = [
       { href: "/backup", label: "Backup & Restore", permission: "backup:read" },
       { href: "/settings", label: "Settings", permission: "settings:read" },
       { href: "/settings?cat=system",  label: "  System",            permission: "settings:read" },
+      { href: "/system/info", label: "  System Info", permission: "settings:read" },
       { href: "/settings?cat=api",     label: "  API & Auth",        permission: "settings:read" },
       { href: "/settings?cat=dns",     label: "  DNS",               permission: "settings:read" },
       { href: "/settings?cat=storage", label: "  Storage & Metrics", permission: "settings:read" },
