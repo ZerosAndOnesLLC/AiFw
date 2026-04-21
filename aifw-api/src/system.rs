@@ -1,7 +1,7 @@
 //! System settings API — KV-backed persistence + apply hooks.
 
 use crate::AppState;
-use aifw_core::system_apply::{apply_general, ApplyReport, GeneralInput};
+use aifw_core::system_apply::{apply_banner, apply_general, ApplyReport, BannerInput, GeneralInput};
 use aifw_core::system_apply_helpers::{validate_domain, validate_hostname};
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
@@ -62,10 +62,32 @@ pub async fn put_general(
     Ok(Json(report))
 }
 
-// ---------- Banner / SSH / Console / Info — stubs (filled in Tasks 6-9) ----------
+// ---------- Banner ----------
 
-pub async fn get_banner() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
-pub async fn put_banner() -> Result<Json<ApplyReport>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BannerDto { pub login_banner: String, pub motd: String }
+
+pub async fn get_banner(State(state): State<AppState>) -> Result<Json<BannerDto>, StatusCode> {
+    let login_banner = get_kv(&state.pool, "login_banner").await.unwrap_or_default();
+    let motd = get_kv(&state.pool, "motd").await.unwrap_or_default();
+    Ok(Json(BannerDto { login_banner, motd }))
+}
+
+pub async fn put_banner(
+    State(state): State<AppState>,
+    Json(req): Json<BannerDto>,
+) -> Result<Json<ApplyReport>, (StatusCode, String)> {
+    const MAX: usize = 8 * 1024;
+    if req.login_banner.len() > MAX || req.motd.len() > MAX {
+        return Err((StatusCode::BAD_REQUEST, "banner/motd must be ≤ 8 KiB".into()));
+    }
+    set_kv(&state.pool, "login_banner", &req.login_banner).await;
+    set_kv(&state.pool, "motd", &req.motd).await;
+    let report = apply_banner(&BannerInput { login_banner: req.login_banner, motd: req.motd }).await;
+    Ok(Json(report))
+}
+
+// ---------- SSH / Console / Info — stubs (filled in Tasks 7-9) ----------
 pub async fn get_ssh() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
 pub async fn put_ssh() -> Result<Json<ApplyReport>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }
 pub async fn get_console() -> Result<Json<serde_json::Value>, StatusCode> { Err(StatusCode::NOT_IMPLEMENTED) }

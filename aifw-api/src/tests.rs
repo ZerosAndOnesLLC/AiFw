@@ -1138,4 +1138,39 @@ mod tests {
         assert_eq!(body["data"]["net_fibs"], 1);
         assert_eq!(body["data"]["used"].as_array().unwrap()[0], 0);
     }
+
+    #[tokio::test]
+    async fn system_banner_round_trip() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .put("/api/v1/system/banner")
+            .authorization_bearer(&token)
+            .json(&json!({ "login_banner": "Authorized only", "motd": "Welcome" }))
+            .await;
+        resp.assert_status_ok();
+
+        let resp = server
+            .get("/api/v1/system/banner")
+            .authorization_bearer(&token)
+            .await;
+        let body: Value = resp.json();
+        assert_eq!(body["login_banner"], "Authorized only");
+        assert_eq!(body["motd"], "Welcome");
+    }
+
+    #[tokio::test]
+    async fn system_banner_rejects_oversize() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let big = "x".repeat(9 * 1024);
+        let resp = server
+            .put("/api/v1/system/banner")
+            .authorization_bearer(&token)
+            .json(&json!({ "login_banner": big, "motd": "" }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
 }

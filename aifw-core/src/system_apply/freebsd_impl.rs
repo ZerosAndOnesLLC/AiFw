@@ -51,12 +51,40 @@ pub async fn apply_general(i: &GeneralInput) -> ApplyReport {
     }
 }
 
-// Stubs — filled in Tasks 6-9.
-pub async fn apply_banner(_i: &BannerInput) -> ApplyReport { ApplyReport::ok() }
+pub async fn apply_banner(i: &BannerInput) -> ApplyReport {
+    let mut warnings: Vec<String> = Vec::new();
+
+    if let Err(e) = sudo_install_content("/etc/issue", i.login_banner.as_bytes(), "0644").await {
+        warnings.push(format!("/etc/issue write failed: {}", e));
+    }
+    if let Err(e) = sudo_install_content("/etc/motd.template", i.motd.as_bytes(), "0644").await {
+        warnings.push(format!("/etc/motd.template write failed: {}", e));
+    }
+
+    // Create marker so the MOTD-version updater cleanup script skips
+    // this appliance — the admin is managing MOTD via the UI.
+    if let Err(e) = ensure_motd_marker().await {
+        // Marker failure is non-fatal; the banner itself was applied.
+        warnings.push(format!("motd marker failed: {}", e));
+    }
+
+    if warnings.is_empty() {
+        ApplyReport::ok()
+    } else {
+        let mut r = ApplyReport::ok();
+        r.warning = Some(warnings.join("; "));
+        r
+    }
+}
+
+pub async fn motd_user_edited_marker_set() -> bool {
+    tokio::fs::try_exists("/var/db/aifw/motd.user-edited").await.unwrap_or(false)
+}
+
+// Stubs — filled in Tasks 7-9.
 pub async fn apply_console(_i: &ConsoleInput) -> ApplyReport { ApplyReport::ok_requires_reboot() }
 pub async fn apply_ssh(_i: &SshInput) -> ApplyReport { ApplyReport::ok_requires_restart("sshd") }
 pub async fn collect_info() -> SystemInfo { SystemInfo::default() }
-pub async fn motd_user_edited_marker_set() -> bool { false }
 
 // ---------- Privileged helpers ----------
 
@@ -92,6 +120,15 @@ async fn sudo_install_content(path: &str, data: &[u8], mode: &str) -> Result<(),
 /// The source must already exist and be readable.
 async fn sudo_install_from(src: &str, path: &str, mode: &str) -> Result<(), String> {
     sudo_run("/usr/bin/install", &["-m", mode, src, path]).await
+}
+
+/// Create `/var/db/aifw/motd.user-edited` (mode 0644, root-owned).
+/// Creates the parent directory if needed. Idempotent.
+async fn ensure_motd_marker() -> Result<(), String> {
+    // Parent dir — `/var/db/aifw` must exist before install can place the file.
+    // `/bin/mkdir` is in the sudoers allowlist.
+    let _ = sudo_run("/bin/mkdir", &["-p", "/var/db/aifw"]).await;
+    sudo_install_content("/var/db/aifw/motd.user-edited", b"1\n", "0644").await
 }
 
 /// Build a tempfile path alongside /tmp so the aifw user can create it.
