@@ -110,6 +110,8 @@ pub async fn motd_user_edited_marker_set() -> bool { false }
 
 // ----- FreeBSD: real apply (bodies filled in Tasks 5–9) -----
 
+pub mod freebsd_helpers;
+
 #[cfg(target_os = "freebsd")]
 mod freebsd_impl;
 
