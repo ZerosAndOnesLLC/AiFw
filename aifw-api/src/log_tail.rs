@@ -6,13 +6,20 @@
 //! the first line appeared was the worst UX in the whole product.
 //!
 //! What this module does:
-//!  1. Probe each candidate path with `test -r` so we never spam stderr
-//!     trying to read a file that doesn't exist on this appliance.
+//!  1. Probe each candidate path with `fs::metadata` so we skip files
+//!     that don't exist on this appliance.
 //!  2. `tail -n N` the first readable file (bounded read; on FreeBSD
 //!     this seeks back from EOF in O(N) bytes).
 //!  3. Optional `grep -i <needle>` BEFORE the bytes hit user space, so
 //!     filter cost scales with matches not file size.
 //!  4. Cap the response at the requested line count, newest-first.
+//!
+//! No sudo: each service's rc.d script is responsible for making its
+//! log group-readable by `aifw` (see rdns's rc.d script for the
+//! pattern — 0640 root:aifw). System logs like /var/log/messages are
+//! world-readable. Wrapping tail/grep in sudo would require the aifw
+//! sudoers file to whitelist them, and earlier versions that did so
+//! silently failed because those commands weren't in the whitelist.
 //!
 //! The full pipeline runs under `/bin/sh -c` so we can `|` between
 //! tail/grep/tail without writing a JSON-encoded ProcessBuilder graph.
@@ -32,15 +39,7 @@ pub async fn tail_filtered(
     take: usize,
 ) -> Vec<String> {
     for path in paths {
-        // Existence + readability via sudo `test -r`. We never `tail` a
-        // missing file; that just adds a sudo invocation per poll.
-        let exists = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/bin/test", "-r", path])
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !exists {
+        if tokio::fs::metadata(path).await.is_err() {
             continue;
         }
 
@@ -48,18 +47,16 @@ pub async fn tail_filtered(
             Some(n) => {
                 let safe = sanitize_needle(n);
                 if safe.is_empty() {
-                    format!(
-                        "/usr/local/bin/sudo /usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/tail -n {take}"
-                    )
+                    format!("/usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/tail -n {take}")
                 } else {
                     format!(
-                        "/usr/local/bin/sudo /usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/grep -iF -- '{safe}' | /usr/bin/tail -n {take}"
+                        "/usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/grep -iF -- '{safe}' | /usr/bin/tail -n {take}"
                     )
                 }
             }
-            None => format!(
-                "/usr/local/bin/sudo /usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/tail -n {take}"
-            ),
+            None => {
+                format!("/usr/bin/tail -n {tail_lines} '{path}' | /usr/bin/tail -n {take}")
+            }
         };
 
         let out = Command::new("/bin/sh")
