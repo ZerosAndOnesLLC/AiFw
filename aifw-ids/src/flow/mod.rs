@@ -232,19 +232,32 @@ impl Flow {
 pub struct FlowTable {
     table: DashMap<FlowKey, Flow>,
     max_stream_depth: usize,
+    max_flows: usize,
+    reassembly_budget_bytes: usize,
 }
 
 impl FlowTable {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(max_flows: usize) -> Self {
         Self {
-            table: DashMap::with_capacity(capacity),
-            max_stream_depth: 1024 * 1024, // 1MB default stream depth
+            table: DashMap::with_capacity(max_flows),
+            max_stream_depth: 65536, // 64 KB per direction — covers HTTP headers, TLS handshake, DNS, banners.
+            max_flows,
+            reassembly_budget_bytes: 256 * 1024 * 1024, // 256 MB
         }
     }
 
     pub fn with_stream_depth(mut self, depth: usize) -> Self {
         self.max_stream_depth = depth;
         self
+    }
+
+    pub fn with_reassembly_budget(mut self, bytes: usize) -> Self {
+        self.reassembly_budget_bytes = bytes;
+        self
+    }
+
+    pub fn max_flows(&self) -> usize {
+        self.max_flows
     }
 
     /// Look up or create a flow for this packet. Returns the flow direction.
@@ -265,12 +278,34 @@ impl FlowTable {
         let key = FlowKey::from_packet(src_ip, dst_ip, src_port, dst_port, proto);
         let direction = key.direction(src_ip, src_port);
 
+        // Evict if at cap and this is a new flow.
+        if !self.table.contains_key(&key) && self.table.len() >= self.max_flows {
+            self.evict_oldest();
+        }
+
         self.table
             .entry(key.clone())
             .and_modify(|flow| flow.update(packet, direction))
             .or_insert_with(|| Flow::new(key.clone(), packet, self.max_stream_depth));
 
+        // Enforce reassembly byte budget — evict oldest until under budget.
+        while self.reassembly_bytes() > self.reassembly_budget_bytes && !self.table.is_empty() {
+            self.evict_oldest();
+        }
+
         Some((key, direction))
+    }
+
+    /// Evict the entry with the smallest `last_ts`. O(N).
+    fn evict_oldest(&self) {
+        let oldest = self
+            .table
+            .iter()
+            .min_by_key(|e| e.value().last_ts)
+            .map(|e| e.key().clone());
+        if let Some(k) = oldest {
+            self.table.remove(&k);
+        }
     }
 
     /// Get a reference to a flow by key.
@@ -449,6 +484,69 @@ mod tests {
         let (key, _) = table.track_packet(&packet).unwrap();
         let flow = table.get(&key).unwrap();
         assert_eq!(flow.toserver_buf, b"GET / HTTP/1.1\r\n");
+    }
+
+    #[test]
+    fn default_stream_depth_is_64kb() {
+        let table = FlowTable::new(1024);
+        assert_eq!(table.max_stream_depth, 65536);
+    }
+
+    #[test]
+    fn evicts_oldest_when_at_cap() {
+        let table = FlowTable::new(3);
+        let make_pkt = |src_octet: u8, ts: i64| DecodedPacket {
+            timestamp_us: ts,
+            src_ip: Some(format!("10.0.0.{src_octet}").parse().unwrap()),
+            dst_ip: Some("10.0.1.1".parse().unwrap()),
+            src_port: Some(1000),
+            dst_port: Some(80),
+            protocol: PacketProtocol::Tcp,
+            tcp_flags: None,
+            payload: vec![],
+            packet_len: 64,
+        };
+        table.track_packet(&make_pkt(1, 1_000));
+        table.track_packet(&make_pkt(2, 2_000));
+        table.track_packet(&make_pkt(3, 3_000));
+        assert_eq!(table.len(), 3);
+        table.track_packet(&make_pkt(4, 4_000));
+        assert_eq!(table.len(), 3, "should not exceed cap");
+        // Oldest (src 1, ts 1000) should have been evicted.
+        let oldest_key = FlowKey::from_packet(
+            "10.0.0.1".parse().unwrap(),
+            "10.0.1.1".parse().unwrap(),
+            1000,
+            80,
+            6,
+        );
+        assert!(table.get(&oldest_key).is_none());
+    }
+
+    #[test]
+    fn evicts_when_reassembly_budget_exceeded() {
+        let table = FlowTable::new(1024).with_reassembly_budget(2048);
+        let mut ts = 1_000;
+        for i in 1..=10u8 {
+            let pkt = DecodedPacket {
+                timestamp_us: ts,
+                src_ip: Some(format!("10.0.0.{i}").parse().unwrap()),
+                dst_ip: Some("10.0.1.1".parse().unwrap()),
+                src_port: Some(1000),
+                dst_port: Some(80),
+                protocol: PacketProtocol::Tcp,
+                tcp_flags: None,
+                payload: vec![0u8; 512], // 512 bytes per direction
+                packet_len: 600,
+            };
+            table.track_packet(&pkt);
+            ts += 1_000;
+        }
+        assert!(
+            table.reassembly_bytes() <= 2048,
+            "budget exceeded: {}",
+            table.reassembly_bytes()
+        );
     }
 
     #[test]

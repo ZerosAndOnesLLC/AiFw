@@ -83,6 +83,30 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Periodic time-based flow expiry — even idle flows eventually fall off
+    // so memory plateaus on quiet links. Per-packet expiry runs in the
+    // capture worker; this is the safety net for low-traffic paths.
+    {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            const FLOW_IDLE_TIMEOUT_US: i64 = 300_000_000; // 5 min
+            loop {
+                interval.tick().await;
+                if let Some(table) = engine.flow_table() {
+                    let now_us = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_micros() as i64;
+                    let expired = table.expire(now_us, FLOW_IDLE_TIMEOUT_US);
+                    if expired > 0 {
+                        tracing::debug!(expired, active = table.len(), "flow table time-expiry");
+                    }
+                }
+            }
+        });
+    }
+
     // Bind the IPC socket. Remove stale socket file if present.
     let _ = std::fs::remove_file(&args.socket);
     if let Some(parent) = args.socket.parent() {

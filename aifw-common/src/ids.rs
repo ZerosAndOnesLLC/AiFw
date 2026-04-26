@@ -258,6 +258,8 @@ pub struct IdsConfig {
     pub worker_count: Option<u32>,
     pub flow_table_size: Option<u32>,
     pub stream_depth: Option<u32>,
+    /// Per-direction stream reassembly depth, in KB. `None` = built-in default (64 KB).
+    pub flow_stream_depth_kb: Option<u32>,
 }
 
 impl Default for IdsConfig {
@@ -278,6 +280,7 @@ impl Default for IdsConfig {
             worker_count: None,
             flow_table_size: None,
             stream_depth: None,
+            flow_stream_depth_kb: None,
         }
     }
 }

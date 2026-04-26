@@ -92,15 +92,17 @@ impl IdsEngine {
         let disabled = config.config().mode == IdsMode::Disabled;
 
         // Minimal allocations when disabled — just enough for API endpoints to work
+        let cfg_view = config.config();
         let flow_table_size = if disabled {
             16 // trivial map, no real flows tracked
         } else {
-            config.config().flow_table_size.unwrap_or(65536) as usize
+            cfg_view.flow_table_size.unwrap_or(65536) as usize
         };
+        let stream_depth_bytes = cfg_view.flow_stream_depth_kb.unwrap_or(64) as usize * 1024;
         let channel_cap = if disabled { 1 } else { ALERT_CHANNEL_CAPACITY };
 
         let rule_db = Arc::new(RuleDatabase::new());
-        let flow_table = Arc::new(FlowTable::new(flow_table_size));
+        let flow_table = Arc::new(FlowTable::new(flow_table_size).with_stream_depth(stream_depth_bytes));
         let detection = Arc::new(DetectionEngine::new(rule_db.clone(), flow_table.clone()));
         let action = Arc::new(ActionEngine::new(pf.clone(), config.clone()));
         // SQLite is the durable alert store (queried by /api/v1/ids/alerts,
