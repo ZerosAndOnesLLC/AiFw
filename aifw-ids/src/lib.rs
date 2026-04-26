@@ -103,10 +103,16 @@ impl IdsEngine {
         let flow_table = Arc::new(FlowTable::new(flow_table_size));
         let detection = Arc::new(DetectionEngine::new(rule_db.clone(), flow_table.clone()));
         let action = Arc::new(ActionEngine::new(pf.clone(), config.clone()));
-        let alert_pipeline = Arc::new(if let Some(buf) = alert_buffer.clone() {
-            AlertPipeline::with_memory(buf)
-        } else {
-            AlertPipeline::new(pool.clone())
+        // SQLite is the durable alert store (queried by /api/v1/ids/alerts,
+        // AI analysis, suppression matching). When a memory buffer is also
+        // provided, append it as a second output so IPC tail_alerts can serve
+        // recent alerts without hitting the DB.
+        let alert_pipeline = Arc::new({
+            let mut pipeline = AlertPipeline::new(pool.clone());
+            if let Some(buf) = alert_buffer.clone() {
+                pipeline.add_output(Box::new(crate::output::memory::MemoryOutput::new(buf)));
+            }
+            pipeline
         });
 
         let (alert_tx, alert_rx) = channel::bounded(channel_cap);

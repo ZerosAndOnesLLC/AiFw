@@ -656,10 +656,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                 let recent_alerts: Vec<IdsAlertSummary> = recent
                     .into_iter()
                     .map(|a| IdsAlertSummary {
-                        // IPC doesn't carry severity yet; surface 0 as a
-                        // placeholder so the UI keeps rendering. Operators
-                        // who need real severity should query /ids/alerts.
-                        severity: 0,
+                        severity: a.severity,
                         signature_msg: a.msg.clone(),
                         src_ip: a.src_ip.clone(),
                         dst_ip: a.dst_ip.clone(),
@@ -672,13 +669,10 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                     mode: stats.mode,
                     loaded_rules: stats.rules_loaded,
                     alerts_total: stats.alerts_total,
-                    // drops/pps/bps/etc. live in EngineCounters inside
-                    // aifw-ids and aren't exposed over IPC yet — surface
-                    // zeros so the UI keeps the field shape stable.
-                    drops_total: 0,
+                    drops_total: stats.drops_total,
                     packets_inspected: stats.packets_inspected,
-                    packets_per_sec: 0.0,
-                    bytes_per_sec: 0.0,
+                    packets_per_sec: stats.packets_per_sec,
+                    bytes_per_sec: stats.bytes_per_sec,
                     active_flows: stats.flow_count,
                     recent_alerts,
                 })

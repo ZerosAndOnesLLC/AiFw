@@ -36,6 +36,9 @@ pub struct IdsStats {
     pub flow_reassembly_bytes: u64,
     pub packets_inspected: u64,
     pub alerts_total: u64,
+    pub drops_total: u64,
+    pub packets_per_sec: f64,
+    pub bytes_per_sec: f64,
     pub uptime_secs: u64,
 }
 
@@ -68,6 +71,7 @@ pub struct AlertSummary {
     pub src_port: Option<u16>,
     pub dst_port: Option<u16>,
     pub protocol: String,
+    pub severity: u8,
 }
 
 #[cfg(test)]
@@ -92,6 +96,9 @@ mod tests {
             flow_reassembly_bytes: 4096,
             packets_inspected: 100,
             alerts_total: 5,
+            drops_total: 2,
+            packets_per_sec: 12.5,
+            bytes_per_sec: 9000.0,
             uptime_secs: 600,
         };
         let s = serde_json::to_string(&stats).unwrap();

@@ -59,14 +59,18 @@ impl IpcHandler for EngineHandler {
                     .flow_table()
                     .map(|t| t.reassembly_bytes() as u64)
                     .unwrap_or(0);
+                let engine_stats = self.engine.stats();
                 IpcResponse::Stats(IdsStats {
                     mode,
                     running: self.engine.is_running(),
                     rules_loaded,
                     flow_count,
                     flow_reassembly_bytes,
-                    packets_inspected: self.engine.packets_inspected(),
-                    alerts_total: self.engine.alerts_total().await,
+                    packets_inspected: engine_stats.packets_inspected,
+                    alerts_total: engine_stats.alerts_total,
+                    drops_total: engine_stats.drops_total,
+                    packets_per_sec: engine_stats.packets_per_sec,
+                    bytes_per_sec: engine_stats.bytes_per_sec,
                     uptime_secs: self.started_at.elapsed().as_secs(),
                 })
             }
@@ -124,6 +128,7 @@ impl IpcHandler for EngineHandler {
                             src_port: a.src_port,
                             dst_port: a.dst_port,
                             protocol: a.protocol,
+                            severity: a.severity.0,
                         })
                         .collect(),
                 )
