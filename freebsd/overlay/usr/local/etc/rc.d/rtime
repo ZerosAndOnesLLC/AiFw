@@ -3,9 +3,6 @@
 # PROVIDE: rtime
 # REQUIRE: NETWORKING
 # KEYWORD: shutdown
-#
-# Add the following lines to /etc/rc.conf to enable rtime:
-#   rtime_enable="YES"
 
 . /etc/rc.subr
 
@@ -17,11 +14,13 @@ load_rc_config $name
 : ${rtime_enable:="NO"}
 : ${rtime_config:="/usr/local/etc/rtime/rtime.toml"}
 : ${rtime_pidfile:="/var/run/rtime/rtime.pid"}
+: ${rtime_supervisor_pidfile:="/var/run/rtime/rtime-supervisor.pid"}
 
-pidfile="${rtime_pidfile}"
-procname="/usr/local/sbin/rtime"
+pidfile="${rtime_supervisor_pidfile}"
+procname="/usr/sbin/daemon"
+rtime_binary="/usr/local/sbin/rtime"
 command="/usr/sbin/daemon"
-command_args="-f -p ${rtime_pidfile} -R 5 -S -T rtime -o /var/log/rtime/rtime.log ${procname} --config ${rtime_config}"
+command_args="-f -p ${rtime_pidfile} -P ${rtime_supervisor_pidfile} -R 5 -S -T rtime -o /var/log/rtime/rtime.log ${rtime_binary} --config ${rtime_config}"
 
 start_precmd="rtime_precmd"
 stop_postcmd="rtime_poststop"
@@ -29,12 +28,14 @@ stop_postcmd="rtime_poststop"
 rtime_precmd()
 {
     /bin/mkdir -p /var/run/rtime /var/log/rtime /usr/local/etc/rtime
-    /bin/rm -f ${rtime_pidfile}
+    /usr/bin/pkill -f "daemon:.*rtime" 2>/dev/null
+    /usr/bin/pkill -x rtime 2>/dev/null
+    /bin/rm -f ${rtime_pidfile} ${rtime_supervisor_pidfile}
 }
 
 rtime_poststop()
 {
-    /bin/rm -f ${rtime_pidfile}
+    /bin/rm -f ${rtime_pidfile} ${rtime_supervisor_pidfile}
 }
 
 run_rc_command "$1"

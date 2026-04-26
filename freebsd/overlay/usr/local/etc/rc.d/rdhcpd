@@ -1,5 +1,5 @@
 #!/bin/sh
-
+#
 # PROVIDE: rdhcpd
 # REQUIRE: NETWORKING
 # KEYWORD: shutdown
@@ -9,72 +9,53 @@
 name="rdhcpd"
 rcvar="rdhcpd_enable"
 
-command="/usr/local/sbin/rdhcpd"
-command_args="/usr/local/etc/rdhcpd/config.toml"
-pidfile="/var/run/${name}.pid"
+load_rc_config $name
 
-start_cmd="${name}_start"
-stop_cmd="${name}_stop"
-status_cmd="${name}_status"
-reload_cmd="${name}_reload"
+: ${rdhcpd_enable:="NO"}
+: ${rdhcpd_config:="/usr/local/etc/rdhcpd/config.toml"}
+: ${rdhcpd_pidfile:="/var/run/rdhcpd/rdhcpd.pid"}
+: ${rdhcpd_supervisor_pidfile:="/var/run/rdhcpd/rdhcpd-supervisor.pid"}
+
+pidfile="${rdhcpd_supervisor_pidfile}"
+procname="/usr/sbin/daemon"
+rdhcpd_binary="/usr/local/sbin/rdhcpd"
+command="/usr/sbin/daemon"
+command_args="-f -p ${rdhcpd_pidfile} -P ${rdhcpd_supervisor_pidfile} -R 5 -S -T rdhcpd -o /var/log/rdhcpd/rdhcpd.log ${rdhcpd_binary} ${rdhcpd_config}"
+
+start_precmd="rdhcpd_precmd"
+stop_postcmd="rdhcpd_poststop"
+reload_cmd="rdhcpd_reload"
 extra_commands="reload"
 
-rdhcpd_start()
+rdhcpd_precmd()
 {
-    if rdhcpd_status >/dev/null 2>&1; then
-        echo "${name} is already running."
-        return 0
-    fi
+    /bin/mkdir -p /var/db/rdhcpd/leases /var/log/rdhcpd /usr/local/etc/rdhcpd /var/run/rdhcpd
+    /usr/sbin/chown -R aifw:aifw /var/db/rdhcpd /var/log/rdhcpd /usr/local/etc/rdhcpd /var/run/rdhcpd
+    /usr/bin/pkill -f "daemon:.*rdhcpd" 2>/dev/null
+    /usr/bin/pkill -x rdhcpd 2>/dev/null
+    /bin/rm -f ${rdhcpd_pidfile} ${rdhcpd_supervisor_pidfile}
 
-    mkdir -p /var/db/rdhcpd/leases /var/log/rdhcpd /usr/local/etc/rdhcpd
-    chown -R aifw:aifw /var/db/rdhcpd /var/log/rdhcpd /usr/local/etc/rdhcpd
-
-    if [ ! -f /usr/local/etc/rdhcpd/config.toml ]; then
-        echo "ERROR: ${name} config not found at /usr/local/etc/rdhcpd/config.toml"
+    if [ ! -f ${rdhcpd_config} ]; then
+        echo "ERROR: rdhcpd config not found at ${rdhcpd_config}"
         return 1
-    fi
-
-    echo "Starting ${name}."
-    /usr/sbin/daemon -f -p ${pidfile} -o /var/log/rdhcpd/rdhcpd.log ${command} ${command_args}
-}
-
-rdhcpd_stop()
-{
-    if [ -f "${pidfile}" ]; then
-        pid=$(cat "${pidfile}")
-        echo "Stopping ${name} (pid ${pid})."
-        kill "${pid}" 2>/dev/null
-        pkill -f "daemon.*rdhcpd" 2>/dev/null
-        rm -f "${pidfile}"
-        sleep 1
-    else
-        echo "${name} is not running."
     fi
 }
 
-rdhcpd_status()
+rdhcpd_poststop()
 {
-    if [ -f "${pidfile}" ] && kill -0 "$(cat "${pidfile}")" 2>/dev/null; then
-        echo "${name} is running (pid $(cat "${pidfile}"))."
-        return 0
-    else
-        echo "${name} is not running."
-        return 1
-    fi
+    /bin/rm -f ${rdhcpd_pidfile} ${rdhcpd_supervisor_pidfile}
 }
 
 rdhcpd_reload()
 {
-    if [ -f "${pidfile}" ]; then
-        pid=$(cat "${pidfile}")
-        echo "Reloading ${name} (pid ${pid})."
-        kill -HUP "${pid}" 2>/dev/null
+    if [ -f "${rdhcpd_pidfile}" ]; then
+        pid=$(cat "${rdhcpd_pidfile}")
+        echo "Reloading rdhcpd (pid ${pid})."
+        /bin/kill -HUP "${pid}" 2>/dev/null
     else
-        echo "${name} is not running."
+        echo "rdhcpd is not running."
         return 1
     fi
 }
 
-load_rc_config $name
-: ${rdhcpd_enable:="NO"}
 run_rc_command "$1"

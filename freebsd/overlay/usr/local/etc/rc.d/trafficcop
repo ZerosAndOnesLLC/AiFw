@@ -1,5 +1,5 @@
 #!/bin/sh
-
+#
 # PROVIDE: trafficcop
 # REQUIRE: NETWORKING
 # KEYWORD: shutdown
@@ -9,62 +9,41 @@
 name="trafficcop"
 rcvar="trafficcop_enable"
 
-command="/usr/local/sbin/trafficcop"
-command_args="-c /usr/local/etc/trafficcop/config.yaml"
-pidfile="/var/run/${name}.pid"
+load_rc_config $name
 
-start_cmd="${name}_start"
-stop_cmd="${name}_stop"
-status_cmd="${name}_status"
+: ${trafficcop_enable:="NO"}
+: ${trafficcop_config:="/usr/local/etc/trafficcop/config.yaml"}
+: ${trafficcop_pidfile:="/var/run/trafficcop/trafficcop.pid"}
+: ${trafficcop_supervisor_pidfile:="/var/run/trafficcop/trafficcop-supervisor.pid"}
 
-trafficcop_start()
+pidfile="${trafficcop_supervisor_pidfile}"
+procname="/usr/sbin/daemon"
+trafficcop_binary="/usr/local/sbin/trafficcop"
+command="/usr/sbin/daemon"
+command_args="-f -p ${trafficcop_pidfile} -P ${trafficcop_supervisor_pidfile} -R 5 -S -T trafficcop -o /var/log/trafficcop/trafficcop.log -u aifw ${trafficcop_binary} -c ${trafficcop_config}"
+
+start_precmd="trafficcop_precmd"
+stop_postcmd="trafficcop_poststop"
+
+trafficcop_precmd()
 {
-    if trafficcop_status >/dev/null 2>&1; then
-        echo "${name} is already running."
-        return 0
-    fi
+    /bin/mkdir -p /var/run/trafficcop /var/log/trafficcop
+    /usr/sbin/chown aifw:aifw /var/log/trafficcop /var/run/trafficcop
+    /usr/bin/pkill -f "daemon:.*trafficcop" 2>/dev/null
+    /usr/bin/pkill -x trafficcop 2>/dev/null
+    /bin/rm -f ${trafficcop_pidfile} ${trafficcop_supervisor_pidfile}
 
-    mkdir -p /var/log/trafficcop
-    chown aifw:aifw /var/log/trafficcop
-
-    # Validate config before starting
-    if [ -f /usr/local/etc/trafficcop/config.yaml ]; then
-        if ! ${command} -c /usr/local/etc/trafficcop/config.yaml --validate >/dev/null 2>&1; then
-            echo "ERROR: ${name} config validation failed"
+    if [ -f ${trafficcop_config} ]; then
+        if ! ${trafficcop_binary} -c ${trafficcop_config} --validate >/dev/null 2>&1; then
+            echo "ERROR: trafficcop config validation failed"
             return 1
         fi
     fi
-
-    echo "Starting ${name}."
-    /usr/sbin/daemon -p ${pidfile} -o /var/log/trafficcop/trafficcop.log -u aifw ${command} ${command_args}
 }
 
-trafficcop_stop()
+trafficcop_poststop()
 {
-    if [ -f "${pidfile}" ]; then
-        pid=$(cat "${pidfile}")
-        echo "Stopping ${name} (pid ${pid})."
-        kill "${pid}" 2>/dev/null
-        # Also kill the daemon wrapper that holds the binary reference
-        pkill -f "daemon.*trafficcop" 2>/dev/null
-        rm -f "${pidfile}"
-        sleep 1
-    else
-        echo "${name} is not running."
-    fi
+    /bin/rm -f ${trafficcop_pidfile} ${trafficcop_supervisor_pidfile}
 }
 
-trafficcop_status()
-{
-    if [ -f "${pidfile}" ] && kill -0 "$(cat "${pidfile}")" 2>/dev/null; then
-        echo "${name} is running (pid $(cat "${pidfile}"))."
-        return 0
-    else
-        echo "${name} is not running."
-        return 1
-    fi
-}
-
-load_rc_config $name
-: ${trafficcop_enable:="NO"}
 run_rc_command "$1"

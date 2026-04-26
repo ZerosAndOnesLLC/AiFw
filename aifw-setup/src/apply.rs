@@ -1573,10 +1573,12 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.join("\n")
 }
 
-/// Write FreeBSD rc.d service scripts
+/// Write FreeBSD rc.d service scripts. Pattern follows `rdns` — supervisor
+/// pidfile + child pidfile + start_precmd reaping orphans.
 fn write_rcd_scripts(config: &SetupConfig) -> Result<(), String> {
     let daemon_script = format!(
         r#"#!/bin/sh
+#
 # PROVIDE: aifw_daemon
 # REQUIRE: NETWORKING pf devfs
 # KEYWORD: shutdown
@@ -1585,23 +1587,36 @@ fn write_rcd_scripts(config: &SetupConfig) -> Result<(), String> {
 
 name="aifw_daemon"
 rcvar="aifw_daemon_enable"
-command="/usr/local/sbin/aifw-daemon"
-command_args="--db {db} --log-level info"
-pidfile="/var/run/${{name}}.pid"
-start_cmd="${{name}}_start"
-aifw_daemon_user="aifw"
-
-aifw_daemon_start()
-{{
-    mkdir -p /var/log/aifw
-    chown aifw:aifw /var/log/aifw
-    # -R 5: restart after 5s if it dies, -S: log to syslog, -T: syslog tag,
-    # -o: also tee stderr/stdout to file for crash debugging
-    /usr/sbin/daemon -u $aifw_daemon_user -p $pidfile -f -R 5 -S -T aifw_daemon -o /var/log/aifw/daemon.log $command $command_args
-}}
 
 load_rc_config $name
+
 : ${{aifw_daemon_enable:="NO"}}
+: ${{aifw_daemon_pidfile:="/var/run/aifw_daemon.pid"}}
+: ${{aifw_daemon_supervisor_pidfile:="/var/run/aifw_daemon-supervisor.pid"}}
+
+pidfile="${{aifw_daemon_supervisor_pidfile}}"
+procname="/usr/sbin/daemon"
+aifw_daemon_binary="/usr/local/sbin/aifw-daemon"
+command="/usr/sbin/daemon"
+command_args="-f -p ${{aifw_daemon_pidfile}} -P ${{aifw_daemon_supervisor_pidfile}} -R 5 -S -T aifw_daemon -o /var/log/aifw/daemon.log -u aifw ${{aifw_daemon_binary}} --db {db} --log-level info"
+
+start_precmd="aifw_daemon_precmd"
+stop_postcmd="aifw_daemon_poststop"
+
+aifw_daemon_precmd()
+{{
+    /bin/mkdir -p /var/log/aifw
+    /usr/sbin/chown aifw:aifw /var/log/aifw
+    /usr/bin/pkill -f "daemon:.*aifw-daemon" 2>/dev/null
+    /usr/bin/pkill -x aifw-daemon 2>/dev/null
+    /bin/rm -f ${{aifw_daemon_pidfile}} ${{aifw_daemon_supervisor_pidfile}}
+}}
+
+aifw_daemon_poststop()
+{{
+    /bin/rm -f ${{aifw_daemon_pidfile}} ${{aifw_daemon_supervisor_pidfile}}
+}}
+
 run_rc_command "$1"
 "#,
         db = config.db_path
@@ -1609,29 +1624,45 @@ run_rc_command "$1"
 
     let api_script = format!(
         r#"#!/bin/sh
+#
 # PROVIDE: aifw_api
-# REQUIRE: NETWORKING aifw_daemon
+# REQUIRE: NETWORKING aifw_daemon aifw_ids
 # KEYWORD: shutdown
 
 . /etc/rc.subr
 
 name="aifw_api"
 rcvar="aifw_api_enable"
-command="/usr/local/sbin/aifw-api"
-command_args="--db {db} --listen {listen}:{port} --ui-dir /usr/local/share/aifw/ui --log-level info"
-pidfile="/var/run/${{name}}.pid"
-start_cmd="${{name}}_start"
-aifw_api_user="aifw"
-
-aifw_api_start()
-{{
-    mkdir -p /var/log/aifw
-    chown aifw:aifw /var/log/aifw
-    /usr/sbin/daemon -u $aifw_api_user -p $pidfile -f -R 5 -S -T aifw_api -o /var/log/aifw/api.log $command $command_args
-}}
 
 load_rc_config $name
+
 : ${{aifw_api_enable:="NO"}}
+: ${{aifw_api_pidfile:="/var/run/aifw_api.pid"}}
+: ${{aifw_api_supervisor_pidfile:="/var/run/aifw_api-supervisor.pid"}}
+
+pidfile="${{aifw_api_supervisor_pidfile}}"
+procname="/usr/sbin/daemon"
+aifw_api_binary="/usr/local/sbin/aifw-api"
+command="/usr/sbin/daemon"
+command_args="-f -p ${{aifw_api_pidfile}} -P ${{aifw_api_supervisor_pidfile}} -R 5 -S -T aifw_api -o /var/log/aifw/api.log -u aifw ${{aifw_api_binary}} --db {db} --listen {listen}:{port} --ui-dir /usr/local/share/aifw/ui --log-level info"
+
+start_precmd="aifw_api_precmd"
+stop_postcmd="aifw_api_poststop"
+
+aifw_api_precmd()
+{{
+    /bin/mkdir -p /var/log/aifw
+    /usr/sbin/chown aifw:aifw /var/log/aifw
+    /usr/bin/pkill -f "daemon:.*aifw-api" 2>/dev/null
+    /usr/bin/pkill -x aifw-api 2>/dev/null
+    /bin/rm -f ${{aifw_api_pidfile}} ${{aifw_api_supervisor_pidfile}}
+}}
+
+aifw_api_poststop()
+{{
+    /bin/rm -f ${{aifw_api_pidfile}} ${{aifw_api_supervisor_pidfile}}
+}}
+
 run_rc_command "$1"
 "#,
         db = config.db_path,
@@ -1639,7 +1670,55 @@ run_rc_command "$1"
         port = config.api_port
     );
 
+    let ids_script = format!(
+        r#"#!/bin/sh
+#
+# PROVIDE: aifw_ids
+# REQUIRE: NETWORKING aifw_daemon
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="aifw_ids"
+rcvar="aifw_ids_enable"
+
+load_rc_config $name
+
+: ${{aifw_ids_enable:="NO"}}
+: ${{aifw_ids_pidfile:="/var/run/aifw_ids.pid"}}
+: ${{aifw_ids_supervisor_pidfile:="/var/run/aifw_ids-supervisor.pid"}}
+
+pidfile="${{aifw_ids_supervisor_pidfile}}"
+procname="/usr/sbin/daemon"
+aifw_ids_binary="/usr/local/sbin/aifw-ids"
+command="/usr/sbin/daemon"
+command_args="-f -p ${{aifw_ids_pidfile}} -P ${{aifw_ids_supervisor_pidfile}} -R 5 -S -T aifw_ids -o /var/log/aifw/ids.log -u aifw ${{aifw_ids_binary}} --db {db} --socket /var/run/aifw/ids.sock --log-level info"
+
+start_precmd="aifw_ids_precmd"
+stop_postcmd="aifw_ids_poststop"
+
+aifw_ids_precmd()
+{{
+    /bin/mkdir -p /var/log/aifw /var/run/aifw
+    /usr/sbin/chown aifw:aifw /var/log/aifw /var/run/aifw
+    /bin/chmod 0750 /var/run/aifw
+    /usr/bin/pkill -f "daemon:.*aifw-ids" 2>/dev/null
+    /usr/bin/pkill -x aifw-ids 2>/dev/null
+    /bin/rm -f ${{aifw_ids_pidfile}} ${{aifw_ids_supervisor_pidfile}} /var/run/aifw/ids.sock
+}}
+
+aifw_ids_poststop()
+{{
+    /bin/rm -f ${{aifw_ids_pidfile}} ${{aifw_ids_supervisor_pidfile}}
+}}
+
+run_rc_command "$1"
+"#,
+        db = config.db_path
+    );
+
     let rdhcpd_script = r#"#!/bin/sh
+#
 # PROVIDE: rdhcpd
 # REQUIRE: NETWORKING
 # KEYWORD: shutdown
@@ -1649,78 +1728,58 @@ run_rc_command "$1"
 name="rdhcpd"
 rcvar="rdhcpd_enable"
 
-command="/usr/local/sbin/rdhcpd"
-command_args="/usr/local/etc/rdhcpd/config.toml"
-pidfile="/var/run/${name}.pid"
+load_rc_config $name
 
-start_cmd="${name}_start"
-stop_cmd="${name}_stop"
-status_cmd="${name}_status"
-reload_cmd="${name}_reload"
+: ${rdhcpd_enable:="NO"}
+: ${rdhcpd_config:="/usr/local/etc/rdhcpd/config.toml"}
+: ${rdhcpd_pidfile:="/var/run/rdhcpd/rdhcpd.pid"}
+: ${rdhcpd_supervisor_pidfile:="/var/run/rdhcpd/rdhcpd-supervisor.pid"}
+
+pidfile="${rdhcpd_supervisor_pidfile}"
+procname="/usr/sbin/daemon"
+rdhcpd_binary="/usr/local/sbin/rdhcpd"
+command="/usr/sbin/daemon"
+command_args="-f -p ${rdhcpd_pidfile} -P ${rdhcpd_supervisor_pidfile} -R 5 -S -T rdhcpd -o /var/log/rdhcpd/rdhcpd.log ${rdhcpd_binary} ${rdhcpd_config}"
+
+start_precmd="rdhcpd_precmd"
+stop_postcmd="rdhcpd_poststop"
+reload_cmd="rdhcpd_reload"
 extra_commands="reload"
 
-rdhcpd_start()
+rdhcpd_precmd()
 {
-    if rdhcpd_status >/dev/null 2>&1; then
-        echo "${name} is already running."
-        return 0
-    fi
+    /bin/mkdir -p /var/db/rdhcpd/leases /var/log/rdhcpd /usr/local/etc/rdhcpd /var/run/rdhcpd
+    /usr/sbin/chown -R aifw:aifw /var/db/rdhcpd /var/log/rdhcpd /usr/local/etc/rdhcpd /var/run/rdhcpd
+    /usr/bin/pkill -f "daemon:.*rdhcpd" 2>/dev/null
+    /usr/bin/pkill -x rdhcpd 2>/dev/null
+    /bin/rm -f ${rdhcpd_pidfile} ${rdhcpd_supervisor_pidfile}
 
-    mkdir -p /var/db/rdhcpd/leases /var/log/rdhcpd /usr/local/etc/rdhcpd
-    chown -R aifw:aifw /var/db/rdhcpd /var/log/rdhcpd /usr/local/etc/rdhcpd
-
-    if [ ! -f /usr/local/etc/rdhcpd/config.toml ]; then
-        echo "ERROR: ${name} config not found at /usr/local/etc/rdhcpd/config.toml"
+    if [ ! -f ${rdhcpd_config} ]; then
+        echo "ERROR: rdhcpd config not found at ${rdhcpd_config}"
         return 1
-    fi
-
-    echo "Starting ${name}."
-    /usr/sbin/daemon -f -p ${pidfile} -o /var/log/rdhcpd/rdhcpd.log ${command} ${command_args}
-}
-
-rdhcpd_stop()
-{
-    if [ -f "${pidfile}" ]; then
-        pid=$(cat "${pidfile}")
-        echo "Stopping ${name} (pid ${pid})."
-        kill "${pid}" 2>/dev/null
-        pkill -f "daemon.*rdhcpd" 2>/dev/null
-        rm -f "${pidfile}"
-        sleep 1
-    else
-        echo "${name} is not running."
     fi
 }
 
-rdhcpd_status()
+rdhcpd_poststop()
 {
-    if [ -f "${pidfile}" ] && kill -0 "$(cat "${pidfile}")" 2>/dev/null; then
-        echo "${name} is running (pid $(cat "${pidfile}"))."
-        return 0
-    else
-        echo "${name} is not running."
-        return 1
-    fi
+    /bin/rm -f ${rdhcpd_pidfile} ${rdhcpd_supervisor_pidfile}
 }
 
 rdhcpd_reload()
 {
-    if [ -f "${pidfile}" ]; then
-        pid=$(cat "${pidfile}")
-        echo "Reloading ${name} (pid ${pid})."
-        kill -HUP "${pid}" 2>/dev/null
+    if [ -f "${rdhcpd_pidfile}" ]; then
+        pid=$(cat "${rdhcpd_pidfile}")
+        echo "Reloading rdhcpd (pid ${pid})."
+        /bin/kill -HUP "${pid}" 2>/dev/null
     else
-        echo "${name} is not running."
+        echo "rdhcpd is not running."
         return 1
     fi
 }
 
-load_rc_config $name
-: ${rdhcpd_enable:="NO"}
 run_rc_command "$1"
 "#;
 
-    // Write scripts (on non-FreeBSD just write to config dir)
     let rcd_dir = if std::path::Path::new("/usr/local/etc/rc.d").exists() {
         "/usr/local/etc/rc.d"
     } else {
@@ -1729,15 +1788,16 @@ run_rc_command "$1"
 
     write_file(&format!("{rcd_dir}/aifw_daemon"), &daemon_script)?;
     write_file(&format!("{rcd_dir}/aifw_api"), &api_script)?;
+    write_file(&format!("{rcd_dir}/aifw_ids"), &ids_script)?;
     write_file(&format!("{rcd_dir}/rdhcpd"), rdhcpd_script)?;
 
-    // Make executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o755);
         let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_daemon"), perms.clone());
         let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_api"), perms.clone());
+        let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_ids"), perms.clone());
         let _ = std::fs::set_permissions(format!("{rcd_dir}/rdhcpd"), perms);
     }
 
