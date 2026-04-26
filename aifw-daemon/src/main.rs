@@ -33,6 +33,15 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    #[cfg(unix)]
+    let _instance_lock = match aifw_common::single_instance::acquire("aifw-daemon") {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("aifw-daemon: {e}");
+            std::process::exit(1);
+        }
+    };
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
