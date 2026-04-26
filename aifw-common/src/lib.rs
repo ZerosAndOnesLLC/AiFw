@@ -8,6 +8,8 @@ pub mod nat;
 pub mod permission;
 pub mod ratelimit;
 pub mod rule;
+#[cfg(unix)]
+pub mod single_instance;
 #[cfg(test)]
 mod tests;
 pub mod tls;
