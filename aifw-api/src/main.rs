@@ -1840,6 +1840,15 @@ async fn ensure_rdr_anchor() {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    #[cfg(unix)]
+    let _instance_lock = match aifw_common::single_instance::acquire("aifw-api") {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("aifw-api: {e}");
+            std::process::exit(1);
+        }
+    };
+
     // axum-server 0.8 + aws-sdk-* both pull in rustls 0.23 with multiple
     // crypto providers enabled (aws-lc-rs from one, ring from the other).
     // Without an explicit choice, rustls panics on the first TLS handshake
