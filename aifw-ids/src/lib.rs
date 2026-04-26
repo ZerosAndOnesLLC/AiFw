@@ -64,6 +64,7 @@ pub struct IdsEngine {
     detection: Arc<DetectionEngine>,
     action: Arc<ActionEngine>,
     alert_pipeline: Arc<AlertPipeline>,
+    alert_buffer: Option<Arc<crate::output::memory::AlertBuffer>>,
     alert_tx: channel::Sender<IdsAlert>,
     alert_rx: channel::Receiver<IdsAlert>,
     counters: Arc<EngineCounters>,
@@ -102,7 +103,7 @@ impl IdsEngine {
         let flow_table = Arc::new(FlowTable::new(flow_table_size));
         let detection = Arc::new(DetectionEngine::new(rule_db.clone(), flow_table.clone()));
         let action = Arc::new(ActionEngine::new(pf.clone(), config.clone()));
-        let alert_pipeline = Arc::new(if let Some(buf) = alert_buffer {
+        let alert_pipeline = Arc::new(if let Some(buf) = alert_buffer.clone() {
             AlertPipeline::with_memory(buf)
         } else {
             AlertPipeline::new(pool.clone())
@@ -128,6 +129,7 @@ impl IdsEngine {
             detection,
             action,
             alert_pipeline,
+            alert_buffer,
             alert_tx,
             alert_rx,
             counters,
@@ -469,9 +471,12 @@ impl IdsEngine {
         &self.rule_db
     }
 
-    /// Get the flow table.
-    pub fn flow_table(&self) -> &FlowTable {
-        &self.flow_table
+    /// Get the flow table as an Arc reference. Returns `None` when the
+    /// engine is in a state where no flow tracking is active (currently
+    /// always `Some`, but the IPC stats handler treats it as optional so
+    /// future modes can disable flow tracking entirely).
+    pub fn flow_table(&self) -> Option<&Arc<FlowTable>> {
+        Some(&self.flow_table)
     }
 
     /// Get the detection engine.
@@ -530,6 +535,75 @@ impl IdsEngine {
     pub async fn save_config(&self, cfg: &IdsConfig) -> Result<()> {
         self.config.save_to_db(&self.pool, cfg).await
     }
+
+    /// In-memory alert buffer, if one is attached. Used by the IPC
+    /// `tail_alerts` request — without a buffer the daemon falls back
+    /// to returning an empty list.
+    pub fn alert_buffer(&self) -> Option<&Arc<crate::output::memory::AlertBuffer>> {
+        self.alert_buffer.as_ref()
+    }
+
+    /// Total packets inspected since the engine started.
+    pub fn packets_inspected(&self) -> u64 {
+        self.counters.packets_inspected.load(Ordering::Relaxed)
+    }
+
+    /// Total alerts emitted since the engine started.
+    /// Async to leave room for future DB-backed accounting; today this
+    /// just reads the in-memory atomic counter.
+    pub async fn alerts_total(&self) -> u64 {
+        self.counters.alerts_total.load(Ordering::Relaxed)
+    }
+
+    /// Look up a single rule by id (the `ids_rules.id` UUID string).
+    /// Returns `None` if the rule does not exist.
+    pub async fn get_rule(&self, id: &str) -> Result<Option<RuleRow>> {
+        let row: Option<(
+            String,
+            Option<i64>,
+            Option<String>,
+            String,
+            i64,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT id, sid, msg, rule_text, enabled, action_override
+             FROM ids_rules WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(id, sid, msg, rule_text, enabled, action_override)| RuleRow {
+            id,
+            sid: sid.unwrap_or(0) as u32,
+            msg: msg.unwrap_or_default(),
+            action: action_override.unwrap_or_else(|| "alert".to_string()),
+            enabled: enabled != 0,
+            raw: rule_text,
+        }))
+    }
+
+    /// Toggle a rule on or off by id (the `ids_rules.id` UUID string).
+    pub async fn set_rule_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        sqlx::query("UPDATE ids_rules SET enabled = ? WHERE id = ?")
+            .bind(enabled)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+/// Flat row used by the `get_rule` IPC accessor. Mirrors the
+/// `RuleSummary` wire shape so the handler can map field-for-field.
+#[derive(Debug, Clone)]
+pub struct RuleRow {
+    pub id: String,
+    pub sid: u32,
+    pub msg: String,
+    pub action: String,
+    pub enabled: bool,
+    pub raw: String,
 }
 
 /// Detect network interfaces for packet capture.

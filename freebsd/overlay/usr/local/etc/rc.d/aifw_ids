@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+# PROVIDE: aifw_ids
+# REQUIRE: NETWORKING aifw_daemon
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="aifw_ids"
+rcvar="aifw_ids_enable"
+
+load_rc_config $name
+
+: ${aifw_ids_enable:="NO"}
+: ${aifw_ids_pidfile:="/var/run/aifw_ids.pid"}
+: ${aifw_ids_supervisor_pidfile:="/var/run/aifw_ids-supervisor.pid"}
+: ${aifw_ids_db:="/var/db/aifw/aifw.db"}
+: ${aifw_ids_socket:="/var/run/aifw/ids.sock"}
+
+pidfile="${aifw_ids_supervisor_pidfile}"
+procname="/usr/sbin/daemon"
+aifw_ids_binary="/usr/local/sbin/aifw-ids"
+command="/usr/sbin/daemon"
+command_args="-f -p ${aifw_ids_pidfile} -P ${aifw_ids_supervisor_pidfile} -R 5 -S -T aifw_ids -o /var/log/aifw/ids.log -u aifw ${aifw_ids_binary} --db ${aifw_ids_db} --socket ${aifw_ids_socket} --log-level info"
+
+start_precmd="aifw_ids_precmd"
+stop_postcmd="aifw_ids_poststop"
+
+aifw_ids_precmd()
+{
+    /bin/mkdir -p /var/log/aifw /var/run/aifw
+    /usr/sbin/chown aifw:aifw /var/log/aifw /var/run/aifw
+    /bin/chmod 0750 /var/run/aifw
+    /usr/bin/pkill -f "daemon:.*aifw-ids" 2>/dev/null
+    /usr/bin/pkill -x aifw-ids 2>/dev/null
+    /bin/rm -f ${aifw_ids_pidfile} ${aifw_ids_supervisor_pidfile} ${aifw_ids_socket}
+}
+
+aifw_ids_poststop()
+{
+    /bin/rm -f ${aifw_ids_pidfile} ${aifw_ids_supervisor_pidfile}
+}
+
+run_rc_command "$1"

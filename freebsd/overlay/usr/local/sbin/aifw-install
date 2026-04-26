@@ -331,6 +331,7 @@ write_rc_conf() {
     # Enable/disable AiFw services based on whether setup was run
     if [ -f "$AIFW_CONF" ]; then
         sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_daemon_enable="YES"
+        sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_ids_enable="YES"
         sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_api_enable="YES"
         sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_firstboot_enable="NO"
     else
@@ -472,6 +473,7 @@ chroot "$INSTALL_ROOT" /usr/sbin/pw usermod root -s /usr/local/sbin/aifw-console
 # If setup succeeded, enable services in the installed rc.conf
 if [ -f "$INSTALL_ROOT/usr/local/etc/aifw/aifw.conf" ]; then
     sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_daemon_enable="YES"
+    sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_ids_enable="YES"
     sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_api_enable="YES"
     sysrc -f "$INSTALL_ROOT/etc/rc.conf" aifw_firstboot_enable="NO"
     echo ""

@@ -124,6 +124,14 @@ impl AlertBuffer {
         iter.skip(offset).take(limit).cloned().collect()
     }
 
+    /// Return up to `count` most-recent alerts (newest first).
+    /// Used by the IPC `tail_alerts` request to surface the recent alert
+    /// stream without filters or pagination.
+    pub async fn tail(&self, count: usize) -> Vec<IdsAlert> {
+        let buf = self.alerts.read().await;
+        buf.iter().rev().take(count).cloned().collect()
+    }
+
     /// Get a single alert by ID.
     pub async fn get(&self, id: uuid::Uuid) -> Option<IdsAlert> {
         let buf = self.alerts.read().await;

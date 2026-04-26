@@ -303,6 +303,15 @@ impl FlowTable {
         before - self.table.len()
     }
 
+    /// Sum of toserver_buf.len() + toclient_buf.len() across all flows.
+    /// Used for memory accounting / IPC stats.
+    pub fn reassembly_bytes(&self) -> usize {
+        self.table
+            .iter()
+            .map(|e| e.value().toserver_buf.len() + e.value().toclient_buf.len())
+            .sum()
+    }
+
     /// Clear all flows.
     pub fn clear(&self) {
         self.table.clear();

@@ -6,7 +6,7 @@
 set -e
 
 REPO_DIR="/root/AiFw"
-BINS="aifw aifw-api aifw-daemon aifw-setup aifw-tui"
+BINS="aifw aifw-api aifw-daemon aifw-ids aifw-setup aifw-tui"
 TRAFFICCOP_DIR="/root/trafficcop"
 RDHCP_DIR="/root/rDHCP"
 RDNS_DIR="/root/rDNS"
@@ -146,8 +146,11 @@ service rtime stop 2>/dev/null || true
 pkill -9 -f "daemon.*rtime" 2>/dev/null || true
 pkill -9 -f rtime 2>/dev/null || true
 service aifw_api stop 2>/dev/null || true
+service aifw_ids stop 2>/dev/null || true
 service aifw_daemon stop 2>/dev/null || true
 pkill -9 -f "aifw-api.*8081" 2>/dev/null || true
+pkill -9 -f "daemon.*aifw-ids" 2>/dev/null || true
+pkill -9 -f "aifw-ids" 2>/dev/null || true
 sleep 2
 
 # Copy binaries
@@ -226,6 +229,10 @@ chmod 755 /usr/local/etc/rc.d/rdns
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/rtime" /usr/local/etc/rc.d/rtime
 chmod 755 /usr/local/etc/rc.d/rtime
 
+# Install aifw_ids rc.d script
+cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/aifw_ids" /usr/local/etc/rc.d/aifw_ids
+chmod 755 /usr/local/etc/rc.d/aifw_ids
+
 # Ensure sudoers for aifw user
 mkdir -p /usr/local/etc/sudoers.d
 echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /sbin/ifconfig, /sbin/dhclient, /sbin/route, /usr/sbin/service, /usr/sbin/sysrc, /usr/sbin/pkg, /usr/sbin/freebsd-update, /sbin/shutdown, /bin/hostname, /bin/cat, /bin/pkill, /usr/bin/pkill, /usr/bin/tee, /usr/sbin/chown, /bin/mkdir, /usr/sbin/tcpdump, /usr/bin/install, /bin/rm /usr/local/etc/rdns/rpz/*' > /usr/local/etc/sudoers.d/aifw
@@ -241,6 +248,8 @@ fi
 # --- Restart services ---
 echo "[5/5] Restarting services..."
 service aifw_daemon start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_daemon not configured"
+# aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
+service aifw_ids start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_ids not configured"
 service aifw_api start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_api not configured"
 # Start TrafficCop if enabled
 if [ "$(sysrc -n trafficcop_enable 2>/dev/null)" = "YES" ]; then

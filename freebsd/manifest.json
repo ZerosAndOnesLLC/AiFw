@@ -3,7 +3,7 @@
 
   "binaries": {
     "_comment": "Binaries built from this repo (cargo build --release)",
-    "local": ["aifw", "aifw-daemon", "aifw-api", "aifw-tui", "aifw-setup"]
+    "local": ["aifw", "aifw-daemon", "aifw-api", "aifw-ids", "aifw-tui", "aifw-setup"]
   },
 
   "external_repos": [
@@ -31,6 +31,7 @@
 
   "rc_scripts": [
     "aifw_firstboot",
+    "aifw_ids",
     "rdhcpd",
     "rdns",
     "rtime",
