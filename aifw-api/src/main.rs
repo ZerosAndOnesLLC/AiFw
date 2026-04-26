@@ -117,6 +117,7 @@ async fn bump(
 ) -> bool {
     let now = chrono::Utc::now();
     let mut m = map.write().await;
+    m.retain(|_, (_, since)| (now - *since).num_seconds() <= window_secs);
     let entry = m.entry(key.to_string()).or_insert((0, now));
     if (now - entry.1).num_seconds() > window_secs {
         *entry = (1, now);
@@ -133,7 +134,8 @@ async fn over_cap(
     window_secs: i64,
 ) -> bool {
     let now = chrono::Utc::now();
-    let m = map.read().await;
+    let mut m = map.write().await; // upgraded to write — needed for prune
+    m.retain(|_, (_, since)| (now - *since).num_seconds() <= window_secs);
     matches!(
         m.get(key),
         Some((count, since))
@@ -2197,4 +2199,27 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod login_limiter_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn login_limiter_prunes_expired_entries() {
+        let limiter = LoginRateLimiter::with_limits(5, 1); // 1-second window
+        limiter.record_failure("1.1.1.1", "alice").await;
+        limiter.record_failure("2.2.2.2", "bob").await;
+        assert_eq!(limiter.by_ip.read().await.len(), 2);
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Any subsequent call should opportunistically prune both expired
+        // entries before doing its own work.
+        limiter.record_failure("3.3.3.3", "carol").await;
+        assert_eq!(
+            limiter.by_ip.read().await.len(),
+            1,
+            "expired entries should have been pruned"
+        );
+    }
 }
