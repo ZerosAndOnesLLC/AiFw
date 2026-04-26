@@ -161,8 +161,7 @@ pub struct AppState {
     pub sla_engine: Arc<SlaEngine>,
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
-    pub ids_engine: Option<Arc<aifw_ids::IdsEngine>>,
-    pub alert_buffer: Arc<aifw_ids::output::memory::AlertBuffer>,
+    pub ids_client: Arc<aifw_ids_ipc::IdsClient>,
     pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
     pub metrics_store: Arc<aifw_metrics::MetricsStore>,
     pub auth_settings: auth::AuthSettings,
@@ -247,6 +246,10 @@ struct Args {
         default_value = "redis://127.0.0.1:6379"
     )]
     valkey_url: String,
+
+    /// Path to aifw-ids Unix socket
+    #[arg(long, default_value = "/var/run/aifw/ids.sock")]
+    ids_socket: PathBuf,
 
     /// Log level
     #[arg(long, default_value = "info")]
@@ -1409,13 +1412,14 @@ async fn ui_cache_headers(
 pub async fn create_app_state(
     db_path: &std::path::Path,
     auth_settings: auth::AuthSettings,
+    ids_socket: PathBuf,
 ) -> anyhow::Result<AppState> {
     if let Some(parent) = db_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
     let db = Database::new(db_path).await?;
-    create_state_from_db(db, auth_settings).await
+    create_state_from_db(db, auth_settings, ids_socket).await
 }
 
 #[cfg(test)]
@@ -1423,12 +1427,22 @@ pub async fn create_app_state_in_memory(
     auth_settings: auth::AuthSettings,
 ) -> anyhow::Result<AppState> {
     let db = Database::new_in_memory().await?;
-    create_state_from_db(db, auth_settings).await
+    // Tests point the IDS client at a path that doesn't exist; every IPC
+    // call returns Unavailable, which the handlers map to 503. Tests that
+    // don't exercise IDS endpoints don't hit it. To exercise IDS endpoints
+    // a test should spin up its own stub IPC server with `aifw_ids_ipc::server::serve`.
+    let ids_socket = std::env::temp_dir().join(format!(
+        "aifw-test-ids-{}-{}.sock",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    create_state_from_db(db, auth_settings, ids_socket).await
 }
 
 async fn create_state_from_db(
     db: Database,
     auth_settings: auth::AuthSettings,
+    ids_socket: PathBuf,
 ) -> anyhow::Result<AppState> {
     let pool = db.pool().clone();
     let pf: Arc<dyn PfBackend> = Arc::from(aifw_pf::create_backend());
@@ -1502,65 +1516,12 @@ async fn create_state_from_db(
         .map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
 
-    // Initialize IDS engine — always create so API endpoints work,
-    // but the engine itself only starts capture/detection if mode != Disabled
-    // Initialize IDS alert buffer (in-memory, replaces SQLite for alert storage)
-    let ids_max_mb: usize = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_mb'",
-    )
-    .fetch_optional(&pool)
-    .await
-    .ok()
-    .flatten()
-    .and_then(|r| r.0.parse().ok())
-    .unwrap_or(64);
-    let ids_max_age: usize = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_age_secs'",
-    )
-    .fetch_optional(&pool)
-    .await
-    .ok()
-    .flatten()
-    .and_then(|r| r.0.parse().ok())
-    .unwrap_or(86400);
-    let alert_buffer = Arc::new(aifw_ids::output::memory::AlertBuffer::new(
-        ids_max_mb,
-        ids_max_age,
-    ));
-
-    aifw_ids::IdsEngine::migrate(&pool)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let ids_engine = match aifw_ids::IdsEngine::with_alert_buffer(
-        pool.clone(),
-        pf.clone(),
-        Some(alert_buffer.clone()),
-    )
-    .await
-    {
-        Ok(engine) => {
-            tracing::info!("IDS engine initialized");
-            let arc = Arc::new(engine);
-            // Auto-start if mode != disabled, and compile rules
-            if let Ok(cfg) = arc.load_config().await
-                && cfg.mode != aifw_common::ids::IdsMode::Disabled
-            {
-                let mgr = aifw_ids::rules::manager::RulesetManager::new(arc.pool().clone());
-                match mgr.compile_rules(arc.rule_db()).await {
-                    Ok(count) => tracing::info!(count, "IDS rules compiled on startup"),
-                    Err(e) => tracing::warn!("IDS rule compilation failed: {e}"),
-                }
-                if let Err(e) = arc.start().await {
-                    tracing::warn!("IDS engine failed to start: {e}");
-                }
-            }
-            Some(arc)
-        }
-        Err(e) => {
-            tracing::warn!("IDS engine failed to initialize: {e}");
-            None
-        }
-    };
+    // IDS engine moved to aifw-ids binary (see PR 5 / spec
+    // 2026-04-26-process-hardening-and-ids-extraction-design.md). The API
+    // talks to it via this Unix-socket client; reads are TTL-cached inside
+    // the client. ids_alerts / ids_suppressions table reads still go
+    // direct-DB (no IPC hop for plain SQL pagination).
+    let ids_client = Arc::new(aifw_ids_ipc::IdsClient::new(ids_socket));
 
     // Initialize plugin system
     let plugin_ctx = aifw_plugins::PluginContext::new(pf.clone());
@@ -1656,8 +1617,7 @@ async fn create_state_from_db(
         sla_engine,
         alias_engine,
         conntrack,
-        ids_engine,
-        alert_buffer,
+        ids_client,
         plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
         metrics_store: metrics_store.clone(),
         auth_settings,
@@ -1870,7 +1830,7 @@ async fn main() -> anyhow::Result<()> {
     // JWT secret is loaded from the key file below, then swapped in.
     let auth_settings = auth::AuthSettings::default();
 
-    let mut state = create_app_state(&args.db, auth_settings).await?;
+    let mut state = create_app_state(&args.db, auth_settings, args.ids_socket.clone()).await?;
 
     // Resolve the JWT secret: explicit override > key file (migrating any
     // legacy DB-stored secret on first run) > freshly generated in file.
@@ -2052,17 +2012,20 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Start AI analysis background task — reviews unclassified critical/high alerts every 5 minutes
+    // Start AI analysis background task — reviews unclassified critical/high alerts every 5 minutes.
+    // Now reads alerts directly from the SQLite ids_alerts table, since the
+    // in-memory AlertBuffer lives in aifw-ids (other process). This keeps AI
+    // analysis decoupled from the IPC layer; if aifw-ids isn't writing alerts
+    // the analyzer simply finds nothing to do.
     {
         let pool = state.pool.clone();
-        let abuf = state.alert_buffer.clone();
         tokio::spawn(async move {
             // Wait 60s after startup before first run
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
             loop {
                 interval.tick().await;
-                match ai_analysis::run_analysis(&pool, Some(&abuf)).await {
+                match ai_analysis::run_analysis(&pool).await {
                     Ok(0) => {} // No alerts to classify
                     Ok(n) => tracing::info!(count = n, "AI classified alerts"),
                     Err(e) => tracing::debug!(error = %e, "AI analysis skipped"),
@@ -2094,7 +2057,6 @@ async fn main() -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                let alert = mem_state.alert_buffer.stats().await;
                 let hist_entries = mem_state.metrics_history.read().await.len();
                 let hist_bytes: usize = mem_state
                     .metrics_history
@@ -2114,10 +2076,15 @@ async fn main() -> anyhow::Result<()> {
                 let plugins_total = pmgr.count();
                 let plugins_running = pmgr.running_count();
                 drop(pmgr);
-                let ids_rules = mem_state
-                    .ids_engine
+                // IDS counters now come over IPC from aifw-ids. If aifw-ids is
+                // down, these stay 0 — the heartbeat keeps emitting so the
+                // operator can correlate the IPC outage with API memstats.
+                let ids_stats = mem_state.ids_client.get_stats().await.ok();
+                let ids_rules = ids_stats.as_ref().map(|s| s.rules_loaded).unwrap_or(0);
+                let flow_count = ids_stats.as_ref().map(|s| s.flow_count).unwrap_or(0);
+                let flow_reassembly_kb = ids_stats
                     .as_ref()
-                    .map(|e| e.rule_db().rule_count())
+                    .map(|s| s.flow_reassembly_bytes / 1024)
                     .unwrap_or(0);
                 let (ids_alerts_db,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ids_alerts")
                     .fetch_one(&mem_state.pool)
@@ -2139,9 +2106,9 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!(
                     target: "aifw_api::memstats",
                     rss_mb = rss_kb / 1024,
-                    alert_buffer_entries = alert.count,
-                    alert_buffer_mb = format!("{:.1}", alert.estimated_mb).as_str(),
-                    alert_buffer_max_mb = alert.max_mb as u64,
+                    ids_alerts_total = ids_stats.as_ref().map(|s| s.alerts_total).unwrap_or(0),
+                    flow_count = flow_count,
+                    flow_reassembly_kb = flow_reassembly_kb,
                     ids_alerts_db = ids_alerts_db,
                     ids_rules_loaded = ids_rules,
                     metrics_history_entries = hist_entries,

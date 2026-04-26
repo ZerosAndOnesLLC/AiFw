@@ -647,44 +647,43 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         .get_or_init(|| async { tokio::sync::RwLock::new(None) })
         .await;
     let ids = if tick.is_multiple_of(5) {
-        let payload = if let Some(ref engine) = state.ids_engine {
-            let stats = engine.stats();
-            let mode = engine
-                .load_config()
-                .await
-                .map(|c| c.mode.to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
-            let running = engine.is_running();
-            let loaded_rules = engine.rule_db().rule_count() as u32;
-            let recent = state
-                .alert_buffer
-                .query(None, None, None, None, None, 5, 0)
-                .await;
-            let recent_alerts: Vec<IdsAlertSummary> = recent
-                .into_iter()
-                .map(|a| IdsAlertSummary {
-                    severity: a.severity.0,
-                    signature_msg: a.signature_msg.clone(),
-                    src_ip: a.src_ip.to_string(),
-                    dst_ip: a.dst_ip.to_string(),
-                    protocol: a.protocol.clone(),
-                    timestamp: a.timestamp.to_rfc3339(),
+        // All IDS state goes through the IPC client now. If aifw-ids is
+        // offline, get_stats/tail_alerts return Unavailable and we surface
+        // None — same as the legacy `ids_engine.is_none()` path used to do.
+        let payload = match state.ids_client.get_stats().await {
+            Ok(stats) => {
+                let recent = state.ids_client.tail_alerts(5).await.unwrap_or_default();
+                let recent_alerts: Vec<IdsAlertSummary> = recent
+                    .into_iter()
+                    .map(|a| IdsAlertSummary {
+                        // IPC doesn't carry severity yet; surface 0 as a
+                        // placeholder so the UI keeps rendering. Operators
+                        // who need real severity should query /ids/alerts.
+                        severity: 0,
+                        signature_msg: a.msg.clone(),
+                        src_ip: a.src_ip.clone(),
+                        dst_ip: a.dst_ip.clone(),
+                        protocol: a.protocol.clone(),
+                        timestamp: a.timestamp.to_rfc3339(),
+                    })
+                    .collect();
+                Some(IdsStatusPayload {
+                    running: stats.running,
+                    mode: stats.mode,
+                    loaded_rules: stats.rules_loaded,
+                    alerts_total: stats.alerts_total,
+                    // drops/pps/bps/etc. live in EngineCounters inside
+                    // aifw-ids and aren't exposed over IPC yet — surface
+                    // zeros so the UI keeps the field shape stable.
+                    drops_total: 0,
+                    packets_inspected: stats.packets_inspected,
+                    packets_per_sec: 0.0,
+                    bytes_per_sec: 0.0,
+                    active_flows: stats.flow_count,
+                    recent_alerts,
                 })
-                .collect();
-            Some(IdsStatusPayload {
-                running,
-                mode,
-                loaded_rules,
-                alerts_total: stats.alerts_total,
-                drops_total: stats.drops_total,
-                packets_inspected: stats.packets_inspected,
-                packets_per_sec: stats.packets_per_sec,
-                bytes_per_sec: stats.bytes_per_sec,
-                active_flows: stats.active_flows,
-                recent_alerts,
-            })
-        } else {
-            None
+            }
+            Err(_) => None,
         };
         *ids_cache.write().await = payload.clone();
         payload
@@ -1063,10 +1062,15 @@ pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
     let api_rss_mb = get_rss("aifw-api").await;
     let daemon_rss_mb = get_rss("aifw-daemon").await;
 
-    // IDS alert buffer
+    // IDS alert buffer — lives in aifw-ids; stats over IPC (best-effort).
+    // alerts_total isn't the buffer size, but it's the closest metric we
+    // expose. The buffer's MB/max-MB knobs are persisted in auth_config and
+    // can be read there if needed; we keep returning 0 here to avoid lying.
     let (ids_buffer_mb, ids_buffer_max_mb, ids_buffer_count) = {
-        let stats = state.alert_buffer.stats().await;
-        (stats.estimated_mb, stats.max_mb, stats.count)
+        match state.ids_client.get_stats().await {
+            Ok(stats) => (0.0_f64, 0.0_f64, stats.alerts_total as usize),
+            Err(_) => (0.0_f64, 0.0_f64, 0_usize),
+        }
     };
 
     // Metrics history buffer

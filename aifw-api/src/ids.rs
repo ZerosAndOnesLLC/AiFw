@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use aifw_common::ids::{
-    IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleset, IdsStats, IdsSuppression, RuleFormat,
-    SuppressType,
+    IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleset, IdsSuppression, RuleFormat, SuppressType,
 };
 
 use crate::AppState;
@@ -38,14 +37,37 @@ fn bad_request() -> StatusCode {
     StatusCode::BAD_REQUEST
 }
 
+/// Map an `IdsClientError` to an HTTP response body. `Unavailable` and
+/// `Timeout` become 503 — aifw-ids is the source of truth for live IDS
+/// state and we don't want to lie when it's offline. Server-side errors
+/// (rule parse, config validation) come back as 400. Anything else is 500.
+fn ipc_to_response<T: serde::Serialize>(
+    r: Result<T, aifw_ids_ipc::IdsClientError>,
+) -> Result<axum::Json<T>, (axum::http::StatusCode, String)> {
+    match r {
+        Ok(v) => Ok(axum::Json(v)),
+        Err(aifw_ids_ipc::IdsClientError::Unavailable(_))
+        | Err(aifw_ids_ipc::IdsClientError::Timeout) => Err((
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "ids service unavailable".to_string(),
+        )),
+        Err(aifw_ids_ipc::IdsClientError::Server(e)) => {
+            Err((axum::http::StatusCode::BAD_REQUEST, e))
+        }
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+        )),
+    }
+}
+
 // ============ Configuration ============
 
 pub async fn get_config(
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<IdsConfig>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
-    let config = engine.load_config().await.map_err(|_| internal())?;
-    Ok(Json(ApiResponse { data: config }))
+) -> Result<Json<ApiResponse<IdsConfig>>, (StatusCode, String)> {
+    let config = ipc_to_response(state.ids_client.get_config().await)?;
+    Ok(Json(ApiResponse { data: config.0 }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,16 +88,16 @@ pub struct UpdateConfigRequest {
 pub async fn update_config(
     State(state): State<AppState>,
     Json(req): Json<UpdateConfigRequest>,
-) -> Result<Json<ApiResponse<IdsConfig>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
-    let mut config = engine.load_config().await.map_err(|_| internal())?;
+) -> Result<Json<ApiResponse<IdsConfig>>, (StatusCode, String)> {
+    // Pull the current config over IPC, merge fields, push it back.
+    let mut config = ipc_to_response(state.ids_client.get_config().await)?.0;
 
     if let Some(mode) = &req.mode {
         config.mode = match mode.as_str() {
             "ids" => IdsMode::Ids,
             "ips" => IdsMode::Ips,
             "disabled" => IdsMode::Disabled,
-            _ => return Err(bad_request()),
+            _ => return Err((bad_request(), "invalid mode".into())),
         };
     }
     if let Some(home_net) = req.home_net {
@@ -103,46 +125,26 @@ pub async fn update_config(
     config.flow_table_size = req.flow_table_size.or(config.flow_table_size);
     config.stream_depth = req.stream_depth.or(config.stream_depth);
 
-    engine.save_config(&config).await.map_err(|_| internal())?;
-
-    // Start or stop the engine based on mode change
-    if let Some(ref mode) = req.mode {
-        match mode.as_str() {
-            "ids" | "ips" => {
-                if !engine.is_running() {
-                    // Compile rules and start
-                    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
-                    let _ = mgr.compile_rules(engine.rule_db()).await;
-                    let _ = engine.start().await;
-                    tracing::info!(mode = mode.as_str(), "IDS engine started");
-                }
-            }
-            "disabled" => {
-                if engine.is_running() {
-                    engine.stop().await;
-                    tracing::info!("IDS engine stopped");
-                }
-            }
-            _ => {}
-        }
-    }
+    let _ = ipc_to_response(state.ids_client.set_config(config.clone()).await)?;
 
     Ok(Json(ApiResponse { data: config }))
 }
 
-pub async fn reload(State(state): State<AppState>) -> Result<Json<MessageResponse>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
-    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
-    let count = mgr
-        .compile_rules(engine.rule_db())
-        .await
-        .map_err(|_| internal())?;
+pub async fn reload(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, (StatusCode, String)> {
+    let _ = ipc_to_response(state.ids_client.reload().await)?;
     Ok(Json(MessageResponse {
-        message: format!("{count} rules compiled and loaded"),
+        message: "rules reloaded".into(),
     }))
 }
 
 // ============ Alerts ============
+//
+// Alert reads/writes are direct against the `ids_alerts` SQLite table.
+// aifw-ids is the writer; aifw-api is read-only here. The IPC layer
+// provides only `tail_alerts` for the in-memory ring; pagination, filtering,
+// and acknowledge-by-id stay SQL since the table is the durable record.
 
 #[derive(Debug, Deserialize)]
 pub struct AlertsQuery {
@@ -159,18 +161,19 @@ pub async fn list_alerts(
     State(state): State<AppState>,
     Query(q): Query<AlertsQuery>,
 ) -> Result<Json<ApiResponse<Vec<IdsAlert>>>, StatusCode> {
-    let alerts = state
-        .alert_buffer
-        .query(
+    let out = aifw_ids::output::sqlite::SqliteOutput::new(state.pool.clone());
+    let alerts = out
+        .query_alerts(
             q.severity,
             q.src_ip.as_deref(),
             q.signature_id,
             q.acknowledged,
             q.classification.as_deref(),
-            q.limit.unwrap_or(50) as usize,
-            q.offset.unwrap_or(0) as usize,
+            q.limit.unwrap_or(50),
+            q.offset.unwrap_or(0),
         )
-        .await;
+        .await
+        .map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: alerts }))
 }
 
@@ -179,10 +182,11 @@ pub async fn get_alert(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<IdsAlert>>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let alert = state
-        .alert_buffer
-        .get(uuid)
+    let out = aifw_ids::output::sqlite::SqliteOutput::new(state.pool.clone());
+    let alert = out
+        .get_alert(uuid)
         .await
+        .map_err(|_| internal())?
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(ApiResponse { data: alert }))
 }
@@ -192,7 +196,8 @@ pub async fn acknowledge_alert(
     Path(id): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    state.alert_buffer.acknowledge(uuid).await;
+    let out = aifw_ids::output::sqlite::SqliteOutput::new(state.pool.clone());
+    out.acknowledge(uuid).await.map_err(|_| internal())?;
     Ok(Json(MessageResponse {
         message: "alert acknowledged".into(),
     }))
@@ -214,40 +219,54 @@ pub async fn classify_alert(
     if !valid.contains(&req.classification.as_str()) {
         return Err(bad_request());
     }
-    state
-        .alert_buffer
-        .classify(uuid, &req.classification, req.notes.as_deref())
-        .await;
+    let out = aifw_ids::output::sqlite::SqliteOutput::new(state.pool.clone());
+    out.classify(uuid, &req.classification, req.notes.as_deref())
+        .await
+        .map_err(|_| internal())?;
     Ok(Json(MessageResponse {
         message: format!("alert classified as {}", req.classification),
     }))
 }
 
 pub async fn purge_alerts(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    // Alerts are now in-memory with auto-eviction — manual purge trims to current limits
-    _state.alert_buffer.trim().await;
-    let stats = _state.alert_buffer.stats().await;
+    // Drops every row from ids_alerts. The retention sweep in aifw-ids handles
+    // the routine case; this is an operator escape hatch for bulk cleanup.
+    let res = sqlx::query("DELETE FROM ids_alerts")
+        .execute(&state.pool)
+        .await
+        .map_err(|_| internal())?;
     Ok(Json(MessageResponse {
-        message: format!("{} alerts remaining after trim", stats.count),
+        message: format!("{} alerts purged", res.rows_affected()),
     }))
 }
 
 pub async fn alert_buffer_stats(
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let stats = state.alert_buffer.stats().await;
-    Ok(Json(stats.to_json()))
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Surfaces the in-memory ring-buffer stats from aifw-ids via IPC.
+    // Pre-cutover this was an in-process AlertBuffer; the field shape is
+    // best-effort compatible (count + alerts_total at minimum).
+    let stats = ipc_to_response(state.ids_client.get_stats().await)?.0;
+    Ok(Json(serde_json::json!({
+        "alerts_total": stats.alerts_total,
+        "running": stats.running,
+        "uptime_secs": stats.uptime_secs,
+    })))
 }
 
 // ============ Rulesets ============
+//
+// Rulesets/rules tables live in SQLite. aifw-ids is the only writer that
+// touches the in-memory rule DB, so toggling enable/format/etc. requires
+// an IPC reload to take effect — but the table edits themselves are plain
+// CRUD on `state.pool`.
 
 pub async fn list_rulesets(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<IdsRuleset>>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
-    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+    let mgr = aifw_ids::rules::manager::RulesetManager::new(state.pool.clone());
     let rulesets = mgr.list_rulesets().await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: rulesets }))
 }
@@ -266,7 +285,6 @@ pub async fn create_ruleset(
     State(state): State<AppState>,
     Json(req): Json<CreateRulesetRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<IdsRuleset>>), StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let format = RuleFormat::from_str(&req.rule_format).ok_or(bad_request())?;
 
     let ruleset = IdsRuleset {
@@ -282,7 +300,7 @@ pub async fn create_ruleset(
         created_at: Utc::now(),
     };
 
-    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+    let mgr = aifw_ids::rules::manager::RulesetManager::new(state.pool.clone());
     mgr.add_ruleset(&ruleset).await.map_err(|_| internal())?;
 
     Ok((StatusCode::CREATED, Json(ApiResponse { data: ruleset })))
@@ -303,9 +321,8 @@ pub async fn update_ruleset(
     Path(id): Path<String>,
     Json(req): Json<UpdateRulesetRequest>,
 ) -> Result<Json<ApiResponse<IdsRuleset>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+    let mgr = aifw_ids::rules::manager::RulesetManager::new(state.pool.clone());
 
     // Load existing ruleset
     let existing = mgr.list_rulesets().await.map_err(|_| internal())?;
@@ -353,8 +370,12 @@ pub async fn update_ruleset(
         }
     }
 
-    // Recompile rules so the enabled/disabled change takes effect immediately
-    let _ = mgr.compile_rules(engine.rule_db()).await;
+    // Ask aifw-ids to recompile so the enable/disable change takes effect.
+    // Best-effort — if aifw-ids is offline the DB still reflects the change
+    // and a later reload will pick it up.
+    if let Err(e) = state.ids_client.reload().await {
+        tracing::warn!(error = %e, "ids reload failed after ruleset update");
+    }
 
     Ok(Json(ApiResponse { data: ruleset }))
 }
@@ -363,9 +384,8 @@ pub async fn delete_ruleset(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+    let mgr = aifw_ids::rules::manager::RulesetManager::new(state.pool.clone());
     mgr.delete_ruleset(uuid).await.map_err(|_| internal())?;
     Ok(Json(MessageResponse {
         message: "ruleset deleted".into(),
@@ -389,8 +409,7 @@ pub async fn list_rules(
     State(state): State<AppState>,
     Query(q): Query<RulesQuery>,
 ) -> Result<Json<ApiResponse<Vec<IdsRule>>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
-    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+    let mgr = aifw_ids::rules::manager::RulesetManager::new(state.pool.clone());
     let ruleset_id = q
         .ruleset_id
         .as_deref()
@@ -411,13 +430,12 @@ pub async fn get_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<IdsRule>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let row: Option<(String, String, Option<i64>, String, Option<String>, i64, bool, Option<String>, i64, Option<String>, String)> =
         sqlx::query_as(
             "SELECT id, ruleset_id, sid, rule_text, msg, severity, enabled, action_override, hit_count, last_hit, created_at FROM ids_rules WHERE id = ?"
         )
         .bind(&id)
-        .fetch_optional(engine.pool())
+        .fetch_optional(&state.pool)
         .await
         .map_err(|_| internal())?;
 
@@ -458,14 +476,15 @@ pub async fn update_rule(
     Path(id): Path<String>,
     Json(req): Json<UpdateRuleRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+    let mgr = aifw_ids::rules::manager::RulesetManager::new(state.pool.clone());
 
     if let Some(enabled) = req.enabled {
         mgr.toggle_rule(uuid, enabled)
             .await
             .map_err(|_| internal())?;
+        // Best-effort propagate to the running engine via IPC.
+        let _ = state.ids_client.set_rule(&id, enabled).await;
     }
     if let Some(ref action) = req.action_override {
         let action_str = if action.is_empty() {
@@ -492,12 +511,13 @@ pub async fn search_rules(
 }
 
 // ============ Suppressions ============
+//
+// Pure SQLite CRUD — direct queries against `ids_suppressions`.
 
 pub async fn list_suppressions(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
 ) -> Result<Json<ApiResponse<Vec<IdsSuppression>>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     // Bound the response so busy deployments (10k+ suppressions) don't
     // load the whole table into memory + JSON on every list call.
     let limit = q.limit.unwrap_or(1000).clamp(1, 5000);
@@ -508,7 +528,7 @@ pub async fn list_suppressions(
     )
     .bind(limit)
     .bind(offset)
-    .fetch_all(engine.pool())
+    .fetch_all(&state.pool)
     .await
     .map_err(|_| internal())?;
 
@@ -541,7 +561,6 @@ pub async fn create_suppression(
     State(state): State<AppState>,
     Json(req): Json<CreateSuppressionRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<IdsSuppression>>), StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     let suppress_type = SuppressType::from_str(&req.suppress_type).ok_or(bad_request())?;
 
     let suppression = IdsSuppression {
@@ -559,7 +578,7 @@ pub async fn create_suppression(
     .bind(suppression.sid as i64)
     .bind(suppression.suppress_type.to_string())
     .bind(&suppression.ip_cidr)
-    .execute(engine.pool())
+    .execute(&state.pool)
     .await
     .map_err(|_| internal())?;
 
@@ -570,10 +589,9 @@ pub async fn delete_suppression(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
     sqlx::query("DELETE FROM ids_suppressions WHERE id = ?")
         .bind(&id)
-        .execute(engine.pool())
+        .execute(&state.pool)
         .await
         .map_err(|_| internal())?;
     Ok(Json(MessageResponse {
@@ -585,14 +603,15 @@ pub async fn delete_suppression(
 
 pub async fn get_stats(
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<IdsStatsResponse>>, StatusCode> {
-    let engine = state.ids_engine.as_ref().ok_or(internal())?;
-    let stats = engine.stats();
-    let config = engine.load_config().await.map_err(|_| internal())?;
-    let output = aifw_ids::output::sqlite::SqliteOutput::new(engine.pool().clone());
+) -> Result<Json<ApiResponse<IdsStatsResponse>>, (StatusCode, String)> {
+    // Live counters (rules_loaded, packets_inspected, alerts_total, etc.)
+    // come over IPC from aifw-ids. Aggregate breakdowns (by-severity,
+    // top-signatures, top-sources) are SQL queries on `ids_alerts` and stay
+    // direct-DB. Rulesets: also direct-DB.
+    let stats = ipc_to_response(state.ids_client.get_stats().await)?.0;
+    let output = aifw_ids::output::sqlite::SqliteOutput::new(state.pool.clone());
 
     let raw_counts = output.count_by_severity().await.unwrap_or_default();
-    // Convert numeric severity to labeled counts for the UI
     let severity_counts: Vec<(String, i64)> = raw_counts
         .into_iter()
         .map(|(sev, count)| {
@@ -609,31 +628,32 @@ pub async fn get_stats(
     let top_sigs = output.top_signatures(10).await.unwrap_or_default();
     let top_sources = output.top_sources(10).await.unwrap_or_default();
 
-    let mgr = aifw_ids::rules::manager::RulesetManager::new(engine.pool().clone());
+    let mgr = aifw_ids::rules::manager::RulesetManager::new(state.pool.clone());
     let rulesets = mgr.list_rulesets().await.unwrap_or_default();
     let total_rulesets = rulesets.len() as u32;
     let enabled_rulesets = rulesets.iter().filter(|r| r.enabled).count() as u32;
-    let loaded_rules = engine.rule_db().rule_count() as u32;
-    let running = engine.is_running();
 
     Ok(Json(ApiResponse {
         data: IdsStatsResponse {
-            stats,
-            mode: config.mode.to_string(),
+            mode: stats.mode.clone(),
             severity_counts,
             top_signatures: top_sigs,
             top_sources,
-            loaded_rules,
+            loaded_rules: stats.rules_loaded,
             enabled_rulesets,
             total_rulesets,
-            running,
+            running: stats.running,
+            packets_inspected: stats.packets_inspected,
+            alerts_total: stats.alerts_total,
+            flow_count: stats.flow_count,
+            flow_reassembly_bytes: stats.flow_reassembly_bytes,
+            uptime_secs: stats.uptime_secs,
         },
     }))
 }
 
 #[derive(Debug, Serialize)]
 pub struct IdsStatsResponse {
-    pub stats: IdsStats,
     pub mode: String,
     pub severity_counts: Vec<(String, i64)>,
     pub top_signatures: Vec<(String, i64)>,
@@ -642,4 +662,9 @@ pub struct IdsStatsResponse {
     pub enabled_rulesets: u32,
     pub total_rulesets: u32,
     pub running: bool,
+    pub packets_inspected: u64,
+    pub alerts_total: u64,
+    pub flow_count: u64,
+    pub flow_reassembly_bytes: u64,
+    pub uptime_secs: u64,
 }

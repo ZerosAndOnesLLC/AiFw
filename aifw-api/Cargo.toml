@@ -15,6 +15,7 @@ aifw-core = { workspace = true }
 aifw-conntrack = { workspace = true }
 aifw-plugins = { workspace = true }
 aifw-ids = { workspace = true }
+aifw-ids-ipc = { workspace = true }
 aifw-metrics = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }

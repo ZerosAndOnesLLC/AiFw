@@ -12,7 +12,6 @@ path = "src/main.rs"
 aifw-common = { workspace = true }
 aifw-pf = { workspace = true }
 aifw-core = { workspace = true }
-aifw-ids = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

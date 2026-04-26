@@ -9,10 +9,12 @@ use crate::AppState;
 
 /// Run AI analysis on unreviewed critical/high alerts.
 /// Called periodically by a background task or manually via API.
-pub async fn run_analysis(
-    pool: &SqlitePool,
-    alert_buf: Option<&aifw_ids::output::memory::AlertBuffer>,
-) -> Result<u32, String> {
+///
+/// Reads alerts from the `ids_alerts` SQLite table (written by aifw-ids).
+/// The in-memory AlertBuffer used to be passed in; that buffer now lives in
+/// the aifw-ids process, so we go through the DB directly. SqliteOutput here
+/// is just a convenient wrapper around the same table.
+pub async fn run_analysis(pool: &SqlitePool) -> Result<u32, String> {
     // 1. Check if AI is enabled and get active provider
     let enabled = get_config(pool, "ai_enabled")
         .await
@@ -43,14 +45,12 @@ pub async fn run_analysis(
         return Err("AI provider endpoint not configured".into());
     }
 
-    // 2. Get unreviewed critical/high alerts from the in-memory buffer
-    let raw_alerts = if let Some(buf) = alert_buf {
-        buf.query(Some(2), None, None, None, Some("unreviewed"), 20, 0)
-            .await
-    } else {
-        // Fallback to SQLite if no buffer (shouldn't happen in production)
-        return Ok(0);
-    };
+    // 2. Get unreviewed high-severity alerts from SQLite (severity 2 = high).
+    let sqlite_out = aifw_ids::output::sqlite::SqliteOutput::new(pool.clone());
+    let raw_alerts = sqlite_out
+        .query_alerts(Some(2), None, None, None, Some("unreviewed"), 20, 0)
+        .await
+        .map_err(|e| e.to_string())?;
 
     if raw_alerts.is_empty() {
         return Ok(0);
@@ -125,16 +125,22 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
                     reason.clone()
                 };
 
-                // 7. Apply classification to this alert and all alerts with same signature
+                // 7. Apply classification — DB update.
                 let notes_str = format!("AI ({provider}): {clean_reason}");
-                if let Some(buf) = alert_buf {
-                    if sig_id > 0 {
-                        buf.classify_by_signature(sig_id, &classification, &notes_str)
-                            .await;
-                        analyzed_sigs.insert(sig_id);
-                    } else if let Ok(uuid) = Uuid::parse_str(alert_id) {
-                        buf.classify(uuid, &classification, Some(&notes_str)).await;
-                    }
+                if sig_id > 0 {
+                    let _ = sqlx::query(
+                        "UPDATE ids_alerts SET classification = ?, analyst_notes = ?, acknowledged = 1 WHERE signature_id = ? AND classification = 'unreviewed'"
+                    )
+                    .bind(&classification)
+                    .bind(&notes_str)
+                    .bind(sig_id as i64)
+                    .execute(pool)
+                    .await;
+                    analyzed_sigs.insert(sig_id);
+                } else if let Ok(uuid) = Uuid::parse_str(alert_id) {
+                    let _ = sqlite_out
+                        .classify(uuid, &classification, Some(&notes_str))
+                        .await;
                 }
 
                 // 8. Log to audit
@@ -392,7 +398,7 @@ async fn get_config(pool: &SqlitePool, key: &str) -> Option<String> {
 pub async fn trigger_analysis(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    match run_analysis(&state.pool, Some(&state.alert_buffer)).await {
+    match run_analysis(&state.pool).await {
         Ok(count) => Ok(Json(serde_json::json!({
             "message": format!("{count} alerts classified by AI"),
             "classified": count,

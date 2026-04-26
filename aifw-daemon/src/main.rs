@@ -196,35 +196,10 @@ async fn main() -> anyhow::Result<()> {
         info!("SLA aggregation loop started");
     }
 
-    // Initialize IDS engine (only allocate resources if enabled)
-    aifw_ids::IdsEngine::migrate(&pool)
-        .await
-        .unwrap_or_else(|e| error!("IDS migration failed: {e}"));
-    let ids_engine = match aifw_ids::config::RuntimeConfig::load(&pool).await {
-        Ok(cfg) if cfg.config().mode != aifw_common::ids::IdsMode::Disabled => {
-            match aifw_ids::IdsEngine::new(pool.clone(), pf.clone()).await {
-                Ok(engine) => {
-                    let mgr = aifw_ids::rules::manager::RulesetManager::new(pool.clone());
-                    match mgr.compile_rules(engine.rule_db()).await {
-                        Ok(count) => info!(count, "IDS rules compiled"),
-                        Err(e) => error!("failed to compile IDS rules: {e}"),
-                    }
-                    if let Err(e) = engine.start().await {
-                        error!("failed to start IDS engine: {e}");
-                    }
-                    Some(engine)
-                }
-                Err(e) => {
-                    error!("failed to initialize IDS engine: {e}");
-                    None
-                }
-            }
-        }
-        _ => {
-            info!("IDS engine disabled, skipping initialization");
-            None
-        }
-    };
+    // IDS engine moved to aifw-ids binary (see PR 5 / spec
+    // 2026-04-26-process-hardening-and-ids-extraction-design.md). aifw-daemon
+    // no longer holds an in-process IdsEngine. Configuration changes flow
+    // through the IPC layer at /var/run/aifw/ids.sock, which aifw-api owns.
 
     // Drop privileges to 'aifw' user if running as root
     #[cfg(unix)]
@@ -310,11 +285,6 @@ async fn main() -> anyhow::Result<()> {
     shutdown_signal().await;
 
     info!("shutting down");
-
-    // Stop IDS engine gracefully (flush alerts)
-    if let Some(ref engine) = ids_engine {
-        engine.stop().await;
-    }
 
     // Note: we do NOT flush rules on shutdown — pf rules persist in the kernel
     // and should remain active while the daemon restarts or the API takes over.

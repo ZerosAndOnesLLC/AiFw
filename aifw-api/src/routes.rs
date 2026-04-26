@@ -3198,16 +3198,36 @@ pub async fn update_generic_settings(
 }
 
 // --- IDS Alert Buffer Settings ---
+//
+// The alert buffer itself now lives in the aifw-ids process. These endpoints
+// just persist the configured limits in `auth_config`; aifw-ids reads them at
+// startup. Live re-tuning would need an IPC method we haven't added yet —
+// changes take effect after the next aifw-ids restart.
 
 pub async fn get_ids_alert_settings(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let stats = state.alert_buffer.stats().await;
-    let (max_mb, max_age) = state.alert_buffer.limits();
+    let max_mb: usize = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_mb'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.0.parse().ok())
+    .unwrap_or(64);
+    let max_age: usize = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM auth_config WHERE key = 'ids_alert_max_age_secs'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.0.parse().ok())
+    .unwrap_or(86400);
     Ok(Json(serde_json::json!({
         "max_mb": max_mb,
         "max_age_secs": max_age,
-        "stats": stats.to_json(),
     })))
 }
 
@@ -3217,7 +3237,6 @@ pub async fn update_ids_alert_settings(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     if let Some(mb) = req.get("max_mb").and_then(|v| v.as_u64()) {
         let mb = (mb as usize).clamp(8, 512);
-        state.alert_buffer.set_max_mb(mb);
         let _ = sqlx::query(
             "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('ids_alert_max_mb', ?1)",
         )
@@ -3227,7 +3246,6 @@ pub async fn update_ids_alert_settings(
     }
     if let Some(secs) = req.get("max_age_secs").and_then(|v| v.as_u64()) {
         let secs = (secs as usize).clamp(3600, 604800); // 1h to 7 days
-        state.alert_buffer.set_max_age_secs(secs);
         let _ = sqlx::query(
             "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('ids_alert_max_age_secs', ?1)",
         )
@@ -3235,11 +3253,8 @@ pub async fn update_ids_alert_settings(
         .execute(&state.pool)
         .await;
     }
-    state.alert_buffer.trim().await;
-    let stats = state.alert_buffer.stats().await;
     Ok(Json(serde_json::json!({
-        "message": "IDS alert settings updated",
-        "stats": stats.to_json(),
+        "message": "IDS alert settings updated — restart aifw-ids to apply",
     })))
 }
 
