@@ -34,6 +34,8 @@ aifw_ids_precmd()
     /usr/bin/pkill -f "daemon:.*aifw-ids" 2>/dev/null
     /usr/bin/pkill -x aifw-ids 2>/dev/null
     /bin/rm -f ${aifw_ids_pidfile} ${aifw_ids_supervisor_pidfile} ${aifw_ids_socket}
+    /usr/bin/touch /var/run/aifw-ids.lock
+    /usr/sbin/chown aifw:aifw /var/run/aifw-ids.lock
 }
 
 aifw_ids_poststop()

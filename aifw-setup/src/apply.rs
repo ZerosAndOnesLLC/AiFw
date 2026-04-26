@@ -1610,6 +1610,10 @@ aifw_daemon_precmd()
     /usr/bin/pkill -f "daemon:.*aifw-daemon" 2>/dev/null
     /usr/bin/pkill -x aifw-daemon 2>/dev/null
     /bin/rm -f ${{aifw_daemon_pidfile}} ${{aifw_daemon_supervisor_pidfile}}
+    # Pre-create singleton lockfile owned by aifw — /var/run is root-only,
+    # so the binary (running as aifw via daemon -u aifw) can't create it.
+    /usr/bin/touch /var/run/aifw-daemon.lock
+    /usr/sbin/chown aifw:aifw /var/run/aifw-daemon.lock
 }}
 
 aifw_daemon_poststop()
@@ -1656,6 +1660,8 @@ aifw_api_precmd()
     /usr/bin/pkill -f "daemon:.*aifw-api" 2>/dev/null
     /usr/bin/pkill -x aifw-api 2>/dev/null
     /bin/rm -f ${{aifw_api_pidfile}} ${{aifw_api_supervisor_pidfile}}
+    /usr/bin/touch /var/run/aifw-api.lock
+    /usr/sbin/chown aifw:aifw /var/run/aifw-api.lock
 }}
 
 aifw_api_poststop()
@@ -1705,6 +1711,8 @@ aifw_ids_precmd()
     /usr/bin/pkill -f "daemon:.*aifw-ids" 2>/dev/null
     /usr/bin/pkill -x aifw-ids 2>/dev/null
     /bin/rm -f ${{aifw_ids_pidfile}} ${{aifw_ids_supervisor_pidfile}} /var/run/aifw/ids.sock
+    /usr/bin/touch /var/run/aifw-ids.lock
+    /usr/sbin/chown aifw:aifw /var/run/aifw-ids.lock
 }}
 
 aifw_ids_poststop()
