@@ -260,6 +260,9 @@ pub struct IdsConfig {
     pub stream_depth: Option<u32>,
     /// Per-direction stream reassembly depth, in KB. `None` = built-in default (64 KB).
     pub flow_stream_depth_kb: Option<u32>,
+    /// Total memory budget for stream reassembly across all flows, in MB.
+    /// `None` = built-in default (256 MB). Clamped to 4 GB upper bound.
+    pub flow_reassembly_budget_mb: Option<u32>,
 }
 
 impl Default for IdsConfig {
@@ -281,6 +284,7 @@ impl Default for IdsConfig {
             flow_table_size: None,
             stream_depth: None,
             flow_stream_depth_kb: None,
+            flow_reassembly_budget_mb: None,
         }
     }
 }

@@ -35,6 +35,7 @@ aifw_firstboot_start()
         # If setup succeeded, enable and start services
         if [ -f "$AIFW_CONF" ]; then
             sysrc aifw_daemon_enable=YES >/dev/null 2>&1
+            sysrc aifw_ids_enable=YES >/dev/null 2>&1
             sysrc aifw_api_enable=YES >/dev/null 2>&1
             sysrc aifw_firstboot_enable=NO >/dev/null 2>&1
 
@@ -48,6 +49,8 @@ aifw_firstboot_start()
             # Start services now (don't wait for next reboot)
             echo "Starting AiFw services..."
             service aifw_daemon start 2>/dev/null
+            # aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
+            service aifw_ids start 2>/dev/null
             service aifw_api start 2>/dev/null
 
             echo ""

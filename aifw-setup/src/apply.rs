@@ -337,12 +337,31 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
             .output();
         console::success("pf rules loaded");
 
+        // sysrc-enable AiFw services so existing-install upgrades and
+        // re-runs of aifw-setup pick up newly added services (aifw_ids was
+        // added in v5.76.0). aifw_firstboot also does this, but only on
+        // first boot — running aifw-setup on an existing appliance never
+        // hits firstboot, so we belt-and-braces it here too.
+        let _ = Command::new("sysrc")
+            .args(["aifw_daemon_enable=YES"])
+            .output();
+        let _ = Command::new("sysrc")
+            .args(["aifw_ids_enable=YES"])
+            .output();
+        let _ = Command::new("sysrc")
+            .args(["aifw_api_enable=YES"])
+            .output();
+
         // Start core services
         let _ = Command::new("service")
             .args(["aifw_daemon", "start"])
             .output();
+        // aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
+        let _ = Command::new("service")
+            .args(["aifw_ids", "start"])
+            .output();
         let _ = Command::new("service").args(["aifw_api", "start"]).output();
-        console::success("AiFw daemon and API started");
+        console::success("AiFw daemon, IDS, and API started");
 
         // Start rDNS
         let _ = Command::new("service").args(["rdns", "start"]).output();

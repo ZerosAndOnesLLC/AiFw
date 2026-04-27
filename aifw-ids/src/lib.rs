@@ -91,18 +91,41 @@ impl IdsEngine {
         let config = Arc::new(RuntimeConfig::load(&pool).await?);
         let disabled = config.config().mode == IdsMode::Disabled;
 
-        // Minimal allocations when disabled — just enough for API endpoints to work
+        // Minimal allocations when disabled — just enough for API endpoints to work.
+        // Clamping mirrors `RuntimeConfig::clamp` and protects against rows
+        // already in the DB from older versions that pre-date validation.
         let cfg_view = config.config();
+        const MAX_FLOW_TABLE_SIZE: u32 = 1_000_000;
+        const MAX_STREAM_DEPTH_KB: u32 = 4096;
+        const DEFAULT_REASSEMBLY_BUDGET_MB: u32 = 256;
+        const MAX_REASSEMBLY_BUDGET_MB: u32 = 4096;
         let flow_table_size = if disabled {
             16 // trivial map, no real flows tracked
         } else {
-            cfg_view.flow_table_size.unwrap_or(65536) as usize
+            cfg_view
+                .flow_table_size
+                .unwrap_or(65536)
+                .min(MAX_FLOW_TABLE_SIZE) as usize
         };
-        let stream_depth_bytes = cfg_view.flow_stream_depth_kb.unwrap_or(64) as usize * 1024;
+        let stream_depth_bytes = cfg_view
+            .flow_stream_depth_kb
+            .unwrap_or(64)
+            .min(MAX_STREAM_DEPTH_KB) as usize
+            * 1024;
+        let reassembly_budget_bytes = cfg_view
+            .flow_reassembly_budget_mb
+            .unwrap_or(DEFAULT_REASSEMBLY_BUDGET_MB)
+            .min(MAX_REASSEMBLY_BUDGET_MB) as usize
+            * 1024
+            * 1024;
         let channel_cap = if disabled { 1 } else { ALERT_CHANNEL_CAPACITY };
 
         let rule_db = Arc::new(RuleDatabase::new());
-        let flow_table = Arc::new(FlowTable::new(flow_table_size).with_stream_depth(stream_depth_bytes));
+        let flow_table = Arc::new(
+            FlowTable::new(flow_table_size)
+                .with_stream_depth(stream_depth_bytes)
+                .with_reassembly_budget(reassembly_budget_bytes),
+        );
         let detection = Arc::new(DetectionEngine::new(rule_db.clone(), flow_table.clone()));
         let action = Arc::new(ActionEngine::new(pf.clone(), config.clone()));
         // SQLite is the durable alert store (queried by /api/v1/ids/alerts,
@@ -549,18 +572,6 @@ impl IdsEngine {
     /// to returning an empty list.
     pub fn alert_buffer(&self) -> Option<&Arc<crate::output::memory::AlertBuffer>> {
         self.alert_buffer.as_ref()
-    }
-
-    /// Total packets inspected since the engine started.
-    pub fn packets_inspected(&self) -> u64 {
-        self.counters.packets_inspected.load(Ordering::Relaxed)
-    }
-
-    /// Total alerts emitted since the engine started.
-    /// Async to leave room for future DB-backed accounting; today this
-    /// just reads the in-memory atomic counter.
-    pub async fn alerts_total(&self) -> u64 {
-        self.counters.alerts_total.load(Ordering::Relaxed)
     }
 
     /// Look up a single rule by id (the `ids_rules.id` UUID string).

@@ -229,6 +229,14 @@ chmod 755 /usr/local/etc/rc.d/rdns
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/rtime" /usr/local/etc/rc.d/rtime
 chmod 755 /usr/local/etc/rc.d/rtime
 
+# Install aifw_daemon rc.d script
+cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/aifw_daemon" /usr/local/etc/rc.d/aifw_daemon
+chmod 755 /usr/local/etc/rc.d/aifw_daemon
+
+# Install aifw_api rc.d script
+cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/aifw_api" /usr/local/etc/rc.d/aifw_api
+chmod 755 /usr/local/etc/rc.d/aifw_api
+
 # Install aifw_ids rc.d script
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/aifw_ids" /usr/local/etc/rc.d/aifw_ids
 chmod 755 /usr/local/etc/rc.d/aifw_ids

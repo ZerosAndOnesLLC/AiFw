@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.75.2"
+version = "5.76.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -53,4 +53,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 ratatui = "0.30"
 crossterm = "0.29"
-nix = { version = "0.31", features = ["fs", "process"] }
+nix = { version = "0.31", features = ["fs", "process", "socket"] }

@@ -14,5 +14,8 @@ aifw-common = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

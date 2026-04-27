@@ -40,7 +40,10 @@ fn bad_request() -> StatusCode {
 /// Map an `IdsClientError` to an HTTP response body. `Unavailable` and
 /// `Timeout` become 503 — aifw-ids is the source of truth for live IDS
 /// state and we don't want to lie when it's offline. Server-side errors
-/// (rule parse, config validation) come back as 400. Anything else is 500.
+/// (rule parse, config validation) come back as 400 with a stable
+/// generic message; the underlying error is logged server-side so we
+/// don't leak filesystem paths or sqlx column names to HTTP clients.
+/// Anything else is 500.
 fn ipc_to_response<T: serde::Serialize>(
     r: Result<T, aifw_ids_ipc::IdsClientError>,
 ) -> Result<axum::Json<T>, (axum::http::StatusCode, String)> {
@@ -52,12 +55,19 @@ fn ipc_to_response<T: serde::Serialize>(
             "ids service unavailable".to_string(),
         )),
         Err(aifw_ids_ipc::IdsClientError::Server(e)) => {
-            Err((axum::http::StatusCode::BAD_REQUEST, e))
+            tracing::warn!(error = %e, "ids server returned error");
+            Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "ids server error".to_string(),
+            ))
         }
-        Err(e) => Err((
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            e.to_string(),
-        )),
+        Err(e) => {
+            tracing::warn!(error = %e, "ids client error");
+            Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "ids client error".to_string(),
+            ))
+        }
     }
 }
 

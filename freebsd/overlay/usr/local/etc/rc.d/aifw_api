@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# PROVIDE: aifw_api
+# REQUIRE: NETWORKING aifw_daemon aifw_ids
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="aifw_api"
+rcvar="aifw_api_enable"
+
+load_rc_config $name
+
+: ${aifw_api_enable:="NO"}
+: ${aifw_api_pidfile:="/var/run/aifw_api.pid"}
+: ${aifw_api_supervisor_pidfile:="/var/run/aifw_api-supervisor.pid"}
+: ${aifw_api_db:="/var/db/aifw/aifw.db"}
+: ${aifw_api_listen:="0.0.0.0"}
+: ${aifw_api_port:="8080"}
+
+pidfile="${aifw_api_supervisor_pidfile}"
+procname="/usr/sbin/daemon"
+aifw_api_binary="/usr/local/sbin/aifw-api"
+command="/usr/sbin/daemon"
+command_args="-f -p ${aifw_api_pidfile} -P ${aifw_api_supervisor_pidfile} -R 5 -S -T aifw_api -o /var/log/aifw/api.log -u aifw ${aifw_api_binary} --db ${aifw_api_db} --listen ${aifw_api_listen}:${aifw_api_port} --ui-dir /usr/local/share/aifw/ui --log-level info"
+
+start_precmd="aifw_api_precmd"
+stop_postcmd="aifw_api_poststop"
+
+aifw_api_precmd()
+{
+    /bin/mkdir -p /var/log/aifw
+    /usr/sbin/chown aifw:aifw /var/log/aifw
+    /usr/bin/pkill -f "daemon:.*aifw-api" 2>/dev/null
+    /usr/bin/pkill -x aifw-api 2>/dev/null
+    /bin/rm -f ${aifw_api_pidfile} ${aifw_api_supervisor_pidfile}
+    # Pre-create singleton lockfile owned by aifw — /var/run is root-only,
+    # so the binary (running as aifw via daemon -u aifw) can't create it.
+    /usr/bin/touch /var/run/aifw-api.lock
+    /usr/sbin/chown aifw:aifw /var/run/aifw-api.lock
+}
+
+aifw_api_poststop()
+{
+    /bin/rm -f ${aifw_api_pidfile} ${aifw_api_supervisor_pidfile}
+}
+
+run_rc_command "$1"

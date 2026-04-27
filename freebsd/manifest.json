@@ -30,6 +30,8 @@
   ],
 
   "rc_scripts": [
+    "aifw_api",
+    "aifw_daemon",
     "aifw_firstboot",
     "aifw_ids",
     "rdhcpd",

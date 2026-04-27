@@ -9,9 +9,11 @@ use aifw_ids_ipc::server::serve;
 use anyhow::Context;
 use clap::Parser;
 use handler::EngineHandler;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -48,9 +50,20 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // aifw-api and aifw-ids share aifw.db. Without WAL + busy_timeout we
+    // see SQLITE_BUSY drops on concurrent INSERT (alert ingestion racing
+    // with API config writes), and silent alert loss. WAL + 5s busy_timeout
+    // matches the settings aifw-api uses.
+    let connect_url = format!("sqlite://{}", args.db.display());
+    let opts = SqliteConnectOptions::from_str(&connect_url)
+        .context("parse sqlite url")?
+        .busy_timeout(Duration::from_secs(5))
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(8)
-        .connect(&format!("sqlite://{}", args.db.display()))
+        .connect_with(opts)
         .await
         .context("connect sqlite")?;
 

@@ -37,11 +37,47 @@ impl RuntimeConfig {
         Ok(cfg)
     }
 
-    /// Save configuration to the database.
+    /// Save configuration to the database. Values are clamped to safe
+    /// upper bounds so a malformed `SetConfig` (whether from a buggy UI
+    /// or hostile API client) cannot poison the DB into an OOM-on-restart
+    /// loop.
     pub async fn save_to_db(&self, pool: &SqlitePool, cfg: &IdsConfig) -> Result<()> {
-        Self::write_to_db(pool, cfg).await?;
-        self.update(cfg.clone());
+        let clamped = Self::clamp(cfg);
+        Self::write_to_db(pool, &clamped).await?;
+        self.update(clamped);
         Ok(())
+    }
+
+    /// Clamp config fields that, if oversized, would crash the daemon on
+    /// next restart. Mirrored at engine init time as a defence in depth
+    /// for rows already on disk from older versions.
+    fn clamp(cfg: &IdsConfig) -> IdsConfig {
+        // Caps chosen so the worst-case engine init still fits comfortably
+        // in a 4 GB appliance: 1M flow rows ≈ a few hundred MB of HashMap,
+        // 4 MB stream depth × 1M flows would be 4 TB so the *product* is
+        // still bounded by flow_table_size.
+        const MAX_FLOW_TABLE_SIZE: u32 = 1_000_000;
+        const MAX_STREAM_DEPTH_KB: u32 = 4096; // 4 MB
+        const MAX_WORKER_COUNT: u32 = 64;
+        const MAX_REASSEMBLY_BUDGET_MB: u32 = 4096; // 4 GB cap; default 256
+
+        let mut out = cfg.clone();
+        if let Some(v) = out.flow_table_size {
+            out.flow_table_size = Some(v.min(MAX_FLOW_TABLE_SIZE));
+        }
+        if let Some(v) = out.flow_stream_depth_kb {
+            out.flow_stream_depth_kb = Some(v.min(MAX_STREAM_DEPTH_KB));
+        }
+        if let Some(v) = out.stream_depth {
+            out.stream_depth = Some(v.min(MAX_STREAM_DEPTH_KB));
+        }
+        if let Some(v) = out.worker_count {
+            out.worker_count = Some(v.min(MAX_WORKER_COUNT));
+        }
+        if let Some(v) = out.flow_reassembly_budget_mb {
+            out.flow_reassembly_budget_mb = Some(v.min(MAX_REASSEMBLY_BUDGET_MB));
+        }
+        out
     }
 
     /// Network variable expansion: resolve `$HOME_NET`, `$EXTERNAL_NET`, etc.
@@ -107,6 +143,12 @@ impl RuntimeConfig {
                 }
                 "stream_depth" => {
                     cfg.stream_depth = value.parse().ok();
+                }
+                "flow_stream_depth_kb" => {
+                    cfg.flow_stream_depth_kb = value.parse().ok();
+                }
+                "flow_reassembly_budget_mb" => {
+                    cfg.flow_reassembly_budget_mb = value.parse().ok();
                 }
                 _ => {}
             }
@@ -191,6 +233,26 @@ impl RuntimeConfig {
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
             )
             .bind(sd.to_string())
+            .execute(pool)
+            .await?;
+        }
+
+        if let Some(v) = cfg.flow_stream_depth_kb {
+            sqlx::query(
+                "INSERT INTO ids_config (key, value, updated_at) VALUES ('flow_stream_depth_kb', ?, datetime('now'))
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            )
+            .bind(v.to_string())
+            .execute(pool)
+            .await?;
+        }
+
+        if let Some(v) = cfg.flow_reassembly_budget_mb {
+            sqlx::query(
+                "INSERT INTO ids_config (key, value, updated_at) VALUES ('flow_reassembly_budget_mb', ?, datetime('now'))
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            )
+            .bind(v.to_string())
             .execute(pool)
             .await?;
         }

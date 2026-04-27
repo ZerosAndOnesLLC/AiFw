@@ -383,6 +383,9 @@ const RESTARTABLE_SERVICES: &[&str] = &[
     "rtime",
     "trafficcop",
     "aifw_daemon",
+    // aifw_ids must be restarted before aifw_api — aifw_api REQUIREs aifw_ids,
+    // and the API connects to the IDS IPC socket on startup.
+    "aifw_ids",
     "aifw_api",
 ];
 

@@ -32,6 +32,10 @@ trafficcop_precmd()
     /usr/bin/pkill -f "daemon:.*trafficcop" 2>/dev/null
     /usr/bin/pkill -x trafficcop 2>/dev/null
     /bin/rm -f ${trafficcop_pidfile} ${trafficcop_supervisor_pidfile}
+    # Pre-create singleton lockfile owned by aifw — trafficcop runs as aifw
+    # (via daemon -u aifw) and cannot create files in /var/run/ itself.
+    /usr/bin/touch /var/run/trafficcop.lock
+    /usr/sbin/chown aifw:aifw /var/run/trafficcop.lock
 
     if [ -f ${trafficcop_config} ]; then
         if ! ${trafficcop_binary} -c ${trafficcop_config} --validate >/dev/null 2>&1; then
