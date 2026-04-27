@@ -437,10 +437,7 @@ pub async fn restart_services() {
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         for svc in RESTARTABLE_SERVICES {
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/usr/sbin/service", svc, "restart"])
-                .output()
-                .await;
+            restart_one(svc).await;
         }
     });
 }
@@ -448,10 +445,26 @@ pub async fn restart_services() {
 /// Restart AiFw services synchronously (blocks until restart completes, use from CLI).
 pub async fn restart_services_sync() {
     for svc in RESTARTABLE_SERVICES {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["service", svc, "restart"])
-            .output()
-            .await;
+        restart_one(svc).await;
+    }
+}
+
+/// Restart a single service with a hard 60-second timeout. If the underlying
+/// `service X restart` hangs (e.g. graceful-drain stuck, daemon(8) supervisor
+/// waiting on a child whose tokio runtime won't exit), we move on rather than
+/// wedge the entire upgrade. The next restart cycle's `start_precmd` pkill
+/// will reap any orphans we leave behind.
+async fn restart_one(svc: &str) {
+    let cmd = Command::new("/usr/local/bin/sudo")
+        .args(["service", svc, "restart"])
+        .output();
+    match tokio::time::timeout(std::time::Duration::from_secs(60), cmd).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => warn!(service = svc, error = %e, "service restart errored"),
+        Err(_) => warn!(
+            service = svc,
+            "service restart timed out after 60s — moving on"
+        ),
     }
 }
 

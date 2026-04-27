@@ -23,6 +23,7 @@ command="/usr/sbin/daemon"
 command_args="-f -p ${trafficcop_pidfile} -P ${trafficcop_supervisor_pidfile} -R 5 -S -T trafficcop -o /var/log/trafficcop/trafficcop.log -u aifw ${trafficcop_binary} -c ${trafficcop_config}"
 
 start_precmd="trafficcop_precmd"
+stop_cmd="trafficcop_stop"
 stop_postcmd="trafficcop_poststop"
 
 trafficcop_precmd()
@@ -43,6 +44,39 @@ trafficcop_precmd()
             return 1
         fi
     fi
+}
+
+trafficcop_stop()
+{
+    # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
+    # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
+    # if the binary's tokio runtime won't exit (e.g. a background metrics
+    # exporter holding the process alive after main returns), service
+    # restart wedges forever and blocks the in-product update loop.
+    if [ -f "${trafficcop_supervisor_pidfile}" ]; then
+        sup_pid=$(cat "${trafficcop_supervisor_pidfile}")
+        echo "Stopping trafficcop (supervisor pid ${sup_pid})."
+        if kill -TERM "${sup_pid}" 2>/dev/null; then
+            i=0
+            while [ $i -lt 10 ] && kill -0 "${sup_pid}" 2>/dev/null; do
+                sleep 1
+                i=$((i+1))
+            done
+            if kill -0 "${sup_pid}" 2>/dev/null; then
+                echo "Graceful stop timed out; sending SIGKILL"
+                kill -KILL "${sup_pid}" 2>/dev/null
+                /usr/bin/pkill -KILL -x trafficcop 2>/dev/null
+            fi
+        fi
+    elif [ -f "${trafficcop_pidfile}" ]; then
+        pid=$(cat "${trafficcop_pidfile}")
+        kill -TERM "${pid}" 2>/dev/null
+        sleep 2
+        kill -KILL "${pid}" 2>/dev/null
+    else
+        echo "trafficcop is not running."
+    fi
+    /bin/rm -f ${trafficcop_pidfile} ${trafficcop_supervisor_pidfile}
 }
 
 trafficcop_poststop()

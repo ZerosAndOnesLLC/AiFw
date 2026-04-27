@@ -23,6 +23,7 @@ command="/usr/sbin/daemon"
 command_args="-f -p ${rtime_pidfile} -P ${rtime_supervisor_pidfile} -R 5 -S -T rtime -o /var/log/rtime/rtime.log ${rtime_binary} --config ${rtime_config}"
 
 start_precmd="rtime_precmd"
+stop_cmd="rtime_stop"
 stop_postcmd="rtime_poststop"
 
 rtime_precmd()
@@ -30,6 +31,39 @@ rtime_precmd()
     /bin/mkdir -p /var/run/rtime /var/log/rtime /usr/local/etc/rtime
     /usr/bin/pkill -f "daemon:.*rtime" 2>/dev/null
     /usr/bin/pkill -x rtime 2>/dev/null
+    /bin/rm -f ${rtime_pidfile} ${rtime_supervisor_pidfile}
+}
+
+rtime_stop()
+{
+    # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
+    # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
+    # if the binary's tokio runtime won't exit (e.g. a background metrics
+    # exporter holding the process alive after main returns), service
+    # restart wedges forever and blocks the in-product update loop.
+    if [ -f "${rtime_supervisor_pidfile}" ]; then
+        sup_pid=$(cat "${rtime_supervisor_pidfile}")
+        echo "Stopping rtime (supervisor pid ${sup_pid})."
+        if kill -TERM "${sup_pid}" 2>/dev/null; then
+            i=0
+            while [ $i -lt 10 ] && kill -0 "${sup_pid}" 2>/dev/null; do
+                sleep 1
+                i=$((i+1))
+            done
+            if kill -0 "${sup_pid}" 2>/dev/null; then
+                echo "Graceful stop timed out; sending SIGKILL"
+                kill -KILL "${sup_pid}" 2>/dev/null
+                /usr/bin/pkill -KILL -x rtime 2>/dev/null
+            fi
+        fi
+    elif [ -f "${rtime_pidfile}" ]; then
+        pid=$(cat "${rtime_pidfile}")
+        kill -TERM "${pid}" 2>/dev/null
+        sleep 2
+        kill -KILL "${pid}" 2>/dev/null
+    else
+        echo "rtime is not running."
+    fi
     /bin/rm -f ${rtime_pidfile} ${rtime_supervisor_pidfile}
 }
 

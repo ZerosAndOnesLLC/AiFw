@@ -1620,6 +1620,7 @@ command="/usr/sbin/daemon"
 command_args="-f -p ${{aifw_daemon_pidfile}} -P ${{aifw_daemon_supervisor_pidfile}} -R 5 -S -T aifw_daemon -o /var/log/aifw/daemon.log -u aifw ${{aifw_daemon_binary}} --db {db} --log-level info"
 
 start_precmd="aifw_daemon_precmd"
+stop_cmd="aifw_daemon_stop"
 stop_postcmd="aifw_daemon_poststop"
 
 aifw_daemon_precmd()
@@ -1633,6 +1634,39 @@ aifw_daemon_precmd()
     # so the binary (running as aifw via daemon -u aifw) can't create it.
     /usr/bin/touch /var/run/aifw-daemon.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-daemon.lock
+}}
+
+aifw_daemon_stop()
+{{
+    # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
+    # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
+    # if the binary's tokio runtime won't exit (e.g. a background metrics
+    # exporter holding the process alive after main returns), service
+    # restart wedges forever and blocks the in-product update loop.
+    if [ -f "${{aifw_daemon_supervisor_pidfile}}" ]; then
+        sup_pid=$(cat "${{aifw_daemon_supervisor_pidfile}}")
+        echo "Stopping aifw_daemon (supervisor pid ${{sup_pid}})."
+        if kill -TERM "${{sup_pid}}" 2>/dev/null; then
+            i=0
+            while [ $i -lt 10 ] && kill -0 "${{sup_pid}}" 2>/dev/null; do
+                sleep 1
+                i=$((i+1))
+            done
+            if kill -0 "${{sup_pid}}" 2>/dev/null; then
+                echo "Graceful stop timed out; sending SIGKILL"
+                kill -KILL "${{sup_pid}}" 2>/dev/null
+                /usr/bin/pkill -KILL -x aifw-daemon 2>/dev/null
+            fi
+        fi
+    elif [ -f "${{aifw_daemon_pidfile}}" ]; then
+        pid=$(cat "${{aifw_daemon_pidfile}}")
+        kill -TERM "${{pid}}" 2>/dev/null
+        sleep 2
+        kill -KILL "${{pid}}" 2>/dev/null
+    else
+        echo "aifw_daemon is not running."
+    fi
+    /bin/rm -f ${{aifw_daemon_pidfile}} ${{aifw_daemon_supervisor_pidfile}}
 }}
 
 aifw_daemon_poststop()
@@ -1670,6 +1704,7 @@ command="/usr/sbin/daemon"
 command_args="-f -p ${{aifw_api_pidfile}} -P ${{aifw_api_supervisor_pidfile}} -R 5 -S -T aifw_api -o /var/log/aifw/api.log -u aifw ${{aifw_api_binary}} --db {db} --listen {listen}:{port} --ui-dir /usr/local/share/aifw/ui --log-level info"
 
 start_precmd="aifw_api_precmd"
+stop_cmd="aifw_api_stop"
 stop_postcmd="aifw_api_poststop"
 
 aifw_api_precmd()
@@ -1681,6 +1716,39 @@ aifw_api_precmd()
     /bin/rm -f ${{aifw_api_pidfile}} ${{aifw_api_supervisor_pidfile}}
     /usr/bin/touch /var/run/aifw-api.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-api.lock
+}}
+
+aifw_api_stop()
+{{
+    # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
+    # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
+    # if the binary's tokio runtime won't exit (e.g. a background metrics
+    # exporter holding the process alive after main returns), service
+    # restart wedges forever and blocks the in-product update loop.
+    if [ -f "${{aifw_api_supervisor_pidfile}}" ]; then
+        sup_pid=$(cat "${{aifw_api_supervisor_pidfile}}")
+        echo "Stopping aifw_api (supervisor pid ${{sup_pid}})."
+        if kill -TERM "${{sup_pid}}" 2>/dev/null; then
+            i=0
+            while [ $i -lt 10 ] && kill -0 "${{sup_pid}}" 2>/dev/null; do
+                sleep 1
+                i=$((i+1))
+            done
+            if kill -0 "${{sup_pid}}" 2>/dev/null; then
+                echo "Graceful stop timed out; sending SIGKILL"
+                kill -KILL "${{sup_pid}}" 2>/dev/null
+                /usr/bin/pkill -KILL -x aifw-api 2>/dev/null
+            fi
+        fi
+    elif [ -f "${{aifw_api_pidfile}}" ]; then
+        pid=$(cat "${{aifw_api_pidfile}}")
+        kill -TERM "${{pid}}" 2>/dev/null
+        sleep 2
+        kill -KILL "${{pid}}" 2>/dev/null
+    else
+        echo "aifw_api is not running."
+    fi
+    /bin/rm -f ${{aifw_api_pidfile}} ${{aifw_api_supervisor_pidfile}}
 }}
 
 aifw_api_poststop()
@@ -1720,6 +1788,7 @@ command="/usr/sbin/daemon"
 command_args="-f -p ${{aifw_ids_pidfile}} -P ${{aifw_ids_supervisor_pidfile}} -R 5 -S -T aifw_ids -o /var/log/aifw/ids.log -u aifw ${{aifw_ids_binary}} --db {db} --socket /var/run/aifw/ids.sock --log-level info"
 
 start_precmd="aifw_ids_precmd"
+stop_cmd="aifw_ids_stop"
 stop_postcmd="aifw_ids_poststop"
 
 aifw_ids_precmd()
@@ -1732,6 +1801,39 @@ aifw_ids_precmd()
     /bin/rm -f ${{aifw_ids_pidfile}} ${{aifw_ids_supervisor_pidfile}} /var/run/aifw/ids.sock
     /usr/bin/touch /var/run/aifw-ids.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-ids.lock
+}}
+
+aifw_ids_stop()
+{{
+    # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
+    # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
+    # if the binary's tokio runtime won't exit (e.g. a background metrics
+    # exporter holding the process alive after main returns), service
+    # restart wedges forever and blocks the in-product update loop.
+    if [ -f "${{aifw_ids_supervisor_pidfile}}" ]; then
+        sup_pid=$(cat "${{aifw_ids_supervisor_pidfile}}")
+        echo "Stopping aifw_ids (supervisor pid ${{sup_pid}})."
+        if kill -TERM "${{sup_pid}}" 2>/dev/null; then
+            i=0
+            while [ $i -lt 10 ] && kill -0 "${{sup_pid}}" 2>/dev/null; do
+                sleep 1
+                i=$((i+1))
+            done
+            if kill -0 "${{sup_pid}}" 2>/dev/null; then
+                echo "Graceful stop timed out; sending SIGKILL"
+                kill -KILL "${{sup_pid}}" 2>/dev/null
+                /usr/bin/pkill -KILL -x aifw-ids 2>/dev/null
+            fi
+        fi
+    elif [ -f "${{aifw_ids_pidfile}}" ]; then
+        pid=$(cat "${{aifw_ids_pidfile}}")
+        kill -TERM "${{pid}}" 2>/dev/null
+        sleep 2
+        kill -KILL "${{pid}}" 2>/dev/null
+    else
+        echo "aifw_ids is not running."
+    fi
+    /bin/rm -f ${{aifw_ids_pidfile}} ${{aifw_ids_supervisor_pidfile}}
 }}
 
 aifw_ids_poststop()
@@ -1769,6 +1871,7 @@ command="/usr/sbin/daemon"
 command_args="-f -p ${rdhcpd_pidfile} -P ${rdhcpd_supervisor_pidfile} -R 5 -S -T rdhcpd -o /var/log/rdhcpd/rdhcpd.log ${rdhcpd_binary} ${rdhcpd_config}"
 
 start_precmd="rdhcpd_precmd"
+stop_cmd="rdhcpd_stop"
 stop_postcmd="rdhcpd_poststop"
 reload_cmd="rdhcpd_reload"
 extra_commands="reload"
@@ -1785,6 +1888,39 @@ rdhcpd_precmd()
         echo "ERROR: rdhcpd config not found at ${rdhcpd_config}"
         return 1
     fi
+}
+
+rdhcpd_stop()
+{
+    # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
+    # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
+    # if the binary's tokio runtime won't exit (e.g. a background metrics
+    # exporter holding the process alive after main returns), service
+    # restart wedges forever and blocks the in-product update loop.
+    if [ -f "${rdhcpd_supervisor_pidfile}" ]; then
+        sup_pid=$(cat "${rdhcpd_supervisor_pidfile}")
+        echo "Stopping rdhcpd (supervisor pid ${sup_pid})."
+        if kill -TERM "${sup_pid}" 2>/dev/null; then
+            i=0
+            while [ $i -lt 10 ] && kill -0 "${sup_pid}" 2>/dev/null; do
+                sleep 1
+                i=$((i+1))
+            done
+            if kill -0 "${sup_pid}" 2>/dev/null; then
+                echo "Graceful stop timed out; sending SIGKILL"
+                kill -KILL "${sup_pid}" 2>/dev/null
+                /usr/bin/pkill -KILL -x rdhcpd 2>/dev/null
+            fi
+        fi
+    elif [ -f "${rdhcpd_pidfile}" ]; then
+        pid=$(cat "${rdhcpd_pidfile}")
+        kill -TERM "${pid}" 2>/dev/null
+        sleep 2
+        kill -KILL "${pid}" 2>/dev/null
+    else
+        echo "rdhcpd is not running."
+    fi
+    /bin/rm -f ${rdhcpd_pidfile} ${rdhcpd_supervisor_pidfile}
 }
 
 rdhcpd_poststop()
