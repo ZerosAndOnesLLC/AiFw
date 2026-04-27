@@ -34,12 +34,20 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // Fail closed when another instance actually holds the lock; fail open
+    // when the lockfile path isn't writable (older appliances whose rc.d
+    // didn't pre-create the lockfile). rc.d retains its own singleton
+    // enforcement via the daemon-pair pidfiles.
     #[cfg(unix)]
     let _instance_lock = match acquire("aifw-ids") {
-        Ok(lock) => lock,
-        Err(e) => {
-            eprintln!("aifw-ids: {e}");
+        Ok(lock) => Some(lock),
+        Err(aifw_common::single_instance::InstanceLockError::AlreadyRunning(pid)) => {
+            eprintln!("aifw-ids: another instance is already running (pid {pid})");
             std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("aifw-ids: warning: singleton lock unavailable: {e} (continuing)");
+            None
         }
     };
 

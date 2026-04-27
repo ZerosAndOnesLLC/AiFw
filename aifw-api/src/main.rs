@@ -1802,12 +1802,22 @@ async fn ensure_rdr_anchor() {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // Fail closed when another instance actually holds the lock; fail open
+    // when the lockfile path isn't writable (e.g. an appliance whose rc.d
+    // never got upgraded to pre-create /var/run/aifw-api.lock owned by aifw).
+    // The latter case lets the binary still come up so the in-product
+    // updater can ship the rc.d fix that solves it. rc.d retains its own
+    // singleton enforcement via the daemon-pair pidfiles.
     #[cfg(unix)]
     let _instance_lock = match aifw_common::single_instance::acquire("aifw-api") {
-        Ok(lock) => lock,
-        Err(e) => {
-            eprintln!("aifw-api: {e}");
+        Ok(lock) => Some(lock),
+        Err(aifw_common::single_instance::InstanceLockError::AlreadyRunning(pid)) => {
+            eprintln!("aifw-api: another instance is already running (pid {pid})");
             std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("aifw-api: warning: singleton lock unavailable: {e} (continuing)");
+            None
         }
     };
 
