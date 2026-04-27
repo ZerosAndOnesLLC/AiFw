@@ -20,9 +20,9 @@ sha2 = "0.10"
 hex = "0.4"
 cron = "0.16"
 anyhow = "1"
-aws-config = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-sdk-route53 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-route53 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-credential-types = "1"
 aws-smithy-runtime-api = "1"
 instant-acme = "0.7"
