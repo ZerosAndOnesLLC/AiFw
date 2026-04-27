@@ -25,7 +25,7 @@ fi
 
 # --- Install dependencies ---
 echo "=== [1/6] Installing dependencies ==="
-pkg install -y curl git gmake node24 npm-node24 brotli
+pkg install -y curl git gmake node24 npm-node24 brotli jq
 
 # `sudo` clears PATH, so even if rust is already installed under root's home
 # we won't see `cargo` on PATH unless we source cargo's env first. Skipping
@@ -152,7 +152,8 @@ mkdir -p "$SCRIPT_DIR/release"
 # workspace (e.g. aifw-ids in 5.76) requires only a manifest edit, not a
 # build-script edit. Hardcoding the list here was the bug that shipped a
 # 5.76.1 release missing aifw-ids.
-LOCAL_BINS=$(python3 -c "import json; m=json.load(open('$PROJECT_ROOT/freebsd/manifest.json')); print(' '.join(m['binaries']['local']))")
+LOCAL_BINS=$(jq -r '.binaries.local[]' "$PROJECT_ROOT/freebsd/manifest.json" | tr '\n' ' ')
+[ -n "$LOCAL_BINS" ] || die "Could not parse binaries.local from manifest.json (jq failed)"
 for bin in $LOCAL_BINS; do
     if [ ! -f "$PROJECT_ROOT/target/release/${bin}" ]; then
         echo "ERROR: ${bin} listed in manifest but not built — refusing to ship a partial release" >&2
