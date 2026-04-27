@@ -146,10 +146,30 @@ enum MultiwanAction {
 enum UpdateAction {
     /// Check for AiFw firmware update from GitHub
     Check,
-    /// Download and install AiFw firmware update
-    Install,
-    /// Rollback to previous AiFw firmware version
-    Rollback,
+    /// Download and install AiFw firmware update.
+    ///
+    /// Does NOT restart services automatically. Run `aifw update restart`
+    /// (or pass --restart) once you're ready for the brief outage.
+    Install {
+        /// Restart services immediately after install completes, skipping
+        /// the confirmation prompt. Useful for scripts/cron.
+        #[arg(long)]
+        restart: bool,
+        /// Assume "yes" to the restart prompt. Alias for --restart.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Rollback to previous AiFw firmware version.
+    ///
+    /// Same restart semantics as `install`.
+    Rollback {
+        #[arg(long)]
+        restart: bool,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Restart all AiFw services to activate a previously installed update.
+    Restart,
     /// Check for OS and package updates
     OsCheck,
     /// Install OS and package updates
@@ -1040,8 +1060,13 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Update { action } => match action {
             UpdateAction::Check => commands::update_check().await?,
-            UpdateAction::Install => commands::update_install().await?,
-            UpdateAction::Rollback => commands::update_rollback().await?,
+            UpdateAction::Install { restart, yes } => {
+                commands::update_install(restart || yes).await?
+            }
+            UpdateAction::Rollback { restart, yes } => {
+                commands::update_rollback(restart || yes).await?
+            }
+            UpdateAction::Restart => commands::update_restart().await?,
             UpdateAction::OsCheck => commands::update_os_check().await?,
             UpdateAction::OsInstall => commands::update_os_install().await?,
         },

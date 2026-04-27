@@ -46,6 +46,16 @@ interface AifwUpdateInfo {
   checksum_url: string | null;
   has_backup: boolean;
   backup_version: string | null;
+  // True when the on-disk version differs from the running binary —
+  // an install/rollback completed but services have not been bounced.
+  // Drives the "Restart pending" banner.
+  restart_pending?: boolean;
+  running_version?: string;
+}
+
+interface UpdateInstallResponse {
+  message: string;
+  restart_required: boolean;
 }
 
 interface Feedback {
@@ -82,6 +92,13 @@ export default function UpdatesPage() {
   const [aifwRollingBack, setAifwRollingBack] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [restartCountdown, setRestartCountdown] = useState(0);
+  // Restart-confirm modal — shown after install/rollback succeeds.
+  // `restartPrompt.action` is what we just did, used in the modal copy
+  // ("Update v… installed" vs "Rollback to v… completed").
+  const [restartPrompt, setRestartPrompt] = useState<{
+    action: "install" | "rollback";
+    version: string;
+  } | null>(null);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -231,69 +248,81 @@ export default function UpdatesPage() {
     }
   };
 
+  // Wait for the API to bounce, then reload the page. Used by every
+  // path that triggers a service restart — install confirm, rollback
+  // confirm, and the "restart pending" banner.
+  const watchRestart = async () => {
+    setRestarting(true);
+    setRestartCountdown(120);
+
+    const countdownInterval = setInterval(() => {
+      setRestartCountdown((prev) => {
+        if (prev <= 1) { clearInterval(countdownInterval); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Phase 1: wait for the old API to go DOWN. The 2s spawn delay in
+    // restart_services means our /status probe will keep succeeding for
+    // a beat after we POSTed /restart — we want to see that confirmation
+    // before declaring the bounce in progress.
+    let apiWentDown = false;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        await fetch("/api/v1/status", { signal: AbortSignal.timeout(2000) });
+      } catch {
+        apiWentDown = true;
+        break;
+      }
+    }
+    if (!apiWentDown) await new Promise((r) => setTimeout(r, 5000));
+
+    // Phase 2: wait for the new API to come up.
+    const pollStart = Date.now();
+    while (Date.now() - pollStart < 120000) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const probe = await fetch("/api/v1/status", {
+          headers: authHeaders(),
+          signal: AbortSignal.timeout(3000),
+        });
+        if (probe.ok) {
+          clearInterval(countdownInterval);
+          setRestartCountdown(0);
+          await new Promise((r) => setTimeout(r, 500));
+          window.location.reload();
+          return;
+        }
+      } catch {
+        // API not back yet — keep polling
+      }
+    }
+    clearInterval(countdownInterval);
+    window.location.reload();
+  };
+
   const handleAifwInstall = async () => {
     setAifwInstalling(true);
     try {
       const res = await fetch("/api/v1/updates/aifw/install", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await res.json();
-
-      // Install succeeded — API will restart in ~2s. Show countdown overlay.
+      const data: UpdateInstallResponse = await res.json();
       setAifwInstalling(false);
-      setRestarting(true);
-      setRestartCountdown(120);
 
-      // Countdown timer
-      const countdownInterval = setInterval(() => {
-        setRestartCountdown((prev) => {
-          if (prev <= 1) { clearInterval(countdownInterval); return 0; }
-          return prev - 1;
+      if (data.restart_required) {
+        // Install put the new binaries on disk but did NOT bounce services.
+        // Prompt the operator before triggering the outage.
+        setRestartPrompt({
+          action: "install",
+          version: aifwInfo?.latest_version ?? "",
         });
-      }, 1000);
-
-      // Phase 1: Wait for the old API to actually go DOWN.
-      // Poll until we get a connection error, meaning the old process died.
-      let apiWentDown = false;
-      for (let i = 0; i < 30; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
-        try {
-          await fetch("/api/v1/status", { signal: AbortSignal.timeout(2000) });
-          // Still responding — old process alive, keep waiting
-        } catch {
-          apiWentDown = true;
-          break;
-        }
+        // Refresh status so the "restart pending" banner sticks if the
+        // operator dismisses the modal.
+        fetchAifwStatus();
+      } else {
+        showFeedback("success", data.message || "Already on the latest version");
       }
-      // If it never went down (unlikely), force a minimum wait
-      if (!apiWentDown) await new Promise((r) => setTimeout(r, 5000));
-
-      // Phase 2: Poll until the NEW API is up, then refresh.
-      const pollStart = Date.now();
-      const maxWait = 120000;
-      const poll = async () => {
-        while (Date.now() - pollStart < maxWait) {
-          await new Promise((r) => setTimeout(r, 2000));
-          try {
-            const probe = await fetch("/api/v1/status", {
-              headers: authHeaders(),
-              signal: AbortSignal.timeout(3000),
-            });
-            if (probe.ok) {
-              clearInterval(countdownInterval);
-              setRestartCountdown(0);
-              await new Promise((r) => setTimeout(r, 500));
-              window.location.reload();
-              return;
-            }
-          } catch {
-            // API not back yet — keep polling
-          }
-        }
-        // Timeout — refresh anyway
-        clearInterval(countdownInterval);
-        window.location.reload();
-      };
-      poll();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to install AiFw update");
       setAifwInstalling(false);
@@ -305,53 +334,35 @@ export default function UpdatesPage() {
     try {
       const res = await fetch("/api/v1/updates/aifw/rollback", { method: "POST", headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await res.json();
-
+      const data: UpdateInstallResponse = await res.json();
       setAifwRollingBack(false);
-      setRestarting(true);
-      setRestartCountdown(120);
 
-      const countdownInterval = setInterval(() => {
-        setRestartCountdown((prev) => {
-          if (prev <= 1) { clearInterval(countdownInterval); return 0; }
-          return prev - 1;
+      if (data.restart_required) {
+        setRestartPrompt({
+          action: "rollback",
+          version: aifwInfo?.backup_version ?? "",
         });
-      }, 1000);
-
-      // Wait for old API to actually go down
-      let apiDown = false;
-      for (let i = 0; i < 30; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
-        try { await fetch("/api/v1/status", { signal: AbortSignal.timeout(2000) }); }
-        catch { apiDown = true; break; }
+        fetchAifwStatus();
+      } else {
+        showFeedback("success", data.message || "Rollback completed");
       }
-      if (!apiDown) await new Promise((r) => setTimeout(r, 5000));
-
-      const pollStart = Date.now();
-      const poll = async () => {
-        while (Date.now() - pollStart < 120000) {
-          await new Promise((r) => setTimeout(r, 2000));
-          try {
-            const probe = await fetch("/api/v1/status", {
-              headers: authHeaders(),
-              signal: AbortSignal.timeout(3000),
-            });
-            if (probe.ok) {
-              clearInterval(countdownInterval);
-              setRestartCountdown(0);
-              await new Promise((r) => setTimeout(r, 500));
-              window.location.reload();
-              return;
-            }
-          } catch { /* keep polling */ }
-        }
-        clearInterval(countdownInterval);
-        window.location.reload();
-      };
-      poll();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to rollback AiFw");
       setAifwRollingBack(false);
+    }
+  };
+
+  // Operator-confirmed restart. Posts to the dedicated restart endpoint
+  // and switches to the bounce overlay.
+  const handleConfirmRestart = async () => {
+    try {
+      const res = await fetch("/api/v1/updates/aifw/restart", { method: "POST", headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await res.json();
+      setRestartPrompt(null);
+      watchRestart();
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to restart services");
     }
   };
 
@@ -378,6 +389,40 @@ export default function UpdatesPage() {
       </div>
     );
   }
+
+  // Restart-confirm modal — shown after install/rollback succeeds when
+  // the API reports restart_required: true. Lets the operator defer the
+  // outage; the restart-pending banner stays visible until they come
+  // back and click the action.
+  const restartModal = restartPrompt ? (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg max-w-md w-full p-6 space-y-4">
+        <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+          {restartPrompt.action === "install" ? "Update installed" : "Rollback complete"}
+        </h2>
+        <p className="text-sm text-[var(--text-muted)]">
+          {restartPrompt.action === "install"
+            ? `AiFw v${restartPrompt.version} is on disk. A service restart is required to activate it.`
+            : `Rollback to v${restartPrompt.version} is on disk. A service restart is required to activate it.`}
+          {" "}Services will be unavailable for roughly 30 seconds.
+        </p>
+        <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end pt-2">
+          <button
+            onClick={() => setRestartPrompt(null)}
+            className="px-4 py-2 text-sm rounded-md border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
+          >
+            Restart later
+          </button>
+          <button
+            onClick={handleConfirmRestart}
+            className="px-4 py-2 text-sm rounded-md bg-[var(--accent)] text-white hover:opacity-90"
+          >
+            Restart now
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   // Restart overlay — blocks the page during service restart
   if (restarting) {
@@ -412,6 +457,7 @@ export default function UpdatesPage() {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {restartModal}
       <div>
         <h1 className="text-2xl font-bold">System Updates</h1>
         <p className="text-sm text-[var(--text-muted)]">Manage AiFw firmware, operating system, and package updates</p>
@@ -426,6 +472,25 @@ export default function UpdatesPage() {
           }`}
         >
           {feedback.msg}
+        </div>
+      )}
+
+      {/* Restart-pending banner — shows whenever the on-disk version
+          differs from the running binary. Survives page reloads because
+          the flag comes from /updates/aifw/status. */}
+      {aifwInfo?.restart_pending && !restartPrompt && (
+        <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg border border-yellow-500/40 bg-yellow-500/10 text-yellow-200">
+          <div className="text-sm">
+            <span className="font-semibold">Restart pending.</span>{" "}
+            v{aifwInfo.current_version} is installed but services are still running v
+            {aifwInfo.running_version || "the previous version"}. Restart now to activate.
+          </div>
+          <button
+            onClick={handleConfirmRestart}
+            className="px-3 py-1.5 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-100 text-sm rounded-md border border-yellow-500/40 whitespace-nowrap"
+          >
+            Restart now
+          </button>
         </div>
       )}
 

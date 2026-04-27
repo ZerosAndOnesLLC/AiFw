@@ -255,6 +255,13 @@ fi
 
 # --- Restart services ---
 echo "[5/5] Restarting services..."
+# Make sure rc.conf has the rcvar for every AiFw service. Older test VMs
+# were brought up before aifw_ids existed, so the rcvar was never set —
+# `service aifw_ids start` was a silent no-op and IDS endpoints returned
+# 503. Idempotent: sysrc rewrites the line whether or not it exists.
+sysrc aifw_daemon_enable=YES >/dev/null
+sysrc aifw_ids_enable=YES >/dev/null
+sysrc aifw_api_enable=YES >/dev/null
 service aifw_daemon start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_daemon not configured"
 # aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
 service aifw_ids start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_ids not configured"

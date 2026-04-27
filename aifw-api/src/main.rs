@@ -899,6 +899,10 @@ pub fn build_router(
             "/api/v1/updates/aifw/rollback",
             post(updates::aifw_rollback),
         )
+        .route(
+            "/api/v1/updates/aifw/restart",
+            post(updates::aifw_restart_services),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
 
     // backup:read
@@ -1678,6 +1682,39 @@ fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> a
     Ok(())
 }
 
+/// One-shot rc.conf migration for appliances upgraded from versions that
+/// predate a newer service (notably aifw_ids in v5.76.0). The in-product
+/// updater drops the binary + rc.d script in place but never sets the
+/// rcvar, so `service aifw_ids restart` is a silent no-op — aifw-api
+/// then can't reach `/var/run/aifw/ids.sock` and every IDS endpoint
+/// returns 503. Idempotent: rerunning sysrc with the same value is free.
+///
+/// After enabling, we also kick `aifw_ids` ourselves so the appliance
+/// recovers without waiting for the operator to click "Restart Now" on
+/// the very first boot of the new version.
+#[cfg(target_os = "freebsd")]
+async fn ensure_rc_services_enabled() {
+    use tokio::process::Command;
+
+    aifw_core::updater::ensure_rcvars().await;
+
+    let status = Command::new("service")
+        .args(["aifw_ids", "status"])
+        .output()
+        .await;
+    let already_running = status.map(|o| o.status.success()).unwrap_or(false);
+    if !already_running {
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["service", "aifw_ids", "start"])
+            .output()
+            .await;
+        info!("aifw_ids started by aifw-api startup migration");
+    }
+}
+
+#[cfg(not(target_os = "freebsd"))]
+async fn ensure_rc_services_enabled() {}
+
 /// Ensure AiFw anchors are present in /usr/local/etc/aifw/pf.conf.aifw.
 ///
 /// Works line-by-line (never substring-match) so `anchor "aifw"` cannot
@@ -1960,6 +1997,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Ensure rdr-anchor exists in pf.conf (required for DNAT/port forwarding)
     ensure_rdr_anchor().await;
+
+    // Self-heal rc.conf for appliances upgraded from a version that
+    // shipped before aifw_ids. Sets the rcvar and starts aifw_ids if it
+    // wasn't already running. See `ensure_rc_services_enabled` for the
+    // full reasoning.
+    ensure_rc_services_enabled().await;
 
     // Collect VPN pass rules and inject into rule engine so they appear
     // before the default block in the aifw anchor

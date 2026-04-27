@@ -63,6 +63,14 @@ pub struct MessageResponse {
     pub message: String,
 }
 
+/// Response for install/rollback. `restart_required: true` tells the UI to
+/// prompt the user before bouncing services — installs no longer auto-restart.
+#[derive(Debug, Serialize)]
+pub struct UpdateInstallResponse {
+    pub message: String,
+    pub restart_required: bool,
+}
+
 fn internal() -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
@@ -477,8 +485,13 @@ pub async fn aifw_update_status(
     if let Some((json,)) = cached
         && let Ok(mut info) = serde_json::from_str::<AifwUpdateInfo>(&json)
     {
-        // Refresh current version and backup info
+        // Refresh fields that change without a re-check: the on-disk version
+        // (post-install), the running binary's compiled-in version, and the
+        // restart-pending derivation. These are cheap and the cached info
+        // can be hours old.
         info.current_version = updater::get_current_version().await;
+        info.running_version = updater::running_version().to_string();
+        info.restart_pending = updater::restart_pending().await;
         return Ok(Json(info));
     }
 
@@ -495,6 +508,8 @@ pub async fn aifw_update_status(
             .await
             .ok()
             .map(|v| v.trim().to_string()),
+        restart_pending: updater::restart_pending().await,
+        running_version: updater::running_version().to_string(),
     }))
 }
 
@@ -527,7 +542,7 @@ pub async fn aifw_check_update(
 
 pub async fn aifw_install_update(
     State(state): State<AppState>,
-) -> Result<Json<MessageResponse>, StatusCode> {
+) -> Result<Json<UpdateInstallResponse>, StatusCode> {
     // Get cached update info
     let cached = sqlx::query_as::<_, (String,)>(
         "SELECT value FROM update_config WHERE key = 'aifw_cached_info'",
@@ -548,8 +563,9 @@ pub async fn aifw_install_update(
     };
 
     if !info.update_available {
-        return Ok(Json(MessageResponse {
+        return Ok(Json(UpdateInstallResponse {
             message: "Already running the latest version".to_string(),
+            restart_required: false,
         }));
     }
 
@@ -568,17 +584,17 @@ pub async fn aifw_install_update(
     // Clear cached info
     save_config(&state.pool, "aifw_cached_info", "").await;
 
-    // Schedule service restart (background, so the response is sent first)
-    updater::restart_services().await;
-
-    Ok(Json(MessageResponse {
-        message: format!("{}. Services restarting...", msg),
+    // Do NOT auto-restart. The UI/CLI prompt the operator and call
+    // POST /updates/aifw/restart explicitly.
+    Ok(Json(UpdateInstallResponse {
+        message: msg,
+        restart_required: true,
     }))
 }
 
 pub async fn aifw_rollback(
     State(state): State<AppState>,
-) -> Result<Json<MessageResponse>, StatusCode> {
+) -> Result<Json<UpdateInstallResponse>, StatusCode> {
     let msg = updater::rollback().await.map_err(|e| {
         tracing::error!("AiFw rollback failed: {}", e);
         internal()
@@ -587,10 +603,29 @@ pub async fn aifw_rollback(
     log_update(&state.pool, "aifw_rollback", &msg, "completed").await;
     save_config(&state.pool, "aifw_cached_info", "").await;
 
-    // Schedule service restart
-    updater::restart_services().await;
+    // Do NOT auto-restart. The UI/CLI prompt the operator and call
+    // POST /updates/aifw/restart explicitly.
+    Ok(Json(UpdateInstallResponse {
+        message: msg,
+        restart_required: true,
+    }))
+}
 
+/// Operator-confirmed restart of all AiFw services. Returns immediately —
+/// `restart_services()` spawns a 2-second-delayed background task so the
+/// HTTP response leaves the box before aifw-api itself goes down.
+pub async fn aifw_restart_services(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    log_update(
+        &state.pool,
+        "aifw_restart",
+        "operator-triggered service restart",
+        "started",
+    )
+    .await;
+    updater::restart_services().await;
     Ok(Json(MessageResponse {
-        message: format!("{}. Services restarting...", msg),
+        message: "Services restarting...".to_string(),
     }))
 }

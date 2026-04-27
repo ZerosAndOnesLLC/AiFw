@@ -83,6 +83,16 @@ pub struct AifwUpdateInfo {
     pub checksum_url: Option<String>,
     pub has_backup: bool,
     pub backup_version: Option<String>,
+    /// On-disk version differs from the running binary's compiled-in
+    /// version — install completed but services have not been restarted.
+    /// Drives the "Restart pending" banner and survives page reloads.
+    #[serde(default)]
+    pub restart_pending: bool,
+    /// Version actually executing in the current `aifw-api` process. The
+    /// UI compares this to `current_version` to know what the restart
+    /// will activate.
+    #[serde(default)]
+    pub running_version: String,
 }
 
 /// Read the current installed AiFw version.
@@ -92,6 +102,24 @@ pub async fn get_current_version() -> String {
         .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
         .trim()
         .to_string()
+}
+
+/// Version compiled into the running binary. Used together with
+/// `get_current_version()` to detect a pending restart: when the on-disk
+/// version (just written by an update tarball install) differs from this
+/// one, the new binary is on disk but not yet executing.
+pub fn running_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// True when the on-disk version differs from the running binary's
+/// compiled-in version. Drives the "restart pending" UI banner.
+pub async fn restart_pending() -> bool {
+    let on_disk = match tokio::fs::read_to_string(VERSION_FILE).await {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return false,
+    };
+    !on_disk.is_empty() && on_disk != running_version()
 }
 
 /// Check GitHub Releases for a newer AiFw version.
@@ -126,6 +154,7 @@ pub async fn check_for_update() -> Result<AifwUpdateInfo, UpdaterError> {
     }
 
     let (has_backup, backup_version) = get_backup_info().await;
+    let restart_pending = restart_pending().await;
 
     Ok(AifwUpdateInfo {
         update_available: version_newer(&current, latest),
@@ -137,6 +166,8 @@ pub async fn check_for_update() -> Result<AifwUpdateInfo, UpdaterError> {
         checksum_url,
         has_backup,
         backup_version,
+        restart_pending,
+        running_version: running_version().to_string(),
     })
 }
 
@@ -426,6 +457,31 @@ const RESTARTABLE_SERVICES: &[&str] = &[
     "aifw_api",
 ];
 
+/// Services we own. `aifw_firstboot` is excluded — it's a one-shot that
+/// disables itself after the first run and must not be re-enabled here.
+const OWNED_RCVARS: &[&str] = &[
+    "aifw_daemon_enable",
+    "aifw_ids_enable",
+    "aifw_api_enable",
+];
+
+/// Ensure each AiFw service has its rcvar set to YES in /etc/rc.conf.
+///
+/// Appliances upgraded from versions predating a service (notably aifw_ids
+/// added in v5.76.0) only got the binary + rc.d script installed by the
+/// updater — the rcvar stayed unset, so `service aifw_ids restart` was a
+/// silent no-op and the IPC socket never came up. Idempotent: `sysrc`
+/// rewrites the line whether or not it exists.
+pub async fn ensure_rcvars() {
+    for var in OWNED_RCVARS {
+        let arg = format!("{}=YES", var);
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["/usr/sbin/sysrc", &arg])
+            .output()
+            .await;
+    }
+}
+
 /// Restart AiFw services (spawns background task, returns immediately).
 ///
 /// Every companion service is restarted, not just aifw_daemon/aifw_api,
@@ -436,6 +492,7 @@ const RESTARTABLE_SERVICES: &[&str] = &[
 pub async fn restart_services() {
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        ensure_rcvars().await;
         for svc in RESTARTABLE_SERVICES {
             restart_one(svc).await;
         }
@@ -444,6 +501,7 @@ pub async fn restart_services() {
 
 /// Restart AiFw services synchronously (blocks until restart completes, use from CLI).
 pub async fn restart_services_sync() {
+    ensure_rcvars().await;
     for svc in RESTARTABLE_SERVICES {
         restart_one(svc).await;
     }

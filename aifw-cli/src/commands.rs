@@ -1707,7 +1707,7 @@ pub async fn update_check() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn update_install() -> anyhow::Result<()> {
+pub async fn update_install(auto_restart: bool) -> anyhow::Result<()> {
     use aifw_core::updater;
 
     println!("Checking for AiFw updates...");
@@ -1728,22 +1728,52 @@ pub async fn update_install() -> anyhow::Result<()> {
     let msg = updater::download_and_install(&info).await?;
     println!("{}", msg);
 
-    println!("Restarting services...");
-    updater::restart_services_sync().await;
-    println!("Done.");
+    if auto_restart || prompt_restart_yes()? {
+        println!("Restarting services...");
+        updater::restart_services_sync().await;
+        println!("Done.");
+    } else {
+        println!("Update installed. Run 'aifw update restart' when ready to activate it.");
+    }
     Ok(())
 }
 
-pub async fn update_rollback() -> anyhow::Result<()> {
+pub async fn update_rollback(auto_restart: bool) -> anyhow::Result<()> {
     use aifw_core::updater;
 
     let msg = updater::rollback().await?;
     println!("{}", msg);
 
-    println!("Restarting services...");
+    if auto_restart || prompt_restart_yes()? {
+        println!("Restarting services...");
+        updater::restart_services_sync().await;
+        println!("Done.");
+    } else {
+        println!("Rollback installed. Run 'aifw update restart' when ready to activate it.");
+    }
+    Ok(())
+}
+
+pub async fn update_restart() -> anyhow::Result<()> {
+    use aifw_core::updater;
+    println!("Restarting AiFw services...");
     updater::restart_services_sync().await;
     println!("Done.");
     Ok(())
+}
+
+/// Interactive confirmation. Returns true on y/yes (case-insensitive).
+/// Defaults to no on bare Enter — restarts are user-visible outages, the
+/// safe answer when the operator hasn't decided is "don't bounce yet".
+fn prompt_restart_yes() -> anyhow::Result<bool> {
+    use std::io::{BufRead, Write};
+
+    print!("Restart services now to activate? [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(answer == "y" || answer == "yes")
 }
 
 pub async fn update_os_check() -> anyhow::Result<()> {
