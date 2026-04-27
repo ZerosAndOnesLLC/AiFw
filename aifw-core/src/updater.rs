@@ -21,6 +21,7 @@ struct Manifest {
     binaries: ManifestBinaries,
     external_repos: Vec<ExternalRepo>,
     rc_scripts: Vec<String>,
+    #[allow(dead_code)]
     sbin_scripts: Vec<String>,
     directories: Vec<String>,
 }
@@ -211,24 +212,41 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         return Err(UpdaterError::Install("Empty tarball".to_string()));
     };
 
-    // Install binaries
+    // Install binaries. We iterate the tarball's bin/ directory rather than
+    // the compiled-in `all_binaries()` list — that way a release that adds a
+    // new binary (e.g. aifw-ids in 5.76) doesn't require the *running*
+    // updater to know about it. The tarball is the source of truth.
     info!("Installing binaries...");
     let bin_src = update_dir.join("bin");
     let mut installed = 0u32;
-    for bin in &all_binaries() {
-        let src = bin_src.join(bin);
-        if src.exists() {
-            let dst = format!("{}/{}", BIN_DIR, bin);
+    if bin_src.exists() {
+        let mut entries = tokio::fs::read_dir(&bin_src)
+            .await
+            .map_err(|e| UpdaterError::Install(format!("read bin dir: {}", e)))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| UpdaterError::Install(e.to_string()))?
+        {
+            if !entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let src = entry.path();
+            let name = match src.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let dst = format!("{}/{}", BIN_DIR, name);
             let output = Command::new("/usr/local/bin/sudo")
                 .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
                 .output()
                 .await
-                .map_err(|e| UpdaterError::Install(format!("Failed to install {}: {}", bin, e)))?;
+                .map_err(|e| UpdaterError::Install(format!("Failed to install {}: {}", name, e)))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(UpdaterError::Install(format!(
                     "Failed to install {}: {}",
-                    bin, stderr
+                    name, stderr
                 )));
             }
             installed += 1;
@@ -289,14 +307,24 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
 
     let manifest = load_manifest();
 
-    // Install rc.d scripts (service definitions)
+    // Install rc.d scripts. Same reasoning as binaries above: iterate the
+    // tarball directory rather than the compiled-in manifest.rc_scripts list,
+    // so a release that ships a new rc.d (e.g. aifw_ids in 5.76) gets
+    // installed even when the running updater predates it.
     let rcd_src = update_dir.join("rc.d");
     if rcd_src.exists() {
         info!("Installing rc.d scripts...");
-        for script in &manifest.rc_scripts {
-            let src = rcd_src.join(script);
-            if src.exists() {
-                let dst = format!("/usr/local/etc/rc.d/{}", script);
+        if let Ok(mut entries) = tokio::fs::read_dir(&rcd_src).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if !entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                let src = entry.path();
+                let name = match src.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                let dst = format!("/usr/local/etc/rc.d/{}", name);
                 let _ = Command::new("/usr/local/bin/sudo")
                     .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
                     .output()
@@ -305,14 +333,22 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         }
     }
 
-    // Install sbin scripts (console, installer)
+    // Install sbin scripts (console, installer). Iterate tarball/sbin/ for
+    // the same reason as above.
     let sbin_src = update_dir.join("sbin");
     if sbin_src.exists() {
         info!("Installing utility scripts...");
-        for script in &manifest.sbin_scripts {
-            let src = sbin_src.join(script);
-            if src.exists() {
-                let dst = format!("{}/{}", BIN_DIR, script);
+        if let Ok(mut entries) = tokio::fs::read_dir(&sbin_src).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if !entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                let src = entry.path();
+                let name = match src.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                let dst = format!("{}/{}", BIN_DIR, name);
                 let _ = Command::new("/usr/local/bin/sudo")
                     .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
                     .output()
@@ -320,6 +356,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             }
         }
     }
+
 
     // Ensure required directories exist (new services may need them)
     for dir in &manifest.directories {

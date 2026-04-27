@@ -147,7 +147,17 @@ cd "$PROJECT_ROOT"
 # --- Stage build inputs ---
 echo "=== [4/6] Staging build inputs ==="
 mkdir -p "$SCRIPT_DIR/release"
-for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
+
+# Pull the binary list from manifest.json so adding a new crate to the
+# workspace (e.g. aifw-ids in 5.76) requires only a manifest edit, not a
+# build-script edit. Hardcoding the list here was the bug that shipped a
+# 5.76.1 release missing aifw-ids.
+LOCAL_BINS=$(python3 -c "import json; m=json.load(open('$PROJECT_ROOT/freebsd/manifest.json')); print(' '.join(m['binaries']['local']))")
+for bin in $LOCAL_BINS; do
+    if [ ! -f "$PROJECT_ROOT/target/release/${bin}" ]; then
+        echo "ERROR: ${bin} listed in manifest but not built — refusing to ship a partial release" >&2
+        exit 1
+    fi
     cp "$PROJECT_ROOT/target/release/${bin}" "$SCRIPT_DIR/release/${bin}"
 done
 # Stage TrafficCop binary if built
@@ -185,7 +195,8 @@ echo "=== [5/9] Building update tarball ==="
 TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
 rm -rf "$TARBALL_DIR"
 mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui"
-for bin in aifw aifw-daemon aifw-api aifw-tui aifw-setup; do
+# Same source-of-truth as the staging step above.
+for bin in $LOCAL_BINS; do
     cp "$PROJECT_ROOT/target/release/${bin}" "$TARBALL_DIR/bin/"
 done
 # Include TrafficCop in update tarball
