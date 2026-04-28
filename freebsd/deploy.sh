@@ -241,6 +241,20 @@ chmod 755 /usr/local/etc/rc.d/aifw_api
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/aifw_ids" /usr/local/etc/rc.d/aifw_ids
 chmod 755 /usr/local/etc/rc.d/aifw_ids
 
+# Install aifw_watchdog rc.d script
+cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/aifw_watchdog" /usr/local/etc/rc.d/aifw_watchdog
+chmod 755 /usr/local/etc/rc.d/aifw_watchdog
+
+# Install libexec scripts (restart driver, watchdog loop, motd cleanup,
+# login migrate). Mode 755 so the daemon supervisor can exec them.
+mkdir -p /usr/local/libexec
+for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh; do
+    src="$REPO_DIR/freebsd/overlay/usr/local/libexec/$script"
+    if [ -f "$src" ]; then
+        install -m 755 "$src" "/usr/local/libexec/$script"
+    fi
+done
+
 # Ensure sudoers for aifw user
 mkdir -p /usr/local/etc/sudoers.d
 echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /sbin/ifconfig, /sbin/dhclient, /sbin/route, /usr/sbin/service, /usr/sbin/sysrc, /usr/sbin/pkg, /usr/sbin/freebsd-update, /sbin/shutdown, /bin/hostname, /bin/cat, /bin/pkill, /usr/bin/pkill, /usr/bin/tee, /usr/sbin/chown, /bin/mkdir, /usr/sbin/tcpdump, /usr/bin/install, /bin/rm /usr/local/etc/rdns/rpz/*' > /usr/local/etc/sudoers.d/aifw
@@ -262,10 +276,12 @@ echo "[5/5] Restarting services..."
 sysrc aifw_daemon_enable=YES >/dev/null
 sysrc aifw_ids_enable=YES >/dev/null
 sysrc aifw_api_enable=YES >/dev/null
+sysrc aifw_watchdog_enable=YES >/dev/null
 service aifw_daemon start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_daemon not configured"
 # aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
 service aifw_ids start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_ids not configured"
 service aifw_api start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_api not configured"
+service aifw_watchdog start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_watchdog not configured"
 # Start TrafficCop if enabled
 if [ "$(sysrc -n trafficcop_enable 2>/dev/null)" = "YES" ]; then
     service trafficcop start </dev/null >/dev/null 2>&1 || true

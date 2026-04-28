@@ -37,6 +37,7 @@ aifw_firstboot_start()
             sysrc aifw_daemon_enable=YES >/dev/null 2>&1
             sysrc aifw_ids_enable=YES >/dev/null 2>&1
             sysrc aifw_api_enable=YES >/dev/null 2>&1
+            sysrc aifw_watchdog_enable=YES >/dev/null 2>&1
             sysrc aifw_firstboot_enable=NO >/dev/null 2>&1
 
             # Load pf rules
@@ -52,6 +53,8 @@ aifw_firstboot_start()
             # aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
             service aifw_ids start 2>/dev/null
             service aifw_api start 2>/dev/null
+            # Watchdog last so it doesn't observe the others mid-startup.
+            service aifw_watchdog start 2>/dev/null
 
             echo ""
             echo "AiFw is running."

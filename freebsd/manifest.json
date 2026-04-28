@@ -34,6 +34,7 @@
     "aifw_daemon",
     "aifw_firstboot",
     "aifw_ids",
+    "aifw_watchdog",
     "rdhcpd",
     "rdns",
     "rtime",
@@ -43,6 +44,13 @@
   "sbin_scripts": [
     "aifw-console",
     "aifw-install"
+  ],
+
+  "libexec_scripts": [
+    "aifw-login-migrate.sh",
+    "aifw-motd-cleanup.sh",
+    "aifw-restart.sh",
+    "aifw-watchdog.sh"
   ],
 
   "directories": [

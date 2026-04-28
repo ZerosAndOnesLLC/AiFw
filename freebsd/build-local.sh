@@ -236,6 +236,16 @@ if [ -d "$PROJECT_ROOT/freebsd/overlay/usr/local/sbin" ]; then
     cp -a "$PROJECT_ROOT/freebsd/overlay/usr/local/sbin/"* "$TARBALL_DIR/sbin/" 2>/dev/null || true
 fi
 
+# libexec scripts — aifw-restart.sh (detached bouncer), aifw-watchdog.sh
+# (self-heal loop), aifw-motd-cleanup.sh, aifw-login-migrate.sh. The
+# updater (aifw-core/src/updater.rs) iterates <tarball>/libexec/ on
+# install. Skipping this means the new bouncer never reaches the
+# appliance and restart_services() falls back to the in-process loop.
+mkdir -p "$TARBALL_DIR/libexec"
+if [ -d "$PROJECT_ROOT/freebsd/overlay/usr/local/libexec" ]; then
+    cp -a "$PROJECT_ROOT/freebsd/overlay/usr/local/libexec/"* "$TARBALL_DIR/libexec/" 2>/dev/null || true
+fi
+
 echo "$VERSION" > "$TARBALL_DIR/version"
 
 # Write a manifest of what made it into the tarball — commit SHAs for every

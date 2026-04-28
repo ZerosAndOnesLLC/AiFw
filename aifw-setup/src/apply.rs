@@ -351,6 +351,9 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
         let _ = Command::new("sysrc")
             .args(["aifw_api_enable=YES"])
             .output();
+        let _ = Command::new("sysrc")
+            .args(["aifw_watchdog_enable=YES"])
+            .output();
 
         // Start core services
         let _ = Command::new("service")
@@ -361,7 +364,12 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
             .args(["aifw_ids", "start"])
             .output();
         let _ = Command::new("service").args(["aifw_api", "start"]).output();
-        console::success("AiFw daemon, IDS, and API started");
+        // Watchdog last so it doesn't observe the others mid-startup and
+        // try to "heal" them.
+        let _ = Command::new("service")
+            .args(["aifw_watchdog", "start"])
+            .output();
+        console::success("AiFw daemon, IDS, API, and watchdog started");
 
         // Start rDNS
         let _ = Command::new("service").args(["rdns", "start"]).output();
@@ -1949,9 +1957,82 @@ run_rc_command "$1"
         &config.config_dir
     };
 
+    let watchdog_script = r#"#!/bin/sh
+#
+# PROVIDE: aifw_watchdog
+# REQUIRE: aifw_api
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="aifw_watchdog"
+rcvar="aifw_watchdog_enable"
+
+load_rc_config $name
+
+: ${aifw_watchdog_enable:="NO"}
+: ${aifw_watchdog_pidfile:="/var/run/aifw_watchdog.pid"}
+: ${aifw_watchdog_supervisor_pidfile:="/var/run/aifw_watchdog-supervisor.pid"}
+: ${aifw_watchdog_interval:="60"}
+
+pidfile="${aifw_watchdog_supervisor_pidfile}"
+procname="/usr/sbin/daemon"
+command="/usr/sbin/daemon"
+command_args="-f -p ${aifw_watchdog_pidfile} -P ${aifw_watchdog_supervisor_pidfile} -R 5 -S -T aifw_watchdog -o /var/log/aifw/watchdog.log /usr/local/libexec/aifw-watchdog.sh"
+
+start_precmd="aifw_watchdog_precmd"
+stop_cmd="aifw_watchdog_stop"
+stop_postcmd="aifw_watchdog_poststop"
+
+aifw_watchdog_precmd()
+{
+    /bin/mkdir -p /var/log/aifw
+    /usr/bin/pkill -f "daemon:.*aifw-watchdog" 2>/dev/null
+    /usr/bin/pkill -f "aifw-watchdog.sh" 2>/dev/null
+    /bin/rm -f ${aifw_watchdog_pidfile} ${aifw_watchdog_supervisor_pidfile}
+    export AIFW_WATCHDOG_INTERVAL="${aifw_watchdog_interval}"
+}
+
+aifw_watchdog_stop()
+{
+    if [ -f "${aifw_watchdog_supervisor_pidfile}" ]; then
+        sup_pid=$(cat "${aifw_watchdog_supervisor_pidfile}")
+        echo "Stopping aifw_watchdog (supervisor pid ${sup_pid})."
+        if kill -TERM "${sup_pid}" 2>/dev/null; then
+            i=0
+            while [ $i -lt 5 ] && kill -0 "${sup_pid}" 2>/dev/null; do
+                sleep 1
+                i=$((i+1))
+            done
+            if kill -0 "${sup_pid}" 2>/dev/null; then
+                echo "Graceful stop timed out; sending SIGKILL"
+                kill -KILL "${sup_pid}" 2>/dev/null
+                /usr/bin/pkill -KILL -f "aifw-watchdog.sh" 2>/dev/null
+            fi
+        fi
+    elif [ -f "${aifw_watchdog_pidfile}" ]; then
+        pid=$(cat "${aifw_watchdog_pidfile}")
+        kill -TERM "${pid}" 2>/dev/null
+        sleep 2
+        kill -KILL "${pid}" 2>/dev/null
+    else
+        echo "aifw_watchdog is not running."
+    fi
+    /bin/rm -f ${aifw_watchdog_pidfile} ${aifw_watchdog_supervisor_pidfile}
+}
+
+aifw_watchdog_poststop()
+{
+    /bin/rm -f ${aifw_watchdog_pidfile} ${aifw_watchdog_supervisor_pidfile}
+}
+
+run_rc_command "$1"
+"#;
+
     write_file(&format!("{rcd_dir}/aifw_daemon"), &daemon_script)?;
     write_file(&format!("{rcd_dir}/aifw_api"), &api_script)?;
     write_file(&format!("{rcd_dir}/aifw_ids"), &ids_script)?;
+    write_file(&format!("{rcd_dir}/aifw_watchdog"), watchdog_script)?;
     write_file(&format!("{rcd_dir}/rdhcpd"), rdhcpd_script)?;
 
     #[cfg(unix)]
@@ -1961,6 +2042,7 @@ run_rc_command "$1"
         let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_daemon"), perms.clone());
         let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_api"), perms.clone());
         let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_ids"), perms.clone());
+        let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_watchdog"), perms.clone());
         let _ = std::fs::set_permissions(format!("{rcd_dir}/rdhcpd"), perms);
     }
 

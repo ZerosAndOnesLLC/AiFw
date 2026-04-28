@@ -23,6 +23,9 @@ struct Manifest {
     rc_scripts: Vec<String>,
     #[allow(dead_code)]
     sbin_scripts: Vec<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    libexec_scripts: Vec<String>,
     directories: Vec<String>,
 }
 
@@ -364,6 +367,36 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         }
     }
 
+    // Install libexec scripts (restart driver, watchdog loop, motd
+    // cleanup, login migrate). Same iterate-the-tarball pattern: a
+    // release that adds a new libexec script (e.g. aifw-restart.sh in
+    // 5.79.0) lands even when the running updater predates it.
+    let libexec_src = update_dir.join("libexec");
+    if libexec_src.exists() {
+        info!("Installing libexec scripts...");
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["/bin/mkdir", "-p", "/usr/local/libexec"])
+            .output()
+            .await;
+        if let Ok(mut entries) = tokio::fs::read_dir(&libexec_src).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if !entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                let src = entry.path();
+                let name = match src.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                let dst = format!("/usr/local/libexec/{}", name);
+                let _ = Command::new("/usr/local/bin/sudo")
+                    .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
+                    .output()
+                    .await;
+            }
+        }
+    }
+
     // Install sbin scripts (console, installer). Iterate tarball/sbin/ for
     // the same reason as above.
     let sbin_src = update_dir.join("sbin");
@@ -445,6 +478,9 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
 /// Services that may have had their rc.d script replaced by an update and
 /// therefore need a restart for the new script to take effect. Order
 /// matters for aifw_api (last) so HTTP stays up as long as possible.
+/// Used by the synchronous CLI path; the API path delegates to
+/// /usr/local/libexec/aifw-restart.sh which keeps its own ordering in
+/// sync with this list.
 const RESTARTABLE_SERVICES: &[&str] = &[
     "rdns",
     "rdhcpd",
@@ -455,7 +491,12 @@ const RESTARTABLE_SERVICES: &[&str] = &[
     // and the API connects to the IDS IPC socket on startup.
     "aifw_ids",
     "aifw_api",
+    // Watchdog last so it doesn't observe transient down-states during
+    // the bounce window and redundantly try to start things.
+    "aifw_watchdog",
 ];
+
+const RESTART_SCRIPT: &str = "/usr/local/libexec/aifw-restart.sh";
 
 /// Services we own. `aifw_firstboot` is excluded — it's a one-shot that
 /// disables itself after the first run and must not be re-enabled here.
@@ -463,6 +504,7 @@ const OWNED_RCVARS: &[&str] = &[
     "aifw_daemon_enable",
     "aifw_ids_enable",
     "aifw_api_enable",
+    "aifw_watchdog_enable",
 ];
 
 /// Ensure each AiFw service has its rcvar set to YES in /etc/rc.conf.
@@ -482,21 +524,55 @@ pub async fn ensure_rcvars() {
     }
 }
 
-/// Restart AiFw services (spawns background task, returns immediately).
+/// Restart AiFw services after an install or rollback. Spawns the
+/// /usr/local/libexec/aifw-restart.sh driver detached via daemon(8) and
+/// returns immediately so the HTTP response can leave the box.
 ///
-/// Every companion service is restarted, not just aifw_daemon/aifw_api,
-/// because rc.d script updates arrive via the update tarball and only
-/// take effect on service restart. Skipping companions has burned us
-/// before (e.g. the rDNS control-socket chown fix landing in rc.d but
-/// the running daemon ignoring it until the next reboot).
+/// The previous implementation ran the bounce loop inside aifw-api
+/// itself via tokio::spawn. When the loop reached `service aifw_api
+/// restart`, the rc.d stop killed aifw-api and took the loop with it —
+/// any failure during the start half had no driver left to retry, and
+/// the appliance would sit with the API down until an operator noticed.
+/// Detaching via daemon(8) reparents the script to init, so aifw-api
+/// dying mid-iteration cannot kill the bounce.
+///
+/// Falls back to the in-process loop on appliances that don't yet have
+/// the libexec script (mid-upgrade from a pre-detached version). The
+/// fragility we're fixing beats no restart at all.
 pub async fn restart_services() {
-    tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        ensure_rcvars().await;
-        for svc in RESTARTABLE_SERVICES {
-            restart_one(svc).await;
+    if !std::path::Path::new(RESTART_SCRIPT).exists() {
+        warn!(
+            script = RESTART_SCRIPT,
+            "restart driver missing; falling back to in-process loop"
+        );
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            ensure_rcvars().await;
+            for svc in RESTARTABLE_SERVICES {
+                restart_one(svc).await;
+            }
+        });
+        return;
+    }
+    let spawn_result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/sbin/daemon",
+            "-f",
+            "-o",
+            "/var/log/aifw/restart.log",
+            RESTART_SCRIPT,
+        ])
+        .spawn();
+    match spawn_result {
+        Ok(mut child) => {
+            // daemon -f double-forks and returns immediately, so wait()
+            // here just reaps the short-lived sudo wrapper. The actual
+            // bounce continues in its own session, parented to init.
+            let _ = child.wait().await;
+            info!("restart driver detached");
         }
-    });
+        Err(e) => warn!(error = %e, "failed to spawn restart driver"),
+    }
 }
 
 /// Restart AiFw services synchronously (blocks until restart completes, use from CLI).

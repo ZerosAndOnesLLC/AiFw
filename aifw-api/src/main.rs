@@ -1698,17 +1698,24 @@ async fn ensure_rc_services_enabled() {
 
     aifw_core::updater::ensure_rcvars().await;
 
-    let status = Command::new("service")
-        .args(["aifw_ids", "status"])
-        .output()
-        .await;
-    let already_running = status.map(|o| o.status.success()).unwrap_or(false);
-    if !already_running {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["service", "aifw_ids", "start"])
+    // For each rcvar-managed AiFw service that isn't running, kick it.
+    // Order matters: aifw_ids before aifw_api (we're aifw_api so we
+    // don't kick ourselves) and aifw_watchdog last so it doesn't see
+    // transient down-states from the others as "needs heal."
+    for svc in ["aifw_ids", "aifw_watchdog"] {
+        let status = Command::new("service")
+            .args([svc, "status"])
             .output()
             .await;
-        info!("aifw_ids started by aifw-api startup migration");
+        let already_running = status.map(|o| o.status.success()).unwrap_or(false);
+        if already_running {
+            continue;
+        }
+        let _ = Command::new("/usr/local/bin/sudo")
+            .args(["service", svc, "start"])
+            .output()
+            .await;
+        info!(service = svc, "started by aifw-api startup migration");
     }
 }
 
