@@ -375,6 +375,13 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         }
     }
 
+    // Ensure /usr/sbin/daemon is in sudoers. Without it, the detached
+    // restart driver in restart_services() spawns sudo, sudo refuses
+    // for lack of NOPASSWD, and we silently skip the bounce — leaving
+    // the appliance with on-disk version != running version (the
+    // "Restart pending" loop). Same pattern as the wg migration above.
+    ensure_sudoers_daemon().await;
+
     // Ensure required packages are installed (older installs may be missing curl)
     for pkg in &["curl"] {
         let check = Command::new("pkg").args(["info", "-q", pkg]).output().await;
@@ -599,6 +606,63 @@ async fn write_embedded_script(name: &str, content: &str) {
     }
 }
 
+/// Ensure `/usr/sbin/daemon -f *` is in the aifw user's sudoers. Idempotent.
+///
+/// Older installs (and in-place upgrades from before v5.81.0) wrote the
+/// sudoers file without this entry; without it, the detached restart
+/// driver fails silently — sudo refuses, our `spawn()` succeeds, and we
+/// log "restart driver detached" while nothing actually restarted.
+///
+/// The sudoers file is `r--r----- root:wheel`, so a direct `fs::write`
+/// from the aifw user (under whom aifw-api runs) silently fails. We
+/// stage the new content in /tmp and re-install via `sudo install` —
+/// /usr/bin/install is already in the existing sudoers entries.
+pub async fn ensure_sudoers_daemon() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+    if content.contains("/usr/sbin/daemon") {
+        return;
+    }
+    let mut patched = content;
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    patched.push_str("aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *\n");
+
+    let stage = "/tmp/aifw-sudoers-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers patch");
+        return;
+    }
+    let result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/bin/install",
+            "-m",
+            "440",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            stage,
+            path,
+        ])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!("added /usr/sbin/daemon to sudoers for aifw user")
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers patch install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers patch errored"),
+    }
+}
+
 /// Ensure each AiFw service has its rcvar set to YES in /etc/rc.conf.
 ///
 /// Appliances upgraded from versions predating a service (notably aifw_ids
@@ -632,39 +696,58 @@ pub async fn ensure_rcvars() {
 /// the libexec script (mid-upgrade from a pre-detached version). The
 /// fragility we're fixing beats no restart at all.
 pub async fn restart_services() {
-    if !std::path::Path::new(RESTART_SCRIPT).exists() {
-        warn!(
-            script = RESTART_SCRIPT,
-            "restart driver missing; falling back to in-process loop"
-        );
-        tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            ensure_rcvars().await;
-            for svc in RESTARTABLE_SERVICES {
-                restart_one(svc).await;
-            }
-        });
+    if std::path::Path::new(RESTART_SCRIPT).exists()
+        && spawn_detached_restart().await.is_ok()
+    {
         return;
     }
-    let spawn_result = Command::new("/usr/local/bin/sudo")
+    // Either the libexec script isn't present (mid-transitional upgrade)
+    // or sudo refused (older sudoers without /usr/sbin/daemon). Fall
+    // back to the in-process loop. It has the bounce-self-last bug, but
+    // that's strictly better than silently doing nothing — which is
+    // what the previous code did when sudo refused.
+    warn!("falling back to in-process restart loop");
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        ensure_rcvars().await;
+        for svc in RESTARTABLE_SERVICES {
+            restart_one(svc).await;
+        }
+    });
+}
+
+/// Try to spawn /usr/local/libexec/aifw-restart.sh detached via daemon(8).
+/// Returns Err when sudo refuses or the spawn itself fails so the
+/// caller can fall back to the in-process loop instead of silently
+/// pretending the bounce happened.
+async fn spawn_detached_restart() -> Result<(), String> {
+    // .output() (not .spawn() + .wait()) so we observe sudo's exit
+    // status. sudo returns non-zero when NOPASSWD doesn't cover the
+    // command — the tell-tale signature of an older sudoers file
+    // without /usr/sbin/daemon. Without checking, we'd log "restart
+    // driver detached" while nothing happened.
+    let result = Command::new("/usr/local/bin/sudo")
         .args([
+            "-n", // never prompt; fail fast if NOPASSWD doesn't apply
             "/usr/sbin/daemon",
             "-f",
             "-o",
             "/var/log/aifw/restart.log",
             RESTART_SCRIPT,
         ])
-        .spawn();
-    match spawn_result {
-        Ok(mut child) => {
-            // daemon -f double-forks and returns immediately, so wait()
-            // here just reaps the short-lived sudo wrapper. The actual
-            // bounce continues in its own session, parented to init.
-            let _ = child.wait().await;
-            info!("restart driver detached");
-        }
-        Err(e) => warn!(error = %e, "failed to spawn restart driver"),
+        .output()
+        .await
+        .map_err(|e| format!("spawn: {}", e))?;
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        warn!(
+            stderr = %stderr,
+            "sudo refused detached restart spawn"
+        );
+        return Err(format!("sudo exit={:?}", result.status.code()));
     }
+    info!("restart driver detached");
+    Ok(())
 }
 
 /// Restart AiFw services synchronously (blocks until restart completes, use from CLI).

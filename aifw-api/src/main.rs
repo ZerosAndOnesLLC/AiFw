@@ -1706,6 +1706,11 @@ async fn ensure_rc_services_enabled() {
     // the dominant case during a transitional upgrade where the running
     // updater predates `libexec/` iteration.
     aifw_core::updater::ensure_libexec_scripts().await;
+    // Patch sudoers to allow `sudo /usr/sbin/daemon -f *` so the
+    // detached restart driver actually works. Older sudoers files
+    // (written before v5.81.0) lack this entry and silently break the
+    // restart_services() spawn — see ensure_sudoers_daemon for details.
+    aifw_core::updater::ensure_sudoers_daemon().await;
     aifw_core::updater::ensure_rcvars().await;
 
     // For each rcvar-managed AiFw service that isn't running, kick it.

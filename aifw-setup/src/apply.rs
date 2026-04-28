@@ -125,6 +125,12 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/tee *
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
 aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
+
+# --- Detached restart driver ---
+# Required by aifw-core/src/updater.rs `restart_services()` so post-update
+# bounces survive aifw-api dying mid-iteration. -f flag double-forks
+# /usr/local/libexec/aifw-restart.sh into its own session.
+aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
 ";
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
         let _ = std::fs::create_dir_all("/usr/local/etc/sudoers.d");
