@@ -170,6 +170,9 @@ enum UpdateAction {
     },
     /// Restart all AiFw services to activate a previously installed update.
     Restart,
+    /// Reboot the system (full reboot via shutdown -r +1). Recommended
+    /// after updates that change service-supervision tooling.
+    Reboot,
     /// Check for OS and package updates
     OsCheck,
     /// Install OS and package updates
@@ -1067,6 +1070,7 @@ async fn main() -> anyhow::Result<()> {
                 commands::update_rollback(restart || yes).await?
             }
             UpdateAction::Restart => commands::update_restart().await?,
+            UpdateAction::Reboot => commands::update_reboot().await?,
             UpdateAction::OsCheck => commands::update_os_check().await?,
             UpdateAction::OsInstall => commands::update_os_install().await?,
         },

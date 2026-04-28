@@ -1728,12 +1728,24 @@ pub async fn update_install(auto_restart: bool) -> anyhow::Result<()> {
     let msg = updater::download_and_install(&info).await?;
     println!("{}", msg);
 
+    if info.reboot_recommended {
+        println!();
+        println!(
+            "  ⚠ Reboot recommended for this release: {}",
+            info.reboot_reason
+                .as_deref()
+                .unwrap_or("changes service-supervision tooling")
+        );
+        println!("  Use 'aifw update reboot' instead of 'aifw update restart'.");
+        println!();
+    }
+
     if auto_restart || prompt_restart_yes()? {
         println!("Restarting services...");
         updater::restart_services_sync().await;
         println!("Done.");
     } else {
-        println!("Update installed. Run 'aifw update restart' when ready to activate it.");
+        println!("Update installed. Run 'aifw update restart' (or 'aifw update reboot') when ready to activate it.");
     }
     Ok(())
 }
@@ -1759,6 +1771,14 @@ pub async fn update_restart() -> anyhow::Result<()> {
     println!("Restarting AiFw services...");
     updater::restart_services_sync().await;
     println!("Done.");
+    Ok(())
+}
+
+pub async fn update_reboot() -> anyhow::Result<()> {
+    use aifw_core::updater;
+    updater::schedule_reboot().await?;
+    println!("System reboot scheduled in 1 minute.");
+    println!("Cancel with `shutdown -c` if needed.");
     Ok(())
 }
 

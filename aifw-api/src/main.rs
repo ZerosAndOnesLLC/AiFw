@@ -903,6 +903,10 @@ pub fn build_router(
             "/api/v1/updates/aifw/restart",
             post(updates::aifw_restart_services),
         )
+        .route(
+            "/api/v1/updates/aifw/reboot",
+            post(updates::aifw_reboot),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
 
     // backup:read
@@ -1696,6 +1700,12 @@ fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> a
 async fn ensure_rc_services_enabled() {
     use tokio::process::Command;
 
+    // Self-bootstrap libexec scripts FIRST, before kicking the watchdog
+    // service — its rc.d execs /usr/local/libexec/aifw-watchdog.sh and
+    // will respawn-fail in a tight loop if the file is missing. This is
+    // the dominant case during a transitional upgrade where the running
+    // updater predates `libexec/` iteration.
+    aifw_core::updater::ensure_libexec_scripts().await;
     aifw_core::updater::ensure_rcvars().await;
 
     // For each rcvar-managed AiFw service that isn't running, kick it.

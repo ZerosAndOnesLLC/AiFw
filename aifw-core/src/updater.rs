@@ -16,6 +16,18 @@ const UI_DIR: &str = "/usr/local/share/aifw/ui";
 /// Manifest embedded at compile time from freebsd/manifest.json.
 const MANIFEST_JSON: &str = include_str!("../../freebsd/manifest.json");
 
+/// Restart-driver and watchdog scripts embedded into the binary at compile
+/// time. Written to /usr/local/libexec/ on aifw-api startup so a transitional
+/// upgrade — where the running updater predates `libexec/` iteration in
+/// the install path — can still self-bootstrap. Without this, an old
+/// updater installs new aifw-api binaries but leaves the supporting
+/// scripts missing, and the next restart_services call falls back to the
+/// fragile in-process loop. Embedding closes that loop.
+const EMBEDDED_RESTART_SH: &str =
+    include_str!("../../freebsd/overlay/usr/local/libexec/aifw-restart.sh");
+const EMBEDDED_WATCHDOG_SH: &str =
+    include_str!("../../freebsd/overlay/usr/local/libexec/aifw-watchdog.sh");
+
 #[derive(Deserialize)]
 struct Manifest {
     binaries: ManifestBinaries,
@@ -96,6 +108,18 @@ pub struct AifwUpdateInfo {
     /// will activate.
     #[serde(default)]
     pub running_version: String,
+    /// True when the release notes contain `[reboot-recommended]`. The
+    /// UI surfaces a Reboot button as the primary action when this is
+    /// set. Reserved for releases that change service supervision,
+    /// install rc.d-managed services, or otherwise touch state that a
+    /// service-only restart can't reliably refresh.
+    #[serde(default)]
+    pub reboot_recommended: bool,
+    /// Free-form line extracted from the release notes after the
+    /// `[reboot-recommended]` marker, if present. Shown in the modal so
+    /// the operator knows *why* reboot was recommended.
+    #[serde(default)]
+    pub reboot_reason: Option<String>,
 }
 
 /// Read the current installed AiFw version.
@@ -158,6 +182,7 @@ pub async fn check_for_update() -> Result<AifwUpdateInfo, UpdaterError> {
 
     let (has_backup, backup_version) = get_backup_info().await;
     let restart_pending = restart_pending().await;
+    let (reboot_recommended, reboot_reason) = parse_reboot_hint(&notes);
 
     Ok(AifwUpdateInfo {
         update_available: version_newer(&current, latest),
@@ -171,7 +196,31 @@ pub async fn check_for_update() -> Result<AifwUpdateInfo, UpdaterError> {
         backup_version,
         restart_pending,
         running_version: running_version().to_string(),
+        reboot_recommended,
+        reboot_reason,
     })
+}
+
+/// Look for `[reboot-recommended]` in release notes. If present, the
+/// UI/CLI surface the reboot path as the primary action. Anything on the
+/// same line after the marker becomes the human-readable reason.
+///
+/// Example release-note line:
+///   `[reboot-recommended] changes service-supervision rc.d scripts`
+fn parse_reboot_hint(notes: &str) -> (bool, Option<String>) {
+    const MARKER: &str = "[reboot-recommended]";
+    for line in notes.lines() {
+        if let Some(idx) = line.find(MARKER) {
+            let tail = line[idx + MARKER.len()..].trim();
+            let reason = if tail.is_empty() {
+                None
+            } else {
+                Some(tail.to_string())
+            };
+            return (true, reason);
+        }
+    }
+    (false, None)
 }
 
 /// Download, verify, and install an AiFw update.
@@ -507,6 +556,49 @@ const OWNED_RCVARS: &[&str] = &[
     "aifw_watchdog_enable",
 ];
 
+/// Write the embedded libexec scripts to /usr/local/libexec/ if missing or
+/// stale. Idempotent. Called from aifw-api startup so the appliance
+/// self-bootstraps the bouncer + watchdog scripts even when the install
+/// was driven by an old updater that didn't iterate `libexec/`.
+///
+/// Compares content first to avoid touching the file on every startup
+/// (mtime churn matters for log-watching tools). Uses sudo because
+/// /usr/local/libexec is root-owned and aifw-api runs as the aifw user.
+pub async fn ensure_libexec_scripts() {
+    write_embedded_script("aifw-restart.sh", EMBEDDED_RESTART_SH).await;
+    write_embedded_script("aifw-watchdog.sh", EMBEDDED_WATCHDOG_SH).await;
+}
+
+async fn write_embedded_script(name: &str, content: &str) {
+    let path = format!("/usr/local/libexec/{}", name);
+    if let Ok(existing) = tokio::fs::read_to_string(&path).await
+        && existing == content
+    {
+        return;
+    }
+    // Stage in /tmp first, then sudo install -m 755 so the write is atomic
+    // and gets correct ownership/perms regardless of who runs us.
+    let tmp = format!("/tmp/.{}.aifw-bootstrap", name);
+    if tokio::fs::write(&tmp, content).await.is_err() {
+        warn!(name, "failed to stage embedded script");
+        return;
+    }
+    let _ = Command::new("/usr/local/bin/sudo")
+        .args(["/bin/mkdir", "-p", "/usr/local/libexec"])
+        .output()
+        .await;
+    let result = Command::new("/usr/local/bin/sudo")
+        .args(["/usr/bin/install", "-m", "755", &tmp, &path])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(&tmp).await;
+    match result {
+        Ok(o) if o.status.success() => info!(name, "libexec script bootstrapped"),
+        Ok(o) => warn!(name, stderr = %String::from_utf8_lossy(&o.stderr), "install failed"),
+        Err(e) => warn!(name, error = %e, "install errored"),
+    }
+}
+
 /// Ensure each AiFw service has its rcvar set to YES in /etc/rc.conf.
 ///
 /// Appliances upgraded from versions predating a service (notably aifw_ids
@@ -580,6 +672,35 @@ pub async fn restart_services_sync() {
     ensure_rcvars().await;
     for svc in RESTARTABLE_SERVICES {
         restart_one(svc).await;
+    }
+}
+
+/// Schedule a system reboot via FreeBSD's `shutdown(8)`. The +1 syntax
+/// gives the HTTP response a full minute to flush and gives the operator
+/// a window to cancel via console (`shutdown -c`). `shutdown` returns
+/// immediately after registering with init; we await the sudo wrapper
+/// just to reap it.
+///
+/// sudoers (set in deploy.sh + aifw-setup) allows `/sbin/shutdown` for
+/// the aifw user without a password. We deliberately don't go through
+/// `daemon(8)` here — that would need a separate sudoers entry, and
+/// shutdown is already detached from our process tree by init.
+pub async fn schedule_reboot() -> Result<(), UpdaterError> {
+    let result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/sbin/shutdown",
+            "-r",
+            "+1",
+            "AiFw: operator-requested reboot",
+        ])
+        .spawn();
+    match result {
+        Ok(mut child) => {
+            let _ = child.wait().await;
+            info!("reboot scheduled (+1 min)");
+            Ok(())
+        }
+        Err(e) => Err(UpdaterError::Install(format!("schedule reboot: {}", e))),
     }
 }
 

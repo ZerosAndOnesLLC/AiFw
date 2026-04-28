@@ -51,11 +51,17 @@ interface AifwUpdateInfo {
   // Drives the "Restart pending" banner.
   restart_pending?: boolean;
   running_version?: string;
+  // Parsed from `[reboot-recommended]` in release notes. Flips the
+  // modal's primary action from Restart to Reboot.
+  reboot_recommended?: boolean;
+  reboot_reason?: string | null;
 }
 
 interface UpdateInstallResponse {
   message: string;
   restart_required: boolean;
+  reboot_recommended?: boolean;
+  reboot_reason?: string | null;
 }
 
 interface Feedback {
@@ -95,10 +101,18 @@ export default function UpdatesPage() {
   // Restart-confirm modal — shown after install/rollback succeeds.
   // `restartPrompt.action` is what we just did, used in the modal copy
   // ("Update v… installed" vs "Rollback to v… completed").
+  // `rebootRecommended` flips the primary action to Reboot when the
+  // release notes contained `[reboot-recommended]`.
   const [restartPrompt, setRestartPrompt] = useState<{
     action: "install" | "rollback";
     version: string;
+    rebootRecommended: boolean;
+    rebootReason: string | null;
   } | null>(null);
+  // Separate from the existing `rebooting` flag (which the OS-update
+  // path uses for the modal-based confirm flow) — this one stays true
+  // while we show the post-reboot wait overlay.
+  const [aifwRebooting, setAifwRebooting] = useState(false);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -316,6 +330,8 @@ export default function UpdatesPage() {
         setRestartPrompt({
           action: "install",
           version: aifwInfo?.latest_version ?? "",
+          rebootRecommended: data.reboot_recommended ?? aifwInfo?.reboot_recommended ?? false,
+          rebootReason: data.reboot_reason ?? aifwInfo?.reboot_reason ?? null,
         });
         // Refresh status so the "restart pending" banner sticks if the
         // operator dismisses the modal.
@@ -341,6 +357,8 @@ export default function UpdatesPage() {
         setRestartPrompt({
           action: "rollback",
           version: aifwInfo?.backup_version ?? "",
+          rebootRecommended: false,
+          rebootReason: null,
         });
         fetchAifwStatus();
       } else {
@@ -363,6 +381,21 @@ export default function UpdatesPage() {
       watchRestart();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to restart services");
+    }
+  };
+
+  // Operator-confirmed full system reboot. shutdown(8) defers actual
+  // reboot for 1 minute (also surfaces in the response message), so the
+  // overlay countdown is longer than the service-restart path.
+  const handleConfirmReboot = async () => {
+    try {
+      const res = await fetch("/api/v1/updates/aifw/reboot", { method: "POST", headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await res.json();
+      setRestartPrompt(null);
+      setAifwRebooting(true);
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to schedule reboot");
     }
   };
 
@@ -391,38 +424,94 @@ export default function UpdatesPage() {
   }
 
   // Restart-confirm modal — shown after install/rollback succeeds when
-  // the API reports restart_required: true. Lets the operator defer the
-  // outage; the restart-pending banner stays visible until they come
-  // back and click the action.
+  // the API reports restart_required: true. Three actions:
+  //   - Reboot (full system reboot via shutdown(8) — 1 min delay)
+  //   - Restart services (in-place service bounce — ~30s)
+  //   - Later (defer; the restart-pending banner persists across reloads)
+  //
+  // When the release notes contained `[reboot-recommended]` the modal
+  // surfaces that hint and promotes Reboot to the visually-primary
+  // action. Reboot is the safer choice for releases that change rc.d /
+  // libexec / sysrc-managed services, where a service-only bounce can
+  // race against its own tooling (see commit 5b1b232 for the bug we
+  // hit twice doing it the other way).
   const restartModal = restartPrompt ? (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg max-w-md w-full p-6 space-y-4">
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg max-w-lg w-full p-6 space-y-4">
         <h2 className="text-lg font-semibold text-[var(--text-primary)]">
           {restartPrompt.action === "install" ? "Update installed" : "Rollback complete"}
         </h2>
         <p className="text-sm text-[var(--text-muted)]">
           {restartPrompt.action === "install"
-            ? `AiFw v${restartPrompt.version} is on disk. A service restart is required to activate it.`
-            : `Rollback to v${restartPrompt.version} is on disk. A service restart is required to activate it.`}
-          {" "}Services will be unavailable for roughly 30 seconds.
+            ? `AiFw v${restartPrompt.version} is on disk and ready to activate.`
+            : `Rollback to v${restartPrompt.version} is on disk and ready to activate.`}
         </p>
+        {restartPrompt.rebootRecommended && (
+          <div className="px-3 py-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 text-yellow-200 text-xs">
+            <span className="font-semibold">Reboot recommended.</span>{" "}
+            {restartPrompt.rebootReason ??
+              "This release changes service-supervision tooling — a full reboot avoids edge cases where a service-only restart races against its own changes."}
+          </div>
+        )}
+        <ul className="text-xs text-[var(--text-muted)] space-y-1">
+          <li><span className="text-[var(--text-primary)]">Reboot</span> — ~1 min outage, all state reinitialised by init.</li>
+          <li><span className="text-[var(--text-primary)]">Restart services</span> — ~30 s outage, only AiFw services bounce.</li>
+          <li><span className="text-[var(--text-primary)]">Later</span> — keeps running the previous version. Pending banner stays visible.</li>
+        </ul>
         <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end pt-2">
           <button
             onClick={() => setRestartPrompt(null)}
             className="px-4 py-2 text-sm rounded-md border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
           >
-            Restart later
+            Later
           </button>
           <button
             onClick={handleConfirmRestart}
-            className="px-4 py-2 text-sm rounded-md bg-[var(--accent)] text-white hover:opacity-90"
+            className={`px-4 py-2 text-sm rounded-md ${
+              restartPrompt.rebootRecommended
+                ? "border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
+                : "bg-[var(--accent)] text-white hover:opacity-90"
+            }`}
           >
-            Restart now
+            Restart services
+          </button>
+          <button
+            onClick={handleConfirmReboot}
+            className={`px-4 py-2 text-sm rounded-md ${
+              restartPrompt.rebootRecommended
+                ? "bg-yellow-500 text-black font-semibold hover:bg-yellow-400"
+                : "border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
+            }`}
+          >
+            Reboot
           </button>
         </div>
       </div>
     </div>
   ) : null;
+
+  // Reboot overlay — sticks until the browser fails to reach the API
+  // long enough that we know the box has gone down. We don't try to
+  // poll-back-up here; the operator will reload manually after the
+  // box comes back, or close the tab.
+  if (aifwRebooting) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-primary)]/95 backdrop-blur-sm">
+        <div className="text-center space-y-6 max-w-md px-6">
+          <div className="w-16 h-16 mx-auto border-4 border-yellow-500 border-t-transparent rounded-full animate-spin" />
+          <h2 className="text-xl font-bold text-[var(--text-primary)]">Rebooting...</h2>
+          <p className="text-sm text-[var(--text-muted)]">
+            The system will go down in about a minute. The page will become unreachable
+            until the appliance finishes booting (typically 1–2 minutes).
+            Refresh manually once it's back.
+          </p>
+          <p className="text-xs text-[var(--text-muted)]">
+            To cancel, run <code className="font-mono">shutdown -c</code> on the console.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // Restart overlay — blocks the page during service restart
   if (restarting) {

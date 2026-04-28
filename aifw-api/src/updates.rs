@@ -65,10 +65,16 @@ pub struct MessageResponse {
 
 /// Response for install/rollback. `restart_required: true` tells the UI to
 /// prompt the user before bouncing services — installs no longer auto-restart.
+/// `reboot_recommended: true` (parsed from release notes) flips the modal's
+/// primary action from "Restart services" to "Reboot now."
 #[derive(Debug, Serialize)]
 pub struct UpdateInstallResponse {
     pub message: String,
     pub restart_required: bool,
+    #[serde(default)]
+    pub reboot_recommended: bool,
+    #[serde(default)]
+    pub reboot_reason: Option<String>,
 }
 
 fn internal() -> StatusCode {
@@ -510,6 +516,8 @@ pub async fn aifw_update_status(
             .map(|v| v.trim().to_string()),
         restart_pending: updater::restart_pending().await,
         running_version: updater::running_version().to_string(),
+        reboot_recommended: false,
+        reboot_reason: None,
     }))
 }
 
@@ -566,6 +574,8 @@ pub async fn aifw_install_update(
         return Ok(Json(UpdateInstallResponse {
             message: "Already running the latest version".to_string(),
             restart_required: false,
+            reboot_recommended: false,
+            reboot_reason: None,
         }));
     }
 
@@ -585,10 +595,14 @@ pub async fn aifw_install_update(
     save_config(&state.pool, "aifw_cached_info", "").await;
 
     // Do NOT auto-restart. The UI/CLI prompt the operator and call
-    // POST /updates/aifw/restart explicitly.
+    // POST /updates/aifw/restart explicitly. Forward the reboot hint
+    // we parsed at check-time so the modal can highlight Reboot when
+    // the release notes asked for it.
     Ok(Json(UpdateInstallResponse {
         message: msg,
         restart_required: true,
+        reboot_recommended: info.reboot_recommended,
+        reboot_reason: info.reboot_reason,
     }))
 }
 
@@ -604,10 +618,36 @@ pub async fn aifw_rollback(
     save_config(&state.pool, "aifw_cached_info", "").await;
 
     // Do NOT auto-restart. The UI/CLI prompt the operator and call
-    // POST /updates/aifw/restart explicitly.
+    // POST /updates/aifw/restart explicitly. Rollback never needs a
+    // reboot — by definition we're going back to a version we already
+    // ran here.
     Ok(Json(UpdateInstallResponse {
         message: msg,
         restart_required: true,
+        reboot_recommended: false,
+        reboot_reason: None,
+    }))
+}
+
+/// Operator-confirmed system reboot. Schedules `shutdown -r now` after a
+/// short delay so the HTTP response can leave the box; the UI then
+/// switches to its reboot-watching overlay.
+pub async fn aifw_reboot(
+    State(state): State<AppState>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    log_update(
+        &state.pool,
+        "aifw_reboot",
+        "operator-triggered reboot",
+        "scheduled",
+    )
+    .await;
+    updater::schedule_reboot().await.map_err(|e| {
+        tracing::error!("AiFw reboot schedule failed: {}", e);
+        internal()
+    })?;
+    Ok(Json(MessageResponse {
+        message: "System rebooting in 1 minute. Cancel with `shutdown -c` on the console.".to_string(),
     }))
 }
 
