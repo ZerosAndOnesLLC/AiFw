@@ -23,8 +23,8 @@ pub use geoip::{
     GeoIpRuleStatus,
 };
 pub use ha::{
-    CarpStatus, CarpVip, ClusterNode, ClusterRole, ConfigSnapshot, HealthCheck, HealthCheckType,
-    NodeHealth, PfsyncConfig,
+    CarpLatencyProfile, CarpStatus, CarpVip, ClusterNode, ClusterRole, ConfigSnapshot, HealthCheck,
+    HealthCheckType, NodeHealth, PfsyncConfig,
 };
 pub use ids::{
     IdsAction, IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleMatch, IdsRuleset, IdsSeverity,

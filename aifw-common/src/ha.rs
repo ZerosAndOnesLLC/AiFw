@@ -9,6 +9,52 @@ use crate::types::Interface;
 // CARP — Common Address Redundancy Protocol
 // ============================================================
 
+/// Latency profile controlling CARP advertisement timers.
+///
+/// Maps to (advbase, primary_advskew, secondary_advskew):
+/// - Conservative: ~3 s detection, very stable
+/// - Tight: ~1.5 s detection, requires reliable network
+/// - Aggressive: ~1 s detection, requires future heartbeat daemon
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CarpLatencyProfile {
+    Conservative,
+    Tight,
+    Aggressive,
+}
+
+impl CarpLatencyProfile {
+    /// Returns (advbase, primary_advskew, secondary_advskew) for this profile.
+    pub fn skews(self) -> (u8, u8, u8) {
+        match self {
+            Self::Conservative => (1, 0, 100),
+            Self::Tight => (1, 0, 20),
+            Self::Aggressive => (1, 0, 10),
+        }
+    }
+
+    pub fn parse(s: &str) -> crate::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "conservative" => Ok(Self::Conservative),
+            "tight" => Ok(Self::Tight),
+            "aggressive" => Ok(Self::Aggressive),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown latency profile: {s}"
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for CarpLatencyProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Conservative => "conservative",
+            Self::Tight => "tight",
+            Self::Aggressive => "aggressive",
+        })
+    }
+}
+
 /// A CARP virtual IP configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CarpVip {
@@ -124,6 +170,14 @@ pub struct PfsyncConfig {
     /// Defer mode — defer initial state sync to avoid failover flap
     pub defer: bool,
     pub enabled: bool,
+    /// CARP advertisement timer profile
+    pub latency_profile: CarpLatencyProfile,
+    /// Dedicated heartbeat interface (schema-only; consumed by future heartbeat daemon)
+    pub heartbeat_iface: Option<Interface>,
+    /// Heartbeat interval in milliseconds (schema-only; consumed by future heartbeat daemon)
+    pub heartbeat_interval_ms: Option<u32>,
+    /// Link rDHCP HA state to this pfsync session (consumed in Commit 8 / #221)
+    pub dhcp_link: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -135,6 +189,10 @@ impl PfsyncConfig {
             sync_peer: None,
             defer: true,
             enabled: true,
+            latency_profile: CarpLatencyProfile::Conservative,
+            heartbeat_iface: None,
+            heartbeat_interval_ms: None,
+            dhcp_link: false,
             created_at: Utc::now(),
         }
     }

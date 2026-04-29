@@ -1061,4 +1061,16 @@ mod tests {
         assert!(!a.differs_from(&b)); // same hashes
         assert!(a.differs_from(&c)); // different rules_hash
     }
+
+    #[test]
+    fn carp_latency_profiles_render_distinct_skews() {
+        use crate::CarpLatencyProfile;
+        let c = CarpLatencyProfile::Conservative.skews();
+        let t = CarpLatencyProfile::Tight.skews();
+        let a = CarpLatencyProfile::Aggressive.skews();
+        // (advbase, primary_skew, secondary_skew)
+        assert_eq!(c, (1, 0, 100));
+        assert_eq!(t, (1, 0, 20));
+        assert_eq!(a, (1, 0, 10));
+    }
 }

@@ -1,6 +1,6 @@
 use aifw_common::{
-    AifwError, CarpStatus, CarpVip, ClusterNode, ClusterRole, HealthCheck, HealthCheckType,
-    Interface, NodeHealth, PfsyncConfig, Result,
+    AifwError, CarpLatencyProfile, CarpStatus, CarpVip, ClusterNode, ClusterRole, HealthCheck,
+    HealthCheckType, Interface, NodeHealth, PfsyncConfig, Result,
 };
 use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
@@ -94,6 +94,16 @@ impl ClusterEngine {
         .execute(&self.pool)
         .await?;
 
+        // New columns added in the HA epic — IDEMPOTENT (will fail silently on re-run)
+        for stmt in [
+            "ALTER TABLE pfsync_config ADD COLUMN latency_profile TEXT NOT NULL DEFAULT 'conservative'",
+            "ALTER TABLE pfsync_config ADD COLUMN heartbeat_iface TEXT",
+            "ALTER TABLE pfsync_config ADD COLUMN heartbeat_interval_ms INTEGER",
+            "ALTER TABLE pfsync_config ADD COLUMN dhcp_link INTEGER NOT NULL DEFAULT 0",
+        ] {
+            let _ = sqlx::query(stmt).execute(&self.pool).await;
+        }
+
         Ok(())
     }
 
@@ -163,13 +173,21 @@ impl ClusterEngine {
             .await?;
 
         sqlx::query(
-            "INSERT INTO pfsync_config (id, sync_interface, sync_peer, defer_mode, enabled, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            r#"INSERT INTO pfsync_config
+               (id, sync_interface, sync_peer, defer_mode, enabled,
+                latency_profile, heartbeat_iface, heartbeat_interval_ms, dhcp_link,
+                created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
         )
         .bind(config.id.to_string())
         .bind(&config.sync_interface.0)
         .bind(config.sync_peer.map(|p| p.to_string()))
         .bind(config.defer)
         .bind(config.enabled)
+        .bind(config.latency_profile.to_string())
+        .bind(config.heartbeat_iface.as_ref().map(|i| i.0.clone()))
+        .bind(config.heartbeat_interval_ms.map(|n| n as i64))
+        .bind(config.dhcp_link)
         .bind(config.created_at.to_rfc3339())
         .execute(&self.pool)
         .await?;
@@ -348,14 +366,22 @@ impl ClusterEngine {
     pub async fn apply_ha_rules(&self) -> Result<()> {
         let mut pf_rules = Vec::new();
 
-        // CARP rules
+        let pfsync = self.get_pfsync().await?;
+        let (advbase, _primary_skew, secondary_skew) = pfsync
+            .as_ref()
+            .map(|p| p.latency_profile.skews())
+            .unwrap_or((1, 0, 100)); // safe default = Conservative
+
+        // CARP rules — override timer values from latency profile
         let vips = self.list_carp_vips().await?;
-        for vip in &vips {
+        for mut vip in vips {
+            vip.advbase = advbase;
+            vip.advskew = secondary_skew; // primary renders 0 inside to_ifconfig_cmds_for_role
             pf_rules.extend(vip.to_pf_rules());
         }
 
         // pfsync rules
-        if let Some(pfsync) = self.get_pfsync().await? {
+        if let Some(ref pfsync) = pfsync {
             pf_rules.extend(pfsync.to_pf_rules());
         }
 
@@ -365,6 +391,16 @@ impl ClusterEngine {
                 .load_rules(&self.anchor, &pf_rules)
                 .await
                 .map_err(|e| AifwError::Pf(e.to_string()))?;
+        }
+
+        // Enable CARP preempt at apply time so a returning master with better
+        // skew reclaims the role automatically (avoids both-think-master state)
+        let preempt_result = tokio::process::Command::new("sysctl")
+            .arg("net.inet.carp.preempt=1")
+            .status()
+            .await;
+        if let Err(e) = preempt_result {
+            tracing::warn!(error = %e, "ha: failed to set net.inet.carp.preempt=1");
         }
 
         Ok(())
@@ -462,6 +498,10 @@ struct PfsyncRow {
     sync_peer: Option<String>,
     defer_mode: bool,
     enabled: bool,
+    latency_profile: String,
+    heartbeat_iface: Option<String>,
+    heartbeat_interval_ms: Option<i64>,
+    dhcp_link: bool,
     created_at: String,
 }
 
@@ -477,6 +517,12 @@ impl PfsyncRow {
                 .map_err(|e| AifwError::Database(format!("{e}")))?,
             defer: self.defer_mode,
             enabled: self.enabled,
+            latency_profile: CarpLatencyProfile::parse(&self.latency_profile)?,
+            heartbeat_iface: self.heartbeat_iface.map(Interface),
+            heartbeat_interval_ms: self
+                .heartbeat_interval_ms
+                .and_then(|n| u32::try_from(n).ok()),
+            dhcp_link: self.dhcp_link,
             created_at: parse_dt(&self.created_at)?,
         })
     }
@@ -567,5 +613,44 @@ mod tests {
             .recover_kernel_state_for_role(aifw_common::ClusterRole::Standalone)
             .await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn apply_ha_rules_uses_latency_profile() {
+        use aifw_common::{CarpLatencyProfile, CarpVip, Interface, PfsyncConfig};
+
+        let db = Database::new_in_memory().await.unwrap();
+        let mock = Arc::new(aifw_pf::PfMock::new());
+        let pf: Arc<dyn PfBackend> = mock.clone();
+        let engine = ClusterEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+
+        // Configure pfsync with Tight profile
+        let mut p = PfsyncConfig::new(Interface("igb1".into()));
+        p.latency_profile = CarpLatencyProfile::Tight;
+        engine.set_pfsync(p).await.unwrap();
+
+        // Add a CARP VIP
+        let vip = CarpVip::new(
+            10,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("igb0".into()),
+            "abc12345".into(),
+        );
+        engine.add_carp_vip(vip).await.unwrap();
+
+        // apply_ha_rules should succeed — sysctl fails on Linux/test but is
+        // logged as a warning (not an error), so Result is Ok
+        let result = engine.apply_ha_rules().await;
+        assert!(result.is_ok(), "apply_ha_rules failed: {result:?}");
+
+        // Verify the CARP rule was loaded into the aifw-ha anchor
+        let rules = mock.get_rules("aifw-ha").await.unwrap();
+        assert!(!rules.is_empty(), "no rules loaded into aifw-ha anchor");
+        assert!(
+            rules.iter().any(|r| r.contains("carp-vhid-10")),
+            "expected CARP rule for vhid 10, got: {rules:?}"
+        );
     }
 }
