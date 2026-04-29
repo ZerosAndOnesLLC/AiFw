@@ -998,6 +998,27 @@ mod tests {
     }
 
     #[test]
+    fn carp_advskew_renders_per_role() {
+        use crate::{CarpVip, ClusterRole, Interface};
+        use std::net::IpAddr;
+
+        let mut vip = CarpVip::new(
+            10,
+            "192.0.2.1".parse::<IpAddr>().unwrap(),
+            24,
+            Interface("igb0".into()),
+            "secret".into(),
+        );
+        vip.advskew = 100; // baseline configured skew
+
+        let primary_cmds = vip.to_ifconfig_cmds_for_role(ClusterRole::Primary);
+        let secondary_cmds = vip.to_ifconfig_cmds_for_role(ClusterRole::Secondary);
+
+        assert!(primary_cmds[0].contains("advskew 0"), "primary cmds: {primary_cmds:?}");
+        assert!(secondary_cmds[0].contains("advskew 100"), "secondary cmds: {secondary_cmds:?}");
+    }
+
+    #[test]
     fn test_config_snapshot_diff() {
         let a = ConfigSnapshot::new(
             1,

@@ -1,6 +1,7 @@
 use crate::config::{DefaultPolicy, SetupConfig};
 use crate::console;
 use crate::tuning::{self, TuningItem};
+use aifw_common;
 
 /// Apply the setup configuration: write files, init DB, start services
 pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<(), String> {
@@ -361,6 +362,31 @@ aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
             .args(["aifw_watchdog_enable=YES"])
             .output();
 
+        // HA cluster rc.conf keys
+        let cluster_enabled = config.cluster.is_some();
+        let _ = run_sysrc("aifw_cluster_enabled", if cluster_enabled { "YES" } else { "NO" });
+        if let Some(c) = &config.cluster {
+            let _ = run_sysrc("aifw_cluster_role", &c.role.to_string());
+            let _ = run_sysrc("pfsync_enable", "YES");
+            let pfsync_args = format!("syncdev {} defer up", c.pfsync_iface);
+            let _ = run_sysrc("ifconfig_pfsync0", &pfsync_args);
+            for vip in &c.vips {
+                let key = format!("ifconfig_{}_aliases", vip.interface);
+                let alias = format!(
+                    "inet vhid {} advskew {} advbase {} pass {} {}/{}",
+                    vip.vhid,
+                    if matches!(c.role, aifw_common::ClusterRole::Primary) { 0u32 } else { vip.advskew as u32 },
+                    vip.advbase,
+                    c.password,
+                    vip.virtual_ip, vip.prefix,
+                );
+                let _ = run_sysrc_append(&key, &alias);
+            }
+            let _ = run_sysrc("aifw_carp_demote_enable", "YES");
+        } else {
+            let _ = run_sysrc("aifw_cluster_role", "standalone");
+        }
+
         // Start core services
         let _ = Command::new("service")
             .args(["aifw_daemon", "start"])
@@ -666,6 +692,46 @@ fn write_file(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("failed to write {path}: {e}"))
 }
 
+/// Write a single sysrc key=value pair (FreeBSD only).
+#[cfg(target_os = "freebsd")]
+fn run_sysrc(key: &str, value: &str) -> Result<(), String> {
+    let out = std::process::Command::new("sysrc")
+        .arg(format!("{key}={value}"))
+        .output()
+        .map_err(|e| format!("sysrc {key}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "sysrc {key}={value} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Append a value to a sysrc list key (space-separated, FreeBSD only).
+#[cfg(target_os = "freebsd")]
+fn run_sysrc_append(key: &str, value: &str) -> Result<(), String> {
+    let existing = std::process::Command::new("sysrc")
+        .arg("-n")
+        .arg(key)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    let combined = if existing.is_empty() {
+        value.to_string()
+    } else {
+        format!("{existing} {value}")
+    };
+    run_sysrc(key, &combined)
+}
+
 fn write_config_file(config: &SetupConfig) -> Result<(), String> {
     let json = serde_json::to_string_pretty(config).map_err(|e| format!("serialize error: {e}"))?;
     write_file(&format!("{}/aifw.conf", config.config_dir), &json)
@@ -933,6 +999,82 @@ rate_limit = 1000
         && let Some(ref lan_cidr) = config.lan_ip
     {
         seed_dhcp_config(&pool, config, lan_cidr).await?;
+    }
+
+    // Bootstrap HA cluster DB rows and push pf anchor rules
+    if let Some(c) = &config.cluster {
+        let pf: std::sync::Arc<dyn aifw_pf::PfBackend> =
+            std::sync::Arc::from(aifw_pf::create_backend());
+        let cluster_engine = aifw_core::ClusterEngine::new(pool.clone(), pf);
+        cluster_engine
+            .migrate()
+            .await
+            .map_err(|e| format!("ha migrate: {e}"))?;
+
+        // pfsync singleton row
+        let pfsync = aifw_common::PfsyncConfig::new(aifw_common::Interface(c.pfsync_iface.clone()));
+        cluster_engine
+            .set_pfsync(pfsync)
+            .await
+            .map_err(|e| format!("ha set_pfsync: {e}"))?;
+
+        // CARP VIPs
+        for v in &c.vips {
+            let mut vip = aifw_common::CarpVip::new(
+                v.vhid,
+                v.virtual_ip,
+                v.prefix,
+                aifw_common::Interface(v.interface.clone()),
+                c.password.clone(),
+            );
+            vip.advskew = v.advskew;
+            vip.advbase = v.advbase;
+            cluster_engine
+                .add_carp_vip(vip)
+                .await
+                .map_err(|e| format!("ha add_carp_vip: {e}"))?;
+        }
+
+        // Self node row
+        let self_role = c.role;
+        let peer_role = match self_role {
+            aifw_common::ClusterRole::Primary => aifw_common::ClusterRole::Secondary,
+            _ => aifw_common::ClusterRole::Primary,
+        };
+        let self_addr = config
+            .lan_ip
+            .as_ref()
+            .and_then(|ip| ip.split('/').next())
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+            .unwrap_or_else(|| "127.0.0.1".parse().unwrap());
+        // Resolve hostname via `hostname` command (avoids needing the nix
+        // "hostname" feature; works on both FreeBSD and Linux dev environments)
+        let self_name = std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .unwrap_or_else(|| config.hostname.clone());
+        cluster_engine
+            .add_node(aifw_common::ClusterNode::new(self_name, self_addr, self_role))
+            .await
+            .map_err(|e| format!("ha add_node self: {e}"))?;
+        cluster_engine
+            .add_node(aifw_common::ClusterNode::new(
+                format!("peer-{}", c.peer_address),
+                c.peer_address,
+                peer_role,
+            ))
+            .await
+            .map_err(|e| format!("ha add_node peer: {e}"))?;
+
+        // Render HA rules into the pf anchor
+        cluster_engine
+            .apply_ha_rules()
+            .await
+            .map_err(|e| format!("ha apply_ha_rules: {e}"))?;
     }
 
     Ok(())
@@ -1460,9 +1602,13 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     // Options
     lines.push("# Options".to_string());
     lines.push("set skip on lo0".to_string());
+    lines.push("set skip on pfsync0".to_string());
     lines.push("set block-policy drop".to_string());
     lines.push("set optimization aggressive".to_string());
-    lines.push("set state-policy if-bound".to_string());
+    // floating (not if-bound) is required for pfsync state migration on
+    // failover — without it, replicated states bind to the original
+    // interface and don't match traffic on the surviving node's iface.
+    lines.push("set state-policy floating".to_string());
     lines.push(String::new());
 
     // Scrub

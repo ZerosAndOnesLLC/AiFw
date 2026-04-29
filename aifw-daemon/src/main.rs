@@ -206,6 +206,18 @@ async fn main() -> anyhow::Result<()> {
         info!("SLA aggregation loop started");
     }
 
+    // HA kernel-state recovery — idempotent; re-runs ifconfig commands for
+    // pfsync and CARP VIPs if they are absent after a reboot. Logs a warning
+    // and continues on failure so a misconfigured HA setup never prevents the
+    // daemon from coming up.
+    {
+        use aifw_core::ClusterEngine;
+        let cluster_engine = ClusterEngine::new(pool.clone(), pf.clone());
+        if let Err(e) = cluster_engine.recover_kernel_state().await {
+            tracing::warn!(error = %e, "ha: kernel-state recovery failed; continuing");
+        }
+    }
+
     // IDS engine moved to aifw-ids binary (see PR 5 / spec
     // 2026-04-26-process-hardening-and-ids-extraction-design.md). aifw-daemon
     // no longer holds an in-process IdsEngine. Configuration changes flow

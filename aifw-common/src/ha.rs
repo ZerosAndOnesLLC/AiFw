@@ -88,6 +88,27 @@ impl CarpVip {
         )]
     }
 
+    /// Render ifconfig commands for the given local node role.
+    /// Primary uses advskew=0, Secondary uses the stored advskew (so the
+    /// configured value is the *backup* skew), Standalone falls back to stored.
+    pub fn to_ifconfig_cmds_for_role(&self, role: crate::ClusterRole) -> Vec<String> {
+        let effective_skew = match role {
+            crate::ClusterRole::Primary => 0,
+            crate::ClusterRole::Secondary | crate::ClusterRole::Standalone => self.advskew,
+        };
+        let af = if self.virtual_ip.is_ipv4() { "inet" } else { "inet6" };
+        vec![format!(
+            "ifconfig {} vhid {} advskew {} advbase {} pass {} {af} {}/{} alias",
+            self.interface,
+            self.vhid,
+            effective_skew,
+            self.advbase,
+            self.password,
+            self.virtual_ip,
+            self.prefix,
+        )]
+    }
+
     /// Generate pf rules to allow CARP protocol traffic
     pub fn to_pf_rules(&self) -> Vec<String> {
         vec![format!(
@@ -186,6 +207,12 @@ impl std::fmt::Display for ClusterRole {
             ClusterRole::Secondary => write!(f, "secondary"),
             ClusterRole::Standalone => write!(f, "standalone"),
         }
+    }
+}
+
+impl Default for ClusterRole {
+    fn default() -> Self {
+        ClusterRole::Standalone
     }
 }
 

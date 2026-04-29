@@ -295,6 +295,45 @@ impl ClusterEngine {
     // Apply HA pf rules
     // ============================================================
 
+    /// On daemon startup, re-run ifconfig commands if kernel state is missing.
+    /// Idempotent: ifconfig already-configured is a no-op or yields exit 0.
+    /// No-ops on standalone nodes (role = standalone or tables absent).
+    pub async fn recover_kernel_state(&self) -> Result<()> {
+        use std::process::Command;
+        let role = read_local_role();
+
+        // Standalone nodes need no kernel-state recovery
+        if matches!(role, aifw_common::ClusterRole::Standalone) {
+            return Ok(());
+        }
+
+        // pfsync
+        if let Some(p) = self.get_pfsync().await? {
+            let pfsync_present = Command::new("ifconfig")
+                .arg("pfsync0")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !pfsync_present {
+                for cmd in p.to_ifconfig_cmds() {
+                    let _ = run_shell(&cmd);
+                }
+            }
+        }
+
+        // CARP VIPs — render per role
+        for vip in self.list_carp_vips().await? {
+            for cmd in vip.to_ifconfig_cmds_for_role(role) {
+                let _ = run_shell(&cmd);
+            }
+        }
+
+        // Enable CARP preemption so this node can compete in elections
+        let _ = Command::new("sysctl").arg("net.inet.carp.preempt=1").status();
+
+        Ok(())
+    }
+
     pub async fn apply_ha_rules(&self) -> Result<()> {
         let mut pf_rules = Vec::new();
 
@@ -318,6 +357,28 @@ impl ClusterEngine {
         }
 
         Ok(())
+    }
+}
+
+// ============================================================
+// Kernel helpers (called at daemon startup for state recovery)
+// ============================================================
+
+fn run_shell(s: &str) -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new("sh").arg("-c").arg(s).status()
+}
+
+fn read_local_role() -> aifw_common::ClusterRole {
+    let out = std::process::Command::new("sysrc")
+        .arg("-n")
+        .arg("aifw_cluster_role")
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            aifw_common::ClusterRole::parse(&s).unwrap_or(aifw_common::ClusterRole::Standalone)
+        }
+        _ => aifw_common::ClusterRole::Standalone,
     }
 }
 

@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# PROVIDE: aifw_carp_demote
+# REQUIRE: NETWORKING aifw_daemon
+# KEYWORD: nojail
+#
+# Clears net.inet.carp.demotion=0 once the data plane is up,
+# so this node can compete in CARP elections after boot.
+#
+
+. /etc/rc.subr
+
+name="aifw_carp_demote"
+rcvar=aifw_carp_demote_enable
+load_rc_config $name
+: ${aifw_carp_demote_enable:=YES}
+
+start_cmd="aifw_carp_demote_start"
+
+aifw_carp_demote_start() {
+    if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+        sysctl net.inet.carp.demotion=0 >/dev/null 2>&1 || true
+    fi
+}
+
+run_rc_command "$1"
