@@ -1,0 +1,18 @@
+#!/bin/sh
+#
+# PROVIDE: aifw_demote_on_shutdown
+# REQUIRE: aifw_daemon
+# KEYWORD: shutdown
+#
+
+. /etc/rc.subr
+
+name="aifw_demote_on_shutdown"
+rcvar=aifw_demote_on_shutdown_enable
+load_rc_config $name
+: ${aifw_demote_on_shutdown_enable:=NO}
+
+stop_cmd="/usr/local/libexec/aifw-shutdown-hook.sh"
+start_cmd=":"
+
+run_rc_command "$1"

@@ -383,6 +383,7 @@ aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
                 let _ = run_sysrc_append(&key, &alias);
             }
             let _ = run_sysrc("aifw_carp_demote_enable", "YES");
+            let _ = run_sysrc("aifw_demote_on_shutdown_enable", "YES");
         } else {
             let _ = run_sysrc("aifw_cluster_role", "standalone");
         }
@@ -1797,6 +1798,14 @@ start_precmd="aifw_daemon_precmd"
 stop_cmd="aifw_daemon_stop"
 stop_postcmd="aifw_daemon_poststop"
 
+aifw_demote_if_clustered()
+{{
+    if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+        sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
+        sleep 1
+    fi
+}}
+
 aifw_daemon_precmd()
 {{
     /bin/mkdir -p /var/log/aifw
@@ -1812,6 +1821,7 @@ aifw_daemon_precmd()
 
 aifw_daemon_stop()
 {{
+    aifw_demote_if_clustered
     # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
     # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
     # if the binary's tokio runtime won't exit (e.g. a background metrics
@@ -1881,6 +1891,14 @@ start_precmd="aifw_api_precmd"
 stop_cmd="aifw_api_stop"
 stop_postcmd="aifw_api_poststop"
 
+aifw_demote_if_clustered()
+{{
+    if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+        sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
+        sleep 1
+    fi
+}}
+
 aifw_api_precmd()
 {{
     /bin/mkdir -p /var/log/aifw
@@ -1894,6 +1912,7 @@ aifw_api_precmd()
 
 aifw_api_stop()
 {{
+    aifw_demote_if_clustered
     # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
     # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
     # if the binary's tokio runtime won't exit (e.g. a background metrics
@@ -1965,6 +1984,14 @@ start_precmd="aifw_ids_precmd"
 stop_cmd="aifw_ids_stop"
 stop_postcmd="aifw_ids_poststop"
 
+aifw_demote_if_clustered()
+{{
+    if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+        sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
+        sleep 1
+    fi
+}}
+
 aifw_ids_precmd()
 {{
     /bin/mkdir -p /var/log/aifw /var/run/aifw
@@ -1979,6 +2006,7 @@ aifw_ids_precmd()
 
 aifw_ids_stop()
 {{
+    aifw_demote_if_clustered
     # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
     # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
     # if the binary's tokio runtime won't exit (e.g. a background metrics
