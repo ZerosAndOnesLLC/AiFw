@@ -213,6 +213,9 @@ async fn main() -> anyhow::Result<()> {
     {
         use aifw_core::ClusterEngine;
         let cluster_engine = ClusterEngine::new(pool.clone(), pf.clone());
+        if let Err(e) = cluster_engine.migrate().await {
+            tracing::warn!(error = %e, "ha: cluster migrate failed; continuing");
+        }
         if let Err(e) = cluster_engine.recover_kernel_state().await {
             tracing::warn!(error = %e, "ha: kernel-state recovery failed; continuing");
         }

@@ -377,7 +377,7 @@ aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
                     vip.vhid,
                     if matches!(c.role, ClusterRole::Primary) { 0u32 } else { vip.advskew as u32 },
                     vip.advbase,
-                    c.password,
+                    shell_quote_for_rcconf(&c.password),
                     vip.virtual_ip, vip.prefix,
                 );
                 let _ = run_sysrc_append(&key, &alias);
@@ -730,6 +730,15 @@ fn run_sysrc_append(key: &str, value: &str) -> Result<(), String> {
         format!("{existing} {value}")
     };
     run_sysrc(key, &combined)
+}
+
+/// Single-quote-wrap a string for safe inclusion in /etc/rc.conf values, which
+/// are sourced by /bin/sh at boot. Returns the value wrapped in single quotes
+/// with any inner single quotes escaped as `'\''`. Caller embeds the result
+/// directly into the larger value string.
+#[cfg(target_os = "freebsd")]
+fn shell_quote_for_rcconf(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 fn write_config_file(config: &SetupConfig) -> Result<(), String> {

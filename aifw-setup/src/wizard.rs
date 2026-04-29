@@ -608,13 +608,23 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
         }
     };
 
-    // CARP password with minimum length check
+    // CARP password — min 8 chars, and must not contain characters that are
+    // shell-significant inside double-quoted rc.conf values (" ' ` $ \).
+    // rc.conf is sourced by /bin/sh at boot; these chars would corrupt the
+    // value or execute arbitrary code as root.
     let password = loop {
         let pw = console::prompt_password("CARP password (will be shared with peer; min 8 chars):");
-        if pw.len() >= 8 {
-            break pw;
+        if pw.len() < 8 {
+            console::error("Password must be at least 8 characters.");
+            continue;
         }
-        console::error("Password must be at least 8 characters.");
+        if pw.chars().any(|c| matches!(c, '"' | '\'' | '`' | '$' | '\\')) {
+            console::error(
+                "CARP password may not contain quotes, backticks, dollar signs, or backslashes.",
+            );
+            continue;
+        }
+        break pw;
     };
 
     let mut vips = Vec::new();

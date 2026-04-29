@@ -301,7 +301,15 @@ impl ClusterEngine {
     /// No-ops on standalone nodes (role = standalone or tables absent).
     pub async fn recover_kernel_state(&self) -> Result<()> {
         let role = read_local_role().await;
+        self.recover_kernel_state_for_role(role).await
+    }
 
+    /// Inner implementation of kernel-state recovery, taking an explicit role
+    /// so it can be called from tests without spawning sysrc.
+    pub async fn recover_kernel_state_for_role(
+        &self,
+        role: aifw_common::ClusterRole,
+    ) -> Result<()> {
         // Standalone nodes need no kernel-state recovery
         if matches!(role, aifw_common::ClusterRole::Standalone) {
             return Ok(());
@@ -542,4 +550,22 @@ fn parse_dt(s: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .map_err(|e| AifwError::Database(format!("invalid date: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Database;
+
+    #[tokio::test]
+    async fn recover_kernel_state_standalone_is_noop() {
+        let db = Database::new_in_memory().await.unwrap();
+        let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
+        let engine = ClusterEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+        let result = engine
+            .recover_kernel_state_for_role(aifw_common::ClusterRole::Standalone)
+            .await;
+        assert!(result.is_ok());
+    }
 }
