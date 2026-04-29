@@ -10,7 +10,7 @@
 name="aifw_demote_on_shutdown"
 rcvar=aifw_demote_on_shutdown_enable
 load_rc_config $name
-: ${aifw_demote_on_shutdown_enable:=NO}
+: ${aifw_demote_on_shutdown_enable:=YES}
 
 stop_cmd="/usr/local/libexec/aifw-shutdown-hook.sh"
 start_cmd=":"
