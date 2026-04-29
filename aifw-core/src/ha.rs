@@ -296,40 +296,43 @@ impl ClusterEngine {
     // ============================================================
 
     /// On daemon startup, re-run ifconfig commands if kernel state is missing.
-    /// Idempotent: ifconfig already-configured is a no-op or yields exit 0.
+    /// Idempotent: re-running pfsync/CARP ifconfig is a no-op when already
+    /// configured, so we always run them without an existence pre-check.
     /// No-ops on standalone nodes (role = standalone or tables absent).
     pub async fn recover_kernel_state(&self) -> Result<()> {
-        use std::process::Command;
-        let role = read_local_role();
+        let role = read_local_role().await;
 
         // Standalone nodes need no kernel-state recovery
         if matches!(role, aifw_common::ClusterRole::Standalone) {
             return Ok(());
         }
 
-        // pfsync
+        // pfsync — always run (idempotent; no existence pre-check needed)
         if let Some(p) = self.get_pfsync().await? {
-            let pfsync_present = Command::new("ifconfig")
-                .arg("pfsync0")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            if !pfsync_present {
-                for cmd in p.to_ifconfig_cmds() {
-                    let _ = run_shell(&cmd);
+            for argv in p.to_ifconfig_cmds() {
+                if let Err(error) = run_argv(&argv).await {
+                    tracing::warn!(?error, cmd = ?argv, "ha: pfsync ifconfig command failed");
                 }
             }
         }
 
         // CARP VIPs — render per role
         for vip in self.list_carp_vips().await? {
-            for cmd in vip.to_ifconfig_cmds_for_role(role) {
-                let _ = run_shell(&cmd);
+            for argv in vip.to_ifconfig_cmds_for_role(role) {
+                if let Err(error) = run_argv(&argv).await {
+                    tracing::warn!(?error, cmd = ?argv, "ha: CARP ifconfig command failed");
+                }
             }
         }
 
         // Enable CARP preemption so this node can compete in elections
-        let _ = Command::new("sysctl").arg("net.inet.carp.preempt=1").status();
+        if let Err(error) = tokio::process::Command::new("sysctl")
+            .arg("net.inet.carp.preempt=1")
+            .status()
+            .await
+        {
+            tracing::warn!(?error, "ha: sysctl carp.preempt failed");
+        }
 
         Ok(())
     }
@@ -364,15 +367,32 @@ impl ClusterEngine {
 // Kernel helpers (called at daemon startup for state recovery)
 // ============================================================
 
-fn run_shell(s: &str) -> std::io::Result<std::process::ExitStatus> {
-    std::process::Command::new("sh").arg("-c").arg(s).status()
+/// Execute an argv vector via tokio::process::Command (no shell).
+/// `argv[0]` is the executable; the rest are arguments.
+async fn run_argv(argv: &[String]) -> std::io::Result<()> {
+    if argv.is_empty() {
+        return Ok(());
+    }
+    let status = tokio::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .status()
+        .await?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "command {:?} exited with {}",
+            argv, status
+        )))
+    }
 }
 
-fn read_local_role() -> aifw_common::ClusterRole {
-    let out = std::process::Command::new("sysrc")
+async fn read_local_role() -> aifw_common::ClusterRole {
+    let out = tokio::process::Command::new("sysrc")
         .arg("-n")
         .arg("aifw_cluster_role")
-        .output();
+        .output()
+        .await;
     match out {
         Ok(o) if o.status.success() => {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();

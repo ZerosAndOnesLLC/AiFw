@@ -896,12 +896,18 @@ mod tests {
             Interface("em0".to_string()),
             "pass123".to_string(),
         );
-        let cmds = vip.to_ifconfig_cmds();
+        // Use Standalone so the stored advskew (0) is used as-is
+        let cmds = vip.to_ifconfig_cmds_for_role(ClusterRole::Standalone);
         assert_eq!(cmds.len(), 1);
-        assert!(cmds[0].contains("vhid 5"));
-        assert!(cmds[0].contains("pass pass123"));
-        assert!(cmds[0].contains("192.168.1.100/24"));
-        assert!(cmds[0].contains("inet"));
+        let argv = &cmds[0];
+        assert!(argv.contains(&"vhid".to_string()));
+        assert!(argv.contains(&"5".to_string()));
+        assert!(argv.contains(&"pass".to_string()));
+        assert!(argv.contains(&"pass123".to_string()));
+        assert!(argv.contains(&"192.168.1.100/24".to_string()));
+        assert!(argv.contains(&"inet".to_string()));
+        // Ensure the password is a discrete argument, not embedded in a shell string
+        assert!(!argv[0].contains("sh"));
     }
 
     #[test]
@@ -926,10 +932,15 @@ mod tests {
 
         let cmds = config.to_ifconfig_cmds();
         assert_eq!(cmds.len(), 2);
-        assert!(cmds[0].contains("pfsync0 create"));
-        assert!(cmds[1].contains("syncdev em1"));
-        assert!(cmds[1].contains("syncpeer 10.0.0.2"));
-        assert!(cmds[1].contains("defer"));
+        // First argv: ifconfig pfsync0 create
+        assert_eq!(cmds[0], vec!["ifconfig", "pfsync0", "create"]);
+        // Second argv: ifconfig pfsync0 syncdev em1 syncpeer 10.0.0.2 defer up
+        let config_argv = &cmds[1];
+        assert!(config_argv.contains(&"syncdev".to_string()));
+        assert!(config_argv.contains(&"em1".to_string()));
+        assert!(config_argv.contains(&"syncpeer".to_string()));
+        assert!(config_argv.contains(&"10.0.0.2".to_string()));
+        assert!(config_argv.contains(&"defer".to_string()));
     }
 
     #[test]
@@ -1014,8 +1025,13 @@ mod tests {
         let primary_cmds = vip.to_ifconfig_cmds_for_role(ClusterRole::Primary);
         let secondary_cmds = vip.to_ifconfig_cmds_for_role(ClusterRole::Secondary);
 
-        assert!(primary_cmds[0].contains("advskew 0"), "primary cmds: {primary_cmds:?}");
-        assert!(secondary_cmds[0].contains("advskew 100"), "secondary cmds: {secondary_cmds:?}");
+        // argv form: check discrete arguments
+        let primary_argv = &primary_cmds[0];
+        let secondary_argv = &secondary_cmds[0];
+        let skew_pos_p = primary_argv.iter().position(|a| a == "advskew").expect("advskew arg");
+        let skew_pos_s = secondary_argv.iter().position(|a| a == "advskew").expect("advskew arg");
+        assert_eq!(primary_argv[skew_pos_p + 1], "0", "primary cmds: {primary_cmds:?}");
+        assert_eq!(secondary_argv[skew_pos_s + 1], "100", "secondary cmds: {secondary_cmds:?}");
     }
 
     #[test]

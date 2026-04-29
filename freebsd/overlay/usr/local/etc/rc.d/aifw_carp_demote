@@ -13,7 +13,7 @@
 name="aifw_carp_demote"
 rcvar=aifw_carp_demote_enable
 load_rc_config $name
-: ${aifw_carp_demote_enable:=YES}
+: ${aifw_carp_demote_enable:=NO}
 
 start_cmd="aifw_carp_demote_start"
 

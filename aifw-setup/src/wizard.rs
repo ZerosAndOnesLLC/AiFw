@@ -659,7 +659,11 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
             vhid,
             virtual_ip,
             prefix,
-            advskew: 100, // backup skew; primary renders 0 at apply time
+            // 100 is a conservative backup-skew default — operator can tune via the
+            // cluster config UI later (see #227 latency profiles).  Primary nodes
+            // always render advskew=0 at apply time regardless of this value.
+            advskew: 100,
+            // 1 is the minimum stable advbase per CARP spec.
             advbase: 1,
         });
     }

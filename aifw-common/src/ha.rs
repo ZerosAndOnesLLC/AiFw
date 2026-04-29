@@ -69,44 +69,35 @@ impl CarpVip {
         }
     }
 
-    /// Generate ifconfig commands to create the CARP VIP
-    pub fn to_ifconfig_cmds(&self) -> Vec<String> {
-        let af = if self.virtual_ip.is_ipv4() {
-            "inet"
-        } else {
-            "inet6"
-        };
-        vec![format!(
-            "ifconfig {} vhid {} advskew {} advbase {} pass {} {af} {}/{} alias",
-            self.interface,
-            self.vhid,
-            self.advskew,
-            self.advbase,
-            self.password,
-            self.virtual_ip,
-            self.prefix,
-        )]
-    }
-
-    /// Render ifconfig commands for the given local node role.
+    /// Render ifconfig argv for the given local node role.
+    ///
+    /// Returns a list of argument vectors — each inner `Vec<String>` is one
+    /// command where `[0]` is the executable and the rest are its arguments.
+    /// Pass them directly to `tokio::process::Command::new(&argv[0]).args(&argv[1..])`.
+    ///
     /// Primary uses advskew=0, Secondary uses the stored advskew (so the
     /// configured value is the *backup* skew), Standalone falls back to stored.
-    pub fn to_ifconfig_cmds_for_role(&self, role: crate::ClusterRole) -> Vec<String> {
+    pub fn to_ifconfig_cmds_for_role(&self, role: crate::ClusterRole) -> Vec<Vec<String>> {
         let effective_skew = match role {
             crate::ClusterRole::Primary => 0,
             crate::ClusterRole::Secondary | crate::ClusterRole::Standalone => self.advskew,
         };
         let af = if self.virtual_ip.is_ipv4() { "inet" } else { "inet6" };
-        vec![format!(
-            "ifconfig {} vhid {} advskew {} advbase {} pass {} {af} {}/{} alias",
-            self.interface,
-            self.vhid,
-            effective_skew,
-            self.advbase,
-            self.password,
-            self.virtual_ip,
-            self.prefix,
-        )]
+        vec![vec![
+            "ifconfig".to_string(),
+            self.interface.to_string(),
+            "vhid".to_string(),
+            self.vhid.to_string(),
+            "advskew".to_string(),
+            effective_skew.to_string(),
+            "advbase".to_string(),
+            self.advbase.to_string(),
+            "pass".to_string(),
+            self.password.clone(),
+            af.to_string(),
+            format!("{}/{}", self.virtual_ip, self.prefix),
+            "alias".to_string(),
+        ]]
     }
 
     /// Generate pf rules to allow CARP protocol traffic
@@ -148,25 +139,38 @@ impl PfsyncConfig {
         }
     }
 
-    /// Generate ifconfig commands to configure pfsync
-    pub fn to_ifconfig_cmds(&self) -> Vec<String> {
+    /// Generate ifconfig argv vectors to configure pfsync.
+    ///
+    /// Returns a list of argument vectors — each inner `Vec<String>` is one
+    /// command where `[0]` is the executable and the rest are its arguments.
+    /// Pass them directly to `tokio::process::Command::new(&argv[0]).args(&argv[1..])`.
+    pub fn to_ifconfig_cmds(&self) -> Vec<Vec<String>> {
         if !self.enabled {
             return Vec::new();
         }
 
-        let mut cmds = vec![format!("ifconfig pfsync0 create")];
+        let create_argv = vec![
+            "ifconfig".to_string(),
+            "pfsync0".to_string(),
+            "create".to_string(),
+        ];
 
-        let mut pfsync_cmd = format!("ifconfig pfsync0 syncdev {}", self.sync_interface);
+        let mut config_argv = vec![
+            "ifconfig".to_string(),
+            "pfsync0".to_string(),
+            "syncdev".to_string(),
+            self.sync_interface.to_string(),
+        ];
         if let Some(ref peer) = self.sync_peer {
-            pfsync_cmd.push_str(&format!(" syncpeer {peer}"));
+            config_argv.push("syncpeer".to_string());
+            config_argv.push(peer.to_string());
         }
         if self.defer {
-            pfsync_cmd.push_str(" defer");
+            config_argv.push("defer".to_string());
         }
-        pfsync_cmd.push_str(" up");
-        cmds.push(pfsync_cmd);
+        config_argv.push("up".to_string());
 
-        cmds
+        vec![create_argv, config_argv]
     }
 
     /// Generate pf rules to allow pfsync traffic
@@ -207,12 +211,6 @@ impl std::fmt::Display for ClusterRole {
             ClusterRole::Secondary => write!(f, "secondary"),
             ClusterRole::Standalone => write!(f, "standalone"),
         }
-    }
-}
-
-impl Default for ClusterRole {
-    fn default() -> Self {
-        ClusterRole::Standalone
     }
 }
 

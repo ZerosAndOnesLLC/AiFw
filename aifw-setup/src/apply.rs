@@ -1,7 +1,7 @@
 use crate::config::{DefaultPolicy, SetupConfig};
 use crate::console;
 use crate::tuning::{self, TuningItem};
-use aifw_common;
+use aifw_common::{CarpVip, ClusterNode, ClusterRole, Interface, PfsyncConfig};
 
 /// Apply the setup configuration: write files, init DB, start services
 pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<(), String> {
@@ -375,7 +375,7 @@ aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
                 let alias = format!(
                     "inet vhid {} advskew {} advbase {} pass {} {}/{}",
                     vip.vhid,
-                    if matches!(c.role, aifw_common::ClusterRole::Primary) { 0u32 } else { vip.advskew as u32 },
+                    if matches!(c.role, ClusterRole::Primary) { 0u32 } else { vip.advskew as u32 },
                     vip.advbase,
                     c.password,
                     vip.virtual_ip, vip.prefix,
@@ -1012,7 +1012,7 @@ rate_limit = 1000
             .map_err(|e| format!("ha migrate: {e}"))?;
 
         // pfsync singleton row
-        let pfsync = aifw_common::PfsyncConfig::new(aifw_common::Interface(c.pfsync_iface.clone()));
+        let pfsync = PfsyncConfig::new(Interface(c.pfsync_iface.clone()));
         cluster_engine
             .set_pfsync(pfsync)
             .await
@@ -1020,11 +1020,11 @@ rate_limit = 1000
 
         // CARP VIPs
         for v in &c.vips {
-            let mut vip = aifw_common::CarpVip::new(
+            let mut vip = CarpVip::new(
                 v.vhid,
                 v.virtual_ip,
                 v.prefix,
-                aifw_common::Interface(v.interface.clone()),
+                Interface(v.interface.clone()),
                 c.password.clone(),
             );
             vip.advskew = v.advskew;
@@ -1038,15 +1038,20 @@ rate_limit = 1000
         // Self node row
         let self_role = c.role;
         let peer_role = match self_role {
-            aifw_common::ClusterRole::Primary => aifw_common::ClusterRole::Secondary,
-            _ => aifw_common::ClusterRole::Primary,
+            ClusterRole::Primary => ClusterRole::Secondary,
+            ClusterRole::Secondary => ClusterRole::Primary,
+            ClusterRole::Standalone => {
+                return Err("standalone role cannot be configured with a cluster peer".to_string());
+            }
         };
+        // LAN IP is required when configuring a cluster — 127.0.0.1 would be
+        // silently wrong and mislead the peer reachability check.
         let self_addr = config
             .lan_ip
             .as_ref()
             .and_then(|ip| ip.split('/').next())
             .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-            .unwrap_or_else(|| "127.0.0.1".parse().unwrap());
+            .ok_or_else(|| "HA cluster setup requires a configured LAN IP".to_string())?;
         // Resolve hostname via `hostname` command (avoids needing the nix
         // "hostname" feature; works on both FreeBSD and Linux dev environments)
         let self_name = std::process::Command::new("hostname")
@@ -1058,11 +1063,11 @@ rate_limit = 1000
             })
             .unwrap_or_else(|| config.hostname.clone());
         cluster_engine
-            .add_node(aifw_common::ClusterNode::new(self_name, self_addr, self_role))
+            .add_node(ClusterNode::new(self_name, self_addr, self_role))
             .await
             .map_err(|e| format!("ha add_node self: {e}"))?;
         cluster_engine
-            .add_node(aifw_common::ClusterNode::new(
+            .add_node(ClusterNode::new(
                 format!("peer-{}", c.peer_address),
                 c.peer_address,
                 peer_role,
