@@ -245,10 +245,16 @@ chmod 755 /usr/local/etc/rc.d/aifw_ids
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/aifw_watchdog" /usr/local/etc/rc.d/aifw_watchdog
 chmod 755 /usr/local/etc/rc.d/aifw_watchdog
 
+# HA rc.d helpers (only meaningful on cluster-enabled nodes)
+for rcd in aifw_carp_demote aifw_demote_on_shutdown; do
+    src="$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/$rcd"
+    [ -f "$src" ] && install -m 755 "$src" "/usr/local/etc/rc.d/$rcd"
+done
+
 # Install libexec scripts (restart driver, watchdog loop, motd cleanup,
-# login migrate). Mode 755 so the daemon supervisor can exec them.
+# login migrate, shutdown hook). Mode 755 so the daemon supervisor can exec them.
 mkdir -p /usr/local/libexec
-for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh; do
+for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh aifw-shutdown-hook.sh; do
     src="$REPO_DIR/freebsd/overlay/usr/local/libexec/$script"
     if [ -f "$src" ]; then
         install -m 755 "$src" "/usr/local/libexec/$script"

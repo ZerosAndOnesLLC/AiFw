@@ -221,10 +221,9 @@ if [ -f "$RTIME_DIR/target/release/rtime" ]; then
 fi
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
 
-# rc.d service scripts — the updater (aifw-core/src/updater.rs) looks for
-# these under <tarball>/rc.d/ and installs each one listed in manifest.json's
-# `rc_scripts`. Skipping this ships stale service files (e.g. control-socket
-# chown/chmod fixes never reach the appliance).
+# rc.d service scripts — the updater (aifw-core/src/updater.rs) iterates
+# every file found under <tarball>/rc.d/ and installs it; it does not consult
+# manifest.json's rc_scripts list. Skipping this ships stale service files.
 mkdir -p "$TARBALL_DIR/rc.d"
 if [ -d "$PROJECT_ROOT/freebsd/overlay/usr/local/etc/rc.d" ]; then
     cp -a "$PROJECT_ROOT/freebsd/overlay/usr/local/etc/rc.d/"* "$TARBALL_DIR/rc.d/" 2>/dev/null || true
