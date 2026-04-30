@@ -1,6 +1,8 @@
+mod cluster_replicator;
+
 use aifw_core::{
-    AliasEngine, Database, GatewayEngine, GroupEngine, InstanceEngine, LeakEngine, NatEngine,
-    PolicyEngine, RuleEngine, SlaEngine,
+    AliasEngine, ClusterEngine, Database, GatewayEngine, GroupEngine, InstanceEngine, LeakEngine,
+    NatEngine, PolicyEngine, RuleEngine, SlaEngine,
 };
 use chrono::Timelike;
 use clap::Parser;
@@ -211,13 +213,27 @@ async fn main() -> anyhow::Result<()> {
     // and continues on failure so a misconfigured HA setup never prevents the
     // daemon from coming up.
     {
-        use aifw_core::ClusterEngine;
-        let cluster_engine = ClusterEngine::new(pool.clone(), pf.clone());
+        let cluster_engine = Arc::new(ClusterEngine::new(pool.clone(), pf.clone()));
         if let Err(e) = cluster_engine.migrate().await {
             tracing::warn!(error = %e, "ha: cluster migrate failed; continuing");
         }
         if let Err(e) = cluster_engine.recover_kernel_state().await {
             tracing::warn!(error = %e, "ha: kernel-state recovery failed; continuing");
+        }
+
+        // Cluster replicator — active only when AIFW_LOOPBACK_API_KEY is set.
+        // On the master node, pushes config snapshots to peers every 10 s.
+        let self_api_key = std::env::var("AIFW_LOOPBACK_API_KEY").unwrap_or_default();
+        if !self_api_key.is_empty() {
+            let replicator = cluster_replicator::ClusterReplicator::new(
+                cluster_engine.clone(),
+                "https://127.0.0.1:8080".to_string(),
+                self_api_key,
+            );
+            tokio::spawn(replicator.run());
+            info!("ha: cluster replicator started");
+        } else {
+            info!("ha: AIFW_LOOPBACK_API_KEY not set; cluster replicator disabled");
         }
     }
 

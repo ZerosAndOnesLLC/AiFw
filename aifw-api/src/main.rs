@@ -192,6 +192,26 @@ impl AppState {
         f(&mut p);
         let _ = self.pending_tx.send(p.clone());
     }
+
+    /// Produces (snapshot_data_json, sha256_hex_hash) for cluster replication.
+    /// Includes everything backup exports plus IDS rule overrides + suppressions.
+    /// Hash is sha256 of the JSON bytes.
+    pub async fn cluster_snapshot_data(
+        &self,
+    ) -> Result<(String, String), aifw_common::AifwError> {
+        let payload = crate::backup::cluster_export_payload(self)
+            .await
+            .map_err(|e| aifw_common::AifwError::Other(format!("export: {e:?}")))?;
+        let json = serde_json::to_string(&payload)
+            .map_err(|e| aifw_common::AifwError::Other(format!("serialize: {e}")))?;
+
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(json.as_bytes());
+        let hash = hex::encode(h.finalize());
+
+        Ok((json, hash))
+    }
 }
 
 #[derive(Parser)]

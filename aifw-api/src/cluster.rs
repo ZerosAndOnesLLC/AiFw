@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
 
+
 pub fn read_routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/cluster/carp", get(list_carp))
@@ -22,6 +23,8 @@ pub fn read_routes() -> Router<AppState> {
         .route("/api/v1/cluster/nodes", get(list_nodes))
         .route("/api/v1/cluster/health", get(list_health))
         .route("/api/v1/cluster/status", get(get_status))
+        .route("/api/v1/cluster/snapshot/hash", get(snapshot_hash))
+        .route("/api/v1/cluster/snapshot", get(snapshot_get))
 }
 
 pub fn write_routes() -> Router<AppState> {
@@ -41,6 +44,8 @@ pub fn write_routes() -> Router<AppState> {
         .route("/api/v1/cluster/health/{id}", delete(delete_health))
         .route("/api/v1/cluster/promote", post(promote))
         .route("/api/v1/cluster/demote", post(demote))
+        .route("/api/v1/cluster/snapshot", put(snapshot_put))
+        .route("/api/v1/cluster/snapshot/force", post(snapshot_force))
 }
 
 #[derive(Serialize)]
@@ -396,4 +401,122 @@ async fn demote(State(s): State<AppState>) -> StatusCode {
         vhid: 0,
     });
     StatusCode::NO_CONTENT
+}
+
+// ============================================================
+// Snapshot endpoints (Task 5.4, Commit 5 #218)
+// ============================================================
+
+async fn snapshot_hash(State(s): State<AppState>) -> Result<String, StatusCode> {
+    let (_data, hash) = s.cluster_snapshot_data().await.map_err(|e| {
+        tracing::warn!(?e, "snapshot_hash");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(hash)
+}
+
+async fn snapshot_get(State(s): State<AppState>) -> Result<String, StatusCode> {
+    let (data, _hash) = s.cluster_snapshot_data().await.map_err(|e| {
+        tracing::warn!(?e, "snapshot_get");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(data)
+}
+
+async fn snapshot_put(State(s): State<AppState>, body: String) -> StatusCode {
+    // Master never accepts pushes — split-brain protection
+    if is_carp_master_locally().await {
+        return StatusCode::CONFLICT;
+    }
+    match apply_snapshot_data(&s, &body).await {
+        Ok(hash) => {
+            // Use Uuid::nil as node_id placeholder (peer identity improvable later
+            // once per-peer API key is cross-referenced with the authenticated key)
+            let _ = s
+                .cluster_engine
+                .record_snapshot_apply(Uuid::nil(), &hash, "peer")
+                .await;
+            StatusCode::NO_CONTENT
+        }
+        Err(e) => {
+            tracing::warn!(?e, "snapshot apply failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
+    // Look up the primary peer, fetch its snapshot, and apply locally.
+    let nodes = match s.cluster_engine.list_nodes().await {
+        Ok(n) => n,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let peer = match nodes
+        .iter()
+        .find(|n| matches!(n.role, ClusterRole::Primary))
+    {
+        Some(p) => p.clone(),
+        None => return StatusCode::PRECONDITION_FAILED,
+    };
+    let key = match s.cluster_engine.peer_api_key(peer.id).await {
+        Ok(Some(k)) => k,
+        _ => return StatusCode::PRECONDITION_FAILED,
+    };
+
+    let url = format!("https://{}:8080/api/v1/cluster/snapshot", peer.address);
+    let client = match reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    let data = match client
+        .get(&url)
+        .header("Authorization", format!("ApiKey {key}"))
+        .send()
+        .await
+    {
+        Ok(r) => match r.text().await {
+            Ok(s) => s,
+            Err(_) => return StatusCode::BAD_GATEWAY,
+        },
+        Err(_) => return StatusCode::BAD_GATEWAY,
+    };
+
+    match apply_snapshot_data(&s, &data).await {
+        Ok(hash) => {
+            let _ = s
+                .cluster_engine
+                .record_snapshot_apply(peer.id, &hash, &peer.address.to_string())
+                .await;
+            StatusCode::NO_CONTENT
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+async fn is_carp_master_locally() -> bool {
+    tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("ifconfig 2>/dev/null | grep -qE 'carp:[[:space:]]+MASTER'")
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+async fn apply_snapshot_data(
+    state: &AppState,
+    body: &str,
+) -> Result<String, anyhow::Error> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(body.as_bytes());
+    let hash = hex::encode(h.finalize());
+
+    crate::backup::apply_cluster_snapshot(state, body).await?;
+    Ok(hash)
 }

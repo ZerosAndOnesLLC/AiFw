@@ -2811,3 +2811,121 @@ pub async fn put_retention(
         .await
         .map_err(|c| (c, "read back failed".into()))
 }
+
+// ============================================================
+// Cluster snapshot serialization (Task 5.3)
+// ============================================================
+
+/// Payload for cluster config replication snapshots.
+/// Extends FirewallConfig with IDS rule overrides and suppressions
+/// so peer nodes receive a complete picture of config state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterSnapshotPayload {
+    pub firewall: FirewallConfig,
+    pub ids_rule_overrides: Vec<IdsRuleOverride>,
+    pub ids_suppressions: Vec<IdsSuppressionRecord>,
+}
+
+/// Minimal IDS rule override record for snapshot serialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdsRuleOverride {
+    pub id: String,
+    pub enabled: bool,
+    pub action_override: Option<String>,
+}
+
+/// Minimal IDS suppression record for snapshot serialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdsSuppressionRecord {
+    pub id: String,
+    pub sid: i64,
+    pub suppress_type: String,
+    pub ip_cidr: Option<String>,
+}
+
+/// Build a ClusterSnapshotPayload from current live state.
+/// Reuses build_current_config for the firewall section,
+/// then appends IDS rule overrides + suppressions from the DB.
+pub(crate) async fn cluster_export_payload(
+    state: &AppState,
+) -> Result<ClusterSnapshotPayload, StatusCode> {
+    let firewall = build_current_config(state).await?;
+
+    // IDS rule overrides: rows with non-default enabled or action_override
+    let overrides: Vec<IdsRuleOverride> = sqlx::query_as::<_, (String, bool, Option<String>)>(
+        "SELECT id, enabled, action_override FROM ids_rules WHERE enabled = 0 OR action_override IS NOT NULL"
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(id, enabled, action_override)| IdsRuleOverride { id, enabled, action_override })
+    .collect();
+
+    // IDS suppressions
+    let suppressions: Vec<IdsSuppressionRecord> = sqlx::query_as::<_, (String, i64, String, Option<String>)>(
+        "SELECT id, sid, suppress_type, ip_cidr FROM ids_suppressions ORDER BY rowid ASC"
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(id, sid, suppress_type, ip_cidr)| IdsSuppressionRecord { id, sid, suppress_type, ip_cidr })
+    .collect();
+
+    Ok(ClusterSnapshotPayload {
+        firewall,
+        ids_rule_overrides: overrides,
+        ids_suppressions: suppressions,
+    })
+}
+
+/// Apply a cluster snapshot payload (JSON string) to this node.
+/// Parses the payload, applies the firewall config, then syncs
+/// IDS rule overrides and suppressions from the DB.
+pub(crate) async fn apply_cluster_snapshot(
+    state: &AppState,
+    body: &str,
+) -> anyhow::Result<()> {
+    let payload: ClusterSnapshotPayload = serde_json::from_str(body)
+        .map_err(|e| anyhow::anyhow!("snapshot parse error: {e}"))?;
+
+    // Apply firewall config using an identity interface map (same-box restore)
+    let iface_map = std::collections::HashMap::new();
+    apply_firewall_config(state, &payload.firewall, &iface_map)
+        .await
+        .map_err(|sc| anyhow::anyhow!("apply_firewall_config failed: {sc:?}"))?;
+
+    // Sync IDS rule overrides: apply enabled/action_override to ids_rules rows
+    for ov in &payload.ids_rule_overrides {
+        let _ = sqlx::query(
+            "UPDATE ids_rules SET enabled = ?1, action_override = ?2 WHERE id = ?3"
+        )
+        .bind(ov.enabled)
+        .bind(&ov.action_override)
+        .bind(&ov.id)
+        .execute(&state.pool)
+        .await;
+    }
+
+    // Sync IDS suppressions: wipe and re-insert
+    let _ = sqlx::query("DELETE FROM ids_suppressions")
+        .execute(&state.pool)
+        .await;
+    for s in &payload.ids_suppressions {
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO ids_suppressions (id, sid, suppress_type, ip_cidr) VALUES (?1, ?2, ?3, ?4)"
+        )
+        .bind(&s.id)
+        .bind(s.sid)
+        .bind(&s.suppress_type)
+        .bind(&s.ip_cidr)
+        .execute(&state.pool)
+        .await;
+    }
+
+    // Reload IDS config so suppressions take effect
+    let _ = state.ids_client.reload().await;
+
+    Ok(())
+}

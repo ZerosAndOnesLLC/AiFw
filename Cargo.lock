@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ai"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-api"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -54,14 +54,17 @@ dependencies = [
  "chrono",
  "clap",
  "futures-util",
+ "hex",
  "jsonwebtoken",
  "rcgen",
  "redis",
+ "reqwest",
  "rustls",
  "rustls-pemfile",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2 0.10.9",
  "sqlx",
  "time",
  "tokio",
@@ -75,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-cli"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -95,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-common"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "chrono",
  "nix 0.31.2",
@@ -109,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-conntrack"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -123,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-core"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -139,6 +142,7 @@ dependencies = [
  "hex",
  "instant-acme",
  "lettre",
+ "rand 0.8.6",
  "rcgen",
  "reqwest",
  "serde",
@@ -153,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-daemon"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -163,6 +167,7 @@ dependencies = [
  "clap",
  "libc",
  "nix 0.31.2",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
@@ -173,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aho-corasick",
  "aifw-common",
@@ -200,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids-bin"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-ids",
@@ -218,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids-ipc"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -233,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-metrics"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -248,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-pf"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -260,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-plugins"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -277,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-setup"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -298,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-tui"
-version = "5.83.0"
+version = "5.84.0"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",

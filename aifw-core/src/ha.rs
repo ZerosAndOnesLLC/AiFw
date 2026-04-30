@@ -2,6 +2,7 @@ use aifw_common::{
     AifwError, CarpLatencyProfile, CarpStatus, CarpVip, ClusterNode, ClusterRole, HealthCheck,
     HealthCheckType, Interface, NodeHealth, PfsyncConfig, Result,
 };
+use rand::RngCore;
 use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
@@ -68,6 +69,39 @@ impl ClusterEngine {
         )
         .execute(&self.pool)
         .await?;
+
+        // New columns on cluster_nodes for peer auth + drift tracking
+        for stmt in [
+            "ALTER TABLE cluster_nodes ADD COLUMN peer_api_key TEXT",
+            "ALTER TABLE cluster_nodes ADD COLUMN peer_api_key_hash TEXT",
+            "ALTER TABLE cluster_nodes ADD COLUMN software_version TEXT",
+            "ALTER TABLE cluster_nodes ADD COLUMN last_pushed_cert_at TEXT",
+        ] {
+            let _ = sqlx::query(stmt).execute(&self.pool).await;
+        }
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS cluster_snapshot_state (
+                node_id TEXT PRIMARY KEY,
+                last_applied_hash TEXT NOT NULL,
+                last_applied_at TEXT NOT NULL,
+                last_applied_from TEXT NOT NULL
+            );
+        "#).execute(&self.pool).await?;
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS cluster_failover_events (
+                id TEXT PRIMARY KEY,
+                ts TEXT NOT NULL,
+                from_role TEXT NOT NULL,
+                to_role TEXT NOT NULL,
+                cause TEXT NOT NULL,
+                detail TEXT
+            );
+        "#).execute(&self.pool).await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_cluster_failover_events_ts ON cluster_failover_events(ts);")
+            .execute(&self.pool).await?;
 
         sqlx::query(
             r#"
@@ -306,10 +340,63 @@ impl ClusterEngine {
         Ok(())
     }
 
-    /// Stub for snapshot hash — returns Ok(None) until the cluster_snapshot_state
-    /// table is created in Commit 5 (#218).
+    /// Returns the most recently applied snapshot hash from cluster_snapshot_state,
+    /// or None if no snapshot has been applied yet.
     pub async fn last_applied_snapshot_hash(&self) -> Result<Option<String>> {
-        Ok(None)
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT last_applied_hash FROM cluster_snapshot_state ORDER BY last_applied_at DESC LIMIT 1"
+        ).fetch_optional(&self.pool).await?;
+        Ok(row.map(|r| r.0))
+    }
+
+    pub async fn record_snapshot_apply(&self, node_id: Uuid, hash: &str, from: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO cluster_snapshot_state (node_id, last_applied_hash, last_applied_at, last_applied_from) VALUES (?1, ?2, ?3, ?4)"
+        )
+        .bind(node_id.to_string())
+        .bind(hash)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(from)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn record_failover_event(
+        &self, from: &str, to: &str, cause: &str, detail: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO cluster_failover_events (id, ts, from_role, to_role, cause, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(from)
+        .bind(to)
+        .bind(cause)
+        .bind(detail)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn generate_peer_api_key(&self, node_id: Uuid) -> Result<String> {
+        let mut buf = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut buf);
+        let key = hex::encode(buf);
+        let hash = sha256_hex(&key);
+        sqlx::query("UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3")
+            .bind(&key)
+            .bind(&hash)
+            .bind(node_id.to_string())
+            .execute(&self.pool).await?;
+        Ok(key)
+    }
+
+    pub async fn peer_api_key(&self, node_id: Uuid) -> Result<Option<String>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT peer_api_key FROM cluster_nodes WHERE id = ?1"
+        )
+        .bind(node_id.to_string())
+        .fetch_optional(&self.pool).await?;
+        Ok(row.and_then(|(k,)| k))
     }
 
     // ============================================================
@@ -443,6 +530,17 @@ impl ClusterEngine {
 
         Ok(())
     }
+}
+
+// ============================================================
+// Crypto helpers
+// ============================================================
+
+fn sha256_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    hex::encode(h.finalize())
 }
 
 // ============================================================

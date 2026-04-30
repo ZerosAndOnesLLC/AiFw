@@ -163,6 +163,29 @@ export default function ClusterPage() {
             </div>
             <div>Latency profile: {pfsync.latency_profile}</div>
             <div>DHCP link: {pfsync.dhcp_link ? "yes" : "no"}</div>
+            <button
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const r = await fetch("/api/v1/cluster/snapshot/force", {
+                    method: "POST",
+                    credentials: "include",
+                  });
+                  if (!r.ok) {
+                    alert(
+                      `Force sync failed: ${r.status} ${r.statusText}`
+                    );
+                  }
+                  await reload();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              disabled={busy}
+              className="mt-2 px-3 py-1.5 rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-sm"
+            >
+              Force sync from peer
+            </button>
           </div>
         ) : (
           <div className="text-sm text-[var(--text-muted)]">
