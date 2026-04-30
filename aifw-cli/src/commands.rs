@@ -2759,12 +2759,15 @@ pub async fn multiwan_import(db_path: &Path, file: &str) -> anyhow::Result<()> {
 /// Base URL for the local AiFw API.
 const AIFW_API_BASE: &str = "http://127.0.0.1:8080";
 
-/// Read an auth token for the loopback API.
+/// Returns the bearer token for authenticating to the local API.
 ///
 /// Resolution order:
-///   1. `AIFW_TOKEN` environment variable (Bearer JWT or raw API key)
-///   2. `/var/db/aifw/cli.token` on-disk file (written by `aifw-setup` at install)
-///   3. Empty string — unauthenticated (works for routes with no auth, fails with 401 otherwise)
+///   1. `AIFW_TOKEN` env var (preferred for interactive shells / scripts)
+///   2. `/var/db/aifw/cli.token` (reserved for future per-host token provisioning;
+///      nothing currently writes this file — see #225 / #217 for follow-up)
+///
+/// Returns empty string if neither source is available; protected endpoints
+/// will respond 401 in that case.
 fn read_api_token() -> String {
     if let Ok(t) = std::env::var("AIFW_TOKEN") {
         if !t.is_empty() {
@@ -3076,12 +3079,21 @@ pub async fn cluster_verify(as_json: bool) -> anyhow::Result<()> {
         Err(_) => failures.push("pfsync0 not present (kernel module loaded?)".into()),
     }
 
-    // 3. Some CARP VIPs configured (any interface)
+    // 3. Some CARP VIPs configured (any interface) — only meaningful on FreeBSD
     match tokio::process::Command::new("ifconfig").output().await {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
             if !stdout.contains("carp:") {
-                failures.push("no CARP VIPs configured (no 'carp:' lines in ifconfig)".into());
+                if std::env::consts::OS == "freebsd" {
+                    failures.push(
+                        "no CARP VIPs configured (no 'carp:' lines in ifconfig)".into(),
+                    );
+                } else {
+                    failures.push(format!(
+                        "CARP check skipped: not running on FreeBSD (host OS is {})",
+                        std::env::consts::OS
+                    ));
+                }
             }
         }
         Err(_) => failures.push("ifconfig failed".into()),
@@ -3101,6 +3113,14 @@ pub async fn cluster_verify(as_json: bool) -> anyhow::Result<()> {
         .unwrap_or(false)
     {
         failures.push("peer unreachable".into());
+    }
+    if status
+        .get("last_snapshot_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        failures.push("no config snapshot on record (replication may be stalled)".into());
     }
 
     if as_json {
