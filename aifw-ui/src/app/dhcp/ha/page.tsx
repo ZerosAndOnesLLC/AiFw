@@ -95,21 +95,30 @@ export default function HaConfigPage() {
 
   const linked = pfsync?.dhcp_link === true;
 
-  const handleUnlink = async () => {
+  const handleUnlink = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/cluster/pfsync", { headers: authHeadersPlain() });
+      const res = await fetch("/api/v1/cluster/pfsync", {
+        headers: authHeadersPlain(),
+        credentials: "include",
+      });
       if (!res.ok) return;
       const cur: PfsyncConfig = await res.json();
       const body: PfsyncConfig = { ...cur, dhcp_link: false };
-      await fetch("/api/v1/cluster/pfsync", {
+      const putRes = await fetch("/api/v1/cluster/pfsync", {
         method: "PUT",
-        headers: authHeaders(),
+        headers: { ...authHeadersPlain(), "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(body),
       });
-      setPfsync({ ...body });
+      if (!putRes.ok) {
+        // Server didn't accept the unlink; leave UI state alone so the operator
+        // sees the still-linked state and can retry.
+        return;
+      }
+      setPfsync(body);
       await fetchConfig();
     } catch { /* silent */ }
-  };
+  }, [fetchConfig]);
 
   const saveConfig = async () => {
     setSaving(true);
