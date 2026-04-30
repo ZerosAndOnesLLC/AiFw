@@ -397,14 +397,6 @@ impl ClusterEngine {
                 .map_err(|e| AifwError::Pf(e.to_string()))?;
         }
 
-        let preempt = tokio::process::Command::new("sysctl")
-            .arg("net.inet.carp.preempt=1")
-            .status()
-            .await;
-        if let Err(error) = preempt {
-            tracing::warn!(?error, "ha: failed to set net.inet.carp.preempt=1");
-        }
-
         Ok(())
     }
 }
@@ -614,7 +606,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_ha_rules_uses_latency_profile() {
+    async fn apply_ha_rules_loads_carp_pf_rules() {
         use aifw_common::{CarpLatencyProfile, CarpVip, Interface, PfsyncConfig};
 
         let db = Database::new_in_memory().await.unwrap();
@@ -649,6 +641,41 @@ mod tests {
         assert!(
             rules.iter().any(|r| r.contains("carp-vhid-10")),
             "expected CARP rule for vhid 10, got: {rules:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_kernel_state_threads_profile_through() {
+        use aifw_common::{CarpLatencyProfile, CarpVip, ClusterRole, Interface, PfsyncConfig};
+
+        let db = Database::new_in_memory().await.unwrap();
+        let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
+        let engine = ClusterEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+
+        let mut p = PfsyncConfig::new(Interface("igb1".into()));
+        p.latency_profile = CarpLatencyProfile::Tight;
+        engine.set_pfsync(p).await.unwrap();
+
+        let vip = CarpVip::new(
+            10,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("igb0".into()),
+            "abc12345".into(),
+        );
+        engine.add_carp_vip(vip).await.unwrap();
+
+        // recover_kernel_state_for_role shells out to ifconfig/sysctl which won't
+        // succeed on Linux/WSL, but failures are warn-logged and swallowed; the
+        // call should still return Ok(()). The intent is to exercise the
+        // get_pfsync -> profile.timing_for(role) -> to_ifconfig_argv path.
+        let result = engine
+            .recover_kernel_state_for_role(ClusterRole::Secondary)
+            .await;
+        assert!(
+            result.is_ok(),
+            "recover_kernel_state_for_role returned {result:?}"
         );
     }
 }

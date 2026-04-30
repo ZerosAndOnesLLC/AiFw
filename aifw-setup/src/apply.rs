@@ -370,6 +370,13 @@ aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
             let _ = run_sysrc("pfsync_enable", "YES");
             let pfsync_args = format!("syncdev {} defer up", c.pfsync_iface);
             let _ = run_sysrc("ifconfig_pfsync0", &pfsync_args);
+            // Setup writes Conservative timing to rc.conf as the boot-time default.
+            // At runtime, aifw-daemon's recover_kernel_state_for_role re-applies
+            // the actual stored profile via ifconfig, so any operator change via
+            // the cluster API takes effect on next service restart. rc.conf is
+            // rewritten only when re-running setup. TODO: when the cluster API
+            // changes the profile (in #217), have it also rewrite the rc.conf
+            // aliases so reboot doesn't briefly fall back to Conservative.
             let timing = aifw_common::CarpLatencyProfile::default().timing_for(c.role);
             for vip in &c.vips {
                 let key = format!("ifconfig_{}_aliases", vip.interface);
@@ -1089,6 +1096,13 @@ rate_limit = 1000
             .apply_ha_rules()
             .await
             .map_err(|e| format!("ha apply_ha_rules: {e}"))?;
+
+        // Apply runtime kernel state too — recover_kernel_state_for_role
+        // owns the carp.preempt sysctl now that apply_ha_rules is pure-pf.
+        cluster_engine
+            .recover_kernel_state_for_role(c.role)
+            .await
+            .map_err(|e| format!("ha recover_kernel_state_for_role: {e}"))?;
     }
 
     Ok(())
