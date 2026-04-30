@@ -8,7 +8,7 @@ use aifw_common::{
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,7 @@ pub fn read_routes() -> Router<AppState> {
         .route("/api/v1/cluster/snapshot/hash", get(snapshot_hash))
         .route("/api/v1/cluster/snapshot", get(snapshot_get))
         .route("/api/v1/cluster/failover-history", get(failover_history))
+        .route("/api/v1/cluster/health-summary", get(health_summary))
 }
 
 pub fn write_routes() -> Router<AppState> {
@@ -54,12 +55,19 @@ pub fn write_routes() -> Router<AppState> {
             post(generate_node_key),
         )
         .route("/api/v1/cluster/health", post(create_health))
-        .route("/api/v1/cluster/health/{id}", delete(delete_health))
+        .route(
+            "/api/v1/cluster/health/{id}",
+            put(update_health).delete(delete_health),
+        )
         .route("/api/v1/cluster/promote", post(promote))
         .route("/api/v1/cluster/demote", post(demote))
         .route("/api/v1/cluster/snapshot", put(snapshot_put))
         .route("/api/v1/cluster/snapshot/force", post(snapshot_force))
         .route("/api/v1/cluster/cert-push", post(cert_push))
+        .route(
+            "/api/v1/cluster/loopback-key/generate",
+            post(generate_loopback_key),
+        )
         // Internal endpoints — called by aifw-daemon's RoleWatcher and HealthProber.
         // Protected by the same Permission::HaManage middleware as the rest of
         // cluster_write; the daemon authenticates via AIFW_LOOPBACK_API_KEY.
@@ -460,10 +468,28 @@ struct HealthReq {
     pub target: String,
     #[serde(default = "default_interval")]
     pub interval_secs: u32,
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u32,
+    #[serde(default = "default_failures")]
+    pub failures_before_down: u32,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
 }
 
 fn default_interval() -> u32 {
     10
+}
+
+fn default_timeout() -> u32 {
+    5
+}
+
+fn default_failures() -> u32 {
+    3
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 async fn create_health(
@@ -472,11 +498,38 @@ async fn create_health(
 ) -> Result<Json<HealthCheck>, StatusCode> {
     let mut h = HealthCheck::new(r.name, r.check_type, r.target);
     h.interval_secs = r.interval_secs;
+    h.timeout_secs = r.timeout_secs;
+    h.failures_before_down = r.failures_before_down;
+    h.enabled = r.enabled;
     let h = s
         .cluster_engine
         .add_health_check(h)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(h))
+}
+
+async fn update_health(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(r): Json<HealthReq>,
+) -> Result<Json<HealthCheck>, StatusCode> {
+    let mut h = HealthCheck::new(r.name, r.check_type, r.target);
+    h.id = id;
+    h.interval_secs = r.interval_secs;
+    h.timeout_secs = r.timeout_secs;
+    h.failures_before_down = r.failures_before_down;
+    h.enabled = r.enabled;
+    s.cluster_engine
+        .update_health_check(&h)
+        .await
+        .map_err(|e| match e {
+            aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => {
+                tracing::warn!(?e, "update_health_check failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
     Ok(Json(h))
 }
 
@@ -809,4 +862,169 @@ async fn cert_push(
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+// ============================================================
+// Health summary (D2 — onboarding warnings)
+// ============================================================
+
+#[derive(Serialize)]
+struct HealthSummary {
+    missing_peer_keys: Vec<String>,
+    loopback_key_missing: bool,
+    warnings: Vec<String>,
+}
+
+async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>, StatusCode> {
+    let nodes = s
+        .cluster_engine
+        .list_nodes()
+        .await
+        .map_err(|e| {
+            tracing::warn!(?e, "health_summary: list_nodes");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let local_role_str = read_local_role().await;
+    let local_role = ClusterRole::parse(&local_role_str).unwrap_or(ClusterRole::Standalone);
+
+    let mut missing: Vec<String> = Vec::new();
+    for node in nodes.iter().filter(|n| n.role != local_role) {
+        if s.cluster_engine
+            .peer_api_key(node.id)
+            .await
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            missing.push(node.name.clone());
+        }
+    }
+
+    let loopback_key_missing = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM api_keys WHERE name = 'aifw-daemon-loopback'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap_or(0)
+        == 0;
+
+    let mut warnings: Vec<String> = Vec::new();
+    if !missing.is_empty() {
+        warnings.push(format!(
+            "Replication will not flow to: {}. Click 'Generate Peer Key' on each node, copy the key, and register it on the peer.",
+            missing.join(", ")
+        ));
+    }
+    if loopback_key_missing && local_role != ClusterRole::Standalone {
+        warnings.push(
+            "Loopback API key not registered — cluster background tasks (replicator, role watcher, health prober) are disabled. Generate it below or re-run aifw-setup.".to_string(),
+        );
+    }
+
+    Ok(Json(HealthSummary {
+        missing_peer_keys: missing,
+        loopback_key_missing,
+        warnings,
+    }))
+}
+
+// ============================================================
+// Generate loopback key (D4 — post-install key generation)
+// ============================================================
+
+async fn generate_loopback_key(
+    State(s): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Generate 256 bits of entropy (two UUID simple strings = 64 hex chars).
+    let key = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let prefix = key[..12].to_string();
+    let hash = crate::auth::hash_password(&key)?;
+
+    // Find or create the system user that owns this key.
+    // Try to reuse an existing user named "aifw-daemon"; if absent, insert one.
+    let existing_user_id: Option<String> =
+        sqlx::query_scalar("SELECT id FROM users WHERE username = 'aifw-daemon' LIMIT 1")
+            .fetch_optional(&s.pool)
+            .await
+            .map_err(|e| {
+                tracing::warn!(?e, "loopback key: user lookup");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+    let user_id = match existing_user_id {
+        Some(id) => id,
+        None => {
+            // Create a locked system user — no password, no login.
+            let uid = Uuid::new_v4().to_string();
+            let dummy = crate::auth::hash_password(&format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()))?;
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, created_at) \
+                 VALUES (?1, 'aifw-daemon', ?2, 0, 'system', ?3)",
+            )
+            .bind(&uid)
+            .bind(&dummy)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&s.pool)
+            .await
+            .map_err(|e| {
+                tracing::warn!(?e, "loopback key: user insert");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            uid
+        }
+    };
+
+    // Delete any pre-existing loopback key then insert the new one.
+    let _ = sqlx::query("DELETE FROM api_keys WHERE name = 'aifw-daemon-loopback'")
+        .execute(&s.pool)
+        .await;
+
+    sqlx::query(
+        "INSERT INTO api_keys (id, name, key_hash, prefix, user_id, created_at) \
+         VALUES (?1, 'aifw-daemon-loopback', ?2, ?3, ?4, ?5)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(&hash)
+    .bind(&prefix)
+    .bind(&user_id)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&s.pool)
+    .await
+    .map_err(|e| {
+        tracing::warn!(?e, "loopback key: api_key insert");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Write plaintext key to disk (mode 640, root:aifw on FreeBSD).
+    let key_path = std::path::Path::new("/usr/local/etc/aifw/daemon.key");
+    if let Some(parent) = key_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(key_path, &key) {
+        tracing::warn!(error = %e, "loopback key: write daemon.key (non-FreeBSD dev env — skipped)");
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(key_path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o640);
+                let _ = std::fs::set_permissions(key_path, perms);
+            }
+        }
+        #[cfg(target_os = "freebsd")]
+        {
+            let _ = std::process::Command::new("chown")
+                .arg("root:aifw")
+                .arg(key_path)
+                .status();
+        }
+    }
+
+    tracing::info!("loopback API key (re)generated via UI");
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "message": "Loopback key generated. Restart aifw-daemon to activate (run: service aifw_daemon restart)."
+    })))
 }

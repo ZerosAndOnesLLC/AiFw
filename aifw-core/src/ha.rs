@@ -433,6 +433,28 @@ impl ClusterEngine {
         rows.into_iter().map(|r| r.into_check()).collect()
     }
 
+    pub async fn update_health_check(&self, check: &HealthCheck) -> Result<()> {
+        let result = sqlx::query(
+            r#"UPDATE health_checks SET name=?1, check_type=?2, interval_secs=?3,
+               timeout_secs=?4, failures_before_down=?5, target=?6, enabled=?7
+               WHERE id=?8"#,
+        )
+        .bind(&check.name)
+        .bind(check.check_type.to_string())
+        .bind(check.interval_secs as i64)
+        .bind(check.timeout_secs as i64)
+        .bind(check.failures_before_down as i64)
+        .bind(&check.target)
+        .bind(check.enabled)
+        .bind(check.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("health check {} not found", check.id)));
+        }
+        Ok(())
+    }
+
     pub async fn delete_health_check(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM health_checks WHERE id = ?1")
             .bind(id.to_string())
