@@ -13,9 +13,15 @@
 #   1  — a node was unreachable or `aifw cluster verify` returned non-zero
 #   2  — at least one node failed its local checks (ok=false)
 #   3  — expected exactly 1 MASTER, got a different count (0 or 2)
+#   4  — python3 missing
 #  64  — wrong number of arguments
 
 set -e
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "FAIL: python3 is required for JSON parsing but not found in PATH" >&2
+    exit 4
+fi
 
 if [ $# -ne 2 ]; then
     echo "Usage: $0 <node-a-host> <node-b-host>" >&2
@@ -55,17 +61,12 @@ fi
 
 # Count masters. Accept either "primary" or "master" in the role field
 # (the API uses "primary"; "master" is a legacy alias some builds emit).
-masters=$(printf '%s\n%s\n' "$ja" "$jb" | python3 -c '
+# Wrap both blobs into a JSON array so json.load handles pretty-printed
+# multi-line output from `aifw cluster verify --json`.
+masters=$(printf '[%s,%s]' "$ja" "$jb" | python3 -c '
 import sys, json
-n = 0
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    j = json.loads(line)
-    role = j.get("status", {}).get("role", "")
-    if role in ("primary", "master"):
-        n += 1
+docs = json.load(sys.stdin)
+n = sum(1 for j in docs if j.get("status", {}).get("role", "") in ("primary", "master"))
 print(n)
 ')
 

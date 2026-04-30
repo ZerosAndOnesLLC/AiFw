@@ -84,36 +84,54 @@ Without a UPS, a hard power loss results in:
 ## Split-brain handling
 
 If the pfsync link fails but both nodes stay up, both may temporarily think they
-are MASTER. When the link reconnects:
+are MASTER (a "split brain"). When the link reconnects:
 
-- Whichever node has the **higher node-id** (UUID lexicographic comparison)
-  concedes — its `ClusterReplicator` detects the conflict on the next snapshot
-  push (`409 Conflict` from the peer) and records an entry in
-  `cluster_failover_events` with cause `split_brain_detected`.
-- The conceding node's local config edits made during the partition are
-  **discarded** when it accepts the master's snapshot. They appear in the audit
-  log for forensics.
-- The master continues forwarding without interruption.
+- The `ClusterReplicator` on each side detects the conflict on the next snapshot
+  push: the peer responds with `409 Conflict` because it also believes it is
+  master. The conflict is logged and a `cluster_failover_events` row is recorded
+  with cause `split_brain_detected`.
+- **The kernel CARP election resolves the role**, not the application layer. With
+  `net.inet.carp.preempt=1` (set by `apply_ha_rules`), the node with the lower
+  effective advskew wins and the other node observes the new advertisements and
+  demotes itself automatically.
+- Whichever node ends up as BACKUP after the kernel election accepts the
+  surviving master's next snapshot push, replacing any local edits made during
+  the partition. Those edits are visible in the audit log for forensics.
 
-If both nodes' kernels resolve the CARP election (CARP `preempt=1` with the
-master's lower advskew), the demoted node rejoins as BACKUP automatically.
+There is no application-layer node-id tiebreaker; the design relies on CARP's
+deterministic timer comparison plus `preempt`. If both nodes happen to be
+configured with identical advskew (a misconfiguration), CARP itself does not
+deterministically resolve and operators must manually demote one node via
+`aifw cluster demote` until the misconfiguration is corrected.
 
 ## Operations
 
 ### Planned maintenance / rolling upgrade
 
-Always upgrade the standby first, then the master:
+Always upgrade the standby first.
 
 ```sh
-# On the standby node first
-aifw update install --restart
-
-# Then on the master node
+# On the standby
 aifw update install --restart
 ```
 
-`aifw update install --restart` triggers `aifw cluster demote` before bouncing
-services, so traffic flips to the peer before the local data plane stops.
+`aifw update install --restart` runs `service X restart` for each managed
+service. The rc.d stop function for `aifw_daemon`, `aifw_api`, and `aifw_ids`
+includes a prelude (added in #220) that sets `net.inet.carp.demotion=240` and
+sleeps 1 second before killing the service, so the peer takes over CARP master
+before the local data plane drops.
+
+After the standby is healthy on the new version, fail over manually if needed
+and repeat on the (now) standby:
+
+```sh
+aifw cluster demote          # on the current master, hands master to peer
+aifw update install --restart  # on the (now) standby, upgrades the second node
+```
+
+Confirm version drift is gone via `aifw cluster nodes list` (or the dashboard's
+per-node panel — the `software_version` field shows the running version of each
+node).
 
 ### Manual promote / demote
 
@@ -137,11 +155,12 @@ The remaining node continues as a standalone (Standalone role). Obtain the
 ### Force a config sync
 
 ```sh
-aifw cluster sync
+aifw cluster sync     # this node pulls the current snapshot from the primary
 ```
 
-Triggers an immediate snapshot push from master to standby. The dashboard's
-**Force sync from peer** button does the same thing.
+The dashboard's **Force sync from peer** button does the same thing. Use this
+when the standby's `cluster_snapshot_state.last_applied_hash` doesn't match the
+master's live config hash and the next replicator tick is too far away.
 
 ### Show cluster status
 
@@ -157,7 +176,7 @@ aifw cluster status --json
 aifw cluster verify
 
 # Machine-readable output (used by the harness)
-aifw cluster verify --json | jq .
+aifw cluster verify --json | python3 -m json.tool
 ```
 
 The `verify` command checks:
