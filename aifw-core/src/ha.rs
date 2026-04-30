@@ -157,6 +157,28 @@ impl ClusterEngine {
         rows.into_iter().map(|r| r.into_vip()).collect()
     }
 
+    pub async fn update_carp_vip(&self, v: &CarpVip) -> Result<()> {
+        let result = sqlx::query(
+            r#"UPDATE carp_vips SET vhid = ?1, virtual_ip = ?2, prefix = ?3,
+               interface = ?4, password = ?5, status = ?6, updated_at = ?7
+               WHERE id = ?8"#,
+        )
+        .bind(v.vhid as i64)
+        .bind(v.virtual_ip.to_string())
+        .bind(v.prefix as i64)
+        .bind(&v.interface.0)
+        .bind(&v.password)
+        .bind(v.status.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind(v.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("CARP VIP {} not found", v.id)));
+        }
+        Ok(())
+    }
+
     pub async fn delete_carp_vip(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM carp_vips WHERE id = ?1")
             .bind(id.to_string())
@@ -257,6 +279,22 @@ impl ClusterEngine {
         Ok(())
     }
 
+    pub async fn update_node(&self, n: &ClusterNode) -> Result<()> {
+        let result = sqlx::query(
+            r#"UPDATE cluster_nodes SET name = ?1, address = ?2, role = ?3 WHERE id = ?4"#,
+        )
+        .bind(&n.name)
+        .bind(n.address.to_string())
+        .bind(n.role.to_string())
+        .bind(n.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("cluster node {} not found", n.id)));
+        }
+        Ok(())
+    }
+
     pub async fn delete_node(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM cluster_nodes WHERE id = ?1")
             .bind(id.to_string())
@@ -266,6 +304,12 @@ impl ClusterEngine {
             return Err(AifwError::NotFound(format!("cluster node {id} not found")));
         }
         Ok(())
+    }
+
+    /// Stub for snapshot hash — returns Ok(None) until the cluster_snapshot_state
+    /// table is created in Commit 5 (#218).
+    pub async fn last_applied_snapshot_hash(&self) -> Result<Option<String>> {
+        Ok(None)
     }
 
     // ============================================================

@@ -40,10 +40,11 @@ pub enum Permission {
     ProxyWrite,
     MultiWanRead,
     MultiWanWrite,
+    HaManage,
 }
 
 impl Permission {
-    /// Bit index for this permission in the bitmask (0..33).
+    /// Bit index for this permission in the bitmask (0..35).
     pub fn bit_index(self) -> u8 {
         self as u8
     }
@@ -87,6 +88,7 @@ impl Permission {
             Self::ProxyWrite => "proxy:write",
             Self::MultiWanRead => "multiwan:read",
             Self::MultiWanWrite => "multiwan:write",
+            Self::HaManage => "ha:manage",
         }
     }
 
@@ -129,6 +131,7 @@ impl Permission {
             "proxy:write" => Some(Self::ProxyWrite),
             "multiwan:read" => Some(Self::MultiWanRead),
             "multiwan:write" => Some(Self::MultiWanWrite),
+            "ha:manage" => Some(Self::HaManage),
             _ => None,
         }
     }
@@ -178,6 +181,7 @@ pub const ALL_PERMISSIONS: &[Permission] = &[
     Permission::ProxyWrite,
     Permission::MultiWanRead,
     Permission::MultiWanWrite,
+    Permission::HaManage,
 ];
 
 /// A set of permissions stored as a u64 bitmask.

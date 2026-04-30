@@ -1,6 +1,6 @@
 {
   "name": "aifw-ui",
-  "version": "5.82.8",
+  "version": "5.83.0",
   "private": true,
   "scripts": {
     "dev": "next dev",

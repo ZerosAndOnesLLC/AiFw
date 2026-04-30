@@ -3,6 +3,7 @@ mod ai_analysis;
 mod aliases;
 mod auth;
 mod backup;
+mod cluster;
 mod backup_s3;
 mod ca;
 mod dhcp;
@@ -165,6 +166,8 @@ pub struct AppState {
     pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
     pub metrics_store: Arc<aifw_metrics::MetricsStore>,
     pub auth_settings: auth::AuthSettings,
+    pub cluster_engine: Arc<aifw_core::ClusterEngine>,
+    pub cluster_events: aifw_common::ClusterEventBus,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
     pub metrics_history_max: Arc<std::sync::atomic::AtomicUsize>,
     pub redis: Option<redis::aio::ConnectionManager>,
@@ -1267,6 +1270,13 @@ pub fn build_router(
         .route("/api/v1/multiwan/apply-yaml", post(multiwan::import_config))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
+    // ha:manage
+    let cluster_read = cluster::read_routes()
+        .layer(middleware::from_fn(perm_check!(Permission::HaManage)));
+
+    let cluster_write = cluster::write_routes()
+        .layer(middleware::from_fn(perm_check!(Permission::HaManage)));
+
     // Merge all permission-scoped groups into one protected router with auth
     let protected_routes = Router::new()
         .merge(self_service)
@@ -1306,6 +1316,8 @@ pub fn build_router(
         .merge(proxy_write)
         .merge(multiwan_read)
         .merge(multiwan_write)
+        .merge(cluster_read)
+        .merge(cluster_write)
         .merge(system_read)
         .merge(system_write)
         // Auto-snapshot every successful mutation. Middleware is applied
@@ -1523,6 +1535,9 @@ async fn create_state_from_db(
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
+    let cluster_engine = Arc::new(aifw_core::ClusterEngine::new(pool.clone(), pf.clone()));
+    cluster_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let cluster_events = aifw_common::ClusterEventBus::new();
 
     // IDS engine moved to aifw-ids binary (see PR 5 / spec
     // 2026-04-26-process-hardening-and-ids-extraction-design.md). The API
@@ -1629,6 +1644,8 @@ async fn create_state_from_db(
         plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
         metrics_store: metrics_store.clone(),
         auth_settings,
+        cluster_engine,
+        cluster_events,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
         metrics_history_max: Arc::new(std::sync::atomic::AtomicUsize::new(history_max)),
         redis: None,

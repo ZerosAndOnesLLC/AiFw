@@ -251,48 +251,64 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         let _ = sender.send(Message::Text(batch.into())).await;
     }
 
-    // Spawn a task to push updates every second
+    // Spawn a task to push updates every second and forward cluster events
     let push_state = state.clone();
+    let mut cluster_rx = state.cluster_events.subscribe();
     let mut push_task = tokio::spawn(async move {
         let mut tick = interval(Duration::from_secs(1));
         loop {
-            tick.tick().await;
-            match build_update(&push_state).await {
-                Ok((live_msg, history_msg)) => {
-                    // Store slim version in server-side ring buffer (no blocked/connections)
-                    let max = push_state
-                        .metrics_history_max
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    {
-                        let mut buf = push_state.metrics_history.write().await;
-                        while buf.len() >= max {
-                            buf.pop_front();
+            tokio::select! {
+                _ = tick.tick() => {
+                    match build_update(&push_state).await {
+                        Ok((live_msg, history_msg)) => {
+                            // Store slim version in server-side ring buffer (no blocked/connections)
+                            let max = push_state
+                                .metrics_history_max
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            {
+                                let mut buf = push_state.metrics_history.write().await;
+                                while buf.len() >= max {
+                                    buf.pop_front();
+                                }
+                                buf.push_back(history_msg.clone());
+                            }
+
+                            // Persist slim version to Valkey if available
+                            if let Some(ref redis) = push_state.redis {
+                                let mut conn = redis.clone();
+                                let _: Result<(), _> = redis::pipe()
+                                    .cmd("LPUSH")
+                                    .arg("aifw:metrics:history")
+                                    .arg(&history_msg)
+                                    .cmd("LTRIM")
+                                    .arg("aifw:metrics:history")
+                                    .arg(0i64)
+                                    .arg(max as i64 - 1)
+                                    .query_async(&mut conn)
+                                    .await;
+                            }
+
+                            // Send full version (with blocked + connections) to live client
+                            if sender.send(Message::Text(live_msg.into())).await.is_err() {
+                                break;
+                            }
                         }
-                        buf.push_back(history_msg.clone());
-                    }
-
-                    // Persist slim version to Valkey if available
-                    if let Some(ref redis) = push_state.redis {
-                        let mut conn = redis.clone();
-                        let _: Result<(), _> = redis::pipe()
-                            .cmd("LPUSH")
-                            .arg("aifw:metrics:history")
-                            .arg(&history_msg)
-                            .cmd("LTRIM")
-                            .arg("aifw:metrics:history")
-                            .arg(0i64)
-                            .arg(max as i64 - 1)
-                            .query_async(&mut conn)
-                            .await;
-                    }
-
-                    // Send full version (with blocked + connections) to live client
-                    if sender.send(Message::Text(live_msg.into())).await.is_err() {
-                        break;
+                        Err(e) => {
+                            tracing::debug!(error = %e, "ws build_update failed");
+                        }
                     }
                 }
-                Err(e) => {
-                    tracing::debug!(error = %e, "ws build_update failed");
+                ev = cluster_rx.recv() => {
+                    match ev {
+                        Ok(ev) => {
+                            let frame = serde_json::json!({"channel": "cluster", "event": ev});
+                            if sender.send(Message::Text(frame.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
                 }
             }
         }

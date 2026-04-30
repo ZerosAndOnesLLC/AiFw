@@ -1,4 +1,5 @@
 pub mod alias;
+pub mod cluster_events;
 pub mod error;
 pub mod geoip;
 pub mod ha;
@@ -17,6 +18,7 @@ pub mod types;
 pub mod vpn;
 
 pub use alias::{Alias, AliasType};
+pub use cluster_events::{ClusterEvent, ClusterEventBus};
 pub use error::{AifwError, Result};
 pub use geoip::{
     CountryCode, GeoIpAction, GeoIpDbConfig, GeoIpEntry, GeoIpLookupResult, GeoIpRule,

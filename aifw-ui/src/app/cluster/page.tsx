@@ -1,45 +1,209 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import StatusBanner from "./components/StatusBanner";
+
+type CarpVip = {
+  id: string;
+  vhid: number;
+  virtual_ip: string;
+  prefix: number;
+  interface: string;
+  password: string;
+  status: string;
+};
+type Pfsync = {
+  id: string;
+  sync_interface: string;
+  sync_peer: string | null;
+  defer: boolean;
+  enabled: boolean;
+  latency_profile: "conservative" | "tight" | "aggressive";
+  heartbeat_iface: string | null;
+  heartbeat_interval_ms: number | null;
+  dhcp_link: boolean;
+  created_at: string;
+};
+type Node = {
+  id: string;
+  name: string;
+  address: string;
+  role: string;
+  health: string;
+  last_seen: string;
+};
+
 export default function ClusterPage() {
+  const [vips, setVips] = useState<CarpVip[]>([]);
+  const [pfsync, setPfsync] = useState<Pfsync | null>(null);
+  const [nodes, setNodes] = useState<Node[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const reload = async () => {
+    const [v, p, n] = await Promise.all([
+      fetch("/api/v1/cluster/carp", { credentials: "include" }).then((r) =>
+        r.ok ? r.json() : []
+      ),
+      fetch("/api/v1/cluster/pfsync", { credentials: "include" }).then((r) =>
+        r.ok ? r.json() : null
+      ),
+      fetch("/api/v1/cluster/nodes", { credentials: "include" }).then((r) =>
+        r.ok ? r.json() : []
+      ),
+    ]);
+    setVips(v);
+    setPfsync(p);
+    setNodes(n);
+  };
+  useEffect(() => {
+    reload().catch(() => {});
+  }, []);
+
+  const promote = async () => {
+    setBusy(true);
+    try {
+      await fetch("/api/v1/cluster/promote", {
+        method: "POST",
+        credentials: "include",
+      });
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const demote = async () => {
+    setBusy(true);
+    try {
+      await fetch("/api/v1/cluster/demote", {
+        method: "POST",
+        credentials: "include",
+      });
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Cluster & High Availability</h1>
-        <p className="text-sm text-[var(--text-muted)]">
-          CARP failover, pfsync state synchronization, cluster health
-        </p>
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold">
+            Cluster &amp; High Availability
+          </h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            CARP failover, pfsync state synchronization, peer nodes
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={promote}
+            disabled={busy}
+            className="px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm"
+          >
+            Promote
+          </button>
+          <button
+            onClick={demote}
+            disabled={busy}
+            className="px-3 py-1.5 rounded bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-sm"
+          >
+            Demote
+          </button>
+        </div>
       </div>
 
-      <div className="bg-yellow-500/5 border border-yellow-500/30 rounded-lg p-4">
-        <div className="flex items-start gap-3">
-          <svg className="w-5 h-5 text-yellow-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-yellow-400">Not Production Ready</p>
-            <p className="text-xs text-[var(--text-muted)] mt-1">
-              The Cluster and High Availability features are implemented in the backend but have not been
-              thoroughly tested in production environments. Use with caution. CARP failover, pfsync state
-              synchronization, and cluster health monitoring will be validated in upcoming releases.
-            </p>
+      <StatusBanner />
+
+      <section>
+        <h2 className="text-lg font-semibold mb-2">CARP Virtual IPs</h2>
+        {vips.length === 0 ? (
+          <div className="text-sm text-[var(--text-muted)]">
+            No VIPs configured.
           </div>
-        </div>
-      </div>
+        ) : (
+          <table className="w-full text-sm border border-[var(--border)] rounded">
+            <thead className="bg-[var(--bg-card)]">
+              <tr>
+                <th className="text-left p-2">VHID</th>
+                <th className="text-left p-2">Interface</th>
+                <th className="text-left p-2">VIP</th>
+                <th className="text-left p-2">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {vips.map((v) => (
+                <tr key={v.id} className="border-t border-[var(--border)]">
+                  <td className="p-2">{v.vhid}</td>
+                  <td className="p-2 font-mono">{v.interface}</td>
+                  <td className="p-2 font-mono">
+                    {v.virtual_ip}/{v.prefix}
+                  </td>
+                  <td className="p-2">{v.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-12 text-center">
-        <div className="mx-auto w-16 h-16 rounded-full bg-[var(--bg-primary)] flex items-center justify-center mb-4">
-          <svg className="w-8 h-8 text-[var(--text-muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M12 5l7 7-7 7" />
-          </svg>
-        </div>
-        <p className="text-lg font-medium">
-          Cluster features available when High Availability is configured
-        </p>
-        <p className="text-sm text-[var(--text-muted)] mt-2 max-w-md mx-auto">
-          Once HA is set up, this page will display cluster nodes, CARP virtual IPs,
-          health checks, and pfsync synchronization status.
-        </p>
-      </div>
+      <section>
+        <h2 className="text-lg font-semibold mb-2">pfsync</h2>
+        {pfsync ? (
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded p-3 text-sm space-y-1">
+            <div>
+              Sync iface:{" "}
+              <span className="font-mono">{pfsync.sync_interface}</span>
+            </div>
+            <div>
+              Peer:{" "}
+              <span className="font-mono">
+                {pfsync.sync_peer ?? "multicast"}
+              </span>
+            </div>
+            <div>Latency profile: {pfsync.latency_profile}</div>
+            <div>DHCP link: {pfsync.dhcp_link ? "yes" : "no"}</div>
+          </div>
+        ) : (
+          <div className="text-sm text-[var(--text-muted)]">
+            Not configured.
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-2">Cluster Nodes</h2>
+        {nodes.length === 0 ? (
+          <div className="text-sm text-[var(--text-muted)]">
+            No peer nodes registered.
+          </div>
+        ) : (
+          <table className="w-full text-sm border border-[var(--border)] rounded">
+            <thead className="bg-[var(--bg-card)]">
+              <tr>
+                <th className="text-left p-2">Name</th>
+                <th className="text-left p-2">Address</th>
+                <th className="text-left p-2">Role</th>
+                <th className="text-left p-2">Health</th>
+                <th className="text-left p-2">Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {nodes.map((n) => (
+                <tr key={n.id} className="border-t border-[var(--border)]">
+                  <td className="p-2">{n.name}</td>
+                  <td className="p-2 font-mono">{n.address}</td>
+                  <td className="p-2">{n.role}</td>
+                  <td className="p-2">{n.health}</td>
+                  <td className="p-2">
+                    {new Date(n.last_seen).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
     </div>
   );
 }
