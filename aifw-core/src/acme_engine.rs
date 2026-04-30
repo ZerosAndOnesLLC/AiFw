@@ -81,10 +81,14 @@ pub async fn issue(pool: &SqlitePool, cert_id: i64) -> IssueOutcome {
 /// Find every cert flagged `auto_renew` whose expiry is within its renew
 /// window, and issue each one. Returns per-cert outcomes.
 ///
-/// When `cluster` is `Some`, this function:
-///   - skips all renewals when the local node is BACKUP (master-only renewal);
-///   - after each successful renewal on the master, pushes the cert+key to all
-///     secondary peers via `POST /api/v1/cluster/cert-push`.
+/// HA semantics:
+///   - `cluster: None` — standalone node (no HA). Renewal proceeds
+///     unconditionally. Pass `None` only for non-HA deployments; passing
+///     `None` on an HA node would bypass the master-only gate.
+///   - `cluster: Some(_)` — HA-aware. Skips all renewals when the local
+///     node is BACKUP (master-only renewal). After each successful renewal
+///     on the master, pushes the cert+key to all secondary peers via
+///     `POST /api/v1/cluster/cert-push`.
 pub async fn renew_due(
     pool: &SqlitePool,
     cluster: Option<&Arc<ClusterEngine>>,

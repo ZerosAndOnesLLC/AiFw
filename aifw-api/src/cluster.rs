@@ -600,6 +600,13 @@ async fn cert_push(
         return StatusCode::CONFLICT;
     }
 
+    // Note: we deliberately do NOT bump cluster_nodes.last_pushed_cert_at
+    // on the standby side. That column is master-side bookkeeping ("we last
+    // pushed cert X to peer N at time T") populated by acme_engine after a
+    // successful push. The standby has no equivalent receipt timestamp; if
+    // one is needed for the dashboard, add a separate column rather than
+    // overloading this one.
+
     match aifw_core::acme_engine::import_external_cert(
         &s.pool,
         r.cert_id,
