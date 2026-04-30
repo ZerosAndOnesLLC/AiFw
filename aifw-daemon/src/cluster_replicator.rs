@@ -7,6 +7,7 @@
 //!   2. If hashes differ, pushes the snapshot body we already have (no second fetch).
 //!   3. Logs 409 conflicts (split-brain: peer also thinks it's master).
 
+use crate::role_watcher::current_carp_role;
 use aifw_common::ClusterRole;
 use aifw_core::ClusterEngine;
 use std::sync::{
@@ -170,7 +171,24 @@ impl ClusterReplicator {
     }
 }
 
+/// Probe the live CARP state from `ifconfig` so that an unplanned failover
+/// (where the standby becomes the permanent new master without a re-run of
+/// setup) is detected immediately.  Falls back to `sysrc aifw_cluster_role`
+/// during the boot window before CARP initializes (when ifconfig has no
+/// "carp:" line yet).
 async fn read_local_role() -> ClusterRole {
+    let live = current_carp_role().await;
+    match live.as_str() {
+        "master" => ClusterRole::Primary,
+        "backup" => ClusterRole::Secondary,
+        _ => {
+            // "unknown" → CARP not yet up; fall back to the static rc.conf value.
+            fallback_sysrc_role().await
+        }
+    }
+}
+
+async fn fallback_sysrc_role() -> ClusterRole {
     tokio::process::Command::new("sysrc")
         .arg("-n")
         .arg("aifw_cluster_role")

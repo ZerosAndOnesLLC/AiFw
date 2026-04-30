@@ -86,7 +86,7 @@ impl RoleWatcher {
 /// lowercase "master" / "backup" (matching what cluster_status etc. surface)
 /// or "unknown" if neither is observed (e.g. on Linux, or before pfsync
 /// initializes).
-async fn current_carp_role() -> String {
+pub(crate) async fn current_carp_role() -> String {
     let out = tokio::process::Command::new("sh")
         .arg("-c")
         .arg("ifconfig 2>/dev/null | awk '/carp:/ {print tolower($2); exit}'")

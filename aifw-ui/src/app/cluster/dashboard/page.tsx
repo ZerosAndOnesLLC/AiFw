@@ -179,6 +179,11 @@ export default function ClusterDashboard() {
             f.event?.type === "role_changed"
           ) {
             refresh().catch(() => {});
+          } else if (
+            f.channel === "cluster" &&
+            f.event?.type === "health_changed"
+          ) {
+            refresh().catch(() => {});
           }
         } catch {
           // ignore parse errors

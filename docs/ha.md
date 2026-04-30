@@ -16,7 +16,7 @@ of any failure on the master.
 | Component | Survives | Notes |
 |---|---|---|
 | TCP sessions through the firewall | yes | pfsync replicates state to the backup; `state-policy floating` lets replicated states match traffic on the new master's interface |
-| WireGuard tunnels | yes | wireguard-go binds wildcard; CARP VIPs on the WAN are accepted automatically. Existing peers reconnect within ~5 s |
+| WireGuard tunnels | yes* | wireguard-go binds wildcard so CARP VIPs are accepted automatically; existing peers reconnect within ~5 s **provided remote peers have `PersistentKeepalive` ≤ 5** (the default is off — peers without keepalive only reconnect on next outbound traffic) |
 | DHCP leases (rDHCP) | yes | rDHCP HA handles its own state replication; AiFw's `dhcp_link` flag keeps the peer list in sync |
 | ACME certificates | yes | renewal happens master-only; on success the cert+key are pushed to peers via `POST /api/v1/cluster/cert-push` |
 | In-flight DNS lookups | no | small visible glitch during the failover window — most resolvers retry transparently |

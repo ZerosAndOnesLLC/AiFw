@@ -41,6 +41,10 @@ pub fn write_routes() -> Router<AppState> {
             "/api/v1/cluster/nodes/{id}",
             put(update_node).delete(delete_node),
         )
+        .route(
+            "/api/v1/cluster/nodes/{id}/generate-key",
+            post(generate_node_key),
+        )
         .route("/api/v1/cluster/health", post(create_health))
         .route("/api/v1/cluster/health/{id}", delete(delete_health))
         .route("/api/v1/cluster/promote", post(promote))
@@ -334,6 +338,35 @@ async fn delete_node(State(s): State<AppState>, Path(id): Path<Uuid>) -> StatusC
         Ok(_) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::NOT_FOUND,
     }
+}
+
+#[derive(Serialize)]
+struct GenerateKeyResponse {
+    pub key: String,
+}
+
+/// Generate (or regenerate) the per-peer API key for a cluster node.
+///
+/// The returned key is stored in `cluster_nodes.peer_api_key` on this node so
+/// that replication, snapshot/force, and cert-push can authenticate to the peer.
+/// The key is returned ONCE here; the operator must copy it to the peer node's
+/// API keys table (via the peer's Users → API Keys page) before dismissing.
+async fn generate_node_key(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<GenerateKeyResponse>, StatusCode> {
+    let key = s
+        .cluster_engine
+        .generate_peer_api_key(id)
+        .await
+        .map_err(|e| match e {
+            aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => {
+                tracing::warn!(?e, "generate_peer_api_key failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
+    Ok(Json(GenerateKeyResponse { key }))
 }
 
 async fn list_health(State(s): State<AppState>) -> Result<Json<Vec<HealthCheck>>, StatusCode> {

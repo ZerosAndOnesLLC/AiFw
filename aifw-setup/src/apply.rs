@@ -1021,6 +1021,65 @@ rate_limit = 1000
 
     // Bootstrap HA cluster DB rows and push pf anchor rules
     if let Some(c) = &config.cluster {
+        // Generate a loopback API key so the daemon background tasks
+        // (RoleWatcher, HealthProber, ClusterReplicator) can authenticate to
+        // the local API. The key is stored in `api_keys` and the plaintext is
+        // written to rc.conf via aifw_daemon_env so the rc.d start script
+        // passes AIFW_LOOPBACK_API_KEY to the daemon process.
+        //
+        // Schema matches aifw-api/src/auth/mod.rs::migrate() — created here
+        // with IF NOT EXISTS so re-running setup is idempotent.
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                key_hash TEXT NOT NULL,
+                prefix TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("api_keys table: {e}"))?;
+
+        // Two simple-format UUIDs = 64 hex chars of entropy.
+        let loopback_key = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        // prefix: first 12 chars — matches the fast-lookup path in verify_api_key.
+        let loopback_prefix = loopback_key[..12].to_string();
+        // Hash with Argon2id (same algorithm as hash_password in aifw-api/src/auth/password.rs).
+        let loopback_key_hash = hash_for_db(&loopback_key);
+
+        // Delete any pre-existing loopback key so re-running setup always yields
+        // a fresh credential. The daemon must be restarted after re-running setup
+        // to pick up the new key from rc.conf.
+        let _ = sqlx::query("DELETE FROM api_keys WHERE name = 'aifw-daemon-loopback'")
+            .execute(&pool)
+            .await;
+
+        sqlx::query(
+            "INSERT INTO api_keys (id, name, key_hash, prefix, user_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind("aifw-daemon-loopback")
+        .bind(&loopback_key_hash)
+        .bind(&loopback_prefix)
+        .bind(&user_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("loopback api_key insert: {e}"))?;
+
+        // Write to rc.conf so the aifw_daemon rc.d script exports the env var.
+        // aifw_daemon_precmd reads aifw_daemon_env and passes it to the daemon.
+        #[cfg(target_os = "freebsd")]
+        let _ = run_sysrc("aifw_daemon_env", &format!("AIFW_LOOPBACK_API_KEY={loopback_key}"));
+
         let pf: std::sync::Arc<dyn aifw_pf::PfBackend> =
             std::sync::Arc::from(aifw_pf::create_backend());
         let cluster_engine = aifw_core::ClusterEngine::new(pool.clone(), pf);
@@ -1824,6 +1883,7 @@ load_rc_config $name
 : ${{aifw_daemon_enable:="NO"}}
 : ${{aifw_daemon_pidfile:="/var/run/aifw_daemon.pid"}}
 : ${{aifw_daemon_supervisor_pidfile:="/var/run/aifw_daemon-supervisor.pid"}}
+: ${{aifw_daemon_env:=""}}
 
 pidfile="${{aifw_daemon_supervisor_pidfile}}"
 procname="/usr/sbin/daemon"
@@ -1854,6 +1914,12 @@ aifw_daemon_precmd()
     # so the binary (running as aifw via daemon -u aifw) can't create it.
     /usr/bin/touch /var/run/aifw-daemon.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-daemon.lock
+    # Export AIFW_LOOPBACK_API_KEY (and any other daemon env vars) so the
+    # background tasks (RoleWatcher, HealthProber, ClusterReplicator) can
+    # authenticate to the local API.  aifw_daemon_env is written by setup.
+    if [ -n "${{aifw_daemon_env}}" ]; then
+        export ${{aifw_daemon_env}}
+    fi
 }}
 
 aifw_daemon_stop()

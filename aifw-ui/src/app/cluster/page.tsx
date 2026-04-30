@@ -38,6 +38,10 @@ export default function ClusterPage() {
   const [pfsync, setPfsync] = useState<Pfsync | null>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [busy, setBusy] = useState(false);
+  const [generatedKey, setGeneratedKey] = useState<{
+    nodeName: string;
+    key: string;
+  } | null>(null);
 
   const reload = async () => {
     const [v, p, n] = await Promise.all([
@@ -84,6 +88,17 @@ export default function ClusterPage() {
     }
   };
 
+  const generatePeerKey = async (nodeId: string, nodeName: string) => {
+    const r = await fetch(`/api/v1/cluster/nodes/${nodeId}/generate-key`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (r.ok) {
+      const d = await r.json();
+      setGeneratedKey({ nodeName, key: d.key });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -114,6 +129,35 @@ export default function ClusterPage() {
       </div>
 
       <StatusBanner />
+
+      {generatedKey && (
+        <div className="bg-yellow-500/10 border border-yellow-500/40 rounded p-3 text-sm">
+          <div className="font-semibold mb-1">
+            Peer API key for {generatedKey.nodeName}
+          </div>
+          <div className="text-xs opacity-80 mb-2">
+            This key is shown ONCE. Copy it and register it on the peer node as
+            an API key (in the peer&apos;s Users &#x2192; API Keys page) before
+            dismissing. This local node will use it to authenticate to{" "}
+            {generatedKey.nodeName}.
+          </div>
+          <code className="block break-all bg-[var(--bg-card)] p-2 rounded mb-2">
+            {generatedKey.key}
+          </code>
+          <button
+            onClick={() => navigator.clipboard.writeText(generatedKey.key)}
+            className="text-xs underline mr-3"
+          >
+            copy
+          </button>
+          <button
+            onClick={() => setGeneratedKey(null)}
+            className="text-xs underline"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
 
       <section>
         <h2 className="text-lg font-semibold mb-2">CARP Virtual IPs</h2>
@@ -209,6 +253,7 @@ export default function ClusterPage() {
                 <th className="text-left p-2">Role</th>
                 <th className="text-left p-2">Health</th>
                 <th className="text-left p-2">Last seen</th>
+                <th className="text-left p-2">Peer key</th>
               </tr>
             </thead>
             <tbody>
@@ -220,6 +265,14 @@ export default function ClusterPage() {
                   <td className="p-2">{n.health}</td>
                   <td className="p-2">
                     {new Date(n.last_seen).toLocaleString()}
+                  </td>
+                  <td className="p-2">
+                    <button
+                      onClick={() => generatePeerKey(n.id, n.name)}
+                      className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-700 text-xs text-white"
+                    >
+                      Generate Peer Key
+                    </button>
                   </td>
                 </tr>
               ))}
