@@ -52,26 +52,13 @@ pub struct StatusResponse {
 }
 
 async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
-    // Local role from rc.conf (sysrc). Fallback to "standalone".
-    let role = read_local_role().await;
+    let (role, pfsync_state_count, nodes_result) = tokio::join!(
+        read_local_role(),
+        pfsync_state_count(),
+        state.cluster_engine.list_nodes(),
+    );
 
-    // pfsync state count via `pfctl -ss | wc -l`. Fallback to 0.
-    let pfsync_state_count = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg("pfctl -ss 2>/dev/null | wc -l")
-        .output()
-        .await
-        .ok()
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<u64>()
-                .ok()
-        })
-        .unwrap_or(0);
-
-    // Peer reachability: ping the first registered peer.
-    let peer_reachable = match state.cluster_engine.list_nodes().await {
+    let peer_reachable = match nodes_result {
         Ok(nodes) => {
             let local = ClusterRole::parse(&role).unwrap_or(ClusterRole::Standalone);
             match nodes.iter().find(|n| n.role != local) {
@@ -97,6 +84,22 @@ async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse
     }))
 }
 
+async fn pfsync_state_count() -> u64 {
+    tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("pfctl -ss 2>/dev/null | wc -l")
+        .output()
+        .await
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(0)
+}
+
 async fn read_local_role() -> String {
     tokio::process::Command::new("sysrc")
         .arg("-n")
@@ -115,7 +118,8 @@ async fn read_local_role() -> String {
 }
 
 async fn ping_once(addr: &IpAddr) -> bool {
-    tokio::process::Command::new("ping")
+    let cmd = if addr.is_ipv6() { "ping6" } else { "ping" };
+    tokio::process::Command::new(cmd)
         .args(["-c", "1", "-W", "1000"])
         .arg(addr.to_string())
         .output()
@@ -183,7 +187,13 @@ async fn update_carp(
     s.cluster_engine
         .update_carp_vip(&vip)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|e| match e {
+            aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => {
+                tracing::warn!(?e, "update_carp_vip failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
     s.cluster_engine
         .apply_ha_rules()
         .await
@@ -291,7 +301,13 @@ async fn update_node(
     s.cluster_engine
         .update_node(&n)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|e| match e {
+            aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => {
+                tracing::warn!(?e, "update_node failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
     Ok(Json(n))
 }
 
@@ -345,26 +361,38 @@ async fn delete_health(State(s): State<AppState>, Path(id): Path<Uuid>) -> Statu
 }
 
 async fn promote(State(s): State<AppState>) -> StatusCode {
-    let _ = tokio::process::Command::new("sysctl")
+    let ok = tokio::process::Command::new("sysctl")
         .arg("net.inet.carp.demotion=0")
         .status()
-        .await;
+        .await
+        .map(|st| st.success())
+        .unwrap_or(false);
+    if !ok {
+        tracing::warn!("ha: failed to set net.inet.carp.demotion=0 (promote)");
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
     s.cluster_events.emit(ClusterEvent::RoleChanged {
-        from: "backup".into(),
-        to: "master".into(),
+        from: aifw_common::ClusterRole::Secondary.to_string(),
+        to: aifw_common::ClusterRole::Primary.to_string(),
         vhid: 0,
     });
     StatusCode::NO_CONTENT
 }
 
 async fn demote(State(s): State<AppState>) -> StatusCode {
-    let _ = tokio::process::Command::new("sysctl")
+    let ok = tokio::process::Command::new("sysctl")
         .arg("net.inet.carp.demotion=240")
         .status()
-        .await;
+        .await
+        .map(|st| st.success())
+        .unwrap_or(false);
+    if !ok {
+        tracing::warn!("ha: failed to set net.inet.carp.demotion=240 (demote)");
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
     s.cluster_events.emit(ClusterEvent::RoleChanged {
-        from: "master".into(),
-        to: "backup".into(),
+        from: aifw_common::ClusterRole::Primary.to_string(),
+        to: aifw_common::ClusterRole::Secondary.to_string(),
         vhid: 0,
     });
     StatusCode::NO_CONTENT

@@ -44,7 +44,7 @@ pub enum Permission {
 }
 
 impl Permission {
-    /// Bit index for this permission in the bitmask (0..35).
+    /// Bit index for this permission in the bitmask (0..36).
     pub fn bit_index(self) -> u8 {
         self as u8
     }
