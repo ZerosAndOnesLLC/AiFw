@@ -25,6 +25,7 @@ pub fn read_routes() -> Router<AppState> {
         .route("/api/v1/cluster/status", get(get_status))
         .route("/api/v1/cluster/snapshot/hash", get(snapshot_hash))
         .route("/api/v1/cluster/snapshot", get(snapshot_get))
+        .route("/api/v1/cluster/failover-history", get(failover_history))
 }
 
 pub fn write_routes() -> Router<AppState> {
@@ -575,6 +576,41 @@ async fn apply_snapshot_data(
     let hash = aifw_core::sha256_hex(body);
     crate::backup::apply_cluster_snapshot(state, body).await?;
     Ok(hash)
+}
+
+// ============================================================
+// Failover history endpoint (Commit 10 #226)
+// ============================================================
+
+async fn failover_history(
+    State(s): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
+    let rows: Vec<(String, String, String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, ts, from_role, to_role, cause, detail FROM cluster_failover_events
+         WHERE ts >= datetime('now', '-1 day')
+         ORDER BY ts DESC",
+    )
+    .fetch_all(&s.pool)
+    .await
+    .map_err(|e| {
+        tracing::warn!(?e, "failover_history");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, ts, from_role, to_role, cause, detail)| {
+                serde_json::json!({
+                    "id": id,
+                    "ts": ts,
+                    "from_role": from_role,
+                    "to_role": to_role,
+                    "cause": cause,
+                    "detail": detail,
+                })
+            })
+            .collect(),
+    ))
 }
 
 // ============================================================

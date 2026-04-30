@@ -1556,6 +1556,25 @@ async fn create_state_from_db(
     cluster_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
     let cluster_events = aifw_common::ClusterEventBus::new();
 
+    // Commit 10 (#226): emit ClusterEvent::Metrics every 2s for the HA dashboard sparkline.
+    {
+        let bus = cluster_events.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let (pfsync_in, pfsync_out, state_count) = sample_pfsync_metrics().await;
+                bus.emit(aifw_common::ClusterEvent::Metrics {
+                    pfsync_in,
+                    pfsync_out,
+                    state_count,
+                    ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                });
+            }
+        });
+    }
+
     // IDS engine moved to aifw-ids binary (see PR 5 / spec
     // 2026-04-26-process-hardening-and-ids-extraction-design.md). The API
     // talks to it via this Unix-socket client; reads are TTL-cached inside
@@ -1671,6 +1690,52 @@ async fn create_state_from_db(
         login_limiter: LoginRateLimiter::default(),
         ws_tickets: auth::ws_ticket::WsTicketStore::new(),
     })
+}
+
+/// Sample pfsync(4) packet counters and the pf state table size.
+/// Returns (pfsync_in_pkts, pfsync_out_pkts, state_count).
+/// On non-FreeBSD (dev/CI) all three are 0.
+async fn sample_pfsync_metrics() -> (u64, u64, u64) {
+    let pfsync_text = tokio::process::Command::new("ifconfig")
+        .arg("pfsync0")
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    // pfsync(4) ifconfig output contains lines like:
+    //   input:  12345 packets, 67890 bytes
+    //   output: 23456 packets, 78901 bytes
+    let parse = |label: &str| -> u64 {
+        for line in pfsync_text.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix(label) {
+                if let Some(num) = rest.split_whitespace().next() {
+                    return num.replace(',', "").parse().unwrap_or(0);
+                }
+            }
+        }
+        0
+    };
+    let pfsync_in = parse("input:");
+    let pfsync_out = parse("output:");
+
+    let state_count = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("pfctl -ss 2>/dev/null | wc -l")
+        .output()
+        .await
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(0);
+
+    (pfsync_in, pfsync_out, state_count)
 }
 
 fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> anyhow::Result<()> {
