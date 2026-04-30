@@ -688,10 +688,17 @@ struct ClusterNodeRow {
     last_seen: String,
     config_version: i64,
     created_at: String,
+    software_version: Option<String>,
+    last_pushed_cert_at: Option<String>,
 }
 
 impl ClusterNodeRow {
     fn into_node(self) -> Result<ClusterNode> {
+        let last_pushed_cert_at = self
+            .last_pushed_cert_at
+            .as_deref()
+            .map(parse_dt)
+            .transpose()?;
         Ok(ClusterNode {
             id: Uuid::parse_str(&self.id).map_err(|e| AifwError::Database(format!("{e}")))?,
             name: self.name,
@@ -709,6 +716,8 @@ impl ClusterNodeRow {
             last_seen: parse_dt(&self.last_seen)?,
             config_version: self.config_version as u64,
             created_at: parse_dt(&self.created_at)?,
+            software_version: self.software_version,
+            last_pushed_cert_at,
         })
     }
 }

@@ -33,7 +33,7 @@ export default function StatusBanner() {
   }, []);
 
   if (!s) return null;
-  const isMaster = s.role === "primary" || s.role === "master";
+  const isMaster = s.role === "primary";
   const colour = isMaster
     ? "bg-green-500/10 border-green-500/40 text-green-300"
     : s.role === "standalone"

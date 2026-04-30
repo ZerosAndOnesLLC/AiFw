@@ -310,6 +310,11 @@ pub struct ClusterNode {
     pub last_seen: DateTime<Utc>,
     pub config_version: u64,
     pub created_at: DateTime<Utc>,
+    /// Software version string (e.g. "5.88.1") written by the node at boot.
+    /// Used by the dashboard to detect version drift during rolling upgrades.
+    pub software_version: Option<String>,
+    /// When this node last successfully pushed a TLS cert to its peer.
+    pub last_pushed_cert_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -344,6 +349,8 @@ impl ClusterNode {
             last_seen: now,
             config_version: 0,
             created_at: now,
+            software_version: None,
+            last_pushed_cert_at: None,
         }
     }
 

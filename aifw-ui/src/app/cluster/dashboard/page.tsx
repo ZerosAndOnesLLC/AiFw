@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { getWsTicket } from "@/lib/api";
 
 type Metrics = {
   pfsync_in: number;
@@ -92,7 +93,16 @@ export default function ClusterDashboard() {
   const [checks, setChecks] = useState<HealthCheck[]>([]);
   const [metrics, setMetrics] = useState<Metrics[]>([]);
   const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Auto-clear error banner after 5 s
+  useEffect(() => {
+    if (!errorMsg) return;
+    const t = setTimeout(() => setErrorMsg(null), 5000);
+    return () => clearTimeout(t);
+  }, [errorMsg]);
 
   const authHeaders = (): Record<string, string> => {
     const token =
@@ -136,33 +146,58 @@ export default function ClusterDashboard() {
     refresh().catch(() => {});
     const id = setInterval(refresh, 5000);
 
-    // WebSocket for live cluster.metrics + cluster.role_changed
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const token = localStorage.getItem("aifw_token");
-    const wsUrl = `${proto}//${window.location.host}/api/v1/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    ws.onmessage = (e) => {
+    // WebSocket for live cluster.metrics + cluster.role_changed.
+    // Uses a single-use ticket from POST /auth/ws-ticket so the JWT
+    // is never placed in the URL (auth_middleware rejects ?token= URLs).
+    let stopped = false;
+
+    const connect = async () => {
+      if (stopped) return;
+      let ticket: string;
       try {
-        const f = JSON.parse(e.data as string) as {
-          channel?: string;
-          event?: { type?: string } & Metrics;
-        };
-        if (f.channel === "cluster" && f.event?.type === "metrics") {
-          setMetrics((prev) => [...prev.slice(-29), f.event as Metrics]);
-        } else if (
-          f.channel === "cluster" &&
-          f.event?.type === "role_changed"
-        ) {
-          refresh().catch(() => {});
-        }
+        ticket = await getWsTicket();
       } catch {
-        // ignore parse errors
+        // Not logged in or ticket fetch failed; retry after 3 s.
+        if (!stopped) reconnectRef.current = setTimeout(connect, 3000);
+        return;
       }
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(
+        `${proto}//${window.location.host}/api/v1/ws?ticket=${ticket}`
+      );
+      wsRef.current = ws;
+      ws.onmessage = (e) => {
+        try {
+          const f = JSON.parse(e.data as string) as {
+            channel?: string;
+            event?: { type?: string } & Metrics;
+          };
+          if (f.channel === "cluster" && f.event?.type === "metrics") {
+            setMetrics((prev) => [...prev.slice(-29), f.event as Metrics]);
+          } else if (
+            f.channel === "cluster" &&
+            f.event?.type === "role_changed"
+          ) {
+            refresh().catch(() => {});
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
+      ws.onclose = () => {
+        wsRef.current = null;
+        if (!stopped) reconnectRef.current = setTimeout(connect, 3000);
+      };
+      ws.onerror = () => ws.close();
     };
+
+    connect();
+
     return () => {
+      stopped = true;
       clearInterval(id);
-      ws.close();
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      if (wsRef.current) wsRef.current.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -175,8 +210,10 @@ export default function ClusterDashboard() {
     );
   }
 
-  const isMaster =
-    status.role === "primary" || status.role === "master";
+  // HA is documented as active-passive (exactly 2 nodes); this picks the first
+  // non-local node deterministically. If multi-node HA ever ships, surface the
+  // peer count separately and render multiple node cards inline.
+  const isMaster = status.role === "primary";
   const peerNode = nodes.find((n) => n.role !== status.role);
 
   const forceSync = async () => {
@@ -188,7 +225,7 @@ export default function ClusterDashboard() {
         headers: authHeaders(),
       });
       if (!r.ok)
-        alert(`Force sync failed: ${r.status} ${r.statusText}`);
+        setErrorMsg(`Force sync failed: ${r.status} ${r.statusText}`);
       await refresh();
     } finally {
       setBusy(false);
@@ -218,6 +255,19 @@ export default function ClusterDashboard() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">HA Dashboard</h1>
+
+      {/* Inline error banner — replaces alert() */}
+      {errorMsg && (
+        <div className="bg-red-500/10 border border-red-500/40 rounded p-3 text-sm text-red-300 flex justify-between items-center">
+          <span>{errorMsg}</span>
+          <button
+            onClick={() => setErrorMsg(null)}
+            className="text-xs underline ml-4"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
 
       {/* Hero */}
       <div className={`rounded-lg p-4 border ${heroBg}`}>

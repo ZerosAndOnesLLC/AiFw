@@ -1554,9 +1554,38 @@ async fn create_state_from_db(
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
     let cluster_engine = Arc::new(aifw_core::ClusterEngine::new(pool.clone(), pf.clone()));
     cluster_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+
+    // Self-register software version for HA dashboard drift detection.
+    // Run once at boot; no-op if this node is not in cluster_nodes yet.
+    {
+        let our_version = env!("CARGO_PKG_VERSION");
+        let our_hostname = tokio::process::Command::new("hostname")
+            .output()
+            .await
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            });
+        if let Some(name) = our_hostname {
+            let _ = sqlx::query(
+                "UPDATE cluster_nodes SET software_version = ?1 WHERE name = ?2",
+            )
+            .bind(our_version)
+            .bind(&name)
+            .execute(&pool)
+            .await;
+        }
+    }
+
     let cluster_events = aifw_common::ClusterEventBus::new();
 
     // Commit 10 (#226): emit ClusterEvent::Metrics every 2s for the HA dashboard sparkline.
+    // Short-circuits on non-clustered nodes to avoid spawning ifconfig+pfctl subprocesses
+    // every 2s on standalone deployments.
     {
         let bus = cluster_events.clone();
         tokio::spawn(async move {
@@ -1564,6 +1593,20 @@ async fn create_state_from_db(
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
+
+                // Skip emission on non-clustered nodes.
+                let cluster_enabled = tokio::process::Command::new("sysrc")
+                    .arg("-n")
+                    .arg("aifw_cluster_enabled")
+                    .output()
+                    .await
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")
+                    .unwrap_or(false);
+                if !cluster_enabled {
+                    continue;
+                }
+
                 let (pfsync_in, pfsync_out, state_count) = sample_pfsync_metrics().await;
                 bus.emit(aifw_common::ClusterEvent::Metrics {
                     pfsync_in,
