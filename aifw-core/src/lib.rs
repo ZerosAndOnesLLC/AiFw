@@ -36,7 +36,7 @@ pub use config_manager::ConfigManager;
 pub use db::Database;
 pub use engine::RuleEngine;
 pub use geoip::GeoIpEngine;
-pub use ha::{sha256_hex, ClusterEngine};
+pub use ha::{is_local_master, sha256_hex, ClusterEngine};
 pub use multiwan::{
     GatewayEngine, GroupEngine, InstanceEngine, LeakEngine, PolicyEngine, PreflightEngine,
     SlaEngine,

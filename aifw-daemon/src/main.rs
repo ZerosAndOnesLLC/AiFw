@@ -214,8 +214,11 @@ async fn main() -> anyhow::Result<()> {
     // pfsync and CARP VIPs if they are absent after a reboot. Logs a warning
     // and continues on failure so a misconfigured HA setup never prevents the
     // daemon from coming up.
+    //
+    // cluster_engine is kept alive past this block so the ACME scheduler can
+    // use it for master-only renewal and cert-push to peers (Commit 9 #222).
+    let cluster_engine = Arc::new(ClusterEngine::new(pool.clone(), pf.clone()));
     {
-        let cluster_engine = Arc::new(ClusterEngine::new(pool.clone(), pf.clone()));
         if let Err(e) = cluster_engine.migrate().await {
             tracing::warn!(error = %e, "ha: cluster migrate failed; continuing");
         }
@@ -305,10 +308,12 @@ async fn main() -> anyhow::Result<()> {
     // ACME cert renewal scheduler — also daemon-owned. Sweeps certs flagged
     // for auto-renewal whose expiry is within the renew window, plus fires
     // expiring-soon notifications for certs nearing expiry.
+    // cluster_engine is passed so the scheduler skips renewal when BACKUP and
+    // pushes renewed certs to secondary peers after each master issuance (#222).
     aifw_core::acme::migrate(&pool)
         .await
         .unwrap_or_else(|e| error!("acme migration failed: {e}"));
-    aifw_core::acme_engine::spawn_scheduler(pool.clone());
+    aifw_core::acme_engine::spawn_scheduler(pool.clone(), Some(cluster_engine.clone()));
     info!("ACME renewal scheduler started");
 
     // Dynamic DNS scheduler — also daemon-owned. Sweeps every

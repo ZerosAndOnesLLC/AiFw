@@ -531,6 +531,26 @@ impl ClusterEngine {
 }
 
 // ============================================================
+// HA role helpers
+// ============================================================
+
+/// Returns true if the local node is currently the active CARP MASTER.
+///
+/// Shells out to `ifconfig` and greps for `carp: MASTER`.  Returns false on
+/// any error — the safe default is to assume BACKUP so that operations that
+/// should only run on the master (ACME renewal, cert push) are skipped rather
+/// than duplicated.
+pub async fn is_local_master() -> bool {
+    tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("ifconfig 2>/dev/null | grep -qE 'carp:[[:space:]]+MASTER'")
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+// ============================================================
 // Crypto helpers
 // ============================================================
 

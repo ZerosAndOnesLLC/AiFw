@@ -46,6 +46,7 @@ pub fn write_routes() -> Router<AppState> {
         .route("/api/v1/cluster/demote", post(demote))
         .route("/api/v1/cluster/snapshot", put(snapshot_put))
         .route("/api/v1/cluster/snapshot/force", post(snapshot_force))
+        .route("/api/v1/cluster/cert-push", post(cert_push))
         // Internal endpoints — called by aifw-daemon's RoleWatcher and HealthProber.
         // Protected by the same Permission::HaManage middleware as the rest of
         // cluster_write; the daemon authenticates via AIFW_LOOPBACK_API_KEY.
@@ -561,14 +562,10 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
     }
 }
 
+// Thin wrapper that delegates to the single shared implementation in aifw-core.
+// This avoids duplicating the ifconfig grep across cluster.rs and acme_engine.rs.
 async fn is_carp_master_locally() -> bool {
-    tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg("ifconfig 2>/dev/null | grep -qE 'carp:[[:space:]]+MASTER'")
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    aifw_core::is_local_master().await
 }
 
 async fn apply_snapshot_data(
@@ -578,4 +575,46 @@ async fn apply_snapshot_data(
     let hash = aifw_core::sha256_hex(body);
     crate::backup::apply_cluster_snapshot(state, body).await?;
     Ok(hash)
+}
+
+// ============================================================
+// Cert-push endpoint (Commit 9 #222)
+// Master pushes renewed ACME certs to standby peers.
+// Standby applies; master rejects (split-brain protection).
+// ============================================================
+
+#[derive(Deserialize)]
+struct CertPushReq {
+    cert_id: i64,
+    fullchain_pem: String,
+    private_key_pem: String,
+}
+
+async fn cert_push(
+    State(s): State<AppState>,
+    Json(r): Json<CertPushReq>,
+) -> StatusCode {
+    // Master never accepts cert pushes — defends against a stale standby
+    // pushing back during a network partition.
+    if aifw_core::is_local_master().await {
+        return StatusCode::CONFLICT;
+    }
+
+    match aifw_core::acme_engine::import_external_cert(
+        &s.pool,
+        r.cert_id,
+        &r.fullchain_pem,
+        &r.private_key_pem,
+    )
+    .await
+    {
+        Ok(_) => {
+            tracing::info!(cert_id = r.cert_id, "ha: accepted cert push from master");
+            StatusCode::NO_CONTENT
+        }
+        Err(e) => {
+            tracing::warn!(error = ?e, "ha: cert_push apply failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }

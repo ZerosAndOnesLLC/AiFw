@@ -465,7 +465,18 @@ impl VpnEngine {
                 .await;
         }
 
-        // Configure WireGuard private key and listen port
+        // Configure WireGuard private key and listen port.
+        //
+        // HA note: `wg set … listen-port` binds the WireGuard socket to
+        // 0.0.0.0:<port> (wildcard) — not to a specific interface IP.  In an
+        // active-passive cluster the CARP VIP floats on top of the physical
+        // WAN interface, so handshake packets arriving at either the physical
+        // IP or the VIP are delivered to the same wildcard socket.  No
+        // HA-specific binding is required here.
+        //
+        // TODO: WG role-change subscriber for explicit wg-quick down on BACKUP
+        // (default-false `wg_deconfigure_on_backup` flag, deferred — out of
+        // scope for Commit 9 #222).
         let output = Command::new("/usr/local/bin/sudo")
             .args([
                 "/usr/bin/wg",
