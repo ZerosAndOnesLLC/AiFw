@@ -106,6 +106,11 @@ enum Commands {
         #[command(subcommand)]
         action: MultiwanAction,
     },
+    /// Cluster / HA operations
+    Cluster {
+        #[command(subcommand)]
+        action: ClusterAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -140,6 +145,129 @@ enum MultiwanAction {
     Export,
     /// Import multi-WAN config from a JSON file
     Import { file: String },
+}
+
+#[derive(Subcommand)]
+enum ClusterAction {
+    /// Show this node's cluster status
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// CARP VIP operations
+    Carp {
+        #[command(subcommand)]
+        action: CarpAction,
+    },
+    /// pfsync configuration
+    Pfsync {
+        #[command(subcommand)]
+        action: PfsyncAction,
+    },
+    /// Cluster nodes
+    Nodes {
+        #[command(subcommand)]
+        action: NodesAction,
+    },
+    /// Health checks
+    Health {
+        #[command(subcommand)]
+        action: HealthAction,
+    },
+    /// Promote this node to master immediately (sysctl carp.demotion=0)
+    Promote,
+    /// Demote this node to backup immediately (sysctl carp.demotion=240)
+    Demote,
+    /// Force a snapshot pull from peer
+    Sync,
+    /// Run local-side verification checks. Exits 0 on healthy, non-zero on failure.
+    Verify {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CarpAction {
+    /// List CARP VIPs
+    List,
+    /// Show a single CARP VIP
+    Show { id: String },
+    /// Create a CARP VIP
+    Add {
+        #[arg(long)]
+        vhid: u8,
+        #[arg(long)]
+        interface: String,
+        /// Virtual IP in addr/prefix form, e.g. 192.0.2.1/24
+        #[arg(long)]
+        vip: String,
+        #[arg(long)]
+        password: String,
+    },
+    /// Remove a CARP VIP
+    Remove { id: String },
+}
+
+#[derive(Subcommand)]
+enum PfsyncAction {
+    /// Get pfsync configuration
+    Get,
+    /// Set pfsync configuration
+    Set {
+        #[arg(long)]
+        sync_interface: String,
+        #[arg(long)]
+        sync_peer: Option<String>,
+        #[arg(long, default_value_t = true)]
+        defer: bool,
+        #[arg(long, default_value = "conservative")]
+        latency_profile: String,
+        #[arg(long, default_value_t = false)]
+        dhcp_link: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum NodesAction {
+    /// List cluster nodes
+    List,
+    /// Show a cluster node
+    Show { id: String },
+    /// Add a cluster node
+    Add {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        address: String,
+        /// Node role: primary, secondary, or standalone
+        #[arg(long, default_value = "secondary")]
+        role: String,
+    },
+    /// Remove a cluster node
+    Remove { id: String },
+}
+
+#[derive(Subcommand)]
+enum HealthAction {
+    /// List health checks
+    List,
+    /// Add a health check
+    Add {
+        #[arg(long)]
+        name: String,
+        /// Check type: ping, tcp_port, http_get, pf_status
+        #[arg(long)]
+        check_type: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long, default_value_t = 10)]
+        interval_secs: u32,
+    },
+    /// Remove a health check
+    Remove { id: String },
+    /// Trigger an immediate probe of all enabled health checks
+    Run,
 }
 
 #[derive(Subcommand)]
@@ -1101,6 +1229,62 @@ async fn main() -> anyhow::Result<()> {
             }
             MultiwanAction::Export => commands::multiwan_export(&cli.db).await?,
             MultiwanAction::Import { file } => commands::multiwan_import(&cli.db, &file).await?,
+        },
+        Commands::Cluster { action } => match action {
+            ClusterAction::Status { json } => commands::cluster_status(json).await?,
+            ClusterAction::Carp { action } => match action {
+                CarpAction::List => commands::cluster_carp_list().await?,
+                CarpAction::Show { id } => commands::cluster_carp_show(&id).await?,
+                CarpAction::Add {
+                    vhid,
+                    interface,
+                    vip,
+                    password,
+                } => commands::cluster_carp_add(vhid, &interface, &vip, &password).await?,
+                CarpAction::Remove { id } => commands::cluster_carp_remove(&id).await?,
+            },
+            ClusterAction::Pfsync { action } => match action {
+                PfsyncAction::Get => commands::cluster_pfsync_get().await?,
+                PfsyncAction::Set {
+                    sync_interface,
+                    sync_peer,
+                    defer,
+                    latency_profile,
+                    dhcp_link,
+                } => {
+                    commands::cluster_pfsync_set(
+                        &sync_interface,
+                        sync_peer.as_deref(),
+                        defer,
+                        &latency_profile,
+                        dhcp_link,
+                    )
+                    .await?
+                }
+            },
+            ClusterAction::Nodes { action } => match action {
+                NodesAction::List => commands::cluster_nodes_list().await?,
+                NodesAction::Show { id } => commands::cluster_nodes_show(&id).await?,
+                NodesAction::Add { name, address, role } => {
+                    commands::cluster_nodes_add(&name, &address, &role).await?
+                }
+                NodesAction::Remove { id } => commands::cluster_nodes_remove(&id).await?,
+            },
+            ClusterAction::Health { action } => match action {
+                HealthAction::List => commands::cluster_health_list().await?,
+                HealthAction::Add {
+                    name,
+                    check_type,
+                    target,
+                    interval_secs,
+                } => commands::cluster_health_add(&name, &check_type, &target, interval_secs).await?,
+                HealthAction::Remove { id } => commands::cluster_health_remove(&id).await?,
+                HealthAction::Run => commands::cluster_health_run().await?,
+            },
+            ClusterAction::Promote => commands::cluster_promote().await?,
+            ClusterAction::Demote => commands::cluster_demote().await?,
+            ClusterAction::Sync => commands::cluster_sync().await?,
+            ClusterAction::Verify { json } => return commands::cluster_verify(json).await,
         },
     }
 
