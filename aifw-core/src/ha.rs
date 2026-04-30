@@ -873,6 +873,86 @@ mod tests {
         );
     }
 
+    // ============================================================
+    // E7 — current_local_role linux-dev fallback
+    // ============================================================
+
+    /// On a Linux/WSL dev host there are no CARP interfaces and no
+    /// aifw_cluster_role rc.conf variable, so current_local_role must
+    /// fall all the way through both lookups and return Standalone.
+    ///
+    /// This test is intentionally skipped on FreeBSD targets (where a
+    /// CARP-configured host would legitimately return Primary/Secondary).
+    #[cfg(not(target_os = "freebsd"))]
+    #[tokio::test]
+    async fn current_local_role_returns_standalone_on_linux_dev() {
+        let role = current_local_role().await;
+        assert!(
+            matches!(role, aifw_common::ClusterRole::Standalone),
+            "expected Standalone on Linux dev host, got {role:?}"
+        );
+    }
+
+    // ============================================================
+    // E8 — redact_password_in_argv
+    // ============================================================
+
+    #[test]
+    fn redact_password_in_argv_basic() {
+        let argv = vec![
+            "ifconfig".to_string(),
+            "igb0".to_string(),
+            "vhid".to_string(),
+            "10".to_string(),
+            "advskew".to_string(),
+            "100".to_string(),
+            "advbase".to_string(),
+            "1".to_string(),
+            "pass".to_string(),
+            "secret123".to_string(),
+            "inet".to_string(),
+            "10.0.0.1/24".to_string(),
+            "alias".to_string(),
+        ];
+        let redacted = ClusterEngine::redact_password_in_argv(&argv);
+        let pass_pos = redacted.iter().position(|s| s == "pass").unwrap();
+        assert_eq!(redacted[pass_pos + 1], "<redacted>", "password token not redacted");
+        assert_eq!(redacted[0], "ifconfig", "first arg changed");
+        assert_eq!(
+            redacted[redacted.len() - 1],
+            "alias",
+            "last arg changed"
+        );
+    }
+
+    #[test]
+    fn redact_password_in_argv_no_pass_keyword() {
+        // pfsync commands have no "pass" keyword — should pass through unchanged
+        let argv = vec![
+            "ifconfig".to_string(),
+            "pfsync0".to_string(),
+            "syncdev".to_string(),
+            "igb1".to_string(),
+            "defer".to_string(),
+            "up".to_string(),
+        ];
+        let redacted = ClusterEngine::redact_password_in_argv(&argv);
+        assert_eq!(redacted, argv, "no-pass argv should be unchanged");
+    }
+
+    #[test]
+    fn redact_password_in_argv_pass_at_end_no_value() {
+        // Malformed argv with "pass" as the last element (no value) — must not panic
+        let argv = vec![
+            "ifconfig".to_string(),
+            "igb0".to_string(),
+            "pass".to_string(),
+        ];
+        let redacted = ClusterEngine::redact_password_in_argv(&argv);
+        // No panic, and the argv is returned as-is since there is no value to redact
+        assert_eq!(redacted, argv, "malformed argv with trailing pass should be unchanged");
+    }
+
     #[tokio::test]
     async fn recover_kernel_state_threads_profile_through() {
         use aifw_common::{CarpLatencyProfile, CarpVip, ClusterRole, Interface, PfsyncConfig};

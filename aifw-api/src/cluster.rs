@@ -139,19 +139,24 @@ async fn pfsync_state_count() -> u64 {
         .await;
     match out {
         Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            for line in text.lines() {
-                let line = line.trim_start();
-                if let Some(rest) = line.strip_prefix("current entries") {
-                    if let Some(num) = rest.trim().split_whitespace().next() {
-                        return num.parse().unwrap_or(0);
-                    }
-                }
-            }
-            0
+            parse_pfctl_si_state_count(&String::from_utf8_lossy(&o.stdout))
         }
         _ => 0,
     }
+}
+
+/// Extract the "current entries" count from `pfctl -si` stdout.
+/// Exposed for unit testing on Linux/WSL without running pfctl.
+fn parse_pfctl_si_state_count(stdout: &str) -> u64 {
+    for line in stdout.lines() {
+        let line = line.trim_start();
+        if let Some(rest) = line.strip_prefix("current entries") {
+            if let Some(num) = rest.trim().split_whitespace().next() {
+                return num.parse().unwrap_or(0);
+            }
+        }
+    }
+    0
 }
 
 pub(crate) async fn read_local_role() -> String {
@@ -933,6 +938,15 @@ async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>
 // Generate loopback key (D4 — post-install key generation)
 // ============================================================
 
+// ============================================================
+// E4/E5 deferred: snapshot_put and cert_push reject when local role = MASTER.
+// Both endpoints call is_carp_master_locally() which shells to ifconfig.
+// On Linux/WSL dev there are no CARP interfaces so is_carp_master_locally()
+// always returns false — the MASTER-rejection branch cannot be exercised
+// without a CARP-enabled FreeBSD host. These cases are deferred to FreeBSD CI.
+// See: aifw-core/src/ha.rs::current_local_role (is_local_master delegates here).
+// ============================================================
+
 async fn generate_loopback_key(
     State(s): State<AppState>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -1027,4 +1041,49 @@ async fn generate_loopback_key(
         "ok": true,
         "message": "Loopback key generated. Restart aifw-daemon to activate (run: service aifw_daemon restart)."
     })))
+}
+
+// ============================================================
+// E9 — parse_pfctl_si_state_count unit tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::parse_pfctl_si_state_count;
+
+    #[test]
+    fn pfctl_si_parses_normal() {
+        let stdout = concat!(
+            "State Table                          Total             Rate\n",
+            "  current entries                    12345\n",
+            "  searches                       9876543210         12345.6/s\n",
+        );
+        assert_eq!(parse_pfctl_si_state_count(stdout), 12345);
+    }
+
+    #[test]
+    fn pfctl_si_parses_zero() {
+        let stdout = concat!(
+            "State Table                          Total             Rate\n",
+            "  current entries                        0\n",
+        );
+        assert_eq!(parse_pfctl_si_state_count(stdout), 0);
+    }
+
+    #[test]
+    fn pfctl_si_no_state_line() {
+        let stdout = "garbage\nno state line here\n";
+        assert_eq!(parse_pfctl_si_state_count(stdout), 0);
+    }
+
+    #[test]
+    fn pfctl_si_nonnumeric_value() {
+        let stdout = "  current entries                    foo\n";
+        assert_eq!(parse_pfctl_si_state_count(stdout), 0);
+    }
+
+    #[test]
+    fn pfctl_si_empty_input() {
+        assert_eq!(parse_pfctl_si_state_count(""), 0);
+    }
 }

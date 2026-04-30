@@ -212,6 +212,180 @@ impl ProbeState {
     }
 }
 
+// ============================================================
+// Pure state-machine helper (extracted for testability — E2)
+// ============================================================
+
+/// The result of applying one probe tick to a ProbeState.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+struct ProbeOutcome {
+    /// True when this tick causes a transition healthy → unhealthy.
+    became_unhealthy: bool,
+    /// True when this tick causes a transition unhealthy → healthy.
+    became_healthy: bool,
+    failures_after: u32,
+    healthy_after: bool,
+}
+
+/// Apply one probe result to a mutable ProbeState, returning the outcome.
+/// This mirrors the exact logic in `HealthProber::run` but operates on
+/// owned data so it can be unit-tested without spawning async infrastructure.
+#[cfg_attr(not(test), allow(dead_code))]
+fn apply_probe_result(st: &mut ProbeState, ok: bool, failures_before_down: u32) -> ProbeOutcome {
+    let was_healthy = st.healthy;
+    if ok {
+        let became_healthy = !was_healthy;
+        st.healthy = true;
+        // Always reset counter on success so accumulated partial failures
+        // don't carry over and reduce the effective threshold.
+        st.failures = 0;
+        ProbeOutcome {
+            became_unhealthy: false,
+            became_healthy,
+            failures_after: 0,
+            healthy_after: true,
+        }
+    } else {
+        st.failures += 1;
+        let became_unhealthy = st.failures >= failures_before_down && was_healthy;
+        if became_unhealthy {
+            st.healthy = false;
+        }
+        ProbeOutcome {
+            became_unhealthy,
+            became_healthy: false,
+            failures_after: st.failures,
+            healthy_after: st.healthy,
+        }
+    }
+}
+
+// ============================================================
+// E2 — HealthProber state-machine unit tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Single failure below the threshold — still healthy, counter incremented.
+    #[test]
+    fn single_failure_below_threshold_stays_healthy() {
+        let mut st = ProbeState::new(); // healthy=true, failures=0
+        let out = apply_probe_result(&mut st, false, 3);
+        assert!(!out.became_unhealthy, "should not become unhealthy yet");
+        assert!(!out.became_healthy);
+        assert_eq!(out.failures_after, 1);
+        assert!(out.healthy_after);
+    }
+
+    /// N failures equal to threshold → transition to unhealthy.
+    #[test]
+    fn failures_at_threshold_transitions_to_unhealthy() {
+        let mut st = ProbeState::new();
+        // Two failures below threshold
+        apply_probe_result(&mut st, false, 3);
+        apply_probe_result(&mut st, false, 3);
+        // Third failure hits threshold
+        let out = apply_probe_result(&mut st, false, 3);
+        assert!(out.became_unhealthy, "should transition to unhealthy at threshold");
+        assert_eq!(out.failures_after, 3);
+        assert!(!out.healthy_after);
+    }
+
+    /// After becoming unhealthy, a success transitions back to healthy and
+    /// resets the failure counter (Batch A regression guard — I1).
+    #[test]
+    fn success_after_unhealthy_transitions_to_healthy_and_resets_counter() {
+        let mut st = ProbeState::new();
+        // Drive to unhealthy
+        for _ in 0..3 {
+            apply_probe_result(&mut st, false, 3);
+        }
+        assert!(!st.healthy);
+        assert_eq!(st.failures, 3);
+
+        let out = apply_probe_result(&mut st, true, 3);
+        assert!(out.became_healthy, "should transition back to healthy on success");
+        assert!(!out.became_unhealthy);
+        assert_eq!(out.failures_after, 0, "counter must reset on success");
+        assert!(out.healthy_after);
+    }
+
+    /// While still healthy with partial failures, a success resets the
+    /// counter to 0 so the partial run does not lower the effective threshold.
+    #[test]
+    fn success_while_healthy_resets_partial_failure_counter() {
+        let mut st = ProbeState::new();
+        // Two failures — below threshold of 3, still healthy
+        apply_probe_result(&mut st, false, 3);
+        apply_probe_result(&mut st, false, 3);
+        assert!(st.healthy);
+        assert_eq!(st.failures, 2);
+
+        // Success while still healthy
+        let out = apply_probe_result(&mut st, true, 3);
+        assert!(!out.became_unhealthy);
+        assert!(!out.became_healthy, "was already healthy — no transition");
+        assert_eq!(out.failures_after, 0, "counter must reset even during partial-failure run");
+        assert!(out.healthy_after);
+    }
+
+    /// After a single success (recovery), a re-failure must increment the
+    /// counter from 0, not carry over state. This validates the hold-down
+    /// clock restart logic introduced in Batch A (I2).
+    #[test]
+    fn re_failure_after_recovery_increments_fresh_counter() {
+        let mut st = ProbeState::new();
+        // Drive to unhealthy
+        for _ in 0..3 {
+            apply_probe_result(&mut st, false, 3);
+        }
+        // Recover
+        apply_probe_result(&mut st, true, 3);
+        assert!(st.healthy);
+        assert_eq!(st.failures, 0);
+
+        // Single re-failure
+        let out = apply_probe_result(&mut st, false, 3);
+        assert!(!out.became_unhealthy, "one failure should not immediately demote");
+        assert_eq!(out.failures_after, 1, "counter starts from 0 after recovery");
+        assert!(out.healthy_after);
+    }
+
+    /// A re-failure that crosses the threshold again transitions to unhealthy.
+    #[test]
+    fn re_failure_at_threshold_after_recovery_demotes_again() {
+        let mut st = ProbeState::new();
+        // Drive to unhealthy and back
+        for _ in 0..3 {
+            apply_probe_result(&mut st, false, 3);
+        }
+        apply_probe_result(&mut st, true, 3);
+
+        // Drive to unhealthy again (3 failures)
+        apply_probe_result(&mut st, false, 3);
+        apply_probe_result(&mut st, false, 3);
+        let out = apply_probe_result(&mut st, false, 3);
+        assert!(out.became_unhealthy, "should demote again after threshold reached");
+        assert!(!out.healthy_after);
+    }
+
+    /// Already-unhealthy + further failures must NOT set became_unhealthy again.
+    #[test]
+    fn further_failures_while_unhealthy_do_not_re_trigger_transition() {
+        let mut st = ProbeState::new();
+        for _ in 0..3 {
+            apply_probe_result(&mut st, false, 3);
+        }
+        // 4th failure while already unhealthy
+        let out = apply_probe_result(&mut st, false, 3);
+        assert!(!out.became_unhealthy, "already unhealthy — no new transition");
+        assert!(!out.healthy_after);
+    }
+}
+
 async fn run_probe(c: &HealthCheck, client: &reqwest::Client) -> bool {
     match c.check_type {
         HealthCheckType::Ping => probe_ping(&c.target).await,
