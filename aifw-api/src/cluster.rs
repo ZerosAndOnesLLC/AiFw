@@ -9,11 +9,16 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     routing::{delete, get, post, put},
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
+
+/// Name of the API key that the aifw-daemon registers during setup.
+/// Only requests authenticated with this key are accepted on the
+/// `/cluster/internal/*` endpoints.
+const DAEMON_LOOPBACK_KEY_NAME: &str = "aifw-daemon-loopback";
 
 
 pub fn read_routes() -> Router<AppState> {
@@ -518,8 +523,19 @@ struct RoleChangedReq {
 
 async fn internal_role_changed(
     State(s): State<AppState>,
+    Extension(auth): Extension<crate::auth::AuthUser>,
     Json(r): Json<RoleChangedReq>,
 ) -> StatusCode {
+    // Only the aifw-daemon loopback API key may call this endpoint.
+    // Any HaManage holder (operator used to have it, but no longer) or other
+    // admin with a stolen key cannot manipulate the failover audit history.
+    if auth.api_key_name.as_deref() != Some(DAEMON_LOOPBACK_KEY_NAME) {
+        tracing::warn!(
+            key_name = ?auth.api_key_name,
+            "internal_role_changed: rejected non-daemon caller"
+        );
+        return StatusCode::FORBIDDEN;
+    }
     s.cluster_events.emit(ClusterEvent::RoleChanged {
         from: r.from.clone(),
         to: r.to.clone(),
@@ -535,6 +551,9 @@ async fn internal_role_changed(
     StatusCode::NO_CONTENT
 }
 
+/// Maximum allowed byte length for the `detail` field in HealthChangedReq.
+const HEALTH_DETAIL_MAX: usize = 1024;
+
 #[derive(Deserialize)]
 struct HealthChangedReq {
     check: String,
@@ -544,8 +563,22 @@ struct HealthChangedReq {
 
 async fn internal_health_changed(
     State(s): State<AppState>,
+    Extension(auth): Extension<crate::auth::AuthUser>,
     Json(r): Json<HealthChangedReq>,
 ) -> StatusCode {
+    // Only the aifw-daemon loopback API key may call this endpoint.
+    if auth.api_key_name.as_deref() != Some(DAEMON_LOOPBACK_KEY_NAME) {
+        tracing::warn!(
+            key_name = ?auth.api_key_name,
+            "internal_health_changed: rejected non-daemon caller"
+        );
+        return StatusCode::FORBIDDEN;
+    }
+    // Cap detail field to prevent oversized log entries.
+    if r.detail.as_ref().map(|s| s.len()).unwrap_or(0) > HEALTH_DETAIL_MAX {
+        tracing::warn!("internal_health_changed: detail field exceeds 1024 bytes — rejected");
+        return StatusCode::PAYLOAD_TOO_LARGE;
+    }
     s.cluster_events.emit(ClusterEvent::HealthChanged {
         check: r.check,
         healthy: r.healthy,

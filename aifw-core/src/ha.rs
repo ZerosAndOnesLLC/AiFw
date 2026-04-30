@@ -457,6 +457,19 @@ impl ClusterEngine {
         self.recover_kernel_state_for_role(role).await
     }
 
+    /// Redact the element immediately after "pass" in an ifconfig argv slice.
+    /// CARP ifconfig commands include `pass <password>` as discrete elements;
+    /// this prevents the password from leaking into tracing logs on failure.
+    fn redact_password_in_argv(argv: &[String]) -> Vec<String> {
+        let mut out = argv.to_vec();
+        if let Some(pos) = out.iter().position(|s| s == "pass") {
+            if pos + 1 < out.len() {
+                out[pos + 1] = "<redacted>".to_string();
+            }
+        }
+        out
+    }
+
     /// Inner implementation of kernel-state recovery, taking an explicit role
     /// so it can be called from tests without spawning sysrc.
     pub async fn recover_kernel_state_for_role(
@@ -490,7 +503,8 @@ impl ClusterEngine {
         for vip in self.list_carp_vips().await? {
             for argv in vip.to_ifconfig_argv(timing) {
                 if let Err(error) = run_argv(&argv).await {
-                    tracing::warn!(?error, cmd = ?argv, "ha: CARP ifconfig command failed");
+                    let safe_argv = Self::redact_password_in_argv(&argv);
+                    tracing::warn!(?error, cmd = ?safe_argv, "ha: CARP ifconfig command failed");
                 }
             }
         }

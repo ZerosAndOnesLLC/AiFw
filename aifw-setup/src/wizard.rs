@@ -598,7 +598,18 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
         _ => aifw_common::ClusterRole::Secondary,
     };
 
-    let pfsync_iface = console::prompt_required("Which interface carries pfsync traffic? (a dedicated NIC is strongly recommended)");
+    let pfsync_iface = loop {
+        let s = console::prompt_required(
+            "Which interface carries pfsync traffic? (a dedicated NIC is strongly recommended)",
+        );
+        let s = s.trim().to_string();
+        // FreeBSD interface names: ASCII letters, digits, and dots only.
+        // Reject anything else to prevent newline injection into rc.conf.
+        if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+            break s;
+        }
+        console::error("Interface name must contain only ASCII letters, digits, and dots (e.g. em0, igb1, ix0.10).");
+    };
 
     let peer_address = loop {
         let s = console::prompt_required("Peer node IP on the pfsync link:");
@@ -637,9 +648,23 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
         } else {
             config.lan_interface.as_deref().unwrap_or("")
         };
-        let interface = console::prompt(&format!("{iface_label} interface name:"), default_iface);
+        // Validate interface name: ASCII letters, digits, and dots only.
+        // Prevents newline injection into rc.conf values.
+        let interface = loop {
+            let s = console::prompt(&format!("{iface_label} interface name:"), default_iface);
+            let s = s.trim().to_string();
+            if s.is_empty() {
+                console::warn("Interface name required — skipping this VIP.");
+                break String::new();
+            }
+            if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+                break s;
+            }
+            console::error(
+                "Interface name must contain only ASCII letters, digits, and dots (e.g. em0, igb1).",
+            );
+        };
         if interface.is_empty() {
-            console::warn("Interface name required — skipping this VIP.");
             continue;
         }
         let vip_str = console::prompt_required(&format!("Virtual IP on {interface} (e.g. 192.0.2.1):"));

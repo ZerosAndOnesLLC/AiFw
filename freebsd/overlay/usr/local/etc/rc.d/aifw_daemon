@@ -46,10 +46,17 @@ aifw_daemon_precmd()
     # so the binary (running as aifw via daemon -u aifw) can't create it.
     /usr/bin/touch /var/run/aifw-daemon.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-daemon.lock
-    # Export AIFW_LOOPBACK_API_KEY (and any other daemon env vars) so the
-    # background tasks (RoleWatcher, HealthProber, ClusterReplicator) can
-    # authenticate to the local API.  aifw_daemon_env is written by setup.
-    if [ -n "${aifw_daemon_env}" ]; then
+    # Read the loopback API key from a 640 file (mode root:aifw) rather than
+    # from /etc/rc.conf (which is world-readable mode 644).  The file is
+    # written by aifw-setup; the daemon process needs it to authenticate
+    # background tasks (RoleWatcher, HealthProber, ClusterReplicator) to the
+    # local API.
+    if [ -r /usr/local/etc/aifw/daemon.key ]; then
+        export AIFW_LOOPBACK_API_KEY="$(cat /usr/local/etc/aifw/daemon.key)"
+    fi
+    # Fallback: honour legacy rc.conf aifw_daemon_env for nodes that have not
+    # yet been re-provisioned with the new daemon.key path.
+    if [ -z "${AIFW_LOOPBACK_API_KEY}" ] && [ -n "${aifw_daemon_env}" ]; then
         export ${aifw_daemon_env}
     fi
 }

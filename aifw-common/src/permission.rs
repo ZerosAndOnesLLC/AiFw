@@ -266,6 +266,7 @@ pub fn builtin_role_permissions(role: &str) -> Vec<Permission> {
                         | Permission::SettingsWrite
                         | Permission::UpdatesInstall
                         | Permission::SystemReboot
+                        | Permission::HaManage
                 )
             })
             .copied()
@@ -337,6 +338,10 @@ mod tests {
         assert!(!set.has(Permission::SettingsWrite));
         assert!(!set.has(Permission::UpdatesInstall));
         assert!(!set.has(Permission::SystemReboot));
+        // HA management (demote, snapshot-push, cert-push, failover-event injection)
+        // is admin-only; operator can observe HA status via read endpoints that
+        // require no separate permission today.
+        assert!(!set.has(Permission::HaManage));
     }
 
     #[test]

@@ -29,6 +29,19 @@ of any failure on the master.
 - **Synchronized time.** Both nodes should run NTP / `rtime` (the AiFw companion service). CARP advertisement timing is sensitive to clock drift.
 - **Same software version.** Always upgrade the standby first; the cluster dashboard surfaces version drift between nodes.
 
+## Security considerations
+
+The replication channel between cluster nodes is treated as TRUSTED. Specifically:
+
+- **Snapshot pushes carry secrets in plaintext.** The full firewall config is replicated across nodes, including VPN (WireGuard) private keys, preshared keys, DDNS TSIG keys, rDHCP HA TLS material, and the CARP shared password.
+- **TLS verification is disabled on inter-node calls.** Each node accepts self-signed certificates from peers. Anyone with network-layer access to the pfsync segment can MITM these calls and recover the secrets above.
+- **Mitigation: use a dedicated, physically-secured pfsync NIC.** A back-to-back cable between the two nodes, or a VLAN that no other host can reach, is the recommended configuration.
+- **Per-peer API keys.** Each node holds an API key for the peer it pushes to. These are stored in plaintext in the local SQLite DB; treat the DB file as a credential store.
+- **`/usr/local/etc/aifw/daemon.key`** holds the loopback API key used by daemon background tasks. File mode `640`, owned `root:aifw`. The aifw user must have read access; no other local user should.
+- **Future cert pinning** would close the MITM gap. If a follow-up issue has not yet been filed, open one to track this work.
+
+If your network does not satisfy "trusted pfsync segment," do not enable HA replication.
+
 ## Setup
 
 1. Install AiFw on both nodes via the ISO build.

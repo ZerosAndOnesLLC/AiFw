@@ -1075,10 +1075,40 @@ rate_limit = 1000
         .await
         .map_err(|e| format!("loopback api_key insert: {e}"))?;
 
-        // Write to rc.conf so the aifw_daemon rc.d script exports the env var.
-        // aifw_daemon_precmd reads aifw_daemon_env and passes it to the daemon.
+        // Write the loopback key to a 640 file owned root:aifw rather than
+        // embedding it in /etc/rc.conf (which is mode 644, world-readable on
+        // FreeBSD). The rc.d aifw_daemon precmd reads this file and exports
+        // AIFW_LOOPBACK_API_KEY into the daemon's environment.
+        let key_path = std::path::Path::new("/usr/local/etc/aifw/daemon.key");
+        if let Some(parent) = key_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(key_path, &loopback_key) {
+            tracing::warn!(error = %e, "could not write daemon.key (non-FreeBSD dev env — skipped)");
+        } else {
+            // chmod 640
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(key_path) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o640);
+                    let _ = std::fs::set_permissions(key_path, perms);
+                }
+            }
+            // chown root:aifw — only meaningful on FreeBSD where the aifw user exists.
+            #[cfg(target_os = "freebsd")]
+            {
+                let _ = std::process::Command::new("chown")
+                    .arg("root:aifw")
+                    .arg(key_path)
+                    .status();
+            }
+        }
+        // Clear any previously set aifw_daemon_env from rc.conf — the key is
+        // now read from daemon.key by the precmd; rc.conf no longer carries it.
         #[cfg(target_os = "freebsd")]
-        let _ = run_sysrc("aifw_daemon_env", &format!("AIFW_LOOPBACK_API_KEY={loopback_key}"));
+        let _ = run_sysrc("aifw_daemon_env", "");
 
         let pf: std::sync::Arc<dyn aifw_pf::PfBackend> =
             std::sync::Arc::from(aifw_pf::create_backend());
@@ -1924,10 +1954,17 @@ aifw_daemon_precmd()
     # so the binary (running as aifw via daemon -u aifw) can't create it.
     /usr/bin/touch /var/run/aifw-daemon.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-daemon.lock
-    # Export AIFW_LOOPBACK_API_KEY (and any other daemon env vars) so the
-    # background tasks (RoleWatcher, HealthProber, ClusterReplicator) can
-    # authenticate to the local API.  aifw_daemon_env is written by setup.
-    if [ -n "${{aifw_daemon_env}}" ]; then
+    # Read the loopback API key from a 640 file (mode root:aifw) rather than
+    # from /etc/rc.conf (which is world-readable mode 644).  The file is
+    # written by aifw-setup; the daemon process needs it to authenticate
+    # background tasks (RoleWatcher, HealthProber, ClusterReplicator) to the
+    # local API.
+    if [ -r /usr/local/etc/aifw/daemon.key ]; then
+        export AIFW_LOOPBACK_API_KEY="$(cat /usr/local/etc/aifw/daemon.key)"
+    fi
+    # Fallback: honour legacy rc.conf aifw_daemon_env for nodes that have not
+    # yet been re-provisioned with the new daemon.key path.
+    if [ -z "${{AIFW_LOOPBACK_API_KEY}}" ] && [ -n "${{aifw_daemon_env}}" ]; then
         export ${{aifw_daemon_env}}
     fi
 }}

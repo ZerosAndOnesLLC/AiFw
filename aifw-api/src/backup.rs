@@ -2890,6 +2890,15 @@ pub(crate) async fn apply_cluster_snapshot(
     let payload: ClusterSnapshotPayload = serde_json::from_str(body)
         .map_err(|e| anyhow::anyhow!("snapshot parse error: {e}"))?;
 
+    // Apply the same validation backup-import enforces (10k rule cap, schema
+    // version match, hostname sanity, etc). A compromised peer or stolen
+    // API key cannot push out-of-bounds rule sets, expiry-zero auth config,
+    // or future-schema configs that would corrupt our DB.
+    payload
+        .firewall
+        .validate()
+        .map_err(|e| anyhow::anyhow!("snapshot failed validation: {e}"))?;
+
     // Per-peer API keys are LOCAL credentials — never replicate them.
     // apply_firewall_config wipes cluster_nodes and rebuilds from the snapshot
     // (which was captured on the master, where this node's outgoing key is absent).
