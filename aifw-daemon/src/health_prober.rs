@@ -81,9 +81,10 @@ impl HealthProber {
                 if ok {
                     if !st.healthy {
                         st.healthy = true;
-                        st.failures = 0;
                         let _ = self.notify_health(&client, &c.name, true, None).await;
                     }
+                    st.failures = 0; // always reset so accumulated partial failures
+                                     // don't carry over and reduce the effective threshold
                 } else {
                     st.failures += 1;
                     if st.failures >= c.failures_before_down && st.healthy {
@@ -117,6 +118,15 @@ impl HealthProber {
                 } else {
                     tracing::warn!(
                         "ha: failed to set net.inet.carp.demotion=240 on health failure"
+                    );
+                }
+            } else if any_failing_local && demoted {
+                // re-failed during hold-down: restart the recovery clock so a single-tick
+                // flap near the end of the window cannot prematurely restore CARP demotion
+                if recovery_started.is_some() {
+                    recovery_started = None;
+                    tracing::debug!(
+                        "ha: probe re-failed during hold-down; resetting recovery timer"
                     );
                 }
             } else if !any_failing_local && demoted {
