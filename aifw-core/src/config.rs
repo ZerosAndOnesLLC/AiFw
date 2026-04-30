@@ -440,8 +440,6 @@ pub struct CarpVipConfig {
     pub virtual_ip: String,
     pub prefix: u8,
     pub interface: String,
-    pub advskew: u8,
-    pub advbase: u8,
     pub password: String,
 }
 

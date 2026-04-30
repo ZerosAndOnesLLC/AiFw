@@ -1087,8 +1087,6 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                     virtual_ip: v.virtual_ip.to_string(),
                     prefix: v.prefix,
                     interface: v.interface.0.clone(),
-                    advskew: v.advskew,
-                    advbase: v.advbase,
                     password: v.password.clone(),
                 })
                 .collect(),
@@ -2476,8 +2474,6 @@ fn carp_vip_from_config(vc: &aifw_core::config::CarpVipConfig) -> Option<aifw_co
         virtual_ip,
         prefix: vc.prefix,
         interface: Interface(vc.interface.clone()),
-        advskew: vc.advskew,
-        advbase: vc.advbase,
         password: vc.password.clone(),
         status: CarpStatus::Init,
         created_at: now,

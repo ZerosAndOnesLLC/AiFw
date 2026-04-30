@@ -884,7 +884,6 @@ mod tests {
         );
         assert_eq!(vip.vhid, 1);
         assert_eq!(vip.status, CarpStatus::Init);
-        assert_eq!(vip.advskew, 0);
     }
 
     #[test]
@@ -896,8 +895,9 @@ mod tests {
             Interface("em0".to_string()),
             "pass123".to_string(),
         );
-        // Use Standalone so the stored advskew (0) is used as-is
-        let cmds = vip.to_ifconfig_cmds_for_role(ClusterRole::Standalone);
+        // Use Conservative profile + Standalone role
+        let timing = CarpLatencyProfile::Conservative.timing_for(ClusterRole::Standalone);
+        let cmds = vip.to_ifconfig_argv(timing);
         assert_eq!(cmds.len(), 1);
         let argv = &cmds[0];
         assert!(argv.contains(&"vhid".to_string()));
@@ -1010,28 +1010,48 @@ mod tests {
 
     #[test]
     fn carp_advskew_renders_per_role() {
-        use crate::{CarpVip, ClusterRole, Interface};
+        use crate::{CarpLatencyProfile, CarpVip, ClusterRole, Interface};
         use std::net::IpAddr;
 
-        let mut vip = CarpVip::new(
+        let vip = CarpVip::new(
             10,
             "192.0.2.1".parse::<IpAddr>().unwrap(),
             24,
             Interface("igb0".into()),
             "secret".into(),
         );
-        vip.advskew = 100; // baseline configured skew
 
-        let primary_cmds = vip.to_ifconfig_cmds_for_role(ClusterRole::Primary);
-        let secondary_cmds = vip.to_ifconfig_cmds_for_role(ClusterRole::Secondary);
+        let primary = vip.to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Primary));
+        let secondary = vip.to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Secondary));
 
-        // argv form: check discrete arguments
-        let primary_argv = &primary_cmds[0];
-        let secondary_argv = &secondary_cmds[0];
-        let skew_pos_p = primary_argv.iter().position(|a| a == "advskew").expect("advskew arg");
-        let skew_pos_s = secondary_argv.iter().position(|a| a == "advskew").expect("advskew arg");
-        assert_eq!(primary_argv[skew_pos_p + 1], "0", "primary cmds: {primary_cmds:?}");
-        assert_eq!(secondary_argv[skew_pos_s + 1], "100", "secondary cmds: {secondary_cmds:?}");
+        let primary_skew = primary[0][primary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
+        let secondary_skew = secondary[0][secondary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
+
+        assert_eq!(primary_skew, "0");
+        assert_eq!(secondary_skew, "100"); // Conservative profile's secondary skew
+    }
+
+    #[test]
+    fn ifconfig_argv_uses_profile_timing() {
+        use crate::{CarpLatencyProfile, CarpVip, ClusterRole, Interface};
+
+        let vip = CarpVip::new(
+            10,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("igb0".into()),
+            "abc12345".into(),
+        );
+
+        let tight_secondary = CarpLatencyProfile::Tight.timing_for(ClusterRole::Secondary);
+        let argv = vip.to_ifconfig_argv(tight_secondary);
+        let argv = &argv[0];
+
+        let advbase_pos = argv.iter().position(|s| s == "advbase").unwrap();
+        let advskew_pos = argv.iter().position(|s| s == "advskew").unwrap();
+
+        assert_eq!(argv[advbase_pos + 1], "1");
+        assert_eq!(argv[advskew_pos + 1], "20"); // Tight secondary skew
     }
 
     #[test]

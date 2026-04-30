@@ -32,8 +32,6 @@ impl ClusterEngine {
                 virtual_ip TEXT NOT NULL,
                 prefix INTEGER NOT NULL,
                 interface TEXT NOT NULL,
-                advskew INTEGER NOT NULL DEFAULT 0,
-                advbase INTEGER NOT NULL DEFAULT 1,
                 password TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'init',
                 created_at TEXT NOT NULL,
@@ -43,6 +41,16 @@ impl ClusterEngine {
         )
         .execute(&self.pool)
         .await?;
+
+        // Drop legacy per-VIP timer columns — profile on pfsync_config is now
+        // the source of truth (SQLite 3.35+; fails silently on older versions
+        // which is acceptable since the columns are simply unused on those nodes).
+        for stmt in [
+            "ALTER TABLE carp_vips DROP COLUMN advskew",
+            "ALTER TABLE carp_vips DROP COLUMN advbase",
+        ] {
+            let _ = sqlx::query(stmt).execute(&self.pool).await;
+        }
 
         sqlx::query(
             r#"
@@ -121,9 +129,9 @@ impl ClusterEngine {
 
         sqlx::query(
             r#"
-            INSERT INTO carp_vips (id, vhid, virtual_ip, prefix, interface, advskew, advbase,
+            INSERT INTO carp_vips (id, vhid, virtual_ip, prefix, interface,
                 password, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(vip.id.to_string())
@@ -131,8 +139,6 @@ impl ClusterEngine {
         .bind(vip.virtual_ip.to_string())
         .bind(vip.prefix as i64)
         .bind(&vip.interface.0)
-        .bind(vip.advskew as i64)
-        .bind(vip.advbase as i64)
         .bind(&vip.password)
         .bind(vip.status.to_string())
         .bind(vip.created_at.to_rfc3339())
@@ -333,8 +339,10 @@ impl ClusterEngine {
             return Ok(());
         }
 
+        let pfsync = self.get_pfsync().await?;
+
         // pfsync — always run (idempotent; no existence pre-check needed)
-        if let Some(p) = self.get_pfsync().await? {
+        if let Some(p) = &pfsync {
             for argv in p.to_ifconfig_cmds() {
                 if let Err(error) = run_argv(&argv).await {
                     tracing::warn!(?error, cmd = ?argv, "ha: pfsync ifconfig command failed");
@@ -342,9 +350,16 @@ impl ClusterEngine {
             }
         }
 
-        // CARP VIPs — render per role
+        // Derive timing from the stored latency profile (default Conservative if absent)
+        let profile = pfsync
+            .as_ref()
+            .map(|p| p.latency_profile)
+            .unwrap_or_default();
+        let timing = profile.timing_for(role);
+
+        // CARP VIPs — render with profile-derived timing
         for vip in self.list_carp_vips().await? {
-            for argv in vip.to_ifconfig_cmds_for_role(role) {
+            for argv in vip.to_ifconfig_argv(timing) {
                 if let Err(error) = run_argv(&argv).await {
                     tracing::warn!(?error, cmd = ?argv, "ha: CARP ifconfig command failed");
                 }
@@ -366,22 +381,11 @@ impl ClusterEngine {
     pub async fn apply_ha_rules(&self) -> Result<()> {
         let mut pf_rules = Vec::new();
 
-        let pfsync = self.get_pfsync().await?;
-        let (advbase, _primary_skew, secondary_skew) = pfsync
-            .as_ref()
-            .map(|p| p.latency_profile.skews())
-            .unwrap_or((1, 0, 100)); // safe default = Conservative
-
-        // CARP rules — override timer values from latency profile
         let vips = self.list_carp_vips().await?;
-        for mut vip in vips {
-            vip.advbase = advbase;
-            vip.advskew = secondary_skew; // primary renders 0 inside to_ifconfig_cmds_for_role
+        for vip in &vips {
             pf_rules.extend(vip.to_pf_rules());
         }
-
-        // pfsync rules
-        if let Some(ref pfsync) = pfsync {
+        if let Some(pfsync) = self.get_pfsync().await? {
             pf_rules.extend(pfsync.to_pf_rules());
         }
 
@@ -393,14 +397,12 @@ impl ClusterEngine {
                 .map_err(|e| AifwError::Pf(e.to_string()))?;
         }
 
-        // Enable CARP preempt at apply time so a returning master with better
-        // skew reclaims the role automatically (avoids both-think-master state)
-        let preempt_result = tokio::process::Command::new("sysctl")
+        let preempt = tokio::process::Command::new("sysctl")
             .arg("net.inet.carp.preempt=1")
             .status()
             .await;
-        if let Err(e) = preempt_result {
-            tracing::warn!(error = %e, "ha: failed to set net.inet.carp.preempt=1");
+        if let Err(error) = preempt {
+            tracing::warn!(?error, "ha: failed to set net.inet.carp.preempt=1");
         }
 
         Ok(())
@@ -457,8 +459,6 @@ struct CarpVipRow {
     virtual_ip: String,
     prefix: i64,
     interface: String,
-    advskew: i64,
-    advbase: i64,
     password: String,
     status: String,
     created_at: String,
@@ -476,8 +476,6 @@ impl CarpVipRow {
                 .map_err(|e| AifwError::Database(format!("{e}")))?,
             prefix: self.prefix as u8,
             interface: Interface(self.interface),
-            advskew: self.advskew as u8,
-            advbase: self.advbase as u8,
             password: self.password,
             status: match self.status.as_str() {
                 "master" => CarpStatus::Master,

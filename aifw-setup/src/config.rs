@@ -70,9 +70,6 @@ pub struct WizardCarpVip {
     pub vhid: u8,
     pub virtual_ip: std::net::IpAddr,
     pub prefix: u8,
-    /// Backup advskew; primary always renders 0 at apply time
-    pub advskew: u8,
-    pub advbase: u8,
 }
 
 /// Cluster configuration collected by the HA wizard step

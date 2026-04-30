@@ -370,13 +370,14 @@ aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
             let _ = run_sysrc("pfsync_enable", "YES");
             let pfsync_args = format!("syncdev {} defer up", c.pfsync_iface);
             let _ = run_sysrc("ifconfig_pfsync0", &pfsync_args);
+            let timing = aifw_common::CarpLatencyProfile::default().timing_for(c.role);
             for vip in &c.vips {
                 let key = format!("ifconfig_{}_aliases", vip.interface);
                 let alias = format!(
                     "inet vhid {} advskew {} advbase {} pass {} {}/{}",
                     vip.vhid,
-                    if matches!(c.role, ClusterRole::Primary) { 0u32 } else { vip.advskew as u32 },
-                    vip.advbase,
+                    timing.advskew,
+                    timing.advbase,
                     shell_quote_for_rcconf(&c.password),
                     vip.virtual_ip, vip.prefix,
                 );
@@ -1030,15 +1031,13 @@ rate_limit = 1000
 
         // CARP VIPs
         for v in &c.vips {
-            let mut vip = CarpVip::new(
+            let vip = CarpVip::new(
                 v.vhid,
                 v.virtual_ip,
                 v.prefix,
                 Interface(v.interface.clone()),
                 c.password.clone(),
             );
-            vip.advskew = v.advskew;
-            vip.advbase = v.advbase;
             cluster_engine
                 .add_carp_vip(vip)
                 .await

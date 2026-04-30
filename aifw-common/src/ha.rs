@@ -23,6 +23,12 @@ pub enum CarpLatencyProfile {
     Aggressive,
 }
 
+impl Default for CarpLatencyProfile {
+    fn default() -> Self {
+        Self::Conservative
+    }
+}
+
 impl CarpLatencyProfile {
     /// Returns (advbase, primary_advskew, secondary_advskew) for this profile.
     pub fn skews(self) -> (u8, u8, u8) {
@@ -43,6 +49,25 @@ impl CarpLatencyProfile {
             ))),
         }
     }
+
+    /// Returns the CARP timing for this profile in the given role.
+    /// Primary always uses advskew=0; secondary uses the profile's secondary_skew.
+    /// Standalone falls back to secondary_skew (conservative "this node will lose elections" default).
+    pub fn timing_for(self, role: ClusterRole) -> CarpTiming {
+        let (advbase, primary_skew, secondary_skew) = self.skews();
+        let advskew = match role {
+            ClusterRole::Primary => primary_skew,
+            ClusterRole::Secondary | ClusterRole::Standalone => secondary_skew,
+        };
+        CarpTiming { advbase, advskew }
+    }
+}
+
+/// Effective CARP advertisement timing derived from a profile + role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CarpTiming {
+    pub advbase: u8,
+    pub advskew: u8,
 }
 
 impl std::fmt::Display for CarpLatencyProfile {
@@ -63,8 +88,6 @@ pub struct CarpVip {
     pub virtual_ip: IpAddr,
     pub prefix: u8,
     pub interface: Interface,
-    pub advskew: u8,
-    pub advbase: u8,
     pub password: String,
     pub status: CarpStatus,
     pub created_at: DateTime<Utc>,
@@ -106,8 +129,6 @@ impl CarpVip {
             virtual_ip,
             prefix,
             interface,
-            advskew: 0,
-            advbase: 1,
             password,
             status: CarpStatus::Init,
             created_at: now,
@@ -115,19 +136,12 @@ impl CarpVip {
         }
     }
 
-    /// Render ifconfig argv for the given local node role.
+    /// Render ifconfig argv for the given CARP timing (derived from profile + role).
     ///
     /// Returns a list of argument vectors — each inner `Vec<String>` is one
     /// command where `[0]` is the executable and the rest are its arguments.
     /// Pass them directly to `tokio::process::Command::new(&argv[0]).args(&argv[1..])`.
-    ///
-    /// Primary uses advskew=0, Secondary uses the stored advskew (so the
-    /// configured value is the *backup* skew), Standalone falls back to stored.
-    pub fn to_ifconfig_cmds_for_role(&self, role: crate::ClusterRole) -> Vec<Vec<String>> {
-        let effective_skew = match role {
-            crate::ClusterRole::Primary => 0,
-            crate::ClusterRole::Secondary | crate::ClusterRole::Standalone => self.advskew,
-        };
+    pub fn to_ifconfig_argv(&self, timing: CarpTiming) -> Vec<Vec<String>> {
         let af = if self.virtual_ip.is_ipv4() { "inet" } else { "inet6" };
         vec![vec![
             "ifconfig".to_string(),
@@ -135,9 +149,9 @@ impl CarpVip {
             "vhid".to_string(),
             self.vhid.to_string(),
             "advskew".to_string(),
-            effective_skew.to_string(),
+            timing.advskew.to_string(),
             "advbase".to_string(),
-            self.advbase.to_string(),
+            timing.advbase.to_string(),
             "pass".to_string(),
             self.password.clone(),
             af.to_string(),
