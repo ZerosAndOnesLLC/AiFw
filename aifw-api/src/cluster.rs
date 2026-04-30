@@ -19,8 +19,10 @@ use uuid::Uuid;
 pub fn read_routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/cluster/carp", get(list_carp))
+        .route("/api/v1/cluster/carp/{id}", get(get_carp))
         .route("/api/v1/cluster/pfsync", get(get_pfsync))
         .route("/api/v1/cluster/nodes", get(list_nodes))
+        .route("/api/v1/cluster/nodes/{id}", get(get_node))
         .route("/api/v1/cluster/health", get(list_health))
         .route("/api/v1/cluster/status", get(get_status))
         .route("/api/v1/cluster/snapshot/hash", get(snapshot_hash))
@@ -30,6 +32,7 @@ pub fn read_routes() -> Router<AppState> {
 
 pub fn write_routes() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/cluster/health/run", post(run_health_checks))
         .route("/api/v1/cluster/carp", post(create_carp))
         .route(
             "/api/v1/cluster/carp/{id}",
@@ -123,6 +126,24 @@ async fn pfsync_state_count() -> u64 {
 }
 
 pub(crate) async fn read_local_role() -> String {
+    // Live CARP role from ifconfig (authoritative after failover); fall
+    // back to sysrc only when no CARP iface has reported state yet.
+    let live = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("ifconfig 2>/dev/null | awk '/carp:/ {print tolower($2); exit}'")
+        .output()
+        .await
+        .ok();
+    if let Some(o) = live {
+        if o.status.success() {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            match s.as_str() {
+                "master" => return "primary".into(),
+                "backup" => return "secondary".into(),
+                _ => {} // fall through to sysrc fallback
+            }
+        }
+    }
     tokio::process::Command::new("sysrc")
         .arg("-n")
         .arg("aifw_cluster_role")
@@ -148,6 +169,40 @@ async fn ping_once(addr: &IpAddr) -> bool {
         .await
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+async fn get_carp(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<CarpVip>, StatusCode> {
+    s.cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(|e| {
+            tracing::warn!(?e, "list_carp_vips");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .into_iter()
+        .find(|v| v.id == id)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn get_node(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ClusterNode>, StatusCode> {
+    s.cluster_engine
+        .list_nodes()
+        .await
+        .map_err(|e| {
+            tracing::warn!(?e, "list_nodes");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .into_iter()
+        .find(|n| n.id == id)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 async fn list_carp(State(s): State<AppState>) -> Result<Json<Vec<CarpVip>>, StatusCode> {
@@ -561,7 +616,11 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
         _ => return StatusCode::PRECONDITION_FAILED,
     };
 
-    let url = format!("https://{}:8080/api/v1/cluster/snapshot", peer.address);
+    let url = format!(
+        "https://{}:{}/api/v1/cluster/snapshot",
+        peer.address,
+        aifw_common::DEFAULT_LOOPBACK_API_PORT
+    );
     let client = match reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(15))
@@ -615,35 +674,43 @@ async fn apply_snapshot_data(
 // Failover history endpoint (Commit 10 #226)
 // ============================================================
 
+#[derive(Serialize, sqlx::FromRow)]
+pub struct FailoverEvent {
+    pub id: String,
+    pub ts: String,
+    pub from_role: String,
+    pub to_role: String,
+    pub cause: String,
+    pub detail: Option<String>,
+}
+
 async fn failover_history(
     State(s): State<AppState>,
-) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
-    let rows: Vec<(String, String, String, String, String, Option<String>)> = sqlx::query_as(
+) -> Result<Json<Vec<FailoverEvent>>, StatusCode> {
+    sqlx::query_as::<_, FailoverEvent>(
         "SELECT id, ts, from_role, to_role, cause, detail FROM cluster_failover_events
          WHERE ts >= datetime('now', '-1 day')
          ORDER BY ts DESC",
     )
     .fetch_all(&s.pool)
     .await
+    .map(Json)
     .map_err(|e| {
         tracing::warn!(?e, "failover_history");
         StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    })
+}
 
-    Ok(Json(
-        rows.into_iter()
-            .map(|(id, ts, from_role, to_role, cause, detail)| {
-                serde_json::json!({
-                    "id": id,
-                    "ts": ts,
-                    "from_role": from_role,
-                    "to_role": to_role,
-                    "cause": cause,
-                    "detail": detail,
-                })
-            })
-            .collect(),
-    ))
+// ============================================================
+// On-demand health-check trigger (A10)
+// ============================================================
+
+async fn run_health_checks(_state: State<AppState>) -> StatusCode {
+    // Signal the daemon to probe immediately. The HealthProber daemon runs on
+    // its own 1-second tick; this endpoint returns 202 Accepted so the CLI
+    // surface exists and the response is well-defined. A future implementation
+    // may use an internal channel to wake the prober out of band.
+    StatusCode::ACCEPTED
 }
 
 // ============================================================

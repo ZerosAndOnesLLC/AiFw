@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { fetchApi } from "@/lib/api";
 import StatusBanner from "./components/StatusBanner";
 
 type CarpVip = {
@@ -45,15 +46,9 @@ export default function ClusterPage() {
 
   const reload = async () => {
     const [v, p, n] = await Promise.all([
-      fetch("/api/v1/cluster/carp", { credentials: "include" }).then((r) =>
-        r.ok ? r.json() : []
-      ),
-      fetch("/api/v1/cluster/pfsync", { credentials: "include" }).then((r) =>
-        r.ok ? r.json() : null
-      ),
-      fetch("/api/v1/cluster/nodes", { credentials: "include" }).then((r) =>
-        r.ok ? r.json() : []
-      ),
+      fetchApi<CarpVip[]>("/api/v1/cluster/carp").catch(() => [] as CarpVip[]),
+      fetchApi<Pfsync>("/api/v1/cluster/pfsync").catch(() => null),
+      fetchApi<Node[]>("/api/v1/cluster/nodes").catch(() => [] as Node[]),
     ]);
     setVips(v);
     setPfsync(p);
@@ -66,10 +61,7 @@ export default function ClusterPage() {
   const promote = async () => {
     setBusy(true);
     try {
-      await fetch("/api/v1/cluster/promote", {
-        method: "POST",
-        credentials: "include",
-      });
+      await fetchApi("/api/v1/cluster/promote", { method: "POST" });
       await reload();
     } finally {
       setBusy(false);
@@ -78,10 +70,7 @@ export default function ClusterPage() {
   const demote = async () => {
     setBusy(true);
     try {
-      await fetch("/api/v1/cluster/demote", {
-        method: "POST",
-        credentials: "include",
-      });
+      await fetchApi("/api/v1/cluster/demote", { method: "POST" });
       await reload();
     } finally {
       setBusy(false);
@@ -89,12 +78,11 @@ export default function ClusterPage() {
   };
 
   const generatePeerKey = async (nodeId: string, nodeName: string) => {
-    const r = await fetch(`/api/v1/cluster/nodes/${nodeId}/generate-key`, {
-      method: "POST",
-      credentials: "include",
-    });
-    if (r.ok) {
-      const d = await r.json();
+    const d = await fetchApi<{ key: string }>(
+      `/api/v1/cluster/nodes/${nodeId}/generate-key`,
+      { method: "POST" }
+    ).catch(() => null);
+    if (d) {
       setGeneratedKey({ nodeName, key: d.key });
     }
   };
@@ -211,15 +199,9 @@ export default function ClusterPage() {
               onClick={async () => {
                 setBusy(true);
                 try {
-                  const r = await fetch("/api/v1/cluster/snapshot/force", {
+                  await fetchApi("/api/v1/cluster/snapshot/force", {
                     method: "POST",
-                    credentials: "include",
-                  });
-                  if (!r.ok) {
-                    alert(
-                      `Force sync failed: ${r.status} ${r.statusText}`
-                    );
-                  }
+                  }).catch(() => {});
                   await reload();
                 } finally {
                   setBusy(false);

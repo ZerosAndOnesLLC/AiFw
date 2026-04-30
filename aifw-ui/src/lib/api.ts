@@ -1,6 +1,6 @@
 const API_BASE = "";
 
-async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

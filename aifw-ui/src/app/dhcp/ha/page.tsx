@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { fetchApi } from "@/lib/api";
 
 interface HaConfig {
   mode: string;
@@ -21,16 +22,6 @@ interface HaStatus {
   role: string;
   peer_state?: string;
   healthy: boolean;
-}
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
 }
 
 interface PfsyncConfig {
@@ -60,9 +51,7 @@ export default function HaConfigPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/ha/config", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: HaConfig = await res.json();
+      const data = await fetchApi<HaConfig>("/api/v1/dhcp/ha/config");
       setConfig(data);
       setPeersInput((data.peers || []).join(", "));
     } catch { /* silent */ }
@@ -70,17 +59,14 @@ export default function HaConfigPage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/ha/status", { headers: authHeadersPlain() });
-      if (!res.ok) return;
-      setStatus(await res.json());
+      const data = await fetchApi<HaStatus>("/api/v1/dhcp/ha/status");
+      setStatus(data);
     } catch { /* silent — service may not be running */ }
   }, []);
 
   const fetchPfsync = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/cluster/pfsync", { headers: authHeadersPlain() });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await fetchApi<PfsyncConfig>("/api/v1/cluster/pfsync");
       setPfsync(data);
     } catch { /* silent */ }
   }, []);
@@ -97,27 +83,15 @@ export default function HaConfigPage() {
 
   const handleUnlink = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/cluster/pfsync", {
-        headers: authHeadersPlain(),
-        credentials: "include",
-      });
-      if (!res.ok) return;
-      const cur: PfsyncConfig = await res.json();
+      const cur = await fetchApi<PfsyncConfig>("/api/v1/cluster/pfsync");
       const body: PfsyncConfig = { ...cur, dhcp_link: false };
-      const putRes = await fetch("/api/v1/cluster/pfsync", {
+      await fetchApi<PfsyncConfig>("/api/v1/cluster/pfsync", {
         method: "PUT",
-        headers: { ...authHeadersPlain(), "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(body),
       });
-      if (!putRes.ok) {
-        // Server didn't accept the unlink; leave UI state alone so the operator
-        // sees the still-linked state and can retry.
-        return;
-      }
       setPfsync(body);
       await fetchConfig();
-    } catch { /* silent */ }
+    } catch { /* silent — leave UI state intact so operator can retry */ }
   }, [fetchConfig]);
 
   const saveConfig = async () => {
@@ -127,12 +101,10 @@ export default function HaConfigPage() {
       if (config.mode === "raft") {
         payload.peers = peersInput.split(",").map(s => s.trim()).filter(Boolean);
       }
-      const res = await fetch("/api/v1/dhcp/ha/config", {
+      await fetchApi<HaConfig>("/api/v1/dhcp/ha/config", {
         method: "PUT",
-        headers: authHeaders(),
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showFeedback("success", "HA settings saved. Apply config to take effect.");
       await fetchConfig();
     } catch (err) {

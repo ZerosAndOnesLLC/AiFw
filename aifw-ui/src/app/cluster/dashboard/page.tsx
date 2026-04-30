@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getWsTicket } from "@/lib/api";
+import { fetchApi, getWsTicket } from "@/lib/api";
 
 type Metrics = {
   pfsync_in: number;
@@ -104,36 +104,13 @@ export default function ClusterDashboard() {
     return () => clearTimeout(t);
   }, [errorMsg]);
 
-  const authHeaders = (): Record<string, string> => {
-    const token =
-      typeof window !== "undefined"
-        ? localStorage.getItem("aifw_token")
-        : null;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  };
-
   const refresh = async () => {
     const [s, n, h, v, c] = await Promise.all([
-      fetch("/api/v1/cluster/status", {
-        credentials: "include",
-        headers: authHeaders(),
-      }).then((r) => (r.ok ? r.json() : null)),
-      fetch("/api/v1/cluster/nodes", {
-        credentials: "include",
-        headers: authHeaders(),
-      }).then((r) => (r.ok ? r.json() : [])),
-      fetch("/api/v1/cluster/failover-history", {
-        credentials: "include",
-        headers: authHeaders(),
-      }).then((r) => (r.ok ? r.json() : [])),
-      fetch("/api/v1/cluster/carp", {
-        credentials: "include",
-        headers: authHeaders(),
-      }).then((r) => (r.ok ? r.json() : [])),
-      fetch("/api/v1/cluster/health", {
-        credentials: "include",
-        headers: authHeaders(),
-      }).then((r) => (r.ok ? r.json() : [])),
+      fetchApi<Status>("/api/v1/cluster/status").catch(() => null),
+      fetchApi<Node[]>("/api/v1/cluster/nodes").catch(() => [] as Node[]),
+      fetchApi<FailoverEvent[]>("/api/v1/cluster/failover-history").catch(() => [] as FailoverEvent[]),
+      fetchApi<CarpVip[]>("/api/v1/cluster/carp").catch(() => [] as CarpVip[]),
+      fetchApi<HealthCheck[]>("/api/v1/cluster/health").catch(() => [] as HealthCheck[]),
     ]);
     setStatus(s);
     setNodes(n);
@@ -224,13 +201,11 @@ export default function ClusterDashboard() {
   const forceSync = async () => {
     setBusy(true);
     try {
-      const r = await fetch("/api/v1/cluster/snapshot/force", {
-        method: "POST",
-        credentials: "include",
-        headers: authHeaders(),
-      });
-      if (!r.ok)
-        setErrorMsg(`Force sync failed: ${r.status} ${r.statusText}`);
+      await fetchApi("/api/v1/cluster/snapshot/force", { method: "POST" }).catch(
+        (e: unknown) => {
+          setErrorMsg(`Force sync failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      );
       await refresh();
     } finally {
       setBusy(false);
@@ -240,11 +215,7 @@ export default function ClusterDashboard() {
   const demote = async () => {
     setBusy(true);
     try {
-      await fetch("/api/v1/cluster/demote", {
-        method: "POST",
-        credentials: "include",
-        headers: authHeaders(),
-      });
+      await fetchApi("/api/v1/cluster/demote", { method: "POST" }).catch(() => {});
       await refresh();
     } finally {
       setBusy(false);

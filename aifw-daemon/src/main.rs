@@ -232,7 +232,7 @@ async fn main() -> anyhow::Result<()> {
         // ClusterReplicator: 10s snapshot push to peer on master
         let self_api_key = std::env::var("AIFW_LOOPBACK_API_KEY").unwrap_or_default();
         if !self_api_key.is_empty() {
-            let api_base = "https://127.0.0.1:8080".to_string();
+            let api_base = aifw_common::DEFAULT_LOOPBACK_API_BASE.to_string();
 
             let watcher = role_watcher::RoleWatcher::new(
                 api_base.clone(),

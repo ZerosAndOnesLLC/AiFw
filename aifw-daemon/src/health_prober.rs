@@ -215,6 +215,7 @@ async fn run_probe(c: &HealthCheck) -> bool {
         HealthCheckType::TcpPort => probe_tcp(&c.target, c.timeout_secs).await,
         HealthCheckType::HttpGet => probe_http(&c.target, c.timeout_secs).await,
         HealthCheckType::PfStatus => probe_pf().await,
+        HealthCheckType::ProcessRunning => probe_process(&c.target).await,
     }
 }
 
@@ -258,6 +259,18 @@ async fn probe_http(target: &str, timeout_secs: u32) -> bool {
 async fn probe_pf() -> bool {
     tokio::process::Command::new("pfctl")
         .arg("-si")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Check that a named process is running via `pgrep -x <name>`.
+/// `pgrep -x` matches against the exact process name (not the full command line).
+async fn probe_process(process_name: &str) -> bool {
+    tokio::process::Command::new("pgrep")
+        .arg("-x")
+        .arg(process_name)
         .output()
         .await
         .map(|o| o.status.success())

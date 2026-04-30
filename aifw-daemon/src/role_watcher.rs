@@ -42,8 +42,17 @@ impl RoleWatcher {
             let role = current_carp_role().await;
             if last_role.as_deref() != Some(&role) {
                 if let Some(prev) = &last_role {
+                    // Convert raw ifconfig role strings ("master"/"backup") to
+                    // canonical ClusterRole vocabulary ("primary"/"secondary") so
+                    // audit history and WS event consumers see one vocabulary.
+                    let from_canon = aifw_common::ClusterRole::parse(prev)
+                        .map(|r| r.to_string())
+                        .unwrap_or_else(|_| prev.clone());
+                    let to_canon = aifw_common::ClusterRole::parse(&role)
+                        .map(|r| r.to_string())
+                        .unwrap_or_else(|_| role.clone());
                     let body =
-                        serde_json::json!({"from": prev, "to": role, "vhid": 0u8});
+                        serde_json::json!({"from": from_canon, "to": to_canon, "vhid": 0u8});
                     let url =
                         format!("{}/api/v1/cluster/internal/role-changed", self.api_base);
                     match client

@@ -388,6 +388,8 @@ pub enum HealthCheckType {
     HttpGet,
     /// pf is running
     PfStatus,
+    /// Process is running — `target` is the exact process name passed to `pgrep -x`
+    ProcessRunning,
 }
 
 impl std::fmt::Display for HealthCheckType {
@@ -397,6 +399,7 @@ impl std::fmt::Display for HealthCheckType {
             HealthCheckType::TcpPort => write!(f, "tcp_port"),
             HealthCheckType::HttpGet => write!(f, "http_get"),
             HealthCheckType::PfStatus => write!(f, "pf_status"),
+            HealthCheckType::ProcessRunning => write!(f, "process_running"),
         }
     }
 }
@@ -408,6 +411,7 @@ impl HealthCheckType {
             "tcp" | "tcp_port" => Ok(HealthCheckType::TcpPort),
             "http" | "http_get" => Ok(HealthCheckType::HttpGet),
             "pf" | "pf_status" => Ok(HealthCheckType::PfStatus),
+            "process_running" | "process" | "pgrep" => Ok(HealthCheckType::ProcessRunning),
             _ => Err(crate::AifwError::Validation(format!(
                 "unknown health check type: {s}"
             ))),

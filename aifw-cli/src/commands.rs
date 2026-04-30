@@ -2757,7 +2757,12 @@ pub async fn multiwan_import(db_path: &Path, file: &str) -> anyhow::Result<()> {
 // ============================================================
 
 /// Base URL for the local AiFw API.
+/// Uses HTTP on loopback (TLS termination is handled by the appliance's
+/// reverse proxy on the public interface; loopback is trusted).
 const AIFW_API_BASE: &str = "http://127.0.0.1:8080";
+// Note: DEFAULT_LOOPBACK_API_BASE is HTTPS (for daemon-to-daemon use with
+// self-signed cert acceptance). CLI uses plain HTTP on loopback since it
+// runs interactively on the appliance itself.
 
 /// Returns the bearer token for authenticating to the local API.
 ///
@@ -3015,9 +3020,14 @@ pub async fn cluster_health_remove(id: &str) -> anyhow::Result<()> {
 }
 
 pub async fn cluster_health_run() -> anyhow::Result<()> {
-    // On-demand health probing is added in #219 (Commit 7); this is a stub.
-    // When Commit 7 lands, wire through to a /cluster/health/run trigger endpoint here.
-    eprintln!("Health-check on-demand probing is added in #219 (Commit 7); this is a stub.");
+    // POST to the trigger endpoint; the daemon still probes on its own 1-second
+    // tick. This returns 202 Accepted — the actual out-of-band probe mechanism
+    // is a future enhancement. See aifw-api/src/cluster.rs::run_health_checks.
+    let r = api_post("/api/v1/cluster/health/run", &serde_json::json!({})).await;
+    match r {
+        Ok(_) => println!("Health-check run requested (daemon probes on its own 1s tick)."),
+        Err(e) => eprintln!("Failed: {e}"),
+    }
     Ok(())
 }
 

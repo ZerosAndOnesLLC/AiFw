@@ -1,3 +1,16 @@
+// ============================================================
+// Loopback API constants
+// ============================================================
+
+/// Default loopback API port. Used by daemon background tasks and CLI
+/// to reach the local aifw-api process. The actual listen port is
+/// configured via `aifw-api --listen` but defaults to this value.
+///
+/// TODO: when peer ports become configurable per-node, store on
+/// cluster_nodes and use that instead.
+pub const DEFAULT_LOOPBACK_API_PORT: u16 = 8080;
+pub const DEFAULT_LOOPBACK_API_BASE: &str = "https://127.0.0.1:8080";
+
 pub mod alias;
 pub mod cluster_events;
 pub mod error;

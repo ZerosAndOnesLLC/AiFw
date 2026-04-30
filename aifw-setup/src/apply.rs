@@ -1177,6 +1177,16 @@ rate_limit = 1000
                 aifw_common::HealthCheckType::PfStatus,
                 String::new(),
             ),
+            aifw_common::HealthCheck::new(
+                "aifw_daemon".into(),
+                aifw_common::HealthCheckType::ProcessRunning,
+                "aifw-daemon".into(),
+            ),
+            aifw_common::HealthCheck::new(
+                "aifw_ids".into(),
+                aifw_common::HealthCheckType::ProcessRunning,
+                "aifw-ids".into(),
+            ),
         ] {
             if let Err(e) = cluster_engine.add_health_check(h.clone()).await {
                 tracing::warn!(

@@ -284,6 +284,10 @@ sysrc aifw_daemon_enable=YES >/dev/null
 sysrc aifw_ids_enable=YES >/dev/null
 sysrc aifw_api_enable=YES >/dev/null
 sysrc aifw_watchdog_enable=YES >/dev/null
+# Enable HA helpers if cluster is configured. Safe to set unconditionally:
+# the rc.d scripts gate on aifw_cluster_enabled before doing any work.
+sysrc aifw_carp_demote_enable=YES >/dev/null
+sysrc aifw_demote_on_shutdown_enable=YES >/dev/null
 service aifw_daemon start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_daemon not configured"
 # aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
 service aifw_ids start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_ids not configured"

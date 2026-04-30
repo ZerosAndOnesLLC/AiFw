@@ -534,20 +534,55 @@ impl ClusterEngine {
 // HA role helpers
 // ============================================================
 
+/// Returns the live CARP role of this node.
+///
+/// Reads `ifconfig` for the authoritative kernel state; falls back to
+/// `sysrc aifw_cluster_role` when no CARP iface has reported state yet
+/// (e.g., during early boot). Returns `ClusterRole::Standalone` when
+/// neither source yields a result.
+///
+/// This is the canonical role helper. All callers in aifw-api and
+/// aifw-daemon should delegate here rather than reimplementing.
+pub async fn current_local_role() -> aifw_common::ClusterRole {
+    let live = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("ifconfig 2>/dev/null | awk '/carp:/ {print tolower($2); exit}'")
+        .output()
+        .await
+        .ok();
+    if let Some(o) = live {
+        if o.status.success() {
+            match String::from_utf8_lossy(&o.stdout).trim() {
+                "master" => return aifw_common::ClusterRole::Primary,
+                "backup" => return aifw_common::ClusterRole::Secondary,
+                _ => {} // fall through to sysrc fallback
+            }
+        }
+    }
+    tokio::process::Command::new("sysrc")
+        .arg("-n")
+        .arg("aifw_cluster_role")
+        .output()
+        .await
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .and_then(|s| aifw_common::ClusterRole::parse(&s).ok())
+        .unwrap_or(aifw_common::ClusterRole::Standalone)
+}
+
 /// Returns true if the local node is currently the active CARP MASTER.
 ///
-/// Shells out to `ifconfig` and greps for `carp: MASTER`.  Returns false on
-/// any error — the safe default is to assume BACKUP so that operations that
-/// should only run on the master (ACME renewal, cert push) are skipped rather
-/// than duplicated.
+/// Delegates to `current_local_role()`. Returns false on any error — the
+/// safe default is to assume BACKUP so that operations that should only run
+/// on the master (ACME renewal, cert push) are skipped rather than duplicated.
 pub async fn is_local_master() -> bool {
-    tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg("ifconfig 2>/dev/null | grep -qE 'carp:[[:space:]]+MASTER'")
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    matches!(current_local_role().await, aifw_common::ClusterRole::Primary)
 }
 
 // ============================================================
@@ -586,18 +621,7 @@ async fn run_argv(argv: &[String]) -> std::io::Result<()> {
 }
 
 async fn read_local_role() -> aifw_common::ClusterRole {
-    let out = tokio::process::Command::new("sysrc")
-        .arg("-n")
-        .arg("aifw_cluster_role")
-        .output()
-        .await;
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            aifw_common::ClusterRole::parse(&s).unwrap_or(aifw_common::ClusterRole::Standalone)
-        }
-        _ => aifw_common::ClusterRole::Standalone,
-    }
+    current_local_role().await
 }
 
 // ============================================================

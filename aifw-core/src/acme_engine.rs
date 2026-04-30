@@ -205,7 +205,11 @@ async fn push_cert_to_peers(
                 continue;
             }
         };
-        let url = format!("https://{}:8080/api/v1/cluster/cert-push", n.address);
+        let url = format!(
+            "https://{}:{}/api/v1/cluster/cert-push",
+            n.address,
+            aifw_common::DEFAULT_LOOPBACK_API_PORT
+        );
         let body = serde_json::json!({
             "cert_id": cert_id,
             "fullchain_pem": fullchain,
