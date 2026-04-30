@@ -82,7 +82,7 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 - **Geo-IP filtering** — country-based block/allow with GeoLite2 CSV, CIDR aggregation
 - **TLS inspection** — JA3/JA3S fingerprinting, SNI filtering, cert validation, version enforcement
 - **Plugin system** — native Rust + WASM sandboxed plugins with 7 hook points
-- **High availability** — CARP virtual IPs, pfsync state sync, cluster node management, health checks
+- **High availability (active-passive pair)**: Two AiFw nodes share a CARP virtual IP and pfsync state. Reboot the master and TCP sessions survive on the standby with no operator intervention. Setup via the UI in <15 minutes. See [docs/ha.md](docs/ha.md) for setup, ops, and failure modes.
 - **Metrics engine** — RRD-style ring buffers (1s/1m/1h/1d tiers), optional PostgreSQL backend
 - **REST API** — Axum with JWT auth, API keys, full CRUD for all resources
 - **Terminal UI** — ratatui dashboard with 5 tabs

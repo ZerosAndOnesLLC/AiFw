@@ -139,9 +139,9 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
         <div class="feature-icon" style="background: rgba(168,85,247,0.1); border-color: rgba(168,85,247,0.2); color: var(--purple);">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
         </div>
-        <h3>HA clustering</h3>
-        <p>CARP virtual IPs, pfsync state sync, health checks, and config snapshots — failover ready out of the box.</p>
-        <div class="feature-tags"><span class="tag">CARP</span><span class="tag">pfsync</span><span class="tag">health-check</span></div>
+        <h3>Active-passive HA</h3>
+        <p>CARP virtual IP + pfsync state migration, REST API + operator dashboard. Active-passive pair in beta with documented failure modes and ops runbooks. <a href="{{ '/ha/' | relative_url }}" style="color: var(--purple);">Setup &amp; failure modes →</a></p>
+        <div class="feature-tags"><span class="tag">CARP</span><span class="tag">pfsync</span><span class="tag">beta</span></div>
       </div>
 
       <div class="feature">
