@@ -1,4 +1,6 @@
 mod cluster_replicator;
+mod health_prober;
+mod role_watcher;
 
 use aifw_core::{
     AliasEngine, ClusterEngine, Database, GatewayEngine, GroupEngine, InstanceEngine, LeakEngine,
@@ -221,19 +223,38 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!(error = %e, "ha: kernel-state recovery failed; continuing");
         }
 
-        // Cluster replicator — active only when AIFW_LOOPBACK_API_KEY is set.
-        // On the master node, pushes config snapshots to peers every 10 s.
+        // Cluster background tasks — active only when AIFW_LOOPBACK_API_KEY is set.
+        // RoleWatcher: 1s CARP role polling → /cluster/internal/role-changed
+        // HealthProber: per-check interval probes → CARP demotion on failure
+        // ClusterReplicator: 10s snapshot push to peer on master
         let self_api_key = std::env::var("AIFW_LOOPBACK_API_KEY").unwrap_or_default();
         if !self_api_key.is_empty() {
+            let api_base = "https://127.0.0.1:8080".to_string();
+
+            let watcher = role_watcher::RoleWatcher::new(
+                api_base.clone(),
+                self_api_key.clone(),
+            );
+            tokio::spawn(watcher.run());
+            info!("ha: role watcher started");
+
+            let prober = health_prober::HealthProber::new(
+                cluster_engine.clone(),
+                api_base.clone(),
+                self_api_key.clone(),
+            );
+            tokio::spawn(prober.run());
+            info!("ha: health prober started");
+
             let replicator = cluster_replicator::ClusterReplicator::new(
                 cluster_engine.clone(),
-                "https://127.0.0.1:8080".to_string(),
+                api_base,
                 self_api_key,
             );
             tokio::spawn(replicator.run());
             info!("ha: cluster replicator started");
         } else {
-            info!("ha: AIFW_LOOPBACK_API_KEY not set; cluster replicator disabled");
+            info!("ha: AIFW_LOOPBACK_API_KEY not set; cluster background tasks disabled");
         }
     }
 

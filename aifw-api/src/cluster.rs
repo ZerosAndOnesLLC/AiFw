@@ -46,6 +46,17 @@ pub fn write_routes() -> Router<AppState> {
         .route("/api/v1/cluster/demote", post(demote))
         .route("/api/v1/cluster/snapshot", put(snapshot_put))
         .route("/api/v1/cluster/snapshot/force", post(snapshot_force))
+        // Internal endpoints — called by aifw-daemon's RoleWatcher and HealthProber.
+        // Protected by the same Permission::HaManage middleware as the rest of
+        // cluster_write; the daemon authenticates via AIFW_LOOPBACK_API_KEY.
+        .route(
+            "/api/v1/cluster/internal/role-changed",
+            post(internal_role_changed),
+        )
+        .route(
+            "/api/v1/cluster/internal/health-changed",
+            post(internal_health_changed),
+        )
 }
 
 #[derive(Serialize)]
@@ -399,6 +410,56 @@ async fn demote(State(s): State<AppState>) -> StatusCode {
         from: aifw_common::ClusterRole::Primary.to_string(),
         to: aifw_common::ClusterRole::Secondary.to_string(),
         vhid: 0,
+    });
+    StatusCode::NO_CONTENT
+}
+
+// ============================================================
+// Internal endpoints (Commit 7 #219)
+// Called by aifw-daemon's RoleWatcher and HealthProber over the loopback.
+// ============================================================
+
+#[derive(Deserialize)]
+struct RoleChangedReq {
+    from: String,
+    to: String,
+    vhid: u8,
+}
+
+async fn internal_role_changed(
+    State(s): State<AppState>,
+    Json(r): Json<RoleChangedReq>,
+) -> StatusCode {
+    s.cluster_events.emit(ClusterEvent::RoleChanged {
+        from: r.from.clone(),
+        to: r.to.clone(),
+        vhid: r.vhid,
+    });
+    if let Err(e) = s
+        .cluster_engine
+        .record_failover_event(&r.from, &r.to, "carp_transition", None)
+        .await
+    {
+        tracing::warn!(?e, "internal_role_changed: record_failover_event");
+    }
+    StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+struct HealthChangedReq {
+    check: String,
+    healthy: bool,
+    detail: Option<String>,
+}
+
+async fn internal_health_changed(
+    State(s): State<AppState>,
+    Json(r): Json<HealthChangedReq>,
+) -> StatusCode {
+    s.cluster_events.emit(ClusterEvent::HealthChanged {
+        check: r.check,
+        healthy: r.healthy,
+        detail: r.detail,
     });
     StatusCode::NO_CONTENT
 }

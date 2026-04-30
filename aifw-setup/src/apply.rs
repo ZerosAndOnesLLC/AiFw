@@ -1103,6 +1103,30 @@ rate_limit = 1000
             .recover_kernel_state_for_role(c.role)
             .await
             .map_err(|e| format!("ha recover_kernel_state_for_role: {e}"))?;
+
+        // Seed minimal default health checks so the HealthProber daemon task
+        // has something to probe out of the box.  Failures are warn-only so a
+        // duplicate-name conflict (re-running setup) never blocks setup completion.
+        for h in [
+            aifw_common::HealthCheck::new(
+                "aifw_api".into(),
+                aifw_common::HealthCheckType::TcpPort,
+                "127.0.0.1:8080".into(),
+            ),
+            aifw_common::HealthCheck::new(
+                "pf".into(),
+                aifw_common::HealthCheckType::PfStatus,
+                String::new(),
+            ),
+        ] {
+            if let Err(e) = cluster_engine.add_health_check(h.clone()).await {
+                tracing::warn!(
+                    ?e,
+                    name = %h.name,
+                    "ha: failed to seed default health check (continuing)"
+                );
+            }
+        }
     }
 
     Ok(())
