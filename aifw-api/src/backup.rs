@@ -2890,11 +2890,37 @@ pub(crate) async fn apply_cluster_snapshot(
     let payload: ClusterSnapshotPayload = serde_json::from_str(body)
         .map_err(|e| anyhow::anyhow!("snapshot parse error: {e}"))?;
 
+    // Per-peer API keys are LOCAL credentials — never replicate them.
+    // apply_firewall_config wipes cluster_nodes and rebuilds from the snapshot
+    // (which was captured on the master, where this node's outgoing key is absent).
+    // We preserve them here and restore them after apply so this node can keep
+    // authenticating to its peers.
+    let saved_keys: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, peer_api_key, peer_api_key_hash FROM cluster_nodes"
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+
     // Apply firewall config using an identity interface map (same-box restore)
     let iface_map = std::collections::HashMap::new();
     apply_firewall_config(state, &payload.firewall, &iface_map)
         .await
         .map_err(|sc| anyhow::anyhow!("apply_firewall_config failed: {sc:?}"))?;
+
+    // Restore local per-peer credentials wiped by apply_firewall_config.
+    for (id, key, hash) in &saved_keys {
+        if key.is_some() || hash.is_some() {
+            let _ = sqlx::query(
+                "UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3"
+            )
+            .bind(key)
+            .bind(hash)
+            .bind(id)
+            .execute(&state.pool)
+            .await;
+        }
+    }
 
     // Sync IDS rule overrides: apply enabled/action_override to ids_rules rows
     for ov in &payload.ids_rule_overrides {
@@ -2908,21 +2934,24 @@ pub(crate) async fn apply_cluster_snapshot(
         .await;
     }
 
-    // Sync IDS suppressions: wipe and re-insert
-    let _ = sqlx::query("DELETE FROM ids_suppressions")
-        .execute(&state.pool)
-        .await;
+    // Sync IDS suppressions: wipe and re-insert atomically so the IDS daemon
+    // never sees an empty table mid-replace (WAL readers see pre-tx state until commit).
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("DELETE FROM ids_suppressions")
+        .execute(&mut *tx)
+        .await?;
     for s in &payload.ids_suppressions {
-        let _ = sqlx::query(
+        sqlx::query(
             "INSERT OR IGNORE INTO ids_suppressions (id, sid, suppress_type, ip_cidr) VALUES (?1, ?2, ?3, ?4)"
         )
         .bind(&s.id)
         .bind(s.sid)
         .bind(&s.suppress_type)
         .bind(&s.ip_cidr)
-        .execute(&state.pool)
-        .await;
+        .execute(&mut *tx)
+        .await?;
     }
+    tx.commit().await?;
 
     // Reload IDS config so suppressions take effect
     let _ = state.ids_client.reload().await;

@@ -205,10 +205,7 @@ impl AppState {
         let json = serde_json::to_string(&payload)
             .map_err(|e| aifw_common::AifwError::Other(format!("serialize: {e}")))?;
 
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(json.as_bytes());
-        let hash = hex::encode(h.finalize());
+        let hash = aifw_core::sha256_hex(&json);
 
         Ok((json, hash))
     }

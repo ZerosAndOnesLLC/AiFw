@@ -408,6 +408,8 @@ async fn demote(State(s): State<AppState>) -> StatusCode {
 // ============================================================
 
 async fn snapshot_hash(State(s): State<AppState>) -> Result<String, StatusCode> {
+    // Hash returned here may differ from /snapshot's body hash if config mutates between requests;
+    // this endpoint is for probes/dashboards that don't require atomicity.
     let (_data, hash) = s.cluster_snapshot_data().await.map_err(|e| {
         tracing::warn!(?e, "snapshot_hash");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -512,11 +514,7 @@ async fn apply_snapshot_data(
     state: &AppState,
     body: &str,
 ) -> Result<String, anyhow::Error> {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(body.as_bytes());
-    let hash = hex::encode(h.finalize());
-
+    let hash = aifw_core::sha256_hex(body);
     crate::backup::apply_cluster_snapshot(state, body).await?;
     Ok(hash)
 }

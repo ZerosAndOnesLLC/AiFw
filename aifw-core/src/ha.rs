@@ -2,7 +2,6 @@ use aifw_common::{
     AifwError, CarpLatencyProfile, CarpStatus, CarpVip, ClusterNode, ClusterRole, HealthCheck,
     HealthCheckType, Interface, NodeHealth, PfsyncConfig, Result,
 };
-use rand::RngCore;
 use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
@@ -378,9 +377,8 @@ impl ClusterEngine {
     }
 
     pub async fn generate_peer_api_key(&self, node_id: Uuid) -> Result<String> {
-        let mut buf = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut buf);
-        let key = hex::encode(buf);
+        // Two simple-format UUIDs = 64 hex chars = 256 bits of getrandom-sourced entropy.
+        let key = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let hash = sha256_hex(&key);
         sqlx::query("UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3")
             .bind(&key)
@@ -536,7 +534,7 @@ impl ClusterEngine {
 // Crypto helpers
 // ============================================================
 
-fn sha256_hex(s: &str) -> String {
+pub fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(s.as_bytes());
