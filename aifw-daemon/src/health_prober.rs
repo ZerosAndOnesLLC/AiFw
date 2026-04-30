@@ -61,6 +61,9 @@ impl HealthProber {
                 }
             };
 
+            // Drop ProbeState entries for health_check rows that were deleted.
+            state.retain(|id, _| checks.iter().any(|c| c.id == *id));
+
             let mut any_failing_local = false;
 
             for c in checks.iter().filter(|c| c.enabled) {
@@ -77,7 +80,7 @@ impl HealthProber {
                 }
                 st.last_run = Some(Instant::now());
 
-                let ok = run_probe(c).await;
+                let ok = run_probe(c, &client).await;
                 if ok {
                     if !st.healthy {
                         st.healthy = true;
@@ -209,11 +212,11 @@ impl ProbeState {
     }
 }
 
-async fn run_probe(c: &HealthCheck) -> bool {
+async fn run_probe(c: &HealthCheck, client: &reqwest::Client) -> bool {
     match c.check_type {
         HealthCheckType::Ping => probe_ping(&c.target).await,
         HealthCheckType::TcpPort => probe_tcp(&c.target, c.timeout_secs).await,
-        HealthCheckType::HttpGet => probe_http(&c.target, c.timeout_secs).await,
+        HealthCheckType::HttpGet => probe_http(client, &c.target, c.timeout_secs).await,
         HealthCheckType::PfStatus => probe_pf().await,
         HealthCheckType::ProcessRunning => probe_process(&c.target).await,
     }
@@ -240,18 +243,15 @@ async fn probe_tcp(target: &str, timeout_secs: u32) -> bool {
     .unwrap_or(false)
 }
 
-async fn probe_http(target: &str, timeout_secs: u32) -> bool {
-    let client = reqwest::Client::builder()
+async fn probe_http(client: &reqwest::Client, target: &str, timeout_secs: u32) -> bool {
+    // Use per-request timeout so the shared client's pool settings don't interfere.
+    match client
+        .get(target)
         .timeout(Duration::from_secs(timeout_secs as u64))
-        .danger_accept_invalid_certs(true)
-        .build();
-    match client {
-        Ok(c) => c
-            .get(target)
-            .send()
-            .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false),
+        .send()
+        .await
+    {
+        Ok(r) => r.status().is_success(),
         Err(_) => false,
     }
 }

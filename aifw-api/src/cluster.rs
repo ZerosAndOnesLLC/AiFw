@@ -82,22 +82,31 @@ pub struct StatusResponse {
 }
 
 async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
-    let (role, pfsync_state_count, nodes_result) = tokio::join!(
+    // Fetch nodes + local role first so we can identify the peer address,
+    // then fan out state-count and ping concurrently.
+    let (role, nodes_result) = tokio::join!(
         read_local_role(),
-        pfsync_state_count(),
         state.cluster_engine.list_nodes(),
     );
 
-    let peer_reachable = match nodes_result {
+    let peer_addr = match &nodes_result {
         Ok(nodes) => {
             let local = ClusterRole::parse(&role).unwrap_or(ClusterRole::Standalone);
-            match nodes.iter().find(|n| n.role != local) {
-                Some(peer) => ping_once(&peer.address).await,
+            nodes.iter().find(|n| n.role != local).map(|n| n.address)
+        }
+        Err(_) => None,
+    };
+
+    // Fan out: pfsync state count + peer ping run concurrently.
+    let (pfsync_state_count, peer_reachable) = tokio::join!(
+        pfsync_state_count(),
+        async move {
+            match peer_addr {
+                Some(addr) => ping_once(&addr).await,
                 None => false,
             }
-        }
-        Err(_) => false,
-    };
+        },
+    );
 
     let last_snapshot_hash = state
         .cluster_engine
@@ -114,20 +123,27 @@ async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse
     }))
 }
 
+/// Parse `pfctl -si` "current entries" for O(1) state count.
 async fn pfsync_state_count() -> u64 {
-    tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg("pfctl -ss 2>/dev/null | wc -l")
+    let out = tokio::process::Command::new("pfctl")
+        .args(["-si"])
         .output()
-        .await
-        .ok()
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<u64>()
-                .ok()
-        })
-        .unwrap_or(0)
+        .await;
+    match out {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            for line in text.lines() {
+                let line = line.trim_start();
+                if let Some(rest) = line.strip_prefix("current entries") {
+                    if let Some(num) = rest.trim().split_whitespace().next() {
+                        return num.parse().unwrap_or(0);
+                    }
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
 }
 
 pub(crate) async fn read_local_role() -> String {

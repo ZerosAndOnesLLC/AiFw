@@ -120,8 +120,7 @@ export default function ClusterDashboard() {
   };
 
   useEffect(() => {
-    refresh().catch(() => {});
-    const id = setInterval(refresh, 5000);
+    refresh().catch(() => {}); // initial fetch only — WS events drive subsequent updates
 
     // WebSocket for live cluster.metrics + cluster.role_changed.
     // Uses a single-use ticket from POST /auth/ws-ticket so the JWT
@@ -177,7 +176,6 @@ export default function ClusterDashboard() {
 
     return () => {
       stopped = true;
-      clearInterval(id);
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       if (wsRef.current) wsRef.current.close();
     };

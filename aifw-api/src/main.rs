@@ -28,7 +28,8 @@ mod tests;
 use aifw_conntrack::ConnectionTracker;
 use aifw_core::{
     AliasEngine, Database, GatewayEngine, GeoIpEngine, GroupEngine, InstanceEngine, LeakEngine,
-    NatEngine, PolicyEngine, PreflightEngine, RuleEngine, SlaEngine, VpnEngine,
+    NatEngine, PolicyEngine, PreflightEngine, RuleEngine, ShapingEngine, SlaEngine, TlsEngine,
+    VpnEngine,
 };
 use aifw_pf::PfBackend;
 use axum::{
@@ -167,6 +168,11 @@ pub struct AppState {
     pub metrics_store: Arc<aifw_metrics::MetricsStore>,
     pub auth_settings: auth::AuthSettings,
     pub cluster_engine: Arc<aifw_core::ClusterEngine>,
+    pub shaping_engine: Arc<ShapingEngine>,
+    pub tls_engine: Arc<TlsEngine>,
+    /// Cached at startup: `sysrc -n aifw_cluster_enabled == YES`.
+    /// Never changes without a config write, so a one-shot read is correct.
+    pub cluster_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub cluster_events: aifw_common::ClusterEventBus,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
     pub metrics_history_max: Arc<std::sync::atomic::AtomicUsize>,
@@ -1554,6 +1560,22 @@ async fn create_state_from_db(
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
     let cluster_engine = Arc::new(aifw_core::ClusterEngine::new(pool.clone(), pf.clone()));
     cluster_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let shaping_engine = Arc::new(ShapingEngine::new(pool.clone(), pf.clone()));
+    shaping_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let tls_engine = Arc::new(TlsEngine::new(pool.clone(), pf.clone()));
+    tls_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+
+    // Read aifw_cluster_enabled once at startup. The flag only changes on
+    // config writes, so a cached value is always correct for the process lifetime.
+    let cluster_enabled_val = tokio::process::Command::new("sysrc")
+        .arg("-n")
+        .arg("aifw_cluster_enabled")
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")
+        .unwrap_or(false);
+    let cluster_enabled = Arc::new(std::sync::atomic::AtomicBool::new(cluster_enabled_val));
 
     // Self-register software version for HA dashboard drift detection.
     // Run once at boot; no-op if this node is not in cluster_nodes yet.
@@ -1588,22 +1610,15 @@ async fn create_state_from_db(
     // every 2s on standalone deployments.
     {
         let bus = cluster_events.clone();
+        let cluster_enabled_clone = cluster_enabled.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
 
-                // Skip emission on non-clustered nodes.
-                let cluster_enabled = tokio::process::Command::new("sysrc")
-                    .arg("-n")
-                    .arg("aifw_cluster_enabled")
-                    .output()
-                    .await
-                    .ok()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")
-                    .unwrap_or(false);
-                if !cluster_enabled {
+                // Skip emission on non-clustered nodes (O(1) cached read).
+                if !cluster_enabled_clone.load(std::sync::atomic::Ordering::Relaxed) {
                     continue;
                 }
 
@@ -1724,6 +1739,9 @@ async fn create_state_from_db(
         metrics_store: metrics_store.clone(),
         auth_settings,
         cluster_engine,
+        shaping_engine,
+        tls_engine,
+        cluster_enabled,
         cluster_events,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
         metrics_history_max: Arc::new(std::sync::atomic::AtomicUsize::new(history_max)),
@@ -1764,21 +1782,35 @@ async fn sample_pfsync_metrics() -> (u64, u64, u64) {
     let pfsync_in = parse("input:");
     let pfsync_out = parse("output:");
 
-    let state_count = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg("pfctl -ss 2>/dev/null | wc -l")
-        .output()
-        .await
-        .ok()
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<u64>()
-                .ok()
-        })
-        .unwrap_or(0);
+    let state_count = pfsync_state_count_from_si().await;
 
     (pfsync_in, pfsync_out, state_count)
+}
+
+/// Parse `pfctl -si` "current entries" line to get the pf state table size in O(1).
+/// Format on FreeBSD:
+///   State Table                          Total             Rate
+///     current entries                    12345
+async fn pfsync_state_count_from_si() -> u64 {
+    let out = tokio::process::Command::new("pfctl")
+        .args(["-si"])
+        .output()
+        .await;
+    match out {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            for line in text.lines() {
+                let line = line.trim_start();
+                if let Some(rest) = line.strip_prefix("current entries") {
+                    if let Some(num) = rest.trim().split_whitespace().next() {
+                        return num.parse().unwrap_or(0);
+                    }
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
 }
 
 fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> anyhow::Result<()> {

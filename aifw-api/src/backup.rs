@@ -855,7 +855,6 @@ pub async fn commit_confirm_status() -> Result<Json<CommitConfirmState>, StatusC
 /// Build a FirewallConfig from current live state
 pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallConfig, StatusCode> {
     use aifw_core::config::*;
-    use aifw_core::{ha::ClusterEngine, shaping::ShapingEngine, tls::TlsEngine};
 
     let rules = state
         .rule_engine
@@ -883,21 +882,15 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         .await
         .map_err(|_| internal())?;
 
-    let shaping = ShapingEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = shaping.migrate().await;
-    let queues = shaping.list_queues().await.unwrap_or_default();
-    let rate_limits = shaping.list_rate_limits().await.unwrap_or_default();
+    let queues = state.shaping_engine.list_queues().await.unwrap_or_default();
+    let rate_limits = state.shaping_engine.list_rate_limits().await.unwrap_or_default();
 
-    let tls_engine = TlsEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = tls_engine.migrate().await;
-    let sni_rules = tls_engine.list_sni_rules().await.unwrap_or_default();
-    let ja3 = tls_engine.list_ja3_blocks().await.unwrap_or_default();
+    let sni_rules = state.tls_engine.list_sni_rules().await.unwrap_or_default();
+    let ja3 = state.tls_engine.list_ja3_blocks().await.unwrap_or_default();
 
-    let ha = ClusterEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = ha.migrate().await;
-    let carp_vips = ha.list_carp_vips().await.unwrap_or_default();
-    let cluster_nodes = ha.list_nodes().await.unwrap_or_default();
-    let pfsync = ha.get_pfsync().await.ok().flatten();
+    let carp_vips = state.cluster_engine.list_carp_vips().await.unwrap_or_default();
+    let cluster_nodes = state.cluster_engine.list_nodes().await.unwrap_or_default();
+    let pfsync = state.cluster_engine.get_pfsync().await.ok().flatten();
 
     let max_states = aifw_core::pf_tuning::configured_max_states(&state.pool).await;
 

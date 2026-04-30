@@ -36,10 +36,28 @@ impl ClusterReplicator {
     }
 
     pub async fn run(self) {
+        // Build the client once — TLS context and connection pool are reused
+        // across all peer pushes and across all ticks.
+        let client = match reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(15))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "ha: replicator failed to build http client; aborting"
+                );
+                return;
+            }
+        };
+
         let mut tick = interval(Duration::from_secs(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            if let Err(e) = self.tick_once().await {
+            if let Err(e) = self.tick_once(&client).await {
                 // Warn ONCE on the first 401 so a missing/unregistered
                 // AIFW_LOOPBACK_API_KEY is visible without flooding logs.
                 let status = e
@@ -61,16 +79,11 @@ impl ClusterReplicator {
         }
     }
 
-    async fn tick_once(&self) -> anyhow::Result<()> {
+    async fn tick_once(&self, client: &reqwest::Client) -> anyhow::Result<()> {
         let role = aifw_core::current_local_role().await;
         if !matches!(role, ClusterRole::Primary) {
             return Ok(());
         }
-
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(15))
-            .build()?;
 
         // Pull our snapshot ONCE — body and hash are both derived from this
         // single read, so they are always consistent with each other.
