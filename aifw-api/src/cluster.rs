@@ -116,7 +116,7 @@ async fn pfsync_state_count() -> u64 {
         .unwrap_or(0)
 }
 
-async fn read_local_role() -> String {
+pub(crate) async fn read_local_role() -> String {
     tokio::process::Command::new("sysrc")
         .arg("-n")
         .arg("aifw_cluster_role")
