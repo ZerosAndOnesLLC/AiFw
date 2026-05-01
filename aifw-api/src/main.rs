@@ -935,6 +935,18 @@ pub fn build_router(
         )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
 
+    // Local-tarball install — needs a large body limit (500 MB) for the
+    // tarball upload, so it gets its own router with DefaultBodyLimit applied
+    // before the auth/permission middleware.  The perm_check is still applied
+    // so only UpdatesInstall-capable sessions can trigger it.
+    let updates_install_local = Router::new()
+        .route(
+            "/api/v1/updates/aifw/install-local",
+            post(updates::install_aifw_update_local),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(500 * 1024 * 1024))
+        .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
+
     // backup:read
     let backup_read = Router::new()
         .route("/api/v1/config/history", get(backup::config_history))
@@ -1332,6 +1344,7 @@ pub fn build_router(
         .merge(plugins_write)
         .merge(updates_read)
         .merge(updates_install)
+        .merge(updates_install_local)
         .merge(backup_read)
         .merge(backup_write)
         .merge(system_reboot)

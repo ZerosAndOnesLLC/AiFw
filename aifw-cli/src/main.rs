@@ -278,6 +278,10 @@ enum UpdateAction {
     ///
     /// Does NOT restart services automatically. Run `aifw update restart`
     /// (or pass --restart) once you're ready for the brief outage.
+    ///
+    /// Pass --from <path> to install from a local .tar.xz tarball instead of
+    /// fetching the latest GitHub release.  A sibling .sha256 sidecar is
+    /// expected unless --skip-checksum is also passed.
     Install {
         /// Restart services immediately after install completes, skipping
         /// the confirmation prompt. Useful for scripts/cron.
@@ -286,6 +290,15 @@ enum UpdateAction {
         /// Assume "yes" to the restart prompt. Alias for --restart.
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Install from a local tarball instead of fetching the latest
+        /// GitHub release.  Path must be a .tar.xz file; a sibling
+        /// .sha256 file is expected unless --skip-checksum is passed.
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+        /// Skip checksum verification (use only when the .sha256 sidecar
+        /// is unavailable).
+        #[arg(long)]
+        skip_checksum: bool,
     },
     /// Rollback to previous AiFw firmware version.
     ///
@@ -1191,8 +1204,12 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Update { action } => match action {
             UpdateAction::Check => commands::update_check().await?,
-            UpdateAction::Install { restart, yes } => {
-                commands::update_install(restart || yes).await?
+            UpdateAction::Install { restart, yes, from, skip_checksum } => {
+                if let Some(path) = from {
+                    commands::update_install_local(path, skip_checksum, restart || yes).await?
+                } else {
+                    commands::update_install(restart || yes).await?
+                }
             }
             UpdateAction::Rollback { restart, yes } => {
                 commands::update_rollback(restart || yes).await?

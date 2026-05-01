@@ -1782,6 +1782,128 @@ pub async fn update_reboot() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Install AiFw from a local tarball by uploading it to the API's
+/// install-local endpoint.  The API streams the file to disk, optionally
+/// verifies the sha256 sidecar, and runs the same extract+install path
+/// as remote installs.
+pub async fn update_install_local(
+    path: std::path::PathBuf,
+    skip_checksum: bool,
+    auto_restart: bool,
+) -> anyhow::Result<()> {
+    if !path.exists() {
+        anyhow::bail!("tarball not found: {}", path.display());
+    }
+    if !path.extension().map(|e| e == "xz").unwrap_or(false) {
+        anyhow::bail!("expected a .tar.xz file, got: {}", path.display());
+    }
+
+    let meta = tokio::fs::metadata(&path).await?;
+    let size_mb = meta.len() / (1024 * 1024);
+
+    if !auto_restart {
+        use std::io::{BufRead, Write};
+        println!(
+            "Install from local tarball: {} ({} MB)",
+            path.display(),
+            size_mb
+        );
+        print!("Proceed? [y/N] ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        let answer = line.trim().to_ascii_lowercase();
+        if answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!(
+        "Uploading {} ({} MB) to API...",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        size_mb
+    );
+
+    // Build a multipart form.  Load the tarball into memory (50-100 MB is
+    // fine for local use) to avoid pulling in a streaming-body dependency
+    // beyond what reqwest multipart already provides.
+    let tarball_bytes = tokio::fs::read(&path).await
+        .map_err(|e| anyhow::anyhow!("failed to read tarball: {e}"))?;
+
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let mut form = reqwest::multipart::Form::new().part(
+        "tarball",
+        reqwest::multipart::Part::bytes(tarball_bytes)
+            .file_name(filename),
+    );
+
+    if !skip_checksum {
+        // Expect <file>.sha256 next to the tarball.
+        let sha_path = {
+            let mut p = path.clone();
+            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            p.set_file_name(format!("{}.sha256", name));
+            p
+        };
+        if !sha_path.exists() {
+            anyhow::bail!(
+                "sha256 sidecar not found: {} — use --skip-checksum to bypass",
+                sha_path.display()
+            );
+        }
+        let sha_content = tokio::fs::read_to_string(&sha_path).await
+            .map_err(|e| anyhow::anyhow!("failed to read sha256 sidecar: {e}"))?;
+        form = form.text("sha256", sha_content);
+    }
+
+    if auto_restart {
+        form = form.text("restart", "true");
+    }
+
+    let client = reqwest::Client::builder()
+        // Use a longer timeout for the upload — 50-100 MB over localhost
+        // is fast, but give headroom for slow test VMs.
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+
+    let token = read_api_token();
+    let url = format!("{AIFW_API_BASE}/api/v1/updates/aifw/install-local");
+    let mut req = client.post(&url).multipart(form);
+    if !token.is_empty() {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let resp = req.send().await
+        .map_err(|e| anyhow::anyhow!("upload failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("install-local failed: {} {}", status, body);
+    }
+
+    let data: serde_json::Value = resp.json().await
+        .unwrap_or(serde_json::Value::Null);
+    let msg = data["message"].as_str().unwrap_or("install accepted");
+    println!("{}", msg);
+    println!("Check `aifw update history` for status.");
+
+    if auto_restart {
+        println!("Restarting services...");
+        aifw_core::updater::restart_services_sync().await;
+        println!("Done.");
+    } else {
+        println!("Run 'aifw update restart' (or 'aifw update reboot') when ready to activate it.");
+    }
+
+    Ok(())
+}
+
 /// Interactive confirmation. Returns true on y/yes (case-insensitive).
 /// Defaults to no on bare Enter — restarts are user-visible outages, the
 /// safe answer when the operator hasn't decided is "don't bounce yet".
