@@ -128,6 +128,32 @@ export default function DhcpLeasesPage() {
     );
   });
 
+  /* -- Group by subnet --------------------------------------------- */
+
+  // Sort IPv4 addresses numerically so leases land in dotted-quad order
+  // within each subnet card.
+  const ipKey = (ip: string): number => {
+    const parts = ip.split(".").map((p) => parseInt(p, 10));
+    if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return 0;
+    return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+  };
+
+  const grouped: { subnet: string; leases: DhcpLease[] }[] = (() => {
+    const buckets = new Map<string, DhcpLease[]>();
+    for (const l of filtered) {
+      const key = l.subnet || "(unknown)";
+      const arr = buckets.get(key);
+      if (arr) arr.push(l);
+      else buckets.set(key, [l]);
+    }
+    const out = Array.from(buckets.entries()).map(([subnet, list]) => ({
+      subnet,
+      leases: list.slice().sort((a, b) => ipKey(a.ip_address) - ipKey(b.ip_address)),
+    }));
+    out.sort((a, b) => a.subnet.localeCompare(b.subnet));
+    return out;
+  })();
+
   /* -- Render ------------------------------------------------------- */
 
   if (loading) {
@@ -200,76 +226,85 @@ export default function DhcpLeasesPage() {
         />
       </div>
 
-      {/* -- Table --------------------------------------------------- */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg">
-        {filtered.length === 0 ? (
-          <div className="px-6 py-8 text-center text-sm text-[var(--text-muted)]">
-            {leases.length === 0
-              ? "No active leases found."
-              : "No leases match your search."}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--text-muted)] uppercase">
-                  <th className="px-6 py-3">IP Address</th>
-                  <th className="px-6 py-3">MAC Address</th>
-                  <th className="px-6 py-3">Hostname</th>
-                  <th className="px-6 py-3">State</th>
-                  <th className="px-6 py-3">Subnet</th>
-                  <th className="px-6 py-3">Starts</th>
-                  <th className="px-6 py-3">Expires</th>
-                  <th className="px-6 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((lease) => (
-                  <tr
-                    key={lease.ip_address}
-                    className="border-b border-[var(--border)] hover:bg-white/[0.02]"
-                  >
-                    <td className="px-6 py-3 text-[var(--text-primary)] font-mono text-xs font-medium">
-                      {lease.ip_address}
-                    </td>
-                    <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs">
-                      {lease.mac_address}
-                    </td>
-                    <td className="px-6 py-3 text-[var(--text-secondary)]">
-                      {lease.hostname || "-"}
-                    </td>
-                    <td className="px-6 py-3">
-                      <StateBadge state={lease.state} />
-                    </td>
-                    <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs">
-                      {lease.subnet || "-"}
-                    </td>
-                    <td className="px-6 py-3 text-[var(--text-secondary)] text-xs">
-                      {fmtDateTime(lease.starts)}
-                    </td>
-                    <td className="px-6 py-3 text-[var(--text-secondary)] text-xs">
-                      {fmtDateTime(lease.expires)}
-                    </td>
-                    <td className="px-6 py-3">
-                      <div className="flex items-center justify-end">
-                        <button
-                          onClick={() => setReleaseIp(lease.ip_address)}
-                          title="Release Lease"
-                          className="p-1.5 text-[var(--text-muted)] hover:text-red-400 rounded hover:bg-red-500/10"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {/* -- Subnet cards -------------------------------------------- */}
+      {filtered.length === 0 ? (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-6 py-8 text-center text-sm text-[var(--text-muted)]">
+          {leases.length === 0
+            ? "No active leases found."
+            : "No leases match your search."}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {grouped.map(({ subnet, leases: rows }) => (
+            <div
+              key={subnet}
+              className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg"
+            >
+              <div className="px-6 py-3 border-b border-[var(--border)] flex items-center justify-between">
+                <span className="font-mono text-sm text-[var(--text-primary)]">{subnet}</span>
+                <span className="text-xs text-[var(--text-muted)]">
+                  {rows.length} lease{rows.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--text-muted)] uppercase">
+                      <th className="px-6 py-3">IP Address</th>
+                      <th className="px-6 py-3">MAC Address</th>
+                      <th className="px-6 py-3">Hostname</th>
+                      <th className="px-6 py-3">State</th>
+                      <th className="px-6 py-3">Starts</th>
+                      <th className="px-6 py-3">Expires</th>
+                      <th className="px-6 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((lease) => (
+                      <tr
+                        key={lease.ip_address}
+                        className="border-b border-[var(--border)] hover:bg-white/[0.02]"
+                      >
+                        <td className="px-6 py-3 text-[var(--text-primary)] font-mono text-xs font-medium">
+                          {lease.ip_address}
+                        </td>
+                        <td className="px-6 py-3 text-[var(--text-secondary)] font-mono text-xs">
+                          {lease.mac_address}
+                        </td>
+                        <td className="px-6 py-3 text-[var(--text-secondary)]">
+                          {lease.hostname || "-"}
+                        </td>
+                        <td className="px-6 py-3">
+                          <StateBadge state={lease.state} />
+                        </td>
+                        <td className="px-6 py-3 text-[var(--text-secondary)] text-xs">
+                          {fmtDateTime(lease.starts)}
+                        </td>
+                        <td className="px-6 py-3 text-[var(--text-secondary)] text-xs">
+                          {fmtDateTime(lease.expires)}
+                        </td>
+                        <td className="px-6 py-3">
+                          <div className="flex items-center justify-end">
+                            <button
+                              onClick={() => setReleaseIp(lease.ip_address)}
+                              title="Release Lease"
+                              className="p-1.5 text-[var(--text-muted)] hover:text-red-400 rounded hover:bg-red-500/10"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* -- Release Confirm Modal ----------------------------------- */}
       {releaseIp && (

@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ai"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-api"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-cli"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-common"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "chrono",
  "nix 0.31.2",
@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-conntrack"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-core"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-daemon"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aho-corasick",
  "aifw-common",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids-bin"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-ids",
@@ -225,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids-ipc"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-metrics"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-pf"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-plugins"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-setup"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-tui"
-version = "5.89.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
