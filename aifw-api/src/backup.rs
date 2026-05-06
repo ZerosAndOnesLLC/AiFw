@@ -855,7 +855,6 @@ pub async fn commit_confirm_status() -> Result<Json<CommitConfirmState>, StatusC
 /// Build a FirewallConfig from current live state
 pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallConfig, StatusCode> {
     use aifw_core::config::*;
-    use aifw_core::{ha::ClusterEngine, shaping::ShapingEngine, tls::TlsEngine};
 
     let rules = state
         .rule_engine
@@ -883,21 +882,15 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         .await
         .map_err(|_| internal())?;
 
-    let shaping = ShapingEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = shaping.migrate().await;
-    let queues = shaping.list_queues().await.unwrap_or_default();
-    let rate_limits = shaping.list_rate_limits().await.unwrap_or_default();
+    let queues = state.shaping_engine.list_queues().await.unwrap_or_default();
+    let rate_limits = state.shaping_engine.list_rate_limits().await.unwrap_or_default();
 
-    let tls_engine = TlsEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = tls_engine.migrate().await;
-    let sni_rules = tls_engine.list_sni_rules().await.unwrap_or_default();
-    let ja3 = tls_engine.list_ja3_blocks().await.unwrap_or_default();
+    let sni_rules = state.tls_engine.list_sni_rules().await.unwrap_or_default();
+    let ja3 = state.tls_engine.list_ja3_blocks().await.unwrap_or_default();
 
-    let ha = ClusterEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = ha.migrate().await;
-    let carp_vips = ha.list_carp_vips().await.unwrap_or_default();
-    let cluster_nodes = ha.list_nodes().await.unwrap_or_default();
-    let pfsync = ha.get_pfsync().await.ok().flatten();
+    let carp_vips = state.cluster_engine.list_carp_vips().await.unwrap_or_default();
+    let cluster_nodes = state.cluster_engine.list_nodes().await.unwrap_or_default();
+    let pfsync = state.cluster_engine.get_pfsync().await.ok().flatten();
 
     let max_states = aifw_core::pf_tuning::configured_max_states(&state.pool).await;
 
@@ -1087,8 +1080,6 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                     virtual_ip: v.virtual_ip.to_string(),
                     prefix: v.prefix,
                     interface: v.interface.0.clone(),
-                    advskew: v.advskew,
-                    advbase: v.advbase,
                     password: v.password.clone(),
                 })
                 .collect(),
@@ -2476,8 +2467,6 @@ fn carp_vip_from_config(vc: &aifw_core::config::CarpVipConfig) -> Option<aifw_co
         virtual_ip,
         prefix: vc.prefix,
         interface: Interface(vc.interface.clone()),
-        advskew: vc.advskew,
-        advbase: vc.advbase,
         password: vc.password.clone(),
         status: CarpStatus::Init,
         created_at: now,
@@ -2814,4 +2803,160 @@ pub async fn put_retention(
     get_retention(State(state))
         .await
         .map_err(|c| (c, "read back failed".into()))
+}
+
+// ============================================================
+// Cluster snapshot serialization (Task 5.3)
+// ============================================================
+
+/// Payload for cluster config replication snapshots.
+/// Extends FirewallConfig with IDS rule overrides and suppressions
+/// so peer nodes receive a complete picture of config state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterSnapshotPayload {
+    pub firewall: FirewallConfig,
+    pub ids_rule_overrides: Vec<IdsRuleOverride>,
+    pub ids_suppressions: Vec<IdsSuppressionRecord>,
+}
+
+/// Minimal IDS rule override record for snapshot serialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdsRuleOverride {
+    pub id: String,
+    pub enabled: bool,
+    pub action_override: Option<String>,
+}
+
+/// Minimal IDS suppression record for snapshot serialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdsSuppressionRecord {
+    pub id: String,
+    pub sid: i64,
+    pub suppress_type: String,
+    pub ip_cidr: Option<String>,
+}
+
+/// Build a ClusterSnapshotPayload from current live state.
+/// Reuses build_current_config for the firewall section,
+/// then appends IDS rule overrides + suppressions from the DB.
+pub(crate) async fn cluster_export_payload(
+    state: &AppState,
+) -> Result<ClusterSnapshotPayload, StatusCode> {
+    let firewall = build_current_config(state).await?;
+
+    // IDS rule overrides: rows with non-default enabled or action_override
+    let overrides: Vec<IdsRuleOverride> = sqlx::query_as::<_, (String, bool, Option<String>)>(
+        "SELECT id, enabled, action_override FROM ids_rules WHERE enabled = 0 OR action_override IS NOT NULL"
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(id, enabled, action_override)| IdsRuleOverride { id, enabled, action_override })
+    .collect();
+
+    // IDS suppressions
+    let suppressions: Vec<IdsSuppressionRecord> = sqlx::query_as::<_, (String, i64, String, Option<String>)>(
+        "SELECT id, sid, suppress_type, ip_cidr FROM ids_suppressions ORDER BY rowid ASC"
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(id, sid, suppress_type, ip_cidr)| IdsSuppressionRecord { id, sid, suppress_type, ip_cidr })
+    .collect();
+
+    Ok(ClusterSnapshotPayload {
+        firewall,
+        ids_rule_overrides: overrides,
+        ids_suppressions: suppressions,
+    })
+}
+
+/// Apply a cluster snapshot payload (JSON string) to this node.
+/// Parses the payload, applies the firewall config, then syncs
+/// IDS rule overrides and suppressions from the DB.
+pub(crate) async fn apply_cluster_snapshot(
+    state: &AppState,
+    body: &str,
+) -> anyhow::Result<()> {
+    let payload: ClusterSnapshotPayload = serde_json::from_str(body)
+        .map_err(|e| anyhow::anyhow!("snapshot parse error: {e}"))?;
+
+    // Apply the same validation backup-import enforces (10k rule cap, schema
+    // version match, hostname sanity, etc). A compromised peer or stolen
+    // API key cannot push out-of-bounds rule sets, expiry-zero auth config,
+    // or future-schema configs that would corrupt our DB.
+    payload
+        .firewall
+        .validate()
+        .map_err(|e| anyhow::anyhow!("snapshot failed validation: {e}"))?;
+
+    // Per-peer API keys are LOCAL credentials — never replicate them.
+    // apply_firewall_config wipes cluster_nodes and rebuilds from the snapshot
+    // (which was captured on the master, where this node's outgoing key is absent).
+    // We preserve them here and restore them after apply so this node can keep
+    // authenticating to its peers.
+    let saved_keys: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, peer_api_key, peer_api_key_hash FROM cluster_nodes"
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+
+    // Apply firewall config using an identity interface map (same-box restore)
+    let iface_map = std::collections::HashMap::new();
+    apply_firewall_config(state, &payload.firewall, &iface_map)
+        .await
+        .map_err(|sc| anyhow::anyhow!("apply_firewall_config failed: {sc:?}"))?;
+
+    // Restore local per-peer credentials wiped by apply_firewall_config.
+    for (id, key, hash) in &saved_keys {
+        if key.is_some() || hash.is_some() {
+            let _ = sqlx::query(
+                "UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3"
+            )
+            .bind(key)
+            .bind(hash)
+            .bind(id)
+            .execute(&state.pool)
+            .await;
+        }
+    }
+
+    // Sync IDS rule overrides: apply enabled/action_override to ids_rules rows
+    for ov in &payload.ids_rule_overrides {
+        let _ = sqlx::query(
+            "UPDATE ids_rules SET enabled = ?1, action_override = ?2 WHERE id = ?3"
+        )
+        .bind(ov.enabled)
+        .bind(&ov.action_override)
+        .bind(&ov.id)
+        .execute(&state.pool)
+        .await;
+    }
+
+    // Sync IDS suppressions: wipe and re-insert atomically so the IDS daemon
+    // never sees an empty table mid-replace (WAL readers see pre-tx state until commit).
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("DELETE FROM ids_suppressions")
+        .execute(&mut *tx)
+        .await?;
+    for s in &payload.ids_suppressions {
+        sqlx::query(
+            "INSERT OR IGNORE INTO ids_suppressions (id, sid, suppress_type, ip_cidr) VALUES (?1, ?2, ?3, ?4)"
+        )
+        .bind(&s.id)
+        .bind(s.sid)
+        .bind(&s.suppress_type)
+        .bind(&s.ip_cidr)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+
+    // Reload IDS config so suppressions take effect
+    let _ = state.ids_client.reload().await;
+
+    Ok(())
 }

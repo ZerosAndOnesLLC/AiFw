@@ -789,20 +789,21 @@ pub async fn create_api_key(
     })
 }
 
-pub async fn verify_api_key(pool: &SqlitePool, key: &str) -> Result<String, StatusCode> {
+/// Verify an API key and return (user_id, key_name) on success.
+pub async fn verify_api_key(pool: &SqlitePool, key: &str) -> Result<(String, String), StatusCode> {
     // Use prefix for fast lookup, then verify hash only on prefix-matched keys
     let prefix = if key.len() >= 12 { &key[..12] } else { key };
-    let rows = sqlx::query_as::<_, (String, String)>(
-        "SELECT ak.key_hash, u.id FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.prefix = ?1",
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT ak.key_hash, u.id, ak.name FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.prefix = ?1",
     )
     .bind(prefix)
     .fetch_all(pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    for (key_hash, user_id) in rows {
+    for (key_hash, user_id, key_name) in rows {
         if verify_password(key, &key_hash) {
-            return Ok(user_id);
+            return Ok((user_id, key_name));
         }
     }
     Err(StatusCode::UNAUTHORIZED)
@@ -824,8 +825,8 @@ pub async fn auth_middleware(
     // or ?ticket=<id> (short-lived, single-use; see auth::ws_ticket).
     let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok());
 
-    // Resolve (user_id, perm_from_token, role_from_token) from the credential
-    let (user_id, jwt_perm, jwt_role) =
+    // Resolve (user_id, perm_from_token, role_from_token, api_key_name) from the credential
+    let (user_id, jwt_perm, jwt_role, api_key_name) =
         if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
             let token_data = verify_access_token(token, &state.auth_settings)
                 .map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -836,17 +837,18 @@ pub async fn auth_middleware(
                 token_data.claims.sub,
                 token_data.claims.perm,
                 token_data.claims.role,
+                None,
             )
         } else if let Some(key) = auth_header.and_then(|h| h.strip_prefix("ApiKey ")) {
-            let uid = verify_api_key(&state.pool, key).await?;
-            (uid, None, None) // API keys don't carry JWT claims — will do DB lookup
+            let (uid, key_name) = verify_api_key(&state.pool, key).await?;
+            (uid, None, None, Some(key_name)) // API keys don't carry JWT claims — will do DB lookup
         } else if let Some(ticket_id) = query_ticket(request.uri().query()) {
             let uid = state
                 .ws_tickets
                 .consume(&ticket_id)
                 .await
                 .ok_or(StatusCode::UNAUTHORIZED)?;
-            (uid, None, None) // tickets inherit permissions from the DB row
+            (uid, None, None, None) // tickets inherit permissions from the DB row
         } else {
             return Err(StatusCode::UNAUTHORIZED);
         };
@@ -903,6 +905,7 @@ pub async fn auth_middleware(
         username: user.username.clone(),
         permissions: perm_set,
         role: role_name,
+        api_key_name,
     });
     Ok(next.run(request).await)
 }
@@ -927,6 +930,8 @@ pub struct AuthUser {
     pub username: String,
     pub permissions: aifw_common::PermissionSet,
     pub role: String,
+    /// Set when the request authenticated via an API key; None for JWT/ticket auth.
+    pub api_key_name: Option<String>,
 }
 
 /// Permission check middleware. Reads `AuthUser` from request extensions

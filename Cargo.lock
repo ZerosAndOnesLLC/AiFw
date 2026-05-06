@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ai"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-api"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -54,14 +54,17 @@ dependencies = [
  "chrono",
  "clap",
  "futures-util",
+ "hex",
  "jsonwebtoken",
  "rcgen",
  "redis",
+ "reqwest",
  "rustls",
  "rustls-pemfile",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2 0.10.9",
  "sqlx",
  "time",
  "tokio",
@@ -75,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-cli"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -84,10 +87,12 @@ dependencies = [
  "argon2",
  "chrono",
  "clap",
+ "reqwest",
  "serde_json",
  "serde_yaml_ng",
  "sqlx",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -95,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-common"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "chrono",
  "nix 0.31.2",
@@ -103,12 +108,13 @@ dependencies = [
  "serde_json",
  "sqlx",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 
 [[package]]
 name = "aifw-conntrack"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -122,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-core"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -152,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-daemon"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -162,17 +168,19 @@ dependencies = [
  "clap",
  "libc",
  "nix 0.31.2",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
 name = "aifw-ids"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aho-corasick",
  "aifw-common",
@@ -199,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids-bin"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-ids",
@@ -217,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-ids-ipc"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -232,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-metrics"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -247,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-pf"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "async-trait",
@@ -259,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-plugins"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-pf",
@@ -276,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-setup"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-core",
@@ -297,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "aifw-tui"
-version = "5.81.0"
+version = "5.89.1"
 dependencies = [
  "aifw-common",
  "aifw-conntrack",
@@ -990,6 +998,7 @@ dependencies = [
  "matchit",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
@@ -1929,6 +1938,15 @@ name = "email_address"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
 
 [[package]]
 name = "equivalent"
@@ -3096,6 +3114,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http 1.4.0",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin 0.9.8",
+ "version_check",
+]
+
+[[package]]
 name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3898,6 +3933,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-core",
+ "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
@@ -3906,6 +3942,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -3917,12 +3954,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots",
 ]
@@ -5431,6 +5470,19 @@ dependencies = [
  "indexmap",
  "wasm-encoder",
  "wasmparser",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

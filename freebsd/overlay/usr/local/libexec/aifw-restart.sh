@@ -13,6 +13,11 @@
 
 set -u
 
+if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+    sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
+    sleep 1
+fi
+
 LOG=/var/log/aifw/restart.log
 mkdir -p /var/log/aifw 2>/dev/null
 

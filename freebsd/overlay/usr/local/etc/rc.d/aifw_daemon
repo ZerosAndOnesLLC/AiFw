@@ -15,6 +15,7 @@ load_rc_config $name
 : ${aifw_daemon_pidfile:="/var/run/aifw_daemon.pid"}
 : ${aifw_daemon_supervisor_pidfile:="/var/run/aifw_daemon-supervisor.pid"}
 : ${aifw_daemon_db:="/var/db/aifw/aifw.db"}
+: ${aifw_daemon_env:=""}
 
 pidfile="${aifw_daemon_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
@@ -25,6 +26,14 @@ command_args="-f -p ${aifw_daemon_pidfile} -P ${aifw_daemon_supervisor_pidfile} 
 start_precmd="aifw_daemon_precmd"
 stop_cmd="aifw_daemon_stop"
 stop_postcmd="aifw_daemon_poststop"
+
+aifw_demote_if_clustered()
+{
+    if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+        sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
+        sleep 1
+    fi
+}
 
 aifw_daemon_precmd()
 {
@@ -37,10 +46,24 @@ aifw_daemon_precmd()
     # so the binary (running as aifw via daemon -u aifw) can't create it.
     /usr/bin/touch /var/run/aifw-daemon.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-daemon.lock
+    # Read the loopback API key from a 640 file (mode root:aifw) rather than
+    # from /etc/rc.conf (which is world-readable mode 644).  The file is
+    # written by aifw-setup; the daemon process needs it to authenticate
+    # background tasks (RoleWatcher, HealthProber, ClusterReplicator) to the
+    # local API.
+    if [ -r /usr/local/etc/aifw/daemon.key ]; then
+        export AIFW_LOOPBACK_API_KEY="$(cat /usr/local/etc/aifw/daemon.key)"
+    fi
+    # Fallback: honour legacy rc.conf aifw_daemon_env for nodes that have not
+    # yet been re-provisioned with the new daemon.key path.
+    if [ -z "${AIFW_LOOPBACK_API_KEY}" ] && [ -n "${aifw_daemon_env}" ]; then
+        export ${aifw_daemon_env}
+    fi
 }
 
 aifw_daemon_stop()
 {
+    aifw_demote_if_clustered
     # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
     # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
     # if the binary's tokio runtime won't exit (e.g. a background metrics

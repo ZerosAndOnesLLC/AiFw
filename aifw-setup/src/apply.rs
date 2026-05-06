@@ -1,6 +1,7 @@
 use crate::config::{DefaultPolicy, SetupConfig};
 use crate::console;
 use crate::tuning::{self, TuningItem};
+use aifw_common::{CarpVip, ClusterNode, ClusterRole, Interface, PfsyncConfig};
 
 /// Apply the setup configuration: write files, init DB, start services
 pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<(), String> {
@@ -361,6 +362,40 @@ aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
             .args(["aifw_watchdog_enable=YES"])
             .output();
 
+        // HA cluster rc.conf keys
+        let cluster_enabled = config.cluster.is_some();
+        let _ = run_sysrc("aifw_cluster_enabled", if cluster_enabled { "YES" } else { "NO" });
+        if let Some(c) = &config.cluster {
+            let _ = run_sysrc("aifw_cluster_role", &c.role.to_string());
+            let _ = run_sysrc("pfsync_enable", "YES");
+            let pfsync_args = format!("syncdev {} defer up", c.pfsync_iface);
+            let _ = run_sysrc("ifconfig_pfsync0", &pfsync_args);
+            // Setup writes Conservative timing to rc.conf as the boot-time default.
+            // At runtime, aifw-daemon's recover_kernel_state_for_role re-applies
+            // the actual stored profile via ifconfig, so any operator change via
+            // the cluster API takes effect on next service restart. rc.conf is
+            // rewritten only when re-running setup. TODO: when the cluster API
+            // changes the profile (in #217), have it also rewrite the rc.conf
+            // aliases so reboot doesn't briefly fall back to Conservative.
+            let timing = aifw_common::CarpLatencyProfile::default().timing_for(c.role);
+            for vip in &c.vips {
+                let key = format!("ifconfig_{}_aliases", vip.interface);
+                let alias = format!(
+                    "inet vhid {} advskew {} advbase {} pass {} {}/{}",
+                    vip.vhid,
+                    timing.advskew,
+                    timing.advbase,
+                    shell_quote_for_rcconf(&c.password),
+                    vip.virtual_ip, vip.prefix,
+                );
+                let _ = run_sysrc_append(&key, &alias);
+            }
+            let _ = run_sysrc("aifw_carp_demote_enable", "YES");
+            let _ = run_sysrc("aifw_demote_on_shutdown_enable", "YES");
+        } else {
+            let _ = run_sysrc("aifw_cluster_role", "standalone");
+        }
+
         // Start core services
         let _ = Command::new("service")
             .args(["aifw_daemon", "start"])
@@ -666,6 +701,55 @@ fn write_file(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("failed to write {path}: {e}"))
 }
 
+/// Write a single sysrc key=value pair (FreeBSD only).
+#[cfg(target_os = "freebsd")]
+fn run_sysrc(key: &str, value: &str) -> Result<(), String> {
+    let out = std::process::Command::new("sysrc")
+        .arg(format!("{key}={value}"))
+        .output()
+        .map_err(|e| format!("sysrc {key}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "sysrc {key}={value} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Append a value to a sysrc list key (space-separated, FreeBSD only).
+#[cfg(target_os = "freebsd")]
+fn run_sysrc_append(key: &str, value: &str) -> Result<(), String> {
+    let existing = std::process::Command::new("sysrc")
+        .arg("-n")
+        .arg(key)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    let combined = if existing.is_empty() {
+        value.to_string()
+    } else {
+        format!("{existing} {value}")
+    };
+    run_sysrc(key, &combined)
+}
+
+/// Single-quote-wrap a string for safe inclusion in /etc/rc.conf values, which
+/// are sourced by /bin/sh at boot. Returns the value wrapped in single quotes
+/// with any inner single quotes escaped as `'\''`. Caller embeds the result
+/// directly into the larger value string.
+#[cfg(target_os = "freebsd")]
+fn shell_quote_for_rcconf(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 fn write_config_file(config: &SetupConfig) -> Result<(), String> {
     let json = serde_json::to_string_pretty(config).map_err(|e| format!("serialize error: {e}"))?;
     write_file(&format!("{}/aifw.conf", config.config_dir), &json)
@@ -933,6 +1017,215 @@ rate_limit = 1000
         && let Some(ref lan_cidr) = config.lan_ip
     {
         seed_dhcp_config(&pool, config, lan_cidr).await?;
+    }
+
+    // Bootstrap HA cluster DB rows and push pf anchor rules
+    if let Some(c) = &config.cluster {
+        // Generate a loopback API key so the daemon background tasks
+        // (RoleWatcher, HealthProber, ClusterReplicator) can authenticate to
+        // the local API. The key is stored in `api_keys` and the plaintext is
+        // written to rc.conf via aifw_daemon_env so the rc.d start script
+        // passes AIFW_LOOPBACK_API_KEY to the daemon process.
+        //
+        // Schema matches aifw-api/src/auth/mod.rs::migrate() — created here
+        // with IF NOT EXISTS so re-running setup is idempotent.
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                key_hash TEXT NOT NULL,
+                prefix TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("api_keys table: {e}"))?;
+
+        // Two simple-format UUIDs = 64 hex chars of entropy.
+        let loopback_key = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        // prefix: first 12 chars — matches the fast-lookup path in verify_api_key.
+        let loopback_prefix = loopback_key[..12].to_string();
+        // Hash with Argon2id (same algorithm as hash_password in aifw-api/src/auth/password.rs).
+        let loopback_key_hash = hash_for_db(&loopback_key);
+
+        // Delete any pre-existing loopback key so re-running setup always yields
+        // a fresh credential. The daemon must be restarted after re-running setup
+        // to pick up the new key from rc.conf.
+        let _ = sqlx::query("DELETE FROM api_keys WHERE name = 'aifw-daemon-loopback'")
+            .execute(&pool)
+            .await;
+
+        sqlx::query(
+            "INSERT INTO api_keys (id, name, key_hash, prefix, user_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind("aifw-daemon-loopback")
+        .bind(&loopback_key_hash)
+        .bind(&loopback_prefix)
+        .bind(&user_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("loopback api_key insert: {e}"))?;
+
+        // Write the loopback key to a 640 file owned root:aifw rather than
+        // embedding it in /etc/rc.conf (which is mode 644, world-readable on
+        // FreeBSD). The rc.d aifw_daemon precmd reads this file and exports
+        // AIFW_LOOPBACK_API_KEY into the daemon's environment.
+        let key_path = std::path::Path::new("/usr/local/etc/aifw/daemon.key");
+        if let Some(parent) = key_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(key_path, &loopback_key) {
+            tracing::warn!(error = %e, "could not write daemon.key (non-FreeBSD dev env — skipped)");
+        } else {
+            // chmod 640
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(key_path) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o640);
+                    let _ = std::fs::set_permissions(key_path, perms);
+                }
+            }
+            // chown root:aifw — only meaningful on FreeBSD where the aifw user exists.
+            #[cfg(target_os = "freebsd")]
+            {
+                let _ = std::process::Command::new("chown")
+                    .arg("root:aifw")
+                    .arg(key_path)
+                    .status();
+            }
+        }
+        // Clear any previously set aifw_daemon_env from rc.conf — the key is
+        // now read from daemon.key by the precmd; rc.conf no longer carries it.
+        #[cfg(target_os = "freebsd")]
+        let _ = run_sysrc("aifw_daemon_env", "");
+
+        let pf: std::sync::Arc<dyn aifw_pf::PfBackend> =
+            std::sync::Arc::from(aifw_pf::create_backend());
+        let cluster_engine = aifw_core::ClusterEngine::new(pool.clone(), pf);
+        cluster_engine
+            .migrate()
+            .await
+            .map_err(|e| format!("ha migrate: {e}"))?;
+
+        // pfsync singleton row
+        let pfsync = PfsyncConfig::new(Interface(c.pfsync_iface.clone()));
+        cluster_engine
+            .set_pfsync(pfsync)
+            .await
+            .map_err(|e| format!("ha set_pfsync: {e}"))?;
+
+        // CARP VIPs
+        for v in &c.vips {
+            let vip = CarpVip::new(
+                v.vhid,
+                v.virtual_ip,
+                v.prefix,
+                Interface(v.interface.clone()),
+                c.password.clone(),
+            );
+            cluster_engine
+                .add_carp_vip(vip)
+                .await
+                .map_err(|e| format!("ha add_carp_vip: {e}"))?;
+        }
+
+        // Self node row
+        let self_role = c.role;
+        let peer_role = match self_role {
+            ClusterRole::Primary => ClusterRole::Secondary,
+            ClusterRole::Secondary => ClusterRole::Primary,
+            ClusterRole::Standalone => {
+                return Err("standalone role cannot be configured with a cluster peer".to_string());
+            }
+        };
+        // LAN IP is required when configuring a cluster — 127.0.0.1 would be
+        // silently wrong and mislead the peer reachability check.
+        let self_addr = config
+            .lan_ip
+            .as_ref()
+            .and_then(|ip| ip.split('/').next())
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+            .ok_or_else(|| "HA cluster setup requires a configured LAN IP".to_string())?;
+        // Resolve hostname via `hostname` command (avoids needing the nix
+        // "hostname" feature; works on both FreeBSD and Linux dev environments)
+        let self_name = std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .unwrap_or_else(|| config.hostname.clone());
+        cluster_engine
+            .add_node(ClusterNode::new(self_name, self_addr, self_role))
+            .await
+            .map_err(|e| format!("ha add_node self: {e}"))?;
+        cluster_engine
+            .add_node(ClusterNode::new(
+                format!("peer-{}", c.peer_address),
+                c.peer_address,
+                peer_role,
+            ))
+            .await
+            .map_err(|e| format!("ha add_node peer: {e}"))?;
+
+        // Render HA rules into the pf anchor
+        cluster_engine
+            .apply_ha_rules()
+            .await
+            .map_err(|e| format!("ha apply_ha_rules: {e}"))?;
+
+        // Apply runtime kernel state too — recover_kernel_state_for_role
+        // owns the carp.preempt sysctl now that apply_ha_rules is pure-pf.
+        cluster_engine
+            .recover_kernel_state_for_role(c.role)
+            .await
+            .map_err(|e| format!("ha recover_kernel_state_for_role: {e}"))?;
+
+        // Seed minimal default health checks so the HealthProber daemon task
+        // has something to probe out of the box.  Failures are warn-only so a
+        // duplicate-name conflict (re-running setup) never blocks setup completion.
+        for h in [
+            aifw_common::HealthCheck::new(
+                "aifw_api".into(),
+                aifw_common::HealthCheckType::TcpPort,
+                "127.0.0.1:8080".into(),
+            ),
+            aifw_common::HealthCheck::new(
+                "pf".into(),
+                aifw_common::HealthCheckType::PfStatus,
+                String::new(),
+            ),
+            aifw_common::HealthCheck::new(
+                "aifw_daemon".into(),
+                aifw_common::HealthCheckType::ProcessRunning,
+                "aifw-daemon".into(),
+            ),
+            aifw_common::HealthCheck::new(
+                "aifw_ids".into(),
+                aifw_common::HealthCheckType::ProcessRunning,
+                "aifw-ids".into(),
+            ),
+        ] {
+            if let Err(e) = cluster_engine.add_health_check(h.clone()).await {
+                tracing::warn!(
+                    ?e,
+                    name = %h.name,
+                    "ha: failed to seed default health check (continuing)"
+                );
+            }
+        }
     }
 
     Ok(())
@@ -1460,9 +1753,13 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     // Options
     lines.push("# Options".to_string());
     lines.push("set skip on lo0".to_string());
+    lines.push("set skip on pfsync0".to_string());
     lines.push("set block-policy drop".to_string());
     lines.push("set optimization aggressive".to_string());
-    lines.push("set state-policy if-bound".to_string());
+    // floating (not if-bound) is required for pfsync state migration on
+    // failover — without it, replicated states bind to the original
+    // interface and don't match traffic on the surviving node's iface.
+    lines.push("set state-policy floating".to_string());
     lines.push(String::new());
 
     // Scrub
@@ -1626,6 +1923,7 @@ load_rc_config $name
 : ${{aifw_daemon_enable:="NO"}}
 : ${{aifw_daemon_pidfile:="/var/run/aifw_daemon.pid"}}
 : ${{aifw_daemon_supervisor_pidfile:="/var/run/aifw_daemon-supervisor.pid"}}
+: ${{aifw_daemon_env:=""}}
 
 pidfile="${{aifw_daemon_supervisor_pidfile}}"
 procname="/usr/sbin/daemon"
@@ -1636,6 +1934,14 @@ command_args="-f -p ${{aifw_daemon_pidfile}} -P ${{aifw_daemon_supervisor_pidfil
 start_precmd="aifw_daemon_precmd"
 stop_cmd="aifw_daemon_stop"
 stop_postcmd="aifw_daemon_poststop"
+
+aifw_demote_if_clustered()
+{{
+    if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+        sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
+        sleep 1
+    fi
+}}
 
 aifw_daemon_precmd()
 {{
@@ -1648,10 +1954,24 @@ aifw_daemon_precmd()
     # so the binary (running as aifw via daemon -u aifw) can't create it.
     /usr/bin/touch /var/run/aifw-daemon.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-daemon.lock
+    # Read the loopback API key from a 640 file (mode root:aifw) rather than
+    # from /etc/rc.conf (which is world-readable mode 644).  The file is
+    # written by aifw-setup; the daemon process needs it to authenticate
+    # background tasks (RoleWatcher, HealthProber, ClusterReplicator) to the
+    # local API.
+    if [ -r /usr/local/etc/aifw/daemon.key ]; then
+        export AIFW_LOOPBACK_API_KEY="$(cat /usr/local/etc/aifw/daemon.key)"
+    fi
+    # Fallback: honour legacy rc.conf aifw_daemon_env for nodes that have not
+    # yet been re-provisioned with the new daemon.key path.
+    if [ -z "${{AIFW_LOOPBACK_API_KEY}}" ] && [ -n "${{aifw_daemon_env}}" ]; then
+        export ${{aifw_daemon_env}}
+    fi
 }}
 
 aifw_daemon_stop()
 {{
+    aifw_demote_if_clustered
     # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
     # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
     # if the binary's tokio runtime won't exit (e.g. a background metrics
@@ -1721,6 +2041,14 @@ start_precmd="aifw_api_precmd"
 stop_cmd="aifw_api_stop"
 stop_postcmd="aifw_api_poststop"
 
+aifw_demote_if_clustered()
+{{
+    if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+        sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
+        sleep 1
+    fi
+}}
+
 aifw_api_precmd()
 {{
     /bin/mkdir -p /var/log/aifw
@@ -1734,6 +2062,7 @@ aifw_api_precmd()
 
 aifw_api_stop()
 {{
+    aifw_demote_if_clustered
     # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
     # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
     # if the binary's tokio runtime won't exit (e.g. a background metrics
@@ -1805,6 +2134,14 @@ start_precmd="aifw_ids_precmd"
 stop_cmd="aifw_ids_stop"
 stop_postcmd="aifw_ids_poststop"
 
+aifw_demote_if_clustered()
+{{
+    if [ "$(sysrc -n aifw_cluster_enabled 2>/dev/null)" = "YES" ]; then
+        sysctl net.inet.carp.demotion=240 >/dev/null 2>&1 || true
+        sleep 1
+    fi
+}}
+
 aifw_ids_precmd()
 {{
     /bin/mkdir -p /var/log/aifw /var/run/aifw
@@ -1819,6 +2156,7 @@ aifw_ids_precmd()
 
 aifw_ids_stop()
 {{
+    aifw_demote_if_clustered
     # SIGTERM with a hard 10-second wall-clock timeout, then SIGKILL.
     # The default rc.subr stop sends SIGTERM and pwait()s indefinitely —
     # if the binary's tokio runtime won't exit (e.g. a background metrics

@@ -651,6 +651,128 @@ pub async fn aifw_reboot(
     }))
 }
 
+/// Install AiFw from an uploaded local tarball.
+///
+/// Accepts a multipart/form-data body with fields:
+///   - `tarball`  — the .tar.xz file bytes (required)
+///   - `sha256`   — checksum file content (optional; skip to bypass verification)
+///   - `restart`  — "true" to auto-restart services after install (optional)
+///
+/// The tarball is streamed to a temp directory, optionally verified, and then
+/// processed through the same extract+install path as remote installs.
+/// Body cap: 500 MB (enforced by the route-level DefaultBodyLimit layer in
+/// build_router).
+pub async fn install_aifw_update_local(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    let tmp_dir = format!("/tmp/aifw-update-local-{}", std::process::id());
+    if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
+        tracing::warn!(?e, "failed to create tmp dir for local upload");
+        return Err(internal());
+    }
+
+    let mut tarball_path: Option<std::path::PathBuf> = None;
+    let mut expected_hash: Option<String> = None;
+    let mut auto_restart = false;
+
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| {
+            tracing::warn!(?e, "multipart next_field error");
+            StatusCode::BAD_REQUEST
+        })?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "tarball" => {
+                use tokio::io::AsyncWriteExt;
+                let path = std::path::PathBuf::from(format!("{}/update.tar.xz", tmp_dir));
+                let mut file = tokio::fs::File::create(&path)
+                    .await
+                    .map_err(|_| internal())?;
+                while let Some(chunk) = field
+                    .chunk()
+                    .await
+                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                {
+                    file.write_all(&chunk).await.map_err(|_| internal())?;
+                }
+                file.flush().await.ok();
+                tarball_path = Some(path);
+            }
+            "sha256" => {
+                let v = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                // Accept both FreeBSD sha256 format ("SHA256 (file) = <hex>")
+                // and sha256sum format ("<hex>  filename") — extract_hash handles
+                // both, but here we just store the raw content and let
+                // install_from_path's caller (us) strip to the hex.
+                // Lines look like: "<hex>  aifw-update-...tar.xz"
+                // We extract just the hex portion so install_from_path gets a
+                // clean expected hash.
+                let hash = aifw_core::updater::extract_hash_pub(&v);
+                if !hash.is_empty() {
+                    expected_hash = Some(hash);
+                }
+            }
+            "restart" => {
+                let v = field.text().await.ok();
+                auto_restart = v.as_deref() == Some("true");
+            }
+            _ => {
+                // Drain unknown fields
+                while field.chunk().await.map_err(|_| StatusCode::BAD_REQUEST)?.is_some() {}
+            }
+        }
+    }
+
+    let path = tarball_path.ok_or_else(|| {
+        tracing::warn!("install-local: no tarball field in multipart");
+        StatusCode::BAD_REQUEST
+    })?;
+
+    // Sanity-check size — refuse pathologically large uploads even if the
+    // body-limit layer already capped them.
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| internal())?;
+    if meta.len() > 500 * 1024 * 1024 {
+        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    let result = aifw_core::updater::install_from_path(
+        &path,
+        expected_hash.as_deref(),
+    )
+    .await;
+
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+
+    match result {
+        Ok(version) => {
+            let msg = format!("installed {}", version);
+            let _ = log_update(&state.pool, "install_local", &msg, "ok").await;
+            if auto_restart {
+                aifw_core::updater::restart_services().await;
+            }
+            Ok(Json(MessageResponse { message: msg }))
+        }
+        Err(e) => {
+            let _ = log_update(
+                &state.pool,
+                "install_local",
+                &format!("{e}"),
+                "error",
+            )
+            .await;
+            tracing::warn!(?e, "install-local failed");
+            Err(internal())
+        }
+    }
+}
+
 /// Operator-confirmed restart of all AiFw services. Returns immediately —
 /// `restart_services()` spawns a 2-second-delayed background task so the
 /// HTTP response leaves the box before aifw-api itself goes down.

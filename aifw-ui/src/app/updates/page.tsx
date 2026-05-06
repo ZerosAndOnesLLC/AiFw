@@ -91,6 +91,14 @@ export default function UpdatesPage() {
   const [rebootConfirm, setRebootConfirm] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // Local-package install state
+  const [tarballFile, setTarballFile] = useState<File | null>(null);
+  const [shaFile, setShaFile] = useState<File | null>(null);
+  const [installRestart, setInstallRestart] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [installLocalResult, setInstallLocalResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [localInstalling, setLocalInstalling] = useState(false);
+
   // AiFw firmware update state
   const [aifwInfo, setAifwInfo] = useState<AifwUpdateInfo | null>(null);
   const [aifwChecking, setAifwChecking] = useState(false);
@@ -399,6 +407,59 @@ export default function UpdatesPage() {
     }
   };
 
+  const handleLocalInstall = () => {
+    if (!tarballFile) return;
+    setLocalInstalling(true);
+    setUploadProgress(0);
+    setInstallLocalResult(null);
+
+    const form = new FormData();
+    form.append("tarball", tarballFile);
+    if (shaFile) {
+      // Read the sha file as text and send it as a plain text field
+      const reader = new FileReader();
+      reader.onload = () => {
+        form.append("sha256", reader.result as string);
+        if (installRestart) form.append("restart", "true");
+        sendLocalInstall(form);
+      };
+      reader.readAsText(shaFile);
+    } else {
+      if (installRestart) form.append("restart", "true");
+      sendLocalInstall(form);
+    }
+  };
+
+  const sendLocalInstall = (form: FormData) => {
+    const token = localStorage.getItem("aifw_token") ?? "";
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) {
+        setUploadProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    });
+    xhr.addEventListener("loadend", () => {
+      setUploadProgress(null);
+      setLocalInstalling(false);
+      const ok = xhr.status >= 200 && xhr.status < 300;
+      let message = ok ? "Install accepted" : `Failed (HTTP ${xhr.status})`;
+      try {
+        const body = JSON.parse(xhr.responseText);
+        if (body.message) message = body.message;
+      } catch {
+        // keep default message
+      }
+      setInstallLocalResult({ ok, message });
+      if (ok) {
+        fetchHistory();
+        fetchAifwStatus();
+      }
+    });
+    xhr.open("POST", "/api/v1/updates/aifw/install-local");
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.send(form);
+  };
+
   const statusBadgeColor = (s: string) => {
     switch (s.toLowerCase()) {
       case "success":
@@ -652,6 +713,113 @@ export default function UpdatesPage() {
               </button>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Install from package */}
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6">
+        <h2 className="text-lg font-semibold mb-1">Install from Package</h2>
+        <p className="text-sm text-[var(--text-muted)] mb-4">
+          Install a locally-built update tarball (<code className="font-mono text-xs">.tar.xz</code>) without
+          fetching from GitHub. Useful for test-cycle iteration — build the tarball with{" "}
+          <code className="font-mono text-xs">sh freebsd/build-update.sh</code> and upload it here.
+        </p>
+
+        <div className="space-y-4">
+          {/* Tarball picker */}
+          <div>
+            <label className="block text-xs text-[var(--text-muted)] mb-1">
+              Update tarball <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="file"
+              accept=".xz,.tar.xz"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                setTarballFile(f);
+                setInstallLocalResult(null);
+              }}
+              className="block w-full text-sm text-[var(--text-secondary)] file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border file:border-[var(--border)] file:bg-[var(--bg-secondary)] file:text-[var(--text-primary)] file:text-sm hover:file:bg-[var(--bg-card)] cursor-pointer"
+            />
+            {tarballFile && (
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {tarballFile.name} &mdash; {Math.round(tarballFile.size / (1024 * 1024))} MB
+              </p>
+            )}
+          </div>
+
+          {/* SHA256 sidecar (optional) */}
+          <div>
+            <label className="block text-xs text-[var(--text-muted)] mb-1">
+              SHA256 checksum file <span className="text-[var(--text-muted)]">(optional — omit to skip verification)</span>
+            </label>
+            <input
+              type="file"
+              accept=".sha256,.txt"
+              onChange={(e) => {
+                setShaFile(e.target.files?.[0] ?? null);
+                setInstallLocalResult(null);
+              }}
+              className="block w-full text-sm text-[var(--text-secondary)] file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border file:border-[var(--border)] file:bg-[var(--bg-secondary)] file:text-[var(--text-primary)] file:text-sm hover:file:bg-[var(--bg-card)] cursor-pointer"
+            />
+          </div>
+
+          {/* Auto-restart toggle */}
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={installRestart}
+              onChange={(e) => setInstallRestart(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
+            />
+            <div>
+              <span className="text-sm text-[var(--text-secondary)]">Auto-restart services after install</span>
+              <p className="text-xs text-[var(--text-muted)]">
+                Restarts all AiFw services immediately after the tarball is installed. Causes a brief outage.
+              </p>
+            </div>
+          </label>
+
+          {/* Upload progress */}
+          {uploadProgress !== null && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                <span>Uploading...</span>
+                <span>{uploadProgress}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-[var(--bg-secondary)] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[var(--accent)] rounded-full transition-all duration-200"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Result banner */}
+          {installLocalResult && (
+            <div
+              className={`px-3 py-2 rounded-md text-sm border ${
+                installLocalResult.ok
+                  ? "bg-green-500/10 border-green-500/30 text-green-400"
+                  : "bg-red-500/10 border-red-500/30 text-red-400"
+              }`}
+            >
+              {installLocalResult.message}
+            </div>
+          )}
+
+          {/* Install button */}
+          <button
+            onClick={handleLocalInstall}
+            disabled={!tarballFile || localInstalling}
+            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
+          >
+            {localInstalling && (
+              <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            )}
+            {localInstalling ? "Installing..." : "Install Package"}
+          </button>
         </div>
       </div>
 

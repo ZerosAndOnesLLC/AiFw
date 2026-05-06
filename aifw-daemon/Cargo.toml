@@ -20,6 +20,8 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 clap = { workspace = true }
 anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 libc = "0.2"
 nix = { version = "0.31", features = ["user"] }
 chrono = { workspace = true }
+uuid = { workspace = true }

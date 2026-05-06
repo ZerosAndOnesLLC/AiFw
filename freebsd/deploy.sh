@@ -245,10 +245,16 @@ chmod 755 /usr/local/etc/rc.d/aifw_ids
 cp "$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/aifw_watchdog" /usr/local/etc/rc.d/aifw_watchdog
 chmod 755 /usr/local/etc/rc.d/aifw_watchdog
 
+# HA rc.d helpers (only meaningful on cluster-enabled nodes)
+for rcd in aifw_carp_demote aifw_demote_on_shutdown; do
+    src="$REPO_DIR/freebsd/overlay/usr/local/etc/rc.d/$rcd"
+    [ -f "$src" ] && install -m 755 "$src" "/usr/local/etc/rc.d/$rcd"
+done
+
 # Install libexec scripts (restart driver, watchdog loop, motd cleanup,
-# login migrate). Mode 755 so the daemon supervisor can exec them.
+# login migrate, shutdown hook). Mode 755 so the daemon supervisor can exec them.
 mkdir -p /usr/local/libexec
-for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh; do
+for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh aifw-shutdown-hook.sh; do
     src="$REPO_DIR/freebsd/overlay/usr/local/libexec/$script"
     if [ -f "$src" ]; then
         install -m 755 "$src" "/usr/local/libexec/$script"
@@ -278,6 +284,10 @@ sysrc aifw_daemon_enable=YES >/dev/null
 sysrc aifw_ids_enable=YES >/dev/null
 sysrc aifw_api_enable=YES >/dev/null
 sysrc aifw_watchdog_enable=YES >/dev/null
+# Enable HA helpers if cluster is configured. Safe to set unconditionally:
+# the rc.d scripts gate on aifw_cluster_enabled before doing any work.
+sysrc aifw_carp_demote_enable=YES >/dev/null
+sysrc aifw_demote_on_shutdown_enable=YES >/dev/null
 service aifw_daemon start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_daemon not configured"
 # aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
 service aifw_ids start </dev/null >/dev/null 2>&1 || echo "  WARNING: aifw_ids not configured"

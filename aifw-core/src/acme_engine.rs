@@ -18,12 +18,15 @@
 
 use crate::acme::{self, AcmeAccount, AcmeCert, CertStatus, ChallengeType};
 use crate::acme_dns::{DnsSolver, build_solver};
+use crate::ha::ClusterEngine;
+use aifw_common::ClusterRole;
 use chrono::{DateTime, Utc};
 use instant_acme::{
     Account, AuthorizationStatus, ChallengeType as InstantChallengeType, Identifier,
     KeyAuthorization, NewAccount, NewOrder, Order, OrderStatus,
 };
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Outcome of a single issue/renew run. Persisted on the cert row so the UI
@@ -77,7 +80,26 @@ pub async fn issue(pool: &SqlitePool, cert_id: i64) -> IssueOutcome {
 
 /// Find every cert flagged `auto_renew` whose expiry is within its renew
 /// window, and issue each one. Returns per-cert outcomes.
-pub async fn renew_due(pool: &SqlitePool) -> Vec<(i64, IssueOutcome)> {
+///
+/// HA semantics:
+///   - `cluster: None` — standalone node (no HA). Renewal proceeds
+///     unconditionally. Pass `None` only for non-HA deployments; passing
+///     `None` on an HA node would bypass the master-only gate.
+///   - `cluster: Some(_)` — HA-aware. Skips all renewals when the local
+///     node is BACKUP (master-only renewal). After each successful renewal
+///     on the master, pushes the cert+key to all secondary peers via
+///     `POST /api/v1/cluster/cert-push`.
+pub async fn renew_due(
+    pool: &SqlitePool,
+    cluster: Option<&Arc<ClusterEngine>>,
+) -> Vec<(i64, IssueOutcome)> {
+    // HA: skip renewal when this node is BACKUP.  The master handles issuance
+    // and will push the result to us via cert-push.
+    if cluster.is_some() && !crate::ha::is_local_master().await {
+        tracing::debug!("acme: skipping renewal sweep — node is BACKUP");
+        return Vec::new();
+    }
+
     let due = acme::certs_due_for_renewal(pool).await;
     let mut out = Vec::with_capacity(due.len());
     for c in due {
@@ -98,6 +120,26 @@ pub async fn renew_due(pool: &SqlitePool) -> Vec<(i64, IssueOutcome)> {
                 ),
             )
             .await;
+
+            // HA: push renewed cert to secondary peers so standbys stay current.
+            if let Some(ce) = cluster {
+                // Re-load the freshly issued cert from DB to get the PEM blobs.
+                if let Some(cert_row) = acme::load_cert(pool, c.id).await {
+                    let fullchain = build_fullchain(&cert_row);
+                    let key = cert_row.key_pem.unwrap_or_default();
+                    if !fullchain.is_empty() && !key.is_empty() {
+                        if let Err(e) =
+                            push_cert_to_peers(pool, ce, c.id, &fullchain, &key).await
+                        {
+                            tracing::warn!(
+                                cert_id = c.id,
+                                error = %e,
+                                "acme: failed to push renewed cert to cluster peers"
+                            );
+                        }
+                    }
+                }
+            }
         } else {
             crate::smtp_notify::send_event(
                 pool,
@@ -112,6 +154,99 @@ pub async fn renew_due(pool: &SqlitePool) -> Vec<(i64, IssueOutcome)> {
         out.push((c.id, outcome));
     }
     out
+}
+
+// =============================================================================
+// HA cert-push helpers
+// =============================================================================
+
+/// Concatenate `cert_pem` and `chain_pem` into a single fullchain PEM blob.
+/// The standby's `import_external_cert` will split it back.
+fn build_fullchain(cert: &crate::acme::AcmeCert) -> String {
+    let leaf = cert.cert_pem.as_deref().unwrap_or("");
+    let chain = cert.chain_pem.as_deref().unwrap_or("");
+    if chain.is_empty() {
+        leaf.to_string()
+    } else {
+        format!("{leaf}\n{chain}")
+    }
+}
+
+/// Push a freshly issued cert+key to all secondary cluster nodes.
+///
+/// Failures are best-effort: each peer is attempted independently, a warn is
+/// logged per failure, and the master's renewal is never blocked.  Peers that
+/// are temporarily unreachable will receive the next renewal push automatically;
+/// there is no automatic retry within this call — that is an acceptable gap for
+/// an active-passive HA pair where failover itself triggers the standby to
+/// request a snapshot (which includes the updated cert via the ACME cert rows).
+async fn push_cert_to_peers(
+    pool: &SqlitePool,
+    cluster_engine: &ClusterEngine,
+    cert_id: i64,
+    fullchain: &str,
+    privkey: &str,
+) -> anyhow::Result<()> {
+    let nodes = cluster_engine.list_nodes().await?;
+    if nodes.is_empty() {
+        return Ok(());
+    }
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    for n in nodes.iter().filter(|n| matches!(n.role, ClusterRole::Secondary)) {
+        let key = match cluster_engine.peer_api_key(n.id).await? {
+            Some(k) => k,
+            None => {
+                tracing::debug!(peer = %n.address, "acme: no peer_api_key for node, skipping cert push");
+                continue;
+            }
+        };
+        let url = format!(
+            "https://{}:{}/api/v1/cluster/cert-push",
+            n.address,
+            aifw_common::DEFAULT_LOOPBACK_API_PORT
+        );
+        let body = serde_json::json!({
+            "cert_id": cert_id,
+            "fullchain_pem": fullchain,
+            "private_key_pem": privkey,
+        });
+        match client
+            .post(&url)
+            .header("Authorization", format!("ApiKey {key}"))
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!(cert_id, peer = %n.address, "acme: cert pushed to peer");
+                let _ = sqlx::query(
+                    "UPDATE cluster_nodes SET last_pushed_cert_at = ?1 WHERE id = ?2",
+                )
+                .bind(Utc::now().to_rfc3339())
+                .bind(n.id.to_string())
+                .execute(pool)
+                .await;
+            }
+            Ok(r) => tracing::warn!(
+                cert_id,
+                peer = %n.address,
+                status = ?r.status(),
+                "acme: cert-push non-success response"
+            ),
+            Err(e) => tracing::warn!(
+                cert_id,
+                peer = %n.address,
+                error = %e,
+                "acme: cert-push failed"
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// Sweep certs that are within `EXPIRY_WARNING_DAYS` of expiry but NOT yet
@@ -148,14 +283,62 @@ pub async fn warn_expiring(pool: &SqlitePool) {
     }
 }
 
+/// Import a cert+key received from the cluster master (cert-push endpoint).
+///
+/// Splits `fullchain_pem` into leaf + chain using the same logic as `issue_inner`,
+/// then writes the result into the `acme_cert` row identified by `cert_id`.
+/// Called by the `POST /api/v1/cluster/cert-push` handler on standby nodes.
+pub async fn import_external_cert(
+    pool: &SqlitePool,
+    cert_id: i64,
+    fullchain_pem: &str,
+    private_key_pem: &str,
+) -> anyhow::Result<()> {
+    let (leaf_pem, chain_pem) = split_pem_bundle(fullchain_pem);
+    let expires_at = parse_cert_expiry(&leaf_pem);
+
+    sqlx::query(
+        r#"
+        UPDATE acme_cert
+           SET status = ?,
+               cert_pem = ?,
+               chain_pem = ?,
+               key_pem = ?,
+               issued_at = ?,
+               expires_at = ?,
+               last_renew_attempt = ?,
+               last_renew_error = NULL
+         WHERE id = ?
+        "#,
+    )
+    .bind(CertStatus::Active.as_str())
+    .bind(&leaf_pem)
+    .bind(&chain_pem)
+    .bind(private_key_pem)
+    .bind(Utc::now().to_rfc3339())
+    .bind(expires_at.map(|t| t.to_rfc3339()))
+    .bind(Utc::now().to_rfc3339())
+    .bind(cert_id)
+    .execute(pool)
+    .await
+    .map_err(|e| anyhow::anyhow!("import_external_cert persist: {e}"))?;
+
+    Ok(())
+}
+
 /// Spawn the daily renewal scheduler. Call from `aifw-daemon::main`. Runs:
 ///   - 30 s after start (catch certs that expired while the box was down)
 ///   - then every 6 hours (cheap; renewals only fire when actually due).
-pub fn spawn_scheduler(pool: SqlitePool) {
+///
+/// `cluster` is `Some(engine)` when this node participates in an HA cluster.
+/// With a cluster engine, the scheduler skips renewal when local role is BACKUP
+/// and pushes freshly issued certs to secondary peers after each master renewal.
+pub fn spawn_scheduler(pool: SqlitePool, cluster: Option<Arc<ClusterEngine>>) {
     tokio::spawn(async move {
+        let ce = cluster;
         // First sweep shortly after boot.
         tokio::time::sleep(Duration::from_secs(30)).await;
-        let _ = renew_due(&pool).await;
+        let _ = renew_due(&pool, ce.as_ref()).await;
         warn_expiring(&pool).await;
 
         let mut tick = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
@@ -163,7 +346,7 @@ pub fn spawn_scheduler(pool: SqlitePool) {
         tick.tick().await; // skip the immediate fire
         loop {
             tick.tick().await;
-            let _ = renew_due(&pool).await;
+            let _ = renew_due(&pool, ce.as_ref()).await;
             warn_expiring(&pool).await;
         }
     });

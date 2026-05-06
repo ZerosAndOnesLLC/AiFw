@@ -40,10 +40,11 @@ pub enum Permission {
     ProxyWrite,
     MultiWanRead,
     MultiWanWrite,
+    HaManage,
 }
 
 impl Permission {
-    /// Bit index for this permission in the bitmask (0..33).
+    /// Bit index for this permission in the bitmask (0..36).
     pub fn bit_index(self) -> u8 {
         self as u8
     }
@@ -87,6 +88,7 @@ impl Permission {
             Self::ProxyWrite => "proxy:write",
             Self::MultiWanRead => "multiwan:read",
             Self::MultiWanWrite => "multiwan:write",
+            Self::HaManage => "ha:manage",
         }
     }
 
@@ -129,6 +131,7 @@ impl Permission {
             "proxy:write" => Some(Self::ProxyWrite),
             "multiwan:read" => Some(Self::MultiWanRead),
             "multiwan:write" => Some(Self::MultiWanWrite),
+            "ha:manage" => Some(Self::HaManage),
             _ => None,
         }
     }
@@ -178,6 +181,7 @@ pub const ALL_PERMISSIONS: &[Permission] = &[
     Permission::ProxyWrite,
     Permission::MultiWanRead,
     Permission::MultiWanWrite,
+    Permission::HaManage,
 ];
 
 /// A set of permissions stored as a u64 bitmask.
@@ -262,6 +266,7 @@ pub fn builtin_role_permissions(role: &str) -> Vec<Permission> {
                         | Permission::SettingsWrite
                         | Permission::UpdatesInstall
                         | Permission::SystemReboot
+                        | Permission::HaManage
                 )
             })
             .copied()
@@ -333,6 +338,10 @@ mod tests {
         assert!(!set.has(Permission::SettingsWrite));
         assert!(!set.has(Permission::UpdatesInstall));
         assert!(!set.has(Permission::SystemReboot));
+        // HA management (demote, snapshot-push, cert-push, failover-event injection)
+        // is admin-only; operator can observe HA status via read endpoints that
+        // require no separate permission today.
+        assert!(!set.has(Permission::HaManage));
     }
 
     #[test]

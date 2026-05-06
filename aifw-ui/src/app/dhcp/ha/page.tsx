@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { fetchApi } from "@/lib/api";
 
 interface HaConfig {
   mode: string;
@@ -23,19 +24,21 @@ interface HaStatus {
   healthy: boolean;
 }
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
+interface PfsyncConfig {
+  sync_interface: string;
+  sync_peer?: string;
+  defer: boolean;
+  enabled: boolean;
+  latency_profile: string;
+  heartbeat_iface?: string;
+  heartbeat_interval_ms?: number;
+  dhcp_link: boolean;
 }
 
 export default function HaConfigPage() {
   const [config, setConfig] = useState<HaConfig>({ mode: "standalone" });
   const [status, setStatus] = useState<HaStatus | null>(null);
+  const [pfsync, setPfsync] = useState<PfsyncConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [peersInput, setPeersInput] = useState("");
@@ -48,9 +51,7 @@ export default function HaConfigPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/ha/config", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: HaConfig = await res.json();
+      const data = await fetchApi<HaConfig>("/api/v1/dhcp/ha/config");
       setConfig(data);
       setPeersInput((data.peers || []).join(", "));
     } catch { /* silent */ }
@@ -58,19 +59,40 @@ export default function HaConfigPage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/ha/status", { headers: authHeadersPlain() });
-      if (!res.ok) return;
-      setStatus(await res.json());
+      const data = await fetchApi<HaStatus>("/api/v1/dhcp/ha/status");
+      setStatus(data);
     } catch { /* silent — service may not be running */ }
+  }, []);
+
+  const fetchPfsync = useCallback(async () => {
+    try {
+      const data = await fetchApi<PfsyncConfig>("/api/v1/cluster/pfsync");
+      setPfsync(data);
+    } catch { /* silent */ }
   }, []);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      await Promise.all([fetchConfig(), fetchStatus()]);
+      await Promise.all([fetchConfig(), fetchStatus(), fetchPfsync()]);
       setLoading(false);
     })();
-  }, [fetchConfig, fetchStatus]);
+  }, [fetchConfig, fetchStatus, fetchPfsync]);
+
+  const linked = pfsync?.dhcp_link === true;
+
+  const handleUnlink = useCallback(async () => {
+    try {
+      const cur = await fetchApi<PfsyncConfig>("/api/v1/cluster/pfsync");
+      const body: PfsyncConfig = { ...cur, dhcp_link: false };
+      await fetchApi<PfsyncConfig>("/api/v1/cluster/pfsync", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      setPfsync(body);
+      await fetchConfig();
+    } catch { /* silent — leave UI state intact so operator can retry */ }
+  }, [fetchConfig]);
 
   const saveConfig = async () => {
     setSaving(true);
@@ -79,12 +101,10 @@ export default function HaConfigPage() {
       if (config.mode === "raft") {
         payload.peers = peersInput.split(",").map(s => s.trim()).filter(Boolean);
       }
-      const res = await fetch("/api/v1/dhcp/ha/config", {
+      await fetchApi<HaConfig>("/api/v1/dhcp/ha/config", {
         method: "PUT",
-        headers: authHeaders(),
         body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showFeedback("success", "HA settings saved. Apply config to take effect.");
       await fetchConfig();
     } catch (err) {
@@ -175,8 +195,17 @@ export default function HaConfigPage() {
                   value={config.peer || ""}
                   onChange={(e) => setConfig((p) => ({ ...p, peer: e.target.value }))}
                   placeholder="e.g. 10.0.0.2:9000"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  disabled={linked}
+                  className={`w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500${linked ? " opacity-60 cursor-not-allowed" : ""}`}
                 />
+                {linked && (
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                    Inherited from cluster config —{" "}
+                    <button type="button" onClick={handleUnlink} className="underline hover:text-[var(--text-primary)]">
+                      unlink
+                    </button>
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-xs text-[var(--text-muted)] mb-1">Listen Address</label>
@@ -245,8 +274,17 @@ export default function HaConfigPage() {
                   value={peersInput}
                   onChange={(e) => setPeersInput(e.target.value)}
                   placeholder="10.0.0.2:9000, 10.0.0.3:9000"
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  disabled={linked}
+                  className={`w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-md text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500${linked ? " opacity-60 cursor-not-allowed" : ""}`}
                 />
+                {linked && (
+                  <p className="text-xs text-[var(--text-muted)] mt-1">
+                    Inherited from cluster config —{" "}
+                    <button type="button" onClick={handleUnlink} className="underline hover:text-[var(--text-primary)]">
+                      unlink
+                    </button>
+                  </p>
+                )}
               </div>
             </div>
           </div>

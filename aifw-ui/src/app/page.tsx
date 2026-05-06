@@ -197,6 +197,7 @@ export default function Dashboard() {
     dhcp: { running: boolean; version: string; total_subnets: number; active_leases: number; total_reservations: number } | null;
     time: { running: boolean; version: string; sources_count: number } | null;
   }>({ dns: null, dhcp: null, time: null });
+  const [haStatus, setHaStatus] = useState<{ role: string; peer_reachable: boolean } | null>(null);
   const [rateIn, setRateIn] = useState(0);
   const [rateOut, setRateOut] = useState(0);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -355,6 +356,20 @@ export default function Dashboard() {
     return () => clearInterval(iv);
   }, []);
 
+  // Fetch HA status once on mount — only show card when HA is configured
+  useEffect(() => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+    if (!token) return;
+    fetch("/api/v1/cluster/status", { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then((s: { role?: string; peer_reachable?: boolean } | null) => {
+        if (s && s.role && s.role !== "standalone") {
+          setHaStatus({ role: s.role, peer_reachable: s.peer_reachable ?? false });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const blocked = (ws.blocked || []) as unknown as { timestamp: string; action: string; direction: string; interface: string; protocol: string; src_addr: string; src_port: number; dst_addr: string; dst_port: number }[];
 
   const topTalkers = connections.reduce<{ip:string;bytes:number;conns:number}[]>((a,c) => {
@@ -447,6 +462,22 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* HA status card — only shown when HA is configured (role != standalone) */}
+      {haStatus && (
+        <a
+          href="/cluster/dashboard"
+          className="block bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3 text-sm hover:border-[var(--text-muted)] transition-colors"
+        >
+          <span className="text-[10px] text-[var(--text-muted)] uppercase font-medium">HA</span>
+          {" · "}
+          <span className="font-semibold">{haStatus.role.toUpperCase()}</span>
+          {" · peer "}
+          {haStatus.peer_reachable
+            ? <span className="text-green-400">healthy</span>
+            : <span className="text-red-400 font-semibold">UNREACHABLE</span>}
+        </a>
+      )}
 
       {/* Stats Grid — 3 groups */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

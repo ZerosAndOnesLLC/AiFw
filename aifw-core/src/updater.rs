@@ -223,53 +223,49 @@ fn parse_reboot_hint(notes: &str) -> (bool, Option<String>) {
     (false, None)
 }
 
-/// Download, verify, and install an AiFw update.
-pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, UpdaterError> {
-    let tarball_url = info.tarball_url.as_deref().ok_or(UpdaterError::NoTarball)?;
-    let checksum_url = info
-        .checksum_url
-        .as_deref()
-        .ok_or(UpdaterError::NoTarball)?;
+/// Install an AiFw update from a local tarball path.
+///
+/// This is the shared install primitive used by both `download_and_install`
+/// (which downloads first, then delegates here) and the API's
+/// `install-local` endpoint (which receives an uploaded tarball and
+/// delegates here directly).
+///
+/// `expected_hash` — if `Some`, the tarball's sha256 is verified before
+/// extraction.  Pass `None` only when the caller has already verified the
+/// hash or when `--skip-checksum` was explicitly requested.
+pub async fn install_from_path(
+    tarball_path: &std::path::Path,
+    expected_hash: Option<&str>,
+) -> Result<String, UpdaterError> {
+    let tarball_str = tarball_path
+        .to_str()
+        .ok_or_else(|| UpdaterError::Install("tarball path is not valid UTF-8".to_string()))?;
 
-    let tmp_dir = "/tmp/aifw-update";
-    let tarball_path = format!("{}/update.tar.xz", tmp_dir);
-    let checksum_path = format!("{}/update.tar.xz.sha256", tmp_dir);
-
-    // Clean and create temp dir
-    let _ = tokio::fs::remove_dir_all(tmp_dir).await;
-    tokio::fs::create_dir_all(tmp_dir)
-        .await
-        .map_err(|e| UpdaterError::Install(format!("Failed to create temp dir: {}", e)))?;
-
-    // Download tarball and checksum
-    info!("Downloading AiFw update v{}...", info.latest_version);
-    http_download(tarball_url, &tarball_path).await?;
-    http_download(checksum_url, &checksum_path).await?;
-
-    // Verify checksum
-    info!("Verifying checksum...");
-    let expected = tokio::fs::read_to_string(&checksum_path)
-        .await
-        .map_err(|e| UpdaterError::Download(format!("Failed to read checksum: {}", e)))?;
-    let expected_hash = extract_hash(&expected);
-    if !verify_sha256(&tarball_path, &expected_hash).await? {
-        let _ = tokio::fs::remove_dir_all(tmp_dir).await;
-        return Err(UpdaterError::Checksum);
+    // Optionally verify checksum
+    if let Some(hash) = expected_hash {
+        info!("Verifying checksum...");
+        if !verify_sha256(tarball_str, hash).await? {
+            return Err(UpdaterError::Checksum);
+        }
     }
 
     // Backup current installation
     info!("Backing up current installation...");
     backup_current().await?;
 
-    // Extract tarball
-    info!("Extracting update...");
-    let extract_dir = format!("{}/extracted", tmp_dir);
+    // Extract tarball into a sibling directory
+    let extract_dir = {
+        let parent = tarball_path
+            .parent()
+            .unwrap_or(std::path::Path::new("/tmp"));
+        parent.join("extracted")
+    };
     tokio::fs::create_dir_all(&extract_dir)
         .await
         .map_err(|e| UpdaterError::Install(format!("Failed to create extract dir: {}", e)))?;
 
     let output = Command::new("tar")
-        .args(["xf", &tarball_path, "-C", &extract_dir])
+        .args(["xf", tarball_str, "-C", extract_dir.to_str().unwrap()])
         .output()
         .await
         .map_err(|e| UpdaterError::Install(format!("tar failed: {}", e)))?;
@@ -385,8 +381,8 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     // Ensure required packages are installed (older installs may be missing curl)
     for pkg in &["curl"] {
         let check = Command::new("pkg").args(["info", "-q", pkg]).output().await;
-        let installed = check.map(|o| o.status.success()).unwrap_or(false);
-        if !installed {
+        let pkg_installed = check.map(|o| o.status.success()).unwrap_or(false);
+        if !pkg_installed {
             info!(package = pkg, "Installing missing dependency");
             let _ = Command::new("/usr/local/bin/sudo")
                 .args(["pkg", "install", "-y", pkg])
@@ -477,7 +473,6 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         }
     }
 
-
     // Ensure required directories exist (new services may need them)
     for dir in &manifest.directories {
         let _ = Command::new("/usr/local/bin/sudo")
@@ -486,21 +481,30 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             .await;
     }
 
-    // Update version file
-    let ver_src = update_dir.join("version");
-    if ver_src.exists() {
-        let output = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/cp", ver_src.to_str().unwrap(), VERSION_FILE])
-            .output()
-            .await
-            .map_err(|e| UpdaterError::Install(format!("Failed to update version file: {}", e)))?;
-        if !output.status.success() {
-            warn!(
-                "Failed to update version file: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+    // Read the installed version from the tarball's version file
+    let installed_version = {
+        let ver_src = update_dir.join("version");
+        if ver_src.exists() {
+            let output = Command::new("/usr/local/bin/sudo")
+                .args(["/bin/cp", ver_src.to_str().unwrap(), VERSION_FILE])
+                .output()
+                .await
+                .map_err(|e| UpdaterError::Install(format!("Failed to update version file: {}", e)))?;
+            if !output.status.success() {
+                warn!(
+                    "Failed to update version file: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            tokio::fs::read_to_string(&ver_src)
+                .await
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        } else {
+            String::new()
         }
-    }
+    };
 
     // Strip stale AiFw version from MOTD template. Idempotent and respects
     // the marker file that `system_apply::apply_banner` sets when the admin
@@ -521,13 +525,62 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
             .await;
     }
 
+    // Cleanup extract dir
+    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+
+    let version_display = if installed_version.is_empty() {
+        "unknown".to_string()
+    } else {
+        installed_version.clone()
+    };
+    info!(version = %version_display, "AiFw install_from_path completed");
+    Ok(version_display)
+}
+
+/// Download, verify, and install an AiFw update.
+pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, UpdaterError> {
+    let tarball_url = info.tarball_url.as_deref().ok_or(UpdaterError::NoTarball)?;
+    let checksum_url = info
+        .checksum_url
+        .as_deref()
+        .ok_or(UpdaterError::NoTarball)?;
+
+    let tmp_dir = "/tmp/aifw-update";
+    let tarball_path = std::path::PathBuf::from(format!("{}/update.tar.xz", tmp_dir));
+    let checksum_path = format!("{}/update.tar.xz.sha256", tmp_dir);
+
+    // Clean and create temp dir
+    let _ = tokio::fs::remove_dir_all(tmp_dir).await;
+    tokio::fs::create_dir_all(tmp_dir)
+        .await
+        .map_err(|e| UpdaterError::Install(format!("Failed to create temp dir: {}", e)))?;
+
+    // Download tarball and checksum
+    info!("Downloading AiFw update v{}...", info.latest_version);
+    http_download(tarball_url, tarball_path.to_str().unwrap()).await?;
+    http_download(checksum_url, &checksum_path).await?;
+
+    // Read and parse the expected hash from the downloaded checksum file
+    let expected = tokio::fs::read_to_string(&checksum_path)
+        .await
+        .map_err(|e| UpdaterError::Download(format!("Failed to read checksum: {}", e)))?;
+    let expected_hash = extract_hash(&expected);
+
+    // Delegate to the shared install primitive (verifies hash, extracts, installs)
+    let version = install_from_path(&tarball_path, Some(&expected_hash)).await?;
+
     // Cleanup temp dir
     let _ = tokio::fs::remove_dir_all(tmp_dir).await;
 
-    info!("AiFw updated to v{}", info.latest_version);
+    let new_ver = if version.is_empty() {
+        info.latest_version.clone()
+    } else {
+        version
+    };
+    info!(version = %new_ver, "AiFw updated");
     Ok(format!(
         "AiFw updated from v{} to v{}",
-        info.current_version, info.latest_version
+        info.current_version, new_ver
     ))
 }
 
@@ -946,6 +999,15 @@ async fn get_backup_info() -> (bool, Option<String>) {
 fn version_newer(current: &str, latest: &str) -> bool {
     let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
     parse(latest) > parse(current)
+}
+
+/// Parse the hex digest from a checksum file line.
+///
+/// Exposed as `extract_hash_pub` for use by the API's local-install handler
+/// which needs to strip the filename part from an uploaded .sha256 sidecar
+/// before passing it to `install_from_path`.
+pub fn extract_hash_pub(checksum_content: &str) -> String {
+    extract_hash(checksum_content)
 }
 
 fn extract_hash(checksum_content: &str) -> String {

@@ -884,7 +884,6 @@ mod tests {
         );
         assert_eq!(vip.vhid, 1);
         assert_eq!(vip.status, CarpStatus::Init);
-        assert_eq!(vip.advskew, 0);
     }
 
     #[test]
@@ -896,12 +895,19 @@ mod tests {
             Interface("em0".to_string()),
             "pass123".to_string(),
         );
-        let cmds = vip.to_ifconfig_cmds();
+        // Use Conservative profile + Standalone role
+        let timing = CarpLatencyProfile::Conservative.timing_for(ClusterRole::Standalone);
+        let cmds = vip.to_ifconfig_argv(timing);
         assert_eq!(cmds.len(), 1);
-        assert!(cmds[0].contains("vhid 5"));
-        assert!(cmds[0].contains("pass pass123"));
-        assert!(cmds[0].contains("192.168.1.100/24"));
-        assert!(cmds[0].contains("inet"));
+        let argv = &cmds[0];
+        assert!(argv.contains(&"vhid".to_string()));
+        assert!(argv.contains(&"5".to_string()));
+        assert!(argv.contains(&"pass".to_string()));
+        assert!(argv.contains(&"pass123".to_string()));
+        assert!(argv.contains(&"192.168.1.100/24".to_string()));
+        assert!(argv.contains(&"inet".to_string()));
+        // Ensure the password is a discrete argument, not embedded in a shell string
+        assert!(!argv[0].contains("sh"));
     }
 
     #[test]
@@ -926,10 +932,15 @@ mod tests {
 
         let cmds = config.to_ifconfig_cmds();
         assert_eq!(cmds.len(), 2);
-        assert!(cmds[0].contains("pfsync0 create"));
-        assert!(cmds[1].contains("syncdev em1"));
-        assert!(cmds[1].contains("syncpeer 10.0.0.2"));
-        assert!(cmds[1].contains("defer"));
+        // First argv: ifconfig pfsync0 create
+        assert_eq!(cmds[0], vec!["ifconfig", "pfsync0", "create"]);
+        // Second argv: ifconfig pfsync0 syncdev em1 syncpeer 10.0.0.2 defer up
+        let config_argv = &cmds[1];
+        assert!(config_argv.contains(&"syncdev".to_string()));
+        assert!(config_argv.contains(&"em1".to_string()));
+        assert!(config_argv.contains(&"syncpeer".to_string()));
+        assert!(config_argv.contains(&"10.0.0.2".to_string()));
+        assert!(config_argv.contains(&"defer".to_string()));
     }
 
     #[test]
@@ -998,6 +1009,52 @@ mod tests {
     }
 
     #[test]
+    fn carp_advskew_renders_per_role() {
+        use crate::{CarpLatencyProfile, CarpVip, ClusterRole, Interface};
+        use std::net::IpAddr;
+
+        let vip = CarpVip::new(
+            10,
+            "192.0.2.1".parse::<IpAddr>().unwrap(),
+            24,
+            Interface("igb0".into()),
+            "secret".into(),
+        );
+
+        let primary = vip.to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Primary));
+        let secondary = vip.to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Secondary));
+
+        let primary_skew = primary[0][primary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
+        let secondary_skew = secondary[0][secondary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
+
+        assert_eq!(primary_skew, "0");
+        assert_eq!(secondary_skew, "100"); // Conservative profile's secondary skew
+    }
+
+    #[test]
+    fn ifconfig_argv_uses_profile_timing() {
+        use crate::{CarpLatencyProfile, CarpVip, ClusterRole, Interface};
+
+        let vip = CarpVip::new(
+            10,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("igb0".into()),
+            "abc12345".into(),
+        );
+
+        let tight_secondary = CarpLatencyProfile::Tight.timing_for(ClusterRole::Secondary);
+        let argv = vip.to_ifconfig_argv(tight_secondary);
+        let argv = &argv[0];
+
+        let advbase_pos = argv.iter().position(|s| s == "advbase").unwrap();
+        let advskew_pos = argv.iter().position(|s| s == "advskew").unwrap();
+
+        assert_eq!(argv[advbase_pos + 1], "1");
+        assert_eq!(argv[advskew_pos + 1], "20"); // Tight secondary skew
+    }
+
+    #[test]
     fn test_config_snapshot_diff() {
         let a = ConfigSnapshot::new(
             1,
@@ -1023,5 +1080,17 @@ mod tests {
 
         assert!(!a.differs_from(&b)); // same hashes
         assert!(a.differs_from(&c)); // different rules_hash
+    }
+
+    #[test]
+    fn carp_latency_profiles_render_distinct_skews() {
+        use crate::CarpLatencyProfile;
+        let c = CarpLatencyProfile::Conservative.skews();
+        let t = CarpLatencyProfile::Tight.skews();
+        let a = CarpLatencyProfile::Aggressive.skews();
+        // (advbase, primary_skew, secondary_skew)
+        assert_eq!(c, (1, 0, 100));
+        assert_eq!(t, (1, 0, 20));
+        assert_eq!(a, (1, 0, 10));
     }
 }

@@ -48,10 +48,38 @@ pub struct SetupConfig {
     // Paths
     pub db_path: String,
     pub config_dir: String,
+
+    // HA cluster (set by wizard; not persisted in aifw.conf JSON)
+    #[serde(skip)]
+    pub cluster: Option<WizardClusterConfig>,
 }
 
 fn default_ram_mb() -> u64 {
     1024
+}
+
+// ============================================================
+// HA / Cluster wizard config (not serialized — only used in-process
+// during wizard run → apply())
+// ============================================================
+
+/// Per-VIP configuration collected by the HA wizard step
+#[derive(Debug, Clone)]
+pub struct WizardCarpVip {
+    pub interface: String,
+    pub vhid: u8,
+    pub virtual_ip: std::net::IpAddr,
+    pub prefix: u8,
+}
+
+/// Cluster configuration collected by the HA wizard step
+#[derive(Debug, Clone)]
+pub struct WizardClusterConfig {
+    pub role: aifw_common::ClusterRole,
+    pub pfsync_iface: String,
+    pub peer_address: std::net::IpAddr,
+    pub vips: Vec<WizardCarpVip>,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -139,6 +167,7 @@ impl Default for SetupConfig {
             ram_mb: 1024,
             db_path: "/var/db/aifw/aifw.db".to_string(),
             config_dir: "/usr/local/etc/aifw".to_string(),
+            cluster: None,
         }
     }
 }

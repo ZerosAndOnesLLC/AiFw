@@ -465,7 +465,17 @@ impl VpnEngine {
                 .await;
         }
 
-        // Configure WireGuard private key and listen port
+        // Configure WireGuard private key and listen port.
+        //
+        // HA: WireGuard binds 0.0.0.0 by default (wireguard-go), so CARP VIPs
+        // floating on the WAN interface are accepted automatically — no explicit
+        // ListenAddress override needed. Some WG implementations support
+        // ListenAddress for explicit binding; if AiFw ever migrates to one,
+        // this is where the per-iface bind would be wired.
+        //
+        // TODO: WG role-change subscriber for explicit wg-quick down on BACKUP
+        // (default-false `wg_deconfigure_on_backup` flag, deferred — out of
+        // scope for Commit 9 #222).
         let output = Command::new("/usr/local/bin/sudo")
             .args([
                 "/usr/bin/wg",

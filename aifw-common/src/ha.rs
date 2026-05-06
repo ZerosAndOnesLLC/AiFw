@@ -9,6 +9,77 @@ use crate::types::Interface;
 // CARP — Common Address Redundancy Protocol
 // ============================================================
 
+/// Latency profile controlling CARP advertisement timers.
+///
+/// Maps to (advbase, primary_advskew, secondary_advskew):
+/// - Conservative: ~3 s detection, very stable
+/// - Tight: ~1.5 s detection, requires reliable network
+/// - Aggressive: ~1 s detection, requires future heartbeat daemon
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CarpLatencyProfile {
+    Conservative,
+    Tight,
+    Aggressive,
+}
+
+impl Default for CarpLatencyProfile {
+    fn default() -> Self {
+        Self::Conservative
+    }
+}
+
+impl CarpLatencyProfile {
+    /// Returns (advbase, primary_advskew, secondary_advskew) for this profile.
+    pub fn skews(self) -> (u8, u8, u8) {
+        match self {
+            Self::Conservative => (1, 0, 100),
+            Self::Tight => (1, 0, 20),
+            Self::Aggressive => (1, 0, 10),
+        }
+    }
+
+    pub fn parse(s: &str) -> crate::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "conservative" => Ok(Self::Conservative),
+            "tight" => Ok(Self::Tight),
+            "aggressive" => Ok(Self::Aggressive),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown latency profile: {s}"
+            ))),
+        }
+    }
+
+    /// Returns the CARP timing for this profile in the given role.
+    /// Primary always uses advskew=0; secondary uses the profile's secondary_skew.
+    /// Standalone falls back to secondary_skew (conservative "this node will lose elections" default).
+    pub fn timing_for(self, role: ClusterRole) -> CarpTiming {
+        let (advbase, primary_skew, secondary_skew) = self.skews();
+        let advskew = match role {
+            ClusterRole::Primary => primary_skew,
+            ClusterRole::Secondary | ClusterRole::Standalone => secondary_skew,
+        };
+        CarpTiming { advbase, advskew }
+    }
+}
+
+/// Effective CARP advertisement timing derived from a profile + role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CarpTiming {
+    pub advbase: u8,
+    pub advskew: u8,
+}
+
+impl std::fmt::Display for CarpLatencyProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Conservative => "conservative",
+            Self::Tight => "tight",
+            Self::Aggressive => "aggressive",
+        })
+    }
+}
+
 /// A CARP virtual IP configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CarpVip {
@@ -17,8 +88,6 @@ pub struct CarpVip {
     pub virtual_ip: IpAddr,
     pub prefix: u8,
     pub interface: Interface,
-    pub advskew: u8,
-    pub advbase: u8,
     pub password: String,
     pub status: CarpStatus,
     pub created_at: DateTime<Utc>,
@@ -60,8 +129,6 @@ impl CarpVip {
             virtual_ip,
             prefix,
             interface,
-            advskew: 0,
-            advbase: 1,
             password,
             status: CarpStatus::Init,
             created_at: now,
@@ -69,23 +136,28 @@ impl CarpVip {
         }
     }
 
-    /// Generate ifconfig commands to create the CARP VIP
-    pub fn to_ifconfig_cmds(&self) -> Vec<String> {
-        let af = if self.virtual_ip.is_ipv4() {
-            "inet"
-        } else {
-            "inet6"
-        };
-        vec![format!(
-            "ifconfig {} vhid {} advskew {} advbase {} pass {} {af} {}/{} alias",
-            self.interface,
-            self.vhid,
-            self.advskew,
-            self.advbase,
-            self.password,
-            self.virtual_ip,
-            self.prefix,
-        )]
+    /// Render ifconfig argv for the given CARP timing (derived from profile + role).
+    ///
+    /// Returns a list of argument vectors — each inner `Vec<String>` is one
+    /// command where `[0]` is the executable and the rest are its arguments.
+    /// Pass them directly to `tokio::process::Command::new(&argv[0]).args(&argv[1..])`.
+    pub fn to_ifconfig_argv(&self, timing: CarpTiming) -> Vec<Vec<String>> {
+        let af = if self.virtual_ip.is_ipv4() { "inet" } else { "inet6" };
+        vec![vec![
+            "ifconfig".to_string(),
+            self.interface.to_string(),
+            "vhid".to_string(),
+            self.vhid.to_string(),
+            "advskew".to_string(),
+            timing.advskew.to_string(),
+            "advbase".to_string(),
+            timing.advbase.to_string(),
+            "pass".to_string(),
+            self.password.clone(),
+            af.to_string(),
+            format!("{}/{}", self.virtual_ip, self.prefix),
+            "alias".to_string(),
+        ]]
     }
 
     /// Generate pf rules to allow CARP protocol traffic
@@ -112,6 +184,14 @@ pub struct PfsyncConfig {
     /// Defer mode — defer initial state sync to avoid failover flap
     pub defer: bool,
     pub enabled: bool,
+    /// CARP advertisement timer profile
+    pub latency_profile: CarpLatencyProfile,
+    /// Dedicated heartbeat interface (schema-only; consumed by future heartbeat daemon)
+    pub heartbeat_iface: Option<Interface>,
+    /// Heartbeat interval in milliseconds (schema-only; consumed by future heartbeat daemon)
+    pub heartbeat_interval_ms: Option<u32>,
+    /// Link rDHCP HA state to this pfsync session (consumed in Commit 8 / #221)
+    pub dhcp_link: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -123,29 +203,46 @@ impl PfsyncConfig {
             sync_peer: None,
             defer: true,
             enabled: true,
+            latency_profile: CarpLatencyProfile::Conservative,
+            heartbeat_iface: None,
+            heartbeat_interval_ms: None,
+            dhcp_link: false,
             created_at: Utc::now(),
         }
     }
 
-    /// Generate ifconfig commands to configure pfsync
-    pub fn to_ifconfig_cmds(&self) -> Vec<String> {
+    /// Generate ifconfig argv vectors to configure pfsync.
+    ///
+    /// Returns a list of argument vectors — each inner `Vec<String>` is one
+    /// command where `[0]` is the executable and the rest are its arguments.
+    /// Pass them directly to `tokio::process::Command::new(&argv[0]).args(&argv[1..])`.
+    pub fn to_ifconfig_cmds(&self) -> Vec<Vec<String>> {
         if !self.enabled {
             return Vec::new();
         }
 
-        let mut cmds = vec![format!("ifconfig pfsync0 create")];
+        let create_argv = vec![
+            "ifconfig".to_string(),
+            "pfsync0".to_string(),
+            "create".to_string(),
+        ];
 
-        let mut pfsync_cmd = format!("ifconfig pfsync0 syncdev {}", self.sync_interface);
+        let mut config_argv = vec![
+            "ifconfig".to_string(),
+            "pfsync0".to_string(),
+            "syncdev".to_string(),
+            self.sync_interface.to_string(),
+        ];
         if let Some(ref peer) = self.sync_peer {
-            pfsync_cmd.push_str(&format!(" syncpeer {peer}"));
+            config_argv.push("syncpeer".to_string());
+            config_argv.push(peer.to_string());
         }
         if self.defer {
-            pfsync_cmd.push_str(" defer");
+            config_argv.push("defer".to_string());
         }
-        pfsync_cmd.push_str(" up");
-        cmds.push(pfsync_cmd);
+        config_argv.push("up".to_string());
 
-        cmds
+        vec![create_argv, config_argv]
     }
 
     /// Generate pf rules to allow pfsync traffic
@@ -213,6 +310,11 @@ pub struct ClusterNode {
     pub last_seen: DateTime<Utc>,
     pub config_version: u64,
     pub created_at: DateTime<Utc>,
+    /// Software version string (e.g. "5.88.1") written by the node at boot.
+    /// Used by the dashboard to detect version drift during rolling upgrades.
+    pub software_version: Option<String>,
+    /// When this node last successfully pushed a TLS cert to its peer.
+    pub last_pushed_cert_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -247,6 +349,8 @@ impl ClusterNode {
             last_seen: now,
             config_version: 0,
             created_at: now,
+            software_version: None,
+            last_pushed_cert_at: None,
         }
     }
 
@@ -284,6 +388,8 @@ pub enum HealthCheckType {
     HttpGet,
     /// pf is running
     PfStatus,
+    /// Process is running — `target` is the exact process name passed to `pgrep -x`
+    ProcessRunning,
 }
 
 impl std::fmt::Display for HealthCheckType {
@@ -293,6 +399,7 @@ impl std::fmt::Display for HealthCheckType {
             HealthCheckType::TcpPort => write!(f, "tcp_port"),
             HealthCheckType::HttpGet => write!(f, "http_get"),
             HealthCheckType::PfStatus => write!(f, "pf_status"),
+            HealthCheckType::ProcessRunning => write!(f, "process_running"),
         }
     }
 }
@@ -304,6 +411,7 @@ impl HealthCheckType {
             "tcp" | "tcp_port" => Ok(HealthCheckType::TcpPort),
             "http" | "http_get" => Ok(HealthCheckType::HttpGet),
             "pf" | "pf_status" => Ok(HealthCheckType::PfStatus),
+            "process_running" | "process" | "pgrep" => Ok(HealthCheckType::ProcessRunning),
             _ => Err(crate::AifwError::Validation(format!(
                 "unknown health check type: {s}"
             ))),

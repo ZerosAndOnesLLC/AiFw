@@ -1,4 +1,4 @@
-use crate::config::{DefaultPolicy, SetupConfig, SshAuthMethod, WanMode};
+use crate::config::{DefaultPolicy, SetupConfig, SshAuthMethod, WanMode, WizardCarpVip, WizardClusterConfig};
 use crate::console;
 use crate::hwdetect::SystemProfile;
 use crate::tuning::{self, TuningItem};
@@ -483,6 +483,9 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         _ => DefaultPolicy::Standard,
     };
 
+    // ── Optional HA step ────────────────────────────────────
+    config.cluster = ask_cluster(&config);
+
     // ── Summary ──────────────────────────────────────────────
     console::header("Configuration Summary");
     println!();
@@ -554,6 +557,14 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         "  Tuning:         {} optimizations",
         tuning_enabled
     ));
+    if let Some(ref c) = config.cluster {
+        console::info(&format!("  HA role:        {}", c.role));
+        console::info(&format!("  pfsync iface:   {}", c.pfsync_iface));
+        console::info(&format!("  Peer:           {}", c.peer_address));
+        console::info(&format!("  CARP VIPs:      {}", c.vips.len()));
+    } else {
+        console::info("  HA:             standalone");
+    }
     println!();
 
     if console::confirm("Apply this configuration?", true) {
@@ -565,6 +576,134 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         console::info("Setup cancelled.");
         None
     }
+}
+
+/// Ask whether this node is part of an HA pair and collect cluster settings.
+/// Returns `None` if the operator declines or enters invalid data.
+fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
+    if !console::confirm(
+        "Configure this node as part of an HA pair? (Two AiFw boxes sharing a virtual IP via CARP + pfsync)",
+        false,
+    ) {
+        return None;
+    }
+
+    let role_idx = console::select(
+        "Is this the PRIMARY (master under normal load) or SECONDARY node?",
+        &["primary", "secondary"],
+        0,
+    );
+    let role = match role_idx {
+        0 => aifw_common::ClusterRole::Primary,
+        _ => aifw_common::ClusterRole::Secondary,
+    };
+
+    let pfsync_iface = loop {
+        let s = console::prompt_required(
+            "Which interface carries pfsync traffic? (a dedicated NIC is strongly recommended)",
+        );
+        let s = s.trim().to_string();
+        // FreeBSD interface names: ASCII letters, digits, and dots only.
+        // Reject anything else to prevent newline injection into rc.conf.
+        if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+            break s;
+        }
+        console::error("Interface name must contain only ASCII letters, digits, and dots (e.g. em0, igb1, ix0.10).");
+    };
+
+    let peer_address = loop {
+        let s = console::prompt_required("Peer node IP on the pfsync link:");
+        match s.parse::<std::net::IpAddr>() {
+            Ok(addr) => break addr,
+            Err(_) => console::error("Not a valid IP address."),
+        }
+    };
+
+    // CARP password — min 8 chars, and must not contain characters that are
+    // shell-significant inside double-quoted rc.conf values (" ' ` $ \).
+    // rc.conf is sourced by /bin/sh at boot; these chars would corrupt the
+    // value or execute arbitrary code as root.
+    let password = loop {
+        let pw = console::prompt_password("CARP password (will be shared with peer; min 8 chars):");
+        if pw.len() < 8 {
+            console::error("Password must be at least 8 characters.");
+            continue;
+        }
+        if pw.chars().any(|c| matches!(c, '"' | '\'' | '`' | '$' | '\\')) {
+            console::error(
+                "CARP password may not contain quotes, backticks, dollar signs, or backslashes.",
+            );
+            continue;
+        }
+        break pw;
+    };
+
+    let mut vips = Vec::new();
+    for iface_label in &["WAN", "LAN"] {
+        if !console::confirm(&format!("Add a CARP VIP on the {iface_label} interface?"), true) {
+            continue;
+        }
+        let default_iface = if *iface_label == "WAN" {
+            config.wan_interface.as_str()
+        } else {
+            config.lan_interface.as_deref().unwrap_or("")
+        };
+        // Validate interface name: ASCII letters, digits, and dots only.
+        // Prevents newline injection into rc.conf values.
+        let interface = loop {
+            let s = console::prompt(&format!("{iface_label} interface name:"), default_iface);
+            let s = s.trim().to_string();
+            if s.is_empty() {
+                console::warn("Interface name required — skipping this VIP.");
+                break String::new();
+            }
+            if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+                break s;
+            }
+            console::error(
+                "Interface name must contain only ASCII letters, digits, and dots (e.g. em0, igb1).",
+            );
+        };
+        if interface.is_empty() {
+            continue;
+        }
+        let vip_str = console::prompt_required(&format!("Virtual IP on {interface} (e.g. 192.0.2.1):"));
+        let virtual_ip = match vip_str.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip,
+            Err(_) => {
+                console::error("Invalid IP address — skipping this VIP.");
+                continue;
+            }
+        };
+        let prefix: u8 = loop {
+            let s = console::prompt("Prefix length (e.g. 24):", "24");
+            match s.parse::<u8>() {
+                Ok(p) if p <= 128 => break p,
+                _ => console::warn("Enter a valid prefix length (0-32 for IPv4, 0-128 for IPv6)."),
+            }
+        };
+        let vhid: u8 = loop {
+            let s = console::prompt_required("CARP VHID (1-255, must match peer):");
+            match s.parse::<u8>() {
+                Ok(v) if v >= 1 => break v,
+                _ => console::warn("VHID must be 1-255."),
+            }
+        };
+        vips.push(WizardCarpVip {
+            interface,
+            vhid,
+            virtual_ip,
+            prefix,
+        });
+    }
+
+    Some(WizardClusterConfig {
+        role,
+        pfsync_iface,
+        peer_address,
+        vips,
+        password,
+    })
 }
 
 /// Fetch SSH public keys from a GitHub user's profile.

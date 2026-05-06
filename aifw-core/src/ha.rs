@@ -1,6 +1,6 @@
 use aifw_common::{
-    AifwError, CarpStatus, CarpVip, ClusterNode, ClusterRole, HealthCheck, HealthCheckType,
-    Interface, NodeHealth, PfsyncConfig, Result,
+    AifwError, CarpLatencyProfile, CarpStatus, CarpVip, ClusterNode, ClusterRole, HealthCheck,
+    HealthCheckType, Interface, NodeHealth, PfsyncConfig, Result,
 };
 use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
@@ -32,8 +32,6 @@ impl ClusterEngine {
                 virtual_ip TEXT NOT NULL,
                 prefix INTEGER NOT NULL,
                 interface TEXT NOT NULL,
-                advskew INTEGER NOT NULL DEFAULT 0,
-                advbase INTEGER NOT NULL DEFAULT 1,
                 password TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'init',
                 created_at TEXT NOT NULL,
@@ -43,6 +41,16 @@ impl ClusterEngine {
         )
         .execute(&self.pool)
         .await?;
+
+        // Drop legacy per-VIP timer columns — profile on pfsync_config is now
+        // the source of truth (SQLite 3.35+; fails silently on older versions
+        // which is acceptable since the columns are simply unused on those nodes).
+        for stmt in [
+            "ALTER TABLE carp_vips DROP COLUMN advskew",
+            "ALTER TABLE carp_vips DROP COLUMN advbase",
+        ] {
+            let _ = sqlx::query(stmt).execute(&self.pool).await;
+        }
 
         sqlx::query(
             r#"
@@ -60,6 +68,39 @@ impl ClusterEngine {
         )
         .execute(&self.pool)
         .await?;
+
+        // New columns on cluster_nodes for peer auth + drift tracking
+        for stmt in [
+            "ALTER TABLE cluster_nodes ADD COLUMN peer_api_key TEXT",
+            "ALTER TABLE cluster_nodes ADD COLUMN peer_api_key_hash TEXT",
+            "ALTER TABLE cluster_nodes ADD COLUMN software_version TEXT",
+            "ALTER TABLE cluster_nodes ADD COLUMN last_pushed_cert_at TEXT",
+        ] {
+            let _ = sqlx::query(stmt).execute(&self.pool).await;
+        }
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS cluster_snapshot_state (
+                node_id TEXT PRIMARY KEY,
+                last_applied_hash TEXT NOT NULL,
+                last_applied_at TEXT NOT NULL,
+                last_applied_from TEXT NOT NULL
+            );
+        "#).execute(&self.pool).await?;
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS cluster_failover_events (
+                id TEXT PRIMARY KEY,
+                ts TEXT NOT NULL,
+                from_role TEXT NOT NULL,
+                to_role TEXT NOT NULL,
+                cause TEXT NOT NULL,
+                detail TEXT
+            );
+        "#).execute(&self.pool).await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_cluster_failover_events_ts ON cluster_failover_events(ts);")
+            .execute(&self.pool).await?;
 
         sqlx::query(
             r#"
@@ -94,6 +135,16 @@ impl ClusterEngine {
         .execute(&self.pool)
         .await?;
 
+        // New columns added in the HA epic — IDEMPOTENT (will fail silently on re-run)
+        for stmt in [
+            "ALTER TABLE pfsync_config ADD COLUMN latency_profile TEXT NOT NULL DEFAULT 'conservative'",
+            "ALTER TABLE pfsync_config ADD COLUMN heartbeat_iface TEXT",
+            "ALTER TABLE pfsync_config ADD COLUMN heartbeat_interval_ms INTEGER",
+            "ALTER TABLE pfsync_config ADD COLUMN dhcp_link INTEGER NOT NULL DEFAULT 0",
+        ] {
+            let _ = sqlx::query(stmt).execute(&self.pool).await;
+        }
+
         Ok(())
     }
 
@@ -111,9 +162,9 @@ impl ClusterEngine {
 
         sqlx::query(
             r#"
-            INSERT INTO carp_vips (id, vhid, virtual_ip, prefix, interface, advskew, advbase,
+            INSERT INTO carp_vips (id, vhid, virtual_ip, prefix, interface,
                 password, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(vip.id.to_string())
@@ -121,8 +172,6 @@ impl ClusterEngine {
         .bind(vip.virtual_ip.to_string())
         .bind(vip.prefix as i64)
         .bind(&vip.interface.0)
-        .bind(vip.advskew as i64)
-        .bind(vip.advbase as i64)
         .bind(&vip.password)
         .bind(vip.status.to_string())
         .bind(vip.created_at.to_rfc3339())
@@ -139,6 +188,28 @@ impl ClusterEngine {
             .fetch_all(&self.pool)
             .await?;
         rows.into_iter().map(|r| r.into_vip()).collect()
+    }
+
+    pub async fn update_carp_vip(&self, v: &CarpVip) -> Result<()> {
+        let result = sqlx::query(
+            r#"UPDATE carp_vips SET vhid = ?1, virtual_ip = ?2, prefix = ?3,
+               interface = ?4, password = ?5, status = ?6, updated_at = ?7
+               WHERE id = ?8"#,
+        )
+        .bind(v.vhid as i64)
+        .bind(v.virtual_ip.to_string())
+        .bind(v.prefix as i64)
+        .bind(&v.interface.0)
+        .bind(&v.password)
+        .bind(v.status.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind(v.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("CARP VIP {} not found", v.id)));
+        }
+        Ok(())
     }
 
     pub async fn delete_carp_vip(&self, id: Uuid) -> Result<()> {
@@ -163,13 +234,21 @@ impl ClusterEngine {
             .await?;
 
         sqlx::query(
-            "INSERT INTO pfsync_config (id, sync_interface, sync_peer, defer_mode, enabled, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            r#"INSERT INTO pfsync_config
+               (id, sync_interface, sync_peer, defer_mode, enabled,
+                latency_profile, heartbeat_iface, heartbeat_interval_ms, dhcp_link,
+                created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
         )
         .bind(config.id.to_string())
         .bind(&config.sync_interface.0)
         .bind(config.sync_peer.map(|p| p.to_string()))
         .bind(config.defer)
         .bind(config.enabled)
+        .bind(config.latency_profile.to_string())
+        .bind(config.heartbeat_iface.as_ref().map(|i| i.0.clone()))
+        .bind(config.heartbeat_interval_ms.map(|n| n as i64))
+        .bind(config.dhcp_link)
         .bind(config.created_at.to_rfc3339())
         .execute(&self.pool)
         .await?;
@@ -233,6 +312,22 @@ impl ClusterEngine {
         Ok(())
     }
 
+    pub async fn update_node(&self, n: &ClusterNode) -> Result<()> {
+        let result = sqlx::query(
+            r#"UPDATE cluster_nodes SET name = ?1, address = ?2, role = ?3 WHERE id = ?4"#,
+        )
+        .bind(&n.name)
+        .bind(n.address.to_string())
+        .bind(n.role.to_string())
+        .bind(n.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("cluster node {} not found", n.id)));
+        }
+        Ok(())
+    }
+
     pub async fn delete_node(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM cluster_nodes WHERE id = ?1")
             .bind(id.to_string())
@@ -242,6 +337,64 @@ impl ClusterEngine {
             return Err(AifwError::NotFound(format!("cluster node {id} not found")));
         }
         Ok(())
+    }
+
+    /// Returns the most recently applied snapshot hash from cluster_snapshot_state,
+    /// or None if no snapshot has been applied yet.
+    pub async fn last_applied_snapshot_hash(&self) -> Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT last_applied_hash FROM cluster_snapshot_state ORDER BY last_applied_at DESC LIMIT 1"
+        ).fetch_optional(&self.pool).await?;
+        Ok(row.map(|r| r.0))
+    }
+
+    pub async fn record_snapshot_apply(&self, node_id: Uuid, hash: &str, from: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO cluster_snapshot_state (node_id, last_applied_hash, last_applied_at, last_applied_from) VALUES (?1, ?2, ?3, ?4)"
+        )
+        .bind(node_id.to_string())
+        .bind(hash)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(from)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn record_failover_event(
+        &self, from: &str, to: &str, cause: &str, detail: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO cluster_failover_events (id, ts, from_role, to_role, cause, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(from)
+        .bind(to)
+        .bind(cause)
+        .bind(detail)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn generate_peer_api_key(&self, node_id: Uuid) -> Result<String> {
+        // Two simple-format UUIDs = 64 hex chars = 256 bits of getrandom-sourced entropy.
+        let key = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let hash = sha256_hex(&key);
+        sqlx::query("UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3")
+            .bind(&key)
+            .bind(&hash)
+            .bind(node_id.to_string())
+            .execute(&self.pool).await?;
+        Ok(key)
+    }
+
+    pub async fn peer_api_key(&self, node_id: Uuid) -> Result<Option<String>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT peer_api_key FROM cluster_nodes WHERE id = ?1"
+        )
+        .bind(node_id.to_string())
+        .fetch_optional(&self.pool).await?;
+        Ok(row.and_then(|(k,)| k))
     }
 
     // ============================================================
@@ -280,6 +433,28 @@ impl ClusterEngine {
         rows.into_iter().map(|r| r.into_check()).collect()
     }
 
+    pub async fn update_health_check(&self, check: &HealthCheck) -> Result<()> {
+        let result = sqlx::query(
+            r#"UPDATE health_checks SET name=?1, check_type=?2, interval_secs=?3,
+               timeout_secs=?4, failures_before_down=?5, target=?6, enabled=?7
+               WHERE id=?8"#,
+        )
+        .bind(&check.name)
+        .bind(check.check_type.to_string())
+        .bind(check.interval_secs as i64)
+        .bind(check.timeout_secs as i64)
+        .bind(check.failures_before_down as i64)
+        .bind(&check.target)
+        .bind(check.enabled)
+        .bind(check.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("health check {} not found", check.id)));
+        }
+        Ok(())
+    }
+
     pub async fn delete_health_check(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM health_checks WHERE id = ?1")
             .bind(id.to_string())
@@ -295,16 +470,86 @@ impl ClusterEngine {
     // Apply HA pf rules
     // ============================================================
 
+    /// On daemon startup, re-run ifconfig commands if kernel state is missing.
+    /// Idempotent: re-running pfsync/CARP ifconfig is a no-op when already
+    /// configured, so we always run them without an existence pre-check.
+    /// No-ops on standalone nodes (role = standalone or tables absent).
+    pub async fn recover_kernel_state(&self) -> Result<()> {
+        let role = read_local_role().await;
+        self.recover_kernel_state_for_role(role).await
+    }
+
+    /// Redact the element immediately after "pass" in an ifconfig argv slice.
+    /// CARP ifconfig commands include `pass <password>` as discrete elements;
+    /// this prevents the password from leaking into tracing logs on failure.
+    fn redact_password_in_argv(argv: &[String]) -> Vec<String> {
+        let mut out = argv.to_vec();
+        if let Some(pos) = out.iter().position(|s| s == "pass") {
+            if pos + 1 < out.len() {
+                out[pos + 1] = "<redacted>".to_string();
+            }
+        }
+        out
+    }
+
+    /// Inner implementation of kernel-state recovery, taking an explicit role
+    /// so it can be called from tests without spawning sysrc.
+    pub async fn recover_kernel_state_for_role(
+        &self,
+        role: aifw_common::ClusterRole,
+    ) -> Result<()> {
+        // Standalone nodes need no kernel-state recovery
+        if matches!(role, aifw_common::ClusterRole::Standalone) {
+            return Ok(());
+        }
+
+        let pfsync = self.get_pfsync().await?;
+
+        // pfsync — always run (idempotent; no existence pre-check needed)
+        if let Some(p) = &pfsync {
+            for argv in p.to_ifconfig_cmds() {
+                if let Err(error) = run_argv(&argv).await {
+                    tracing::warn!(?error, cmd = ?argv, "ha: pfsync ifconfig command failed");
+                }
+            }
+        }
+
+        // Derive timing from the stored latency profile (default Conservative if absent)
+        let profile = pfsync
+            .as_ref()
+            .map(|p| p.latency_profile)
+            .unwrap_or_default();
+        let timing = profile.timing_for(role);
+
+        // CARP VIPs — render with profile-derived timing
+        for vip in self.list_carp_vips().await? {
+            for argv in vip.to_ifconfig_argv(timing) {
+                if let Err(error) = run_argv(&argv).await {
+                    let safe_argv = Self::redact_password_in_argv(&argv);
+                    tracing::warn!(?error, cmd = ?safe_argv, "ha: CARP ifconfig command failed");
+                }
+            }
+        }
+
+        // Enable CARP preemption so this node can compete in elections
+        if let Err(error) = tokio::process::Command::new("sysctl")
+            .arg("net.inet.carp.preempt=1")
+            .status()
+            .await
+        {
+            tracing::warn!(?error, "ha: sysctl carp.preempt failed");
+        }
+
+        Ok(())
+    }
+
     pub async fn apply_ha_rules(&self) -> Result<()> {
         let mut pf_rules = Vec::new();
 
-        // CARP rules
         let vips = self.list_carp_vips().await?;
         for vip in &vips {
             pf_rules.extend(vip.to_pf_rules());
         }
-
-        // pfsync rules
         if let Some(pfsync) = self.get_pfsync().await? {
             pf_rules.extend(pfsync.to_pf_rules());
         }
@@ -322,6 +567,100 @@ impl ClusterEngine {
 }
 
 // ============================================================
+// HA role helpers
+// ============================================================
+
+/// Returns the live CARP role of this node.
+///
+/// Reads `ifconfig` for the authoritative kernel state; falls back to
+/// `sysrc aifw_cluster_role` when no CARP iface has reported state yet
+/// (e.g., during early boot). Returns `ClusterRole::Standalone` when
+/// neither source yields a result.
+///
+/// This is the canonical role helper. All callers in aifw-api and
+/// aifw-daemon should delegate here rather than reimplementing.
+pub async fn current_local_role() -> aifw_common::ClusterRole {
+    let live = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("ifconfig 2>/dev/null | awk '/carp:/ {print tolower($2); exit}'")
+        .output()
+        .await
+        .ok();
+    if let Some(o) = live {
+        if o.status.success() {
+            match String::from_utf8_lossy(&o.stdout).trim() {
+                "master" => return aifw_common::ClusterRole::Primary,
+                "backup" => return aifw_common::ClusterRole::Secondary,
+                _ => {} // fall through to sysrc fallback
+            }
+        }
+    }
+    tokio::process::Command::new("sysrc")
+        .arg("-n")
+        .arg("aifw_cluster_role")
+        .output()
+        .await
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .and_then(|s| aifw_common::ClusterRole::parse(&s).ok())
+        .unwrap_or(aifw_common::ClusterRole::Standalone)
+}
+
+/// Returns true if the local node is currently the active CARP MASTER.
+///
+/// Delegates to `current_local_role()`. Returns false on any error — the
+/// safe default is to assume BACKUP so that operations that should only run
+/// on the master (ACME renewal, cert push) are skipped rather than duplicated.
+pub async fn is_local_master() -> bool {
+    matches!(current_local_role().await, aifw_common::ClusterRole::Primary)
+}
+
+// ============================================================
+// Crypto helpers
+// ============================================================
+
+pub fn sha256_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    hex::encode(h.finalize())
+}
+
+// ============================================================
+// Kernel helpers (called at daemon startup for state recovery)
+// ============================================================
+
+/// Execute an argv vector via tokio::process::Command (no shell).
+/// `argv[0]` is the executable; the rest are arguments.
+async fn run_argv(argv: &[String]) -> std::io::Result<()> {
+    if argv.is_empty() {
+        return Ok(());
+    }
+    let status = tokio::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .status()
+        .await?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "command {:?} exited with {}",
+            argv, status
+        )))
+    }
+}
+
+async fn read_local_role() -> aifw_common::ClusterRole {
+    current_local_role().await
+}
+
+// ============================================================
 // Row types
 // ============================================================
 
@@ -332,8 +671,6 @@ struct CarpVipRow {
     virtual_ip: String,
     prefix: i64,
     interface: String,
-    advskew: i64,
-    advbase: i64,
     password: String,
     status: String,
     created_at: String,
@@ -351,8 +688,6 @@ impl CarpVipRow {
                 .map_err(|e| AifwError::Database(format!("{e}")))?,
             prefix: self.prefix as u8,
             interface: Interface(self.interface),
-            advskew: self.advskew as u8,
-            advbase: self.advbase as u8,
             password: self.password,
             status: match self.status.as_str() {
                 "master" => CarpStatus::Master,
@@ -373,6 +708,10 @@ struct PfsyncRow {
     sync_peer: Option<String>,
     defer_mode: bool,
     enabled: bool,
+    latency_profile: String,
+    heartbeat_iface: Option<String>,
+    heartbeat_interval_ms: Option<i64>,
+    dhcp_link: bool,
     created_at: String,
 }
 
@@ -388,6 +727,12 @@ impl PfsyncRow {
                 .map_err(|e| AifwError::Database(format!("{e}")))?,
             defer: self.defer_mode,
             enabled: self.enabled,
+            latency_profile: CarpLatencyProfile::parse(&self.latency_profile)?,
+            heartbeat_iface: self.heartbeat_iface.map(Interface),
+            heartbeat_interval_ms: self
+                .heartbeat_interval_ms
+                .and_then(|n| u32::try_from(n).ok()),
+            dhcp_link: self.dhcp_link,
             created_at: parse_dt(&self.created_at)?,
         })
     }
@@ -403,10 +748,17 @@ struct ClusterNodeRow {
     last_seen: String,
     config_version: i64,
     created_at: String,
+    software_version: Option<String>,
+    last_pushed_cert_at: Option<String>,
 }
 
 impl ClusterNodeRow {
     fn into_node(self) -> Result<ClusterNode> {
+        let last_pushed_cert_at = self
+            .last_pushed_cert_at
+            .as_deref()
+            .map(parse_dt)
+            .transpose()?;
         Ok(ClusterNode {
             id: Uuid::parse_str(&self.id).map_err(|e| AifwError::Database(format!("{e}")))?,
             name: self.name,
@@ -424,6 +776,8 @@ impl ClusterNodeRow {
             last_seen: parse_dt(&self.last_seen)?,
             config_version: self.config_version as u64,
             created_at: parse_dt(&self.created_at)?,
+            software_version: self.software_version,
+            last_pushed_cert_at,
         })
     }
 }
@@ -461,4 +815,176 @@ fn parse_dt(s: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .map_err(|e| AifwError::Database(format!("invalid date: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Database;
+
+    #[tokio::test]
+    async fn recover_kernel_state_standalone_is_noop() {
+        let db = Database::new_in_memory().await.unwrap();
+        let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
+        let engine = ClusterEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+        let result = engine
+            .recover_kernel_state_for_role(aifw_common::ClusterRole::Standalone)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn apply_ha_rules_loads_carp_pf_rules() {
+        use aifw_common::{CarpLatencyProfile, CarpVip, Interface, PfsyncConfig};
+
+        let db = Database::new_in_memory().await.unwrap();
+        let mock = Arc::new(aifw_pf::PfMock::new());
+        let pf: Arc<dyn PfBackend> = mock.clone();
+        let engine = ClusterEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+
+        // Configure pfsync with Tight profile
+        let mut p = PfsyncConfig::new(Interface("igb1".into()));
+        p.latency_profile = CarpLatencyProfile::Tight;
+        engine.set_pfsync(p).await.unwrap();
+
+        // Add a CARP VIP
+        let vip = CarpVip::new(
+            10,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("igb0".into()),
+            "abc12345".into(),
+        );
+        engine.add_carp_vip(vip).await.unwrap();
+
+        // apply_ha_rules should succeed — sysctl fails on Linux/test but is
+        // logged as a warning (not an error), so Result is Ok
+        let result = engine.apply_ha_rules().await;
+        assert!(result.is_ok(), "apply_ha_rules failed: {result:?}");
+
+        // Verify the CARP rule was loaded into the aifw-ha anchor
+        let rules = mock.get_rules("aifw-ha").await.unwrap();
+        assert!(!rules.is_empty(), "no rules loaded into aifw-ha anchor");
+        assert!(
+            rules.iter().any(|r| r.contains("carp-vhid-10")),
+            "expected CARP rule for vhid 10, got: {rules:?}"
+        );
+    }
+
+    // ============================================================
+    // E7 — current_local_role linux-dev fallback
+    // ============================================================
+
+    /// On a Linux/WSL dev host there are no CARP interfaces and no
+    /// aifw_cluster_role rc.conf variable, so current_local_role must
+    /// fall all the way through both lookups and return Standalone.
+    ///
+    /// This test is intentionally skipped on FreeBSD targets (where a
+    /// CARP-configured host would legitimately return Primary/Secondary).
+    #[cfg(not(target_os = "freebsd"))]
+    #[tokio::test]
+    async fn current_local_role_returns_standalone_on_linux_dev() {
+        let role = current_local_role().await;
+        assert!(
+            matches!(role, aifw_common::ClusterRole::Standalone),
+            "expected Standalone on Linux dev host, got {role:?}"
+        );
+    }
+
+    // ============================================================
+    // E8 — redact_password_in_argv
+    // ============================================================
+
+    #[test]
+    fn redact_password_in_argv_basic() {
+        let argv = vec![
+            "ifconfig".to_string(),
+            "igb0".to_string(),
+            "vhid".to_string(),
+            "10".to_string(),
+            "advskew".to_string(),
+            "100".to_string(),
+            "advbase".to_string(),
+            "1".to_string(),
+            "pass".to_string(),
+            "secret123".to_string(),
+            "inet".to_string(),
+            "10.0.0.1/24".to_string(),
+            "alias".to_string(),
+        ];
+        let redacted = ClusterEngine::redact_password_in_argv(&argv);
+        let pass_pos = redacted.iter().position(|s| s == "pass").unwrap();
+        assert_eq!(redacted[pass_pos + 1], "<redacted>", "password token not redacted");
+        assert_eq!(redacted[0], "ifconfig", "first arg changed");
+        assert_eq!(
+            redacted[redacted.len() - 1],
+            "alias",
+            "last arg changed"
+        );
+    }
+
+    #[test]
+    fn redact_password_in_argv_no_pass_keyword() {
+        // pfsync commands have no "pass" keyword — should pass through unchanged
+        let argv = vec![
+            "ifconfig".to_string(),
+            "pfsync0".to_string(),
+            "syncdev".to_string(),
+            "igb1".to_string(),
+            "defer".to_string(),
+            "up".to_string(),
+        ];
+        let redacted = ClusterEngine::redact_password_in_argv(&argv);
+        assert_eq!(redacted, argv, "no-pass argv should be unchanged");
+    }
+
+    #[test]
+    fn redact_password_in_argv_pass_at_end_no_value() {
+        // Malformed argv with "pass" as the last element (no value) — must not panic
+        let argv = vec![
+            "ifconfig".to_string(),
+            "igb0".to_string(),
+            "pass".to_string(),
+        ];
+        let redacted = ClusterEngine::redact_password_in_argv(&argv);
+        // No panic, and the argv is returned as-is since there is no value to redact
+        assert_eq!(redacted, argv, "malformed argv with trailing pass should be unchanged");
+    }
+
+    #[tokio::test]
+    async fn recover_kernel_state_threads_profile_through() {
+        use aifw_common::{CarpLatencyProfile, CarpVip, ClusterRole, Interface, PfsyncConfig};
+
+        let db = Database::new_in_memory().await.unwrap();
+        let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
+        let engine = ClusterEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+
+        let mut p = PfsyncConfig::new(Interface("igb1".into()));
+        p.latency_profile = CarpLatencyProfile::Tight;
+        engine.set_pfsync(p).await.unwrap();
+
+        let vip = CarpVip::new(
+            10,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("igb0".into()),
+            "abc12345".into(),
+        );
+        engine.add_carp_vip(vip).await.unwrap();
+
+        // recover_kernel_state_for_role shells out to ifconfig/sysctl which won't
+        // succeed on Linux/WSL, but failures are warn-logged and swallowed; the
+        // call should still return Ok(()). The intent is to exercise the
+        // get_pfsync -> profile.timing_for(role) -> to_ifconfig_argv path.
+        let result = engine
+            .recover_kernel_state_for_role(ClusterRole::Secondary)
+            .await;
+        assert!(
+            result.is_ok(),
+            "recover_kernel_state_for_role returned {result:?}"
+        );
+    }
 }

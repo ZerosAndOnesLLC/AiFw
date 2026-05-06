@@ -1,6 +1,10 @@
+mod cluster_replicator;
+mod health_prober;
+mod role_watcher;
+
 use aifw_core::{
-    AliasEngine, Database, GatewayEngine, GroupEngine, InstanceEngine, LeakEngine, NatEngine,
-    PolicyEngine, RuleEngine, SlaEngine,
+    AliasEngine, ClusterEngine, Database, GatewayEngine, GroupEngine, InstanceEngine, LeakEngine,
+    NatEngine, PolicyEngine, RuleEngine, SlaEngine,
 };
 use chrono::Timelike;
 use clap::Parser;
@@ -206,6 +210,57 @@ async fn main() -> anyhow::Result<()> {
         info!("SLA aggregation loop started");
     }
 
+    // HA kernel-state recovery — idempotent; re-runs ifconfig commands for
+    // pfsync and CARP VIPs if they are absent after a reboot. Logs a warning
+    // and continues on failure so a misconfigured HA setup never prevents the
+    // daemon from coming up.
+    //
+    // cluster_engine is kept alive past this block so the ACME scheduler can
+    // use it for master-only renewal and cert-push to peers (Commit 9 #222).
+    let cluster_engine = Arc::new(ClusterEngine::new(pool.clone(), pf.clone()));
+    {
+        if let Err(e) = cluster_engine.migrate().await {
+            tracing::warn!(error = %e, "ha: cluster migrate failed; continuing");
+        }
+        if let Err(e) = cluster_engine.recover_kernel_state().await {
+            tracing::warn!(error = %e, "ha: kernel-state recovery failed; continuing");
+        }
+
+        // Cluster background tasks — active only when AIFW_LOOPBACK_API_KEY is set.
+        // RoleWatcher: 1s CARP role polling → /cluster/internal/role-changed
+        // HealthProber: per-check interval probes → CARP demotion on failure
+        // ClusterReplicator: 10s snapshot push to peer on master
+        let self_api_key = std::env::var("AIFW_LOOPBACK_API_KEY").unwrap_or_default();
+        if !self_api_key.is_empty() {
+            let api_base = aifw_common::DEFAULT_LOOPBACK_API_BASE.to_string();
+
+            let watcher = role_watcher::RoleWatcher::new(
+                api_base.clone(),
+                self_api_key.clone(),
+            );
+            tokio::spawn(watcher.run());
+            info!("ha: role watcher started");
+
+            let prober = health_prober::HealthProber::new(
+                cluster_engine.clone(),
+                api_base.clone(),
+                self_api_key.clone(),
+            );
+            tokio::spawn(prober.run());
+            info!("ha: health prober started");
+
+            let replicator = cluster_replicator::ClusterReplicator::new(
+                cluster_engine.clone(),
+                api_base,
+                self_api_key,
+            );
+            tokio::spawn(replicator.run());
+            info!("ha: cluster replicator started");
+        } else {
+            info!("ha: AIFW_LOOPBACK_API_KEY not set; cluster background tasks disabled");
+        }
+    }
+
     // IDS engine moved to aifw-ids binary (see PR 5 / spec
     // 2026-04-26-process-hardening-and-ids-extraction-design.md). aifw-daemon
     // no longer holds an in-process IdsEngine. Configuration changes flow
@@ -253,10 +308,12 @@ async fn main() -> anyhow::Result<()> {
     // ACME cert renewal scheduler — also daemon-owned. Sweeps certs flagged
     // for auto-renewal whose expiry is within the renew window, plus fires
     // expiring-soon notifications for certs nearing expiry.
+    // cluster_engine is passed so the scheduler skips renewal when BACKUP and
+    // pushes renewed certs to secondary peers after each master issuance (#222).
     aifw_core::acme::migrate(&pool)
         .await
         .unwrap_or_else(|e| error!("acme migration failed: {e}"));
-    aifw_core::acme_engine::spawn_scheduler(pool.clone());
+    aifw_core::acme_engine::spawn_scheduler(pool.clone(), Some(cluster_engine.clone()));
     info!("ACME renewal scheduler started");
 
     // Dynamic DNS scheduler — also daemon-owned. Sweeps every

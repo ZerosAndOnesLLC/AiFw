@@ -1,4 +1,18 @@
+// ============================================================
+// Loopback API constants
+// ============================================================
+
+/// Default loopback API port. Used by daemon background tasks and CLI
+/// to reach the local aifw-api process. The actual listen port is
+/// configured via `aifw-api --listen` but defaults to this value.
+///
+/// TODO: when peer ports become configurable per-node, store on
+/// cluster_nodes and use that instead.
+pub const DEFAULT_LOOPBACK_API_PORT: u16 = 8080;
+pub const DEFAULT_LOOPBACK_API_BASE: &str = "https://127.0.0.1:8080";
+
 pub mod alias;
+pub mod cluster_events;
 pub mod error;
 pub mod geoip;
 pub mod ha;
@@ -17,14 +31,15 @@ pub mod types;
 pub mod vpn;
 
 pub use alias::{Alias, AliasType};
+pub use cluster_events::{ClusterEvent, ClusterEventBus};
 pub use error::{AifwError, Result};
 pub use geoip::{
     CountryCode, GeoIpAction, GeoIpDbConfig, GeoIpEntry, GeoIpLookupResult, GeoIpRule,
     GeoIpRuleStatus,
 };
 pub use ha::{
-    CarpStatus, CarpVip, ClusterNode, ClusterRole, ConfigSnapshot, HealthCheck, HealthCheckType,
-    NodeHealth, PfsyncConfig,
+    CarpLatencyProfile, CarpStatus, CarpTiming, CarpVip, ClusterNode, ClusterRole, ConfigSnapshot,
+    HealthCheck, HealthCheckType, NodeHealth, PfsyncConfig,
 };
 pub use ids::{
     IdsAction, IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleMatch, IdsRuleset, IdsSeverity,

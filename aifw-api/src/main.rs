@@ -3,6 +3,7 @@ mod ai_analysis;
 mod aliases;
 mod auth;
 mod backup;
+mod cluster;
 mod backup_s3;
 mod ca;
 mod dhcp;
@@ -27,7 +28,8 @@ mod tests;
 use aifw_conntrack::ConnectionTracker;
 use aifw_core::{
     AliasEngine, Database, GatewayEngine, GeoIpEngine, GroupEngine, InstanceEngine, LeakEngine,
-    NatEngine, PolicyEngine, PreflightEngine, RuleEngine, SlaEngine, VpnEngine,
+    NatEngine, PolicyEngine, PreflightEngine, RuleEngine, ShapingEngine, SlaEngine, TlsEngine,
+    VpnEngine,
 };
 use aifw_pf::PfBackend;
 use axum::{
@@ -165,6 +167,13 @@ pub struct AppState {
     pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
     pub metrics_store: Arc<aifw_metrics::MetricsStore>,
     pub auth_settings: auth::AuthSettings,
+    pub cluster_engine: Arc<aifw_core::ClusterEngine>,
+    pub shaping_engine: Arc<ShapingEngine>,
+    pub tls_engine: Arc<TlsEngine>,
+    /// Cached at startup: `sysrc -n aifw_cluster_enabled == YES`.
+    /// Never changes without a config write, so a one-shot read is correct.
+    pub cluster_enabled: Arc<std::sync::atomic::AtomicBool>,
+    pub cluster_events: aifw_common::ClusterEventBus,
     pub metrics_history: Arc<RwLock<VecDeque<String>>>,
     pub metrics_history_max: Arc<std::sync::atomic::AtomicUsize>,
     pub redis: Option<redis::aio::ConnectionManager>,
@@ -188,6 +197,23 @@ impl AppState {
         let mut p = self.pending.write().await;
         f(&mut p);
         let _ = self.pending_tx.send(p.clone());
+    }
+
+    /// Produces (snapshot_data_json, sha256_hex_hash) for cluster replication.
+    /// Includes everything backup exports plus IDS rule overrides + suppressions.
+    /// Hash is sha256 of the JSON bytes.
+    pub async fn cluster_snapshot_data(
+        &self,
+    ) -> Result<(String, String), aifw_common::AifwError> {
+        let payload = crate::backup::cluster_export_payload(self)
+            .await
+            .map_err(|e| aifw_common::AifwError::Other(format!("export: {e:?}")))?;
+        let json = serde_json::to_string(&payload)
+            .map_err(|e| aifw_common::AifwError::Other(format!("serialize: {e}")))?;
+
+        let hash = aifw_core::sha256_hex(&json);
+
+        Ok((json, hash))
     }
 }
 
@@ -909,6 +935,18 @@ pub fn build_router(
         )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
 
+    // Local-tarball install — needs a large body limit (500 MB) for the
+    // tarball upload, so it gets its own router with DefaultBodyLimit applied
+    // before the auth/permission middleware.  The perm_check is still applied
+    // so only UpdatesInstall-capable sessions can trigger it.
+    let updates_install_local = Router::new()
+        .route(
+            "/api/v1/updates/aifw/install-local",
+            post(updates::install_aifw_update_local),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(500 * 1024 * 1024))
+        .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
+
     // backup:read
     let backup_read = Router::new()
         .route("/api/v1/config/history", get(backup::config_history))
@@ -1267,6 +1305,13 @@ pub fn build_router(
         .route("/api/v1/multiwan/apply-yaml", post(multiwan::import_config))
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
+    // ha:manage
+    let cluster_read = cluster::read_routes()
+        .layer(middleware::from_fn(perm_check!(Permission::HaManage)));
+
+    let cluster_write = cluster::write_routes()
+        .layer(middleware::from_fn(perm_check!(Permission::HaManage)));
+
     // Merge all permission-scoped groups into one protected router with auth
     let protected_routes = Router::new()
         .merge(self_service)
@@ -1299,6 +1344,7 @@ pub fn build_router(
         .merge(plugins_write)
         .merge(updates_read)
         .merge(updates_install)
+        .merge(updates_install_local)
         .merge(backup_read)
         .merge(backup_write)
         .merge(system_reboot)
@@ -1306,6 +1352,8 @@ pub fn build_router(
         .merge(proxy_write)
         .merge(multiwan_read)
         .merge(multiwan_write)
+        .merge(cluster_read)
+        .merge(cluster_write)
         .merge(system_read)
         .merge(system_write)
         // Auto-snapshot every successful mutation. Middleware is applied
@@ -1523,6 +1571,80 @@ async fn create_state_from_db(
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
+    let cluster_engine = Arc::new(aifw_core::ClusterEngine::new(pool.clone(), pf.clone()));
+    cluster_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let shaping_engine = Arc::new(ShapingEngine::new(pool.clone(), pf.clone()));
+    shaping_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    let tls_engine = Arc::new(TlsEngine::new(pool.clone(), pf.clone()));
+    tls_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+
+    // Read aifw_cluster_enabled once at startup. The flag only changes on
+    // config writes, so a cached value is always correct for the process lifetime.
+    let cluster_enabled_val = tokio::process::Command::new("sysrc")
+        .arg("-n")
+        .arg("aifw_cluster_enabled")
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")
+        .unwrap_or(false);
+    let cluster_enabled = Arc::new(std::sync::atomic::AtomicBool::new(cluster_enabled_val));
+
+    // Self-register software version for HA dashboard drift detection.
+    // Run once at boot; no-op if this node is not in cluster_nodes yet.
+    {
+        let our_version = env!("CARGO_PKG_VERSION");
+        let our_hostname = tokio::process::Command::new("hostname")
+            .output()
+            .await
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            });
+        if let Some(name) = our_hostname {
+            let _ = sqlx::query(
+                "UPDATE cluster_nodes SET software_version = ?1 WHERE name = ?2",
+            )
+            .bind(our_version)
+            .bind(&name)
+            .execute(&pool)
+            .await;
+        }
+    }
+
+    let cluster_events = aifw_common::ClusterEventBus::new();
+
+    // Commit 10 (#226): emit ClusterEvent::Metrics every 2s for the HA dashboard sparkline.
+    // Short-circuits on non-clustered nodes to avoid spawning ifconfig+pfctl subprocesses
+    // every 2s on standalone deployments.
+    {
+        let bus = cluster_events.clone();
+        let cluster_enabled_clone = cluster_enabled.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+
+                // Skip emission on non-clustered nodes (O(1) cached read).
+                if !cluster_enabled_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
+
+                let (pfsync_in, pfsync_out, state_count) = sample_pfsync_metrics().await;
+                bus.emit(aifw_common::ClusterEvent::Metrics {
+                    pfsync_in,
+                    pfsync_out,
+                    state_count,
+                    ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                });
+            }
+        });
+    }
 
     // IDS engine moved to aifw-ids binary (see PR 5 / spec
     // 2026-04-26-process-hardening-and-ids-extraction-design.md). The API
@@ -1629,6 +1751,11 @@ async fn create_state_from_db(
         plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
         metrics_store: metrics_store.clone(),
         auth_settings,
+        cluster_engine,
+        shaping_engine,
+        tls_engine,
+        cluster_enabled,
+        cluster_events,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
         metrics_history_max: Arc::new(std::sync::atomic::AtomicUsize::new(history_max)),
         redis: None,
@@ -1637,6 +1764,66 @@ async fn create_state_from_db(
         login_limiter: LoginRateLimiter::default(),
         ws_tickets: auth::ws_ticket::WsTicketStore::new(),
     })
+}
+
+/// Sample pfsync(4) packet counters and the pf state table size.
+/// Returns (pfsync_in_pkts, pfsync_out_pkts, state_count).
+/// On non-FreeBSD (dev/CI) all three are 0.
+async fn sample_pfsync_metrics() -> (u64, u64, u64) {
+    let pfsync_text = tokio::process::Command::new("ifconfig")
+        .arg("pfsync0")
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    // pfsync(4) ifconfig output contains lines like:
+    //   input:  12345 packets, 67890 bytes
+    //   output: 23456 packets, 78901 bytes
+    let parse = |label: &str| -> u64 {
+        for line in pfsync_text.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix(label) {
+                if let Some(num) = rest.split_whitespace().next() {
+                    return num.replace(',', "").parse().unwrap_or(0);
+                }
+            }
+        }
+        0
+    };
+    let pfsync_in = parse("input:");
+    let pfsync_out = parse("output:");
+
+    let state_count = pfsync_state_count_from_si().await;
+
+    (pfsync_in, pfsync_out, state_count)
+}
+
+/// Parse `pfctl -si` "current entries" line to get the pf state table size in O(1).
+/// Format on FreeBSD:
+///   State Table                          Total             Rate
+///     current entries                    12345
+async fn pfsync_state_count_from_si() -> u64 {
+    let out = tokio::process::Command::new("pfctl")
+        .args(["-si"])
+        .output()
+        .await;
+    match out {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            for line in text.lines() {
+                let line = line.trim_start();
+                if let Some(rest) = line.strip_prefix("current entries") {
+                    if let Some(num) = rest.trim().split_whitespace().next() {
+                        return num.parse().unwrap_or(0);
+                    }
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
 }
 
 fn ensure_tls_cert(cert_path: &std::path::Path, key_path: &std::path::Path) -> anyhow::Result<()> {

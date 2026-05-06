@@ -9,6 +9,8 @@ use sqlx::sqlite::SqlitePool;
 use tokio::process::Command;
 use uuid::Uuid;
 
+use aifw_common::ClusterRole;
+
 use crate::AppState;
 
 const RDHCP_CONFIG_PATH: &str = "/usr/local/etc/rdhcpd/config.toml";
@@ -1402,15 +1404,45 @@ pub async fn update_ddns_config(
 // --- HA config ---
 
 pub async fn get_ha_config(State(state): State<AppState>) -> Result<Json<HaConfig>, StatusCode> {
-    Ok(Json(load_ha_config(&state.pool).await))
+    let mut cfg = load_ha_config(&state.pool).await;
+    let linked = state.cluster_engine.get_pfsync().await
+        .ok()
+        .flatten()
+        .map(|p| p.dhcp_link)
+        .unwrap_or(false);
+    if linked {
+        let (peer, peers) = derive_ha_peers_from_cluster(&state).await;
+        cfg.peer = peer;
+        cfg.peers = peers;
+    }
+    Ok(Json(cfg))
 }
 
 pub async fn update_ha_config(
     State(state): State<AppState>,
     Json(config): Json<HaConfig>,
-) -> Result<Json<MessageResponse>, StatusCode> {
+) -> Result<Json<HaConfig>, (StatusCode, Json<serde_json::Value>)> {
+    let linked = state.cluster_engine.get_pfsync().await
+        .ok()
+        .flatten()
+        .map(|p| p.dhcp_link)
+        .unwrap_or(false);
+
+    // When linked, peer fields are derived from cluster_nodes; reject any attempt
+    // to supply them directly so the caller gets a clear error rather than a
+    // silent discard.
+    if linked && (config.peer.is_some() || config.peers.is_some()) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "detail": "DHCP HA peer list is inherited from cluster_nodes (pfsync.dhcp_link=true). \
+                           Set dhcp_link=false via PUT /api/v1/cluster/pfsync to edit peers manually."
+            })),
+        ));
+    }
+
+    // Always save non-peer fields.
     save_ha_key(&state.pool, "mode", &config.mode).await;
-    save_ha_key(&state.pool, "peer", config.peer.as_deref().unwrap_or("")).await;
     save_ha_key(
         &state.pool,
         "listen",
@@ -1447,16 +1479,9 @@ pub async fn update_ha_config(
         &config.node_id.map(|v| v.to_string()).unwrap_or_default(),
     )
     .await;
-    save_ha_key(
-        &state.pool,
-        "peers",
-        &config
-            .peers
-            .as_ref()
-            .map(|v| v.join(","))
-            .unwrap_or_default(),
-    )
-    .await;
+    // TODO: when the cluster cert store lands (#222 / #217 follow-up), reuse the
+    // per-peer API key/cert from cluster_nodes instead of saving DHCP-specific
+    // TLS material here.
     save_ha_key(
         &state.pool,
         "tls_cert",
@@ -1475,9 +1500,69 @@ pub async fn update_ha_config(
         config.tls_ca.as_deref().unwrap_or(""),
     )
     .await;
-    Ok(Json(MessageResponse {
-        message: "HA config updated".to_string(),
-    }))
+
+    // When linked, derive peers from cluster_nodes (peer fields already rejected above if present).
+    if linked {
+        let (peer, peers) = derive_ha_peers_from_cluster(&state).await;
+        let mut cfg = load_ha_config(&state.pool).await;
+        cfg.peer = peer;
+        cfg.peers = peers;
+        return Ok(Json(cfg));
+    }
+
+    // Not linked: save the operator-supplied peer fields.
+    save_ha_key(&state.pool, "peer", config.peer.as_deref().unwrap_or("")).await;
+    save_ha_key(
+        &state.pool,
+        "peers",
+        &config
+            .peers
+            .as_ref()
+            .map(|v| v.join(","))
+            .unwrap_or_default(),
+    )
+    .await;
+
+    Ok(Json(load_ha_config(&state.pool).await))
+}
+
+/// Derive DHCP HA peer addresses from cluster_nodes, filtering out the local node.
+/// Returns (peer for active-active, peers for raft).
+async fn derive_ha_peers_from_cluster(state: &AppState) -> (Option<String>, Option<Vec<String>>) {
+    let local_role_str = crate::cluster::read_local_role().await;
+    let local_role = ClusterRole::parse(&local_role_str).unwrap_or(ClusterRole::Standalone);
+
+    // Standalone nodes have no cluster relationship; never derive peers.
+    if matches!(local_role, ClusterRole::Standalone) {
+        return (None, None);
+    }
+
+    let nodes = state.cluster_engine.list_nodes().await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "ha: list_nodes failed during DHCP HA peer derivation");
+        vec![]
+    });
+    let peer_addrs: Vec<String> = nodes
+        .into_iter()
+        .filter(|n| n.role != local_role)
+        .map(|n| n.address.to_string())
+        .collect();
+
+    // active-active DHCP HA only supports a single peer; when multiple non-self
+    // nodes are present we take the first match. Use Raft mode for 3+ node clusters.
+    let peer = if peer_addrs.len() > 1 {
+        tracing::warn!(
+            candidates = peer_addrs.len(),
+            chosen = ?peer_addrs.first(),
+            "ha: active-active DHCP HA only supports one peer; selecting first non-self node \
+             (use Raft mode for 3+ node clusters)"
+        );
+        peer_addrs.first().cloned()
+    } else {
+        peer_addrs.first().cloned()
+    };
+
+    let peers = if peer_addrs.is_empty() { None } else { Some(peer_addrs) };
+    (peer, peers)
 }
 
 // --- HA live status (from rDHCP API) ---
