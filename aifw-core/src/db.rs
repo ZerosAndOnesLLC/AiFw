@@ -86,6 +86,9 @@ impl Database {
                 timeout_icmp INTEGER,
                 status TEXT NOT NULL DEFAULT 'active',
                 schedule_id TEXT,
+                ip_version TEXT NOT NULL DEFAULT 'both',
+                src_invert INTEGER NOT NULL DEFAULT 0,
+                dst_invert INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -93,6 +96,16 @@ impl Database {
         )
         .execute(&self.pool)
         .await?;
+
+        // Idempotent ALTERs for pre-existing tables. SQLite has no IF NOT
+        // EXISTS for ADD COLUMN; ignore the duplicate-column error.
+        for stmt in [
+            "ALTER TABLE rules ADD COLUMN ip_version TEXT NOT NULL DEFAULT 'both'",
+            "ALTER TABLE rules ADD COLUMN src_invert INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE rules ADD COLUMN dst_invert INTEGER NOT NULL DEFAULT 0",
+        ] {
+            let _ = sqlx::query(stmt).execute(&self.pool).await;
+        }
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_rules_priority ON rules(priority);")
             .execute(&self.pool)
@@ -122,9 +135,10 @@ impl Database {
             INSERT INTO rules (id, priority, action, direction, interface, protocol,
                 src_addr, src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end,
                 log, quick, label, state_tracking, state_policy, adaptive_start, adaptive_end,
-                timeout_tcp, timeout_udp, timeout_icmp, status, created_at, updated_at, schedule_id)
+                timeout_tcp, timeout_udp, timeout_icmp, status, created_at, updated_at, schedule_id,
+                ip_version, src_invert, dst_invert)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
+                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
             "#,
         )
         .bind(rule.id.to_string())
@@ -169,6 +183,9 @@ impl Database {
         .bind(rule.created_at.to_rfc3339())
         .bind(rule.updated_at.to_rfc3339())
         .bind(rule.schedule_id.as_deref())
+        .bind(format!("{:?}", rule.ip_version).to_lowercase())
+        .bind(rule.src_invert)
+        .bind(rule.dst_invert)
         .execute(&self.pool)
         .await?;
 
@@ -214,7 +231,8 @@ impl Database {
                 state_tracking = ?16, state_policy = ?17,
                 adaptive_start = ?18, adaptive_end = ?19,
                 timeout_tcp = ?20, timeout_udp = ?21, timeout_icmp = ?22,
-                status = ?23, updated_at = ?24, schedule_id = ?25
+                status = ?23, updated_at = ?24, schedule_id = ?25,
+                ip_version = ?26, src_invert = ?27, dst_invert = ?28
             WHERE id = ?1
             "#,
         )
@@ -259,6 +277,9 @@ impl Database {
         })
         .bind(Utc::now().to_rfc3339())
         .bind(rule.schedule_id.as_deref())
+        .bind(format!("{:?}", rule.ip_version).to_lowercase())
+        .bind(rule.src_invert)
+        .bind(rule.dst_invert)
         .execute(&self.pool)
         .await?;
 
@@ -338,6 +359,9 @@ struct RuleRow {
     created_at: String,
     updated_at: String,
     schedule_id: Option<String>,
+    ip_version: String,
+    src_invert: bool,
+    dst_invert: bool,
 }
 
 impl RuleRow {
@@ -385,9 +409,10 @@ impl RuleRow {
                 dst_addr: Address::parse(&self.dst_addr)?,
                 dst_port: parse_port_range(self.dst_port_start, self.dst_port_end),
             },
-            ip_version: aifw_common::IpVersion::default(),
-            src_invert: false,
-            dst_invert: false,
+            ip_version: aifw_common::IpVersion::parse(&self.ip_version)
+                .unwrap_or_default(),
+            src_invert: self.src_invert,
+            dst_invert: self.dst_invert,
             log: self.log,
             quick: self.quick,
             label: self.label,

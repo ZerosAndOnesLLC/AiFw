@@ -2658,7 +2658,7 @@ pub async fn delete_static_route(
     }))
 }
 
-async fn apply_route_to_system(
+pub(crate) async fn apply_route_to_system(
     destination: &str,
     gateway: &str,
     interface: Option<&str>,
