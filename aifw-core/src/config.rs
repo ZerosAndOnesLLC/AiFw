@@ -43,6 +43,15 @@ pub struct FirewallConfig {
     /// schema rev — `#[serde(default)]` keeps older backups deserialising.
     #[serde(default)]
     pub dhcp: DhcpSection,
+    /// Named aliases (host / network / port / urltable). Round-tripped so
+    /// snapshot+restore (and the OPNsense importer's pre-import snapshot)
+    /// can revert alias additions cleanly.
+    #[serde(default)]
+    pub aliases: Vec<AliasConfig>,
+    /// Static routes. Same rationale as aliases — without this section,
+    /// snapshot/restore silently drops every route the user defined.
+    #[serde(default)]
+    pub static_routes: Vec<StaticRouteConfig>,
 }
 
 impl Default for FirewallConfig {
@@ -61,8 +70,43 @@ impl Default for FirewallConfig {
             ha: HaConfig::default(),
             tuning: Vec::new(),
             dhcp: DhcpSection::default(),
+            aliases: Vec::new(),
+            static_routes: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AliasConfig {
+    pub id: String,
+    pub name: String,
+    pub alias_type: String,
+    pub entries: Vec<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticRouteConfig {
+    pub id: String,
+    pub destination: String,
+    pub gateway: String,
+    #[serde(default)]
+    pub interface: Option<String>,
+    #[serde(default)]
+    pub metric: i32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub fib: u32,
 }
 
 impl FirewallConfig {
@@ -293,6 +337,19 @@ pub struct RuleConfig {
     pub label: Option<String>,
     pub state_tracking: String,
     pub status: String,
+    /// Address family — `inet`, `inet6`, or `both`. Older backups predate
+    /// this field; default to `both` so historical rules keep their
+    /// dual-stack semantics on restore.
+    #[serde(default = "default_ip_version")]
+    pub ip_version: String,
+    #[serde(default)]
+    pub src_invert: bool,
+    #[serde(default)]
+    pub dst_invert: bool,
+}
+
+fn default_ip_version() -> String {
+    "both".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

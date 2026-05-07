@@ -1225,6 +1225,9 @@ mod tests {
             label: Some("https".into()),
             state_tracking: "keep_state".into(),
             status: "active".into(),
+            ip_version: "both".into(),
+            src_invert: false,
+            dst_invert: false,
         });
         assert_eq!(config.resource_count(), 1);
     }
@@ -1377,6 +1380,9 @@ mod tests {
             label: None,
             state_tracking: "keep_state".into(),
             status: "active".into(),
+            ip_version: "both".into(),
+            src_invert: false,
+            dst_invert: false,
         });
         let v2 = mgr.save_version(&c2, "test", None).await.unwrap();
 

@@ -106,6 +106,31 @@ impl std::fmt::Display for Action {
     }
 }
 
+impl Action {
+    /// Stable string identity used by the DB layer + config snapshots.
+    /// Decoupled from `Display` (which produces pf-syntax with whitespace)
+    /// and from `format!("{:?}")` (which depends on the Rust enum-variant
+    /// name and would silently break on a rename).
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Action::Pass => "pass",
+            Action::Block => "block",
+            Action::BlockDrop => "block_drop",
+            Action::BlockReturn => "block_return",
+        }
+    }
+
+    pub fn parse_db(s: &str) -> Option<Self> {
+        match s {
+            "pass" => Some(Action::Pass),
+            "block" => Some(Action::Block),
+            "block_drop" | "blockdrop" => Some(Action::BlockDrop),
+            "block_return" | "blockreturn" => Some(Action::BlockReturn),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
