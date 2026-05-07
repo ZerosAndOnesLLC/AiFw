@@ -14,6 +14,7 @@ mod iface;
 mod log_tail;
 mod metrics_series;
 mod multiwan;
+mod opnsense;
 mod plugins;
 mod reverse_proxy;
 mod routes;
@@ -956,7 +957,8 @@ pub fn build_router(
         .route("/api/v1/config/export", get(routes::export_config))
         .route(
             "/api/v1/config/preview-opnsense",
-            post(backup::preview_opnsense),
+            post(opnsense::preview_opnsense)
+                .layer(axum::extract::DefaultBodyLimit::max(15 * 1024 * 1024)),
         )
         .route(
             "/api/v1/config/import-preview",
@@ -985,7 +987,8 @@ pub fn build_router(
         .route("/api/v1/config/restore", post(backup::restore_version))
         .route(
             "/api/v1/config/import-opnsense",
-            post(backup::import_opnsense),
+            post(opnsense::import_opnsense)
+                .layer(axum::extract::DefaultBodyLimit::max(15 * 1024 * 1024)),
         )
         .route("/api/v1/config/save", post(backup::save_version))
         .route(

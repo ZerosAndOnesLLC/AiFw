@@ -300,26 +300,35 @@ impl Rule {
             parts.push(format!("on {iface}"));
         }
 
+        // address family — must precede `proto` in pf grammar
+        match self.ip_version {
+            IpVersion::Inet => parts.push("inet".to_string()),
+            IpVersion::Inet6 => parts.push("inet6".to_string()),
+            IpVersion::Both => {} // pf default is to match both families
+        }
+
         // protocol
         if self.protocol != Protocol::Any {
             parts.push(format!("proto {}", self.protocol));
         }
 
-        // source
+        // source — `!` prefix for invert per pf grammar
         let src = &self.rule_match.src_addr;
+        let src_neg = if self.src_invert { "! " } else { "" };
         if *src != Address::Any {
             match &self.rule_match.src_port {
-                Some(port) => parts.push(format!("from {src} port {port}")),
-                None => parts.push(format!("from {src}")),
+                Some(port) => parts.push(format!("from {src_neg}{src} port {port}")),
+                None => parts.push(format!("from {src_neg}{src}")),
             }
         }
 
         // destination
         let dst = &self.rule_match.dst_addr;
+        let dst_neg = if self.dst_invert { "! " } else { "" };
         if *dst != Address::Any {
             match &self.rule_match.dst_port {
-                Some(port) => parts.push(format!("to {dst} port {port}")),
-                None => parts.push(format!("to {dst}")),
+                Some(port) => parts.push(format!("to {dst_neg}{dst} port {port}")),
+                None => parts.push(format!("to {dst_neg}{dst}")),
             }
         } else if let Some(ref port) = self.rule_match.dst_port {
             parts.push(format!("to any port {port}"));
