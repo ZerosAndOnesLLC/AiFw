@@ -200,25 +200,132 @@ async fn import_writes_nat_via_engine_with_proper_columns() {
 }
 
 #[tokio::test]
-async fn import_persists_dns_to_auth_config() {
+async fn import_default_does_not_change_dns_or_hostname() {
+    // Audit C4 + H1: default import leaves system settings alone. The user
+    // must opt in via `import_system_settings: true`.
     let (server, _) = test_app().await;
     let token = login(&server).await;
-    let _ = server
+
+    let resp = server
         .post("/api/v1/config/import-opnsense")
         .add_header("authorization", format!("Bearer {token}"))
         .json(&json!({ "xml": MEDIUM_FIXTURE, "commit_confirm": false }))
         .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["applied"]["dns_servers"], 0, "DNS not applied without opt-in");
+    assert_eq!(body["applied"]["hostname"], false, "hostname not applied without opt-in");
+}
 
-    // C1: DNS persisted via the same path /api/v1/dns reads.
-    // (We can't fully assert the resolv.conf write inside an in-memory test
-    // — sudo isn't wired — but the DB row IS the durable state.)
+#[tokio::test]
+async fn import_with_system_settings_opt_in_applies_them() {
+    let (server, _) = test_app().await;
+    let token = login(&server).await;
+
     let resp = server
-        .get("/api/v1/dns")
+        .post("/api/v1/config/import-opnsense")
         .add_header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "xml": MEDIUM_FIXTURE,
+            "commit_confirm": false,
+            "import_system_settings": true,
+        }))
         .await;
     resp.assert_status_ok();
-    // get_dns reads /etc/resolv.conf which we don't control here; the auth_config
-    // row is what survives. The router has the route — that's the contract.
+    let body: Value = resp.json();
+    assert_eq!(body["applied"]["dns_servers"], 2, "both DNS upstreams applied");
+    assert_eq!(body["applied"]["hostname"], true, "hostname applied");
+}
+
+#[tokio::test]
+async fn import_refuses_when_commit_confirm_already_active() {
+    // Audit H5: stacking a second commit-confirm window silently dropped the
+    // first timer. Importer now refuses with 409.
+    let (server, _) = test_app().await;
+    let token = login(&server).await;
+
+    // First import arms commit-confirm.
+    let first = server
+        .post("/api/v1/config/import-opnsense")
+        .add_header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "xml": MEDIUM_FIXTURE,
+            "commit_confirm": true,
+        }))
+        .await;
+    first.assert_status_ok();
+
+    // Second import should be refused.
+    let second = server
+        .post("/api/v1/config/import-opnsense")
+        .add_header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "xml": MEDIUM_FIXTURE,
+            "commit_confirm": true,
+        }))
+        .await;
+    assert_eq!(second.status_code(), StatusCode::CONFLICT);
+
+    // Clean up the global commit-confirm state so unrelated tests aren't
+    // left with stale active state in this process.
+    let _ = server
+        .post("/api/v1/config/commit-confirm/confirm")
+        .add_header("authorization", format!("Bearer {token}"))
+        .await;
+}
+
+#[tokio::test]
+async fn imported_ipv6_rule_round_trips_through_config_history() {
+    // Audit H6: the rules table has ip_version/src_invert/dst_invert columns,
+    // but they only matter if `RuleConfig` (used by snapshot/restore) carries
+    // them. Without that round-trip the auto-snapshot middleware silently
+    // demotes IPv6 rules back to "both" on the very next mutation.
+    let (server, _) = test_app().await;
+    let token = login(&server).await;
+
+    let resp = server
+        .post("/api/v1/config/import-opnsense")
+        .add_header("authorization", format!("Bearer {token}"))
+        .json(&json!({
+            "xml": MEDIUM_FIXTURE,
+            "interface_map": { "lan": "eth0" },
+            "commit_confirm": false,
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    // History was the *pre-import* state (empty) — make a fresh snapshot
+    // post-import that captures the imported rules and verify ip_version
+    // survives the FirewallConfig round-trip.
+    let save = server
+        .post("/api/v1/config/save")
+        .add_header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "comment": "post-import" }))
+        .await;
+    save.assert_status_ok();
+    let history_list = server
+        .get("/api/v1/config/history?limit=5")
+        .add_header("authorization", format!("Bearer {token}"))
+        .await;
+    let body: Value = history_list.json();
+    let arr = body["data"].as_array().or_else(|| body.as_array()).unwrap();
+    let latest = arr
+        .iter()
+        .filter_map(|v| v["version"].as_i64())
+        .max()
+        .unwrap();
+    let v = server
+        .get(&format!("/api/v1/config/version?version={latest}"))
+        .add_header("authorization", format!("Bearer {token}"))
+        .await;
+    v.assert_status_ok();
+    let cfg: Value = v.json();
+    let rules = cfg["rules"].as_array().expect("rules array in snapshot");
+    let ssh = rules
+        .iter()
+        .find(|r| r["label"].as_str().unwrap_or("").contains("SSH"))
+        .expect("imported SSH rule in snapshot");
+    assert_eq!(ssh["ip_version"], "inet6", "ip_version round-trips through FirewallConfig");
 }
 
 #[tokio::test]

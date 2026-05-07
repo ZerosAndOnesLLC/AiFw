@@ -145,12 +145,22 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                     .unescape()
                     .map_err(|err| ParseError::Malformed(err.to_string()))?
                     .into_owned();
-                if !s.trim().is_empty() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
                     let last = stack.last_mut().unwrap();
                     if last.text.is_empty() {
-                        last.text = s.trim().to_string();
+                        // First text run: keep the raw whitespace from the
+                        // event so multi-line `<address>10.0.0.5\n10.0.0.6
+                        // </address>` content survives the splitter that
+                        // alias parsing relies on.
+                        last.text = s;
                     } else {
-                        last.text.push_str(s.trim());
+                        // Subsequent run (quick-xml occasionally splits text
+                        // across events): always insert a single newline as
+                        // a safe separator. Without this, two split events
+                        // could concatenate IPs into "10.0.0.510.0.0.6".
+                        last.text.push('\n');
+                        last.text.push_str(&s);
                     }
                 }
             }
@@ -161,6 +171,9 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                     .map_err(|err| ParseError::Malformed(err.to_string()))?
                     .to_string();
                 let last = stack.last_mut().unwrap();
+                if !last.text.is_empty() {
+                    last.text.push('\n');
+                }
                 last.text.push_str(&s);
             }
         }
@@ -229,18 +242,29 @@ fn parse_rule(node: &Node) -> OpnRule {
             .collect()
     };
 
+    let floating = node.child("floating").map(|n| n.text == "yes").unwrap_or(false);
+    // OPNsense `<quick>` semantics depend on whether the rule is floating.
+    // Non-floating rules default to quick=yes (first match wins, the pf
+    // default for AiFw rules). Floating rules default to quick=no (last
+    // match wins) to match OPNsense's UI default. Explicit `<quick>` always
+    // overrides.
+    let quick = match node.child("quick") {
+        Some(n) => n.text != "0" && !n.text.eq_ignore_ascii_case("no"),
+        None => !floating,
+    };
+
     OpnRule {
         action: node.child("type").map(|n| n.text.clone()).unwrap_or_else(|| "pass".into()),
         direction: node.child("direction").map(|n| n.text.clone()).unwrap_or_else(|| "in".into()),
         interface,
-        floating: node.child("floating").map(|n| n.text == "yes").unwrap_or(false),
+        floating,
         ipprotocol: node.child("ipprotocol").map(|n| AddrFamily::parse(&n.text)).unwrap_or(AddrFamily::Inet),
         protocol: node.child("protocol").map(|n| n.text.clone()).unwrap_or_else(|| "any".into()),
         source: node.child("source").map(parse_endpoint).unwrap_or_default(),
         destination: node.child("destination").map(parse_endpoint).unwrap_or_default(),
         disabled: node.has_child("disabled"),
         log: node.has_child("log"),
-        quick: node.child("quick").map(|n| n.text != "0" && n.text != "no").unwrap_or(true),
+        quick,
         descr: node.child("descr").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
     }
 }
@@ -272,6 +296,8 @@ fn parse_nat(node: &Node) -> OpnNat {
                 target: r.child("target").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
                 disabled: r.has_child("disabled"),
                 descr: r.child("descr").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+                nonat: r.has_child("nonat"),
+                staticnatport: r.has_child("staticnatport"),
             });
         }
     }

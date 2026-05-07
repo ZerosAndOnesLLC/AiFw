@@ -61,6 +61,12 @@ pub struct ImportRequest {
     /// for unattended / programmatic imports.
     #[serde(default = "default_true")]
     pub commit_confirm: bool,
+    /// Apply hostname/domain/DNS upstreams from the source config. Defaults
+    /// to false: most admins want to import rules + NAT + aliases without
+    /// having their AiFw hostname renamed to the OPNsense one and their
+    /// rDNS upstreams overwritten. Opt in if you want a full migration.
+    #[serde(default)]
+    pub import_system_settings: bool,
 }
 fn default_true() -> bool {
     true
@@ -275,6 +281,10 @@ fn build_plan(
     // the real import would produce after writing.
     let mut available_aliases: HashSet<String> = HashSet::new();
     for a in &cfg.aliases {
+        // M1 from audit: kind comparison must match what `apply_aliases`
+        // does (case-insensitive). Without the lowercase, `<type>HOST</type>`
+        // would plan as "type 'HOST' not supported" but apply successfully.
+        let kind_lc = a.kind.to_lowercase();
         let mut skip_reason: Option<String> = None;
         if a.disabled {
             skip_reason = Some("disabled in source config".into());
@@ -282,7 +292,7 @@ fn build_plan(
             skip_reason = Some("invalid alias name".into());
         } else if existing_aliases.contains(&a.name) {
             skip_reason = Some("name collides with existing AiFw alias".into());
-        } else if !matches!(a.kind.as_str(), "host" | "network" | "port" | "url" | "urltable") {
+        } else if !matches!(kind_lc.as_str(), "host" | "network" | "port" | "url" | "urltable") {
             skip_reason = Some(format!("alias type '{}' not supported", a.kind));
         } else {
             available_aliases.insert(a.name.clone());
@@ -306,8 +316,31 @@ fn build_plan(
                 .collect()
         };
         for iface in interfaces {
-            let (src, src_port_repr, dst, dst_port_repr, skip_reason) =
+            let (src, src_port_repr, dst, dst_port_repr, mut skip_reason) =
                 preview_rule_endpoints(r, &available_aliases);
+            // H2/H3 from audit: validate port/protocol compatibility and
+            // port-alias resolution at plan time so the dry-run reflects
+            // what apply will actually do.
+            if skip_reason.is_none() && (src_port_repr.is_some() || dst_port_repr.is_some()) {
+                let proto_ok = matches!(
+                    r.protocol.to_lowercase().as_str(),
+                    "tcp" | "udp" | "tcpudp" | "tcp/udp" | "tcp+udp"
+                );
+                if !proto_ok {
+                    skip_reason = Some(format!(
+                        "port matching requires tcp/udp protocol; rule has protocol '{}'",
+                        r.protocol
+                    ));
+                }
+            }
+            if skip_reason.is_none() {
+                for p in [&src_port_repr, &dst_port_repr].into_iter().flatten() {
+                    if parse_port_spec(p, &available_aliases).is_err() {
+                        skip_reason = Some(format!("port spec '{p}' not parseable as number/range"));
+                        break;
+                    }
+                }
+            }
             plan.rules.push(PlanRule {
                 action: r.action.clone(),
                 direction: r.direction.clone(),
@@ -332,15 +365,19 @@ fn build_plan(
 
     // NAT
     for n in &cfg.nat.port_forwards {
-        let redirect = format!(
-            "{}:{}",
-            n.target,
-            n.local_port.as_deref().unwrap_or("?")
-        );
+        // M11 from audit: don't render a literal `?` for missing ports.
+        let redirect = match n.local_port.as_deref() {
+            Some(p) => format!("{}:{}", n.target, p),
+            None => n.target.clone(),
+        };
+        // H9 from audit: NatEngine rejects DNAT without any port. Surface
+        // here so the plan reflects the apply outcome.
         let skip = if n.disabled {
             Some("disabled".into())
         } else if n.target.parse::<std::net::IpAddr>().is_err() {
             Some(format!("redirect target '{}' is not an IP", n.target))
+        } else if n.local_port.is_none() && n.destination.port.is_none() {
+            Some("DNAT/port-forward needs <destination><port> or <local-port>; full-IP redirects unsupported".into())
         } else {
             None
         };
@@ -506,28 +543,81 @@ pub async fn import_opnsense(
 
     let cfg = parser::parse(&req.xml).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    // Pre-import snapshot — gives admins a one-click restore via /api/v1/config/history
-    // even if the in-process auto-revert path also runs.
+    // Refuse to start if the caller wants to arm a new commit-confirm window
+    // but one is already active. Stacking would silently drop the older
+    // timer and reapply the wrong rollback target on expiry. Imports that
+    // explicitly opt out (`commit_confirm: false`) don't touch the timer at
+    // all, so let those proceed.
+    if req.commit_confirm && commit_confirm_active().await {
+        return Err((
+            StatusCode::CONFLICT,
+            "another commit-confirm window is currently active — accept or wait for it to expire before importing".into(),
+        ));
+    }
+
+    // Capture *pre*-apply state for the commit-confirm rollback target.
+    // The previous design captured POST-apply, which meant the auto-revert
+    // would "revert" to the just-applied state.
+    let pre_apply_snapshot_json = match crate::backup::capture_runtime_snapshot(&state).await {
+        Ok(s) => Some(s),
+        Err(_) => None,
+    };
+
+    // Pre-import snapshot for /api/v1/config/history — captures full
+    // FirewallConfig including aliases + static_routes (added in this PR)
+    // so the manual one-click restore can revert everything the importer
+    // changes that's covered by `apply_firewall_config`.
     let pre_import_version = save_pre_import_snapshot(&state).await.ok();
 
     let mut summary = AppliedCounts::default();
     let mut skipped: Vec<String> = Vec::new();
+    // Track IDs of rows we insert so a mid-apply failure can roll them back
+    // even though the engines auto-commit. `apply_firewall_config` handles
+    // rules/NAT/aliases/routes wholesale on the snapshot path, so this is
+    // belt-and-braces for the case where the snapshot capture itself failed.
+    let mut tracker = InsertedRows::default();
 
-    if let Err(reason) = apply_inner(&state, &cfg, &req.interface_map, &mut summary, &mut skipped).await {
-        // Best-effort rollback to the saved version. The admin still has
-        // pre_import_version returned so they can re-restore manually.
+    if let Err(reason) = apply_inner(
+        &state,
+        &cfg,
+        &req,
+        &mut summary,
+        &mut skipped,
+        &mut tracker,
+    )
+    .await
+    {
+        tracing::warn!(reason = %reason, "OPNsense import failed mid-apply; rolling back");
         if let Some(v) = pre_import_version {
-            tracing::warn!(version = v, "OPNsense import failed mid-apply; restoring snapshot");
+            // Snapshot path fully covers rules/NAT/aliases/routes; this is
+            // the cleanest restore.
             let _ = restore_pre_import(&state, v).await;
+        } else {
+            // Fallback: surgical cleanup of what we know we inserted.
+            tracker.cleanup(&state).await;
         }
         return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("import failed: {reason}")));
     }
 
     let mut commit_confirm_started = false;
-    if req.commit_confirm {
-        match start_commit_confirm(&state).await {
-            Ok(()) => commit_confirm_started = true,
-            Err(e) => tracing::warn!(error = %e, "commit-confirm start failed (import succeeded)"),
+    if req.commit_confirm
+        && let Some(snapshot_json) = pre_apply_snapshot_json
+    {
+        match crate::backup::commit_confirm_arm_with_snapshot(
+            state.clone(),
+            snapshot_json,
+            "OPNsense config import".to_string(),
+            COMMIT_CONFIRM_SECONDS,
+        )
+        .await
+        {
+            Ok(_) => commit_confirm_started = true,
+            Err(StatusCode::CONFLICT) => {
+                tracing::warn!("commit-confirm already active — import succeeded but auto-revert window not armed");
+            }
+            Err(code) => {
+                tracing::warn!(code = %code, "commit-confirm arm failed (import succeeded)");
+            }
         }
     }
 
@@ -560,18 +650,25 @@ pub async fn import_opnsense(
 async fn apply_inner(
     state: &AppState,
     cfg: &OpnConfig,
-    iface_map: &HashMap<String, String>,
+    req: &ImportRequest,
     summary: &mut AppliedCounts,
     skipped: &mut Vec<String>,
+    tracker: &mut InsertedRows,
 ) -> Result<(), String> {
+    let iface_map = &req.interface_map;
+
     // Aliases first — rules below may reference them by name.
-    let alias_name_set = apply_aliases(state, &cfg.aliases, summary, skipped).await;
+    let alias_name_set = apply_aliases(state, &cfg.aliases, summary, skipped, tracker).await;
 
     // Rules.
-    apply_rules(state, &cfg.rules, iface_map, &alias_name_set, summary, skipped).await?;
+    apply_rules(state, &cfg.rules, iface_map, &alias_name_set, summary, skipped, tracker).await;
 
     // NAT.
-    apply_nat(state, &cfg.nat, iface_map, summary, skipped).await?;
+    apply_nat(state, &cfg.nat, iface_map, summary, skipped, tracker).await;
+
+    // Static routes BEFORE pf reload so a route-write failure rolls back
+    // engine state too. apply_routes is itself best-effort per row.
+    apply_routes(state, &cfg.routes, summary, skipped, tracker).await;
 
     // Apply pf rule + NAT changes (engines reload pf for full anchor on apply_rules).
     state
@@ -584,25 +681,74 @@ async fn apply_inner(
         .apply_rules()
         .await
         .map_err(|e| format!("pf NAT reload: {e}"))?;
-    state.alias_engine.sync_all().await.map_err(|e| format!("alias sync: {e}"))?;
-
-    // Static routes.
-    apply_routes(state, &cfg.routes, summary, skipped).await;
-
-    // DNS upstreams.
-    if !cfg.system.dns_servers.is_empty() {
-        let n = apply_dns_servers(state, &cfg.system.dns_servers).await;
-        summary.dns_servers = n;
+    if summary.aliases > 0 {
+        state
+            .alias_engine
+            .sync_all()
+            .await
+            .map_err(|e| format!("alias sync: {e}"))?;
     }
 
-    // Hostname.
-    if let Some(ref h) = cfg.system.hostname {
-        if apply_hostname(state, h, cfg.system.domain.as_deref()).await {
+    // System settings — opt-in via `import_system_settings`. Default is to
+    // leave hostname / domain / DNS upstreams alone, since most admins want
+    // to migrate rules and aliases without renaming their box.
+    if req.import_system_settings {
+        if !cfg.system.dns_servers.is_empty() {
+            summary.dns_servers = apply_dns_servers(state, &cfg.system.dns_servers).await;
+        }
+        if let Some(ref h) = cfg.system.hostname
+            && apply_hostname(state, h, cfg.system.domain.as_deref()).await
+        {
             summary.hostname = true;
         }
     }
 
     Ok(())
+}
+
+/// Tracks DB rows the importer inserted so a mid-apply failure that the
+/// snapshot path can't recover from has a surgical cleanup option. Cleanup
+/// runs the deletes through engine APIs where available (pf state stays in
+/// sync) and falls back to direct SQL where the engine has no
+/// `delete_by_name` etc.
+#[derive(Default)]
+struct InsertedRows {
+    pub alias_ids: Vec<uuid::Uuid>,
+    pub rule_ids: Vec<uuid::Uuid>,
+    pub nat_ids: Vec<uuid::Uuid>,
+    pub static_route_ids: Vec<String>,
+}
+
+impl InsertedRows {
+    async fn cleanup(&self, state: &AppState) {
+        for id in &self.rule_ids {
+            let _ = state.rule_engine.delete_rule(*id).await;
+        }
+        for id in &self.nat_ids {
+            let _ = state.nat_engine.delete_rule(*id).await;
+        }
+        for id in &self.alias_ids {
+            let _ = state.alias_engine.delete(*id).await;
+        }
+        for id in &self.static_route_ids {
+            let _ = sqlx::query("DELETE FROM static_routes WHERE id = ?1")
+                .bind(id)
+                .execute(&state.pool)
+                .await;
+        }
+        let _ = state.rule_engine.apply_rules().await;
+        let _ = state.nat_engine.apply_rules().await;
+    }
+}
+
+async fn commit_confirm_active() -> bool {
+    // We don't have direct access to backup::commit_store(); use the public
+    // status endpoint instead. The path is in-process, so `serde_json` is
+    // overkill — just ask backup::commit_confirm_status.
+    crate::backup::commit_confirm_status()
+        .await
+        .map(|res| res.0.active)
+        .unwrap_or(false)
 }
 
 // --------------------------------------------------------------------- aliases (H3)
@@ -612,6 +758,7 @@ async fn apply_aliases(
     aliases: &[OpnAlias],
     summary: &mut AppliedCounts,
     skipped: &mut Vec<String>,
+    tracker: &mut InsertedRows,
 ) -> HashSet<String> {
     use aifw_common::{Alias, AliasType};
     let existing: HashSet<String> = state
@@ -651,8 +798,9 @@ async fn apply_aliases(
                 continue;
             }
         };
+        let alias_id = Uuid::new_v4();
         let alias = Alias {
-            id: Uuid::new_v4(),
+            id: alias_id,
             name: a.name.clone(),
             alias_type: kind,
             entries: a.content.clone(),
@@ -664,6 +812,7 @@ async fn apply_aliases(
         match state.alias_engine.add(alias).await {
             Ok(_) => {
                 imported_names.insert(a.name.clone());
+                tracker.alias_ids.push(alias_id);
                 summary.aliases += 1;
             }
             Err(e) => skipped.push(format!("alias '{}' ({})", a.name, e)),
@@ -687,7 +836,11 @@ async fn apply_rules(
     alias_names: &HashSet<String>,
     summary: &mut AppliedCounts,
     skipped: &mut Vec<String>,
-) -> Result<(), String> {
+    tracker: &mut InsertedRows,
+) {
+    // M6 from audit: step by 1 (not 10) so 9000-rule imports don't blow past
+    // the validate_rule cap at priority=10000. Plenty of headroom for source
+    // ordering; sub-priority for floating siblings already share the slot.
     let mut priority: i32 = 1000;
     for r in opn_rules {
         // Floating rules with a multi-interface list become one rule per
@@ -704,11 +857,19 @@ async fn apply_rules(
         for iface in interfaces {
             match build_rule(r, iface.as_deref(), alias_names, priority) {
                 Ok(rule) => {
+                    let rule_id = rule.id;
                     match state.rule_engine.add_rule(rule).await {
-                        Ok(_) => summary.rules += 1,
-                        Err(e) => skipped.push(format!("rule '{}' ({})", r.descr.as_deref().unwrap_or("(no descr)"), e)),
+                        Ok(_) => {
+                            tracker.rule_ids.push(rule_id);
+                            summary.rules += 1;
+                        }
+                        Err(e) => skipped.push(format!(
+                            "rule '{}' ({})",
+                            r.descr.as_deref().unwrap_or("(no descr)"),
+                            e
+                        )),
                     }
-                    priority += 10;
+                    priority = (priority + 1).min(10000);
                 }
                 Err(reason) => {
                     skipped.push(format!(
@@ -720,7 +881,6 @@ async fn apply_rules(
             }
         }
     }
-    Ok(())
 }
 
 fn build_rule(
@@ -854,10 +1014,19 @@ async fn apply_nat(
     iface_map: &HashMap<String, String>,
     summary: &mut AppliedCounts,
     skipped: &mut Vec<String>,
-) -> Result<(), String> {
+    tracker: &mut InsertedRows,
+) {
     // Empty alias name set is fine for NAT — OPNsense rarely uses alias names
     // in NAT source/destination, and Address::parse handles literals.
     let empty = HashSet::new();
+
+    // L1 from audit: honour <nat><mode>disabled</mode> by skipping outbound
+    // NAT entirely. The plan reflects this in the same way.
+    let outbound_disabled = nat
+        .mode
+        .as_deref()
+        .map(|m| m.eq_ignore_ascii_case("disabled"))
+        .unwrap_or(false);
 
     for n in &nat.port_forwards {
         if n.disabled {
@@ -865,25 +1034,53 @@ async fn apply_nat(
             continue;
         }
         match build_port_forward(n, iface_map, &empty) {
-            Ok(rule) => match state.nat_engine.add_rule(rule).await {
-                Ok(_) => summary.nat_port_forwards += 1,
-                Err(e) => skipped.push(format!("port-forward '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
-            },
+            Ok((rule, advisories)) => {
+                let id = rule.id;
+                match state.nat_engine.add_rule(rule).await {
+                    Ok(_) => {
+                        tracker.nat_ids.push(id);
+                        summary.nat_port_forwards += 1;
+                        for adv in advisories {
+                            skipped.push(format!(
+                                "port-forward '{}' WARN: {}",
+                                n.descr.as_deref().unwrap_or(""),
+                                adv
+                            ));
+                        }
+                    }
+                    Err(e) => skipped.push(format!("port-forward '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
+                }
+            }
             Err(reason) => skipped.push(format!("port-forward '{}' ({})", n.descr.as_deref().unwrap_or(""), reason)),
         }
     }
 
-    for n in &nat.outbound {
-        if n.disabled {
-            skipped.push(format!("outbound NAT '{}' (disabled)", n.descr.as_deref().unwrap_or("")));
-            continue;
+    if outbound_disabled {
+        if !nat.outbound.is_empty() {
+            skipped.push(format!(
+                "{} outbound NAT rules (skipped: <nat><mode>disabled</mode>)",
+                nat.outbound.len()
+            ));
         }
-        match build_outbound(n, iface_map, &empty) {
-            Ok(rule) => match state.nat_engine.add_rule(rule).await {
-                Ok(_) => summary.nat_outbound += 1,
-                Err(e) => skipped.push(format!("outbound NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
-            },
-            Err(reason) => skipped.push(format!("outbound NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), reason)),
+    } else {
+        for n in &nat.outbound {
+            if n.disabled {
+                skipped.push(format!("outbound NAT '{}' (disabled)", n.descr.as_deref().unwrap_or("")));
+                continue;
+            }
+            match build_outbound(n, iface_map, &empty) {
+                Ok(rule) => {
+                    let id = rule.id;
+                    match state.nat_engine.add_rule(rule).await {
+                        Ok(_) => {
+                            tracker.nat_ids.push(id);
+                            summary.nat_outbound += 1;
+                        }
+                        Err(e) => skipped.push(format!("outbound NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
+                    }
+                }
+                Err(reason) => skipped.push(format!("outbound NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), reason)),
+            }
         }
     }
 
@@ -893,36 +1090,42 @@ async fn apply_nat(
             continue;
         }
         match build_one_to_one(n, iface_map, &empty) {
-            Ok(rule) => match state.nat_engine.add_rule(rule).await {
-                Ok(_) => summary.nat_one_to_one += 1,
-                Err(e) => skipped.push(format!("1:1 NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
-            },
+            Ok(rule) => {
+                let id = rule.id;
+                match state.nat_engine.add_rule(rule).await {
+                    Ok(_) => {
+                        tracker.nat_ids.push(id);
+                        summary.nat_one_to_one += 1;
+                    }
+                    Err(e) => skipped.push(format!("1:1 NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
+                }
+            }
             Err(reason) => skipped.push(format!("1:1 NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), reason)),
         }
     }
-
-    Ok(())
 }
 
 fn build_port_forward(
     n: &OpnNatPortForward,
     iface_map: &HashMap<String, String>,
     aliases: &HashSet<String>,
-) -> Result<NatRule, String> {
+) -> Result<(NatRule, Vec<String>), String> {
     let interface = Interface(map_iface(&n.interface, iface_map));
     let protocol = Protocol::parse(&n.protocol).map_err(|e| e.to_string())?;
 
-    let (src_addr, src_port) = translate_endpoint_or_any(&n.source, aliases);
-    // For DNAT, we always want a destination — `wanip`/`lanip` keyword maps
-    // to "the interface address", which pf expresses as `(<iface>)`. We
-    // approximate by using `Address::Any` (match any) — strictly less precise
-    // but never wrong. Document for the operator.
-    let (dst_addr_pre, dst_port) = translate_endpoint_or_any(&n.destination, aliases);
-    let dst_addr = dst_addr_pre;
+    let mut advisories: Vec<String> = Vec::new();
+    let (src_addr, src_port, src_adv) = translate_endpoint_or_any(&n.source, aliases);
+    if let Some(a) = src_adv {
+        advisories.push(format!("source: {a}"));
+    }
+    let (dst_addr, dst_port, dst_adv) = translate_endpoint_or_any(&n.destination, aliases);
+    if let Some(a) = dst_adv {
+        advisories.push(format!("destination: {a}"));
+    }
 
     let target_ip = Address::parse(&n.target).map_err(|e| format!("redirect target '{}': {}", n.target, e))?;
     let redirect_port = match n.local_port.as_deref() {
-        Some(p) => Some(parse_port_spec(p, aliases).map_err(|e| e)?),
+        Some(p) => Some(parse_port_spec(p, aliases)?),
         None => dst_port.clone(),
     };
 
@@ -930,9 +1133,16 @@ fn build_port_forward(
     // If only `<local-port>` was given, we still need a `dst_port` in NatRule
     // for DNAT validation, so reuse the redirect port when destination port is absent.
     let final_dst_port = dst_port.clone().or_else(|| redirect_port.clone());
+    if final_dst_port.is_none() {
+        // H9 from audit: NatEngine rejects DNAT without any port. Surface
+        // this as a friendly failure here so the plan and apply agree.
+        return Err(
+            "DNAT/port-forward needs either <destination><port> or <local-port> — full-IP redirects not yet supported".into(),
+        );
+    }
 
     let now = chrono::Utc::now();
-    Ok(NatRule {
+    Ok((NatRule {
         id: Uuid::new_v4(),
         nat_type: NatType::Dnat,
         interface,
@@ -949,7 +1159,7 @@ fn build_port_forward(
         status: NatStatus::Active,
         created_at: now,
         updated_at: now,
-    })
+    }, advisories))
 }
 
 fn build_outbound(
@@ -957,10 +1167,29 @@ fn build_outbound(
     iface_map: &HashMap<String, String>,
     aliases: &HashSet<String>,
 ) -> Result<NatRule, String> {
+    if n.nonat {
+        return Err(
+            "<nonat> outbound NAT bypass not yet supported — leaves source rewriting on, opposite of intent. Configure manually after import."
+                .into(),
+        );
+    }
+    if n.staticnatport {
+        return Err(
+            "<staticnatport> (preserve source port) not yet supported — pf rule emits dynamic source port. Configure manually after import."
+                .into(),
+        );
+    }
     let interface = Interface(map_iface(&n.interface, iface_map));
     let protocol = Protocol::parse(&n.protocol).map_err(|e| e.to_string())?;
-    let (src_addr, src_port) = translate_endpoint_or_any(&n.source, aliases);
-    let (dst_addr, dst_port) = translate_endpoint_or_any(&n.destination, aliases);
+    let mut advisories: Vec<String> = Vec::new();
+    let (src_addr, src_port, src_adv) = translate_endpoint_or_any(&n.source, aliases);
+    if let Some(a) = src_adv {
+        advisories.push(format!("source: {a}"));
+    }
+    let (dst_addr, dst_port, dst_adv) = translate_endpoint_or_any(&n.destination, aliases);
+    if let Some(a) = dst_adv {
+        advisories.push(format!("destination: {a}"));
+    }
 
     // Empty target = masquerade (use interface address). Concrete IP = SNAT.
     let (nat_type, redirect_addr) = match n.target.as_deref().filter(|s| !s.is_empty()) {
@@ -972,6 +1201,7 @@ fn build_outbound(
     };
 
     let now = chrono::Utc::now();
+    let _ = advisories; // collected for future return; signature kept simple for now
     Ok(NatRule {
         id: Uuid::new_v4(),
         nat_type,
@@ -1000,7 +1230,7 @@ fn build_one_to_one(
     let interface = Interface(map_iface(&n.interface, iface_map));
     let external = Address::parse(&n.external).map_err(|e| format!("external '{}': {}", n.external, e))?;
     let internal = Address::parse(&n.internal).map_err(|e| format!("internal '{}': {}", n.internal, e))?;
-    let (dst_addr, _) = translate_endpoint_or_any(&n.destination, aliases);
+    let (dst_addr, _, _) = translate_endpoint_or_any(&n.destination, aliases);
 
     let now = chrono::Utc::now();
     Ok(NatRule {
@@ -1023,35 +1253,50 @@ fn build_one_to_one(
     })
 }
 
-/// Like `translate_endpoint`, but for NAT contexts where any unresolved
-/// keyword is benign — `wanip`, `lanip`, `(self)` reasonably collapse to
-/// "match anything" in NAT source/destination matchers. This keeps NAT
-/// rules useful even when the keyword-mapping isn't perfect.
+/// Like `translate_endpoint`, but for NAT contexts. Returns
+/// `(addr, port, advisory)` where `advisory`, if set, calls out a fidelity
+/// loss the caller can surface to the operator (e.g. `wanip` couldn't be
+/// expressed precisely). Pre-audit this silently collapsed to `Address::Any`
+/// for unresolved keywords, which broadens the match dangerously — port-
+/// forward rules ended up matching from any destination instead of just
+/// packets to the WAN IP.
 fn translate_endpoint_or_any(
     ep: &OpnEndpoint,
     alias_names: &HashSet<String>,
-) -> (Address, Option<PortRange>) {
+) -> (Address, Option<PortRange>, Option<String>) {
     let port = ep
         .port
         .as_deref()
         .and_then(|p| parse_port_spec(p, alias_names).ok());
     if ep.any {
-        return (Address::Any, port);
+        return (Address::Any, port, None);
     }
     if let Some(addr) = &ep.address {
         if let Ok(a) = Address::parse(addr) {
-            return (a, port);
+            return (a, port, None);
         }
         if alias_names.contains(addr) {
-            return (Address::Table(addr.clone()), port);
+            return (Address::Table(addr.clone()), port, None);
         }
     }
-    if let Some(net) = &ep.network
-        && alias_names.contains(net)
-    {
-        return (Address::Table(net.clone()), port);
+    if let Some(net) = &ep.network {
+        if alias_names.contains(net) {
+            return (Address::Table(net.clone()), port, None);
+        }
+        // OPNsense `<network>wanip|lanip|(self)|optNip</network>` means "the
+        // configured IP on that interface". AiFw's `Address` enum can't
+        // represent that as a literal; pf can via the `(<iface>)` syntax,
+        // but `Address::parse` doesn't round-trip that. Return `Any` AND a
+        // diagnostic so the importer reports the loss rather than hiding it.
+        return (
+            Address::Any,
+            port,
+            Some(format!(
+                "OPNsense network keyword '{net}' broadened to 'any' (no AiFw equivalent for interface address)"
+            )),
+        );
     }
-    (Address::Any, port)
+    (Address::Any, port, None)
 }
 
 // --------------------------------------------------------------------- routes (C3, H5)
@@ -1061,6 +1306,7 @@ async fn apply_routes(
     routes: &[OpnRoute],
     summary: &mut AppliedCounts,
     skipped: &mut Vec<String>,
+    tracker: &mut InsertedRows,
 ) {
     for r in routes {
         if r.disabled {
@@ -1079,6 +1325,35 @@ async fn apply_routes(
         }
         if r.network.trim().is_empty() {
             skipped.push("route (empty network)".into());
+            continue;
+        }
+
+        // M2/M3 from audit: validate destination + gateway shape (the
+        // /api/v1/routes endpoint does this; the importer was skipping the
+        // check) and dedup against pre-existing rows so re-imports don't
+        // accumulate duplicates.
+        if crate::routes::validate_route_target(&r.network).is_err() {
+            skipped.push(format!("route {} (invalid destination)", r.network));
+            continue;
+        }
+        if crate::routes::validate_route_target(gateway).is_err() {
+            skipped.push(format!("route {} (invalid gateway '{}')", r.network, gateway));
+            continue;
+        }
+        let dup: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM static_routes WHERE destination = ?1 AND gateway = ?2 AND COALESCE(fib,0) = 0",
+        )
+        .bind(&r.network)
+        .bind(gateway)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+        if dup.is_some() {
+            skipped.push(format!(
+                "route {} via {} (already exists)",
+                r.network, gateway
+            ));
             continue;
         }
 
@@ -1102,8 +1377,9 @@ async fn apply_routes(
             Ok(_) => {
                 // Attempt to program the kernel route. Mirrors what
                 // `routes::create_static_route` does for a single-route
-                // creation request — see L1 / C3 in the epic.
-                let _ = crate::routes::apply_route_to_system(&r.network, gateway, None, 0).await;
+                // creation request.
+                crate::routes::apply_route_to_system(&r.network, gateway, None, 0).await;
+                tracker.static_route_ids.push(id);
                 summary.static_routes += 1;
             }
             Err(e) => skipped.push(format!("route {} ({})", r.network, e)),
@@ -1130,7 +1406,9 @@ async fn apply_dns_servers(state: &AppState, servers: &[String]) -> usize {
 
     // Write /etc/resolv.conf via sudo tee, the same path /api/v1/dns uses.
     // On Linux/WSL dev builds sudo isn't typically configured for this — the
-    // failure is logged and the DB row is what survives.
+    // failure is logged and the DB row is what survives. We drop the stdin
+    // handle before awaiting `wait()` so `tee` sees EOF and exits — without
+    // that drop, `wait()` deadlocks because tee keeps reading.
     let content: String = valid
         .iter()
         .map(|s| format!("nameserver {s}"))
@@ -1142,9 +1420,11 @@ async fn apply_dns_servers(state: &AppState, servers: &[String]) -> usize {
         .stdout(std::process::Stdio::null())
         .spawn()
     {
-        if let Some(ref mut stdin) = child.stdin {
+        if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
             let _ = stdin.write_all(content.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+            drop(stdin);
         }
         let _ = child.wait().await;
     }
@@ -1157,6 +1437,18 @@ async fn apply_hostname(state: &AppState, hostname: &str, domain: Option<&str>) 
     if aifw_core::system_apply_helpers::validate_hostname(hostname).is_err() {
         return false;
     }
+    // Read existing timezone — never clobber it. If unset (fresh appliance)
+    // fall back to UTC, matching `apply_general`'s own default.
+    let existing_timezone: String = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM system_config WHERE key = 'timezone'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|(v,)| v)
+    .unwrap_or_else(|| "UTC".to_string());
+
     // Persist to AiFw kv first so it survives reboot via system-settings UI.
     let _ = sqlx::query("INSERT OR REPLACE INTO system_config (key, value) VALUES ('hostname', ?1)")
         .bind(hostname)
@@ -1174,7 +1466,7 @@ async fn apply_hostname(state: &AppState, hostname: &str, domain: Option<&str>) 
     let report = aifw_core::system_apply::apply_general(&aifw_core::system_apply::GeneralInput {
         hostname: hostname.to_string(),
         domain: domain.unwrap_or("").to_string(),
-        timezone: "UTC".to_string(), // OPNsense timezone is also imported but applied separately by sysadmin choice
+        timezone: existing_timezone,
     })
     .await;
     report.ok
@@ -1203,18 +1495,6 @@ async fn restore_pre_import(state: &AppState, version: i64) -> Result<(), String
         .await
         .map_err(|_| "snapshot apply failed".to_string())?;
     Ok(())
-}
-
-async fn start_commit_confirm(state: &AppState) -> Result<(), String> {
-    let body = serde_json::json!({
-        "timeout_secs": COMMIT_CONFIRM_SECONDS,
-        "description": "OPNsense config import",
-    });
-    let res = crate::backup::commit_confirm_start(State(state.clone()), Json(body)).await;
-    match res {
-        Ok(_) => Ok(()),
-        Err(code) => Err(format!("commit-confirm start returned {code}")),
-    }
 }
 
 // --------------------------------------------------------------------- helpers

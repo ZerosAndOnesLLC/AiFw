@@ -128,6 +128,7 @@ export default function BackupPage() {
   const [opnImporting, setOpnImporting] = useState(false);
   const [opnPreview, setOpnPreview] = useState<Record<string, unknown> | null>(null);
   const [opnIfaceMap, setOpnIfaceMap] = useState<Record<string, string>>({});
+  const [opnImportSystemSettings, setOpnImportSystemSettings] = useState(false);
   const opnFileRef = useRef<HTMLInputElement>(null);
 
   // Commit Confirm
@@ -433,6 +434,7 @@ export default function BackupPage() {
           xml: opnXml,
           interface_map: opnIfaceMap,
           commit_confirm: true,
+          import_system_settings: opnImportSystemSettings,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1035,9 +1037,25 @@ export default function BackupPage() {
                       </div>
                     </details>
 
+                    {/* System settings opt-in */}
+                    <label className="flex items-start gap-2 text-xs text-[var(--text-secondary)] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={opnImportSystemSettings}
+                        onChange={(e) => setOpnImportSystemSettings(e.target.checked)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="font-medium">Also import system settings</span>
+                        <span className="block text-[var(--text-muted)] mt-0.5">
+                          When checked, the OPNsense hostname, domain, and DNS upstreams will replace the AiFw values. Off by default — most migrations want rules and aliases without renaming the appliance.
+                        </span>
+                      </span>
+                    </label>
+
                     {/* Confirm Import */}
                     <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 text-xs text-yellow-300">
-                      Confirm to apply. A pre-import snapshot is saved to config history first, and rules + NAT are wrapped in commit-confirm — if you don&apos;t confirm within the timeout, those revert automatically.
+                      Confirm to apply. A pre-import snapshot is saved to config history first, and rules + NAT + aliases + routes are wrapped in commit-confirm — if you don&apos;t confirm within the timeout, those revert automatically.
                     </div>
                     <div className="flex gap-3">
                       <button onClick={handleOpnImport} disabled={opnImporting || (needMapping && !allMapped)} className={btnPrimary}>

@@ -23,10 +23,10 @@ fn internal() -> StatusCode {
 
 #[derive(Clone, Serialize)]
 pub struct CommitConfirmState {
-    active: bool,
-    expires_at: String,
-    seconds_remaining: u64,
-    description: String,
+    pub active: bool,
+    pub expires_at: String,
+    pub seconds_remaining: u64,
+    pub description: String,
 }
 
 type CommitConfirmStore = Arc<RwLock<Option<CommitConfirmInner>>>;
@@ -358,7 +358,22 @@ pub async fn commit_confirm_start(
         .unwrap_or("Config change")
         .to_string();
 
-    // Snapshot current rules + NAT before the change
+    // Capture current state as the rollback snapshot. Callers that need to
+    // capture state *before* their own changes (e.g. the OPNsense importer)
+    // should use `commit_confirm_arm_with_snapshot` instead.
+    let snapshot_json = capture_runtime_snapshot(&state).await?;
+    commit_confirm_arm_with_snapshot(state.clone(), snapshot_json, description, timeout_secs)
+        .await
+        .map(|msg| Json(MessageResponse { message: msg }))
+}
+
+/// Build a JSON snapshot of the live rules + NAT + aliases + routes for use
+/// as a commit-confirm rollback target. The snapshot is a `FirewallConfig`
+/// with only the sections `apply_firewall_config` knows how to delete +
+/// restore — VPN, geo-IP, and other engine state stays untouched on revert.
+pub(crate) async fn capture_runtime_snapshot(state: &AppState) -> Result<String, StatusCode> {
+    use aifw_core::config::*;
+
     let rules = state
         .rule_engine
         .list_rules()
@@ -369,71 +384,89 @@ pub async fn commit_confirm_start(
         .list_rules()
         .await
         .map_err(|_| internal())?;
+    let aliases = build_aliases_section(state).await;
+    let static_routes = build_static_routes_section(&state.pool).await;
+
     let snapshot = FirewallConfig {
         rules: rules
             .iter()
-            .map(|r| {
-                use aifw_core::config::RuleConfig;
-                RuleConfig {
-                    id: r.id.to_string(),
-                    priority: r.priority,
-                    action: format!("{:?}", r.action).to_lowercase(),
-                    direction: format!("{:?}", r.direction).to_lowercase(),
-                    protocol: r.protocol.to_string(),
-                    interface: r.interface.as_ref().map(|i| i.0.clone()),
-                    src_addr: Some(r.rule_match.src_addr.to_string()),
-                    src_port_start: r.rule_match.src_port.as_ref().map(|p| p.start),
-                    src_port_end: r.rule_match.src_port.as_ref().map(|p| p.end),
-                    dst_addr: Some(r.rule_match.dst_addr.to_string()),
-                    dst_port_start: r.rule_match.dst_port.as_ref().map(|p| p.start),
-                    dst_port_end: r.rule_match.dst_port.as_ref().map(|p| p.end),
-                    log: r.log,
-                    quick: r.quick,
-                    label: r.label.clone(),
-                    state_tracking: "keep_state".into(),
-                    status: match r.status {
-                        aifw_common::RuleStatus::Active => "active".into(),
-                        _ => "disabled".into(),
-                    },
-                }
+            .map(|r| RuleConfig {
+                id: r.id.to_string(),
+                priority: r.priority,
+                action: enum_as_string(&r.action),
+                direction: enum_as_string(&r.direction),
+                protocol: enum_as_string(&r.protocol),
+                interface: r.interface.as_ref().map(|i| i.0.clone()),
+                src_addr: Some(r.rule_match.src_addr.to_string()),
+                src_port_start: r.rule_match.src_port.as_ref().map(|p| p.start),
+                src_port_end: r.rule_match.src_port.as_ref().map(|p| p.end),
+                dst_addr: Some(r.rule_match.dst_addr.to_string()),
+                dst_port_start: r.rule_match.dst_port.as_ref().map(|p| p.start),
+                dst_port_end: r.rule_match.dst_port.as_ref().map(|p| p.end),
+                log: r.log,
+                quick: r.quick,
+                label: r.label.clone(),
+                state_tracking: enum_as_string(&r.state_options.tracking),
+                status: enum_as_string(&r.status),
+                ip_version: enum_as_string(&r.ip_version),
+                src_invert: r.src_invert,
+                dst_invert: r.dst_invert,
             })
             .collect(),
         nat: nat_rules
             .iter()
-            .map(|n| {
-                use aifw_core::config::NatRuleConfig;
-                NatRuleConfig {
-                    id: n.id.to_string(),
-                    nat_type: format!("{:?}", n.nat_type).to_lowercase(),
-                    interface: n.interface.0.clone(),
-                    protocol: n.protocol.to_string(),
-                    src_addr: Some(n.src_addr.to_string()),
-                    src_port_start: n.src_port.as_ref().map(|p| p.start),
-                    src_port_end: n.src_port.as_ref().map(|p| p.end),
-                    dst_addr: Some(n.dst_addr.to_string()),
-                    dst_port_start: n.dst_port.as_ref().map(|p| p.start),
-                    dst_port_end: n.dst_port.as_ref().map(|p| p.end),
-                    redirect_addr: n.redirect.address.to_string(),
-                    redirect_port_start: n.redirect.port.as_ref().map(|p| p.start),
-                    redirect_port_end: n.redirect.port.as_ref().map(|p| p.end),
-                    label: n.label.clone(),
-                    status: match n.status {
-                        aifw_common::NatStatus::Active => "active".into(),
-                        _ => "disabled".into(),
-                    },
-                }
+            .map(|n| NatRuleConfig {
+                id: n.id.to_string(),
+                nat_type: enum_as_string(&n.nat_type),
+                interface: n.interface.0.clone(),
+                protocol: enum_as_string(&n.protocol),
+                src_addr: Some(n.src_addr.to_string()),
+                src_port_start: n.src_port.as_ref().map(|p| p.start),
+                src_port_end: n.src_port.as_ref().map(|p| p.end),
+                dst_addr: Some(n.dst_addr.to_string()),
+                dst_port_start: n.dst_port.as_ref().map(|p| p.start),
+                dst_port_end: n.dst_port.as_ref().map(|p| p.end),
+                redirect_addr: n.redirect.address.to_string(),
+                redirect_port_start: n.redirect.port.as_ref().map(|p| p.start),
+                redirect_port_end: n.redirect.port.as_ref().map(|p| p.end),
+                label: n.label.clone(),
+                status: enum_as_string(&n.status),
             })
             .collect(),
+        aliases,
+        static_routes,
         ..Default::default()
     };
-    let snapshot_json = serde_json::to_string(&snapshot).map_err(|_| internal())?;
+    serde_json::to_string(&snapshot).map_err(|_| internal())
+}
+
+/// Arm commit-confirm with a caller-supplied snapshot. Returns `409 Conflict`
+/// if a confirm window is already active — concurrent imports / config
+/// changes cannot stack their rollback timers on top of each other (the
+/// previous global-store overwrite would silently drop the older timer).
+pub(crate) async fn commit_confirm_arm_with_snapshot(
+    state: AppState,
+    snapshot_json: String,
+    description: String,
+    timeout_secs: u64,
+) -> Result<String, StatusCode> {
+    {
+        let store_read = commit_store().read().await;
+        if store_read.is_some() {
+            return Err(StatusCode::CONFLICT);
+        }
+    }
 
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs as i64);
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-    // Store the rollback state
     {
         let mut store = commit_store().write().await;
+        if store.is_some() {
+            // Lost a race with another armer between the read above and this
+            // write — refuse rather than overwrite.
+            return Err(StatusCode::CONFLICT);
+        }
         *store = Some(CommitConfirmInner {
             rollback_config: snapshot_json.clone(),
             expires_at,
@@ -464,11 +497,9 @@ pub async fn commit_confirm_start(
         }
     });
 
-    Ok(Json(MessageResponse {
-        message: format!(
-            "Commit confirm started. You have {timeout_secs} seconds to confirm. If you do not log in and confirm, the configuration will automatically revert."
-        ),
-    }))
+    Ok(format!(
+        "Commit confirm started. You have {timeout_secs} seconds to confirm. If you do not log in and confirm, the configuration will automatically revert."
+    ))
 }
 
 pub async fn commit_confirm_accept() -> Result<Json<MessageResponse>, StatusCode> {
@@ -633,6 +664,9 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 label: r.label.clone(),
                 state_tracking: enum_as_string(&r.state_options.tracking),
                 status: enum_as_string(&r.status),
+                ip_version: enum_as_string(&r.ip_version),
+                src_invert: r.src_invert,
+                dst_invert: r.dst_invert,
             })
             .collect(),
         nat: nat_rules
@@ -763,9 +797,57 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             enabled: true,
         }],
         dhcp: build_dhcp_section(&state.pool).await,
+        aliases: build_aliases_section(state).await,
+        static_routes: build_static_routes_section(&state.pool).await,
     };
 
     Ok(config)
+}
+
+async fn build_aliases_section(state: &AppState) -> Vec<aifw_core::config::AliasConfig> {
+    use aifw_core::config::AliasConfig;
+    state
+        .alias_engine
+        .list()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| AliasConfig {
+            id: a.id.to_string(),
+            name: a.name,
+            alias_type: a.alias_type.as_str().to_string(),
+            entries: a.entries,
+            description: a.description,
+            enabled: a.enabled,
+        })
+        .collect()
+}
+
+async fn build_static_routes_section(
+    pool: &sqlx::SqlitePool,
+) -> Vec<aifw_core::config::StaticRouteConfig> {
+    use aifw_core::config::StaticRouteConfig;
+    sqlx::query_as::<
+        _,
+        (String, String, String, Option<String>, i64, bool, Option<String>, i64),
+    >(
+        "SELECT id, destination, gateway, interface, COALESCE(metric,0), enabled, description, COALESCE(fib,0) FROM static_routes ORDER BY metric ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(id, destination, gateway, interface, metric, enabled, description, fib)| StaticRouteConfig {
+        id,
+        destination,
+        gateway,
+        interface,
+        metric: metric as i32,
+        enabled,
+        description,
+        fib: fib as u32,
+    })
+    .collect()
 }
 
 async fn build_dhcp_section(pool: &sqlx::SqlitePool) -> aifw_core::config::DhcpSection {
@@ -1414,6 +1496,10 @@ pub(crate) async fn apply_firewall_config(
     let _ = sqlx::query("DELETE FROM nat_rules")
         .execute(&state.pool)
         .await;
+    let _ = sqlx::query("DELETE FROM aliases").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM static_routes")
+        .execute(&state.pool)
+        .await;
 
     for rc in &config.rules {
         let iface_after = match rc.interface.as_deref() {
@@ -1438,6 +1524,64 @@ pub(crate) async fn apply_firewall_config(
         nc.interface = mapped_iface;
         if let Some(nat) = nat_from_config(&nc) {
             let _ = state.nat_engine.add_rule(nat).await;
+        }
+    }
+
+    // Aliases — restored from snapshot. AliasEngine.add validates name +
+    // resyncs the pf table; failures here just skip the row (same pattern as
+    // rules/NAT above).
+    for ac in &config.aliases {
+        use aifw_common::{Alias, AliasType};
+        let Some(alias_type) = AliasType::parse(&ac.alias_type) else {
+            continue;
+        };
+        let id = uuid::Uuid::parse_str(&ac.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+        let alias = Alias {
+            id,
+            name: ac.name.clone(),
+            alias_type,
+            entries: ac.entries.clone(),
+            description: ac.description.clone(),
+            enabled: ac.enabled,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let _ = state.alias_engine.add(alias).await;
+    }
+
+    // Static routes — restored via direct INSERT + apply_route_to_system,
+    // matching what /api/v1/routes does for manual creates. Interface map
+    // applies if the snapshot pinned a specific iface.
+    for rc in &config.static_routes {
+        let iface_after = match rc.interface.as_deref() {
+            Some(name) => match map_iface(name, iface_map) {
+                Some(m) => Some(m),
+                None => continue,
+            },
+            None => None,
+        };
+        let _ = sqlx::query(
+            "INSERT INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at, fib) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        )
+        .bind(&rc.id)
+        .bind(&rc.destination)
+        .bind(&rc.gateway)
+        .bind(iface_after.as_deref())
+        .bind(rc.metric as i64)
+        .bind(rc.enabled)
+        .bind(rc.description.as_deref())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(rc.fib as i64)
+        .execute(&state.pool)
+        .await;
+        if rc.enabled {
+            crate::routes::apply_route_to_system(
+                &rc.destination,
+                &rc.gateway,
+                iface_after.as_deref(),
+                rc.fib,
+            )
+            .await;
         }
     }
 
@@ -1945,12 +2089,13 @@ fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::R
     };
     let id = uuid::Uuid::parse_str(&rc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
     let now = chrono::Utc::now();
+    let ip_version = IpVersion::parse(&rc.ip_version).unwrap_or_default();
     Some(Rule {
         id,
         priority: rc.priority,
         action,
         direction,
-        ip_version: IpVersion::default(),
+        ip_version,
         interface: rc.interface.clone().map(Interface),
         protocol,
         rule_match: RuleMatch {
@@ -1959,8 +2104,8 @@ fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::R
             dst_addr,
             dst_port,
         },
-        src_invert: false,
-        dst_invert: false,
+        src_invert: rc.src_invert,
+        dst_invert: rc.dst_invert,
         log: rc.log,
         quick: rc.quick,
         label: rc.label.clone(),

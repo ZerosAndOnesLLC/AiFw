@@ -143,7 +143,7 @@ impl Database {
         )
         .bind(rule.id.to_string())
         .bind(rule.priority)
-        .bind(format!("{:?}", rule.action).to_lowercase())
+        .bind(rule.action.as_db_str())
         .bind(format!("{:?}", rule.direction).to_lowercase())
         .bind(rule.interface.as_ref().map(|i| i.0.clone()))
         .bind(rule.protocol.to_string())
@@ -238,7 +238,7 @@ impl Database {
         )
         .bind(rule.id.to_string())
         .bind(rule.priority)
-        .bind(format!("{:?}", rule.action).to_lowercase())
+        .bind(rule.action.as_db_str())
         .bind(format!("{:?}", rule.direction).to_lowercase())
         .bind(rule.interface.as_ref().map(|i| i.0.clone()))
         .bind(rule.protocol.to_string())
@@ -367,13 +367,7 @@ struct RuleRow {
 impl RuleRow {
     fn into_rule(self) -> Result<Rule> {
         let parse_action = |s: &str| -> Result<Action> {
-            match s {
-                "pass" => Ok(Action::Pass),
-                "block" => Ok(Action::Block),
-                "blockdrop" => Ok(Action::BlockDrop),
-                "blockreturn" => Ok(Action::BlockReturn),
-                _ => Err(AifwError::Database(format!("unknown action: {s}"))),
-            }
+            Action::parse_db(s).ok_or_else(|| AifwError::Database(format!("unknown action: {s}")))
         };
 
         let parse_direction = |s: &str| -> Result<Direction> {

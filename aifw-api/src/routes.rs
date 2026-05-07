@@ -2502,7 +2502,7 @@ pub async fn list_static_routes(
     Ok(Json(ApiResponse { data: routes }))
 }
 
-fn validate_route_target(s: &str) -> Result<(), StatusCode> {
+pub(crate) fn validate_route_target(s: &str) -> Result<(), StatusCode> {
     // Accept IP or CIDR (e.g., "10.0.0.0/8", "192.168.1.1", "default")
     if s == "default" {
         return Ok(());

@@ -84,6 +84,12 @@ pub struct OpnNatOutbound {
     pub target: Option<String>,   // empty / absent = use interface address
     pub disabled: bool,
     pub descr: Option<String>,
+    /// `<nonat>1</nonat>` — explicit "do not NAT this traffic" rule. Becomes
+    /// a pf `no nat ...` rule rather than a regular SNAT/masq.
+    pub nonat: bool,
+    /// `<staticnatport>1</staticnatport>` — preserve source port instead of
+    /// rewriting it. Becomes pf's `static-port` keyword.
+    pub staticnatport: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
