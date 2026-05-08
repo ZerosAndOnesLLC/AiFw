@@ -183,6 +183,12 @@ pub struct AppState {
     pub pending_tx: watch::Sender<PendingChanges>,
     pub login_limiter: LoginRateLimiter,
     pub ws_tickets: Arc<auth::ws_ticket::WsTicketStore>,
+    /// Broadcast channel that carries the prepared per-tick dashboard JSON
+    /// payload. A single producer task (`ws::run_dashboard_producer`) builds
+    /// the message once per tick; every connected WS client subscribes here
+    /// and just forwards. Replaces per-client `build_update` cloning that
+    /// scaled `O(n_states × n_clients)` per second (#178).
+    pub ws_tick: tokio::sync::broadcast::Sender<Arc<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -1770,6 +1776,10 @@ async fn create_state_from_db(
         pending_tx: watch::channel(PendingChanges::default()).0,
         login_limiter: LoginRateLimiter::default(),
         ws_tickets: auth::ws_ticket::WsTicketStore::new(),
+        // Capacity of 4 is enough to absorb a producer that briefly outpaces
+        // a slow client without dropping more than a handful of frames.
+        // Lagged subscribers self-recover on the next tick.
+        ws_tick: tokio::sync::broadcast::channel::<Arc<String>>(4).0,
     })
 }
 
@@ -2330,6 +2340,16 @@ async fn main() -> anyhow::Result<()> {
                     .execute(&pool)
                     .await;
             }
+        });
+    }
+
+    // Single global dashboard-WS producer (#178). Builds the per-tick
+    // payload once and broadcasts to every connected client via
+    // `state.ws_tick`, replacing per-client `build_update` cloning.
+    {
+        let producer_state = state.clone();
+        tokio::spawn(async move {
+            ws::run_dashboard_producer(producer_state).await;
         });
     }
 

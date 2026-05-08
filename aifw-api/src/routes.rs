@@ -1588,12 +1588,31 @@ pub async fn about_info(State(state): State<AppState>) -> Json<AboutResponse> {
 
 // --- Connections ---
 
+#[derive(Debug, Deserialize, Default)]
+pub struct ConnectionsQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
 pub async fn list_connections(
     State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<ConnectionsQuery>,
 ) -> Result<Json<ApiResponse<Vec<aifw_pf::PfState>>>, StatusCode> {
     state.conntrack.refresh().await.map_err(|_| internal())?;
     let connections = state.conntrack.get_connections().await;
-    Ok(Json(ApiResponse { data: connections }))
+    // Pagination (#178): a 50k-state appliance returning the full table on
+    // every poll is multi-MB JSON per request. Cap unpaginated callers at
+    // a sane default; honor explicit `limit`/`offset` when supplied.
+    const DEFAULT_LIMIT: usize = 1_000;
+    const MAX_LIMIT: usize = 10_000;
+    let offset = q.offset.unwrap_or(0).min(connections.len());
+    let limit = q
+        .limit
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
+    let end = offset.saturating_add(limit).min(connections.len());
+    let page = connections[offset..end].to_vec();
+    Ok(Json(ApiResponse { data: page }))
 }
 
 // --- Pending / Reload ---

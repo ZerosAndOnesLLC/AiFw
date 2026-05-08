@@ -8,7 +8,6 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use std::time::Duration;
-use tokio::time::interval;
 
 use crate::AppState;
 use aifw_common::RuleStatus;
@@ -251,51 +250,26 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         let _ = sender.send(Message::Text(batch.into())).await;
     }
 
-    // Spawn a task to push updates every second and forward cluster events
-    let push_state = state.clone();
+    // Subscribe to the global per-tick broadcast (#178). The dashboard
+    // producer task builds `live_msg` once per tick and publishes it here;
+    // we just forward. No more per-client `build_update` cloning the full
+    // pf state table.
+    let mut tick_rx = state.ws_tick.subscribe();
     let mut cluster_rx = state.cluster_events.subscribe();
     let mut push_task = tokio::spawn(async move {
-        let mut tick = interval(Duration::from_secs(1));
         loop {
             tokio::select! {
-                _ = tick.tick() => {
-                    match build_update(&push_state).await {
-                        Ok((live_msg, history_msg)) => {
-                            // Store slim version in server-side ring buffer (no blocked/connections)
-                            let max = push_state
-                                .metrics_history_max
-                                .load(std::sync::atomic::Ordering::Relaxed);
-                            {
-                                let mut buf = push_state.metrics_history.write().await;
-                                while buf.len() >= max {
-                                    buf.pop_front();
-                                }
-                                buf.push_back(history_msg.clone());
-                            }
-
-                            // Persist slim version to Valkey if available
-                            if let Some(ref redis) = push_state.redis {
-                                let mut conn = redis.clone();
-                                let _: Result<(), _> = redis::pipe()
-                                    .cmd("LPUSH")
-                                    .arg("aifw:metrics:history")
-                                    .arg(&history_msg)
-                                    .cmd("LTRIM")
-                                    .arg("aifw:metrics:history")
-                                    .arg(0i64)
-                                    .arg(max as i64 - 1)
-                                    .query_async(&mut conn)
-                                    .await;
-                            }
-
-                            // Send full version (with blocked + connections) to live client
-                            if sender.send(Message::Text(live_msg.into())).await.is_err() {
+                msg = tick_rx.recv() => {
+                    match msg {
+                        Ok(arc_msg) => {
+                            if sender.send(Message::Text((*arc_msg).clone().into())).await.is_err() {
                                 break;
                             }
                         }
-                        Err(e) => {
-                            tracing::debug!(error = %e, "ws build_update failed");
-                        }
+                        // We dropped frames because we couldn't keep up.
+                        // Don't disconnect — wait for the next tick.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
                 ev = cluster_rx.recv() => {
@@ -328,6 +302,96 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     tokio::select! {
         _ = &mut push_task => { recv_task.abort(); }
         _ = &mut recv_task => { push_task.abort(); }
+    }
+}
+
+/// Single global producer for the per-tick dashboard payload (#178).
+///
+/// Pre-fix every connected WS client called `build_update` independently —
+/// each one cloned the full `Vec<PfState>` and rebuilt identical JSON.
+/// At 50k states × 10 clients that was 500k state clones / sec on the API
+/// process. Now this task runs once per tick, builds the payload, writes
+/// it to the metrics-history ring + Valkey *once*, and broadcasts the
+/// `Arc<String>` to every subscriber.
+///
+/// Tick interval scales with state-table size: 1 Hz under 5k states (the
+/// common case — snappy dashboard), 5 s above that (heavy load — protect
+/// the box from busy-looping over a giant table).
+pub async fn run_dashboard_producer(state: AppState) {
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    const HEAVY_STATE_THRESHOLD: u64 = 5_000;
+    const FAST_INTERVAL: Duration = Duration::from_secs(1);
+    const SLOW_INTERVAL: Duration = Duration::from_secs(5);
+
+    let mut next_at = Instant::now() + FAST_INTERVAL;
+    loop {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(next_at)).await;
+
+        // Skip the heavy build when nobody's listening AND there's no
+        // history to populate. metrics_history matters even with zero
+        // current clients — reconnects need it — so we always tick when
+        // there's a non-zero history retention. If the whole feature is
+        // off (max == 0) and no clients, skip.
+        let max = state
+            .metrics_history_max
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let have_subscribers = state.ws_tick.receiver_count() > 0;
+        if !have_subscribers && max == 0 {
+            next_at = Instant::now() + FAST_INTERVAL;
+            continue;
+        }
+
+        let started = Instant::now();
+        match build_update(&state).await {
+            Ok((live_msg, history_msg)) => {
+                // Slim history → in-memory ring buffer (so reconnects can
+                // backfill the dashboard) and Valkey (so the ring survives
+                // process restart when configured).
+                if max > 0 {
+                    let mut buf = state.metrics_history.write().await;
+                    while buf.len() >= max {
+                        buf.pop_front();
+                    }
+                    buf.push_back(history_msg.clone());
+                }
+                if let Some(ref redis) = state.redis {
+                    let mut conn = redis.clone();
+                    let _: Result<(), _> = redis::pipe()
+                        .cmd("LPUSH")
+                        .arg("aifw:metrics:history")
+                        .arg(&history_msg)
+                        .cmd("LTRIM")
+                        .arg("aifw:metrics:history")
+                        .arg(0i64)
+                        .arg(max as i64 - 1)
+                        .query_async(&mut conn)
+                        .await;
+                }
+                // Live frame to dashboard clients. `send` errors only if
+                // there are no subscribers, which is fine — we wanted to
+                // populate history regardless.
+                let _ = state.ws_tick.send(Arc::new(live_msg));
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "ws producer build_update failed");
+            }
+        }
+
+        // Throttle when we're sitting on a giant state table. Use the
+        // value from the build we just did (cheap: cached on the tracker).
+        let pf_states = state.conntrack.total_count().await as u64;
+        let interval = if pf_states > HEAVY_STATE_THRESHOLD {
+            SLOW_INTERVAL
+        } else {
+            FAST_INTERVAL
+        };
+        // Drift correction: schedule the next tick based on the start of
+        // *this* one, not the end. Keeps the cadence stable when a build
+        // takes longer than expected; falls back to "interval from now" if
+        // the build blew past the budget.
+        next_at = (started + interval).max(Instant::now());
     }
 }
 
