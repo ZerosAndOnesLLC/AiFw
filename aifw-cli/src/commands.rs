@@ -2120,17 +2120,13 @@ pub async fn rp_apply(db_path: &Path) -> anyhow::Result<()> {
     println!("Generating config...");
     let yaml = rp_generate_config(pool).await?;
 
-    // Write config via sudo
-    let mut child = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["tee", "/usr/local/etc/trafficcop/config.yaml"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin.write_all(yaml.as_bytes()).await?;
-    }
-    child.wait().await?;
+    // Write config through the narrow `aifw-sudo-write` helper rather
+    // than the broad `sudo tee` grant (#204).
+    aifw_core::sudo::write_file(
+        std::path::Path::new("/usr/local/etc/trafficcop/config.yaml"),
+        yaml.as_bytes(),
+    )
+    .await?;
 
     println!("Config written. Restarting service...");
     let output = tokio::process::Command::new("/usr/local/bin/sudo")

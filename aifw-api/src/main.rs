@@ -2040,23 +2040,19 @@ async fn ensure_rdr_anchor() {
         }
     }
 
-    // Validation passed — commit.
-    if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["tee", pf_path])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
+    // Validation passed — commit through the narrow `aifw-sudo-write`
+    // helper rather than the broad `sudo tee` grant (#204).
+    if aifw_core::sudo::write_file(std::path::Path::new(pf_path), patched.as_bytes())
+        .await
+        .is_ok()
     {
-        if let Some(ref mut stdin) = child.stdin {
-            let _ = tokio::io::AsyncWriteExt::write_all(stdin, patched.as_bytes()).await;
-        }
-        drop(child.stdin.take());
-        let _ = child.wait().await;
         let _ = tokio::process::Command::new("/usr/local/bin/sudo")
             .args(["/sbin/pfctl", "-f", pf_path])
             .output()
             .await;
         info!("Patched pf.conf with missing AiFw anchors and reloaded");
+    } else {
+        tracing::warn!("aifw-sudo-write failed to commit patched pf.conf");
     }
     let _ = tokio::fs::remove_file(tmp_path).await;
 }

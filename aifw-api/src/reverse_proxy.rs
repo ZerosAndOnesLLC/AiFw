@@ -1243,20 +1243,12 @@ pub async fn apply_config(
         .await
         .map_err(|_| internal())?;
 
-    // Write YAML config via sudo tee
+    // Write YAML config through the narrow `aifw-sudo-write` helper
+    // rather than the broad `sudo tee` grant (#204).
     let config_path = "/usr/local/etc/trafficcop/config.yaml";
-    let mut child = Command::new("/usr/local/bin/sudo")
-        .args(["tee", config_path])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
+    aifw_core::sudo::write_file(std::path::Path::new(config_path), yaml.as_bytes())
+        .await
         .map_err(|_| internal())?;
-
-    if let Some(ref mut stdin) = child.stdin {
-        use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(yaml.as_bytes()).await;
-    }
-    let _ = child.wait().await;
 
     if global.enabled {
         let _ = Command::new("/usr/local/bin/sudo")

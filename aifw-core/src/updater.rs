@@ -378,6 +378,11 @@ pub async fn install_from_path(
     // "Restart pending" loop). Same pattern as the wg migration above.
     ensure_sudoers_daemon().await;
 
+    // Migrate sudoers from `/usr/bin/tee *` (broad root write to any path)
+    // to `/usr/local/libexec/aifw-sudo-write *` (allowlisted helper).
+    // GHSA-mjqh-2vx8-7hq7 follow-up #204. Idempotent.
+    ensure_sudoers_write_helper().await;
+
     // Ensure required packages are installed (older installs may be missing curl)
     for pkg in &["curl"] {
         let check = Command::new("pkg").args(["info", "-q", pkg]).output().await;
@@ -713,6 +718,79 @@ pub async fn ensure_sudoers_daemon() {
             "sudoers patch install failed"
         ),
         Err(e) => warn!(error = %e, "sudoers patch errored"),
+    }
+}
+
+/// Migrate sudoers from the broad `/usr/bin/tee *` grant to the narrow
+/// `aifw-sudo-write` helper (GHSA-mjqh-2vx8-7hq7 follow-up #204).
+///
+/// Adds the helper grant if missing and strips any pre-existing
+/// `/usr/bin/tee *` line. Idempotent: running on an appliance that's
+/// already been migrated is a no-op (skips both sides).
+///
+/// Same staging pattern as `ensure_sudoers_daemon` — write to /tmp,
+/// re-install via `sudo install` (which is already in sudoers).
+pub async fn ensure_sudoers_write_helper() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+
+    let helper_marker = "/usr/local/libexec/aifw-sudo-write";
+    let tee_substr = "/usr/bin/tee *";
+
+    let needs_helper = !content.contains(helper_marker);
+    let needs_tee_strip = content.contains(tee_substr);
+    if !needs_helper && !needs_tee_strip {
+        return;
+    }
+
+    // Strip any line referencing the broad tee grant. Match on the
+    // distinctive `/usr/bin/tee *` substring so we don't touch unrelated
+    // lines. The grant lives on its own line in every shipped sudoers.
+    let mut patched: String = content
+        .lines()
+        .filter(|line| !line.contains(tee_substr))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    if needs_helper {
+        patched.push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *\n");
+    }
+
+    let stage = "/tmp/aifw-sudoers-write-helper-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers write-helper patch");
+        return;
+    }
+    let result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/bin/install",
+            "-m",
+            "440",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            stage,
+            path,
+        ])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!(
+                "migrated sudoers: dropped /usr/bin/tee, added aifw-sudo-write helper grant"
+            )
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers write-helper migration install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers write-helper migration errored"),
     }
 }
 

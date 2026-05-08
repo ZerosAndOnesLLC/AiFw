@@ -20,6 +20,7 @@ pub mod pf_tuning;
 pub mod s3_backup;
 pub mod shaping;
 pub mod smtp_notify;
+pub mod sudo;
 pub mod system_apply;
 pub mod system_apply_helpers;
 #[cfg(test)]

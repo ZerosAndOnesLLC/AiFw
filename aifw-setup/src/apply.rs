@@ -102,6 +102,12 @@ aifw ALL=(root) NOPASSWD: /sbin/pfctl -f /etc/pf.conf
 aifw ALL=(root) NOPASSWD: /sbin/shutdown -p +10s *
 aifw ALL=(root) NOPASSWD: /sbin/shutdown -r +10s *
 
+# --- Narrow wrapper scripts (GHSA-mjqh-2vx8-7hq7 follow-up #204) ---
+# Each helper enforces its own internal allowlist of valid arguments —
+# paths, services, interfaces. Migrate broad grants below to wrappers
+# and remove the corresponding line as each category lands.
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
+
 # --- Network configuration ---
 # TODO(GHSA-mjqh-2vx8-7hq7): the wildcards below still grant broad root.
 # Migrate each call site to a narrow wrapper script and replace these
@@ -122,7 +128,6 @@ aifw ALL=(ALL) NOPASSWD: /bin/pkill *
 aifw ALL=(ALL) NOPASSWD: /usr/bin/install *
 aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *
 aifw ALL=(ALL) NOPASSWD: /usr/bin/tar *
-aifw ALL=(ALL) NOPASSWD: /usr/bin/tee *
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
 aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *

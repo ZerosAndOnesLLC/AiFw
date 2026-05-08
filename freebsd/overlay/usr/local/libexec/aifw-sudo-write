@@ -1,0 +1,42 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-write <dest_path>
+#
+# Reads stdin and writes atomically to <dest_path>, as root, refusing any
+# destination outside the allowlist below. Replaces the broad `sudo tee`
+# grant (GHSA-mjqh-2vx8-7hq7 follow-up #204) so the `aifw` user no
+# longer has root write access to arbitrary paths.
+#
+# To add a new managed write target: add the exact path to the case
+# block. Do not introduce wildcards beyond the leaf filename — the
+# whole point of this wrapper is that the privileged surface is a
+# closed list.
+
+set -eu
+
+if [ $# -ne 1 ]; then
+    echo "usage: $0 <dest_path>" >&2
+    exit 2
+fi
+
+DEST="$1"
+
+case "$DEST" in
+    /etc/pf.conf) ;;
+    /usr/local/etc/trafficcop/config.yaml) ;;
+    *)
+        echo "aifw-sudo-write: refusing write outside allowlist: $DEST" >&2
+        exit 1
+        ;;
+esac
+
+DIR=$(dirname "$DEST")
+BASENAME=$(basename "$DEST")
+TMPFILE=$(mktemp "${DIR}/.${BASENAME}.aifw.XXXXXX")
+trap 'rm -f "$TMPFILE"' EXIT INT TERM HUP
+
+cat > "$TMPFILE"
+chmod 644 "$TMPFILE"
+chown root:wheel "$TMPFILE"
+mv "$TMPFILE" "$DEST"
+
+trap - EXIT INT TERM HUP
