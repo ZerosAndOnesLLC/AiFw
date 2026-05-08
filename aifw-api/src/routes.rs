@@ -1878,18 +1878,28 @@ pub async fn list_logs(
 
 // --- DNS ---
 
-pub async fn get_dns() -> Result<Json<DnsConfigResponse>, StatusCode> {
-    let content = tokio::fs::read_to_string("/etc/resolv.conf")
-        .await
-        .unwrap_or_default();
-    let servers: Vec<String> = content
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            line.strip_prefix("nameserver")
-                .map(|addr| addr.trim().to_string())
-        })
-        .collect();
+pub async fn get_dns(
+    State(state): State<AppState>,
+) -> Result<Json<DnsConfigResponse>, StatusCode> {
+    // Returns the rDNS upstream forwarders (what client DNS queries actually
+    // get sent to). Pre-fix this read /etc/resolv.conf, which on a default
+    // appliance is `127.0.0.1` — useless to a caller asking "what are my
+    // configured upstreams?".
+    let servers: Vec<String> = sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|(v,)| {
+        v.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect()
+    })
+    .unwrap_or_default();
     Ok(Json(DnsConfigResponse { servers }))
 }
 
@@ -3744,14 +3754,8 @@ pub async fn update_dns(
     State(state): State<AppState>,
     Json(req): Json<DnsConfigRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
-    // Validate all entries are valid IPs
-    for server in &req.servers {
-        if server.parse::<std::net::IpAddr>().is_err() {
-            return Err(bad_request());
-        }
-    }
-
-    // Persist to DB so settings survive DHCP renewal / network changes
+    // Persist for backup/restore round-trip (legacy `auth_config` field is
+    // still what the snapshot format reads).
     let dns_json = serde_json::to_string(&req.servers).unwrap_or_default();
     let _ =
         sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dns_servers', ?1)")
@@ -3759,32 +3763,15 @@ pub async fn update_dns(
             .execute(&state.pool)
             .await;
 
-    let content: String = req
-        .servers
-        .iter()
-        .map(|s| format!("nameserver {s}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Write via sudo tee — aifw user can't write root-owned /etc/resolv.conf
-    let mut child = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["tee", "/etc/resolv.conf"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| internal())?;
-
-    if let Some(ref mut stdin) = child.stdin {
-        use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(content.as_bytes())
-            .await
-            .map_err(|_| internal())?;
-    }
-    child.wait().await.map_err(|_| internal())?;
+    // Program the actual rDNS upstream forwarders. Pre-fix this endpoint
+    // wrote `/etc/resolv.conf` directly, which only changed what the
+    // appliance OS itself queried — clients still hit 127.0.0.1 (rDNS) with
+    // its old upstreams, so RPZ / blocklists / query logging silently lost
+    // coverage of the configured DNS servers.
+    crate::dns_resolver::set_forwarders(&state, &req.servers).await?;
 
     Ok(Json(MessageResponse {
-        message: "DNS configuration updated".to_string(),
+        message: "DNS upstream forwarders saved. Apply via /api/v1/dns/resolver/apply.".to_string(),
     }))
 }
 

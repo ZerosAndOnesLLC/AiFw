@@ -8,8 +8,9 @@
 //! * **Engine-routed writes.** Aliases go through `AliasEngine`, NAT through
 //!   `NatEngine`, rules through `RuleEngine`, static routes through the same
 //!   `apply_route_to_system` path the manual REST endpoint uses, and DNS
-//!   through the same `auth_config.dns_servers` + `sudo tee /etc/resolv.conf`
-//!   path that `update_dns` uses. No raw INSERTs that bypass `apply_*`.
+//!   through `dns_resolver::set_forwarders` (the same forwarders the rDNS
+//!   resolver config UI writes), not `/etc/resolv.conf`. No raw INSERTs that
+//!   bypass `apply_*`.
 //! * **Snapshot + commit-confirm.** Before any write, we save a
 //!   `pre-OPNsense-import` config-history version so the import can be
 //!   reverted in one click. After a successful apply we start commit-confirm
@@ -1391,42 +1392,29 @@ async fn apply_routes(
 
 async fn apply_dns_servers(state: &AppState, servers: &[String]) -> usize {
     // Validate first; skip junk silently rather than failing the whole import.
-    let valid: Vec<&String> = servers
+    let valid: Vec<String> = servers
         .iter()
         .filter(|s| s.parse::<std::net::IpAddr>().is_ok())
+        .cloned()
         .collect();
     if valid.is_empty() {
         return 0;
     }
+    // Mirror the legacy `auth_config.dns_servers` row so backup/restore
+    // round-trips imported configs the same way as native ones.
     let json = serde_json::to_string(&valid).unwrap_or_else(|_| "[]".into());
     let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dns_servers', ?1)")
         .bind(&json)
         .execute(&state.pool)
         .await;
 
-    // Write /etc/resolv.conf via sudo tee, the same path /api/v1/dns uses.
-    // On Linux/WSL dev builds sudo isn't typically configured for this — the
-    // failure is logged and the DB row is what survives. We drop the stdin
-    // handle before awaiting `wait()` so `tee` sees EOF and exits — without
-    // that drop, `wait()` deadlocks because tee keeps reading.
-    let content: String = valid
-        .iter()
-        .map(|s| format!("nameserver {s}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["tee", "/etc/resolv.conf"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-    {
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(content.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-            drop(stdin);
-        }
-        let _ = child.wait().await;
+    // Program rDNS upstream forwarders. Pre-fix this wrote `/etc/resolv.conf`
+    // directly, which on an appliance where resolv.conf points at 127.0.0.1
+    // (rDNS) bypassed the resolver for the box's own lookups *and* did
+    // nothing for client queries because rDNS reads its forwarders from
+    // `dns_resolver_config`, not `/etc/resolv.conf`.
+    if crate::dns_resolver::set_forwarders(state, &valid).await.is_err() {
+        return 0;
     }
     valid.len()
 }

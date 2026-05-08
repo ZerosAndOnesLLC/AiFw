@@ -235,6 +235,21 @@ async fn import_with_system_settings_opt_in_applies_them() {
     let body: Value = resp.json();
     assert_eq!(body["applied"]["dns_servers"], 2, "both DNS upstreams applied");
     assert_eq!(body["applied"]["hostname"], true, "hostname applied");
+
+    // C1: imported DNS servers should land in the rDNS forwarders config
+    // (visible via /api/v1/dns/resolver/config), not /etc/resolv.conf.
+    let cfg = server
+        .get("/api/v1/dns/resolver/config")
+        .add_header("authorization", format!("Bearer {token}"))
+        .await;
+    cfg.assert_status_ok();
+    let cfg_body: Value = cfg.json();
+    let forwarders = cfg_body["forwarding_servers"]
+        .as_array()
+        .expect("forwarding_servers array");
+    assert!(forwarders.iter().any(|s| s == "1.1.1.1"));
+    assert!(forwarders.iter().any(|s| s == "9.9.9.9"));
+    assert_eq!(cfg_body["forwarding_enabled"], true);
 }
 
 #[tokio::test]

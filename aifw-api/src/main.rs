@@ -2183,7 +2183,11 @@ async fn main() -> anyhow::Result<()> {
     // Apply all enabled static routes from DB (survives reboot)
     routes::apply_all_routes(&state.pool).await;
 
-    // Restore DNS servers from DB to /etc/resolv.conf (survives DHCP renewal)
+    // One-time migration: appliances upgraded from a version that wrote DNS
+    // settings to /etc/resolv.conf still have their list in the legacy
+    // `auth_config.dns_servers` row. Move it into `dns_resolver_config` so
+    // rDNS picks them up as upstream forwarders. Only runs when forwarders
+    // are unset — operators who already configured them keep their values.
     if let Ok(Some((dns_json,))) =
         sqlx::query_as::<_, (String,)>("SELECT value FROM auth_config WHERE key = 'dns_servers'")
             .fetch_optional(&state.pool)
@@ -2191,23 +2195,35 @@ async fn main() -> anyhow::Result<()> {
         && let Ok(servers) = serde_json::from_str::<Vec<String>>(&dns_json)
         && !servers.is_empty()
     {
-        let content: String = servers
-            .iter()
-            .map(|s| format!("nameserver {s}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if let Ok(mut child) = tokio::process::Command::new("/usr/local/bin/sudo")
-            .args(["tee", "/etc/resolv.conf"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()
-        {
-            if let Some(ref mut stdin) = child.stdin {
-                let _ = tokio::io::AsyncWriteExt::write_all(stdin, content.as_bytes()).await;
-            }
-            drop(child.stdin.take());
-            let _ = child.wait().await;
-            info!("DNS servers restored from DB: {}", servers.join(", "));
+        let existing: Option<String> = sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'",
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|(v,)| v);
+        let unset = existing
+            .as_deref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true);
+        if unset {
+            let _ = sqlx::query(
+                "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('forwarding_servers', ?1)",
+            )
+            .bind(servers.join(","))
+            .execute(&state.pool)
+            .await;
+            let _ = sqlx::query(
+                "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('forwarding_enabled', 'true')",
+            )
+            .execute(&state.pool)
+            .await;
+            info!(
+                "Migrated {} DNS servers from legacy auth_config to rDNS forwarders: {}",
+                servers.len(),
+                servers.join(", ")
+            );
         }
     }
 

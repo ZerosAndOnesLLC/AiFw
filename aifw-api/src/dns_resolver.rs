@@ -610,6 +610,30 @@ async fn save_key(pool: &SqlitePool, key: &str, value: &str) {
         .await;
 }
 
+/// Persist a list of upstream DNS forwarders for the local rDNS resolver and
+/// signal that an apply is pending. Validates each entry is a parseable IP.
+///
+/// This is the single seam used by the legacy `PUT /api/v1/dns` endpoint and
+/// by the OPNsense importer's `apply_dns_servers`. Both used to write
+/// `/etc/resolv.conf` directly, which bypassed rDNS entirely (the appliance's
+/// own clients still went through 127.0.0.1, so RPZ / blocklists / query
+/// logging silently lost coverage of the configured upstreams). Routing
+/// through this helper writes the same `dns_resolver_config` keys the proper
+/// `PUT /api/v1/dns/resolver/config` endpoint writes, so the actual rDNS
+/// `forwarders = [...]` list reflects what the operator asked for.
+pub async fn set_forwarders(state: &AppState, servers: &[String]) -> Result<(), StatusCode> {
+    for s in servers {
+        if s.parse::<std::net::IpAddr>().is_err() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    let pool = &state.pool;
+    save_key(pool, "forwarding_servers", &servers.join(",")).await;
+    save_key(pool, "forwarding_enabled", bool_str(!servers.is_empty())).await;
+    state.set_pending(|p| p.dns = true).await;
+    Ok(())
+}
+
 async fn load_key(pool: &SqlitePool, key: &str) -> Option<String> {
     sqlx::query_as::<_, (String,)>("SELECT value FROM dns_resolver_config WHERE key = ?1")
         .bind(key)
