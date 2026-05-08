@@ -480,3 +480,77 @@ async fn import_creates_pre_import_snapshot() {
         "pre_import snapshot version {version} not in history"
     );
 }
+
+#[tokio::test]
+async fn pre_import_snapshot_restores_clean_baseline() {
+    // #248: a SQL transaction can't wrap the import (engine writes trigger pf
+    // reloads, which are kernel-side effects sqlx can't rewind). The atomicity
+    // contract is instead: pre-import snapshot via `save_pre_import_snapshot`,
+    // and `restore_pre_import` can fully revert what the importer changed.
+    // This test exercises the recovery path end-to-end through the REST API:
+    // import populates the DB, then restoring the pre-import snapshot brings
+    // it back to the empty baseline.
+    let (server, _) = test_app().await;
+    let token = login(&server).await;
+
+    let baseline_rules = server
+        .get("/api/v1/rules")
+        .add_header("authorization", format!("Bearer {token}"))
+        .await;
+    let baseline_rules: Value = baseline_rules.json();
+    let baseline_rule_count = baseline_rules["data"]
+        .as_array()
+        .or_else(|| baseline_rules.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    let resp = server
+        .post("/api/v1/config/import-opnsense")
+        .add_header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "xml": MEDIUM_FIXTURE, "commit_confirm": false }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let pre_version = body["pre_import_version"].as_i64().expect("snapshot version");
+    let imported_rule_count = body["applied"]["rules"].as_u64().unwrap_or(0);
+    assert!(
+        imported_rule_count > 0,
+        "import should have added rules; baseline test is meaningless otherwise"
+    );
+
+    // Restore to the pre-import snapshot — same code path the importer's own
+    // `restore_pre_import` invokes on mid-apply failure.
+    let restore = server
+        .post("/api/v1/config/restore")
+        .add_header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "version": pre_version }))
+        .await;
+    restore.assert_status_ok();
+
+    let after_restore = server
+        .get("/api/v1/rules")
+        .add_header("authorization", format!("Bearer {token}"))
+        .await;
+    let after_restore: Value = after_restore.json();
+    let after_count = after_restore["data"]
+        .as_array()
+        .or_else(|| after_restore.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        after_count, baseline_rule_count,
+        "rule count after pre-import-snapshot restore must match baseline"
+    );
+
+    let aliases = server
+        .get("/api/v1/aliases")
+        .add_header("authorization", format!("Bearer {token}"))
+        .await;
+    let aliases: Value = aliases.json();
+    let alias_count = aliases["data"]
+        .as_array()
+        .or_else(|| aliases.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(alias_count, 0, "imported aliases must be gone after restore");
+}

@@ -647,6 +647,24 @@ pub async fn import_opnsense(
 }
 
 // --------------------------------------------------------------------- apply pipeline
+//
+// Atomicity model (#248): a single SQL transaction can't wrap the import
+// because each engine write triggers a pf reload — kernel-side effects sqlx
+// can't rewind. Instead the contract is "snapshot, apply, restore on error":
+//
+//   1. `save_pre_import_snapshot` captures the full FirewallConfig before
+//      any write touches the DB or pf.
+//   2. `apply_inner` runs the engine writes; per-row failures land on the
+//      `skipped` list and continue, but pf reload / alias sync failures
+//      bubble up as `Err`.
+//   3. On `Err` the caller invokes `restore_pre_import`, which re-applies
+//      the snapshot via `apply_firewall_config` — wholesale revert of
+//      rules, NAT, aliases, and routes back to the pre-import state.
+//   4. `InsertedRows::cleanup` is the surgical fallback if the snapshot
+//      capture itself failed.
+//
+// `pre_import_snapshot_restores_clean_baseline` in tests.rs exercises the
+// recovery path end-to-end through the REST API.
 
 async fn apply_inner(
     state: &AppState,
