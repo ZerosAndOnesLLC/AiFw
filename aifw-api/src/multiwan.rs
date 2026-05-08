@@ -211,6 +211,98 @@ pub async fn list_fibs(
     }))
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct EnableFibsRequest {
+    /// If true, schedule a reboot in 10s after writing loader.conf.
+    #[serde(default)]
+    pub reboot: bool,
+    /// Override fib count (default 16). Must be a power of two between 2 and 65536.
+    #[serde(default)]
+    pub fibs: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnableFibsResponse {
+    pub message: String,
+    pub net_fibs: u32,
+    pub already_enabled: bool,
+    pub reboot_scheduled: bool,
+}
+
+/// POST /api/v1/multiwan/enable-fibs
+///
+/// Idempotently writes `net.fibs="<n>"` to `/boot/loader.conf` so that the
+/// kernel allocates multiple forwarding tables on next boot. If the user
+/// passes `reboot=true`, schedules a reboot in 10 seconds. Requires the
+/// `system:reboot` permission since it touches boot config + reboots.
+pub async fn enable_fibs(
+    Json(req): Json<EnableFibsRequest>,
+) -> Result<Json<ApiResponse<EnableFibsResponse>>, StatusCode> {
+    let target_fibs = req.fibs.unwrap_or(16);
+    if target_fibs < 2 || target_fibs > 65536 || !target_fibs.is_power_of_two() {
+        return Err(bad_request());
+    }
+
+    #[cfg(target_os = "freebsd")]
+    let already_enabled = {
+        let path = "/boot/loader.conf";
+        let existing = std::fs::read_to_string(path).unwrap_or_default();
+        let has_line = existing.lines().any(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with('#')
+                && trimmed.split('=').next().map(str::trim) == Some("net.fibs")
+        });
+        if has_line {
+            true
+        } else {
+            let mut new_content = existing;
+            if !new_content.is_empty() && !new_content.ends_with('\n') {
+                new_content.push('\n');
+            }
+            new_content
+                .push_str("\n# AiFw — multi-WAN forwarding tables (added via UI)\n");
+            new_content.push_str(&format!("net.fibs=\"{target_fibs}\"\n"));
+            std::fs::write(path, new_content).map_err(|_| internal())?;
+            false
+        }
+    };
+
+    #[cfg(not(target_os = "freebsd"))]
+    let already_enabled = false;
+
+    let reboot_scheduled = if req.reboot && !already_enabled {
+        let _ = tokio::process::Command::new("/usr/local/bin/sudo")
+            .args([
+                "/sbin/shutdown",
+                "-r",
+                "+10s",
+                "AiFw enabling multi-WAN forwarding tables",
+            ])
+            .output()
+            .await;
+        true
+    } else {
+        false
+    };
+
+    let message = if already_enabled {
+        "net.fibs is already configured in /boot/loader.conf — reboot to apply if not already".into()
+    } else if reboot_scheduled {
+        format!("net.fibs={target_fibs} written to /boot/loader.conf — system rebooting in 10 seconds")
+    } else {
+        format!("net.fibs={target_fibs} written to /boot/loader.conf — reboot required to take effect")
+    };
+
+    Ok(Json(ApiResponse {
+        data: EnableFibsResponse {
+            message,
+            net_fibs: target_fibs,
+            already_enabled,
+            reboot_scheduled,
+        },
+    }))
+}
+
 // ============================================================
 // Gateways (Phase 2)
 // ============================================================

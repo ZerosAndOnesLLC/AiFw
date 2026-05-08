@@ -67,6 +67,18 @@ pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
         enabled: true,
     });
 
+    // ── Multi-WAN FIBs ───────────────────────────────────────
+    // Allocate 16 forwarding tables so the multi-WAN feature is usable
+    // out of the box. Cost is negligible (a few KB of kernel memory) and
+    // changing this later requires a reboot, so set it at install time.
+    items.push(TuningItem {
+        key: "net.fibs".into(),
+        value: "16".into(),
+        target: TuningTarget::LoaderConf,
+        reason: "Forwarding tables for multi-WAN routing instances (16 = up to 15 WAN uplinks)".into(),
+        enabled: true,
+    });
+
     // ── pf State Table (scale with RAM) ──────────────────────
     let states_hashsize = match profile.memory.total_mb {
         0..=1024 => 32768,

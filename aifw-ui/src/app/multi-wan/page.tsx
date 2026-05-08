@@ -35,6 +35,7 @@ export default function MultiWanPage() {
 
   const [memberInputs, setMemberInputs] = useState<Record<string, string>>({});
   const [memberErrs, setMemberErrs] = useState<Record<string, string>>({});
+  const [enabling, setEnabling] = useState(false);
 
   const clearFeedback = useCallback(() => {
     setTimeout(() => setFeedback(null), 4000);
@@ -155,6 +156,31 @@ export default function MultiWanPage() {
     }
   }
 
+  async function enableFibs() {
+    if (
+      !confirm(
+        "This will write net.fibs=16 to /boot/loader.conf and reboot the system in 10 seconds. Continue?",
+      )
+    )
+      return;
+    setEnabling(true);
+    try {
+      const r = await api<{
+        data: { message: string; reboot_scheduled: boolean };
+      }>("POST", "/api/v1/multiwan/enable-fibs", { reboot: true });
+      setFeedback({ type: "success", message: r.data.message });
+      clearFeedback();
+    } catch (err) {
+      setFeedback({
+        type: "error",
+        message: err instanceof Error ? err.message : "enable failed",
+      });
+      clearFeedback();
+    } finally {
+      setEnabling(false);
+    }
+  }
+
   async function detachMember(instId: string, iface: string) {
     try {
       await api(
@@ -222,9 +248,10 @@ export default function MultiWanPage() {
             <code>ifconfig &lt;if&gt; fib N</code> for you.
           </li>
           <li>
-            <b>Prerequisite:</b> set <code>net.fibs=16</code> in
-            <code> /boot/loader.conf</code> and reboot. The
-            card below shows how many FIBs the kernel currently offers.
+            <b>Prerequisite:</b> the kernel must be built with multiple FIBs.
+            New AiFw installs ship with <code>net.fibs=16</code> by default;
+            older installs can flip it on with the <i>Enable multi-WAN</i>{" "}
+            button below (writes <code>/boot/loader.conf</code> and reboots).
           </li>
         </ul>
       </HelpBanner>
@@ -320,10 +347,22 @@ export default function MultiWanPage() {
           </div>
         </div>
         {fibs && fibs.net_fibs <= 1 && (
-          <p className="text-xs text-yellow-400">
-            Only 1 FIB available. To enable multi-WAN, set{" "}
-            <code>net.fibs=16</code> in <code>/boot/loader.conf</code> and reboot.
-          </p>
+          <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 p-3 space-y-2">
+            <p className="text-xs text-yellow-300">
+              Only 1 FIB available. Multi-WAN needs the kernel to allocate
+              extra forwarding tables, which requires a one-time reboot.
+            </p>
+            <button
+              type="button"
+              onClick={enableFibs}
+              disabled={enabling}
+              className="px-3 py-2 rounded bg-yellow-600 hover:bg-yellow-700 text-white text-xs disabled:opacity-50"
+            >
+              {enabling
+                ? "Writing loader.conf…"
+                : "Enable multi-WAN (writes loader.conf + reboots)"}
+            </button>
+          </div>
         )}
         <button
           type="submit"

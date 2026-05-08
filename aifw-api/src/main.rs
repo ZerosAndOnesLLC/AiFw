@@ -1032,6 +1032,10 @@ pub fn build_router(
     let system_reboot = Router::new()
         .route("/api/v1/updates/reboot", post(updates::reboot_system))
         .route("/api/v1/updates/shutdown", post(updates::shutdown_system))
+        .route(
+            "/api/v1/multiwan/enable-fibs",
+            post(multiwan::enable_fibs),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::SystemReboot)));
 
     // proxy:read
