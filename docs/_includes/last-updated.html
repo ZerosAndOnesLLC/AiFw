@@ -1,0 +1,3 @@
+{% if page.date %}
+<p class="last-updated">Last updated: <time datetime="{{ page.date | date: '%Y-%m-%d' }}">{{ page.date | date: "%B %-d, %Y" }}</time></p>
+{% endif %}
