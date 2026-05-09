@@ -198,17 +198,13 @@ pub async fn update_status(
         }
     }
 
-    let pending_os = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/freebsd-update", "updatesready"])
-        .output()
+    let pending_os = aifw_core::sudo::freebsd_update("updatesready", &[])
         .await
         .map(|o| o.status.success())
         .unwrap_or(false);
 
     let needs_reboot = std::path::Path::new("/var/run/reboot-required").exists()
-        || Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/freebsd-update", "updatesready"])
-            .output()
+        || aifw_core::sudo::freebsd_update("updatesready", &[])
             .await
             .map(|o| o.status.success())
             .unwrap_or(false);
@@ -255,14 +251,7 @@ pub async fn check_updates(
     };
 
     // Check OS updates
-    let os_result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/sbin/freebsd-update",
-            "fetch",
-            "--not-running-from-cron",
-        ])
-        .output()
-        .await;
+    let os_result = aifw_core::sudo::freebsd_update("fetch", &["--not-running-from-cron"]).await;
     let os_msg = match os_result {
         Ok(o) => {
             if o.status.success() {
@@ -309,10 +298,7 @@ pub async fn install_updates(
     }
 
     // Install OS updates
-    let os_result = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/freebsd-update", "install"])
-        .output()
-        .await;
+    let os_result = aifw_core::sudo::freebsd_update("install", &[]).await;
     match os_result {
         Ok(o) => {
             if o.status.success() {

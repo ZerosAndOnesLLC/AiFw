@@ -16,6 +16,7 @@ use tokio::process::Command;
 const SUDO: &str = "/usr/local/bin/sudo";
 const HELPER_WRITE: &str = "/usr/local/libexec/aifw-sudo-write";
 const HELPER_WG: &str = "/usr/local/libexec/aifw-sudo-wg";
+const HELPER_FREEBSD_UPDATE: &str = "/usr/local/libexec/aifw-sudo-freebsd-update";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -66,6 +67,23 @@ pub async fn wg(
     extra_args: &[&str],
 ) -> std::io::Result<std::process::Output> {
     let mut args: Vec<&str> = vec![HELPER_WG, subcommand, iface];
+    args.extend_from_slice(extra_args);
+    Command::new(SUDO).args(&args).output().await
+}
+
+/// Run `freebsd-update <action> [args...]` as root via the
+/// `aifw-sudo-freebsd-update` helper.
+///
+/// The helper restricts `action` to `updatesready` / `fetch` / `install`
+/// and validates the small set of allowed args per action (currently
+/// just `--not-running-from-cron` for `fetch`). Returns the raw
+/// `Output` so callers can branch on `status.success()` and surface
+/// `stderr`/`stdout` themselves.
+pub async fn freebsd_update(
+    action: &str,
+    extra_args: &[&str],
+) -> std::io::Result<std::process::Output> {
+    let mut args: Vec<&str> = vec![HELPER_FREEBSD_UPDATE, action];
     args.extend_from_slice(extra_args);
     Command::new(SUDO).args(&args).output().await
 }
