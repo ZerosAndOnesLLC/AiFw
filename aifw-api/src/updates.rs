@@ -173,9 +173,7 @@ pub async fn update_status(
             .map(|r| r.0);
 
     // Check for pending pkg updates
-    let pkg_out = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/pkg", "upgrade", "-n"])
-        .output()
+    let pkg_out = aifw_core::sudo::pkg("upgrade", &["-n"])
         .await
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
@@ -228,10 +226,7 @@ pub async fn check_updates(
     save_config(&state.pool, "last_check", &now).await;
 
     // Check pkg updates
-    let pkg_result = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/pkg", "update"])
-        .output()
-        .await;
+    let pkg_result = aifw_core::sudo::pkg("update", &[]).await;
     let pkg_msg = match pkg_result {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
@@ -281,10 +276,7 @@ pub async fn install_updates(
     let mut results = Vec::new();
 
     // Install pkg updates
-    let pkg_result = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/pkg", "upgrade", "-y"])
-        .output()
-        .await;
+    let pkg_result = aifw_core::sudo::pkg("upgrade", &["-y"]).await;
     match pkg_result {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);

@@ -17,6 +17,7 @@ const SUDO: &str = "/usr/local/bin/sudo";
 const HELPER_WRITE: &str = "/usr/local/libexec/aifw-sudo-write";
 const HELPER_WG: &str = "/usr/local/libexec/aifw-sudo-wg";
 const HELPER_FREEBSD_UPDATE: &str = "/usr/local/libexec/aifw-sudo-freebsd-update";
+const HELPER_PKG: &str = "/usr/local/libexec/aifw-sudo-pkg";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -84,6 +85,18 @@ pub async fn freebsd_update(
     extra_args: &[&str],
 ) -> std::io::Result<std::process::Output> {
     let mut args: Vec<&str> = vec![HELPER_FREEBSD_UPDATE, action];
+    args.extend_from_slice(extra_args);
+    Command::new(SUDO).args(&args).output().await
+}
+
+/// Run `pkg <action> [args...]` as root via the `aifw-sudo-pkg` helper.
+///
+/// The helper restricts `action` to `update` / `install` / `upgrade`
+/// and validates each form (`install -y <pkg>...` requires alnum/dot/
+/// underscore/plus/hyphen-only package names; `upgrade` must be `-y`
+/// or `-n`). Other subcommands and arbitrary flags are denied.
+pub async fn pkg(action: &str, extra_args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut args: Vec<&str> = vec![HELPER_PKG, action];
     args.extend_from_slice(extra_args);
     Command::new(SUDO).args(&args).output().await
 }

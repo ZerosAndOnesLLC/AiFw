@@ -370,6 +370,10 @@ pub async fn install_from_path(
     // `aifw-sudo-freebsd-update *` helper (#204). Idempotent.
     ensure_sudoers_freebsd_update_helper().await;
 
+    // Migrate pkg sudoers grant from the broad `/usr/sbin/pkg *` to the
+    // narrow `aifw-sudo-pkg *` helper (#204). Idempotent.
+    ensure_sudoers_pkg_helper().await;
+
     // Ensure /usr/sbin/daemon is in sudoers. Without it, the detached
     // restart driver in restart_services() spawns sudo, sudo refuses
     // for lack of NOPASSWD, and we silently skip the bounce — leaving
@@ -388,10 +392,7 @@ pub async fn install_from_path(
         let pkg_installed = check.map(|o| o.status.success()).unwrap_or(false);
         if !pkg_installed {
             info!(package = pkg, "Installing missing dependency");
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["pkg", "install", "-y", pkg])
-                .output()
-                .await;
+            let _ = crate::sudo::pkg("install", &["-y", pkg]).await;
         }
     }
 
@@ -918,6 +919,67 @@ pub async fn ensure_sudoers_freebsd_update_helper() {
             "sudoers freebsd-update-helper migration install failed"
         ),
         Err(e) => warn!(error = %e, "sudoers freebsd-update-helper migration errored"),
+    }
+}
+
+/// Migrate sudoers from the broad `/usr/sbin/pkg *` grant to the
+/// narrow `aifw-sudo-pkg` helper (#204). Idempotent.
+pub async fn ensure_sudoers_pkg_helper() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+
+    let helper_marker = "/usr/local/libexec/aifw-sudo-pkg";
+    let direct_substr = "/usr/sbin/pkg *";
+
+    let needs_helper = !content.contains(helper_marker);
+    let needs_strip = content.contains(direct_substr);
+    if !needs_helper && !needs_strip {
+        return;
+    }
+
+    let mut patched: String = content
+        .lines()
+        .filter(|line| !line.contains(direct_substr))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    if needs_helper {
+        patched.push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-pkg *\n");
+    }
+
+    let stage = "/tmp/aifw-sudoers-pkg-helper-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers pkg-helper patch");
+        return;
+    }
+    let result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/bin/install",
+            "-m",
+            "440",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            stage,
+            path,
+        ])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!("migrated sudoers: dropped /usr/sbin/pkg, added aifw-sudo-pkg helper grant")
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers pkg-helper migration install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers pkg-helper migration errored"),
     }
 }
 

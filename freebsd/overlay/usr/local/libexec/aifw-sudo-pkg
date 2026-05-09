@@ -1,0 +1,83 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-pkg <action> [args...]
+#
+# Narrow-grant wrapper around /usr/sbin/pkg (#204). Restricts the
+# `aifw` user to:
+#
+#   - update                    — refresh package catalog
+#   - install -y <pkg> [<pkg>...]  — install packages (no scripts/repos)
+#   - upgrade -y                — apply all pending upgrades
+#   - upgrade -n                — dry-run pending upgrades
+#
+# Other subcommands (delete, set, lock, unlock, autoremove, audit
+# fetch-from-arbitrary-URL, install with `-r reponame`, install of
+# absolute paths, etc.) are denied. Package names are validated
+# character-class-wise so a compromised daemon can't smuggle shell
+# metacharacters or `-r` flags through.
+
+set -eu
+
+if [ $# -lt 1 ]; then
+    echo "usage: $0 <update|install|upgrade> [args...]" >&2
+    exit 2
+fi
+
+ACTION="$1"
+shift
+
+# Validate a single package name: alnum, dot, underscore, plus, hyphen.
+# Reject empty and anything starting with `-` (which would smuggle a flag).
+valid_pkg_name() {
+    case "$1" in
+        ""|-*)
+            return 1
+            ;;
+        *[^A-Za-z0-9._+-]*)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+case "$ACTION" in
+    update)
+        if [ $# -ne 0 ]; then
+            echo "aifw-sudo-pkg: 'update' takes no extra args" >&2
+            exit 1
+        fi
+        exec /usr/sbin/pkg update
+        ;;
+    install)
+        if [ $# -lt 2 ] || [ "$1" != "-y" ]; then
+            echo "aifw-sudo-pkg: only 'install -y <pkg>...' supported" >&2
+            exit 1
+        fi
+        shift  # drop -y
+        for p; do
+            if ! valid_pkg_name "$p"; then
+                echo "aifw-sudo-pkg: invalid package name: $p" >&2
+                exit 1
+            fi
+        done
+        exec /usr/sbin/pkg install -y "$@"
+        ;;
+    upgrade)
+        if [ $# -ne 1 ]; then
+            echo "aifw-sudo-pkg: 'upgrade' takes exactly one of -y or -n" >&2
+            exit 1
+        fi
+        case "$1" in
+            -y|-n)
+                exec /usr/sbin/pkg upgrade "$1"
+                ;;
+            *)
+                echo "aifw-sudo-pkg: unsupported upgrade flag: $1" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        echo "aifw-sudo-pkg: unsupported action: $ACTION" >&2
+        exit 1
+        ;;
+esac
