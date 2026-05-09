@@ -476,19 +476,14 @@ impl VpnEngine {
         // TODO: WG role-change subscriber for explicit wg-quick down on BACKUP
         // (default-false `wg_deconfigure_on_backup` flag, deferred — out of
         // scope for Commit 9 #222).
-        let output = Command::new("/usr/local/bin/sudo")
-            .args([
-                "/usr/bin/wg",
-                "set",
-                iface,
-                "private-key",
-                &key_path,
-                "listen-port",
-                &tunnel.listen_port.to_string(),
-            ])
-            .output()
-            .await
-            .map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
+        let listen_port_s = tunnel.listen_port.to_string();
+        let output = crate::sudo::wg(
+            "set",
+            iface,
+            &["private-key", &key_path, "listen-port", &listen_port_s],
+        )
+        .await
+        .map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
         let _ = tokio::fs::remove_file(&key_path).await;
         if !output.status.success() {
             let _ = Command::new("/usr/local/bin/sudo")
@@ -576,14 +571,12 @@ impl VpnEngine {
     /// Apply a single peer to a running WireGuard interface via `wg set`.
     async fn apply_peer_to_interface(&self, iface: &str, peer: &WgPeer) -> Result<()> {
         let allowed: Vec<String> = peer.allowed_ips.iter().map(|a| a.to_string()).collect();
-        let mut args = vec![
-            "/usr/bin/wg".to_string(),
-            "set".to_string(),
-            iface.to_string(),
+        let allowed_joined = allowed.join(",");
+        let mut args: Vec<String> = vec![
             "peer".to_string(),
             peer.public_key.clone(),
             "allowed-ips".to_string(),
-            allowed.join(","),
+            allowed_joined,
         ];
         if let Some(ref endpoint) = peer.endpoint
             && !endpoint.is_empty()
@@ -596,41 +589,36 @@ impl VpnEngine {
             args.push(ka.to_string());
         }
         // PSK requires a temp file
-        if let Some(ref psk) = peer.preshared_key {
-            let psk_path = format!("/tmp/wg-psk-{}.key", peer.id);
-            tokio::fs::write(&psk_path, psk)
+        let psk_path = if let Some(ref psk) = peer.preshared_key {
+            let path = format!("/tmp/wg-psk-{}.key", peer.id);
+            tokio::fs::write(&path, psk)
                 .await
                 .map_err(|e| AifwError::Pf(format!("Failed to write PSK: {e}")))?;
             let _ = Command::new("chmod")
-                .args(["600", &psk_path])
+                .args(["600", &path])
                 .output()
                 .await;
             args.push("preshared-key".to_string());
-            args.push(psk_path.clone());
-            let output = Command::new("/usr/local/bin/sudo")
-                .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-                .output()
-                .await
-                .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
-            let _ = tokio::fs::remove_file(&psk_path).await;
-            if !output.status.success() {
-                return Err(AifwError::Pf(format!(
-                    "wg set peer failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                )));
-            }
+            args.push(path.clone());
+            Some(path)
         } else {
-            let output = Command::new("/usr/local/bin/sudo")
-                .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-                .output()
-                .await
-                .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
-            if !output.status.success() {
-                return Err(AifwError::Pf(format!(
-                    "wg set peer failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                )));
-            }
+            None
+        };
+
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let output = crate::sudo::wg("set", iface, &arg_refs)
+            .await
+            .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
+
+        if let Some(ref path) = psk_path {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+
+        if !output.status.success() {
+            return Err(AifwError::Pf(format!(
+                "wg set peer failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
         Ok(())
     }
@@ -640,9 +628,7 @@ impl VpnEngine {
         let tunnel = self.get_wg_tunnel(id).await?;
         let iface = &tunnel.interface.0;
 
-        let output = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/bin/wg", "show", iface, "dump"])
-            .output()
+        let output = crate::sudo::wg("show", iface, &["dump"])
             .await
             .map_err(|e| AifwError::Pf(format!("wg show failed: {e}")))?;
 

@@ -359,17 +359,11 @@ pub async fn install_from_path(
         }
     }
 
-    // Ensure wg is in sudoers for aifw user (older installs may be missing it)
-    {
-        let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
-        if let Ok(content) = tokio::fs::read_to_string(sudoers_path).await
-            && !content.contains("/usr/bin/wg")
-        {
-            let patched = format!("{content}aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *\n");
-            let _ = tokio::fs::write(sudoers_path, patched).await;
-            info!("Added wg to sudoers for aifw user");
-        }
-    }
+    // Migrate wg sudoers grant. Older installs may have nothing (was added
+    // ad-hoc post-install) or the broad `/usr/bin/wg *` grant; both are
+    // replaced with the narrow `aifw-sudo-wg` helper grant
+    // (GHSA-mjqh-2vx8-7hq7 follow-up #204). Idempotent.
+    ensure_sudoers_wg_helper().await;
 
     // Ensure /usr/sbin/daemon is in sudoers. Without it, the detached
     // restart driver in restart_services() spawns sudo, sudo refuses
@@ -791,6 +785,68 @@ pub async fn ensure_sudoers_write_helper() {
             "sudoers write-helper migration install failed"
         ),
         Err(e) => warn!(error = %e, "sudoers write-helper migration errored"),
+    }
+}
+
+/// Migrate sudoers from the broad `/usr/bin/wg *` grant (or no wg grant
+/// at all — older installs added it ad-hoc) to the narrow `aifw-sudo-wg`
+/// helper (GHSA-mjqh-2vx8-7hq7 follow-up #204). Idempotent.
+pub async fn ensure_sudoers_wg_helper() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+
+    let helper_marker = "/usr/local/libexec/aifw-sudo-wg";
+    let direct_substr = "/usr/bin/wg *";
+
+    let needs_helper = !content.contains(helper_marker);
+    let needs_strip = content.contains(direct_substr);
+    if !needs_helper && !needs_strip {
+        return;
+    }
+
+    let mut patched: String = content
+        .lines()
+        .filter(|line| !line.contains(direct_substr))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    if needs_helper {
+        patched.push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-wg *\n");
+    }
+
+    let stage = "/tmp/aifw-sudoers-wg-helper-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers wg-helper patch");
+        return;
+    }
+    let result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/bin/install",
+            "-m",
+            "440",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            stage,
+            path,
+        ])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!("migrated sudoers: dropped /usr/bin/wg, added aifw-sudo-wg helper grant")
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers wg-helper migration install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers wg-helper migration errored"),
     }
 }
 
