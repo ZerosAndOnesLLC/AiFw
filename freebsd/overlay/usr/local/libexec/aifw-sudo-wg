@@ -1,0 +1,42 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-wg <subcommand> <iface> [args...]
+#
+# Narrow-grant wrapper around /usr/bin/wg (GHSA-mjqh-2vx8-7hq7 follow-up
+# #204). Restricts the `aifw` user to:
+#
+#   - subcommands `set` and `show` (no `setconf`, `pubkey`, `genkey`, etc.)
+#   - interface names matching wg<N> (no `lo0`, no arbitrary system iface)
+#
+# Remaining args (peer pubkey, allowed-ips, key-file paths, etc.) are
+# passed through. wg's own argument validator catches malformed forms.
+
+set -eu
+
+if [ $# -lt 2 ]; then
+    echo "usage: $0 <set|show> <iface> [args...]" >&2
+    exit 2
+fi
+
+SUBCMD="$1"
+IFACE="$2"
+shift 2
+
+case "$SUBCMD" in
+    set|show) ;;
+    *)
+        echo "aifw-sudo-wg: unsupported subcommand: $SUBCMD" >&2
+        exit 1
+        ;;
+esac
+
+# Whitelist iface names — wg<N> with up to 3 digits. AiFw's tunnel
+# allocator uses wg0, wg1, ... so 3 digits gives plenty of headroom.
+case "$IFACE" in
+    wg[0-9]|wg[0-9][0-9]|wg[0-9][0-9][0-9]) ;;
+    *)
+        echo "aifw-sudo-wg: invalid iface (expected wg<N>): $IFACE" >&2
+        exit 1
+        ;;
+esac
+
+exec /usr/bin/wg "$SUBCMD" "$IFACE" "$@"

@@ -46,18 +46,41 @@
         <img src="{{ '/assets/AiFw-1.png' | relative_url }}" alt="AiFw" class="brand-logo">
         <span>AiFw</span>
       </a>
-      <nav>
-        <a href="{{ '/features/' | relative_url }}">Features</a>
-        <a href="{{ '/compare/' | relative_url }}">Compare</a>
-        <a href="{{ '/install/' | relative_url }}">Install</a>
-        <a href="{{ '/docs/' | relative_url }}">Docs</a>
-        <a href="https://github.com/ZerosAndOnesLLC/AiFw" class="btn btn-outline" target="_blank" rel="noopener">GitHub</a>
+      <nav class="primary-nav" aria-label="Primary">
+        <ul class="nav-list">
+          {% for item in site.nav.primary %}
+            {% if item.dropdown %}
+              <li class="nav-item has-dropdown">
+                <button class="nav-trigger" aria-expanded="false" aria-haspopup="true">{{ item.title }} <span aria-hidden="true">▾</span></button>
+                <ul class="nav-dropdown">
+                  {% for sub in item.dropdown %}
+                    {% if sub.divider %}
+                      <li class="nav-divider" role="separator"></li>
+                    {% else %}
+                      <li><a href="{{ sub.url | relative_url }}">{{ sub.title }}</a></li>
+                    {% endif %}
+                  {% endfor %}
+                </ul>
+              </li>
+            {% else %}
+              <li class="nav-item">
+                {% if item.external %}
+                  <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}{% if item.title == 'GitHub' %} ↗{% endif %}</a>
+                {% else %}
+                  <a href="{{ item.url | relative_url }}">{{ item.title }}</a>
+                {% endif %}
+              </li>
+            {% endif %}
+          {% endfor %}
+        </ul>
       </nav>
     </div>
   </header>
 
   <main>
+    {% include breadcrumb.html %}
     {{ content }}
+    {% include last-updated.html %}
   </main>
 
   <footer class="site-footer">

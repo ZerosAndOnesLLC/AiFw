@@ -107,6 +107,7 @@ aifw ALL=(root) NOPASSWD: /sbin/shutdown -r +10s *
 # paths, services, interfaces. Migrate broad grants below to wrappers
 # and remove the corresponding line as each category lands.
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-wg *
 
 # --- Network configuration ---
 # TODO(GHSA-mjqh-2vx8-7hq7): the wildcards below still grant broad root.
@@ -130,7 +131,6 @@ aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *
 aifw ALL=(ALL) NOPASSWD: /usr/bin/tar *
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
-aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
 
 # --- Detached restart driver ---
 # Required by aifw-core/src/updater.rs `restart_services()` so post-update

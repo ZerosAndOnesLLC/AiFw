@@ -17,6 +17,7 @@ repository: ZerosAndOnesLLC/AiFw
 plugins:
   - jekyll-seo-tag
   - jekyll-feed
+  - jekyll-sitemap
 
 # SEO
 twitter:
@@ -42,7 +43,44 @@ exclude:
   - Gemfile
   - Gemfile.lock
   - vendor
+  - superpowers
 
 markdown: kramdown
 kramdown:
   syntax_highlighter: rouge
+
+# Top nav definition — referenced by _layouts/default.html
+nav:
+  primary:
+    - title: Features
+      url: /features/
+    - title: Docs
+      dropdown:
+        - { title: "Install",        url: "/install/" }
+        - { title: "First boot",     url: "/install/#first-boot-setup-wizard" }
+        - { divider: true }
+        - { title: "Firewall",       url: "/docs/firewall/" }
+        - { title: "NAT",            url: "/docs/nat/" }
+        - { title: "VPN",            url: "/docs/vpn/" }
+        - { title: "IDS / IPS",      url: "/docs/ids/" }
+        - { title: "Multi-WAN",      url: "/multi-wan/" }
+        - { title: "HA cluster",     url: "/ha/" }
+        - { title: "DNS",            url: "/docs/dns/" }
+        - { title: "DHCP",           url: "/docs/dhcp/" }
+        - { title: "Geo-IP",         url: "/docs/geoip/" }
+        - { title: "Auth & RBAC",    url: "/docs/auth/" }
+        - { title: "Reverse proxy",  url: "/docs/reverse-proxy/" }
+        - { title: "Backup & migration", url: "/docs/backup/" }
+        - { title: "Plugins",        url: "/plugins/" }
+        - { divider: true }
+        - { title: "API reference", url: "/docs/api/" }
+        - { title: "CLI reference", url: "/docs/cli/" }
+        - { title: "FAQ",           url: "/faq/" }
+    - title: Compare
+      url: /compare/
+    - title: Download
+      url: https://github.com/ZerosAndOnesLLC/AiFw/releases/latest
+      external: true
+    - title: GitHub
+      url: https://github.com/ZerosAndOnesLLC/AiFw
+      external: true

@@ -15,6 +15,7 @@ use tokio::process::Command;
 
 const SUDO: &str = "/usr/local/bin/sudo";
 const HELPER_WRITE: &str = "/usr/local/libexec/aifw-sudo-write";
+const HELPER_WG: &str = "/usr/local/libexec/aifw-sudo-wg";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -50,4 +51,21 @@ pub async fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Run `wg <subcommand> <iface> [args...]` as root via the
+/// `aifw-sudo-wg` helper.
+///
+/// The helper restricts `subcommand` to `set` / `show` and `iface` to
+/// `wg<N>` patterns; remaining args are passed through. Returns the raw
+/// `Output` so callers can inspect stdout (e.g. `wg show … dump`) and
+/// surface `stderr` themselves on failure.
+pub async fn wg(
+    subcommand: &str,
+    iface: &str,
+    extra_args: &[&str],
+) -> std::io::Result<std::process::Output> {
+    let mut args: Vec<&str> = vec![HELPER_WG, subcommand, iface];
+    args.extend_from_slice(extra_args);
+    Command::new(SUDO).args(&args).output().await
 }

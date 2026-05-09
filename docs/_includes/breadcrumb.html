@@ -1,0 +1,26 @@
+{% if page.breadcrumb %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <ol>
+    <li><a href="{{ '/' | relative_url }}">Home</a></li>
+    {% for crumb in page.breadcrumb %}
+      {% if forloop.last %}
+        <li aria-current="page">{{ crumb.title }}</li>
+      {% else %}
+        <li><a href="{{ crumb.url | relative_url }}">{{ crumb.title }}</a></li>
+      {% endif %}
+    {% endfor %}
+  </ol>
+</nav>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "Home", "item": "{{ site.url }}/" }
+    {%- for crumb in page.breadcrumb -%}
+    , { "@type": "ListItem", "position": {{ forloop.index | plus: 1 }}, "name": "{{ crumb.title }}"{% unless forloop.last %}, "item": "{{ site.url }}{{ crumb.url }}"{% endunless %} }
+    {%- endfor -%}
+  ]
+}
+</script>
+{% endif %}
