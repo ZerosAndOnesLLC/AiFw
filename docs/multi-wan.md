@@ -1,7 +1,25 @@
 ---
 layout: default
-title: Multi-WAN
+title: Multi-WAN with FIB isolation — AiFw
+description: Set up Multi-WAN failover and load-balancing on AiFw with FreeBSD FIBs, gateway groups, policy routing, and blast-radius preview.
+permalink: /multi-wan/
+date: 2026-05-09
+breadcrumb:
+  - { title: "Docs", url: "/docs/" }
+  - { title: "Multi-WAN", url: "/multi-wan/" }
 ---
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Multi-WAN with FIB isolation on AiFw",
+  "description": "Configure multi-WAN failover, weighted load-balance, and policy routing on AiFw using FreeBSD FIBs and pf.",
+  "author": { "@type": "Organization", "name": "ZerosAndOnesLLC" },
+  "datePublished": "2026-05-09",
+  "dateModified": "2026-05-09"
+}
+</script>
 
 # Multi-WAN
 
@@ -17,9 +35,19 @@ The design exceeds what Cisco (IOS PBR + IP SLA) and Juniper (routing-instances 
 - **GitOps export/import** — `GET /api/v1/multiwan/config.yaml` returns the entire multi-WAN config.
 - **AI anomaly detection** (optional) — SLA baseline deviation alerting when probes still pass but latency profile shifted.
 
-## Prerequisites
+## Prerequisites — UI bootstrap
 
-Enable multi-FIB at boot:
+The first time you create a Multi-WAN instance from the web UI, AiFw checks `net.fibs` and offers to bootstrap it for you. The bootstrap action:
+
+1. Writes `net.fibs=16` to `/boot/loader.conf` (idempotent — won't duplicate the line).
+2. Verifies the value loads on next boot.
+3. Prompts for a single reboot.
+
+Click **Enable Multi-WAN** in the UI, accept the reboot, and skip the rest of this section.
+
+### Manual setup (advanced)
+
+If you'd rather configure FIBs by hand:
 
 ```
 # /boot/loader.conf
@@ -129,3 +157,10 @@ anchor "aifw-mwan-reply" all
 anchor "aifw-nat" all
 anchor "aifw" all
 ```
+
+## See also
+
+- [Features overview →]({{ '/features/' | relative_url }})
+- [Comparison with pfSense / OPNsense →]({{ '/compare/' | relative_url }})
+- [Firewall rules →]({{ '/docs/firewall/' | relative_url }})
+- Source: [`aifw-core/src/multiwan/`](https://github.com/ZerosAndOnesLLC/AiFw/tree/main/aifw-core/src/multiwan)
