@@ -121,13 +121,23 @@ pub async fn apply_ssh(i: &SshInput) -> ApplyReport {
 
     // --- service action ---
     let service_action = if i.enabled { "start" } else { "stop" };
-    if let Err(e) = sudo_run("/usr/sbin/service", &["sshd", service_action]).await {
+    if let Err(e) = crate::sudo::service("sshd", service_action)
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
+            }
+        })
+    {
         // Ignore "already running" / "not running" style non-zero exits — surface them as hints, not errors.
         warnings.push(format!("service sshd {} failed: {}", service_action, e));
     }
     if i.enabled {
         // Reload after starting so the config changes take effect without dropping connections unnecessarily.
-        let _ = sudo_run("/usr/sbin/service", &["sshd", "reload"]).await;
+        let _ = crate::sudo::service("sshd", "reload").await;
     }
 
     let mut r = ApplyReport::ok_requires_restart("sshd");

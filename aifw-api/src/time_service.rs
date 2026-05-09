@@ -446,10 +446,7 @@ async fn run_service(action: &str) -> Json<MessageResponse> {
             .output()
             .await;
     }
-    let output = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/service", "rtime", action])
-        .output()
-        .await;
+    let output = aifw_core::sudo::service("rtime", action).await;
     match output {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout).to_string();
@@ -473,9 +470,7 @@ async fn run_service(action: &str) -> Json<MessageResponse> {
 }
 
 pub async fn time_status(State(state): State<AppState>) -> Result<Json<TimeStatus>, StatusCode> {
-    let running = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/service", "rtime", "status"])
-        .output()
+    let running = aifw_core::sudo::service("rtime", "status")
         .await
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -557,19 +552,13 @@ pub async fn apply_config(
             .args(["/usr/sbin/sysrc", "rtime_enable=YES"])
             .output()
             .await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "rtime", "restart"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::service("rtime", "restart").await;
 
         Ok(Json(MessageResponse {
             message: "Time config applied and rTime restarted".to_string(),
         }))
     } else {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "rtime", "stop"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::service("rtime", "stop").await;
         let _ = Command::new("/usr/local/bin/sudo")
             .args(["/usr/sbin/sysrc", "rtime_enable=NO"])
             .output()

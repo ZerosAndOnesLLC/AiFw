@@ -374,6 +374,10 @@ pub async fn install_from_path(
     // narrow `aifw-sudo-pkg *` helper (#204). Idempotent.
     ensure_sudoers_pkg_helper().await;
 
+    // Migrate service sudoers grant from the broad `/usr/sbin/service *`
+    // to the narrow `aifw-sudo-service *` helper (#204). Idempotent.
+    ensure_sudoers_service_helper().await;
+
     // Ensure /usr/sbin/daemon is in sudoers. Without it, the detached
     // restart driver in restart_services() spawns sudo, sudo refuses
     // for lack of NOPASSWD, and we silently skip the bounce — leaving
@@ -983,6 +987,69 @@ pub async fn ensure_sudoers_pkg_helper() {
     }
 }
 
+/// Migrate sudoers from the broad `/usr/sbin/service *` grant to the
+/// narrow `aifw-sudo-service` helper (#204). Idempotent.
+pub async fn ensure_sudoers_service_helper() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+
+    let helper_marker = "/usr/local/libexec/aifw-sudo-service";
+    let direct_substr = "/usr/sbin/service *";
+
+    let needs_helper = !content.contains(helper_marker);
+    let needs_strip = content.contains(direct_substr);
+    if !needs_helper && !needs_strip {
+        return;
+    }
+
+    let mut patched: String = content
+        .lines()
+        .filter(|line| !line.contains(direct_substr))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    if needs_helper {
+        patched.push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-service *\n");
+    }
+
+    let stage = "/tmp/aifw-sudoers-service-helper-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers service-helper patch");
+        return;
+    }
+    let result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/bin/install",
+            "-m",
+            "440",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            stage,
+            path,
+        ])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!(
+                "migrated sudoers: dropped /usr/sbin/service, added aifw-sudo-service helper grant"
+            )
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers service-helper migration install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers service-helper migration errored"),
+    }
+}
+
 /// Ensure each AiFw service has its rcvar set to YES in /etc/rc.conf.
 ///
 /// Appliances upgraded from versions predating a service (notably aifw_ids
@@ -1113,9 +1180,7 @@ pub async fn schedule_reboot() -> Result<(), UpdaterError> {
 /// wedge the entire upgrade. The next restart cycle's `start_precmd` pkill
 /// will reap any orphans we leave behind.
 async fn restart_one(svc: &str) {
-    let cmd = Command::new("/usr/local/bin/sudo")
-        .args(["service", svc, "restart"])
-        .output();
+    let cmd = crate::sudo::service(svc, "restart");
     match tokio::time::timeout(std::time::Duration::from_secs(60), cmd).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => warn!(service = svc, error = %e, "service restart errored"),

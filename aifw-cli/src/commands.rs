@@ -1994,10 +1994,7 @@ pub async fn rp_status(db_path: &Path) -> anyhow::Result<()> {
     let pool = db.pool();
 
     // Check service status
-    let output = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["service", "trafficcop", "status"])
-        .output()
-        .await;
+    let output = aifw_core::sudo::service("trafficcop", "status").await;
     let running = output.map(|o| o.status.success()).unwrap_or(false);
 
     println!("Reverse Proxy (TrafficCop)");
@@ -2039,10 +2036,7 @@ pub async fn rp_status(db_path: &Path) -> anyhow::Result<()> {
 }
 
 pub async fn rp_start() -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["service", "trafficcop", "start"])
-        .output()
-        .await?;
+    let output = aifw_core::sudo::service("trafficcop", "start").await?;
     println!("{}", String::from_utf8_lossy(&output.stdout).trim());
     if !output.stderr.is_empty() {
         eprintln!("{}", String::from_utf8_lossy(&output.stderr).trim());
@@ -2051,19 +2045,13 @@ pub async fn rp_start() -> anyhow::Result<()> {
 }
 
 pub async fn rp_stop() -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["service", "trafficcop", "stop"])
-        .output()
-        .await?;
+    let output = aifw_core::sudo::service("trafficcop", "stop").await?;
     println!("{}", String::from_utf8_lossy(&output.stdout).trim());
     Ok(())
 }
 
 pub async fn rp_restart() -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["service", "trafficcop", "restart"])
-        .output()
-        .await?;
+    let output = aifw_core::sudo::service("trafficcop", "restart").await?;
     println!("{}", String::from_utf8_lossy(&output.stdout).trim());
     Ok(())
 }
@@ -2110,10 +2098,7 @@ pub async fn rp_apply(db_path: &Path) -> anyhow::Result<()> {
     .await?;
 
     println!("Config written. Restarting service...");
-    let output = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["service", "trafficcop", "restart"])
-        .output()
-        .await?;
+    let output = aifw_core::sudo::service("trafficcop", "restart").await?;
     println!("{}", String::from_utf8_lossy(&output.stdout).trim());
     Ok(())
 }
