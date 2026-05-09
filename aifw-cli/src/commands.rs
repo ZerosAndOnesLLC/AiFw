@@ -1934,14 +1934,7 @@ pub async fn update_os_check() -> anyhow::Result<()> {
         );
     }
 
-    let os = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/sbin/freebsd-update",
-            "fetch",
-            "--not-running-from-cron",
-        ])
-        .output()
-        .await?;
+    let os = aifw_core::sudo::freebsd_update("fetch", &["--not-running-from-cron"]).await?;
     if os.status.success() {
         println!("  OS update check complete.");
     } else {
@@ -1987,10 +1980,7 @@ pub async fn update_os_install() -> anyhow::Result<()> {
         .count();
     println!("  {} package(s) updated.", count);
 
-    let os = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/freebsd-update", "install"])
-        .output()
-        .await?;
+    let os = aifw_core::sudo::freebsd_update("install", &[]).await?;
     if os.status.success() {
         println!("  OS updates installed.");
     } else {

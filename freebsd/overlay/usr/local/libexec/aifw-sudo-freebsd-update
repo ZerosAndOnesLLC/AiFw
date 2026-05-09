@@ -1,0 +1,63 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-freebsd-update <action>
+#
+# Narrow-grant wrapper around /usr/sbin/freebsd-update (#204).
+# Restricts the `aifw` user to:
+#
+#   - updatesready             — exit code reflects whether updates pending
+#   - fetch [--not-running-from-cron]
+#   - install                  — apply downloaded updates
+#
+# Other subcommands (cron, IDS, rollback, upgrade) are denied so a
+# compromised daemon can't, for example, `freebsd-update rollback` to
+# uninstall security patches or `freebsd-update IDS` to spam the system
+# with checksumming load.
+
+set -eu
+
+if [ $# -lt 1 ]; then
+    echo "usage: $0 <updatesready|fetch|install>" >&2
+    exit 2
+fi
+
+ACTION="$1"
+shift
+
+case "$ACTION" in
+    updatesready)
+        if [ $# -ne 0 ]; then
+            echo "aifw-sudo-freebsd-update: 'updatesready' takes no extra args" >&2
+            exit 1
+        fi
+        exec /usr/sbin/freebsd-update updatesready
+        ;;
+    fetch)
+        case $# in
+            0)
+                exec /usr/sbin/freebsd-update fetch
+                ;;
+            1)
+                if [ "$1" = "--not-running-from-cron" ]; then
+                    exec /usr/sbin/freebsd-update fetch --not-running-from-cron
+                fi
+                echo "aifw-sudo-freebsd-update: only --not-running-from-cron is allowed for fetch" >&2
+                exit 1
+                ;;
+            *)
+                echo "aifw-sudo-freebsd-update: too many args for fetch" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    install)
+        if [ $# -ne 0 ]; then
+            echo "aifw-sudo-freebsd-update: 'install' takes no extra args" >&2
+            exit 1
+        fi
+        exec /usr/sbin/freebsd-update install
+        ;;
+    *)
+        echo "aifw-sudo-freebsd-update: unsupported action: $ACTION" >&2
+        exit 1
+        ;;
+esac
