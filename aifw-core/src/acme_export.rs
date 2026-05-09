@@ -231,10 +231,10 @@ async fn run_local_tls_store(cert: &AcmeCert, cfg: &serde_json::Value) -> Result
     .await?;
     sudo_install_string(key, &format!("{dir}/key.pem"), "0640", Some("root:rdns")).await?;
 
-    // Reload the configured service so it picks up the new cert.
-    let _ = Command::new(SUDO)
-        .args(["/usr/sbin/service", reload_service, "restart"])
-        .output()
-        .await;
+    // Reload the configured service so it picks up the new cert. The
+    // helper enforces an allowlist on `reload_service` — operators
+    // setting an arbitrary service name in the cert export config will
+    // see the call fail loudly rather than escalate via service(8).
+    let _ = crate::sudo::service(reload_service, "restart").await;
     Ok(())
 }

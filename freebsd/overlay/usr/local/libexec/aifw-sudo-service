@@ -1,0 +1,46 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-service <service> <action>
+#
+# Narrow-grant wrapper around /usr/sbin/service (#204). Restricts the
+# `aifw` user to a closed allowlist of AiFw-managed services and the
+# standard rc.d action verbs.
+#
+# Allowlist must be kept in sync with `aifw_sudo_service_allowed`
+# in aifw-core/src/sudo.rs and the OWNED_RCVARS list in updater.rs —
+# adding a new managed service requires updating all three.
+
+set -eu
+
+if [ $# -ne 2 ]; then
+    echo "usage: $0 <service> <action>" >&2
+    exit 2
+fi
+
+SERVICE="$1"
+ACTION="$2"
+
+case "$SERVICE" in
+    aifw_daemon|aifw_api|aifw_ids|aifw_watchdog|aifw_carp_demote|aifw_demote_on_shutdown)
+        ;;
+    rdhcpd|rdns|rtime|trafficcop)
+        ;;
+    unbound|local_unbound|sshd)
+        ;;
+    *)
+        echo "aifw-sudo-service: service not in allowlist: $SERVICE" >&2
+        exit 1
+        ;;
+esac
+
+case "$ACTION" in
+    start|stop|restart|reload|status)
+        ;;
+    onestart|onestop|onerestart|onestatus)
+        ;;
+    *)
+        echo "aifw-sudo-service: action not allowed: $ACTION" >&2
+        exit 1
+        ;;
+esac
+
+exec /usr/sbin/service "$SERVICE" "$ACTION"

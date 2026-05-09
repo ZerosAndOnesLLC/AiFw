@@ -1458,9 +1458,7 @@ async fn collect_services() -> Vec<ServiceStatusPayload> {
             ("rTIME", "rtime"),
             ("TrafficCop", "trafficcop"),
         ] {
-            let running = tokio::process::Command::new("/usr/local/bin/sudo")
-                .args(["/usr/sbin/service", svc_name, "status"])
-                .output()
+            let running = aifw_core::sudo::service(svc_name, "status")
                 .await
                 .map(|o| o.status.success())
                 .unwrap_or(false);

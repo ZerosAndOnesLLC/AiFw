@@ -1148,9 +1148,7 @@ async fn rdhcp_api_delete(path: &str, api_port: u16) -> Result<(), String> {
 pub async fn dhcp_status(State(state): State<AppState>) -> Result<Json<DhcpStatus>, StatusCode> {
     let config = load_global_config(&state.pool).await;
 
-    let running = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/service", "rdhcpd", "status"])
-        .output()
+    let running = aifw_core::sudo::service("rdhcpd", "status")
         .await
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -1218,10 +1216,7 @@ async fn run_rdhcp_service(action: &str) -> Json<MessageResponse> {
             .output()
             .await;
     }
-    let output = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/service", "rdhcpd", action])
-        .output()
-        .await;
+    let output = aifw_core::sudo::service("rdhcpd", action).await;
     match output {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout).to_string();
@@ -2003,10 +1998,7 @@ pub async fn apply_config(
             .args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"])
             .output()
             .await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "rdhcpd", "restart"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::service("rdhcpd", "restart").await;
 
         // Reload all aifw anchor rules (includes user rules + service rules)
         // This preserves existing firewall rules while adding DHCP pass rules
@@ -2016,10 +2008,7 @@ pub async fn apply_config(
             message: "DHCP config applied and rDHCP restarted".to_string(),
         }))
     } else {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "rdhcpd", "stop"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::service("rdhcpd", "stop").await;
         let _ = Command::new("/usr/local/bin/sudo")
             .args(["/usr/sbin/sysrc", "rdhcpd_enable=NO"])
             .output()
@@ -2051,10 +2040,7 @@ pub(crate) async fn auto_apply(state: &AppState) {
             .args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rdhcpd"])
             .output()
             .await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "rdhcpd", "restart"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::service("rdhcpd", "restart").await;
         tracing::info!("DHCP config auto-applied");
     }
 

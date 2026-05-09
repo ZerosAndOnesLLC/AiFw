@@ -110,6 +110,7 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-wg *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-freebsd-update *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-pkg *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-service *
 
 # --- Network configuration ---
 # TODO(GHSA-mjqh-2vx8-7hq7): the wildcards below still grant broad root.
@@ -118,7 +119,6 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-pkg *
 aifw ALL=(ALL) NOPASSWD: /sbin/ifconfig *
 aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *
 aifw ALL=(ALL) NOPASSWD: /sbin/route *
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/service *
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/sysrc *
 aifw ALL=(ALL) NOPASSWD: /bin/cat *
 aifw ALL=(ALL) NOPASSWD: /bin/cp *
