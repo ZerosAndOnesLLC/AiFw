@@ -1921,10 +1921,7 @@ fn prompt_restart_yes() -> anyhow::Result<bool> {
 pub async fn update_os_check() -> anyhow::Result<()> {
     println!("Checking for OS and package updates...");
 
-    let pkg = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/pkg", "update"])
-        .output()
-        .await?;
+    let pkg = aifw_core::sudo::pkg("update", &[]).await?;
     if pkg.status.success() {
         println!("  Package catalog updated.");
     } else {
@@ -1948,10 +1945,7 @@ pub async fn update_os_check() -> anyhow::Result<()> {
     }
 
     // Show pending
-    let pending = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/pkg", "upgrade", "-n"])
-        .output()
-        .await?;
+    let pending = aifw_core::sudo::pkg("upgrade", &["-n"]).await?;
     let stdout = String::from_utf8_lossy(&pending.stdout);
     let count = stdout
         .lines()
@@ -1969,10 +1963,7 @@ pub async fn update_os_check() -> anyhow::Result<()> {
 pub async fn update_os_install() -> anyhow::Result<()> {
     println!("Installing OS and package updates...");
 
-    let pkg = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/pkg", "upgrade", "-y"])
-        .output()
-        .await?;
+    let pkg = aifw_core::sudo::pkg("upgrade", &["-y"]).await?;
     let stdout = String::from_utf8_lossy(&pkg.stdout);
     let count = stdout
         .lines()
