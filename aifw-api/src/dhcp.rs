@@ -1211,10 +1211,7 @@ pub async fn dhcp_status(State(state): State<AppState>) -> Result<Json<DhcpStatu
 async fn run_rdhcp_service(action: &str) -> Json<MessageResponse> {
     // Ensure rdhcpd is enabled in rc.conf before start/restart
     if action == "start" || action == "restart" {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::sysrc(&["rdhcpd_enable=YES"]).await;
     }
     let output = aifw_core::sudo::service("rdhcpd", action).await;
     match output {
@@ -1985,10 +1982,7 @@ pub async fn apply_config(
     let _ = aifw_core::sudo::chown_r("aifw:aifw", "/var/log/rdhcpd").await;
 
     if config.enabled {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", "rdhcpd_enable=YES"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::sysrc(&["rdhcpd_enable=YES"]).await;
         let _ = aifw_core::sudo::service("rdhcpd", "restart").await;
 
         // Reload all aifw anchor rules (includes user rules + service rules)
@@ -2000,10 +1994,7 @@ pub async fn apply_config(
         }))
     } else {
         let _ = aifw_core::sudo::service("rdhcpd", "stop").await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", "rdhcpd_enable=NO"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::sysrc(&["rdhcpd_enable=NO"]).await;
         // Reload anchor to remove DHCP rules
         reload_aifw_anchor(&state).await;
         Ok(Json(MessageResponse {

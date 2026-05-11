@@ -394,6 +394,10 @@ pub async fn install_from_path(
     // to the narrow `aifw-sudo-ifconfig *` helper (#204). Idempotent.
     ensure_sudoers_ifconfig_helper().await;
 
+    // Migrate sysrc sudoers grant from the broad `/usr/sbin/sysrc *` to
+    // the narrow `aifw-sudo-sysrc *` helper (#204). Idempotent.
+    ensure_sudoers_sysrc_helper().await;
+
     // Ensure /usr/sbin/daemon is in sudoers. Without it, the detached
     // restart driver in restart_services() spawns sudo, sudo refuses
     // for lack of NOPASSWD, and we silently skip the bounce — leaving
@@ -1157,6 +1161,54 @@ pub async fn ensure_sudoers_install_helper() {
     }
 }
 
+/// Migrate sudoers from the broad `/usr/sbin/sysrc *` grant to the
+/// narrow `aifw-sudo-sysrc` helper (#204). Idempotent.
+pub async fn ensure_sudoers_sysrc_helper() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+
+    let helper_marker = "/usr/local/libexec/aifw-sudo-sysrc";
+    let direct_substr = "/usr/sbin/sysrc *";
+
+    let needs_helper = !content.contains(helper_marker);
+    let needs_strip = content.contains(direct_substr);
+    if !needs_helper && !needs_strip {
+        return;
+    }
+
+    let mut patched: String = content
+        .lines()
+        .filter(|line| !line.contains(direct_substr))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    if needs_helper {
+        patched.push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-sysrc *\n");
+    }
+
+    let stage = "/tmp/aifw-sudoers-sysrc-helper-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers sysrc-helper patch");
+        return;
+    }
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!("migrated sudoers: dropped /usr/sbin/sysrc, added aifw-sudo-sysrc helper grant")
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers sysrc-helper migration install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers sysrc-helper migration errored"),
+    }
+}
+
 /// Ensure each AiFw service has its rcvar set to YES in /etc/rc.conf.
 ///
 /// Appliances upgraded from versions predating a service (notably aifw_ids
@@ -1167,10 +1219,7 @@ pub async fn ensure_sudoers_install_helper() {
 pub async fn ensure_rcvars() {
     for var in OWNED_RCVARS {
         let arg = format!("{}=YES", var);
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", &arg])
-            .output()
-            .await;
+        let _ = crate::sudo::sysrc(&[&arg]).await;
     }
 }
 

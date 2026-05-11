@@ -255,7 +255,7 @@ done
 # login migrate, shutdown hook, narrow-grant sudo wrappers from #204).
 # Mode 755 so the daemon supervisor / sudo can exec them.
 mkdir -p /usr/local/libexec
-for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh aifw-shutdown-hook.sh aifw-sudo-write aifw-sudo-wg aifw-sudo-freebsd-update aifw-sudo-pkg aifw-sudo-service aifw-sudo-chown aifw-sudo-ifconfig aifw-sudo-install; do
+for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh aifw-shutdown-hook.sh aifw-sudo-write aifw-sudo-wg aifw-sudo-freebsd-update aifw-sudo-pkg aifw-sudo-service aifw-sudo-chown aifw-sudo-ifconfig aifw-sudo-install aifw-sudo-sysrc; do
     src="$REPO_DIR/freebsd/overlay/usr/local/libexec/$script"
     if [ -f "$src" ]; then
         install -m 755 "$src" "/usr/local/libexec/$script"
@@ -266,7 +266,7 @@ done
 # favor of /usr/local/libexec/aifw-sudo-write, which enforces a closed
 # allowlist of write paths (#204).
 mkdir -p /usr/local/etc/sudoers.d
-echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /sbin/dhclient, /sbin/route, /usr/sbin/sysrc, /sbin/shutdown, /bin/hostname, /bin/cat, /bin/pkill, /usr/bin/pkill, /bin/mkdir, /usr/sbin/tcpdump, /bin/rm /usr/local/etc/rdns/rpz/*
+echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /sbin/dhclient, /sbin/route, /sbin/shutdown, /bin/hostname, /bin/cat, /bin/pkill, /usr/bin/pkill, /bin/mkdir, /usr/sbin/tcpdump, /bin/rm /usr/local/etc/rdns/rpz/*
 aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-wg *
@@ -275,7 +275,8 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-pkg *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-service *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-chown *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-ifconfig *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *' > /usr/local/etc/sudoers.d/aifw
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-sysrc *' > /usr/local/etc/sudoers.d/aifw
 chmod 440 /usr/local/etc/sudoers.d/aifw
 
 echo ""

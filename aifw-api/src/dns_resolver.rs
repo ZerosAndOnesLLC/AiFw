@@ -142,9 +142,14 @@ async fn service_cmd(service: &str, action: &str) {
     .await;
 }
 
-/// Run sysrc safely without shell interpolation.
+/// Run sysrc safely without shell interpolation. Routes through the
+/// narrow `aifw-sudo-sysrc` helper (#204).
 async fn sysrc(setting: &str) {
-    let _ = run_cmd_timeout("/usr/local/bin/sudo", &["/usr/sbin/sysrc", setting]).await;
+    let _ = run_cmd_timeout(
+        "/usr/local/bin/sudo",
+        &["/usr/local/libexec/aifw-sudo-sysrc", setting],
+    )
+    .await;
 }
 
 /// Read a sysrc value — returns the raw value without the "key: " prefix.

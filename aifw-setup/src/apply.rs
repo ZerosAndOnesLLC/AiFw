@@ -114,6 +114,7 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-service *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-chown *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-ifconfig *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-sysrc *
 
 # --- Network configuration ---
 # TODO(GHSA-mjqh-2vx8-7hq7): the wildcards below still grant broad root.
@@ -121,7 +122,6 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *
 # lines with the wrapper path.
 aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *
 aifw ALL=(ALL) NOPASSWD: /sbin/route *
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/sysrc *
 aifw ALL=(ALL) NOPASSWD: /bin/cat *
 aifw ALL=(ALL) NOPASSWD: /bin/cp *
 aifw ALL=(ALL) NOPASSWD: /bin/rm *

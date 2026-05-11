@@ -1462,8 +1462,12 @@ async fn collect_services() -> Vec<ServiceStatusPayload> {
                 .await
                 .map(|o| o.status.success())
                 .unwrap_or(false);
-            let enabled = tokio::process::Command::new("/usr/local/bin/sudo")
-                .args(["/usr/sbin/sysrc", "-n", &format!("{svc_name}_enable")])
+            // `sysrc -n` is a read; doesn't need root. Calling
+            // `/usr/sbin/sysrc` directly avoids the helper allowlist
+            // round-trip for what should be a status check.
+            let enable_key = format!("{svc_name}_enable");
+            let enabled = tokio::process::Command::new("/usr/sbin/sysrc")
+                .args(["-n", &enable_key])
                 .output()
                 .await
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")

@@ -389,10 +389,8 @@ pub async fn reconcile(db_path: &Path) -> anyhow::Result<()> {
 }
 
 async fn sudo_sysrc_set(key: &str, value: &str) -> anyhow::Result<()> {
-    let out = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/sysrc", &format!("{key}={value}")])
-        .output()
-        .await?;
+    let kv = format!("{key}={value}");
+    let out = aifw_core::sudo::sysrc(&[&kv]).await?;
     if !out.status.success() {
         anyhow::bail!(
             "sysrc {key}={value} failed: {}",

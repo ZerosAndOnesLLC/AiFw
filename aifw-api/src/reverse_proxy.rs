@@ -1246,20 +1246,14 @@ pub async fn apply_config(
         .map_err(|_| internal())?;
 
     if global.enabled {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", "trafficcop_enable=YES"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::sysrc(&["trafficcop_enable=YES"]).await;
         let _ = aifw_core::sudo::service("trafficcop", "restart").await;
         Ok(Json(MessageResponse {
             message: "TrafficCop config applied and service restarted".to_string(),
         }))
     } else {
         let _ = aifw_core::sudo::service("trafficcop", "stop").await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", "trafficcop_enable=NO"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::sysrc(&["trafficcop_enable=NO"]).await;
         Ok(Json(MessageResponse {
             message: "TrafficCop config saved, service stopped".to_string(),
         }))

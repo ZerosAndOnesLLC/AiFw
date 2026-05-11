@@ -9,7 +9,8 @@ pub async fn apply_general(i: &GeneralInput) -> ApplyReport {
     let mut warnings: Vec<String> = Vec::new();
 
     // --- hostname: sysrc (persistent) + live ---
-    if let Err(e) = sudo_run("/usr/sbin/sysrc", &[&format!("hostname={}", i.hostname)]).await {
+    let hostname_kv = format!("hostname={}", i.hostname);
+    if let Err(e) = run_sysrc_helper(&[&hostname_kv]).await {
         warnings.push(format!("sysrc hostname failed: {}", e));
     }
     if let Err(e) = sudo_run("/bin/hostname", &[&i.hostname]).await {
@@ -93,15 +94,11 @@ pub async fn apply_ssh(i: &SshInput) -> ApplyReport {
     let mut warnings: Vec<String> = Vec::new();
 
     // --- sysrc sshd_enable=YES|NO ---
-    if let Err(e) = sudo_run(
-        "/usr/sbin/sysrc",
-        &[&format!(
-            "sshd_enable={}",
-            if i.enabled { "YES" } else { "NO" }
-        )],
-    )
-    .await
-    {
+    let sshd_kv = format!(
+        "sshd_enable={}",
+        if i.enabled { "YES" } else { "NO" }
+    );
+    if let Err(e) = run_sysrc_helper(&[&sshd_kv]).await {
         warnings.push(format!("sysrc sshd_enable failed: {}", e));
     }
 
@@ -354,6 +351,22 @@ async fn sudo_install_content(path: &str, data: &[u8], mode: &str) -> Result<(),
 /// readable.
 async fn sudo_install_from(src: &str, path: &str, mode: &str) -> Result<(), String> {
     run_install_helper(mode, src, path).await
+}
+
+/// Route through the narrow `aifw-sudo-sysrc` helper (#204). The
+/// helper enforces a closed allowlist of rcvar keys.
+async fn run_sysrc_helper(args: &[&str]) -> Result<(), String> {
+    let output = crate::sudo::sysrc(args)
+        .await
+        .map_err(|e| format!("aifw-sudo-sysrc spawn failed: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "aifw-sudo-sysrc {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
 }
 
 /// Route through the narrow `aifw-sudo-install` helper (#204). The
