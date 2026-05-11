@@ -171,12 +171,10 @@ async fn sysrc_set_if_different(key: &str, value: &str) {
     sysrc(&format!("{key}={value}")).await;
 }
 
-/// Copy a file to a destination using sudo tee — no shell interpolation.
+/// Copy a file to a destination via the `aifw-sudo-install` helper —
+/// no shell interpolation (#204).
 async fn sudo_copy(src: &str, dest: &str) {
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/bin/install", "-m", "0644", src, dest])
-        .output()
-        .await;
+    let _ = aifw_core::sudo::install(Some("0644"), None, None, src, dest).await;
 }
 
 /// Validate a domain name — alphanumeric, hyphens, dots only.

@@ -21,6 +21,7 @@ const HELPER_PKG: &str = "/usr/local/libexec/aifw-sudo-pkg";
 const HELPER_SERVICE: &str = "/usr/local/libexec/aifw-sudo-service";
 const HELPER_CHOWN: &str = "/usr/local/libexec/aifw-sudo-chown";
 const HELPER_IFCONFIG: &str = "/usr/local/libexec/aifw-sudo-ifconfig";
+const HELPER_INSTALL: &str = "/usr/local/libexec/aifw-sudo-install";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -147,5 +148,38 @@ pub async fn ifconfig(
 ) -> std::io::Result<std::process::Output> {
     let mut args: Vec<&str> = vec![HELPER_IFCONFIG, iface, action];
     args.extend_from_slice(extra_args);
+    Command::new(SUDO).args(&args).output().await
+}
+
+/// Run `install -m MODE [-o OWNER] [-g GROUP] SRC DEST` as root via the
+/// `aifw-sudo-install` helper.
+///
+/// The helper enforces closed allowlists for SRC (must be under
+/// `/tmp/` or `/usr/share/zoneinfo/`), DEST (specific files +
+/// AiFw-managed prefixes), MODE (`0440`/`0600`/`0644`/`0755`), and
+/// OWNER/GROUP (root, aifw, rdns, unbound, nginx, www / wheel, aifw,
+/// rdns, unbound, nginx, www). Pass `None` for any unwanted field.
+pub async fn install(
+    mode: Option<&str>,
+    owner: Option<&str>,
+    group: Option<&str>,
+    src: &str,
+    dest: &str,
+) -> std::io::Result<std::process::Output> {
+    let mut args: Vec<&str> = vec![HELPER_INSTALL];
+    if let Some(m) = mode {
+        args.push("-m");
+        args.push(m);
+    }
+    if let Some(o) = owner {
+        args.push("-o");
+        args.push(o);
+    }
+    if let Some(g) = group {
+        args.push("-g");
+        args.push(g);
+    }
+    args.push(src);
+    args.push(dest);
     Command::new(SUDO).args(&args).output().await
 }

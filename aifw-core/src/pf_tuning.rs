@@ -93,9 +93,7 @@ pub async fn apply_to_pf(value: u64) -> Result<(), String> {
         .args(["/bin/mkdir", "-p", "/usr/local/etc/aifw"])
         .output()
         .await;
-    let install = Command::new(SUDO)
-        .args(["/usr/bin/install", "-m", "0644", tmp, TUNING_FILE])
-        .output()
+    let install = crate::sudo::install(Some("0644"), None, None, tmp, TUNING_FILE)
         .await
         .map_err(|e| format!("spawn install: {e}"))?;
     let _ = tokio::fs::remove_file(tmp).await;

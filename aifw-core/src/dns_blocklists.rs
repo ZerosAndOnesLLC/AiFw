@@ -822,10 +822,7 @@ async fn atomic_write(path: &std::path::Path, body: &str) -> std::io::Result<()>
     let dest = path
         .to_str()
         .ok_or_else(|| std::io::Error::other("non-utf8 path"))?;
-    let out = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/bin/install", "-m", "0644", &tmp, dest])
-        .output()
-        .await?;
+    let out = crate::sudo::install(Some("0644"), None, None, &tmp, dest).await?;
     let _ = tokio::fs::remove_file(&tmp).await;
     if !out.status.success() {
         return Err(std::io::Error::other(format!(

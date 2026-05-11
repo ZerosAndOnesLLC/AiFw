@@ -343,16 +343,33 @@ async fn sudo_install_content(path: &str, data: &[u8], mode: &str) -> Result<(),
     tokio::fs::write(&tmp, data)
         .await
         .map_err(|e| format!("tmp write: {}", e))?;
-    let result = sudo_run("/usr/bin/install", &["-m", mode, &tmp, path]).await;
+    let result = run_install_helper(mode, &tmp, path).await;
     // Best-effort cleanup regardless of install result.
     let _ = tokio::fs::remove_file(&tmp).await;
     result
 }
 
-/// Atomically place an existing file at `path` via `sudo install`.
-/// The source must already exist and be readable.
+/// Atomically place an existing file at `path` via the
+/// `aifw-sudo-install` helper. The source must already exist and be
+/// readable.
 async fn sudo_install_from(src: &str, path: &str, mode: &str) -> Result<(), String> {
-    sudo_run("/usr/bin/install", &["-m", mode, src, path]).await
+    run_install_helper(mode, src, path).await
+}
+
+/// Route through the narrow `aifw-sudo-install` helper (#204). The
+/// helper enforces closed allowlists on src/dest/mode/owner/group.
+async fn run_install_helper(mode: &str, src: &str, dest: &str) -> Result<(), String> {
+    let output = crate::sudo::install(Some(mode), None, None, src, dest)
+        .await
+        .map_err(|e| format!("aifw-sudo-install spawn failed: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "aifw-sudo-install {src} -> {dest}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
 }
 
 /// Create `/var/db/aifw/motd.user-edited` (mode 0644, root-owned).
