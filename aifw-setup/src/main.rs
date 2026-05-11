@@ -26,11 +26,22 @@ struct Args {
     /// Just generate a pf.conf and exit (no DB init)
     #[arg(long)]
     pf_only: bool,
+
+    /// Print the sudoers content that would be installed at
+    /// /usr/local/etc/sudoers.d/aifw and exit. Used by CI to pipe into
+    /// `visudo -cf -` for syntax validation (#204).
+    #[arg(long)]
+    print_sudoers: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    if args.print_sudoers {
+        print!("{}", apply::sudoers_content());
+        return Ok(());
+    }
 
     // If --config provided, load from file instead of wizard
     if let Some(ref config_path) = args.config {

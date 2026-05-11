@@ -87,6 +87,15 @@ jobs:
             cd /home/runner/work/AiFw/AiFw
             cargo build --release
 
+            echo "=== Validating sudoers content (visudo -cf, #204) ==="
+            # Pipe the same content aifw-setup writes to
+            # /usr/local/etc/sudoers.d/aifw through FreeBSD's visudo
+            # syntax checker. Fails the build if a malformed grant
+            # would land on appliances.
+            target/release/aifw-setup --print-sudoers > /tmp/aifw-sudoers
+            visudo -cf /tmp/aifw-sudoers
+            echo "sudoers OK"
+
             # Build external repos from manifest
             MANIFEST="freebsd/manifest.json"
             for row in $(jq -c '.external_repos[]' "$MANIFEST"); do

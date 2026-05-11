@@ -71,76 +71,30 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     console::success("Service scripts installed");
 
     // 5b. Grant aifw user sudo access to the specific commands the daemon
-    // needs. Most call sites still rely on broad wildcards while the
-    // end-to-end wrapper-script migration is in flight (tracked as a
-    // follow-up to GHSA-mjqh-2vx8-7hq7). The lines below tighten the two
-    // highest-impact categories:
-    //   - pfctl is restricted to aifw-* anchors + a small set of
-    //     read-only / anchor-flush forms; a compromised daemon can no
-    //     longer rewrite the host ruleset outside its anchors.
-    //   - shutdown is restricted to the two commands the daemon actually
-    //     issues; arbitrary shutdown flags are no longer permitted.
-    // The remainder is kept permissive for now — documented openly so
-    // operators understand the residual risk.
+    // needs. The originally-broad NOPASSWD grants from
+    // GHSA-mjqh-2vx8-7hq7 have been split into three tiers:
+    //
+    //   1. `pfctl` and `shutdown` — restricted to a small set of exact
+    //      forms (anchor scope, +10s grace, etc.).
+    //   2. Nine narrow wrapper scripts under
+    //      `/usr/local/libexec/aifw-sudo-*` — each enforces its own
+    //      internal allowlist of valid arguments (paths, services,
+    //      interfaces, rcvars). #204 closed the original 9 broad
+    //      grants (tee/wg/freebsd-update/pkg/service/chown/ifconfig/
+    //      install/sysrc) via this tier.
+    //   3. Remaining broad-wildcard grants for utilities AiFw still
+    //      calls directly (dhclient, route, cat, cp, rm, mkdir, chmod,
+    //      pkill, tar, tcpdump). These are out of #204's scope; a
+    //      future hardening pass could narrow them too.
+    //
+    // The full sudoers content is exposed as `sudoers_content()` so a
+    // unit test can validate it structurally and CI can run
+    // `visudo -cf` against it.
     #[cfg(target_os = "freebsd")]
     {
-        let sudoers_line = "\
-# --- pfctl (restricted to aifw anchors) ---
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /usr/local/etc/aifw/anchors/aifw*
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -nf /tmp/aifw_pf_*.conf
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -F all
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sr
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -ss
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -k label -k aifw*
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -sr
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -si
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -f /etc/pf.conf
-
-# --- shutdown (exact forms only; -p power-off or -r reboot with +10s grace) ---
-aifw ALL=(root) NOPASSWD: /sbin/shutdown -p +10s *
-aifw ALL=(root) NOPASSWD: /sbin/shutdown -r +10s *
-
-# --- Narrow wrapper scripts (GHSA-mjqh-2vx8-7hq7 follow-up #204) ---
-# Each helper enforces its own internal allowlist of valid arguments —
-# paths, services, interfaces. Migrate broad grants below to wrappers
-# and remove the corresponding line as each category lands.
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-wg *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-freebsd-update *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-pkg *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-service *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-chown *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-ifconfig *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-sysrc *
-
-# --- Network configuration ---
-# TODO(GHSA-mjqh-2vx8-7hq7): the wildcards below still grant broad root.
-# Migrate each call site to a narrow wrapper script and replace these
-# lines with the wrapper path.
-aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *
-aifw ALL=(ALL) NOPASSWD: /sbin/route *
-aifw ALL=(ALL) NOPASSWD: /bin/cat *
-aifw ALL=(ALL) NOPASSWD: /bin/cp *
-aifw ALL=(ALL) NOPASSWD: /bin/rm *
-aifw ALL=(ALL) NOPASSWD: /bin/mkdir *
-aifw ALL=(ALL) NOPASSWD: /bin/chmod *
-aifw ALL=(ALL) NOPASSWD: /bin/pkill *
-aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *
-aifw ALL=(ALL) NOPASSWD: /usr/bin/tar *
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
-
-# --- Detached restart driver ---
-# Required by aifw-core/src/updater.rs `restart_services()` so post-update
-# bounces survive aifw-api dying mid-iteration. -f flag double-forks
-# /usr/local/libexec/aifw-restart.sh into its own session.
-aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
-";
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
         let _ = std::fs::create_dir_all("/usr/local/etc/sudoers.d");
-        let _ = std::fs::write(sudoers_path, sudoers_line);
+        let _ = std::fs::write(sudoers_path, sudoers_content());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2398,6 +2352,71 @@ run_rc_command "$1"
     Ok(())
 }
 
+/// The sudoers content AiFw writes to
+/// `/usr/local/etc/sudoers.d/aifw`. Exposed as a function so a unit
+/// test can validate the structure and CI can pipe the same content
+/// into `visudo -cf -` for FreeBSD-side syntax checking.
+///
+/// **When adding a line**: keep the format `aifw ALL=(<runas>) NOPASSWD:
+/// <command> [args...]`. Both `(root)` and `(ALL)` are accepted; the
+/// structural test in `tests` below enforces this shape.
+// dead_code on Linux dev builds: only the FreeBSD-gated apply() path
+// + the cfg(test) checks reference this. Linux release builds don't
+// touch it.
+#[cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+pub fn sudoers_content() -> &'static str {
+    "\
+# --- pfctl (restricted to aifw anchors) ---
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /usr/local/etc/aifw/anchors/aifw*
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -nf /tmp/aifw_pf_*.conf
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -F all
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sr
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -ss
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -k label -k aifw*
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -sr
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -si
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -f /etc/pf.conf
+
+# --- shutdown (exact forms only; -p power-off or -r reboot with +10s grace) ---
+aifw ALL=(root) NOPASSWD: /sbin/shutdown -p +10s *
+aifw ALL=(root) NOPASSWD: /sbin/shutdown -r +10s *
+
+# --- Narrow wrapper scripts (GHSA-mjqh-2vx8-7hq7 follow-up #204) ---
+# Each helper enforces its own internal allowlist of valid arguments —
+# paths, services, interfaces, rcvars.
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-wg *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-freebsd-update *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-pkg *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-service *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-chown *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-ifconfig *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-sysrc *
+
+# --- Remaining broad grants (out of #204 scope, possible future tightening) ---
+aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *
+aifw ALL=(ALL) NOPASSWD: /sbin/route *
+aifw ALL=(ALL) NOPASSWD: /bin/cat *
+aifw ALL=(ALL) NOPASSWD: /bin/cp *
+aifw ALL=(ALL) NOPASSWD: /bin/rm *
+aifw ALL=(ALL) NOPASSWD: /bin/mkdir *
+aifw ALL=(ALL) NOPASSWD: /bin/chmod *
+aifw ALL=(ALL) NOPASSWD: /bin/pkill *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/tar *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
+
+# --- Detached restart driver ---
+# Required by aifw-core/src/updater.rs `restart_services()` so post-update
+# bounces survive aifw-api dying mid-iteration. -f flag double-forks
+# /usr/local/libexec/aifw-restart.sh into its own session.
+aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
+"
+}
+
 /// Generate pf rules for testing (non-FreeBSD)
 #[cfg(test)]
 pub mod tests_support {
@@ -2414,5 +2433,103 @@ pub mod tests_support {
             ..Default::default()
         };
         generate_pf_conf(&config)
+    }
+}
+
+#[cfg(test)]
+mod sudoers_tests {
+    use super::sudoers_content;
+
+    /// Structural-validity check on the sudoers content. We can't run
+    /// `visudo -cf` from a Linux dev box, but we can enforce that every
+    /// non-empty, non-comment line is a well-formed `aifw ALL=(<runas>)
+    /// NOPASSWD: <abs-path>` grant. CI on FreeBSD additionally pipes the
+    /// same string into `visudo -cf -` (see build-iso.yml).
+    #[test]
+    fn sudoers_lines_are_well_formed() {
+        let content = sudoers_content();
+        for (lineno, raw) in content.lines().enumerate() {
+            let line = raw.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            assert!(
+                line.starts_with("aifw ALL=("),
+                "line {} doesn't start with 'aifw ALL=(': {raw:?}",
+                lineno + 1
+            );
+            let after_paren = line
+                .split_once(") NOPASSWD: ")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "line {} missing ') NOPASSWD: ' separator: {raw:?}",
+                        lineno + 1
+                    )
+                })
+                .1;
+            // Command path must be absolute.
+            assert!(
+                after_paren.starts_with('/'),
+                "line {} command path is not absolute: {raw:?}",
+                lineno + 1
+            );
+        }
+    }
+
+    /// Each `aifw-sudo-*` helper grant must reference a script that
+    /// actually ships in `freebsd/overlay/usr/local/libexec/`. Catches
+    /// typos and dropped scripts before they land on an appliance.
+    #[test]
+    fn helper_grants_point_at_real_scripts() {
+        let content = sudoers_content();
+        let helper_prefix = "/usr/local/libexec/aifw-sudo-";
+        let overlay = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace dir")
+            .join("freebsd/overlay/usr/local/libexec");
+        for line in content.lines() {
+            let Some(start) = line.find(helper_prefix) else {
+                continue;
+            };
+            // Helper path ends at the first space after the prefix.
+            let tail = &line[start..];
+            let helper_path = tail.split_whitespace().next().unwrap();
+            let basename = std::path::Path::new(helper_path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            let on_disk = overlay.join(&basename);
+            assert!(
+                on_disk.exists(),
+                "sudoers grants {helper_path} but {} is missing in overlay",
+                on_disk.display()
+            );
+        }
+    }
+
+    /// No broad grants for the nine #204 categories should remain.
+    /// Catches regressions where a future change re-adds `/usr/sbin/sysrc *`
+    /// etc. (alongside the helper, by mistake).
+    #[test]
+    fn migrated_204_categories_are_not_broadly_granted() {
+        let content = sudoers_content();
+        for forbidden in [
+            "/usr/bin/tee *",
+            "/usr/bin/wg *",
+            "/usr/sbin/freebsd-update *",
+            "/usr/sbin/pkg *",
+            "/usr/sbin/service *",
+            "/usr/sbin/chown *",
+            "/sbin/ifconfig *",
+            "/usr/bin/install *",
+            "/usr/sbin/sysrc *",
+        ] {
+            assert!(
+                !content.contains(forbidden),
+                "broad grant {forbidden:?} was re-introduced — should be \
+                 routed through the matching aifw-sudo-* helper (#204)"
+            );
+        }
     }
 }
