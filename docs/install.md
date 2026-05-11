@@ -145,7 +145,7 @@ All services run under `daemon(8)` with `-R 5` auto-restart. Check `/var/log/aif
 
 ## Next steps
 
-- [Configure WireGuard VPN →]({{ '/docs/wireguard' | relative_url }})
+- [Configure WireGuard VPN →]({{ '/docs/vpn' | relative_url }})
 - [Enable IDS/IPS →]({{ '/docs/ids' | relative_url }})
 - [Compare features vs pfSense/OPNsense →]({{ '/compare' | relative_url }})
 
