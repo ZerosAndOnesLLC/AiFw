@@ -432,13 +432,8 @@ impl VpnEngine {
             .await;
 
         // Create the WireGuard interface
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["ifconfig", iface, "destroy"])
-            .output()
-            .await; // clean up if exists
-        let output = Command::new("/usr/local/bin/sudo")
-            .args(["ifconfig", iface, "create"])
-            .output()
+        let _ = crate::sudo::ifconfig(iface, "destroy", &[]).await; // clean up if exists
+        let output = crate::sudo::ifconfig(iface, "create", &[])
             .await
             .map_err(|e| AifwError::Pf(format!("ifconfig create failed: {e}")))?;
         if !output.status.success() {
@@ -452,17 +447,12 @@ impl VpnEngine {
 
         // Set address and bring up
         let addr = tunnel.address.to_string();
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["ifconfig", iface, "inet", &addr, "up"])
-            .output()
-            .await;
+        let _ = crate::sudo::ifconfig(iface, "inet", &[&addr, "up"]).await;
 
         // Set MTU if specified
         if let Some(mtu) = tunnel.mtu {
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["ifconfig", iface, "mtu", &mtu.to_string()])
-                .output()
-                .await;
+            let mtu_s = mtu.to_string();
+            let _ = crate::sudo::ifconfig(iface, "mtu", &[&mtu_s]).await;
         }
 
         // Configure WireGuard private key and listen port.
@@ -486,10 +476,7 @@ impl VpnEngine {
         .map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
         let _ = tokio::fs::remove_file(&key_path).await;
         if !output.status.success() {
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["ifconfig", iface, "destroy"])
-                .output()
-                .await;
+            let _ = crate::sudo::ifconfig(iface, "destroy", &[]).await;
             return Err(AifwError::Pf(format!(
                 "wg set failed: {}",
                 String::from_utf8_lossy(&output.stderr)
@@ -522,10 +509,7 @@ impl VpnEngine {
         let tunnel = self.get_wg_tunnel(id).await?;
         let iface = &tunnel.interface.0;
 
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["ifconfig", iface, "destroy"])
-            .output()
-            .await;
+        let _ = crate::sudo::ifconfig(iface, "destroy", &[]).await;
 
         let _ = sqlx::query("UPDATE wg_tunnels SET status = 'down', updated_at = ?1 WHERE id = ?2")
             .bind(Utc::now().to_rfc3339())

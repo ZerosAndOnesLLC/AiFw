@@ -1,0 +1,131 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-ifconfig <iface> <action> [args...]
+#
+# Narrow-grant wrapper around /sbin/ifconfig (#204). Restricts the
+# `aifw` user to the small set of subcommands AiFw legitimately needs
+# (bring an interface up/down, set address, set MTU, create/destroy a
+# cloned interface, set FIB, configure a VLAN child), with iface name
+# validation that rejects shell metacharacters and flag-shaped values.
+#
+# Read-only `ifconfig` invocations (status/info, listing) don't need
+# root and don't go through this wrapper — call ifconfig directly.
+
+set -eu
+
+if [ $# -lt 2 ]; then
+    echo "usage: $0 <iface> <action> [args...]" >&2
+    exit 2
+fi
+
+IFACE="$1"
+ACTION="$2"
+shift 2
+
+# Interface name: alnum, dot, underscore. No paths, no flags, max
+# IFNAMSIZ (FreeBSD = 16).
+if [ -z "$IFACE" ] || [ ${#IFACE} -gt 16 ]; then
+    echo "aifw-sudo-ifconfig: invalid iface name length: $IFACE" >&2
+    exit 1
+fi
+case "$IFACE" in
+    -*|*[^A-Za-z0-9._]*)
+        echo "aifw-sudo-ifconfig: invalid iface name: $IFACE" >&2
+        exit 1
+        ;;
+esac
+
+# Helper: validate a single argument as numeric (no leading -, no
+# embedded chars).
+is_numeric() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Helper: validate a parent iface name (same rules as the top-level
+# IFACE arg).
+is_valid_iface_name() {
+    [ -n "$1" ] && [ ${#1} -le 16 ] || return 1
+    case "$1" in
+        -*|*[^A-Za-z0-9._]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+case "$ACTION" in
+    up|down|delete|destroy|create)
+        if [ $# -ne 0 ]; then
+            echo "aifw-sudo-ifconfig: '$ACTION' takes no extra args" >&2
+            exit 1
+        fi
+        exec /sbin/ifconfig "$IFACE" "$ACTION"
+        ;;
+    mtu|fib)
+        if [ $# -ne 1 ]; then
+            echo "aifw-sudo-ifconfig: '$ACTION' takes one numeric arg" >&2
+            exit 1
+        fi
+        if ! is_numeric "$1"; then
+            echo "aifw-sudo-ifconfig: '$ACTION' arg must be numeric: $1" >&2
+            exit 1
+        fi
+        exec /sbin/ifconfig "$IFACE" "$ACTION" "$1"
+        ;;
+    inet)
+        # inet <addr>           — set IPv4
+        # inet <addr> -alias    — remove IPv4 alias
+        # inet <addr> up        — set + bring up
+        case $# in
+            1)
+                exec /sbin/ifconfig "$IFACE" inet "$1"
+                ;;
+            2)
+                if [ "$2" = "-alias" ] || [ "$2" = "up" ]; then
+                    exec /sbin/ifconfig "$IFACE" inet "$1" "$2"
+                fi
+                echo "aifw-sudo-ifconfig: inet second arg must be -alias or up" >&2
+                exit 1
+                ;;
+            *)
+                echo "aifw-sudo-ifconfig: inet takes 1 or 2 args" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    inet6)
+        if [ $# -ne 1 ]; then
+            echo "aifw-sudo-ifconfig: inet6 takes one address arg" >&2
+            exit 1
+        fi
+        exec /sbin/ifconfig "$IFACE" inet6 "$1"
+        ;;
+    description)
+        # Bounded length so a 1 MB body can't go into syslog.
+        if [ $# -ne 1 ] || [ ${#1} -gt 128 ]; then
+            echo "aifw-sudo-ifconfig: description takes one arg <=128 chars" >&2
+            exit 1
+        fi
+        exec /sbin/ifconfig "$IFACE" description "$1"
+        ;;
+    vlan)
+        # Form: vlan <id> vlandev <parent>
+        if [ $# -ne 3 ] || [ "$2" != "vlandev" ]; then
+            echo "aifw-sudo-ifconfig: vlan form is 'vlan <id> vlandev <parent>'" >&2
+            exit 1
+        fi
+        if ! is_numeric "$1"; then
+            echo "aifw-sudo-ifconfig: vlan id must be numeric: $1" >&2
+            exit 1
+        fi
+        if ! is_valid_iface_name "$3"; then
+            echo "aifw-sudo-ifconfig: invalid vlan parent: $3" >&2
+            exit 1
+        fi
+        exec /sbin/ifconfig "$IFACE" vlan "$1" vlandev "$3"
+        ;;
+    *)
+        echo "aifw-sudo-ifconfig: unsupported action: $ACTION" >&2
+        exit 1
+        ;;
+esac
