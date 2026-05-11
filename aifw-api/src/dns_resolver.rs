@@ -131,11 +131,13 @@ async fn run_cmd_timeout(program: &str, args: &[&str]) -> std::io::Result<std::p
     })
 }
 
-/// Run a service command with timeout (no shell interpolation).
+/// Run a service command with timeout (no shell interpolation). Routes
+/// through the `aifw-sudo-service` allowlist helper rather than the
+/// broad `/usr/sbin/service *` grant (#204).
 async fn service_cmd(service: &str, action: &str) {
     let _ = run_cmd_timeout(
         "/usr/local/bin/sudo",
-        &["/usr/sbin/service", service, action],
+        &["/usr/local/libexec/aifw-sudo-service", service, action],
     )
     .await;
 }
@@ -1326,10 +1328,7 @@ pub async fn resolver_status(
     let is_rdns = config.backend == "rdns";
 
     let service_name = if is_rdns { "rdns" } else { "local_unbound" };
-    let running = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/service", service_name, "status"])
-        .output()
-        .await
+    let running = aifw_core::sudo::service(service_name, "status").await
         .map(|o| o.status.success())
         .unwrap_or(false);
 
@@ -1710,7 +1709,7 @@ async fn start_backend(backend: &str) -> Result<String, String> {
     sysrc_set_if_different(key, "YES").await;
     match run_cmd_timeout(
         "/usr/local/bin/sudo",
-        &["/usr/sbin/service", svc, "restart"],
+        &["/usr/local/libexec/aifw-sudo-service", svc, "restart"],
     )
     .await
     {

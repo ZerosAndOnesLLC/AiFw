@@ -18,6 +18,7 @@ const HELPER_WRITE: &str = "/usr/local/libexec/aifw-sudo-write";
 const HELPER_WG: &str = "/usr/local/libexec/aifw-sudo-wg";
 const HELPER_FREEBSD_UPDATE: &str = "/usr/local/libexec/aifw-sudo-freebsd-update";
 const HELPER_PKG: &str = "/usr/local/libexec/aifw-sudo-pkg";
+const HELPER_SERVICE: &str = "/usr/local/libexec/aifw-sudo-service";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -99,4 +100,19 @@ pub async fn pkg(action: &str, extra_args: &[&str]) -> std::io::Result<std::proc
     let mut args: Vec<&str> = vec![HELPER_PKG, action];
     args.extend_from_slice(extra_args);
     Command::new(SUDO).args(&args).output().await
+}
+
+/// Run `service <name> <action>` as root via the `aifw-sudo-service`
+/// helper.
+///
+/// The helper restricts both the service name (closed allowlist of
+/// AiFw-managed services + `unbound`/`sshd`) and the action verb
+/// (`start` / `stop` / `restart` / `reload` / `status`, plus the
+/// `one*` force variants). Adding a new managed service requires
+/// updating the helper script's case block.
+pub async fn service(name: &str, action: &str) -> std::io::Result<std::process::Output> {
+    Command::new(SUDO)
+        .args([HELPER_SERVICE, name, action])
+        .output()
+        .await
 }

@@ -1930,10 +1930,7 @@ async fn ensure_rc_services_enabled() {
         if already_running {
             continue;
         }
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["service", svc, "start"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::service(svc, "start").await;
         info!(service = svc, "started by aifw-api startup migration");
     }
 }

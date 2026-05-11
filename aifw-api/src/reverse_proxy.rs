@@ -1062,10 +1062,7 @@ pub async fn generate_trafficcop_config(pool: &SqlitePool) -> Result<String, sql
 // ============================================================
 
 async fn run_trafficcop_service(action: &str) -> Json<MessageResponse> {
-    let output = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/service", "trafficcop", action])
-        .output()
-        .await;
+    let output = aifw_core::sudo::service("trafficcop", action).await;
     match output {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout).to_string();
@@ -1091,9 +1088,7 @@ async fn run_trafficcop_service(action: &str) -> Json<MessageResponse> {
 pub async fn rp_status(
     State(state): State<AppState>,
 ) -> Result<Json<ReverseProxyStatus>, StatusCode> {
-    let running = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/sbin/service", "trafficcop", "status"])
-        .output()
+    let running = aifw_core::sudo::service("trafficcop", "status")
         .await
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -1255,18 +1250,12 @@ pub async fn apply_config(
             .args(["/usr/sbin/sysrc", "trafficcop_enable=YES"])
             .output()
             .await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "trafficcop", "restart"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::service("trafficcop", "restart").await;
         Ok(Json(MessageResponse {
             message: "TrafficCop config applied and service restarted".to_string(),
         }))
     } else {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/service", "trafficcop", "stop"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::service("trafficcop", "stop").await;
         let _ = Command::new("/usr/local/bin/sudo")
             .args(["/usr/sbin/sysrc", "trafficcop_enable=NO"])
             .output()
