@@ -1,0 +1,59 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-chown -R <owner:group> <path>
+#
+# Narrow-grant wrapper around /usr/sbin/chown (#204). Restricts the
+# `aifw` user to recursive ownership changes on AiFw-managed companion
+# service directories, with a closed allowlist of valid owner:group
+# pairs.
+#
+# Only the `-R` form is exposed — single-file chown is never needed by
+# AiFw and a non-recursive variant would just be more surface to
+# defend.
+
+set -eu
+
+if [ $# -ne 3 ]; then
+    echo "usage: $0 -R <owner:group> <path>" >&2
+    exit 2
+fi
+
+FLAG="$1"
+OWNER_GROUP="$2"
+TARGET="$3"
+
+if [ "$FLAG" != "-R" ]; then
+    echo "aifw-sudo-chown: only -R is supported" >&2
+    exit 1
+fi
+
+# Closed allowlist of owner:group pairs. The companion services run as
+# the `aifw` user (rdhcpd, rtime) or their own user (unbound).
+case "$OWNER_GROUP" in
+    aifw:aifw|unbound:unbound)
+        ;;
+    *)
+        echo "aifw-sudo-chown: owner:group not in allowlist: $OWNER_GROUP" >&2
+        exit 1
+        ;;
+esac
+
+# Closed allowlist of target paths. Add a path here when adding a new
+# managed companion service directory — do NOT widen the pattern to
+# `/usr/local/etc/*` or `/var/log/*`, which would let an `aifw`-process
+# compromise hand /etc/sudoers.d/ or /var/log/auth.log to itself.
+case "$TARGET" in
+    /usr/local/etc/rdhcpd|/usr/local/etc/rtime|/usr/local/etc/rdns)
+        ;;
+    /var/db/rdhcpd|/var/db/rdhcpd/leases)
+        ;;
+    /var/log/rdhcpd|/var/log/rtime|/var/log/rdns)
+        ;;
+    /var/unbound|/var/run/rdns)
+        ;;
+    *)
+        echo "aifw-sudo-chown: path not in allowlist: $TARGET" >&2
+        exit 1
+        ;;
+esac
+
+exec /usr/sbin/chown -R "$OWNER_GROUP" "$TARGET"

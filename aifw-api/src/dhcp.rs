@@ -1980,18 +1980,9 @@ pub async fn apply_config(
         .map_err(|_| internal())?;
 
     // Fix ownership
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rdhcpd"])
-        .output()
-        .await;
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["chown", "-R", "aifw:aifw", RDHCP_LEASE_DB])
-        .output()
-        .await;
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["chown", "-R", "aifw:aifw", "/var/log/rdhcpd"])
-        .output()
-        .await;
+    let _ = aifw_core::sudo::chown_r("aifw:aifw", "/usr/local/etc/rdhcpd").await;
+    let _ = aifw_core::sudo::chown_r("aifw:aifw", RDHCP_LEASE_DB).await;
+    let _ = aifw_core::sudo::chown_r("aifw:aifw", "/var/log/rdhcpd").await;
 
     if config.enabled {
         let _ = Command::new("/usr/local/bin/sudo")
@@ -2036,10 +2027,7 @@ pub(crate) async fn auto_apply(state: &AppState) {
         .await
         .is_ok()
     {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rdhcpd"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::chown_r("aifw:aifw", "/usr/local/etc/rdhcpd").await;
         let _ = aifw_core::sudo::service("rdhcpd", "restart").await;
         tracing::info!("DHCP config auto-applied");
     }

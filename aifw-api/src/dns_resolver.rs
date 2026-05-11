@@ -1612,10 +1612,7 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
                 .map_err(|_| internal())?;
             sudo_copy(tmp_path, "/var/unbound/unbound.conf").await;
             let _ = tokio::fs::remove_file(tmp_path).await;
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/usr/sbin/chown", "-R", "unbound:unbound", "/var/unbound"])
-                .output()
-                .await;
+            let _ = aifw_core::sudo::chown_r("unbound:unbound", "/var/unbound").await;
             Ok(())
         }
         "rdns" => {
