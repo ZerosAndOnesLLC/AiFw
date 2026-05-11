@@ -1,9 +1,39 @@
 ---
 layout: default
 title: Features — AiFw Firewall
-description: Complete feature list for AiFw — stateful firewall, WireGuard, IPsec, IDS/IPS with Sigma and YARA rules, AI threat detection, NAT, DNS, DHCP, HA clustering, and more.
+description: Complete feature list for AiFw — stateful firewall, WireGuard, IPsec, IDS/IPS with Sigma and YARA rules, AI threat detection, multi-WAN with FIB isolation, NAT, DNS, DHCP, HA clustering, OPNsense importer, and more.
 permalink: /features/
+date: 2026-05-09
+breadcrumb:
+  - { title: "Features", url: "/features/" }
 ---
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "AiFw",
+  "description": "AiFw is an open-source AI-powered firewall for FreeBSD with WireGuard, IPsec, IDS/IPS, multi-WAN, HA clustering, and a modern web dashboard.",
+  "url": "https://aifw.zerosandones.us/features/",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "FreeBSD",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+  "featureList": [
+    "Stateful packet filtering via FreeBSD pf",
+    "WireGuard and IPsec VPN",
+    "Suricata IDS/IPS with Sigma and YARA rules",
+    "Multi-WAN with FIB isolation, SLA-driven failover, leak detection",
+    "HA clustering with CARP",
+    "NAT including SNAT, DNAT, 1:1, NAT64, NAT46",
+    "Geo-IP filtering",
+    "DNS resolver and DHCP server",
+    "OPNsense configuration importer",
+    "REST API with 300+ routes and RBAC",
+    "React-based web dashboard"
+  ],
+  "license": "https://opensource.org/licenses/MIT"
+}
+</script>
 
 <div class="content-page">
 <article markdown="1">
@@ -31,6 +61,21 @@ A complete inventory of what AiFw ships with today. All features are MIT-license
 - **1:1 NAT** (binat)
 - **NAT64** (IPv6 → IPv4)
 - **NAT46** (IPv4 → IPv6) — unique to AiFw
+
+## Multi-WAN
+
+Enterprise-grade multi-WAN built on FreeBSD FIBs and pf. Designed to match what Cisco IOS PBR + IP SLA and Juniper routing-instances + RPM offer, with a few features neither has.
+
+- **FIB isolation** — each WAN lives in its own FreeBSD FIB, the same isolation primitive as Juniper routing-instances or Cisco VRFs.
+- **Active health monitoring** — ICMP, TCP, HTTP, and DNS probes with hysteresis and MOS scoring on every probe kind.
+- **Gateway groups** — failover, weighted load-balance, and MOS-weighted adaptive policies.
+- **Policy routing** — match on 5-tuple + interface + DSCP + geo-IP. Steer to an instance, gateway, or group.
+- **Blast-radius preview** — dry-run any config change to see which existing flows would be re-routed and whether management traffic would be stranded, before applying.
+- **Per-flow visibility** — live pf state table joined to policy labels, with one-click force-migrate.
+- **GitOps export/import** — `GET /api/v1/multiwan/config.yaml` returns the entire multi-WAN config; POST it back to apply.
+- **Anomaly scoring** (optional) — SLA baseline deviation alerting when probes still pass but the latency profile shifted.
+
+See the [multi-WAN setup guide]({{ '/multi-wan/' | relative_url }}) for FIB bootstrap, gateway monitoring, policy construction, and the pf rules emitted under `aifw-pbr`, `aifw-mwan-reply`, and `aifw-mwan-leak`.
 
 ## VPN
 
@@ -83,6 +128,16 @@ Each detector produces a threat score (0.0–1.0 confidence) and severity classi
 - Query logging
 - Rebind protection, identity hiding
 
+## DNS blocklists
+
+- Source URL configuration with periodic auto-refresh
+- Per-list hit counters and last-fetch metadata
+- Allowlist override that beats blocklist rules
+- Per-blocklist enable/disable, with no resolver restart required
+- Compatible with common public blocklists (StevenBlack, OISD, etc.)
+
+See the [DNS guide]({{ '/docs/dns/' | relative_url }}) for sources, refresh cadence, and allowlist examples.
+
 ## DHCP
 
 - DHCPv4 server with multiple subnets
@@ -93,16 +148,18 @@ Each detector produces a threat score (0.0–1.0 confidence) and severity classi
 - **DDNS** — automatic DHCP-to-DNS updates
 - Configurable lease time, gateway, DNS per subnet
 
-## Reverse proxy
+## Reverse proxy &amp; ACME
 
-Built-in TrafficCop reverse proxy:
+Built-in TrafficCop reverse proxy — no HAProxy/Nginx package install:
 
-- HTTP, TCP, and UDP routing
-- Path and host-based HTTP routing
-- Load balancing with health checks
-- TLS termination
-- Middleware chains
-- ACME (Let's Encrypt) certificate resolvers
+- **HTTP routers** with path and host matching
+- **TCP and UDP routers** with SNI matching
+- **Services** with multiple backends, health checks, and load-balancing strategies
+- **Middleware chains** — auth, rate limit, header rewrites, redirect, IP allowlist
+- **TLS termination** with per-router certificate selection
+- **ACME / Let's Encrypt automation** — issue, renew, and push certs to the local TLS store, a filesystem location, or a webhook destination
+
+See the [reverse proxy guide]({{ '/docs/reverse-proxy/' | relative_url }}) for setup, ACME providers, middleware reference, and example configs.
 
 ## High availability
 
@@ -130,24 +187,27 @@ Built-in TrafficCop reverse proxy:
 
 - **Local users** with bcrypt password hashing
 - **TOTP 2FA** with recovery codes
-- **OAuth / SSO** — unique to AiFw among FreeBSD firewalls
+- **OAuth / SSO** — first-class auth method, not a plugin. Built-in providers for Google, GitHub, generic OIDC. See the [auth &amp; RBAC guide]({{ '/docs/auth/' | relative_url }}) for setup, the full 37-permission RBAC matrix, and TOTP / API-key flows.
 - **API keys** for programmatic access
 - **JWT token sessions** with refresh tokens
 
 ## Authorization — RBAC
 
-34 granular permissions including:
+37 granular permissions including:
 
 `dashboard:view` · `rules:read/write` · `nat:read/write` · `vpn:read/write` · `geoip:read/write` · `ids:read/write` · `dns:read/write` · `dhcp:read/write` · `aliases:read/write` · `interfaces:read/write` · `connections:view` · `logs:view` · `users:read/write` · `settings:read/write` · `plugins:read/write` · `updates:read/install` · `backup:read/write` · `system:reboot` · `proxy:read/write`
 
 Built-in roles: **admin**, **operator**, **viewer**. Custom roles supported.
 
-## Config management
+## Backup &amp; migration
 
-- **Backup/restore** to/from JSON
-- **Versioned config history** with diff and selective restore
-- **Commit confirm** — every apply auto-reverts on timeout unless confirmed
-- **OPNsense import** — migrate from existing OPNsense XML configs
+- **JSON backup / restore** — entire config in one file, atomically replayable
+- **S3 backup destination** — configurable bucket and prefix; rotation policy
+- **OPNsense XML import** — recently rewritten end-to-end. Parse the XML, preview a diff of what'll change, apply atomically with rollback on failure
+- **Versioned config history** — every change is snapshotted; diff and selective restore from the UI
+- **Commit confirm** — every apply auto-reverts on timeout unless explicitly confirmed; default 300-second window
+
+See the [backup &amp; migration guide]({{ '/docs/backup/' | relative_url }}) for the full migration workflow from OPNsense, S3 setup, and rollback procedures.
 
 ## Plugin system <span class="badge-beta">Beta</span>
 
@@ -177,6 +237,20 @@ See the full [plugin system documentation]({{ '/plugins' | relative_url }}) for 
 - Blocked traffic tail from pflog
 - Active connection tracking
 
+## Time service
+
+- **NTP and PTP** via the rTIME companion service
+- Stratum, drift, and peer health visible in the UI
+- Per-peer enable/disable with key-authenticated peers supported
+- Required for HA — both nodes must run synchronized time for CARP advertisement timing
+
+## TLS inspection
+
+- **JA3 / JA3S fingerprinting** of inbound and outbound flows
+- **SNI filtering** — block by hostname before TLS handshake completes
+- **Certificate validation** — chain trust, validity window, expected SANs
+- **TLS version enforcement** — min/max version policy, cipher suite policy
+
 ## Updates
 
 - **Self-update** via the web UI, CLI, or console
@@ -188,14 +262,16 @@ See the full [plugin system documentation]({{ '/plugins' | relative_url }}) for 
 ## Interfaces
 
 - **Web UI** — Next.js / React with static export (no Node.js on appliance)
-- **REST API** — 300+ endpoints, Axum-based, WebSocket for live data
-- **CLI** — `aifw` with 40+ subcommands
+- **REST API** — 300+ endpoints, Axum-based, WebSocket for live data. See the [API reference]({{ '/docs/api/' | relative_url }}).
+- **CLI** — `aifw` with 17 subcommand groups. See the [CLI reference]({{ '/docs/cli/' | relative_url }}).
 - **TUI** — interactive terminal UI for headless operation
 
 ## See also
 
-- [How AiFw compares to pfSense / OPNsense →]({{ '/compare' | relative_url }})
-- [Install guide →]({{ '/install' | relative_url }})
+- [How AiFw compares to pfSense / OPNsense →]({{ '/compare/' | relative_url }})
+- [Install guide →]({{ '/install/' | relative_url }})
+- [Documentation hub →]({{ '/docs/' | relative_url }})
+- [FAQ →]({{ '/faq/' | relative_url }})
 - [GitHub repository →](https://github.com/ZerosAndOnesLLC/AiFw)
 
 </article>

@@ -1,8 +1,11 @@
 ---
 layout: default
 title: AiFw vs pfSense vs OPNsense — Feature Comparison
-description: Honest head-to-head comparison of AiFw, OPNsense, and pfSense. WireGuard, IDS/IPS, NAT, VPN, HA, and more — see what each firewall actually supports.
+description: Honest head-to-head comparison of AiFw, OPNsense, and pfSense. WireGuard, IDS/IPS, NAT, VPN, HA, multi-WAN, OPNsense import, and more — see what each firewall actually supports.
 permalink: /compare/
+date: 2026-05-09
+breadcrumb:
+  - { title: "Compare", url: "/compare/" }
 ---
 
 <script type="application/ld+json">
@@ -54,7 +57,9 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>IPv6 support</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>VLAN support</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>Static routing</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>Multi-WAN / failover / LB</td><td class="partial">planned</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>Multi-WAN / failover / LB</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>FIB-based isolation per WAN</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>Multi-WAN blast-radius preview</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
 <tr><td>Captive portal</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 
 <tr class="section-row"><td colspan="4">NAT</td></tr>
@@ -81,6 +86,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>Host/domain overrides</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>DNSSEC</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>Dynamic DNS client (WAN)</td><td class="no">—</td><td class="partial">plugin</td><td class="yes">✓</td></tr>
+<tr><td>DNS blocklists</td><td class="yes">✓</td><td class="partial">pi-hole</td><td class="partial">pfBlockerNG</td></tr>
 
 <tr class="section-row"><td colspan="4">DHCP</td></tr>
 <tr><td>DHCPv4 server</td><td class="yes">rDHCP</td><td class="yes">Kea/ISC</td><td class="yes">Kea/ISC</td></tr>
@@ -101,6 +107,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 
 <tr class="section-row"><td colspan="4">Reverse proxy</td></tr>
 <tr><td>Built-in proxy</td><td class="yes">TrafficCop</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>ACME / Let's Encrypt automation</td><td class="yes">✓</td><td class="partial">plugin</td><td class="partial">pkg</td></tr>
 <tr><td>HAProxy</td><td class="no">—</td><td class="partial">plugin</td><td class="partial">pkg</td></tr>
 
 <tr class="section-row"><td colspan="4">Authentication</td></tr>
@@ -110,7 +117,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>RADIUS</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>OAuth / SSO</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
 <tr><td>API keys</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">community</td></tr>
-<tr><td>RBAC (granular perms)</td><td class="yes">34 perms</td><td class="yes">ACL</td><td class="partial">user/group</td></tr>
+<tr><td>RBAC (granular perms)</td><td class="yes">37 perms</td><td class="yes">ACL</td><td class="partial">user/group</td></tr>
 
 <tr class="section-row"><td colspan="4">Plugins & extensibility</td></tr>
 <tr><td>Package/plugin system</td><td class="partial">beta</td><td class="yes">✓</td><td class="yes">✓</td></tr>
@@ -127,7 +134,11 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>Backup / restore</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>Versioning + diff</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>Commit confirm (auto-rollback)</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
-<tr><td>OPNsense config import</td><td class="yes">✓</td><td class="no">n/a</td><td class="no">—</td></tr>
+
+<tr class="section-row"><td colspan="4">Backup &amp; migration</td></tr>
+<tr><td>JSON backup / restore</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>S3 backup destination</td><td class="yes">✓</td><td class="partial">plugin</td><td class="partial">pkg</td></tr>
+<tr><td>OPNsense XML import</td><td class="yes">✓</td><td class="no">n/a</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">Certificate Authority</td></tr>
 <tr><td>Built-in CA</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
@@ -137,6 +148,9 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 
 ## Where AiFw wins
 
+- **Multi-WAN with FIB isolation** — each WAN lives in its own FreeBSD FIB (just like a Juniper routing-instance). Gateway groups with failover, weighted load-balance, and MOS-weighted adaptive policies. Blast-radius preview shows which existing flows would migrate before you apply. No other open-source FreeBSD firewall does this.
+- **OPNsense config import** — drop-in migration. Parse the XML, preview the diff, apply atomically with rollback. Recently rewritten end-to-end (#230, #248–#252).
+- **Built-in reverse proxy + ACME** — TrafficCop runs HTTP, TCP, and UDP. ACME issuance pushes certs straight to the TLS store, file, or webhook. No HAProxy plugin install dance.
 - **AI/ML threat detection** — 5 built-in behavioural detectors (port scan, DDoS, brute force, C2 beacon, DNS tunneling) with auto-response and TTL blocks. Implemented in `aifw-ai/src/detectors/`.
 - **Sigma + YARA rule support** — modern rule formats neither OPNsense nor pfSense support. Full parsers in `aifw-ids/src/rules/`.
 - **NAT46** — IPv4→IPv6 translation. Nobody else has this out of the box.
@@ -153,7 +167,6 @@ Honesty matters. Things you'll miss if you switch:
 
 - **No OpenVPN** — both competitors have it. If you need OpenVPN specifically, don't switch (yet).
 - **No LDAP / RADIUS** — AiFw uses OAuth/SSO instead. Big companies often need LDAP.
-- **No Multi-WAN failover / load balancing** — planned but not shipped.
 - **No captive portal** — if you run a café/hotspot, stay put.
 - **No dynamic DNS client** for WAN IP updates (DDNS is only DHCP→DNS integration).
 - **No CBQ** traffic shaping (has CoDel, HFSC, PRIQ).
@@ -164,7 +177,7 @@ Honesty matters. Things you'll miss if you switch:
 ## Should you switch?
 
 **Stay on pfSense/OPNsense if:**
-- You rely on OpenVPN, captive portal, multi-WAN load balancing, or LDAP
+- You rely on OpenVPN, captive portal, or LDAP
 - You value a large community for Q&A
 - Your stack is already stable and you're not hitting any pain points
 

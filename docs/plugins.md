@@ -1,9 +1,25 @@
 ---
 layout: default
 title: Plugin System — AiFw
-description: Extend AiFw with Rust and WASM plugins. 12 hook points across rules, connections, DNS, DHCP, VPN, and more.
+description: Extend AiFw with Rust and WASM plugins. 14 hook points across rules, connections, DNS, DHCP, VPN, IDS, and timer events.
 permalink: /plugins/
+date: 2026-05-09
+breadcrumb:
+  - { title: "Docs", url: "/docs/" }
+  - { title: "Plugins", url: "/plugins/" }
 ---
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "AiFw plugin system — Rust and WASM plugins with 14 hook points",
+  "description": "Extend AiFw with Rust plugins. 14 hook points, 8 hook actions, 3 built-in plugins.",
+  "author": { "@type": "Organization", "name": "ZerosAndOnesLLC" },
+  "datePublished": "2026-05-09",
+  "dateModified": "2026-05-09"
+}
+</script>
 
 <div class="content-page">
 <article markdown="1">
@@ -22,7 +38,7 @@ AiFw includes a plugin system that lets you extend firewall behavior without mod
 
 ## Overview
 
-- **12 hook points** across the firewall pipeline (rules, connections, DNS, DHCP, VPN, API, timer)
+- **14 hook points** across the firewall pipeline (rules, connections, DNS, DHCP, VPN, API, timer)
 - **3 built-in plugins** (Logging, IP Reputation, Webhook) — disabled by default
 - **Native Rust plugins** via the `Plugin` trait
 - **WASM plugin support** (planned) for sandboxed third-party plugins
@@ -90,6 +106,8 @@ Plugins subscribe to specific hooks. The firewall dispatches events to running p
 | `dhcp_lease` | DHCP lease action (rDHCP) | MAC, IP, hostname, action | No |
 | `vpn_event` | VPN tunnel state change | tunnel name, peer, action | No |
 | `timer` | Every 60 seconds | timestamp | No |
+| `ids_alert` | IDS rule matched (signature, anomaly, etc.) | rule id, src/dst IP, severity | No (observe only) |
+| `ids_drop` | IPS mode dropped a packet | rule id, src/dst IP, action | No (already dropped) |
 
 ## Hook Actions
 
@@ -300,6 +318,12 @@ Sends notifications to an HTTP endpoint for security events.
 - pflog dispatch is per-packet but only for logged packets
 - Timer hooks fire once per minute, not per-packet
 - Plugin manager uses RwLock — reads don't block each other, only writes (toggle) block briefly
+
+## See also
+
+- [Features overview →]({{ '/features/' | relative_url }})
+- [API reference →]({{ '/docs/api/' | relative_url }}) — plugin endpoints under `/api/v1/plugins/*`
+- Source: [`aifw-plugins/src/`](https://github.com/ZerosAndOnesLLC/AiFw/tree/main/aifw-plugins/src)
 
 </article>
 </div>

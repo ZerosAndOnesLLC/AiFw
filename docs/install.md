@@ -3,6 +3,9 @@ layout: default
 title: Install AiFw — FreeBSD firewall installation guide
 description: Step-by-step guide to install AiFw on FreeBSD from ISO, USB image, or update an existing installation.
 permalink: /install/
+date: 2026-05-09
+breadcrumb:
+  - { title: "Install", url: "/install/" }
 ---
 
 <script type="application/ld+json">
@@ -90,6 +93,10 @@ Once done, reach the web UI at:
 https://<lan-ip>:8080
 ```
 
+### Multi-WAN setup later
+
+Multi-WAN can be enabled from the web UI at any time after install — no need to edit `/boot/loader.conf` by hand. See the [multi-WAN guide]({{ '/multi-wan/' | relative_url }}).
+
 ## Minimum requirements
 
 | Resource | Minimum | Recommended |
@@ -138,7 +145,7 @@ All services run under `daemon(8)` with `-R 5` auto-restart. Check `/var/log/aif
 
 ## Next steps
 
-- [Configure WireGuard VPN →]({{ '/docs/wireguard' | relative_url }})
+- [Configure WireGuard VPN →]({{ '/docs/vpn' | relative_url }})
 - [Enable IDS/IPS →]({{ '/docs/ids' | relative_url }})
 - [Compare features vs pfSense/OPNsense →]({{ '/compare' | relative_url }})
 

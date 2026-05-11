@@ -3,7 +3,23 @@ layout: default
 title: High Availability — AiFw Active-Passive Pair
 description: Setup, architecture, latency profiles, failure modes, split-brain handling, and ops runbooks for AiFw HA pairs using CARP and pfsync on FreeBSD.
 permalink: /ha/
+date: 2026-05-09
+breadcrumb:
+  - { title: "Docs", url: "/docs/" }
+  - { title: "HA cluster", url: "/ha/" }
 ---
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "High Availability on AiFw — CARP and pfsync",
+  "description": "Setup, latency profiles, failure modes, and ops runbooks for AiFw HA pairs using CARP and pfsync on FreeBSD.",
+  "author": { "@type": "Organization", "name": "ZerosAndOnesLLC" },
+  "datePublished": "2026-05-09",
+  "dateModified": "2026-05-09"
+}
+</script>
 
 # High Availability — Active-Passive Pair
 
@@ -231,3 +247,9 @@ Exit codes:
 - **NUT (Network UPS Tools) integration** — strongly recommended in this doc, but
   not built into AiFw. Configure NUT separately and point its shutdown hook at
   `aifw cluster demote && shutdown -p now`.
+
+## See also
+
+- [Features overview →]({{ '/features/' | relative_url }})
+- [Comparison with pfSense / OPNsense →]({{ '/compare/' | relative_url }})
+- [Auth &amp; RBAC →]({{ '/docs/auth/' | relative_url }}) — RBAC perms required for cluster operations

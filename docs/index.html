@@ -1,7 +1,8 @@
 ---
 layout: default
 title: AiFw — AI-Powered Open-Source Firewall for FreeBSD
-description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with Suricata, Sigma, and YARA rules. WireGuard, IPsec, HA clustering, 257-route REST API, and a React dashboard. MIT licensed.
+description: Modern firewall for FreeBSD written in Rust. WireGuard, IPsec, IDS/IPS with Suricata/Sigma/YARA, multi-WAN with SLA failover, HA clustering, 300+ REST API routes, and a React dashboard. MIT licensed.
+date: 2026-05-09
 ---
 
 <script type="application/ld+json">
@@ -41,8 +42,8 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
     <p class="lead">
       A complete firewall platform in one Rust codebase: stateful pf rules,
       Suricata + Sigma + YARA IDS, WireGuard &amp; IPsec VPN, CARP/pfsync HA,
-      AI threat detection, and a live React dashboard. An honest alternative
-      to pfSense and OPNsense.
+      multi-WAN with FIB isolation, AI threat detection, and a live React dashboard.
+      An honest alternative to pfSense and OPNsense.
     </p>
     <div class="hero-ctas">
       <a href="{{ '/install/' | relative_url }}" class="btn btn-primary btn-lg">
@@ -55,8 +56,8 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
       </a>
     </div>
     <div class="hero-stats">
-      <div class="hero-stat"><div class="hero-stat-num">257</div><div class="hero-stat-label">API endpoints</div></div>
-      <div class="hero-stat"><div class="hero-stat-num">34</div><div class="hero-stat-label">RBAC perms</div></div>
+      <div class="hero-stat"><div class="hero-stat-num">300+</div><div class="hero-stat-label">API endpoints</div></div>
+      <div class="hero-stat"><div class="hero-stat-num">37</div><div class="hero-stat-label">RBAC perms</div></div>
       <div class="hero-stat"><div class="hero-stat-num">5</div><div class="hero-stat-label">AI detectors</div></div>
       <div class="hero-stat"><div class="hero-stat-num">6</div><div class="hero-stat-label">NAT types</div></div>
       <div class="hero-stat"><div class="hero-stat-num">3</div><div class="hero-stat-label">Rule formats</div></div>
@@ -112,9 +113,18 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
         <div class="feature-icon" style="background: rgba(168,85,247,0.1); border-color: rgba(168,85,247,0.2); color: var(--purple);">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
         </div>
-        <h3>AI threat detection</h3>
+        <h3>AI threat detection <span class="badge-beta">opt-in · experimental</span></h3>
         <p>Five behavioural detectors: port scan, DDoS, brute force, C2 beacon, and DNS tunneling. Auto-response with TTL blocks.</p>
         <div class="feature-tags"><span class="tag">port-scan</span><span class="tag">ddos</span><span class="tag">c2-beacon</span></div>
+      </div>
+
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(34,197,94,0.10); border-color: rgba(34,197,94,0.20); color: var(--green);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12h18M9 6l-6 6 6 6m6-12l6 6-6 6"/></svg>
+        </div>
+        <h3>Multi-WAN with FIB isolation</h3>
+        <p>Each WAN in its own FreeBSD FIB. Gateway groups with failover, weighted, and adaptive MOS-weighted policies. Per-flow blast-radius preview before apply. <a href="{{ '/multi-wan/' | relative_url }}" style="color: var(--green);">Setup →</a></p>
+        <div class="feature-tags"><span class="tag">FIB</span><span class="tag">PBR</span><span class="tag">SLA</span></div>
       </div>
 
       <div class="feature">
@@ -136,6 +146,15 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
       </div>
 
       <div class="feature">
+        <div class="feature-icon" style="background: rgba(6,182,212,0.10); border-color: rgba(6,182,212,0.20); color: var(--cyan);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        </div>
+        <h3>Reverse proxy + ACME</h3>
+        <p>Built-in TrafficCop reverse proxy: HTTP, TCP, UDP routers, services, middlewares. ACME / Let's Encrypt automation pushes certs straight to the TLS store, file, or webhook. <a href="{{ '/docs/reverse-proxy/' | relative_url }}" style="color: var(--cyan);">Configure →</a></p>
+        <div class="feature-tags"><span class="tag">TrafficCop</span><span class="tag">ACME</span><span class="tag">TLS</span></div>
+      </div>
+
+      <div class="feature">
         <div class="feature-icon" style="background: rgba(168,85,247,0.1); border-color: rgba(168,85,247,0.2); color: var(--purple);">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
         </div>
@@ -149,8 +168,8 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
         </div>
         <h3>Granular RBAC</h3>
-        <p>34 specific permissions across every subsystem. TOTP 2FA, OAuth/SSO, API keys, built-in CA for certificate issuance.</p>
-        <div class="feature-tags"><span class="tag">34 perms</span><span class="tag">TOTP</span><span class="tag">OAuth</span></div>
+        <p>37 specific permissions across every subsystem. TOTP 2FA, OAuth/SSO, API keys, built-in CA for certificate issuance.</p>
+        <div class="feature-tags"><span class="tag">37 perms</span><span class="tag">TOTP</span><span class="tag">OAuth</span></div>
       </div>
 
       <div class="feature">
@@ -160,6 +179,15 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
         <h3>Commit confirm</h3>
         <p>Every apply stages changes with a timer. If you don't confirm within the window, your config auto-reverts. Never lock yourself out.</p>
         <div class="feature-tags"><span class="tag">auto-revert</span><span class="tag">snapshots</span><span class="tag">rollback</span></div>
+      </div>
+
+      <div class="feature">
+        <div class="feature-icon" style="background: rgba(245,158,11,0.10); border-color: rgba(245,158,11,0.20); color: var(--amber);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v-3a4 4 0 014-4h12m0 0l-4-4m4 4l-4 4"/></svg>
+        </div>
+        <h3>OPNsense config import</h3>
+        <p>Drop-in migration from OPNsense. Parse the XML config, see exactly what'll change, apply atomically with rollback. Recently rewritten end-to-end. <a href="{{ '/docs/backup/#opnsense-import' | relative_url }}" style="color: var(--amber);">Migration guide →</a></p>
+        <div class="feature-tags"><span class="tag">XML</span><span class="tag">atomic</span><span class="tag">rollback</span></div>
       </div>
 
     </div>
@@ -175,28 +203,52 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
     </div>
     <div class="gallery">
       <figure>
-        <img src="{{ '/assets/screenshots/01-dashboard.png' | relative_url }}" alt="AiFw main dashboard" loading="lazy">
+        <img src="{{ '/assets/screenshots/01-dashboard.png' | relative_url }}" alt="AiFw live dashboard with system metrics, service health, and IDS summary" loading="lazy" width="1200" height="700">
         <figcaption><strong>Dashboard</strong>Live system metrics, service health, and IDS summary in one view.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/02-traffic.png' | relative_url }}" alt="NAT flow topology" loading="lazy">
+        <img src="{{ '/assets/screenshots/02-traffic.png' | relative_url }}" alt="AiFw NAT flow topology — per-interface pipes with throughput-scaled widths" loading="lazy" width="1200" height="700">
         <figcaption><strong>NAT flow topology</strong>Per-interface pipes with throughput-scaled widths — see exactly where traffic goes.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/03-rules.png' | relative_url }}" alt="Firewall rules editor" loading="lazy">
-        <figcaption><strong>Rules</strong>Drag to reorder, schedule by time, group by alias. IPv4 and IPv6 side by side.</figcaption>
+        <img src="{{ '/assets/screenshots/03-rules.png' | relative_url }}" alt="AiFw firewall rules editor with drag-to-reorder and time-based scheduling" loading="lazy" width="1200" height="700">
+        <figcaption><strong>Firewall rules</strong>Drag to reorder, schedule by time, group by alias. IPv4 and IPv6 side by side.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/07-ids-dashboard.png' | relative_url }}" alt="IDS/IPS dashboard" loading="lazy">
+        <img src="{{ '/assets/screenshots/07-ids-dashboard.png' | relative_url }}" alt="AiFw IDS/IPS dashboard with Suricata, Sigma, and YARA engines" loading="lazy" width="1200" height="700">
         <figcaption><strong>IDS / IPS</strong>Suricata, Sigma, and YARA engines on one pane. Classify, suppress, tune.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/13-vpn.png' | relative_url }}" alt="WireGuard VPN" loading="lazy">
+        <img src="{{ '/assets/screenshots/13-vpn.png' | relative_url }}" alt="AiFw WireGuard VPN management with auto-keypair generation and per-peer config export" loading="lazy" width="1200" height="700">
         <figcaption><strong>WireGuard</strong>Auto-keypair generation, per-peer config export, live handshake tracking.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/10-dhcp.png' | relative_url }}" alt="DHCP server" loading="lazy">
+        <img src="{{ '/assets/screenshots/10-dhcp.png' | relative_url }}" alt="AiFw DHCP server with HA failover and live lease tracking" loading="lazy" width="1200" height="700">
         <figcaption><strong>DHCP</strong>HA failover, reservations, live lease tracking. Powered by rDHCP.</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/15-reverse-proxy.png' | relative_url }}" alt="AiFw reverse proxy with HTTP, TCP, and UDP routers" loading="lazy" width="1200" height="700">
+        <figcaption><strong>Reverse proxy</strong>TrafficCop routes HTTP, TCP, and UDP. Middlewares, health checks, ACME certs.</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/14-geoip.png' | relative_url }}" alt="AiFw Geo-IP filtering with country-based block and allow rules" loading="lazy" width="1200" height="700">
+        <figcaption><strong>Geo-IP</strong>Country-based block / allow with on-disk GeoLite2 lookups.</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/16-time.png' | relative_url }}" alt="AiFw NTP and PTP time service status" loading="lazy" width="1200" height="700">
+        <figcaption><strong>Time service</strong>NTP and PTP via the rTIME companion. Drift, peer health, and stratum.</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/18-roles.png' | relative_url }}" alt="AiFw roles and permissions matrix with 37 granular RBAC permissions" loading="lazy" width="1200" height="700">
+        <figcaption><strong>Roles &amp; permissions</strong>37 granular RBAC permissions. Built-in admin / operator / viewer plus custom roles.</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/19-settings.png' | relative_url }}" alt="AiFw settings panel with TLS policy, metrics backend, and API config" loading="lazy" width="1200" height="700">
+        <figcaption><strong>Settings</strong>TLS policy, metrics backend, system tuning — all from the web UI.</figcaption>
+      </figure>
+      <figure>
+        <img src="{{ '/assets/screenshots/20-updates.png' | relative_url }}" alt="AiFw self-update workflow with one-click rollback" loading="lazy" width="1200" height="700">
+        <figcaption><strong>Self-update</strong>Update check, download, verify, install, restart. One-click rollback.</figcaption>
       </figure>
     </div>
   </div>
@@ -222,7 +274,9 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
       <div class="row"><div class="feat-name">Commit confirm (auto-rollback)</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
       <div class="row"><div class="feat-name">Modern UI stack</div><div>React/Next.js</div><div>PHP</div><div>PHP</div></div>
       <div class="row"><div class="feat-name">OpenVPN</div><div><span class="ind no">—</span></div><div><span class="ind yes">✓</span></div><div><span class="ind yes">✓</span></div></div>
-      <div class="row"><div class="feat-name">Multi-WAN load balancing</div><div><span class="ind partial">planned</span></div><div><span class="ind yes">✓</span></div><div><span class="ind yes">✓</span></div></div>
+      <div class="row"><div class="feat-name">Multi-WAN with FIB isolation</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
+      <div class="row"><div class="feat-name">OPNsense config import</div><div><span class="ind yes">✓</span></div><div><span class="ind no">n/a</span></div><div><span class="ind no">—</span></div></div>
+      <div class="row"><div class="feat-name">Built-in reverse proxy</div><div><span class="ind yes">TrafficCop</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
     </div>
     <p style="text-align: center; margin-top: 32px;">
       <a href="{{ '/compare/' | relative_url }}" class="btn btn-outline">See the full matrix →</a>
@@ -241,7 +295,7 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
 <div class="line"><span class="comment">// Workspace crates</span></div>
 <div class="line"><span class="crate">aifw-common</span>      shared types: rules, NAT, VPN, IDS, HA, geo-IP</div>
 <div class="line"><span class="crate">aifw-pf</span>          pf backend trait (ioctl on FreeBSD, mock on Linux)</div>
-<div class="line"><span class="crate">aifw-core</span>        engines: rules, NAT, VPN, HA, shaping, audit</div>
+<div class="line"><span class="crate">aifw-core</span>        engines: rules, NAT, VPN, HA, shaping, audit, multi-WAN</div>
 <div class="line"><span class="crate">aifw-ids</span>         IDS/IPS engine with Suricata + Sigma + YARA</div>
 <div class="line"><span class="crate">aifw-ai</span>          5 behavioural threat detectors</div>
 <div class="line"><span class="crate">aifw-conntrack</span>   connection tracking</div>
