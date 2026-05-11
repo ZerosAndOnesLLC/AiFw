@@ -443,8 +443,18 @@ impl PfBackend for PfIoctl {
     }
 
     async fn set_interface_fib(&self, iface: &str, fib: u32) -> Result<(), PfError> {
+        // Route through the narrow `aifw-sudo-ifconfig` helper rather
+        // than the broad `/sbin/ifconfig *` grant (#204). `aifw-pf`
+        // can't depend on `aifw-core::sudo`, so the helper path is
+        // inlined here.
+        let fib_s = fib.to_string();
         let output = Command::new("/usr/local/bin/sudo")
-            .args(["/sbin/ifconfig", iface, "fib", &fib.to_string()])
+            .args([
+                "/usr/local/libexec/aifw-sudo-ifconfig",
+                iface,
+                "fib",
+                &fib_s,
+            ])
             .output()
             .await
             .map_err(|e| PfError::Other(format!("ifconfig fib exec failed: {e}")))?;

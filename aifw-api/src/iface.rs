@@ -489,16 +489,13 @@ pub async fn configure_interface(
 
     // Handle enable/disable
     if let Some(enabled) = req.enabled {
-        if enabled {
-            let _ = sudo_cmd(&["/sbin/ifconfig", &name, "up"]).await;
-        } else {
-            let _ = sudo_cmd(&["/sbin/ifconfig", &name, "down"]).await;
-        }
+        let _ = aifw_core::sudo::ifconfig(&name, if enabled { "up" } else { "down" }, &[]).await;
     }
 
     // Handle MTU
     if let Some(mtu) = req.mtu {
-        let _ = sudo_cmd(&["/sbin/ifconfig", &name, "mtu", &mtu.to_string()]).await;
+        let mtu_s = mtu.to_string();
+        let _ = aifw_core::sudo::ifconfig(&name, "mtu", &[&mtu_s]).await;
     }
 
     // Handle IPv4 mode change
@@ -507,7 +504,7 @@ pub async fn configure_interface(
             "dhcp" => {
                 // Kill any existing dhclient, remove static address, then start dhclient
                 let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
-                let _ = sudo_cmd(&["/sbin/ifconfig", &name, "delete"]).await;
+                let _ = aifw_core::sudo::ifconfig(&name, "delete", &[]).await;
                 let _ = sudo_cmd(&["/sbin/dhclient", &name]).await;
                 // Persist
                 let _ = Command::new("/usr/local/bin/sudo")
@@ -528,20 +525,11 @@ pub async fn configure_interface(
                     // FreeBSD ifconfig won't replace — it adds aliases. Must delete first.
                     let current = get_iface_ipv4s(&name).await;
                     for old_ip in &current {
-                        let _ = Command::new("/usr/local/bin/sudo")
-                            .args(["/sbin/ifconfig", &name, "inet", old_ip, "-alias"])
-                            .output()
-                            .await;
+                        let _ = aifw_core::sudo::ifconfig(&name, "inet", &[old_ip, "-alias"]).await;
                     }
                     // Set the new static IP
-                    let _ = Command::new("/usr/local/bin/sudo")
-                        .args(["/sbin/ifconfig", &name, "inet", addr])
-                        .output()
-                        .await;
-                    let _ = Command::new("/usr/local/bin/sudo")
-                        .args(["/sbin/ifconfig", &name, "up"])
-                        .output()
-                        .await;
+                    let _ = aifw_core::sudo::ifconfig(&name, "inet", &[addr]).await;
+                    let _ = aifw_core::sudo::ifconfig(&name, "up", &[]).await;
 
                     // Persist in rc.conf
                     let _ = Command::new("/usr/local/bin/sudo")
@@ -595,7 +583,7 @@ pub async fn configure_interface(
             }
             "none" => {
                 let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
-                let _ = sudo_cmd(&["/sbin/ifconfig", &name, "delete"]).await;
+                let _ = aifw_core::sudo::ifconfig(&name, "delete", &[]).await;
                 let _ = Command::new("/usr/local/bin/sudo")
                     .args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", name)])
                     .output()
@@ -638,11 +626,11 @@ pub async fn configure_interface(
     if let Some(ref ipv6) = req.ipv6_address
         && !ipv6.is_empty()
     {
-        let _ = sudo_cmd(&["/sbin/ifconfig", &name, "inet6", ipv6]).await;
+        let _ = aifw_core::sudo::ifconfig(&name, "inet6", &[ipv6]).await;
     }
 
     if let Some(ref desc) = req.description {
-        let _ = sudo_cmd(&["/sbin/ifconfig", &name, "description", desc]).await;
+        let _ = aifw_core::sudo::ifconfig(&name, "description", &[desc]).await;
     }
 
     let summary = if msgs.is_empty() {
@@ -753,32 +741,20 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
 
         if *enabled {
             // Create if not exists
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/sbin/ifconfig", &vlan_name, "create"])
-                .output()
-                .await;
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args([
-                    "/sbin/ifconfig",
-                    &vlan_name,
-                    "vlan",
-                    &vid.to_string(),
-                    "vlandev",
-                    parent,
-                ])
-                .output()
-                .await;
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/sbin/ifconfig", &vlan_name, "mtu", &mtu.to_string()])
-                .output()
-                .await;
+            let _ = aifw_core::sudo::ifconfig(&vlan_name, "create", &[]).await;
+            let vid_s = vid.to_string();
+            let _ = aifw_core::sudo::ifconfig(
+                &vlan_name,
+                "vlan",
+                &[&vid_s, "vlandev", parent],
+            )
+            .await;
+            let mtu_s = mtu.to_string();
+            let _ = aifw_core::sudo::ifconfig(&vlan_name, "mtu", &[&mtu_s]).await;
 
             if mode == "static" {
                 if let Some(addr) = ip_addr {
-                    let _ = Command::new("/usr/local/bin/sudo")
-                        .args(["/sbin/ifconfig", &vlan_name, "inet", addr])
-                        .output()
-                        .await;
+                    let _ = aifw_core::sudo::ifconfig(&vlan_name, "inet", &[addr]).await;
                 }
             } else if mode == "dhcp" {
                 let _ = Command::new("/usr/local/bin/sudo")
@@ -786,10 +762,7 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
                     .output()
                     .await;
             }
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/sbin/ifconfig", &vlan_name, "up"])
-                .output()
-                .await;
+            let _ = aifw_core::sudo::ifconfig(&vlan_name, "up", &[]).await;
 
             // Persist in rc.conf
             let _ = Command::new("/usr/local/bin/sudo")
@@ -809,10 +782,7 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
                 .output()
                 .await;
         } else {
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/sbin/ifconfig", &vlan_name, "down"])
-                .output()
-                .await;
+            let _ = aifw_core::sudo::ifconfig(&vlan_name, "down", &[]).await;
         }
     }
 
@@ -829,10 +799,7 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
         .collect();
     for iface in iface_list.split_whitespace() {
         if iface.starts_with("vlan") && !db_vlan_names.contains(&iface.to_string()) {
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/sbin/ifconfig", iface, "destroy"])
-                .output()
-                .await;
+            let _ = aifw_core::sudo::ifconfig(iface, "destroy", &[]).await;
             let _ = Command::new("/usr/local/bin/sudo")
                 .args(["/usr/sbin/sysrc", "-x", &format!("ifconfig_{}", iface)])
                 .output()

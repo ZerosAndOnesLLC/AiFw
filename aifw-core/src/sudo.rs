@@ -20,6 +20,7 @@ const HELPER_FREEBSD_UPDATE: &str = "/usr/local/libexec/aifw-sudo-freebsd-update
 const HELPER_PKG: &str = "/usr/local/libexec/aifw-sudo-pkg";
 const HELPER_SERVICE: &str = "/usr/local/libexec/aifw-sudo-service";
 const HELPER_CHOWN: &str = "/usr/local/libexec/aifw-sudo-chown";
+const HELPER_IFCONFIG: &str = "/usr/local/libexec/aifw-sudo-ifconfig";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -129,4 +130,22 @@ pub async fn chown_r(owner_group: &str, path: &str) -> std::io::Result<std::proc
         .args([HELPER_CHOWN, "-R", owner_group, path])
         .output()
         .await
+}
+
+/// Run `ifconfig <iface> <action> [args...]` as root via the
+/// `aifw-sudo-ifconfig` helper.
+///
+/// The helper validates the iface name (alnum/dot/underscore, ≤16
+/// chars, no flag-shape) and constrains `action` to a closed set:
+/// `up`/`down`/`delete`/`destroy`/`create` (no-arg), `mtu`/`fib`
+/// (numeric arg), `inet` (1–2 args), `inet6` (one arg), `description`
+/// (≤128 chars), and `vlan <id> vlandev <parent>`.
+pub async fn ifconfig(
+    iface: &str,
+    action: &str,
+    extra_args: &[&str],
+) -> std::io::Result<std::process::Output> {
+    let mut args: Vec<&str> = vec![HELPER_IFCONFIG, iface, action];
+    args.extend_from_slice(extra_args);
+    Command::new(SUDO).args(&args).output().await
 }

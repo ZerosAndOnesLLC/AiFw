@@ -382,6 +382,10 @@ pub async fn install_from_path(
     // the narrow `aifw-sudo-chown *` helper (#204). Idempotent.
     ensure_sudoers_chown_helper().await;
 
+    // Migrate ifconfig sudoers grant from the broad `/sbin/ifconfig *`
+    // to the narrow `aifw-sudo-ifconfig *` helper (#204). Idempotent.
+    ensure_sudoers_ifconfig_helper().await;
+
     // Ensure /usr/sbin/daemon is in sudoers. Without it, the detached
     // restart driver in restart_services() spawns sudo, sudo refuses
     // for lack of NOPASSWD, and we silently skip the bounce — leaving
@@ -1112,6 +1116,67 @@ pub async fn ensure_sudoers_chown_helper() {
             "sudoers chown-helper migration install failed"
         ),
         Err(e) => warn!(error = %e, "sudoers chown-helper migration errored"),
+    }
+}
+
+/// Migrate sudoers from the broad `/sbin/ifconfig *` grant to the
+/// narrow `aifw-sudo-ifconfig` helper (#204). Idempotent.
+pub async fn ensure_sudoers_ifconfig_helper() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+
+    let helper_marker = "/usr/local/libexec/aifw-sudo-ifconfig";
+    let direct_substr = "/sbin/ifconfig *";
+
+    let needs_helper = !content.contains(helper_marker);
+    let needs_strip = content.contains(direct_substr);
+    if !needs_helper && !needs_strip {
+        return;
+    }
+
+    let mut patched: String = content
+        .lines()
+        .filter(|line| !line.contains(direct_substr))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    if needs_helper {
+        patched.push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-ifconfig *\n");
+    }
+
+    let stage = "/tmp/aifw-sudoers-ifconfig-helper-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers ifconfig-helper patch");
+        return;
+    }
+    let result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/bin/install",
+            "-m",
+            "440",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            stage,
+            path,
+        ])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!("migrated sudoers: dropped /sbin/ifconfig, added aifw-sudo-ifconfig helper grant")
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers ifconfig-helper migration install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers ifconfig-helper migration errored"),
     }
 }
 
