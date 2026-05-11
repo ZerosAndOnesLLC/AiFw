@@ -1,0 +1,82 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-sysrc [-x|-n] <key[=value]>
+#
+# Narrow-grant wrapper around /usr/sbin/sysrc (#204). Restricts the
+# `aifw` user to writing only AiFw-managed rcvars, with key-name
+# validation that rejects shell metacharacters.
+#
+# Supported forms:
+#   aifw-sudo-sysrc <key>=<value>    — set rcvar
+#   aifw-sudo-sysrc -x <key>         — unset rcvar
+#   aifw-sudo-sysrc -n <key>         — print value (read-only)
+#
+# Pre-fix `sysrc` had a broad sudoers grant that let a compromised
+# daemon write arbitrary rcvars, e.g. `sudo sysrc ifconfig_em0=...` to
+# hijack network configuration outside the AiFw-managed set.
+
+set -eu
+
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    echo "usage: $0 [-x|-n] <key[=value]>" >&2
+    exit 2
+fi
+
+FLAG=""
+ARG=""
+if [ $# -eq 2 ]; then
+    case "$1" in
+        -x|-n) FLAG="$1"; ARG="$2" ;;
+        *)
+            echo "aifw-sudo-sysrc: first arg must be -x or -n: $1" >&2
+            exit 1 ;;
+    esac
+else
+    ARG="$1"
+fi
+
+# Extract KEY from KEY[=VALUE].
+KEY="${ARG%%=*}"
+
+# -x and -n take a bare key — no =value.
+if [ -n "$FLAG" ] && [ "${ARG#*=}" != "$ARG" ]; then
+    echo "aifw-sudo-sysrc: -x and -n take a bare key, no =value: $ARG" >&2
+    exit 1
+fi
+
+# Key character validation: alphanumeric + underscore only.
+case "$KEY" in
+    ""|*[^A-Za-z0-9_]*)
+        echo "aifw-sudo-sysrc: invalid key (alnum + underscore only): $KEY" >&2
+        exit 1 ;;
+esac
+
+# Key allowlist — only rcvars AiFw legitimately manages.
+case "$KEY" in
+    # System basics AiFw sets via system-settings UI
+    hostname|defaultrouter|sshd_enable) ;;
+
+    # AiFw service rcvars (aifw_daemon_enable, aifw_api_enable, etc.)
+    aifw_cluster_enabled) ;;
+    aifw_daemon_enable|aifw_api_enable|aifw_ids_enable|aifw_watchdog_enable) ;;
+    aifw_carp_demote_enable|aifw_demote_on_shutdown_enable) ;;
+
+    # Companion service rcvars
+    rdhcpd_enable|rdns_enable|rtime_enable|trafficcop_enable) ;;
+    local_unbound_enable|unbound_enable) ;;
+
+    # Interface configuration (ifconfig_<iface>, ifconfig_<iface>_<n>)
+    ifconfig_*) ;;
+
+    # VLAN child list per parent interface (vlans_<parent>)
+    vlans_*) ;;
+
+    *)
+        echo "aifw-sudo-sysrc: key not in allowlist: $KEY" >&2
+        exit 1 ;;
+esac
+
+if [ -n "$FLAG" ]; then
+    exec /usr/sbin/sysrc "$FLAG" "$KEY"
+else
+    exec /usr/sbin/sysrc "$ARG"
+fi

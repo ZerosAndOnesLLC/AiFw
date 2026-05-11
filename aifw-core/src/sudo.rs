@@ -22,6 +22,7 @@ const HELPER_SERVICE: &str = "/usr/local/libexec/aifw-sudo-service";
 const HELPER_CHOWN: &str = "/usr/local/libexec/aifw-sudo-chown";
 const HELPER_IFCONFIG: &str = "/usr/local/libexec/aifw-sudo-ifconfig";
 const HELPER_INSTALL: &str = "/usr/local/libexec/aifw-sudo-install";
+const HELPER_SYSRC: &str = "/usr/local/libexec/aifw-sudo-sysrc";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -159,6 +160,20 @@ pub async fn ifconfig(
 /// AiFw-managed prefixes), MODE (`0440`/`0600`/`0644`/`0755`), and
 /// OWNER/GROUP (root, aifw, rdns, unbound, nginx, www / wheel, aifw,
 /// rdns, unbound, nginx, www). Pass `None` for any unwanted field.
+/// Set or unset an `/etc/rc.conf` variable as root via the
+/// `aifw-sudo-sysrc` helper.
+///
+/// The helper restricts which rcvars `aifw` may touch (AiFw service
+/// `*_enable` rcvars, `ifconfig_*`, `vlans_*`, `hostname`,
+/// `defaultrouter`, etc.) and rejects keys with shell metacharacters.
+/// Pass `["KEY=VALUE"]` to set, `["-x", "KEY"]` to unset, `["-n",
+/// "KEY"]` to read (though reads don't actually need root).
+pub async fn sysrc(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut full: Vec<&str> = vec![HELPER_SYSRC];
+    full.extend_from_slice(args);
+    Command::new(SUDO).args(&full).output().await
+}
+
 pub async fn install(
     mode: Option<&str>,
     owner: Option<&str>,

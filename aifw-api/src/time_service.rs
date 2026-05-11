@@ -5,7 +5,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
-use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -441,10 +440,7 @@ pub async fn delete_source(
 
 async fn run_service(action: &str) -> Json<MessageResponse> {
     if action == "start" || action == "restart" {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", "rtime_enable=YES"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::sysrc(&["rtime_enable=YES"]).await;
     }
     let output = aifw_core::sudo::service("rtime", action).await;
     match output {
@@ -542,10 +538,7 @@ pub async fn apply_config(
     let _ = aifw_core::sudo::chown_r("aifw:aifw", "/var/log/rtime").await;
 
     if config.enabled {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", "rtime_enable=YES"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::sysrc(&["rtime_enable=YES"]).await;
         let _ = aifw_core::sudo::service("rtime", "restart").await;
 
         Ok(Json(MessageResponse {
@@ -553,10 +546,7 @@ pub async fn apply_config(
         }))
     } else {
         let _ = aifw_core::sudo::service("rtime", "stop").await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/usr/sbin/sysrc", "rtime_enable=NO"])
-            .output()
-            .await;
+        let _ = aifw_core::sudo::sysrc(&["rtime_enable=NO"]).await;
         Ok(Json(MessageResponse {
             message: "Time config saved, rTime stopped".to_string(),
         }))
