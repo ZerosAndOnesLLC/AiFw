@@ -1,0 +1,159 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-install [-m MODE] [-o OWNER] [-g GROUP] SRC DEST
+#
+# Narrow-grant wrapper around /usr/bin/install (#204). Replaces the
+# broad `/usr/bin/install *` sudoers grant so a compromised `aifw`
+# daemon can't `sudo install /tmp/cert.pem /root/.ssh/authorized_keys`
+# itself into a root shell.
+#
+# Enforcement:
+#  - SRC must be in /tmp or /usr/share/zoneinfo (staging dirs aifw owns).
+#  - DEST must be on the closed allowlist (specific files + prefix
+#    patterns for AiFw-managed paths).
+#  - MODE must be a standard install mode (0440/0600/0644/0755).
+#  - OWNER/GROUP must be a known AiFw-managed identity.
+#  - Only -m / -o / -g flags are supported; everything else is denied.
+#
+# Adding a new managed destination requires editing this script.
+
+set -eu
+
+MODE=""
+OWNER=""
+GROUP=""
+SRC=""
+DEST=""
+
+# Parse args.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -m)
+            [ $# -lt 2 ] && { echo "aifw-sudo-install: -m needs a value" >&2; exit 1; }
+            MODE="$2"; shift 2 ;;
+        -o)
+            [ $# -lt 2 ] && { echo "aifw-sudo-install: -o needs a value" >&2; exit 1; }
+            OWNER="$2"; shift 2 ;;
+        -g)
+            [ $# -lt 2 ] && { echo "aifw-sudo-install: -g needs a value" >&2; exit 1; }
+            GROUP="$2"; shift 2 ;;
+        -*)
+            echo "aifw-sudo-install: unsupported flag: $1" >&2
+            exit 1 ;;
+        *)
+            if [ -z "$SRC" ]; then SRC="$1"
+            elif [ -z "$DEST" ]; then DEST="$1"
+            else
+                echo "aifw-sudo-install: too many positional args" >&2
+                exit 1
+            fi
+            shift ;;
+    esac
+done
+
+if [ -z "$SRC" ] || [ -z "$DEST" ]; then
+    echo "usage: $0 [-m MODE] [-o OWNER] [-g GROUP] SRC DEST" >&2
+    exit 2
+fi
+
+# Mode allowlist (only standard install modes).
+case "$MODE" in
+    ""|0440|440|0600|600|0644|644|0755|755) ;;
+    *)
+        echo "aifw-sudo-install: mode not allowed: $MODE" >&2
+        exit 1 ;;
+esac
+
+# Owner allowlist.
+case "$OWNER" in
+    ""|root|aifw|rdns|unbound|nginx|www) ;;
+    *)
+        echo "aifw-sudo-install: owner not allowed: $OWNER" >&2
+        exit 1 ;;
+esac
+
+# Group allowlist.
+case "$GROUP" in
+    ""|wheel|aifw|rdns|unbound|nginx|www) ;;
+    *)
+        echo "aifw-sudo-install: group not allowed: $GROUP" >&2
+        exit 1 ;;
+esac
+
+# Reject path traversal in either side.
+case "$SRC$DEST" in
+    *..*|*//*)
+        echo "aifw-sudo-install: '..' or '//' not allowed" >&2
+        exit 1 ;;
+esac
+
+# Source must be under one of: /tmp (staging), /usr/share/zoneinfo
+# (timezone files installed into /etc/localtime), or
+# /usr/local/share/aifw/backup (rollback path that restores from the
+# pre-upgrade snapshot).
+case "$SRC" in
+    /tmp/*) ;;
+    /usr/share/zoneinfo/*) ;;
+    /usr/local/share/aifw/backup/*) ;;
+    *)
+        echo "aifw-sudo-install: source not allowed: $SRC" >&2
+        exit 1 ;;
+esac
+
+# Destination: closed allowlist. Keep these tightly scoped — any pattern
+# wider than `path/*` is the difference between this helper and the old
+# `sudo install *` grant.
+case "$DEST" in
+    # AiFw-managed configuration files
+    /usr/local/etc/sudoers.d/aifw) ;;
+    /usr/local/etc/aifw/pf-tuning.conf) ;;
+    /usr/local/etc/aifw/anchors/aifw|/usr/local/etc/aifw/anchors/aifw*) ;;
+    /usr/local/etc/aifw/tls/*) ;;
+    /usr/local/etc/aifw/*) ;;
+
+    # AiFw binaries (root-owned)
+    /usr/local/sbin/aifw|/usr/local/sbin/aifw-*) ;;
+    /usr/local/sbin/rdhcpd|/usr/local/sbin/rdns|/usr/local/sbin/rdns-control) ;;
+    /usr/local/sbin/rtime|/usr/local/sbin/trafficcop) ;;
+
+    # rc.d scripts
+    /usr/local/etc/rc.d/aifw_*) ;;
+    /usr/local/etc/rc.d/rdhcpd|/usr/local/etc/rc.d/rdns) ;;
+    /usr/local/etc/rc.d/rtime|/usr/local/etc/rc.d/trafficcop) ;;
+
+    # libexec helper scripts (including the aifw-sudo-* wrappers themselves)
+    /usr/local/libexec/aifw-*) ;;
+
+    # Companion service config + data
+    /usr/local/etc/rdns/zones/*|/usr/local/etc/rdns/rpz/*) ;;
+    /usr/local/etc/rdhcpd/*) ;;
+    /usr/local/etc/rtime/*) ;;
+    /usr/local/etc/trafficcop/*) ;;
+    /usr/local/etc/nginx/*) ;;
+    /usr/local/etc/traefik/*) ;;
+    /usr/local/etc/haproxy/*) ;;
+    /usr/local/etc/ssl/*) ;;
+    /etc/ssl/*) ;;
+    /var/unbound/*) ;;
+
+    # System-settings opt-in writes (system_apply path)
+    /etc/hosts) ;;
+    /etc/resolv.conf) ;;
+    /etc/localtime) ;;
+    /var/db/zoneinfo) ;;
+    /etc/issue) ;;
+    /etc/motd.template) ;;
+    /etc/ssh/sshd_config) ;;
+    /boot/loader.conf) ;;
+
+    *)
+        echo "aifw-sudo-install: destination not allowed: $DEST" >&2
+        exit 1 ;;
+esac
+
+# Rebuild the install argv (now validated) and exec.
+set -- "$SRC" "$DEST"
+[ -n "$GROUP" ] && set -- -g "$GROUP" "$@"
+[ -n "$OWNER" ] && set -- -o "$OWNER" "$@"
+[ -n "$MODE" ] && set -- -m "$MODE" "$@"
+
+exec /usr/bin/install "$@"

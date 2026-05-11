@@ -138,27 +138,19 @@ async fn sudo_install_string(
         .await
         .map_err(|e| format!("stage tmp: {e}"))?;
 
-    let mut args: Vec<String> = vec!["/usr/bin/install".into(), "-m".into(), mode.into()];
-    if let Some(o) = owner {
-        // install(1): -o user, -g group. Accept "user:group" by splitting.
-        let mut parts = o.splitn(2, ':');
-        let u = parts.next().unwrap_or("").to_string();
-        let g = parts.next().map(|s| s.to_string());
-        if !u.is_empty() {
-            args.push("-o".into());
-            args.push(u);
+    // Parse "user:group" form into separate owner/group args. The
+    // `aifw-sudo-install` helper enforces allowlists on both (#204).
+    let (owner_user, owner_group) = match owner {
+        Some(o) => {
+            let mut parts = o.splitn(2, ':');
+            let u = parts.next().filter(|s| !s.is_empty());
+            let g = parts.next();
+            (u, g)
         }
-        if let Some(g) = g {
-            args.push("-g".into());
-            args.push(g);
-        }
-    }
-    args.push(tmp.clone());
-    args.push(dest.to_string());
+        None => (None, None),
+    };
 
-    let out = Command::new(SUDO)
-        .args(&args)
-        .output()
+    let out = crate::sudo::install(Some(mode), owner_user, owner_group, &tmp, dest)
         .await
         .map_err(|e| format!("spawn sudo install: {e}"))?;
     let _ = tokio::fs::remove_file(&tmp).await;

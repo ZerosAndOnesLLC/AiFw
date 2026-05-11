@@ -316,9 +316,7 @@ pub async fn install_from_path(
                 None => continue,
             };
             let dst = format!("{}/{}", BIN_DIR, name);
-            let output = Command::new("/usr/local/bin/sudo")
-                .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
-                .output()
+            let output = crate::sudo::install(Some("755"), None, None, src.to_str().unwrap(), &dst)
                 .await
                 .map_err(|e| UpdaterError::Install(format!("Failed to install {}: {}", name, e)))?;
             if !output.status.success() {
@@ -358,6 +356,16 @@ pub async fn install_from_path(
             )));
         }
     }
+
+    // Migrate install sudoers grant from the broad `/usr/bin/install *`
+    // to the narrow `aifw-sudo-install *` helper (#204). MUST run before
+    // the other helper migrators because they use `crate::sudo::install`
+    // (which goes through the helper) to write their patched sudoers.
+    // The install migrator itself bootstraps via raw `sudo install`
+    // because it can't depend on the helper grant it's adding.
+    // Two-phase: first run adds the helper grant (broad grant stays),
+    // second run strips the broad grant.
+    ensure_sudoers_install_helper().await;
 
     // Migrate wg sudoers grant. Older installs may have nothing (was added
     // ad-hoc post-install) or the broad `/usr/bin/wg *` grant; both are
@@ -428,9 +436,7 @@ pub async fn install_from_path(
                     None => continue,
                 };
                 let dst = format!("/usr/local/etc/rc.d/{}", name);
-                let _ = Command::new("/usr/local/bin/sudo")
-                    .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
-                    .output()
+                let _ = crate::sudo::install(Some("755"), None, None, src.to_str().unwrap(), &dst)
                     .await;
             }
         }
@@ -458,9 +464,7 @@ pub async fn install_from_path(
                     None => continue,
                 };
                 let dst = format!("/usr/local/libexec/{}", name);
-                let _ = Command::new("/usr/local/bin/sudo")
-                    .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
-                    .output()
+                let _ = crate::sudo::install(Some("755"), None, None, src.to_str().unwrap(), &dst)
                     .await;
             }
         }
@@ -482,9 +486,7 @@ pub async fn install_from_path(
                     None => continue,
                 };
                 let dst = format!("{}/{}", BIN_DIR, name);
-                let _ = Command::new("/usr/local/bin/sudo")
-                    .args(["/usr/bin/install", "-m", "755", src.to_str().unwrap(), &dst])
-                    .output()
+                let _ = crate::sudo::install(Some("755"), None, None, src.to_str().unwrap(), &dst)
                     .await;
             }
         }
@@ -664,10 +666,7 @@ async fn write_embedded_script(name: &str, content: &str) {
         .args(["/bin/mkdir", "-p", "/usr/local/libexec"])
         .output()
         .await;
-    let result = Command::new("/usr/local/bin/sudo")
-        .args(["/usr/bin/install", "-m", "755", &tmp, &path])
-        .output()
-        .await;
+    let result = crate::sudo::install(Some("755"), None, None, &tmp, &path).await;
     let _ = tokio::fs::remove_file(&tmp).await;
     match result {
         Ok(o) if o.status.success() => info!(name, "libexec script bootstrapped"),
@@ -686,7 +685,7 @@ async fn write_embedded_script(name: &str, content: &str) {
 /// The sudoers file is `r--r----- root:wheel`, so a direct `fs::write`
 /// from the aifw user (under whom aifw-api runs) silently fails. We
 /// stage the new content in /tmp and re-install via `sudo install` —
-/// /usr/bin/install is already in the existing sudoers entries.
+/// `aifw-sudo-install` is already in the sudoers entries (#204).
 pub async fn ensure_sudoers_daemon() {
     let path = "/usr/local/etc/sudoers.d/aifw";
     let Ok(content) = tokio::fs::read_to_string(path).await else {
@@ -706,20 +705,7 @@ pub async fn ensure_sudoers_daemon() {
         warn!("failed to stage sudoers patch");
         return;
     }
-    let result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/bin/install",
-            "-m",
-            "440",
-            "-o",
-            "root",
-            "-g",
-            "wheel",
-            stage,
-            path,
-        ])
-        .output()
-        .await;
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
@@ -777,20 +763,7 @@ pub async fn ensure_sudoers_write_helper() {
         warn!("failed to stage sudoers write-helper patch");
         return;
     }
-    let result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/bin/install",
-            "-m",
-            "440",
-            "-o",
-            "root",
-            "-g",
-            "wheel",
-            stage,
-            path,
-        ])
-        .output()
-        .await;
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
@@ -841,20 +814,7 @@ pub async fn ensure_sudoers_wg_helper() {
         warn!("failed to stage sudoers wg-helper patch");
         return;
     }
-    let result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/bin/install",
-            "-m",
-            "440",
-            "-o",
-            "root",
-            "-g",
-            "wheel",
-            stage,
-            path,
-        ])
-        .output()
-        .await;
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
@@ -905,20 +865,7 @@ pub async fn ensure_sudoers_freebsd_update_helper() {
         warn!("failed to stage sudoers freebsd-update-helper patch");
         return;
     }
-    let result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/bin/install",
-            "-m",
-            "440",
-            "-o",
-            "root",
-            "-g",
-            "wheel",
-            stage,
-            path,
-        ])
-        .output()
-        .await;
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
@@ -968,20 +915,7 @@ pub async fn ensure_sudoers_pkg_helper() {
         warn!("failed to stage sudoers pkg-helper patch");
         return;
     }
-    let result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/bin/install",
-            "-m",
-            "440",
-            "-o",
-            "root",
-            "-g",
-            "wheel",
-            stage,
-            path,
-        ])
-        .output()
-        .await;
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
@@ -1029,20 +963,7 @@ pub async fn ensure_sudoers_service_helper() {
         warn!("failed to stage sudoers service-helper patch");
         return;
     }
-    let result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/bin/install",
-            "-m",
-            "440",
-            "-o",
-            "root",
-            "-g",
-            "wheel",
-            stage,
-            path,
-        ])
-        .output()
-        .await;
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
@@ -1092,20 +1013,7 @@ pub async fn ensure_sudoers_chown_helper() {
         warn!("failed to stage sudoers chown-helper patch");
         return;
     }
-    let result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/usr/bin/install",
-            "-m",
-            "440",
-            "-o",
-            "root",
-            "-g",
-            "wheel",
-            stage,
-            path,
-        ])
-        .output()
-        .await;
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
@@ -1153,6 +1061,71 @@ pub async fn ensure_sudoers_ifconfig_helper() {
         warn!("failed to stage sudoers ifconfig-helper patch");
         return;
     }
+    let result = crate::sudo::install(Some("440"), Some("root"), Some("wheel"), stage, path).await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!("migrated sudoers: dropped /sbin/ifconfig, added aifw-sudo-ifconfig helper grant")
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers ifconfig-helper migration install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers ifconfig-helper migration errored"),
+    }
+}
+
+/// Migrate sudoers from the broad `/usr/bin/install *` grant to the
+/// narrow `aifw-sudo-install` helper (#204). Idempotent.
+///
+/// Special care: this migrator itself uses `sudo install` to update
+/// `/usr/local/etc/sudoers.d/aifw`. It writes a sudoers patch that
+/// includes BOTH the old `/usr/bin/install *` grant AND the new helper
+/// grant first, then on the *next* call (or update cycle) strips the
+/// old grant. Trying to drop both in one shot would brick the very
+/// command used to write the file.
+pub async fn ensure_sudoers_install_helper() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+
+    let helper_marker = "/usr/local/libexec/aifw-sudo-install";
+    let direct_substr = "/usr/bin/install *";
+
+    let needs_helper = !content.contains(helper_marker);
+    let needs_strip = content.contains(direct_substr);
+    if !needs_helper && !needs_strip {
+        return;
+    }
+
+    // Two-phase migration so the install grant we depend on stays
+    // available until the helper grant is in place.
+    let mut patched: String;
+    if needs_helper {
+        // Phase 1: add helper grant; KEEP `/usr/bin/install *` for now.
+        patched = content.clone();
+        if !patched.ends_with('\n') {
+            patched.push('\n');
+        }
+        patched.push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *\n");
+    } else {
+        // Phase 2: helper grant exists, strip the broad install grant.
+        patched = content
+            .lines()
+            .filter(|line| !line.contains(direct_substr))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !patched.ends_with('\n') {
+            patched.push('\n');
+        }
+    }
+
+    let stage = "/tmp/aifw-sudoers-install-helper-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers install-helper patch");
+        return;
+    }
     let result = Command::new("/usr/local/bin/sudo")
         .args([
             "/usr/bin/install",
@@ -1170,13 +1143,17 @@ pub async fn ensure_sudoers_ifconfig_helper() {
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
-            info!("migrated sudoers: dropped /sbin/ifconfig, added aifw-sudo-ifconfig helper grant")
+            if needs_helper {
+                info!("migrated sudoers (phase 1/2): added aifw-sudo-install helper grant");
+            } else {
+                info!("migrated sudoers (phase 2/2): dropped /usr/bin/install");
+            }
         }
         Ok(o) => warn!(
             stderr = %String::from_utf8_lossy(&o.stderr),
-            "sudoers ifconfig-helper migration install failed"
+            "sudoers install-helper migration install failed"
         ),
-        Err(e) => warn!(error = %e, "sudoers ifconfig-helper migration errored"),
+        Err(e) => warn!(error = %e, "sudoers install-helper migration errored"),
     }
 }
 
@@ -1341,10 +1318,7 @@ pub async fn rollback() -> Result<String, UpdaterError> {
         let src = format!("{}/bin/{}", BACKUP_DIR, bin);
         if std::path::Path::new(&src).exists() {
             let dst = format!("{}/{}", BIN_DIR, bin);
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/usr/bin/install", "-m", "755", &src, &dst])
-                .output()
-                .await;
+            let _ = crate::sudo::install(Some("755"), None, None, &src, &dst).await;
         }
     }
 
@@ -1354,10 +1328,7 @@ pub async fn rollback() -> Result<String, UpdaterError> {
         let src = format!("{}/rc.d/{}", BACKUP_DIR, script);
         if std::path::Path::new(&src).exists() {
             let dst = format!("/usr/local/etc/rc.d/{}", script);
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args(["/usr/bin/install", "-m", "755", &src, &dst])
-                .output()
-                .await;
+            let _ = crate::sudo::install(Some("755"), None, None, &src, &dst).await;
         }
     }
 
