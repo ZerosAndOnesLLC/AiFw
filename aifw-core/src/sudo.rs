@@ -19,6 +19,7 @@ const HELPER_WG: &str = "/usr/local/libexec/aifw-sudo-wg";
 const HELPER_FREEBSD_UPDATE: &str = "/usr/local/libexec/aifw-sudo-freebsd-update";
 const HELPER_PKG: &str = "/usr/local/libexec/aifw-sudo-pkg";
 const HELPER_SERVICE: &str = "/usr/local/libexec/aifw-sudo-service";
+const HELPER_CHOWN: &str = "/usr/local/libexec/aifw-sudo-chown";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -113,6 +114,19 @@ pub async fn pkg(action: &str, extra_args: &[&str]) -> std::io::Result<std::proc
 pub async fn service(name: &str, action: &str) -> std::io::Result<std::process::Output> {
     Command::new(SUDO)
         .args([HELPER_SERVICE, name, action])
+        .output()
+        .await
+}
+
+/// Recursively change ownership of `path` to `owner_group` (e.g.
+/// `"aifw:aifw"`), as root, via the `aifw-sudo-chown` helper.
+///
+/// The helper enforces closed allowlists for both `owner_group` and
+/// `path`. Only the `-R` form is exposed; adding a new managed
+/// directory requires editing the helper script.
+pub async fn chown_r(owner_group: &str, path: &str) -> std::io::Result<std::process::Output> {
+    Command::new(SUDO)
+        .args([HELPER_CHOWN, "-R", owner_group, path])
         .output()
         .await
 }

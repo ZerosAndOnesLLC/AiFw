@@ -538,14 +538,8 @@ pub async fn apply_config(
         .await
         .map_err(|_| internal())?;
 
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["chown", "-R", "aifw:aifw", "/usr/local/etc/rtime"])
-        .output()
-        .await;
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["chown", "-R", "aifw:aifw", "/var/log/rtime"])
-        .output()
-        .await;
+    let _ = aifw_core::sudo::chown_r("aifw:aifw", "/usr/local/etc/rtime").await;
+    let _ = aifw_core::sudo::chown_r("aifw:aifw", "/var/log/rtime").await;
 
     if config.enabled {
         let _ = Command::new("/usr/local/bin/sudo")

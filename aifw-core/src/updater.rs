@@ -378,6 +378,10 @@ pub async fn install_from_path(
     // to the narrow `aifw-sudo-service *` helper (#204). Idempotent.
     ensure_sudoers_service_helper().await;
 
+    // Migrate chown sudoers grant from the broad `/usr/sbin/chown *` to
+    // the narrow `aifw-sudo-chown *` helper (#204). Idempotent.
+    ensure_sudoers_chown_helper().await;
+
     // Ensure /usr/sbin/daemon is in sudoers. Without it, the detached
     // restart driver in restart_services() spawns sudo, sudo refuses
     // for lack of NOPASSWD, and we silently skip the bounce — leaving
@@ -1047,6 +1051,67 @@ pub async fn ensure_sudoers_service_helper() {
             "sudoers service-helper migration install failed"
         ),
         Err(e) => warn!(error = %e, "sudoers service-helper migration errored"),
+    }
+}
+
+/// Migrate sudoers from the broad `/usr/sbin/chown *` grant to the
+/// narrow `aifw-sudo-chown` helper (#204). Idempotent.
+pub async fn ensure_sudoers_chown_helper() {
+    let path = "/usr/local/etc/sudoers.d/aifw";
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return;
+    };
+
+    let helper_marker = "/usr/local/libexec/aifw-sudo-chown";
+    let direct_substr = "/usr/sbin/chown *";
+
+    let needs_helper = !content.contains(helper_marker);
+    let needs_strip = content.contains(direct_substr);
+    if !needs_helper && !needs_strip {
+        return;
+    }
+
+    let mut patched: String = content
+        .lines()
+        .filter(|line| !line.contains(direct_substr))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !patched.ends_with('\n') {
+        patched.push('\n');
+    }
+    if needs_helper {
+        patched.push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-chown *\n");
+    }
+
+    let stage = "/tmp/aifw-sudoers-chown-helper-patch";
+    if tokio::fs::write(stage, &patched).await.is_err() {
+        warn!("failed to stage sudoers chown-helper patch");
+        return;
+    }
+    let result = Command::new("/usr/local/bin/sudo")
+        .args([
+            "/usr/bin/install",
+            "-m",
+            "440",
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            stage,
+            path,
+        ])
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(stage).await;
+    match result {
+        Ok(o) if o.status.success() => {
+            info!("migrated sudoers: dropped /usr/sbin/chown, added aifw-sudo-chown helper grant")
+        }
+        Ok(o) => warn!(
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "sudoers chown-helper migration install failed"
+        ),
+        Err(e) => warn!(error = %e, "sudoers chown-helper migration errored"),
     }
 }
 
