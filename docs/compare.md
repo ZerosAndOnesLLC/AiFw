@@ -117,7 +117,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>RADIUS</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>OAuth / SSO</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
 <tr><td>API keys</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">community</td></tr>
-<tr><td>RBAC (granular perms)</td><td class="yes">34 perms</td><td class="yes">ACL</td><td class="partial">user/group</td></tr>
+<tr><td>RBAC (granular perms)</td><td class="yes">37 perms</td><td class="yes">ACL</td><td class="partial">user/group</td></tr>
 
 <tr class="section-row"><td colspan="4">Plugins & extensibility</td></tr>
 <tr><td>Package/plugin system</td><td class="partial">beta</td><td class="yes">✓</td><td class="yes">✓</td></tr>

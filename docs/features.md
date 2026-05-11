@@ -8,6 +8,33 @@ breadcrumb:
   - { title: "Features", url: "/features/" }
 ---
 
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "AiFw",
+  "description": "AiFw is an open-source AI-powered firewall for FreeBSD with WireGuard, IPsec, IDS/IPS, multi-WAN, HA clustering, and a modern web dashboard.",
+  "url": "https://aifw.zerosandones.us/features/",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "FreeBSD",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+  "featureList": [
+    "Stateful packet filtering via FreeBSD pf",
+    "WireGuard and IPsec VPN",
+    "Suricata IDS/IPS with Sigma and YARA rules",
+    "Multi-WAN with FIB isolation, SLA-driven failover, leak detection",
+    "HA clustering with CARP",
+    "NAT including SNAT, DNAT, 1:1, NAT64, NAT46",
+    "Geo-IP filtering",
+    "DNS resolver and DHCP server",
+    "OPNsense configuration importer",
+    "REST API with 300+ routes and RBAC",
+    "React-based web dashboard"
+  ],
+  "license": "https://opensource.org/licenses/MIT"
+}
+</script>
+
 <div class="content-page">
 <article markdown="1">
 
@@ -160,13 +187,13 @@ See the [reverse proxy guide]({{ '/docs/reverse-proxy/' | relative_url }}) for s
 
 - **Local users** with bcrypt password hashing
 - **TOTP 2FA** with recovery codes
-- **OAuth / SSO** — first-class auth method, not a plugin. Built-in providers for Google, GitHub, generic OIDC. See the [auth &amp; RBAC guide]({{ '/docs/auth/' | relative_url }}) for setup, the full 34-permission RBAC matrix, and TOTP / API-key flows.
+- **OAuth / SSO** — first-class auth method, not a plugin. Built-in providers for Google, GitHub, generic OIDC. See the [auth &amp; RBAC guide]({{ '/docs/auth/' | relative_url }}) for setup, the full 37-permission RBAC matrix, and TOTP / API-key flows.
 - **API keys** for programmatic access
 - **JWT token sessions** with refresh tokens
 
 ## Authorization — RBAC
 
-34 granular permissions including:
+37 granular permissions including:
 
 `dashboard:view` · `rules:read/write` · `nat:read/write` · `vpn:read/write` · `geoip:read/write` · `ids:read/write` · `dns:read/write` · `dhcp:read/write` · `aliases:read/write` · `interfaces:read/write` · `connections:view` · `logs:view` · `users:read/write` · `settings:read/write` · `plugins:read/write` · `updates:read/install` · `backup:read/write` · `system:reboot` · `proxy:read/write`
 

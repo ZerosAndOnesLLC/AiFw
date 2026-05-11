@@ -1,7 +1,8 @@
 ---
 layout: default
 title: AiFw — AI-Powered Open-Source Firewall for FreeBSD
-description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with Suricata, Sigma, and YARA rules. WireGuard, IPsec, HA clustering, 257-route REST API, and a React dashboard. MIT licensed.
+description: Modern firewall for FreeBSD written in Rust. WireGuard, IPsec, IDS/IPS with Suricata/Sigma/YARA, multi-WAN with SLA failover, HA clustering, 300+ REST API routes, and a React dashboard. MIT licensed.
+date: 2026-05-09
 ---
 
 <script type="application/ld+json">
@@ -56,7 +57,7 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
     </div>
     <div class="hero-stats">
       <div class="hero-stat"><div class="hero-stat-num">300+</div><div class="hero-stat-label">API endpoints</div></div>
-      <div class="hero-stat"><div class="hero-stat-num">34</div><div class="hero-stat-label">RBAC perms</div></div>
+      <div class="hero-stat"><div class="hero-stat-num">37</div><div class="hero-stat-label">RBAC perms</div></div>
       <div class="hero-stat"><div class="hero-stat-num">5</div><div class="hero-stat-label">AI detectors</div></div>
       <div class="hero-stat"><div class="hero-stat-num">6</div><div class="hero-stat-label">NAT types</div></div>
       <div class="hero-stat"><div class="hero-stat-num">3</div><div class="hero-stat-label">Rule formats</div></div>
@@ -167,8 +168,8 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
         </div>
         <h3>Granular RBAC</h3>
-        <p>34 specific permissions across every subsystem. TOTP 2FA, OAuth/SSO, API keys, built-in CA for certificate issuance.</p>
-        <div class="feature-tags"><span class="tag">34 perms</span><span class="tag">TOTP</span><span class="tag">OAuth</span></div>
+        <p>37 specific permissions across every subsystem. TOTP 2FA, OAuth/SSO, API keys, built-in CA for certificate issuance.</p>
+        <div class="feature-tags"><span class="tag">37 perms</span><span class="tag">TOTP</span><span class="tag">OAuth</span></div>
       </div>
 
       <div class="feature">
@@ -238,8 +239,8 @@ description: Modern firewall for FreeBSD written in Rust. Built-in IDS/IPS with 
         <figcaption><strong>Time service</strong>NTP and PTP via the rTIME companion. Drift, peer health, and stratum.</figcaption>
       </figure>
       <figure>
-        <img src="{{ '/assets/screenshots/18-roles.png' | relative_url }}" alt="AiFw roles and permissions matrix with 34 granular RBAC permissions" loading="lazy" width="1200" height="700">
-        <figcaption><strong>Roles &amp; permissions</strong>34 granular RBAC permissions. Built-in admin / operator / viewer plus custom roles.</figcaption>
+        <img src="{{ '/assets/screenshots/18-roles.png' | relative_url }}" alt="AiFw roles and permissions matrix with 37 granular RBAC permissions" loading="lazy" width="1200" height="700">
+        <figcaption><strong>Roles &amp; permissions</strong>37 granular RBAC permissions. Built-in admin / operator / viewer plus custom roles.</figcaption>
       </figure>
       <figure>
         <img src="{{ '/assets/screenshots/19-settings.png' | relative_url }}" alt="AiFw settings panel with TLS policy, metrics backend, and API config" loading="lazy" width="1200" height="700">
