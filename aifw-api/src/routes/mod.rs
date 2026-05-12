@@ -11,10 +11,23 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth;
 use aifw_common::{
-    Action, Address, CountryCode, Direction, GeoIpAction, GeoIpRule, GeoIpRuleStatus, Interface,
-    IpsecMode, IpsecProtocol, IpsecSa, NatRedirect, NatRule, NatStatus, NatType, PortRange,
-    Protocol, Rule, RuleMatch, RuleStatus, StateTracking, WgPeer, WgTunnel,
+    Action, Address, Direction, Interface, IpsecMode, IpsecProtocol, IpsecSa, NatRedirect,
+    NatRule, NatStatus, NatType, PortRange, Protocol, Rule, RuleMatch, RuleStatus, StateTracking,
+    WgPeer, WgTunnel,
 };
+
+// --- Resource sub-modules (#187 incremental split) ---
+//
+// Each sub-module owns its `pub async fn handler(...)` definitions for
+// one `/api/v1/<resource>` namespace. Re-exported below so existing
+// `routes::handler_name` call sites in main.rs keep working during
+// the split — over time, callers should switch to the full path.
+pub mod geoip;
+pub use geoip::*;
+pub mod schedules;
+pub use schedules::*;
+pub mod dns;
+pub use dns::*;
 
 // --- Request / Response types ---
 
@@ -55,16 +68,6 @@ pub struct CreateNatRuleRequest {
     pub redirect_port_end: Option<u16>,
     pub label: Option<String>,
     pub status: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DnsConfigRequest {
-    pub servers: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DnsConfigResponse {
-    pub servers: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -149,7 +152,7 @@ pub struct MetricsResponse {
     pub aifw_nat_rules_total: usize,
 }
 
-fn port_range(start: Option<u16>, end: Option<u16>) -> Option<PortRange> {
+pub(super) fn port_range(start: Option<u16>, end: Option<u16>) -> Option<PortRange> {
     match (start, end) {
         (Some(s), Some(e)) => Some(PortRange { start: s, end: e }),
         (Some(s), None) => Some(PortRange { start: s, end: s }),
@@ -157,11 +160,11 @@ fn port_range(start: Option<u16>, end: Option<u16>) -> Option<PortRange> {
     }
 }
 
-fn bad_request() -> StatusCode {
+pub(super) fn bad_request() -> StatusCode {
     StatusCode::BAD_REQUEST
 }
 
-fn internal() -> StatusCode {
+pub(super) fn internal() -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
@@ -869,194 +872,6 @@ pub async fn import_config(
         "Imported: {rules_n} rules, {nat_n} NAT, {geoip_n} geo-IP, {wg_n} WireGuard, {ipsec_n} IPsec, {dns_n} DNS, {routes_n} static routes"
     );
     Ok(Json(MessageResponse { message: msg }))
-}
-
-// --- Schedules ---
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Schedule {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub time_ranges: String, // e.g. "08:00-17:00" or "08:00-12:00,13:00-17:00"
-    pub days_of_week: String, // e.g. "mon,tue,wed,thu,fri"
-    pub enabled: bool,
-    pub created_at: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub(crate) enum StringOrVec {
-    Single(String),
-    Multiple(Vec<String>),
-}
-
-impl StringOrVec {
-    fn into_string(self) -> String {
-        match self {
-            StringOrVec::Single(s) => s,
-            StringOrVec::Multiple(v) => v.join(","),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateScheduleRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub time_ranges: StringOrVec,
-    pub days_of_week: Option<StringOrVec>,
-    pub enabled: Option<bool>,
-}
-
-pub async fn list_schedules(
-    State(state): State<AppState>,
-) -> Result<Json<ApiResponse<Vec<Schedule>>>, StatusCode> {
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, String, String, bool, String)>(
-        "SELECT id, name, description, time_ranges, days_of_week, enabled, created_at FROM schedules ORDER BY name ASC",
-    ).fetch_all(&state.pool).await.map_err(|_| internal())?;
-    let schedules: Vec<Schedule> = rows
-        .into_iter()
-        .map(|(id, name, desc, tr, dow, en, ca)| Schedule {
-            id,
-            name,
-            description: desc,
-            time_ranges: tr,
-            days_of_week: dow,
-            enabled: en,
-            created_at: ca,
-        })
-        .collect();
-    Ok(Json(ApiResponse { data: schedules }))
-}
-
-fn validate_time_ranges(s: &str) -> bool {
-    // Accepts "HH:MM-HH:MM" or comma-separated ranges
-    for range in s.split(',') {
-        let parts: Vec<&str> = range.trim().split('-').collect();
-        if parts.len() != 2 {
-            return false;
-        }
-        for part in &parts {
-            let hm: Vec<&str> = part.split(':').collect();
-            if hm.len() != 2 {
-                return false;
-            }
-            let h: u8 = match hm[0].parse() {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
-            let m: u8 = match hm[1].parse() {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
-            if h > 23 || m > 59 {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn validate_days_of_week(s: &str) -> bool {
-    const VALID: &[&str] = &["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-    s.split(',').all(|d| VALID.contains(&d.trim()))
-}
-
-pub async fn create_schedule(
-    State(state): State<AppState>,
-    Json(req): Json<CreateScheduleRequest>,
-) -> Result<(StatusCode, Json<ApiResponse<Schedule>>), StatusCode> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let time_ranges = req.time_ranges.into_string();
-    if !validate_time_ranges(&time_ranges) {
-        return Err(bad_request());
-    }
-    let dow = req
-        .days_of_week
-        .map(|d| d.into_string())
-        .unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
-    if !validate_days_of_week(&dow) {
-        return Err(bad_request());
-    }
-    let enabled = req.enabled.unwrap_or(true);
-    sqlx::query("INSERT INTO schedules (id, name, description, time_ranges, days_of_week, enabled, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)")
-        .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&time_ranges).bind(&dow).bind(enabled).bind(&now)
-        .execute(&state.pool).await.map_err(|_| bad_request())?;
-    Ok((
-        StatusCode::CREATED,
-        Json(ApiResponse {
-            data: Schedule {
-                id,
-                name: req.name,
-                description: req.description,
-                time_ranges,
-                days_of_week: dow,
-                enabled,
-                created_at: now,
-            },
-        }),
-    ))
-}
-
-pub async fn update_schedule(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<CreateScheduleRequest>,
-) -> Result<Json<ApiResponse<Schedule>>, StatusCode> {
-    let time_ranges = req.time_ranges.into_string();
-    if !validate_time_ranges(&time_ranges) {
-        return Err(bad_request());
-    }
-    let dow = req
-        .days_of_week
-        .map(|d| d.into_string())
-        .unwrap_or_else(|| "mon,tue,wed,thu,fri,sat,sun".to_string());
-    if !validate_days_of_week(&dow) {
-        return Err(bad_request());
-    }
-    let enabled = req.enabled.unwrap_or(true);
-    let result = sqlx::query("UPDATE schedules SET name=?2, description=?3, time_ranges=?4, days_of_week=?5, enabled=?6 WHERE id=?1")
-        .bind(&id).bind(&req.name).bind(req.description.as_deref()).bind(&time_ranges).bind(&dow).bind(enabled)
-        .execute(&state.pool).await.map_err(|_| internal())?;
-    if result.rows_affected() == 0 {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let now = chrono::Utc::now().to_rfc3339();
-    Ok(Json(ApiResponse {
-        data: Schedule {
-            id,
-            name: req.name,
-            description: req.description,
-            time_ranges,
-            days_of_week: dow,
-            enabled,
-            created_at: now,
-        },
-    }))
-}
-
-pub async fn delete_schedule(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<MessageResponse>, StatusCode> {
-    let result = sqlx::query("DELETE FROM schedules WHERE id=?1")
-        .bind(&id)
-        .execute(&state.pool)
-        .await
-        .map_err(|_| internal())?;
-    if result.rows_affected() == 0 {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    // Unlink from rules
-    let _ = sqlx::query("UPDATE rules SET schedule_id = NULL WHERE schedule_id = ?1")
-        .bind(&id)
-        .execute(&state.pool)
-        .await;
-    Ok(Json(MessageResponse {
-        message: format!("Schedule {id} deleted"),
-    }))
 }
 
 // --- System PF rules (from pfctl, read-only) ---
@@ -1895,33 +1710,6 @@ pub async fn list_logs(
     Ok(Json(ApiResponse { data: entries }))
 }
 
-// --- DNS ---
-
-pub async fn get_dns(
-    State(state): State<AppState>,
-) -> Result<Json<DnsConfigResponse>, StatusCode> {
-    // Returns the rDNS upstream forwarders (what client DNS queries actually
-    // get sent to). Pre-fix this read /etc/resolv.conf, which on a default
-    // appliance is `127.0.0.1` — useless to a caller asking "what are my
-    // configured upstreams?".
-    let servers: Vec<String> = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'",
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten()
-    .map(|(v,)| {
-        v.split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect()
-    })
-    .unwrap_or_default();
-    Ok(Json(DnsConfigResponse { servers }))
-}
-
 // --- Rule reordering ---
 
 #[derive(Debug, Deserialize)]
@@ -1989,93 +1777,6 @@ pub async fn reorder_nat_rules(
     Ok(Json(MessageResponse {
         message: format!("{} NAT rules reordered", req.rule_ids.len()),
     }))
-}
-
-// --- GeoIP ---
-
-#[derive(Debug, Deserialize)]
-pub struct CreateGeoIpRuleRequest {
-    pub country_code: String,
-    pub action: String,
-    pub status: Option<String>,
-}
-
-pub async fn list_geoip_rules(
-    State(state): State<AppState>,
-) -> Result<Json<ApiResponse<Vec<GeoIpRule>>>, StatusCode> {
-    let rules = state
-        .geoip_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
-    Ok(Json(ApiResponse { data: rules }))
-}
-
-pub async fn create_geoip_rule(
-    State(state): State<AppState>,
-    Json(req): Json<CreateGeoIpRuleRequest>,
-) -> Result<(StatusCode, Json<ApiResponse<GeoIpRule>>), StatusCode> {
-    let country = CountryCode::new(&req.country_code).map_err(|_| bad_request())?;
-    let action = GeoIpAction::parse(&req.action).map_err(|_| bad_request())?;
-    let rule = GeoIpRule::new(country, action);
-    let rule = state
-        .geoip_engine
-        .add_rule(rule)
-        .await
-        .map_err(|_| bad_request())?;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
-}
-
-pub async fn update_geoip_rule(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<CreateGeoIpRuleRequest>,
-) -> Result<Json<ApiResponse<GeoIpRule>>, StatusCode> {
-    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let mut rule = state
-        .geoip_engine
-        .get_rule(uuid)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    rule.country = CountryCode::new(&req.country_code).map_err(|_| bad_request())?;
-    rule.action = GeoIpAction::parse(&req.action).map_err(|_| bad_request())?;
-    if let Some(ref s) = req.status {
-        rule.status = match s.as_str() {
-            "active" => GeoIpRuleStatus::Active,
-            "disabled" => GeoIpRuleStatus::Disabled,
-            _ => return Err(bad_request()),
-        };
-    }
-    state
-        .geoip_engine
-        .update_rule(&rule)
-        .await
-        .map_err(|_| internal())?;
-    Ok(Json(ApiResponse { data: rule }))
-}
-
-pub async fn delete_geoip_rule(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<MessageResponse>, StatusCode> {
-    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    state
-        .geoip_engine
-        .delete_rule(uuid)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok(Json(MessageResponse {
-        message: format!("Geo-IP rule {id} deleted"),
-    }))
-}
-
-pub async fn geoip_lookup(
-    State(state): State<AppState>,
-    Path(ip_str): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ip: std::net::IpAddr = ip_str.parse().map_err(|_| bad_request())?;
-    let result = state.geoip_engine.lookup(ip).await;
-    Ok(Json(serde_json::to_value(result).unwrap_or_default()))
 }
 
 // --- VPN: WireGuard ---
@@ -3766,31 +3467,6 @@ pub async fn update_tls_settings(
     }
     Ok(Json(MessageResponse {
         message: "TLS policy saved".to_string(),
-    }))
-}
-
-pub async fn update_dns(
-    State(state): State<AppState>,
-    Json(req): Json<DnsConfigRequest>,
-) -> Result<Json<MessageResponse>, StatusCode> {
-    // Persist for backup/restore round-trip (legacy `auth_config` field is
-    // still what the snapshot format reads).
-    let dns_json = serde_json::to_string(&req.servers).unwrap_or_default();
-    let _ =
-        sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dns_servers', ?1)")
-            .bind(&dns_json)
-            .execute(&state.pool)
-            .await;
-
-    // Program the actual rDNS upstream forwarders. Pre-fix this endpoint
-    // wrote `/etc/resolv.conf` directly, which only changed what the
-    // appliance OS itself queried — clients still hit 127.0.0.1 (rDNS) with
-    // its old upstreams, so RPZ / blocklists / query logging silently lost
-    // coverage of the configured DNS servers.
-    crate::dns_resolver::set_forwarders(&state, &req.servers).await?;
-
-    Ok(Json(MessageResponse {
-        message: "DNS upstream forwarders saved. Apply via /api/v1/dns/resolver/apply.".to_string(),
     }))
 }
 
