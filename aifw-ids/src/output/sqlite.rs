@@ -258,30 +258,44 @@ impl SqliteOutput {
         Ok(result.rows_affected())
     }
 
-    /// Get alert count by severity.
+    /// Get alert count by severity over the last 24 hours.
+    ///
+    /// The dashboard uses this to drive its current-state chart, so an
+    /// unfiltered scan over millions of historical rows isn't what users
+    /// actually want anyway. The 24h window is covered by `idx_ids_alerts_ts`
+    /// (timestamp index) and keeps the query latency bounded regardless of
+    /// total row count.
     pub async fn count_by_severity(&self) -> Result<Vec<(u8, i64)>> {
         let rows: Vec<(i64, i64)> = sqlx::query_as(
-            "SELECT severity, count(*) FROM ids_alerts GROUP BY severity ORDER BY severity",
+            "SELECT severity, count(*) FROM ids_alerts \
+             WHERE timestamp >= datetime('now', '-1 day') \
+             GROUP BY severity ORDER BY severity",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(s, c)| (s as u8, c)).collect())
     }
 
-    /// Get top N alerting signatures.
+    /// Get top N alerting signatures over the last 24 hours.
+    /// See `count_by_severity` for the rationale on the time window.
     pub async fn top_signatures(&self, limit: u32) -> Result<Vec<(String, i64)>> {
         let rows: Vec<(String, i64)> = sqlx::query_as(&format!(
-            "SELECT signature_msg, count(*) as cnt FROM ids_alerts GROUP BY signature_msg ORDER BY cnt DESC LIMIT {limit}"
+            "SELECT signature_msg, count(*) as cnt FROM ids_alerts \
+             WHERE timestamp >= datetime('now', '-1 day') \
+             GROUP BY signature_msg ORDER BY cnt DESC LIMIT {limit}"
         ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
     }
 
-    /// Get top N source IPs.
+    /// Get top N source IPs over the last 24 hours.
+    /// See `count_by_severity` for the rationale on the time window.
     pub async fn top_sources(&self, limit: u32) -> Result<Vec<(String, i64)>> {
         let rows: Vec<(String, i64)> = sqlx::query_as(&format!(
-            "SELECT src_ip, count(*) as cnt FROM ids_alerts GROUP BY src_ip ORDER BY cnt DESC LIMIT {limit}"
+            "SELECT src_ip, count(*) as cnt FROM ids_alerts \
+             WHERE timestamp >= datetime('now', '-1 day') \
+             GROUP BY src_ip ORDER BY cnt DESC LIMIT {limit}"
         ))
         .fetch_all(&self.pool)
         .await?;
