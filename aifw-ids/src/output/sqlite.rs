@@ -243,6 +243,21 @@ impl SqliteOutput {
         Ok(result.rows_affected())
     }
 
+    /// Scrub rows whose `timestamp` column is implausible — system-clock skew
+    /// at insert time has left rows dated year 9920 or 2012 on appliances in
+    /// the field. The companion guard at insert time (`sanitize_alert_timestamp`)
+    /// prevents new ones; this method removes the existing pollution.
+    pub async fn purge_invalid_timestamps(&self) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM ids_alerts \
+             WHERE timestamp < '2020-01-01' \
+                OR timestamp > datetime('now', '+1 day')",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Get alert count by severity.
     pub async fn count_by_severity(&self) -> Result<Vec<(u8, i64)>> {
         let rows: Vec<(i64, i64)> = sqlx::query_as(

@@ -446,6 +446,57 @@ impl IdsEngine {
             info!(interface = %iface_name, "capture worker started");
         }
 
+        // Retention worker — periodically prunes alerts past
+        // `alert_retention_days` and scrubs rows with implausible timestamps
+        // left by past clock-skew events. Without this, `ids_alerts` grows
+        // unbounded (the test VM hit 2.97M rows / 2.9GB before this landed).
+        let retention_pool = self.pool.clone();
+        let retention_config = self.config.clone();
+        let retention_running = self.running.clone();
+        tokio::spawn(async move {
+            let output = crate::output::sqlite::SqliteOutput::new(retention_pool);
+
+            // Initial scrub on startup so a stale appliance cleans itself up
+            // without waiting an hour.
+            match output.purge_invalid_timestamps().await {
+                Ok(0) => {}
+                Ok(n) => warn!(
+                    rows = n,
+                    "ids retention: scrubbed alerts with implausible timestamps"
+                ),
+                Err(e) => error!("ids retention: invalid-timestamp scrub failed: {e}"),
+            }
+            let initial_days = retention_config.config().alert_retention_days;
+            match output.purge_old(initial_days).await {
+                Ok(0) => {}
+                Ok(n) => info!(
+                    rows = n,
+                    days = initial_days,
+                    "ids retention: initial purge complete"
+                ),
+                Err(e) => error!("ids retention: initial purge failed: {e}"),
+            }
+
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await; // burn the first immediate tick
+            while retention_running.load(Ordering::Relaxed) {
+                interval.tick().await;
+                if !retention_running.load(Ordering::Relaxed) {
+                    break;
+                }
+                let days = retention_config.config().alert_retention_days;
+                match output.purge_old(days).await {
+                    Ok(0) => {}
+                    Ok(n) => info!(rows = n, days, "ids retention: purged old alerts"),
+                    Err(e) => error!("ids retention: purge failed: {e}"),
+                }
+                if let Err(e) = output.purge_invalid_timestamps().await {
+                    error!("ids retention: invalid-timestamp scrub failed: {e}");
+                }
+            }
+            info!("ids retention worker stopped");
+        });
+
         info!("IDS engine started");
         Ok(())
     }
