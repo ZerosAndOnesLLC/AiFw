@@ -2394,10 +2394,18 @@ async fn main() -> anyhow::Result<()> {
                 let plugins_total = pmgr.count();
                 let plugins_running = pmgr.running_count();
                 drop(pmgr);
-                // IDS counters now come over IPC from aifw-ids. If aifw-ids is
-                // down, these stay 0 — the heartbeat keeps emitting so the
-                // operator can correlate the IPC outage with API memstats.
-                let ids_stats = mem_state.ids_client.get_stats().await.ok();
+                // IDS counters come over IPC from aifw-ids. Distinguish
+                // "IPC is broken" from "IPC says 0" — the heartbeat used to
+                // silently report rules_loaded=0 even though startup loaded
+                // 47k rules (#277). Surface `ids_ipc_ok` so dashboards can
+                // exclude broken-IPC samples from rule-count panels, and log
+                // a WARN with the actual error for debuggability.
+                let ids_stats_res = mem_state.ids_client.get_stats().await;
+                let ids_ipc_ok = ids_stats_res.is_ok();
+                if let Err(ref e) = ids_stats_res {
+                    tracing::warn!(error = %e, "memstats: ids IPC stats request failed");
+                }
+                let ids_stats = ids_stats_res.ok();
                 let ids_rules = ids_stats.as_ref().map(|s| s.rules_loaded).unwrap_or(0);
                 let flow_count = ids_stats.as_ref().map(|s| s.flow_count).unwrap_or(0);
                 let flow_reassembly_kb = ids_stats
@@ -2424,6 +2432,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!(
                     target: "aifw_api::memstats",
                     rss_mb = rss_kb / 1024,
+                    ids_ipc_ok = ids_ipc_ok,
                     ids_alerts_total = ids_stats.as_ref().map(|s| s.alerts_total).unwrap_or(0),
                     flow_count = flow_count,
                     flow_reassembly_kb = flow_reassembly_kb,
