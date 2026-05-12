@@ -1935,8 +1935,18 @@ pub async fn update_valkey_settings(
 
 // --- Dashboard History Settings ---
 
-/// Average bytes per slim history entry (status + system + interfaces + services JSON).
-const HISTORY_ENTRY_BYTES: usize = 2048;
+/// Average bytes per slim history entry (status + system + interfaces +
+/// services + ids JSON). Measured at ~2.6 KB on a production VM; round up
+/// to 3000 so the RAM-budget conversion under-allocates rather than over.
+/// The previous 2048 estimate caused a 256 MB budget to land at 340 MB of
+/// actual RSS (#274).
+const HISTORY_ENTRY_BYTES: usize = 3000;
+
+/// Hard upper bound on the ring buffer size. 24 hours of 1-Hz samples at
+/// ~2.6 KB each is ~225 MB — already enormous for an in-process buffer.
+/// Anything beyond this should be in Valkey/Redis, not RAM. The previous
+/// 30-day clamp let operators ask for 6+ GB and silently get it.
+pub const HISTORY_SECONDS_HARD_MAX: usize = 86400;
 
 pub async fn get_dashboard_history_settings(
     State(state): State<AppState>,
@@ -2008,8 +2018,8 @@ pub async fn update_dashboard_history_settings(
         }
     };
 
-    // Clamp: min 5 minutes (300), max 30 days (2592000)
-    let clamped = seconds.clamp(300, 2_592_000);
+    // Clamp: min 5 minutes (300), max HISTORY_SECONDS_HARD_MAX (24h)
+    let clamped = seconds.clamp(300, HISTORY_SECONDS_HARD_MAX);
 
     let _ = sqlx::query(
         "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dashboard_history_seconds', ?1)",

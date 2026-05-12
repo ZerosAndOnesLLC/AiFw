@@ -1733,8 +1733,10 @@ async fn create_state_from_db(
         "plugin system initialized"
     );
 
-    // Load configurable dashboard history size from DB (default 30 min = 1800 entries)
-    let history_max = sqlx::query_as::<_, (String,)>(
+    // Load configurable dashboard history size from DB (default 30 min = 1800 entries).
+    // Hard-cap at HISTORY_SECONDS_HARD_MAX (24h) — older builds let operators set
+    // 30-day windows that ballooned the in-process ring buffer past 300 MB (#274).
+    let raw_history_max = sqlx::query_as::<_, (String,)>(
         "SELECT value FROM auth_config WHERE key = 'dashboard_history_seconds'",
     )
     .fetch_optional(&pool)
@@ -1743,6 +1745,14 @@ async fn create_state_from_db(
     .flatten()
     .and_then(|r| r.0.parse::<usize>().ok())
     .unwrap_or(METRICS_HISTORY_SIZE_DEFAULT);
+    let history_max = raw_history_max.min(routes::HISTORY_SECONDS_HARD_MAX);
+    if raw_history_max > history_max {
+        tracing::warn!(
+            configured = raw_history_max,
+            applied = history_max,
+            "dashboard_history_seconds exceeds hard cap; clamping in-memory ring buffer"
+        );
+    }
 
     Ok(AppState {
         pool,
