@@ -640,7 +640,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     let blocked = collect_blocked_recent().await;
 
     // Collect service status (lightweight — just check PIDs)
-    let services = collect_services().await;
+    let services = collect_services(&state.pool).await;
 
     let status = StatusPayload {
         pf_running: stats.running,
@@ -1438,7 +1438,7 @@ async fn collect_blocked_recent() -> Vec<BlockedPayload> {
     all[skip..].to_vec()
 }
 
-async fn collect_services() -> Vec<ServiceStatusPayload> {
+async fn collect_services(pool: &sqlx::SqlitePool) -> Vec<ServiceStatusPayload> {
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::sync::RwLock;
 
@@ -1462,16 +1462,32 @@ async fn collect_services() -> Vec<ServiceStatusPayload> {
                 .await
                 .map(|o| o.status.success())
                 .unwrap_or(false);
-            // `sysrc -n` is a read; doesn't need root. Calling
-            // `/usr/sbin/sysrc` directly avoids the helper allowlist
-            // round-trip for what should be a status check.
-            let enable_key = format!("{svc_name}_enable");
-            let enabled = tokio::process::Command::new("/usr/sbin/sysrc")
-                .args(["-n", &enable_key])
-                .output()
+            // For TrafficCop, the user-facing "enabled" state lives in the
+            // reverse-proxy config DB (tc_config.enabled), not rc.conf. The
+            // UI's Save writes the DB immediately, while Apply is what flushes
+            // to sysrc — so the badge should follow the DB to match user intent.
+            let enabled = if svc_name == "trafficcop" {
+                sqlx::query_as::<_, (String,)>(
+                    "SELECT value FROM tc_config WHERE key = 'enabled'",
+                )
+                .fetch_optional(pool)
                 .await
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")
-                .unwrap_or(false);
+                .ok()
+                .flatten()
+                .map(|(v,)| v == "true")
+                .unwrap_or(false)
+            } else {
+                // `sysrc -n` is a read; doesn't need root. Calling
+                // `/usr/sbin/sysrc` directly avoids the helper allowlist
+                // round-trip for what should be a status check.
+                let enable_key = format!("{svc_name}_enable");
+                tokio::process::Command::new("/usr/sbin/sysrc")
+                    .args(["-n", &enable_key])
+                    .output()
+                    .await
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")
+                    .unwrap_or(false)
+            };
             svcs.push(ServiceStatusPayload {
                 name: name.to_string(),
                 running,
