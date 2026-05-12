@@ -20,9 +20,17 @@ fi
 
 DEST="$1"
 
+# Allowlisted destinations + per-path mode/owner. daemon.key is the
+# inter-service auth secret (read by aifw-daemon as the aifw user) and
+# stays root-owned at 640 so a compromise of any of the API/UI surface
+# can't overwrite or chmod the on-disk material.
 case "$DEST" in
-    /etc/pf.conf) ;;
-    /usr/local/etc/trafficcop/config.yaml) ;;
+    /etc/pf.conf)
+        FMODE=644; FOWNER=root:wheel ;;
+    /usr/local/etc/trafficcop/config.yaml)
+        FMODE=644; FOWNER=root:wheel ;;
+    /usr/local/etc/aifw/daemon.key)
+        FMODE=640; FOWNER=root:aifw ;;
     *)
         echo "aifw-sudo-write: refusing write outside allowlist: $DEST" >&2
         exit 1
@@ -35,8 +43,8 @@ TMPFILE=$(mktemp "${DIR}/.${BASENAME}.aifw.XXXXXX")
 trap 'rm -f "$TMPFILE"' EXIT INT TERM HUP
 
 cat > "$TMPFILE"
-chmod 644 "$TMPFILE"
-chown root:wheel "$TMPFILE"
+chmod "$FMODE" "$TMPFILE"
+chown "$FOWNER" "$TMPFILE"
 mv "$TMPFILE" "$DEST"
 
 trap - EXIT INT TERM HUP

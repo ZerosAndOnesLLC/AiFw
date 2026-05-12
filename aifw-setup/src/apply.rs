@@ -2015,8 +2015,14 @@ aifw_api_precmd()
     /usr/bin/pkill -f "daemon:.*aifw-api" 2>/dev/null
     /usr/bin/pkill -x aifw-api 2>/dev/null
     /bin/rm -f ${{aifw_api_pidfile}} ${{aifw_api_supervisor_pidfile}}
+    # Pre-create singleton lockfile owned by aifw. rm+touch+chown+chmod
+    # every start so stale ownership/mode from older binaries can't strand
+    # the singleton lock — aifw-api now exits hard on FreeBSD when this
+    # fails (see #276).
+    /bin/rm -f /var/run/aifw-api.lock
     /usr/bin/touch /var/run/aifw-api.lock
     /usr/sbin/chown aifw:aifw /var/run/aifw-api.lock
+    /bin/chmod 644 /var/run/aifw-api.lock
 }}
 
 aifw_api_stop()

@@ -1010,30 +1010,15 @@ async fn generate_loopback_key(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Write plaintext key to disk (mode 640, root:aifw on FreeBSD).
+    // Write plaintext key to disk via the aifw-sudo-write helper. The
+    // helper enforces mode 640 / root:aifw for this specific path so the
+    // aifw user (which owns this process) can't tamper with the on-disk
+    // material directly. Previously this used std::fs::write, which fails
+    // with EACCES because /usr/local/etc/aifw is root:aifw 750 — aifw can
+    // read but not create files.
     let key_path = std::path::Path::new("/usr/local/etc/aifw/daemon.key");
-    if let Some(parent) = key_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = std::fs::write(key_path, &key) {
-        tracing::warn!(error = %e, "loopback key: write daemon.key (non-FreeBSD dev env — skipped)");
-    } else {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(key_path) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o640);
-                let _ = std::fs::set_permissions(key_path, perms);
-            }
-        }
-        #[cfg(target_os = "freebsd")]
-        {
-            let _ = std::process::Command::new("chown")
-                .arg("root:aifw")
-                .arg(key_path)
-                .status();
-        }
+    if let Err(e) = aifw_core::sudo::write_file(key_path, key.as_bytes()).await {
+        tracing::warn!(error = %e, "loopback key: write daemon.key failed");
     }
 
     tracing::info!("loopback API key (re)generated via UI");
