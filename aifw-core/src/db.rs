@@ -193,18 +193,20 @@ impl Database {
     }
 
     pub async fn get_rule(&self, id: Uuid) -> Result<Option<Rule>> {
-        let row = sqlx::query_as::<_, RuleRow>("SELECT * FROM rules WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query_as::<_, RuleRow>(&format!(
+            "SELECT {RULE_COLUMNS} FROM rules WHERE id = ?1"
+        ))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
 
         row.map(|r| r.into_rule()).transpose()
     }
 
     pub async fn list_rules(&self) -> Result<Vec<Rule>> {
-        let rows = sqlx::query_as::<_, RuleRow>(
-            "SELECT * FROM rules ORDER BY priority ASC, created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, RuleRow>(&format!(
+            "SELECT {RULE_COLUMNS} FROM rules ORDER BY priority ASC, created_at ASC"
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -212,9 +214,10 @@ impl Database {
     }
 
     pub async fn list_active_rules(&self) -> Result<Vec<Rule>> {
-        let rows = sqlx::query_as::<_, RuleRow>(
-            "SELECT * FROM rules WHERE status = 'active' ORDER BY priority ASC, created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, RuleRow>(&format!(
+            "SELECT {RULE_COLUMNS} FROM rules \
+             WHERE status = 'active' ORDER BY priority ASC, created_at ASC"
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -330,6 +333,18 @@ fn parse_state_policy(s: &str) -> StatePolicy {
         _ => StatePolicy::IfBound,
     }
 }
+
+/// Explicit column list for `RuleRow` selects. The `rules` table has had
+/// multiple ALTER TABLE migrations adding columns; using `SELECT *` here
+/// has triggered a sqlx-sqlite panic (#273) when the prepared statement's
+/// column count and the cached column metadata disagreed during shutdown.
+/// Explicit columns keep the count deterministic regardless of migration
+/// order.
+const RULE_COLUMNS: &str = "id, priority, action, direction, interface, protocol, \
+    src_addr, src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
+    log, quick, label, state_tracking, state_policy, adaptive_start, adaptive_end, \
+    timeout_tcp, timeout_udp, timeout_icmp, status, created_at, updated_at, \
+    schedule_id, ip_version, src_invert, dst_invert";
 
 #[derive(sqlx::FromRow)]
 struct RuleRow {
