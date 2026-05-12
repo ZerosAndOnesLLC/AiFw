@@ -1,8 +1,31 @@
 use aifw_common::ids::IdsAlert;
+use chrono::{DateTime, Datelike, Duration, Utc};
 use sqlx::SqlitePool;
 
 use super::AlertOutput;
 use crate::Result;
+
+/// Sanity-check a wall-clock timestamp before persisting it. The IDS alert
+/// pipeline takes `Utc::now()` at alert-create time; a system clock that's
+/// briefly wrong (NTP skew, VM resume from snapshot, BIOS battery, etc.)
+/// has produced rows dated year 9920 or 2012 in production. Clamp anything
+/// far outside the plausible window to the insert-time clock so dashboards
+/// don't get poisoned.
+fn sanitize_alert_timestamp(ts: DateTime<Utc>) -> DateTime<Utc> {
+    let now = Utc::now();
+    let lower = now - Duration::days(365 * 5);
+    let upper = now + Duration::hours(1);
+    if ts < lower || ts > upper || !(2020..=2100).contains(&ts.year()) {
+        tracing::warn!(
+            original = %ts.to_rfc3339(),
+            replaced_with = %now.to_rfc3339(),
+            "ids alert had implausible timestamp; clamping to now"
+        );
+        now
+    } else {
+        ts
+    }
+}
 
 /// SQLite alert storage — powers the UI alert viewer.
 pub struct SqliteOutput {
@@ -263,7 +286,7 @@ impl AlertOutput for SqliteOutput {
             "INSERT INTO ids_alerts (id, timestamp, signature_id, signature_msg, severity, src_ip, src_port, dst_ip, dst_port, protocol, action, rule_source, flow_id, payload_excerpt, metadata, acknowledged) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"
         )
         .bind(alert.id.to_string())
-        .bind(alert.timestamp.to_rfc3339())
+        .bind(sanitize_alert_timestamp(alert.timestamp).to_rfc3339())
         .bind(alert.signature_id.map(|s| s as i64))
         .bind(&alert.signature_msg)
         .bind(alert.severity.0 as i64)
@@ -355,5 +378,40 @@ mod tests {
 
         let counts = output.count_by_severity().await.unwrap();
         assert!(!counts.is_empty());
+    }
+
+    #[test]
+    fn sanitize_clamps_year_9920() {
+        let bad = DateTime::parse_from_rfc3339("9920-03-27T04:49:13Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let now = Utc::now();
+        let fixed = sanitize_alert_timestamp(bad);
+        assert!((fixed - now).num_seconds().abs() < 5);
+    }
+
+    #[test]
+    fn sanitize_clamps_year_2012() {
+        let bad = DateTime::parse_from_rfc3339("2012-04-06T04:29:12Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let now = Utc::now();
+        let fixed = sanitize_alert_timestamp(bad);
+        assert!((fixed - now).num_seconds().abs() < 5);
+    }
+
+    #[test]
+    fn sanitize_passes_current_time() {
+        let now = Utc::now();
+        let fixed = sanitize_alert_timestamp(now);
+        assert_eq!(fixed, now);
+    }
+
+    #[test]
+    fn sanitize_rejects_far_future() {
+        let bad = Utc::now() + Duration::hours(24);
+        let now = Utc::now();
+        let fixed = sanitize_alert_timestamp(bad);
+        assert!((fixed - now).num_seconds().abs() < 5);
     }
 }
