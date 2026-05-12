@@ -2058,12 +2058,19 @@ async fn ensure_rdr_anchor() {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    // Fail closed when another instance actually holds the lock; fail open
-    // when the lockfile path isn't writable (e.g. an appliance whose rc.d
-    // never got upgraded to pre-create /var/run/aifw-api.lock owned by aifw).
-    // The latter case lets the binary still come up so the in-product
-    // updater can ship the rc.d fix that solves it. rc.d retains its own
-    // singleton enforcement via the daemon-pair pidfiles.
+    // Fail closed on FreeBSD — anything that prevents the lock (another
+    // instance, EACCES on the lockfile path, syscall failure) is an
+    // operational problem we want to surface, not paper over. Previously
+    // we let the binary continue when the lockfile path wasn't writable
+    // so an in-product updater could ship the rc.d fix that creates
+    // /var/run/aifw-api.lock owned by aifw; in practice that left the
+    // door open for two daemons racing on the same DB if rc.d perms ever
+    // drifted. The rc.d precmd now hardens the lockfile on every start
+    // (see #276), so the soft-fail branch is no longer necessary.
+    //
+    // On non-FreeBSD (dev / WSL with the mock pf backend) keep the
+    // soft-warn — multiple devs may share a checkout, and the host's
+    // /var/run isn't ours to manage.
     #[cfg(unix)]
     let _instance_lock = match aifw_common::single_instance::acquire("aifw-api") {
         Ok(lock) => Some(lock),
@@ -2072,7 +2079,10 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("aifw-api: warning: singleton lock unavailable: {e} (continuing)");
+            eprintln!("aifw-api: singleton lock unavailable: {e}");
+            #[cfg(target_os = "freebsd")]
+            std::process::exit(1);
+            #[cfg(not(target_os = "freebsd"))]
             None
         }
     };
