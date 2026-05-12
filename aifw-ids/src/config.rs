@@ -22,12 +22,12 @@ impl RuntimeConfig {
 
     /// Get a snapshot of the current configuration.
     pub fn config(&self) -> IdsConfig {
-        self.inner.read().unwrap().clone()
+        self.inner.read().expect("lock poisoned").clone()
     }
 
     /// Update configuration in memory.
     pub fn update(&self, cfg: IdsConfig) {
-        *self.inner.write().unwrap() = cfg;
+        *self.inner.write().expect("lock poisoned") = cfg;
     }
 
     /// Load configuration from the database.
@@ -82,7 +82,7 @@ impl RuntimeConfig {
 
     /// Network variable expansion: resolve `$HOME_NET`, `$EXTERNAL_NET`, etc.
     pub fn expand_var(&self, var: &str) -> Vec<String> {
-        let cfg = self.inner.read().unwrap();
+        let cfg = self.inner.read().expect("lock poisoned");
         match var {
             "$HOME_NET" | "HOME_NET" => cfg.home_net.clone(),
             "$EXTERNAL_NET" | "EXTERNAL_NET" => {

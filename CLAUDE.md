@@ -176,3 +176,11 @@ Base: `http://<ip>:8080/api/v1/`
 - `npm run build` must succeed (static export)
 - No paid crates (ask first)
 - Run `cargo test` before pushing
+
+## Error Handling Policy (#188)
+
+- **Library crates** (`aifw-common`, `aifw-core`, `aifw-pf`, `aifw-ids`, etc.) use `thiserror` with a crate-local `Error` enum and `Result<T> = std::result::Result<T, Error>`. `aifw_common::AifwError` is the cross-crate fallback when a per-crate enum doesn't yet exist.
+- **Binary crates** (`aifw-api`, `aifw-cli`, `aifw-daemon`, `aifw-setup`) use `anyhow::Result` at the edges and convert to `StatusCode` / `String` errors in handler boundaries.
+- **No `.unwrap()` in non-test production code.** Use `?` for propagation, `.expect("clear reason")` only when the call is **provably infallible** (with the invariant explained in the message), or refactor the function to return `Result`.
+- **No silent `.ok()` or `let _ = ...` on fallible operations** unless the failure is truly unactionable. At minimum log via `tracing::warn!` so the failure is visible.
+- A workspace-level test (`aifw-setup::sudoers_tests` pattern) gates regressions: when adding new sweep-style discipline, write a test that asserts the bad pattern doesn't reappear.

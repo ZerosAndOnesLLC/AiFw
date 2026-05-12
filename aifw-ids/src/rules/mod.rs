@@ -286,32 +286,32 @@ impl RuleDatabase {
     /// Load and compile rules. Replaces the active ruleset.
     pub fn load_rules(&self, rules: Vec<CompiledRule>) {
         let compiled = CompiledRuleset::build(rules.clone());
-        *self.raw_rules.write().unwrap() = rules;
-        *self.ruleset.write().unwrap() = Some(compiled);
+        *self.raw_rules.write().expect("lock poisoned") = rules;
+        *self.ruleset.write().expect("lock poisoned") = Some(compiled);
     }
 
     /// Add rules to the existing set and recompile.
     pub fn add_rules(&self, new_rules: Vec<CompiledRule>) {
-        let mut raw = self.raw_rules.write().unwrap();
+        let mut raw = self.raw_rules.write().expect("lock poisoned");
         raw.extend(new_rules);
         let compiled = CompiledRuleset::build(raw.clone());
-        *self.ruleset.write().unwrap() = Some(compiled);
+        *self.ruleset.write().expect("lock poisoned") = Some(compiled);
     }
 
     /// Get a read lock on the active ruleset.
     pub fn ruleset(&self) -> std::sync::RwLockReadGuard<'_, Option<CompiledRuleset>> {
-        self.ruleset.read().unwrap()
+        self.ruleset.read().expect("lock poisoned")
     }
 
     /// Number of loaded rules.
     pub fn rule_count(&self) -> usize {
-        self.raw_rules.read().unwrap().len()
+        self.raw_rules.read().expect("lock poisoned").len()
     }
 
     /// Clear all rules.
     pub fn clear(&self) {
-        *self.raw_rules.write().unwrap() = Vec::new();
-        *self.ruleset.write().unwrap() = None;
+        *self.raw_rules.write().expect("lock poisoned") = Vec::new();
+        *self.ruleset.write().expect("lock poisoned") = None;
     }
 }
 

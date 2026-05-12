@@ -53,7 +53,11 @@ pub fn aggregate(points: &[MetricPoint], method: Aggregation) -> Option<MetricPo
         .iter()
         .map(|p| p.max)
         .fold(f64::NEG_INFINITY, f64::max);
-    let ts = points.last().unwrap().timestamp;
+    // Guarded by the is_empty check at the top of the function.
+    let last = points
+        .last()
+        .expect("points non-empty (checked above)");
+    let ts = last.timestamp;
 
     let value = match method {
         Aggregation::Average => {
@@ -63,7 +67,7 @@ pub fn aggregate(points: &[MetricPoint], method: Aggregation) -> Option<MetricPo
         Aggregation::Sum => points.iter().map(|p| p.value).sum(),
         Aggregation::Min => min,
         Aggregation::Max => max,
-        Aggregation::Last => points.last().unwrap().value,
+        Aggregation::Last => last.value,
     };
 
     Some(MetricPoint {

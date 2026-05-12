@@ -129,16 +129,24 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                     return Err(ParseError::Malformed("unbalanced end tag".into()));
                 }
                 let node = stack.pop().expect("stack invariant");
-                stack.last_mut().unwrap().children.push(node);
+                stack
+                    .last_mut()
+                    .expect("stack non-empty (length checked above)")
+                    .children
+                    .push(node);
             }
             Ok(Event::Empty(e)) => {
                 let name = std::str::from_utf8(e.name().as_ref())
                     .map_err(|err| ParseError::Malformed(err.to_string()))?
                     .to_string();
-                stack.last_mut().unwrap().children.push(Node {
-                    name,
-                    ..Default::default()
-                });
+                stack
+                    .last_mut()
+                    .expect("stack non-empty (root pushed at function entry)")
+                    .children
+                    .push(Node {
+                        name,
+                        ..Default::default()
+                    });
             }
             Ok(Event::Text(t)) => {
                 let s = t
@@ -147,7 +155,9 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                     .into_owned();
                 let trimmed = s.trim();
                 if !trimmed.is_empty() {
-                    let last = stack.last_mut().unwrap();
+                    let last = stack
+                        .last_mut()
+                        .expect("stack non-empty (root pushed at function entry)");
                     if last.text.is_empty() {
                         // First text run: keep the raw whitespace from the
                         // event so multi-line `<address>10.0.0.5\n10.0.0.6
@@ -170,7 +180,9 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                 let s = std::str::from_utf8(c.as_ref())
                     .map_err(|err| ParseError::Malformed(err.to_string()))?
                     .to_string();
-                let last = stack.last_mut().unwrap();
+                let last = stack
+                    .last_mut()
+                    .expect("stack non-empty (root pushed at function entry)");
                 if !last.text.is_empty() {
                     last.text.push('\n');
                 }
