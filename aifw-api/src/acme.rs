@@ -261,9 +261,15 @@ pub async fn download_cert_pem(
     let h = resp.headers_mut();
     h.insert(
         header::CONTENT_TYPE,
-        "application/x-pem-file".parse().unwrap(),
+        "application/x-pem-file"
+            .parse()
+            .expect("static MIME type is a valid header value"),
     );
-    h.insert(header::CONTENT_DISPOSITION, disp.parse().unwrap());
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        disp.parse()
+            .expect("Content-Disposition built from validated common_name"),
+    );
     Ok(resp)
 }
 
@@ -280,9 +286,15 @@ pub async fn download_key_pem(
     let h = resp.headers_mut();
     h.insert(
         header::CONTENT_TYPE,
-        "application/x-pem-file".parse().unwrap(),
+        "application/x-pem-file"
+            .parse()
+            .expect("static MIME type is a valid header value"),
     );
-    h.insert(header::CONTENT_DISPOSITION, disp.parse().unwrap());
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        disp.parse()
+            .expect("Content-Disposition built from validated common_name"),
+    );
     Ok(resp)
 }
 
@@ -361,9 +373,10 @@ pub async fn create_provider(
     .await
     .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
     let id = res.last_insert_rowid();
-    Ok(Json(
-        acme::load_provider(&state.pool, id).await.unwrap().into(),
-    ))
+    let provider = acme::load_provider(&state.pool, id)
+        .await
+        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after insert".into()))?;
+    Ok(Json(provider.into()))
 }
 
 pub async fn update_provider(
@@ -404,9 +417,10 @@ pub async fn update_provider(
     .execute(&state.pool)
     .await
     .map_err(server)?;
-    Ok(Json(
-        acme::load_provider(&state.pool, id).await.unwrap().into(),
-    ))
+    let provider = acme::load_provider(&state.pool, id)
+        .await
+        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after insert".into()))?;
+    Ok(Json(provider.into()))
 }
 
 pub async fn delete_provider(

@@ -364,9 +364,9 @@ async fn public_ip(url: &str, want_v6: bool) -> Result<IpAddr, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .local_address(if want_v6 {
-            Some("::".parse::<IpAddr>().unwrap())
+            Some(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))
         } else {
-            Some("0.0.0.0".parse::<IpAddr>().unwrap())
+            Some(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
         })
         .build()
         .map_err(|e| format!("reqwest: {e}"))?;

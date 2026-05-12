@@ -219,16 +219,24 @@ pub fn select(group: &GatewayGroup, members: &[GroupMember], gateways: &[Gateway
     match group.policy {
         GroupPolicy::Failover => {
             // Lowest tier wins; within tier highest weight wins.
-            let min_tier = healthy.iter().map(|(m, _)| m.tier).min().unwrap();
+            let min_tier = healthy
+                .iter()
+                .map(|(m, _)| m.tier)
+                .min()
+                .expect("healthy non-empty (checked above)");
             let best = healthy
                 .iter()
                 .filter(|(m, _)| m.tier == min_tier)
                 .max_by_key(|(m, g)| (m.weight, prefer_up(g.state)))
-                .unwrap();
+                .expect("at least one healthy member at min_tier");
             Selection::Single(best.1.id)
         }
         GroupPolicy::WeightedLb | GroupPolicy::LoadBalance => {
-            let min_tier = healthy.iter().map(|(m, _)| m.tier).min().unwrap();
+            let min_tier = healthy
+                .iter()
+                .map(|(m, _)| m.tier)
+                .min()
+                .expect("healthy non-empty (checked above)");
             let list: Vec<(Uuid, u32)> = healthy
                 .iter()
                 .filter(|(m, _)| m.tier == min_tier)
@@ -237,7 +245,11 @@ pub fn select(group: &GatewayGroup, members: &[GroupMember], gateways: &[Gateway
             Selection::WeightedList(list)
         }
         GroupPolicy::Adaptive => {
-            let min_tier = healthy.iter().map(|(m, _)| m.tier).min().unwrap();
+            let min_tier = healthy
+                .iter()
+                .map(|(m, _)| m.tier)
+                .min()
+                .expect("healthy non-empty (checked above)");
             let list: Vec<(Uuid, u32)> = healthy
                 .iter()
                 .filter(|(m, _)| m.tier == min_tier)

@@ -147,7 +147,12 @@ impl Cloudflare {
                 self.zone_name
             ));
         }
-        let id = resp.result.into_iter().next().unwrap().id;
+        let id = resp
+            .result
+            .into_iter()
+            .next()
+            .expect("resp.result non-empty (checked above)")
+            .id;
         let _ = self.zone_id.set(id.clone());
         Ok(id)
     }

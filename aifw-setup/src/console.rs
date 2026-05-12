@@ -36,10 +36,13 @@ pub fn prompt(label: &str, default: &str) -> String {
     } else {
         print!("  {label} [{default}]: ");
     }
-    io::stdout().flush().unwrap();
+    io::stdout().flush().expect("stdout flush failed — terminal lost");
 
     let mut input = String::new();
-    io::stdin().lock().read_line(&mut input).unwrap();
+    io::stdin()
+        .lock()
+        .read_line(&mut input)
+        .expect("stdin read failed — terminal lost");
     let input = input.trim().to_string();
 
     if input.is_empty() {
@@ -64,7 +67,7 @@ pub fn prompt_required(label: &str) -> String {
 /// Falls back to regular prompt if terminal doesn't support no-echo
 pub fn prompt_password(label: &str) -> String {
     print!("  {label}: ");
-    io::stdout().flush().unwrap();
+    io::stdout().flush().expect("stdout flush failed — terminal lost");
 
     // Try to disable echo on Unix
     #[cfg(unix)]
@@ -77,7 +80,10 @@ pub fn prompt_password(label: &str) -> String {
             let _ = tcsetattr(&stdin, SetArg::TCSANOW, &term);
 
             let mut input = String::new();
-            stdin.lock().read_line(&mut input).unwrap();
+            stdin
+                .lock()
+                .read_line(&mut input)
+                .expect("stdin read failed — terminal lost");
             println!(); // newline after hidden input
 
             let _ = tcsetattr(&stdin, SetArg::TCSANOW, &old_term);
@@ -85,14 +91,20 @@ pub fn prompt_password(label: &str) -> String {
         }
         // tcgetattr failed (not a tty) — fall through to echoed read.
         let mut input = String::new();
-        stdin.lock().read_line(&mut input).unwrap();
+        stdin
+            .lock()
+            .read_line(&mut input)
+            .expect("stdin read failed — terminal lost");
         input.trim().to_string()
     }
 
     #[cfg(not(unix))]
     {
         let mut input = String::new();
-        io::stdin().lock().read_line(&mut input).unwrap();
+        io::stdin()
+        .lock()
+        .read_line(&mut input)
+        .expect("stdin read failed — terminal lost");
         input.trim().to_string()
     }
 }
@@ -114,10 +126,13 @@ pub fn prompt_password_confirm(label: &str) -> String {
 pub fn confirm(label: &str, default: bool) -> bool {
     let hint = if default { "Y/n" } else { "y/N" };
     print!("  {label} [{hint}]: ");
-    io::stdout().flush().unwrap();
+    io::stdout().flush().expect("stdout flush failed — terminal lost");
 
     let mut input = String::new();
-    io::stdin().lock().read_line(&mut input).unwrap();
+    io::stdin()
+        .lock()
+        .read_line(&mut input)
+        .expect("stdin read failed — terminal lost");
     let input = input.trim().to_lowercase();
 
     if input.is_empty() {

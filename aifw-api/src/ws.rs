@@ -830,7 +830,7 @@ async fn collect_system_metrics() -> SystemPayload {
         });
 
         if let Some(cur) = cur {
-            let mut prev_lock = PREV_CP.lock().unwrap();
+            let mut prev_lock = PREV_CP.lock().expect("lock poisoned");
             let pct = if let Some(prev) = *prev_lock {
                 let d: Vec<u64> = (0..5).map(|i| cur[i].saturating_sub(prev[i])).collect();
                 let total: u64 = d.iter().sum();

@@ -264,8 +264,11 @@ pub async fn install_from_path(
         .await
         .map_err(|e| UpdaterError::Install(format!("Failed to create extract dir: {}", e)))?;
 
+    let extract_dir_str = extract_dir
+        .to_str()
+        .ok_or_else(|| UpdaterError::Install("extract_dir path is not UTF-8".into()))?;
     let output = Command::new("tar")
-        .args(["xf", tarball_str, "-C", extract_dir.to_str().unwrap()])
+        .args(["xf", tarball_str, "-C", extract_dir_str])
         .output()
         .await
         .map_err(|e| UpdaterError::Install(format!("tar failed: {}", e)))?;
@@ -316,7 +319,10 @@ pub async fn install_from_path(
                 None => continue,
             };
             let dst = format!("{}/{}", BIN_DIR, name);
-            let output = crate::sudo::install(Some("755"), None, None, src.to_str().unwrap(), &dst)
+            let src_str = src
+                .to_str()
+                .expect("src path is utf-8 (file_name validated above)");
+            let output = crate::sudo::install(Some("755"), None, None, src_str, &dst)
                 .await
                 .map_err(|e| UpdaterError::Install(format!("Failed to install {}: {}", name, e)))?;
             if !output.status.success() {
@@ -344,8 +350,11 @@ pub async fn install_from_path(
             .args(["/bin/rm", "-rf", UI_DIR])
             .output()
             .await;
+        let ui_src_str = ui_src
+            .to_str()
+            .ok_or_else(|| UpdaterError::Install("ui_src path is not UTF-8".into()))?;
         let output = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/cp", "-a", ui_src.to_str().unwrap(), UI_DIR])
+            .args(["/bin/cp", "-a", ui_src_str, UI_DIR])
             .output()
             .await
             .map_err(|e| UpdaterError::Install(format!("Failed to install UI: {}", e)))?;
@@ -440,8 +449,10 @@ pub async fn install_from_path(
                     None => continue,
                 };
                 let dst = format!("/usr/local/etc/rc.d/{}", name);
-                let _ = crate::sudo::install(Some("755"), None, None, src.to_str().unwrap(), &dst)
-                    .await;
+                let src_str = src
+                    .to_str()
+                    .expect("src path is utf-8 (file_name validated above)");
+                let _ = crate::sudo::install(Some("755"), None, None, src_str, &dst).await;
             }
         }
     }
@@ -468,8 +479,10 @@ pub async fn install_from_path(
                     None => continue,
                 };
                 let dst = format!("/usr/local/libexec/{}", name);
-                let _ = crate::sudo::install(Some("755"), None, None, src.to_str().unwrap(), &dst)
-                    .await;
+                let src_str = src
+                    .to_str()
+                    .expect("src path is utf-8 (file_name validated above)");
+                let _ = crate::sudo::install(Some("755"), None, None, src_str, &dst).await;
             }
         }
     }
@@ -490,8 +503,10 @@ pub async fn install_from_path(
                     None => continue,
                 };
                 let dst = format!("{}/{}", BIN_DIR, name);
-                let _ = crate::sudo::install(Some("755"), None, None, src.to_str().unwrap(), &dst)
-                    .await;
+                let src_str = src
+                    .to_str()
+                    .expect("src path is utf-8 (file_name validated above)");
+                let _ = crate::sudo::install(Some("755"), None, None, src_str, &dst).await;
             }
         }
     }
@@ -508,8 +523,11 @@ pub async fn install_from_path(
     let installed_version = {
         let ver_src = update_dir.join("version");
         if ver_src.exists() {
+            let ver_src_str = ver_src
+                .to_str()
+                .ok_or_else(|| UpdaterError::Install("ver_src path is not UTF-8".into()))?;
             let output = Command::new("/usr/local/bin/sudo")
-                .args(["/bin/cp", ver_src.to_str().unwrap(), VERSION_FILE])
+                .args(["/bin/cp", ver_src_str, VERSION_FILE])
                 .output()
                 .await
                 .map_err(|e| UpdaterError::Install(format!("Failed to update version file: {}", e)))?;
@@ -580,7 +598,10 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
 
     // Download tarball and checksum
     info!("Downloading AiFw update v{}...", info.latest_version);
-    http_download(tarball_url, tarball_path.to_str().unwrap()).await?;
+    let tarball_path_str = tarball_path
+        .to_str()
+        .ok_or_else(|| UpdaterError::Install("tarball_path is not UTF-8".into()))?;
+    http_download(tarball_url, tarball_path_str).await?;
     http_download(checksum_url, &checksum_path).await?;
 
     // Read and parse the expected hash from the downloaded checksum file
