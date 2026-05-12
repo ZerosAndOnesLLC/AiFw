@@ -252,7 +252,19 @@ pub(crate) async fn apply_route_to_system(
         }
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
-            tracing::warn!(destination, gateway, fib, error = %err, "route add failed");
+            // EEXIST means the route is already in place — that's our desired
+            // end state, so treat it as a no-op. `route(8)` formats this as
+            // "route: writing to routing socket: File exists" on FreeBSD.
+            if err.contains("File exists") {
+                tracing::debug!(
+                    destination,
+                    gateway,
+                    fib,
+                    "route already present, skipping"
+                );
+            } else {
+                tracing::warn!(destination, gateway, fib, error = %err, "route add failed");
+            }
         }
         Err(e) => {
             tracing::warn!(destination, gateway, fib, error = %e, "route command failed");
