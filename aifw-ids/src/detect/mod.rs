@@ -71,9 +71,8 @@ impl DetectionEngine {
             }
         }
 
-        // Step 3: Run detection rules
-        let ruleset_guard = self.rule_db.ruleset();
-        let ruleset = match ruleset_guard.as_ref() {
+        // Step 3: Run detection rules — atomic ArcSwap load, no lock.
+        let ruleset = match self.rule_db.ruleset() {
             Some(rs) => rs,
             None => return alerts,
         };
@@ -295,7 +294,7 @@ impl DetectionEngine {
 
             let data_str = String::from_utf8_lossy(data);
             // Use pre-compiled regex from the ruleset if available, otherwise compile
-            let matched = self.rule_db.ruleset().as_ref().is_some_and(|rs| {
+            let matched = self.rule_db.ruleset().is_some_and(|rs| {
                 rs.regex_patterns
                     .iter()
                     .any(|(re, _)| re.as_str() == pcre.pattern && re.is_match(&data_str))

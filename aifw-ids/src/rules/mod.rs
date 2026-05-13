@@ -4,10 +4,11 @@ pub mod suricata;
 pub mod yara;
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::Arc;
 
 use aho_corasick::AhoCorasick;
 use aifw_common::ids::{IdsAction, IdsSeverity, RuleSource};
+use arc_swap::ArcSwapOption;
 
 /// A compiled rule ready for matching
 #[derive(Debug, Clone)]
@@ -122,10 +123,15 @@ pub enum FlowbitOp {
     NoAlert,
 }
 
-/// A compiled ruleset with prefilter structures
+/// A compiled ruleset with prefilter structures.
+///
+/// The rule list is stored as `Arc<Vec<CompiledRule>>` so swapping in a fresh
+/// ruleset is O(1) — just a pointer + refcount bump. This is the hot path
+/// for `RuleDatabase::load_rules` / `add_rules`, which previously cloned the
+/// entire 47k-rule vector on every reload.
 pub struct CompiledRuleset {
-    /// All compiled rules
-    pub rules: Vec<CompiledRule>,
+    /// All compiled rules — shared via Arc, never cloned.
+    pub rules: Arc<Vec<CompiledRule>>,
     /// Aho-Corasick automaton for all content patterns
     pub content_matcher: Option<AhoCorasick>,
     /// Maps AC match index → list of rule indices that contain that content
@@ -139,8 +145,11 @@ pub struct CompiledRuleset {
 }
 
 impl CompiledRuleset {
-    /// Build a compiled ruleset from a list of compiled rules.
-    pub fn build(rules: Vec<CompiledRule>) -> Self {
+    /// Build a compiled ruleset from a shared list of compiled rules.
+    ///
+    /// Iterates by reference so neither the rules Vec nor any CompiledRule
+    /// is cloned; only the prefilter pattern bytes themselves are extracted.
+    pub fn build(rules: Arc<Vec<CompiledRule>>) -> Self {
         let mut all_patterns: Vec<Vec<u8>> = Vec::new();
         let mut content_to_rules: Vec<Vec<usize>> = Vec::new();
         let mut regex_patterns: Vec<(regex::Regex, Vec<usize>)> = Vec::new();
@@ -268,50 +277,69 @@ impl std::fmt::Debug for CompiledRuleset {
 }
 
 /// The unified rule database managing all rule formats.
+///
+/// Both the raw rule list and the compiled ruleset are held in `ArcSwap`
+/// slots. Readers (detection) load an atomic snapshot — no lock contention,
+/// no clone. Writers (reload) build a new ruleset from the shared `Arc<Vec<_>>`
+/// off-thread, then swap a pointer.
 pub struct RuleDatabase {
     /// The active compiled ruleset (swapped atomically on reload)
-    ruleset: RwLock<Option<CompiledRuleset>>,
+    ruleset: ArcSwapOption<CompiledRuleset>,
     /// Raw parsed rules before compilation
-    raw_rules: RwLock<Vec<CompiledRule>>,
+    raw_rules: ArcSwapOption<Vec<CompiledRule>>,
 }
 
 impl RuleDatabase {
     pub fn new() -> Self {
         Self {
-            ruleset: RwLock::new(None),
-            raw_rules: RwLock::new(Vec::new()),
+            ruleset: ArcSwapOption::const_empty(),
+            raw_rules: ArcSwapOption::const_empty(),
         }
     }
 
     /// Load and compile rules. Replaces the active ruleset.
     pub fn load_rules(&self, rules: Vec<CompiledRule>) {
-        let compiled = CompiledRuleset::build(rules.clone());
-        *self.raw_rules.write().expect("lock poisoned") = rules;
-        *self.ruleset.write().expect("lock poisoned") = Some(compiled);
+        let rules = Arc::new(rules);
+        let compiled = Arc::new(CompiledRuleset::build(rules.clone()));
+        self.raw_rules.store(Some(rules));
+        self.ruleset.store(Some(compiled));
     }
 
     /// Add rules to the existing set and recompile.
+    ///
+    /// This still allocates a fresh Vec because the appended-to list needs
+    /// exclusive ownership; existing readers continue with the previous Arc.
     pub fn add_rules(&self, new_rules: Vec<CompiledRule>) {
-        let mut raw = self.raw_rules.write().expect("lock poisoned");
-        raw.extend(new_rules);
-        let compiled = CompiledRuleset::build(raw.clone());
-        *self.ruleset.write().expect("lock poisoned") = Some(compiled);
+        let existing = self.raw_rules.load_full();
+        let mut combined: Vec<CompiledRule> = existing
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
+        combined.extend(new_rules);
+        let rules = Arc::new(combined);
+        let compiled = Arc::new(CompiledRuleset::build(rules.clone()));
+        self.raw_rules.store(Some(rules));
+        self.ruleset.store(Some(compiled));
     }
 
-    /// Get a read lock on the active ruleset.
-    pub fn ruleset(&self) -> std::sync::RwLockReadGuard<'_, Option<CompiledRuleset>> {
-        self.ruleset.read().expect("lock poisoned")
+    /// Atomic snapshot of the active ruleset.
+    ///
+    /// Returns `None` if no rules have been loaded yet. The returned Arc
+    /// keeps the ruleset alive even if a concurrent reload swaps in a new
+    /// one — readers see a consistent snapshot.
+    pub fn ruleset(&self) -> Option<Arc<CompiledRuleset>> {
+        self.ruleset.load_full()
     }
 
     /// Number of loaded rules.
     pub fn rule_count(&self) -> usize {
-        self.raw_rules.read().expect("lock poisoned").len()
+        self.raw_rules.load().as_ref().map_or(0, |v| v.len())
     }
 
     /// Clear all rules.
     pub fn clear(&self) {
-        *self.raw_rules.write().expect("lock poisoned") = Vec::new();
-        *self.ruleset.write().expect("lock poisoned") = None;
+        self.raw_rules.store(None);
+        self.ruleset.store(None);
     }
 }
 
@@ -376,7 +404,7 @@ mod tests {
             make_rule(3, b"malware", "Another malware rule"),
         ];
 
-        let ruleset = CompiledRuleset::build(rules);
+        let ruleset = CompiledRuleset::build(Arc::new(rules));
         assert_eq!(ruleset.rules.len(), 3);
         assert!(ruleset.content_matcher.is_some());
         // "malware" pattern should map to rules 0 and 2
@@ -390,7 +418,7 @@ mod tests {
             make_rule(2, b"exploit", "Exploit detected"),
         ];
 
-        let ruleset = CompiledRuleset::build(rules);
+        let ruleset = CompiledRuleset::build(Arc::new(rules));
 
         let candidates = ruleset.prefilter(b"this contains malware string");
         assert!(candidates.contains(&0));
