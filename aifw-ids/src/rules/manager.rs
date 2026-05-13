@@ -357,10 +357,31 @@ impl RulesetManager {
     /// Load all enabled rules from the database and compile them into the RuleDatabase.
     pub async fn compile_rules(&self, rule_db: &RuleDatabase) -> Result<usize> {
         let rules = self.list_rules(None, true, 100_000, 0).await?;
-        let mut compiled = Vec::new();
 
+        // Single bulk lookup of ruleset_id → rule_format so we avoid a per-rule
+        // SELECT inside the hot path (previously ~47k queries per reload).
+        let format_rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, rule_format FROM ids_rulesets")
+                .fetch_all(&self.pool)
+                .await?;
+        let source_by_ruleset: std::collections::HashMap<String, RuleSource> = format_rows
+            .into_iter()
+            .map(|(id, fmt)| {
+                let src = match fmt.as_str() {
+                    "sigma" => RuleSource::Sigma,
+                    "yara" => RuleSource::Yara,
+                    _ => RuleSource::EtOpen,
+                };
+                (id, src)
+            })
+            .collect();
+
+        let mut compiled = Vec::new();
         for rule in &rules {
-            let source = self.guess_source(&rule.ruleset_id).await;
+            let source = source_by_ruleset
+                .get(&rule.ruleset_id.to_string())
+                .copied()
+                .unwrap_or(RuleSource::Custom);
             match self.detect_format(&rule.rule_text) {
                 RuleFormat::Suricata => {
                     if let Ok(cr) = super::suricata::parse_rule(&rule.rule_text, source) {
@@ -405,24 +426,6 @@ impl RulesetManager {
         }
     }
 
-    async fn guess_source(&self, ruleset_id: &Uuid) -> RuleSource {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT rule_format FROM ids_rulesets WHERE id = ?")
-                .bind(ruleset_id.to_string())
-                .fetch_optional(&self.pool)
-                .await
-                .ok()
-                .flatten();
-
-        match row {
-            Some((fmt,)) => match fmt.as_str() {
-                "sigma" => RuleSource::Sigma,
-                "yara" => RuleSource::Yara,
-                _ => RuleSource::EtOpen,
-            },
-            None => RuleSource::Custom,
-        }
-    }
 }
 
 fn extract_sid(rule: &str) -> Option<u32> {
