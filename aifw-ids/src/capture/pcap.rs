@@ -74,12 +74,12 @@ mod tests {
         cap.inject_packets(vec![
             RawPacket {
                 timestamp_us: 1000,
-                data: vec![0xAA; 64],
+                data: smallvec::SmallVec::from_slice(&[0xAA; 64]),
                 orig_len: 64,
             },
             RawPacket {
                 timestamp_us: 2000,
-                data: vec![0xBB; 128],
+                data: smallvec::SmallVec::from_slice(&[0xBB; 128]),
                 orig_len: 128,
             },
         ]);

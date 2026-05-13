@@ -34,13 +34,17 @@ impl Default for CaptureConfig {
     }
 }
 
-/// A raw captured packet — timestamp + data
+/// A raw captured packet — timestamp + data.
+///
+/// `data` uses `SmallVec` with a 1600-byte inline buffer (one Ethernet MTU);
+/// the common-case packet incurs zero heap allocation. Jumbo frames or other
+/// >1600-byte payloads spill to the heap automatically.
 #[derive(Debug, Clone)]
 pub struct RawPacket {
     /// Packet timestamp as microseconds since epoch
     pub timestamp_us: i64,
-    /// Packet data (owned copy; zero-copy variant uses slices in hot path)
-    pub data: Vec<u8>,
+    /// Packet bytes — inline up to 1600, heap-spilled beyond.
+    pub data: smallvec::SmallVec<[u8; 1600]>,
     /// Original wire length (may be > data.len() if snaplen truncated)
     pub orig_len: usize,
 }
@@ -105,7 +109,7 @@ mod tests {
     fn test_raw_packet() {
         let pkt = RawPacket {
             timestamp_us: 1000000,
-            data: vec![0u8; 64],
+            data: smallvec::SmallVec::from_slice(&[0u8; 64]),
             orig_len: 64,
         };
         assert_eq!(pkt.data.len(), 64);

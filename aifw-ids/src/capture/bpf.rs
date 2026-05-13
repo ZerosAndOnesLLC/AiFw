@@ -196,9 +196,11 @@ impl CaptureBackend for BpfCapture {
             (&self.buffer[data_start..data_end], datalen)
         };
 
+        // SmallVec inline buffer (1600 B) absorbs all sub-MTU packets with
+        // zero heap allocation — the common case on a typical interface.
         let packet = RawPacket {
             timestamp_us,
-            data: pkt_data.to_vec(),
+            data: smallvec::SmallVec::from_slice(pkt_data),
             orig_len,
         };
 
