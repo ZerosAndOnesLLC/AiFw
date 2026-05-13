@@ -2363,7 +2363,9 @@ aifw ALL=(root) NOPASSWD: /sbin/shutdown -r +10s *
 
 # --- Narrow wrapper scripts (GHSA-mjqh-2vx8-7hq7 follow-up #204; SEC-C2) ---
 # Each helper enforces its own internal allowlist of valid arguments —
-# paths, services, interfaces, rcvars.
+# paths, services, interfaces, rcvars. Preferred over the broad grants
+# below; the helpers exist on every v5.96+ box thanks to
+# `ensure_libexec_scripts` embedding them.
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-wg *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-freebsd-update *
@@ -2381,6 +2383,33 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-mkdir *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-cp *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-tar *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-tcpdump *
+
+# --- Broad compat grants ---
+# Kept alongside the narrow helpers above for upgrade compat: in-place
+# tarball install from a pre-#204 appliance bootstraps via these grants
+# (write_embedded_script falls back to `sudo /usr/bin/install` when the
+# narrow helper isn't yet on disk). Operators who have completed the
+# transition to narrow-only operation may strip these by hand. A future
+# release will add an `aifw-setup --tighten-sudoers` command that removes
+# them automatically once narrow-helper coverage is verified.
+aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *
+aifw ALL=(ALL) NOPASSWD: /sbin/route *
+aifw ALL=(ALL) NOPASSWD: /sbin/ifconfig *
+aifw ALL=(ALL) NOPASSWD: /bin/cp *
+aifw ALL=(ALL) NOPASSWD: /bin/rm *
+aifw ALL=(ALL) NOPASSWD: /bin/mkdir *
+aifw ALL=(ALL) NOPASSWD: /bin/pkill *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/install *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/tar *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/tee *
+aifw ALL=(ALL) NOPASSWD: /usr/bin/wg *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/chown *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/freebsd-update *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/pkg *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/service *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/sysrc *
+aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
 
 # --- Detached restart driver ---
 # Required by aifw-core/src/updater.rs `restart_services()` so post-update
@@ -2481,39 +2510,49 @@ mod sudoers_tests {
         }
     }
 
-    /// No broad grants for the nine #204 categories should remain.
-    /// Catches regressions where a future change re-adds `/usr/sbin/sysrc *`
-    /// etc. (alongside the helper, by mistake).
+    /// The narrow `aifw-sudo-*` helpers must be granted in addition to the
+    /// compat-tier broad grants — the helpers are the preferred path and
+    /// `crate::sudo::*` wrappers always call them when on disk.
     #[test]
-    fn migrated_204_categories_are_not_broadly_granted() {
+    fn narrow_helpers_are_granted() {
         let content = sudoers_content();
-        for forbidden in [
-            "/usr/bin/tee *",
-            "/usr/bin/wg *",
-            "/usr/sbin/freebsd-update *",
-            "/usr/sbin/pkg *",
-            "/usr/sbin/service *",
-            "/usr/sbin/chown *",
-            "/sbin/ifconfig *",
-            "/usr/bin/install *",
-            "/usr/sbin/sysrc *",
-            // SEC-C2: the seven broad-wildcard grants closed in v5.95.33.
-            "/sbin/dhclient *",
-            "/sbin/route *",
-            "/bin/cat *",
-            "/bin/cp *",
-            "/bin/rm *",
-            "/bin/mkdir *",
-            "/bin/chmod *",
-            "/bin/pkill *",
-            "/usr/bin/pkill *",
-            "/usr/bin/tar *",
-            "/usr/sbin/tcpdump *",
+        for helper in [
+            "/usr/local/libexec/aifw-sudo-install",
+            "/usr/local/libexec/aifw-sudo-write",
+            "/usr/local/libexec/aifw-sudo-wg",
+            "/usr/local/libexec/aifw-sudo-freebsd-update",
+            "/usr/local/libexec/aifw-sudo-pkg",
+            "/usr/local/libexec/aifw-sudo-service",
+            "/usr/local/libexec/aifw-sudo-chown",
+            "/usr/local/libexec/aifw-sudo-ifconfig",
+            "/usr/local/libexec/aifw-sudo-sysrc",
+            "/usr/local/libexec/aifw-sudo-dhclient",
+            "/usr/local/libexec/aifw-sudo-route",
+            "/usr/local/libexec/aifw-sudo-pkill",
+            "/usr/local/libexec/aifw-sudo-rm",
+            "/usr/local/libexec/aifw-sudo-mkdir",
+            "/usr/local/libexec/aifw-sudo-cp",
+            "/usr/local/libexec/aifw-sudo-tar",
+            "/usr/local/libexec/aifw-sudo-tcpdump",
         ] {
             assert!(
+                content.contains(helper),
+                "narrow helper grant for {helper:?} is missing — \
+                 v5.96 ships these alongside the compat-tier broad grants"
+            );
+        }
+    }
+
+    /// `cat *` and `chmod *` are NOT in the canonical sudoers — they were
+    /// unused in current code and dropped entirely as part of SEC-C2.
+    #[test]
+    fn deprecated_unused_grants_stay_dropped() {
+        let content = sudoers_content();
+        for forbidden in ["/bin/cat *", "/bin/chmod *"] {
+            assert!(
                 !content.contains(forbidden),
-                "broad grant {forbidden:?} was re-introduced — should be \
-                 routed through the matching aifw-sudo-* helper"
+                "grant {forbidden:?} was reintroduced — kept dropped because \
+                 nothing in the codebase calls it (SEC-C2)"
             );
         }
     }

@@ -28,6 +28,83 @@ const EMBEDDED_RESTART_SH: &str =
 const EMBEDDED_WATCHDOG_SH: &str =
     include_str!("../../freebsd/overlay/usr/local/libexec/aifw-watchdog.sh");
 
+/// All `aifw-sudo-*` narrow-grant helper scripts, embedded at compile time.
+/// `ensure_libexec_scripts()` writes them at every aifw-api startup so an
+/// in-place tarball upgrade from a pre-#204 appliance (no narrow helpers on
+/// disk yet) self-bootstraps the wrapper inventory. Without this, the new
+/// code's `crate::sudo::*` wrappers would all fail (helper not found, sudo
+/// refused) on cold-boot from an old image.
+const EMBEDDED_SUDO_HELPERS: &[(&str, &str)] = &[
+    (
+        "aifw-sudo-install",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-install"),
+    ),
+    (
+        "aifw-sudo-write",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-write"),
+    ),
+    (
+        "aifw-sudo-wg",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-wg"),
+    ),
+    (
+        "aifw-sudo-freebsd-update",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-freebsd-update"),
+    ),
+    (
+        "aifw-sudo-pkg",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-pkg"),
+    ),
+    (
+        "aifw-sudo-service",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-service"),
+    ),
+    (
+        "aifw-sudo-chown",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-chown"),
+    ),
+    (
+        "aifw-sudo-ifconfig",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-ifconfig"),
+    ),
+    (
+        "aifw-sudo-sysrc",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-sysrc"),
+    ),
+    (
+        "aifw-sudo-dhclient",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-dhclient"),
+    ),
+    (
+        "aifw-sudo-route",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-route"),
+    ),
+    (
+        "aifw-sudo-pkill",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-pkill"),
+    ),
+    (
+        "aifw-sudo-rm",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-rm"),
+    ),
+    (
+        "aifw-sudo-mkdir",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-mkdir"),
+    ),
+    (
+        "aifw-sudo-cp",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-cp"),
+    ),
+    (
+        "aifw-sudo-tar",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-tar"),
+    ),
+    (
+        "aifw-sudo-tcpdump",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-tcpdump"),
+    ),
+];
+
 #[derive(Deserialize)]
 struct Manifest {
     binaries: ManifestBinaries,
@@ -649,6 +726,15 @@ const OWNED_RCVARS: &[&str] = &[
 pub async fn ensure_libexec_scripts() {
     write_embedded_script("aifw-restart.sh", EMBEDDED_RESTART_SH).await;
     write_embedded_script("aifw-watchdog.sh", EMBEDDED_WATCHDOG_SH).await;
+    // Bootstrap the narrow-grant sudo helpers (#204 / SEC-C2). These ship
+    // in the tarball overlay AND are embedded here so an in-place upgrade
+    // from a pre-#204 box — which has no `aifw-sudo-*` on disk and no
+    // narrow grants in sudoers — still ends up with the helpers in place.
+    // write_embedded_script falls back to direct `sudo /usr/bin/install`
+    // when the narrow `aifw-sudo-install` helper isn't on disk yet.
+    for (name, content) in EMBEDDED_SUDO_HELPERS {
+        write_embedded_script(name, content).await;
+    }
 }
 
 async fn write_embedded_script(name: &str, content: &str) {
@@ -658,7 +744,7 @@ async fn write_embedded_script(name: &str, content: &str) {
     {
         return;
     }
-    // Stage in /tmp first, then sudo install -m 755 so the write is atomic
+    // Stage in /tmp first, then install -m 755 so the write is atomic
     // and gets correct ownership/perms regardless of who runs us.
     let tmp = format!("/tmp/.{}.aifw-bootstrap", name);
     if tokio::fs::write(&tmp, content).await.is_err() {
@@ -669,7 +755,21 @@ async fn write_embedded_script(name: &str, content: &str) {
         .args(["/bin/mkdir", "-p", "/usr/local/libexec"])
         .output()
         .await;
-    let result = crate::sudo::install(Some("755"), None, None, &tmp, &path).await;
+    // Prefer the narrow `aifw-sudo-install` helper when it's already on
+    // disk. Otherwise fall back to direct `sudo /usr/bin/install`, which
+    // the broad pre-#204 sudoers grant permits. This is the bootstrap path
+    // used on first upgrade from an old box; once the helpers exist on
+    // disk, every subsequent boot takes the narrow path.
+    let aifw_sudo_install_exists =
+        std::path::Path::new("/usr/local/libexec/aifw-sudo-install").exists();
+    let result = if aifw_sudo_install_exists {
+        crate::sudo::install(Some("755"), None, None, &tmp, &path).await
+    } else {
+        Command::new("/usr/local/bin/sudo")
+            .args(["/usr/bin/install", "-m", "755", &tmp, &path])
+            .output()
+            .await
+    };
     let _ = tokio::fs::remove_file(&tmp).await;
     match result {
         Ok(o) if o.status.success() => info!(name, "libexec script bootstrapped"),
