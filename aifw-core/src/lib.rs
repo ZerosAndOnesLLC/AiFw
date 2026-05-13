@@ -9,6 +9,7 @@ pub mod config_manager;
 pub mod db;
 pub mod ddns;
 pub mod dns_blocklists;
+pub mod error;
 pub mod engine;
 pub mod geoip;
 pub mod ha;
@@ -36,6 +37,7 @@ pub use config::{ConsoleConfig, ConsoleKind, FirewallConfig, SshAccessConfig, Sy
 pub use config_manager::ConfigManager;
 pub use db::Database;
 pub use engine::RuleEngine;
+pub use error::{CoreError, Result};
 pub use geoip::GeoIpEngine;
 pub use ha::{ClusterEngine, current_local_role, is_local_master, sha256_hex};
 pub use multiwan::{
