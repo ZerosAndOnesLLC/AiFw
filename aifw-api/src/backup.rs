@@ -1487,28 +1487,28 @@ pub(crate) async fn apply_firewall_config(
         IpsecProtocol, IpsecSa, VpnStatus, WgPeer, WgTunnel,
     };
 
-    let _ = sqlx::query("DELETE FROM wg_peers")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM wg_tunnels")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM ipsec_sas")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM geoip_rules")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM rules").execute(&state.pool).await;
-    let _ = sqlx::query("DELETE FROM nat_rules")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM aliases")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM static_routes")
-        .execute(&state.pool)
-        .await;
+    // Restore preludes — clear existing rows before re-populating from the
+    // imported config. A silent failure here (locked DB, FK violation, schema
+    // drift) used to leave stale rows that produced a half-imported firewall
+    // with no diagnostic. We now log each error and continue, so the operator
+    // can see what didn't clear in `journalctl`/`tail -f`.
+    for table in [
+        "wg_peers",
+        "wg_tunnels",
+        "ipsec_sas",
+        "geoip_rules",
+        "rules",
+        "nat_rules",
+        "aliases",
+        "static_routes",
+    ] {
+        if let Err(e) = sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&state.pool)
+            .await
+        {
+            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
+        }
+    }
 
     for rc in &config.rules {
         let iface_after = match rc.interface.as_deref() {
@@ -1521,7 +1521,10 @@ pub(crate) async fn apply_firewall_config(
         let mut rc = rc.clone();
         rc.interface = iface_after;
         if let Some(rule) = rule_from_config(&rc) {
-            let _ = state.rule_engine.add_rule(rule).await;
+            let rule_id = rule.id;
+            if let Err(e) = state.rule_engine.add_rule(rule).await {
+                tracing::warn!(rule_id = %rule_id, error = %e, "import: rule restore failed");
+            }
         }
     }
 
@@ -1532,7 +1535,10 @@ pub(crate) async fn apply_firewall_config(
         let mut nc = nc.clone();
         nc.interface = mapped_iface;
         if let Some(nat) = nat_from_config(&nc) {
-            let _ = state.nat_engine.add_rule(nat).await;
+            let nat_id = nat.id;
+            if let Err(e) = state.nat_engine.add_rule(nat).await {
+                tracing::warn!(nat_id = %nat_id, error = %e, "import: nat rule restore failed");
+            }
         }
     }
 
@@ -1555,7 +1561,10 @@ pub(crate) async fn apply_firewall_config(
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
-        let _ = state.alias_engine.add(alias).await;
+        let alias_name = alias.name.clone();
+        if let Err(e) = state.alias_engine.add(alias).await {
+            tracing::warn!(alias = %alias_name, error = %e, "import: alias restore failed");
+        }
     }
 
     // Static routes — restored via direct INSERT + apply_route_to_system,
@@ -1569,7 +1578,7 @@ pub(crate) async fn apply_firewall_config(
             },
             None => None,
         };
-        let _ = sqlx::query(
+        let insert_res = sqlx::query(
             "INSERT INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at, fib) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )
         .bind(&rc.id)
@@ -1583,6 +1592,9 @@ pub(crate) async fn apply_firewall_config(
         .bind(rc.fib as i64)
         .execute(&state.pool)
         .await;
+        if let Err(e) = insert_res {
+            tracing::warn!(dest = %rc.destination, error = %e, "import: static route restore failed");
+        }
         if rc.enabled {
             crate::routes::apply_route_to_system(
                 &rc.destination,
@@ -1611,7 +1623,10 @@ pub(crate) async fn apply_firewall_config(
         rule.id = id;
         rule.label = gc.label.clone();
         rule.status = status;
-        let _ = state.geoip_engine.add_rule(rule).await;
+        let country = rule.country.0.clone();
+        if let Err(e) = state.geoip_engine.add_rule(rule).await {
+            tracing::warn!(country = %country, error = %e, "import: geo-ip rule restore failed");
+        }
     }
 
     for wg in &config.vpn.wireguard {
@@ -1662,7 +1677,10 @@ pub(crate) async fn apply_firewall_config(
                 created_at: now,
                 updated_at: now,
             };
-            let _ = state.vpn_engine.add_wg_peer(peer).await;
+            let peer_name = peer.name.clone();
+            if let Err(e) = state.vpn_engine.add_wg_peer(peer).await {
+                tracing::warn!(peer = %peer_name, error = %e, "import: wg peer restore failed");
+            }
         }
     }
 
@@ -1685,7 +1703,10 @@ pub(crate) async fn apply_firewall_config(
         sa.id = id;
         sa.enc_algo = sac.enc_algo.clone();
         sa.auth_algo = sac.auth_algo.clone();
-        let _ = state.vpn_engine.add_ipsec_sa(sa).await;
+        let sa_name = sa.name.clone();
+        if let Err(e) = state.vpn_engine.add_ipsec_sa(sa).await {
+            tracing::warn!(sa = %sa_name, error = %e, "import: ipsec SA restore failed");
+        }
     }
 
     if !config.system.dns_servers.is_empty() {
@@ -1721,10 +1742,14 @@ pub(crate) async fn apply_firewall_config(
     // Traffic shaping: queues + per-IP rate limits
     let shaping = aifw_core::shaping::ShapingEngine::new(state.pool.clone(), state.pf.clone());
     let _ = shaping.migrate().await;
-    let _ = sqlx::query("DELETE FROM queues").execute(&state.pool).await;
-    let _ = sqlx::query("DELETE FROM rate_limits")
-        .execute(&state.pool)
-        .await;
+    for table in ["queues", "rate_limits"] {
+        if let Err(e) = sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&state.pool)
+            .await
+        {
+            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
+        }
+    }
     for qc in &config.queues {
         let Some(mapped) = map_iface(&qc.interface, iface_map) else {
             continue;
@@ -1755,12 +1780,14 @@ pub(crate) async fn apply_firewall_config(
     // TLS: SNI rules + JA3 blocklist
     let tls_engine = aifw_core::tls::TlsEngine::new(state.pool.clone(), state.pf.clone());
     let _ = tls_engine.migrate().await;
-    let _ = sqlx::query("DELETE FROM sni_rules")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM ja3_blocklist")
-        .execute(&state.pool)
-        .await;
+    for table in ["sni_rules", "ja3_blocklist"] {
+        if let Err(e) = sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&state.pool)
+            .await
+        {
+            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
+        }
+    }
     for sc in &config.tls.sni_rules {
         if let Some(sni) = sni_rule_from_config(sc) {
             let _ = tls_engine.add_sni_rule(sni).await;
@@ -1773,15 +1800,14 @@ pub(crate) async fn apply_firewall_config(
     // HA: CARP VIPs + pfsync + cluster nodes
     let ha_engine = aifw_core::ha::ClusterEngine::new(state.pool.clone(), state.pf.clone());
     let _ = ha_engine.migrate().await;
-    let _ = sqlx::query("DELETE FROM carp_vips")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM pfsync_config")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM cluster_nodes")
-        .execute(&state.pool)
-        .await;
+    for table in ["carp_vips", "pfsync_config", "cluster_nodes"] {
+        if let Err(e) = sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&state.pool)
+            .await
+        {
+            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
+        }
+    }
     for vc in &config.ha.carp_vips {
         let Some(mapped) = map_iface(&vc.interface, iface_map) else {
             continue;
