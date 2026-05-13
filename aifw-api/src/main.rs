@@ -1786,10 +1786,11 @@ async fn create_state_from_db(
         pending_tx: watch::channel(PendingChanges::default()).0,
         login_limiter: LoginRateLimiter::default(),
         ws_tickets: auth::ws_ticket::WsTicketStore::new(),
-        // Capacity of 4 is enough to absorb a producer that briefly outpaces
-        // a slow client without dropping more than a handful of frames.
-        // Lagged subscribers self-recover on the next tick.
-        ws_tick: tokio::sync::broadcast::channel::<Arc<String>>(4).0,
+        // Broadcast capacity is per-subscriber lag tolerance, not aggregate.
+        // 256 slots of Arc<String> (~16 KiB pointers + bookkeeping) absorb
+        // reconnect storms and short producer/consumer hiccups without
+        // forcing RecvError::Lagged on the rest of the subscribers.
+        ws_tick: tokio::sync::broadcast::channel::<Arc<String>>(256).0,
     })
 }
 
