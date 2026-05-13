@@ -774,6 +774,11 @@ fn capture_interface_worker(
                         );
                     }
                 }
+            } else {
+                // BPF read returned timeout/None: yield instead of hot-spinning.
+                // FreeBSD BPF normally blocks until BIOCSRTIMEOUT, but mock /
+                // non-blocking backends (Linux dev) return immediately.
+                std::thread::sleep(std::time::Duration::from_micros(100));
             }
         }
 
