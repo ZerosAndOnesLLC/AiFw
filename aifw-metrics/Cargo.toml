@@ -14,6 +14,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 sqlx = { workspace = true }
+dashmap = "6"
 
 [features]
 postgres = []

@@ -1,39 +1,45 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
+use dashmap::DashMap;
+use std::sync::Mutex;
 
 use crate::backend::{MetricQueryResult, MetricsBackend};
 use crate::series::{Aggregation, MetricPoint, MetricSeries, Tier};
 
 /// Default local metrics store using in-memory ring buffers.
 /// This is the RRD-like backend that works standalone.
+///
+/// DashMap shards the keyspace so concurrent record() calls on different
+/// series don't contend. The per-series Mutex is a plain std::sync::Mutex
+/// — record() does not await while holding it, so blocking semantics are
+/// fine and avoid the cost of a fully-async lock.
 pub struct MetricsStore {
-    series: RwLock<HashMap<String, MetricSeries>>,
+    series: DashMap<String, Mutex<MetricSeries>>,
     default_aggregation: Aggregation,
 }
 
 impl MetricsStore {
     pub fn new() -> Self {
         Self {
-            series: RwLock::new(HashMap::new()),
+            series: DashMap::new(),
             default_aggregation: Aggregation::Average,
         }
     }
 
     /// Pre-register metric series with specific aggregation methods
     pub async fn register(&self, name: &str, aggregation: Aggregation) {
-        let mut series = self.series.write().await;
-        series
+        self.series
             .entry(name.to_string())
-            .or_insert_with(|| MetricSeries::new(name, aggregation));
+            .or_insert_with(|| Mutex::new(MetricSeries::new(name, aggregation)));
     }
 
     /// Get a snapshot of all series names and their latest values
     pub async fn snapshot(&self) -> Vec<(String, Option<f64>)> {
-        let series = self.series.read().await;
-        series
+        self.series
             .iter()
-            .map(|(name, s)| (name.clone(), s.latest()))
+            .map(|entry| {
+                let latest = entry.value().lock().expect("series mutex poisoned").latest();
+                (entry.key().clone(), latest)
+            })
             .collect()
     }
 }
@@ -47,11 +53,15 @@ impl Default for MetricsStore {
 #[async_trait]
 impl MetricsBackend for MetricsStore {
     async fn record(&self, name: &str, value: f64) -> Result<(), String> {
-        let mut series = self.series.write().await;
-        let s = series
+        let entry = self
+            .series
             .entry(name.to_string())
-            .or_insert_with(|| MetricSeries::new(name, self.default_aggregation));
-        s.record(value);
+            .or_insert_with(|| Mutex::new(MetricSeries::new(name, self.default_aggregation)));
+        entry
+            .value()
+            .lock()
+            .expect("series mutex poisoned")
+            .record(value);
         Ok(())
     }
 
@@ -61,11 +71,11 @@ impl MetricsBackend for MetricsStore {
         tier: Tier,
         last_n: Option<usize>,
     ) -> Result<MetricQueryResult, String> {
-        let series = self.series.read().await;
-        let s = series
+        let entry = self
+            .series
             .get(name)
             .ok_or_else(|| format!("metric '{name}' not found"))?;
-
+        let s = entry.value().lock().expect("series mutex poisoned");
         let points: Vec<MetricPoint> = match last_n {
             Some(n) => s.get_last(tier, n).into_iter().cloned().collect(),
             None => s.get_tier(tier).into_iter().cloned().collect(),
@@ -79,20 +89,26 @@ impl MetricsBackend for MetricsStore {
     }
 
     async fn latest(&self, name: &str) -> Result<Option<f64>, String> {
-        let series = self.series.read().await;
-        Ok(series.get(name).and_then(|s| s.latest()))
+        Ok(self.series.get(name).and_then(|e| {
+            e.value()
+                .lock()
+                .expect("series mutex poisoned")
+                .latest()
+        }))
     }
 
     async fn list_metrics(&self) -> Result<Vec<String>, String> {
-        let series = self.series.read().await;
-        Ok(series.keys().cloned().collect())
+        Ok(self.series.iter().map(|e| e.key().clone()).collect())
     }
 
     async fn summary(&self) -> Result<Vec<(String, f64)>, String> {
-        let series = self.series.read().await;
-        Ok(series
+        Ok(self
+            .series
             .iter()
-            .filter_map(|(name, s)| s.latest().map(|v| (name.clone(), v)))
+            .filter_map(|e| {
+                let v = e.value().lock().expect("series mutex poisoned").latest()?;
+                Some((e.key().clone(), v))
+            })
             .collect())
     }
 }
