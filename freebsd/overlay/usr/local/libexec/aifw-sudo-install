@@ -102,9 +102,17 @@ esac
 # Destination: closed allowlist. Keep these tightly scoped — any pattern
 # wider than `path/*` is the difference between this helper and the old
 # `sudo install *` grant.
+#
+# NOTE: /usr/local/etc/sudoers.d/aifw is INTENTIONALLY NOT on this list
+# (SEC-C1). Granting aifw write access to its own sudoers.d entry is a
+# trivial privilege-escalation primitive: stage any text in /tmp, then
+# `sudo aifw-sudo-install /tmp/x /usr/local/etc/sudoers.d/aifw` to install
+# `aifw ALL=(ALL) NOPASSWD: ALL`. The sudoers file ships with the update
+# tarball / ISO and is written at install time by deploy.sh / aifw-setup
+# (both already run as root); it is never modified at runtime by aifw-uid
+# code.
 case "$DEST" in
     # AiFw-managed configuration files
-    /usr/local/etc/sudoers.d/aifw) ;;
     /usr/local/etc/aifw/pf-tuning.conf) ;;
     /usr/local/etc/aifw/anchors/aifw|/usr/local/etc/aifw/anchors/aifw*) ;;
     /usr/local/etc/aifw/tls/*) ;;

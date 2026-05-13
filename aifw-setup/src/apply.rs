@@ -2536,4 +2536,31 @@ mod sudoers_tests {
             );
         }
     }
+
+    /// SEC-C1: aifw-sudo-install MUST NOT accept /usr/local/etc/sudoers.d/aifw
+    /// as a destination. Letting aifw-uid code write its own sudoers grants is
+    /// a trivial PE primitive.
+    #[test]
+    fn aifw_sudo_install_does_not_target_sudoers_d() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let helper = manifest_dir
+            .parent()
+            .unwrap()
+            .join("freebsd/overlay/usr/local/libexec/aifw-sudo-install");
+        let script = std::fs::read_to_string(&helper)
+            .unwrap_or_else(|e| panic!("read {}: {}", helper.display(), e));
+        for line in script.lines() {
+            let trimmed = line.trim_start();
+            // Look only at non-comment lines that contain a `case` arm body.
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            assert!(
+                !trimmed.starts_with("/usr/local/etc/sudoers.d/aifw)"),
+                "aifw-sudo-install dest allowlist re-introduces \
+                 /usr/local/etc/sudoers.d/aifw (SEC-C1 regression). \
+                 Sudoers must be shipped via the package, not migrated at runtime."
+            );
+        }
+    }
 }
