@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 use uuid::Uuid;
@@ -29,7 +30,10 @@ pub enum FlowState {
 }
 
 /// Canonical flow key — ordered so both directions map to the same flow.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `Ord` is derived for use as a tie-breaker in the LRU eviction heap; the
+/// ordering itself isn't semantically meaningful, just total.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FlowKey {
     /// Lower IP address
     pub ip_a: IpAddr,
@@ -229,12 +233,22 @@ impl Flow {
 }
 
 /// Concurrent flow table — lock-free per-entry access via DashMap.
+///
+/// `reassembly_total` is an atomic counter maintained alongside the per-flow
+/// `toserver_buf` / `toclient_buf` grows, so reassembly-budget checks are O(1)
+/// instead of an O(N) iteration over the whole table on every packet.
 pub struct FlowTable {
     table: DashMap<FlowKey, Flow>,
     max_stream_depth: usize,
     max_flows: usize,
     reassembly_budget_bytes: usize,
+    reassembly_total: AtomicUsize,
 }
+
+/// Number of flows evicted per `evict_oldest_batch` pass. Amortizes the
+/// O(N) scan over many evictions — the alternative (evict one at a time)
+/// makes track_packet O(N) per call under cap pressure.
+const EVICT_BATCH: usize = 128;
 
 impl FlowTable {
     pub fn new(max_flows: usize) -> Self {
@@ -243,6 +257,7 @@ impl FlowTable {
             max_stream_depth: 65536, // 64 KB per direction — covers HTTP headers, TLS handshake, DNS, banners.
             max_flows,
             reassembly_budget_bytes: 256 * 1024 * 1024, // 256 MB
+            reassembly_total: AtomicUsize::new(0),
         }
     }
 
@@ -278,33 +293,80 @@ impl FlowTable {
         let key = FlowKey::from_packet(src_ip, dst_ip, src_port, dst_port, proto);
         let direction = key.direction(src_ip, src_port);
 
-        // Evict if at cap and this is a new flow.
+        // Evict if at cap and this is a new flow. For small tables we evict
+        // exactly enough to make room (preserves the legacy "drop the single
+        // oldest" semantic); for large tables we evict up to EVICT_BATCH so
+        // the O(N) scan is amortized over many subsequent inserts.
         if !self.table.contains_key(&key) && self.table.len() >= self.max_flows {
-            self.evict_oldest();
+            let table_len = self.table.len();
+            let needed = table_len.saturating_sub(self.max_flows).saturating_add(1);
+            // Amortize: when the table is large, sweep an EVICT_BATCH or
+            // 10% of capacity, whichever is smaller (but never less than
+            // the minimum needed to fit the new flow).
+            let batched = (table_len / 10).min(EVICT_BATCH);
+            self.evict_oldest_batch(needed.max(batched));
         }
 
+        // Track reassembly delta atomically. We measure buf len before and
+        // after the entry mutation so the global counter stays consistent
+        // with the sum-of-bufs across all flows.
+        let mut delta: i64 = 0;
         self.table
             .entry(key.clone())
-            .and_modify(|flow| flow.update(packet, direction))
-            .or_insert_with(|| Flow::new(key.clone(), packet, self.max_stream_depth));
+            .and_modify(|flow| {
+                let before = flow.toserver_buf.len() + flow.toclient_buf.len();
+                flow.update(packet, direction);
+                let after = flow.toserver_buf.len() + flow.toclient_buf.len();
+                delta = after as i64 - before as i64;
+            })
+            .or_insert_with(|| {
+                let flow = Flow::new(key.clone(), packet, self.max_stream_depth);
+                delta = (flow.toserver_buf.len() + flow.toclient_buf.len()) as i64;
+                flow
+            });
+        if delta != 0 {
+            apply_signed_delta(&self.reassembly_total, delta);
+        }
 
-        // Enforce reassembly byte budget — evict oldest until under budget.
-        while self.reassembly_bytes() > self.reassembly_budget_bytes && !self.table.is_empty() {
-            self.evict_oldest();
+        // Enforce reassembly byte budget — batch-evict if over.
+        if self.reassembly_total.load(Ordering::Relaxed) > self.reassembly_budget_bytes
+            && !self.table.is_empty()
+        {
+            self.evict_oldest_batch(EVICT_BATCH);
         }
 
         Some((key, direction))
     }
 
-    /// Evict the entry with the smallest `last_ts`. O(N).
-    fn evict_oldest(&self) {
-        let oldest = self
-            .table
-            .iter()
-            .min_by_key(|e| e.value().last_ts)
-            .map(|e| e.key().clone());
-        if let Some(k) = oldest {
-            self.table.remove(&k);
+    /// Evict up to `n` oldest entries in a single pass. O(N) scan + O(n log n)
+    /// for partial sort, but amortized over n inserts → O(1) per insert when
+    /// the table is at capacity.
+    fn evict_oldest_batch(&self, n: usize) {
+        // Bounded max-heap keyed by last_ts so we keep the smallest n entries
+        // overall in one O(N log n) pass.
+        use std::collections::BinaryHeap;
+        let mut heap: BinaryHeap<(i64, FlowKey)> = BinaryHeap::with_capacity(n + 1);
+        for entry in self.table.iter() {
+            let ts = entry.value().last_ts;
+            let key = entry.key().clone();
+            if heap.len() < n {
+                heap.push((ts, key));
+            } else if let Some(&(top_ts, _)) = heap.peek()
+                && ts < top_ts
+            {
+                heap.pop();
+                heap.push((ts, key));
+            }
+        }
+        // Remove the collected entries and decrement the reassembly counter.
+        let mut freed: usize = 0;
+        for (_, key) in heap.drain() {
+            if let Some((_, flow)) = self.table.remove(&key) {
+                freed += flow.toserver_buf.len() + flow.toclient_buf.len();
+            }
+        }
+        if freed > 0 {
+            self.reassembly_total.fetch_sub(freed, Ordering::Relaxed);
         }
     }
 
@@ -334,22 +396,44 @@ impl FlowTable {
     pub fn expire(&self, now_us: i64, timeout_us: i64) -> usize {
         let cutoff = now_us - timeout_us;
         let before = self.table.len();
-        self.table.retain(|_, flow| flow.last_ts > cutoff);
+        let mut freed: usize = 0;
+        self.table.retain(|_, flow| {
+            if flow.last_ts > cutoff {
+                true
+            } else {
+                freed += flow.toserver_buf.len() + flow.toclient_buf.len();
+                false
+            }
+        });
+        if freed > 0 {
+            self.reassembly_total.fetch_sub(freed, Ordering::Relaxed);
+        }
         before - self.table.len()
     }
 
     /// Sum of toserver_buf.len() + toclient_buf.len() across all flows.
-    /// Used for memory accounting / IPC stats.
+    /// O(1) — backed by an atomic counter maintained on insert/update/evict.
     pub fn reassembly_bytes(&self) -> usize {
-        self.table
-            .iter()
-            .map(|e| e.value().toserver_buf.len() + e.value().toclient_buf.len())
-            .sum()
+        self.reassembly_total.load(Ordering::Relaxed)
     }
 
     /// Clear all flows.
     pub fn clear(&self) {
         self.table.clear();
+        self.reassembly_total.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Apply a signed delta to an unsigned atomic counter, clamping at 0 on
+/// underflow so a racing decrement can never produce a wrapped `usize::MAX`.
+fn apply_signed_delta(counter: &AtomicUsize, delta: i64) {
+    if delta >= 0 {
+        counter.fetch_add(delta as usize, Ordering::Relaxed);
+    } else {
+        let dec = (-delta) as usize;
+        let cur = counter.load(Ordering::Relaxed);
+        let new = cur.saturating_sub(dec);
+        counter.store(new, Ordering::Relaxed);
     }
 }
 
