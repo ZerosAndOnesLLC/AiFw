@@ -110,6 +110,19 @@ impl PfBackend for PfMock {
         Ok(())
     }
 
+    async fn replace_table_entries(
+        &self,
+        table: &str,
+        entries: &[(IpAddr, u8)],
+    ) -> Result<(), PfError> {
+        tracing::debug!(table, count = entries.len(), "mock: replace_table_entries");
+        let mut tables = self.tables.write().await;
+        // Mock only tracks bare addresses, not prefixes — match the existing
+        // add_table_entry contract.
+        tables.insert(table.to_string(), entries.iter().map(|(ip, _)| *ip).collect());
+        Ok(())
+    }
+
     async fn remove_table_entry(&self, table: &str, addr: IpAddr) -> Result<(), PfError> {
         tracing::debug!(%addr, table, "mock: remove_table_entry");
         let mut tables = self.tables.write().await;

@@ -25,6 +25,16 @@ pub trait PfBackend: Send + Sync {
     /// Add an address to a pf table
     async fn add_table_entry(&self, table: &str, addr: IpAddr) -> Result<(), crate::PfError>;
 
+    /// Replace all entries in a pf table with the given (address, prefix) list.
+    /// One syscall / one pfctl invocation regardless of list length — required
+    /// for tables like country geo-IP where a single rule expands to tens of
+    /// thousands of CIDRs.
+    async fn replace_table_entries(
+        &self,
+        table: &str,
+        entries: &[(IpAddr, u8)],
+    ) -> Result<(), crate::PfError>;
+
     /// Remove an address from a pf table
     async fn remove_table_entry(&self, table: &str, addr: IpAddr) -> Result<(), crate::PfError>;
 

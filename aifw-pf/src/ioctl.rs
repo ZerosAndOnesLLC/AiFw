@@ -328,6 +328,46 @@ impl PfBackend for PfIoctl {
         Ok(())
     }
 
+    async fn replace_table_entries(
+        &self,
+        table: &str,
+        entries: &[(IpAddr, u8)],
+    ) -> Result<(), PfError> {
+        // Single 'pfctl -t <table> -T replace -f -' with newline-separated
+        // <addr>/<prefix> on stdin. One sudo+exec regardless of |entries|.
+        use std::fmt::Write as _;
+        let mut payload = String::with_capacity(entries.len() * 20);
+        for (ip, prefix) in entries {
+            let _ = writeln!(payload, "{ip}/{prefix}");
+        }
+        let mut child = Command::new("/usr/local/bin/sudo")
+            .args(["/sbin/pfctl", "-t", table, "-T", "replace", "-f", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| PfError::Rule(format!("pfctl replace_table spawn failed: {e}")))?;
+        if let Some(ref mut stdin) = child.stdin {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(|e| PfError::Rule(format!("pfctl replace_table stdin: {e}")))?;
+            let _ = stdin.shutdown().await;
+        }
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|e| PfError::Rule(format!("pfctl replace_table wait: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("ERROR") || stderr.contains("syntax error") {
+                return Err(PfError::Rule(stderr.to_string()));
+            }
+        }
+        Ok(())
+    }
+
     async fn remove_table_entry(&self, table: &str, addr: IpAddr) -> Result<(), PfError> {
         pfctl(&["-t", table, "-T", "delete", &addr.to_string()]).await?;
         Ok(())

@@ -227,15 +227,14 @@ impl GeoIpEngine {
             // Block/allow rule
             pf_lines.push(rule.to_pf_rule());
 
-            // Populate table with CIDRs
+            // Bulk-populate the table in a single pfctl invocation. The
+            // previous per-CIDR add_table_entry was ~70k forks for a 'US'
+            // rule. replace_table_entries pipes the whole list via stdin.
             let cidrs = self.get_country_cidrs(&rule.country.0).await;
-            for (ip, prefix) in &cidrs {
-                self.pf
-                    .add_table_entry(&rule.table_name(), *ip)
-                    .await
-                    .map_err(|e| AifwError::Pf(e.to_string()))?;
-                let _ = prefix; // pf tables store individual IPs; for CIDRs we'd use pfctl
-            }
+            self.pf
+                .replace_table_entries(&rule.table_name(), &cidrs)
+                .await
+                .map_err(|e| AifwError::Pf(e.to_string()))?;
         }
 
         tracing::info!(count = active.len(), "applying geo-ip rules to pf");
