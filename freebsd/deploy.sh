@@ -255,28 +255,23 @@ done
 # login migrate, shutdown hook, narrow-grant sudo wrappers from #204).
 # Mode 755 so the daemon supervisor / sudo can exec them.
 mkdir -p /usr/local/libexec
-for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh aifw-shutdown-hook.sh aifw-sudo-write aifw-sudo-wg aifw-sudo-freebsd-update aifw-sudo-pkg aifw-sudo-service aifw-sudo-chown aifw-sudo-ifconfig aifw-sudo-install aifw-sudo-sysrc; do
+for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh aifw-shutdown-hook.sh aifw-sudo-write aifw-sudo-wg aifw-sudo-freebsd-update aifw-sudo-pkg aifw-sudo-service aifw-sudo-chown aifw-sudo-ifconfig aifw-sudo-install aifw-sudo-sysrc aifw-sudo-dhclient aifw-sudo-route aifw-sudo-pkill aifw-sudo-rm aifw-sudo-mkdir aifw-sudo-cp aifw-sudo-tar aifw-sudo-tcpdump; do
     src="$REPO_DIR/freebsd/overlay/usr/local/libexec/$script"
     if [ -f "$src" ]; then
         install -m 755 "$src" "/usr/local/libexec/$script"
     fi
 done
 
-# Ensure sudoers for aifw user. /usr/bin/tee was dropped in v5.92.4 in
-# favor of /usr/local/libexec/aifw-sudo-write, which enforces a closed
-# allowlist of write paths (#204).
+# Ensure sudoers for aifw user. The canonical content lives in
+# aifw-setup/src/apply.rs::sudoers_content() — deploy uses
+# `aifw-setup --print-sudoers` so this script can never drift from the
+# tested-in-CI sudoers definition (SEC-C1, SEC-C2).
 mkdir -p /usr/local/etc/sudoers.d
-echo 'aifw ALL=(ALL) NOPASSWD: /sbin/pfctl, /sbin/dhclient, /sbin/route, /sbin/shutdown, /bin/hostname, /bin/cat, /bin/pkill, /usr/bin/pkill, /bin/mkdir, /usr/sbin/tcpdump, /bin/rm /usr/local/etc/rdns/rpz/*
-aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-wg *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-freebsd-update *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-pkg *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-service *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-chown *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-ifconfig *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *
-aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-sysrc *' > /usr/local/etc/sudoers.d/aifw
+if [ -x /usr/local/sbin/aifw-setup ]; then
+    /usr/local/sbin/aifw-setup --print-sudoers > /usr/local/etc/sudoers.d/aifw
+else
+    echo "deploy: aifw-setup binary not installed yet — sudoers file unchanged" >&2
+fi
 chmod 440 /usr/local/etc/sudoers.d/aifw
 
 echo ""

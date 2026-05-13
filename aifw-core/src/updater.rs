@@ -267,9 +267,10 @@ pub async fn install_from_path(
     let extract_dir_str = extract_dir
         .to_str()
         .ok_or_else(|| UpdaterError::Install("extract_dir path is not UTF-8".into()))?;
-    let output = Command::new("tar")
-        .args(["xf", tarball_str, "-C", extract_dir_str])
-        .output()
+    // Use the aifw-sudo-tar helper which rejects --use-compress-program /
+    // --checkpoint-action / -I (SEC-C2 PE primitives). The helper also
+    // restricts tarball + dest to staging dirs we already own.
+    let output = crate::sudo::tar(&["xf", tarball_str, "-C", extract_dir_str])
         .await
         .map_err(|e| UpdaterError::Install(format!("tar failed: {}", e)))?;
 
@@ -347,20 +348,17 @@ pub async fn install_from_path(
     }
     info!(count = installed, "binaries installed");
 
-    // Install UI
+    // Install UI — both rm and cp go through the narrow helpers (SEC-C2).
+    // The helpers restrict UI_DIR and a /tmp staging dir as the only legal
+    // operands; a compromised aifw user can't sudo-cp /tmp/x to /root/.ssh.
     let ui_src = update_dir.join("ui");
     if ui_src.exists() {
         info!("Installing UI...");
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/rm", "-rf", UI_DIR])
-            .output()
-            .await;
+        let _ = crate::sudo::rm(&["-rf", UI_DIR]).await;
         let ui_src_str = ui_src
             .to_str()
             .ok_or_else(|| UpdaterError::Install("ui_src path is not UTF-8".into()))?;
-        let output = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/cp", "-a", ui_src_str, UI_DIR])
-            .output()
+        let output = crate::sudo::cp(&["-a", ui_src_str, UI_DIR])
             .await
             .map_err(|e| UpdaterError::Install(format!("Failed to install UI: {}", e)))?;
         if !output.status.success() {

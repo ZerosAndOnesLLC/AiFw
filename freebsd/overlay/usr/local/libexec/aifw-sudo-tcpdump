@@ -1,0 +1,91 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-tcpdump -tttt -n -e -r <pcap-file>
+# /usr/local/libexec/aifw-sudo-tcpdump -i pflog0 -l -e -n -tttt
+#
+# Narrow-grant wrapper around /usr/sbin/tcpdump. Closes the broad
+# `/usr/sbin/tcpdump *` sudoers grant — tcpdump's `-z` flag executes
+# a postrotate command as root, `-w` allows writing to arbitrary paths.
+#
+# Allowed forms:
+#   - Read a pcap from a closed list of paths (-r <file>)
+#   - Live capture on pflog0 only (no -w, no -z)
+
+set -eu
+
+# Reject every dangerous flag up front. `-z` runs a postrotate command,
+# `-w` writes to arbitrary paths, `-G` rotates output files (used with
+# `-z`), `-W` likewise.
+for a in "$@"; do
+    case "$a" in
+        -z|--postrotate-command*|-z=*|-w|-w=*|-G|-G=*|-W|-W=*|-F|-F=*|-Z|-Z=*)
+            echo "aifw-sudo-tcpdump: dangerous flag rejected: $a" >&2
+            exit 1 ;;
+    esac
+done
+
+IS_READ=""
+IS_LIVE=""
+PCAP_FILE=""
+IFACE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -r)
+            shift
+            [ $# -ge 1 ] || { echo "aifw-sudo-tcpdump: -r needs <file>" >&2; exit 1; }
+            IS_READ="1"
+            PCAP_FILE="$1"
+            shift ;;
+        -i)
+            shift
+            [ $# -ge 1 ] || { echo "aifw-sudo-tcpdump: -i needs <iface>" >&2; exit 1; }
+            IS_LIVE="1"
+            IFACE="$1"
+            shift ;;
+        -tttt|-tt|-t|-n|-nn|-e|-l|-q|-v|-vv)
+            # Benign output / verbosity flags
+            shift ;;
+        -*)
+            echo "aifw-sudo-tcpdump: unsupported flag: $1" >&2
+            exit 1 ;;
+        *)
+            # Trailing filter expression — disallow for now. We never use
+            # one from Rust today; can revisit when needed.
+            echo "aifw-sudo-tcpdump: filter expressions are not allowed: $1" >&2
+            exit 1 ;;
+    esac
+done
+
+if [ -n "$IS_READ" ] && [ -n "$IS_LIVE" ]; then
+    echo "aifw-sudo-tcpdump: -r and -i are mutually exclusive" >&2
+    exit 1
+fi
+
+if [ -n "$IS_READ" ]; then
+    case "$PCAP_FILE" in
+        *..*|*//*)
+            echo "aifw-sudo-tcpdump: '..' or '//' not allowed" >&2
+            exit 1 ;;
+    esac
+    case "$PCAP_FILE" in
+        /var/log/pflog|/var/log/pflog.[0-9]*|/var/log/pflog.[0-9]*.bz2|/var/log/pflog.[0-9]*.gz) ;;
+        /tmp/aifw-*) ;;
+        *)
+            echo "aifw-sudo-tcpdump: pcap file not in allowlist: $PCAP_FILE" >&2
+            exit 1 ;;
+    esac
+    exec /usr/sbin/tcpdump -tttt -n -e -r "$PCAP_FILE"
+fi
+
+if [ -n "$IS_LIVE" ]; then
+    case "$IFACE" in
+        pflog0) ;;
+        *)
+            echo "aifw-sudo-tcpdump: live capture only allowed on pflog0: $IFACE" >&2
+            exit 1 ;;
+    esac
+    exec /usr/sbin/tcpdump -i pflog0 -l -e -n -tttt
+fi
+
+echo "usage: $0 -r <file>  OR  $0 -i pflog0 ..." >&2
+exit 2

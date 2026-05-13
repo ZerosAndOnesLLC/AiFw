@@ -1,0 +1,41 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-pkill -f "dhclient <iface>"
+#
+# Narrow-grant wrapper around /usr/bin/pkill. The only legitimate use
+# from aifw-uid code today is killing a stale dhclient for a specific
+# interface (iface.rs releases and re-acquires DHCP leases).
+#
+# Allowed forms:
+#   pkill -f "dhclient <iface>"
+#
+# Anything else — broader patterns, other signals, killing arbitrary
+# processes — is denied.
+
+set -eu
+
+if [ $# -ne 2 ] || [ "$1" != "-f" ]; then
+    echo "usage: $0 -f \"dhclient <iface>\"" >&2
+    exit 2
+fi
+
+PATTERN="$2"
+
+# Must match exactly `dhclient <iface>` where iface is a valid name.
+case "$PATTERN" in
+    "dhclient "*) ;;
+    *)
+        echo "aifw-sudo-pkill: only dhclient patterns allowed: $PATTERN" >&2
+        exit 1
+        ;;
+esac
+
+IFACE="${PATTERN#dhclient }"
+case "$IFACE" in
+    ""|-*) ;&
+    *[!A-Za-z0-9._]*)
+        echo "aifw-sudo-pkill: invalid iface in pattern: $IFACE" >&2
+        exit 1
+        ;;
+esac
+
+exec /usr/bin/pkill -f -- "$PATTERN"

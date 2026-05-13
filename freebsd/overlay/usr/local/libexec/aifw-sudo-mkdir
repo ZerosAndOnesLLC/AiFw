@@ -1,0 +1,68 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-mkdir [-p] <path>
+#
+# Narrow-grant wrapper around /bin/mkdir. Closes the broad
+# `/bin/mkdir *` sudoers grant.
+#
+# Allowed paths (strict prefix or exact match):
+#   /usr/local/etc/aifw/*          — AiFw config tree
+#   /usr/local/etc/rdns/*          — rDNS config tree
+#   /usr/local/etc/rdhcpd/*        — rDHCP config tree
+#   /usr/local/etc/rtime/*         — rTIME config tree
+#   /usr/local/etc/trafficcop/*    — TrafficCop config tree
+#   /usr/local/etc/sudoers.d       — exact: directory for the sudoers file
+#   /usr/local/share/aifw/*        — UI / share assets
+#   /var/db/aifw/*                 — runtime state
+#   /var/log/aifw/*                — log dir
+#   /tmp/aifw-*                    — temp staging
+
+set -eu
+
+USE_P=""
+TARGET=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -p)
+            USE_P="-p"; shift ;;
+        -*)
+            echo "aifw-sudo-mkdir: unsupported flag: $1" >&2
+            exit 1 ;;
+        *)
+            if [ -n "$TARGET" ]; then
+                echo "aifw-sudo-mkdir: only one target path allowed" >&2
+                exit 1
+            fi
+            TARGET="$1"; shift ;;
+    esac
+done
+
+if [ -z "$TARGET" ]; then
+    echo "usage: $0 [-p] <path>" >&2
+    exit 2
+fi
+
+case "$TARGET" in
+    *..*|*//*)
+        echo "aifw-sudo-mkdir: '..' or '//' not allowed" >&2
+        exit 1 ;;
+esac
+
+case "$TARGET" in
+    /usr/local/etc/aifw|/usr/local/etc/aifw/*) ;;
+    /usr/local/etc/rdns|/usr/local/etc/rdns/*) ;;
+    /usr/local/etc/rdhcpd|/usr/local/etc/rdhcpd/*) ;;
+    /usr/local/etc/rtime|/usr/local/etc/rtime/*) ;;
+    /usr/local/etc/trafficcop|/usr/local/etc/trafficcop/*) ;;
+    /usr/local/etc/sudoers.d) ;;
+    /usr/local/share/aifw|/usr/local/share/aifw/*) ;;
+    /var/db/aifw|/var/db/aifw/*) ;;
+    /var/log/aifw|/var/log/aifw/*) ;;
+    /tmp/aifw-*|/tmp/aifw_*) ;;
+    *)
+        echo "aifw-sudo-mkdir: target not in allowlist: $TARGET" >&2
+        exit 1 ;;
+esac
+
+# shellcheck disable=SC2086
+exec /bin/mkdir $USE_P -- "$TARGET"

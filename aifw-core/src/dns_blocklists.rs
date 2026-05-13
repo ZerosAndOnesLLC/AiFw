@@ -803,19 +803,17 @@ pub fn build_rpz(
 /// `sudo /usr/bin/install -m 0644` it into place. Final rename inside
 /// `install(1)` is atomic on the destination filesystem.
 async fn atomic_write(path: &std::path::Path, body: &str) -> std::io::Result<()> {
-    use tokio::process::Command;
     let basename = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("blocklist.rpz");
     let tmp = format!("/tmp/aifw_blocklist_{basename}.tmp");
 
-    // Best-effort mkdir of parent (sudo /bin/mkdir is in sudoers).
-    if let Some(parent) = path.parent() {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/mkdir", "-p", parent.to_str().unwrap_or("")])
-            .output()
-            .await;
+    // Best-effort mkdir of parent (narrow aifw-sudo-mkdir helper — SEC-C2).
+    if let Some(parent) = path.parent()
+        && let Some(parent_str) = parent.to_str()
+    {
+        let _ = crate::sudo::mkdir(&["-p", parent_str]).await;
     }
 
     tokio::fs::write(&tmp, body).await?;

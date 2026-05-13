@@ -1,0 +1,67 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-rm [-rf] <path>
+#
+# Narrow-grant wrapper around /bin/rm. Closes the broad `/bin/rm *`
+# sudoers grant which is a documented sudo escalation primitive
+# (e.g. `sudo rm /etc/master.passwd` DoS, or removing files to unblock
+# overwrite of system binaries).
+#
+# Allowed paths (strict prefix or exact match):
+#   /usr/local/share/aifw/ui/*     — UI staging area (updater)
+#   /usr/local/etc/rdns/rpz/*      — rDNS RPZ zone files
+#   /usr/local/etc/rdns/blocklists/* — rDNS blocklist files
+#   /tmp/aifw-*                    — temp staging files we own
+#   /tmp/aifw_*                    — temp staging files we own (other naming)
+
+set -eu
+
+RECURSIVE=""
+TARGET=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -rf|-fr)
+            RECURSIVE="-rf"; shift ;;
+        -r|-R)
+            RECURSIVE="-r"; shift ;;
+        -f)
+            RECURSIVE="${RECURSIVE:-} -f"; shift ;;
+        -*)
+            echo "aifw-sudo-rm: unsupported flag: $1" >&2
+            exit 1 ;;
+        *)
+            if [ -n "$TARGET" ]; then
+                echo "aifw-sudo-rm: only one target path allowed" >&2
+                exit 1
+            fi
+            TARGET="$1"; shift ;;
+    esac
+done
+
+if [ -z "$TARGET" ]; then
+    echo "usage: $0 [-rf] <path>" >&2
+    exit 2
+fi
+
+case "$TARGET" in
+    *..*|*//*)
+        echo "aifw-sudo-rm: '..' or '//' not allowed" >&2
+        exit 1 ;;
+esac
+
+case "$TARGET" in
+    /usr/local/share/aifw/ui|/usr/local/share/aifw/ui/*) ;;
+    /usr/local/etc/rdns/rpz|/usr/local/etc/rdns/rpz/*) ;;
+    /usr/local/etc/rdns/blocklists|/usr/local/etc/rdns/blocklists/*) ;;
+    /tmp/aifw-*|/tmp/aifw_*) ;;
+    *)
+        echo "aifw-sudo-rm: target not in allowlist: $TARGET" >&2
+        exit 1 ;;
+esac
+
+# shellcheck disable=SC2086
+if [ -n "$RECURSIVE" ]; then
+    exec /bin/rm $RECURSIVE -- "$TARGET"
+else
+    exec /bin/rm -- "$TARGET"
+fi

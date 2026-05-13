@@ -88,11 +88,9 @@ pub async fn apply_to_pf(value: u64) -> Result<(), String> {
     tokio::fs::write(tmp, body)
         .await
         .map_err(|e| format!("write tmp: {e}"))?;
-    // Make sure the parent dir exists; sudo /bin/mkdir is in the sudoers.
-    let _ = Command::new(SUDO)
-        .args(["/bin/mkdir", "-p", "/usr/local/etc/aifw"])
-        .output()
-        .await;
+    // Make sure the parent dir exists; goes through the narrow
+    // aifw-sudo-mkdir helper (SEC-C2) which only allows AiFw-managed prefixes.
+    let _ = crate::sudo::mkdir(&["-p", "/usr/local/etc/aifw"]).await;
     let install = crate::sudo::install(Some("0644"), None, None, tmp, TUNING_FILE)
         .await
         .map_err(|e| format!("spawn install: {e}"))?;

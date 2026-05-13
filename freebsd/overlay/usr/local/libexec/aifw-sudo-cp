@@ -1,0 +1,74 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-cp [-a] <src> <dest>
+#
+# Narrow-grant wrapper around /bin/cp. Closes the broad `/bin/cp *`
+# sudoers grant which is a documented sudo escalation primitive
+# (`sudo cp /tmp/x /usr/local/etc/sudoers.d/aifw` etc.).
+#
+# Allowed forms:
+#   cp -a <src> <dest>     — recursive copy of staged content
+#   cp <src> <dest>        — single-file copy
+#
+# Both src and dest must be in the closed path allowlist below.
+
+set -eu
+
+ARCHIVE=""
+SRC=""
+DEST=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -a)
+            ARCHIVE="-a"; shift ;;
+        -*)
+            echo "aifw-sudo-cp: unsupported flag: $1" >&2
+            exit 1 ;;
+        *)
+            if [ -z "$SRC" ]; then SRC="$1"
+            elif [ -z "$DEST" ]; then DEST="$1"
+            else
+                echo "aifw-sudo-cp: too many positional args" >&2
+                exit 1
+            fi
+            shift ;;
+    esac
+done
+
+if [ -z "$SRC" ] || [ -z "$DEST" ]; then
+    echo "usage: $0 [-a] <src> <dest>" >&2
+    exit 2
+fi
+
+case "$SRC$DEST" in
+    *..*|*//*)
+        echo "aifw-sudo-cp: '..' or '//' not allowed" >&2
+        exit 1 ;;
+esac
+
+# Source allowlist — staging dirs aifw owns.
+case "$SRC" in
+    /tmp/*) ;;
+    /usr/local/share/aifw/backup/*) ;;
+    *)
+        echo "aifw-sudo-cp: source not in allowlist: $SRC" >&2
+        exit 1 ;;
+esac
+
+# Destination allowlist — same shape as aifw-sudo-install dest list but
+# narrower (no sudoers, no rc.d, no libexec — those go through install).
+case "$DEST" in
+    /usr/local/share/aifw/ui|/usr/local/share/aifw/ui/*) ;;
+    /usr/local/etc/aifw/*) ;;
+    /usr/local/etc/rdns/*) ;;
+    /usr/local/etc/rdhcpd/*) ;;
+    /usr/local/etc/rtime/*) ;;
+    /usr/local/etc/trafficcop/*) ;;
+    /var/db/aifw/*) ;;
+    *)
+        echo "aifw-sudo-cp: destination not in allowlist: $DEST" >&2
+        exit 1 ;;
+esac
+
+# shellcheck disable=SC2086
+exec /bin/cp $ARCHIVE -- "$SRC" "$DEST"

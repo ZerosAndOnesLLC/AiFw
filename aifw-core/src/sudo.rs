@@ -23,6 +23,14 @@ const HELPER_CHOWN: &str = "/usr/local/libexec/aifw-sudo-chown";
 const HELPER_IFCONFIG: &str = "/usr/local/libexec/aifw-sudo-ifconfig";
 const HELPER_INSTALL: &str = "/usr/local/libexec/aifw-sudo-install";
 const HELPER_SYSRC: &str = "/usr/local/libexec/aifw-sudo-sysrc";
+const HELPER_DHCLIENT: &str = "/usr/local/libexec/aifw-sudo-dhclient";
+const HELPER_ROUTE: &str = "/usr/local/libexec/aifw-sudo-route";
+const HELPER_PKILL: &str = "/usr/local/libexec/aifw-sudo-pkill";
+const HELPER_RM: &str = "/usr/local/libexec/aifw-sudo-rm";
+const HELPER_MKDIR: &str = "/usr/local/libexec/aifw-sudo-mkdir";
+const HELPER_CP: &str = "/usr/local/libexec/aifw-sudo-cp";
+const HELPER_TAR: &str = "/usr/local/libexec/aifw-sudo-tar";
+const HELPER_TCPDUMP: &str = "/usr/local/libexec/aifw-sudo-tcpdump";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -197,4 +205,71 @@ pub async fn install(
     args.push(src);
     args.push(dest);
     Command::new(SUDO).args(&args).output().await
+}
+
+/// Run `dhclient <iface>` (or `dhclient -k <iface>` to release) as root via
+/// the `aifw-sudo-dhclient` helper. The helper rejects `-sf`/`-cf`/`-pf`
+/// (script-exec primitives) and validates the iface name.
+pub async fn dhclient(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut full: Vec<&str> = vec![HELPER_DHCLIENT];
+    full.extend_from_slice(args);
+    Command::new(SUDO).args(&full).output().await
+}
+
+/// Run `route <action> <dest> [<gw>] [-fib <N>]` as root via the
+/// `aifw-sudo-route` helper. Restricted to add/delete on `default` or a
+/// CIDR with a valid IP gateway.
+pub async fn route(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut full: Vec<&str> = vec![HELPER_ROUTE];
+    full.extend_from_slice(args);
+    Command::new(SUDO).args(&full).output().await
+}
+
+/// Run `pkill -f "dhclient <iface>"` as root via the `aifw-sudo-pkill`
+/// helper. Only the dhclient pattern is accepted.
+pub async fn pkill_dhclient(iface: &str) -> std::io::Result<std::process::Output> {
+    let pattern = format!("dhclient {iface}");
+    Command::new(SUDO)
+        .args([HELPER_PKILL, "-f", &pattern])
+        .output()
+        .await
+}
+
+/// Remove a single allowlisted path as root via `aifw-sudo-rm`.
+pub async fn rm(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut full: Vec<&str> = vec![HELPER_RM];
+    full.extend_from_slice(args);
+    Command::new(SUDO).args(&full).output().await
+}
+
+/// Create a directory under an allowlisted prefix as root via `aifw-sudo-mkdir`.
+pub async fn mkdir(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut full: Vec<&str> = vec![HELPER_MKDIR];
+    full.extend_from_slice(args);
+    Command::new(SUDO).args(&full).output().await
+}
+
+/// Copy a file or directory between allowlisted paths as root via `aifw-sudo-cp`.
+pub async fn cp(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut full: Vec<&str> = vec![HELPER_CP];
+    full.extend_from_slice(args);
+    Command::new(SUDO).args(&full).output().await
+}
+
+/// Extract a tarball into an allowlisted directory via `aifw-sudo-tar`.
+/// The helper hard-rejects `--use-compress-program`, `--checkpoint-action`,
+/// `--to-command`, `-I` and other script-exec primitives.
+pub async fn tar(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut full: Vec<&str> = vec![HELPER_TAR];
+    full.extend_from_slice(args);
+    Command::new(SUDO).args(&full).output().await
+}
+
+/// Run tcpdump via `aifw-sudo-tcpdump`. The helper rejects `-z` (postrotate
+/// exec), `-w` (arbitrary write), and `-G/-W` (output rotation). Only
+/// reading allowlisted pcap files or live-capturing `pflog0` is allowed.
+pub async fn tcpdump(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut full: Vec<&str> = vec![HELPER_TCPDUMP];
+    full.extend_from_slice(args);
+    Command::new(SUDO).args(&full).output().await
 }

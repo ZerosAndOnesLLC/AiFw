@@ -1336,18 +1336,10 @@ pub fn start_pflog_collector(
     let buf2 = buf.clone();
     let pmgr = plugin_mgr.clone();
     tokio::spawn(async move {
-        // Bootstrap: load historical entries from /var/log/pflog (non-blocking)
-        if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
-            .args([
-                "/usr/sbin/tcpdump",
-                "-tttt",
-                "-n",
-                "-e",
-                "-r",
-                "/var/log/pflog",
-            ])
-            .output()
-            .await
+        // Bootstrap: load historical entries from /var/log/pflog. Uses the
+        // narrow aifw-sudo-tcpdump helper (SEC-C2) which rejects -z / -w / -G
+        // / -W (the script-exec + arbitrary-write PE primitives).
+        if let Ok(output) = aifw_core::sudo::tcpdump(&["-r", "/var/log/pflog"]).await
             && output.status.success()
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1366,16 +1358,14 @@ pub fn start_pflog_collector(
             tracing::info!(count, "pflog bootstrap complete");
         }
 
-        // Live capture: persistent tcpdump on pflog0 interface
+        // Live capture: persistent tcpdump on pflog0 interface, through the
+        // narrow aifw-sudo-tcpdump helper (SEC-C2). The helper only allows
+        // pflog0 as the live-capture iface and forbids -z/-w/-G/-W.
         use tokio::io::{AsyncBufReadExt, BufReader};
         loop {
             let child = tokio::process::Command::new("/usr/local/bin/sudo")
                 .args([
-                    "/usr/sbin/tcpdump",
-                    "-tttt",
-                    "-n",
-                    "-e",
-                    "-l",
+                    "/usr/local/libexec/aifw-sudo-tcpdump",
                     "-i",
                     "pflog0",
                 ])

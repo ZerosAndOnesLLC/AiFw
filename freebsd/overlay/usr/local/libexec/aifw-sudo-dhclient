@@ -1,0 +1,50 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-dhclient <iface>
+# /usr/local/libexec/aifw-sudo-dhclient -k <iface>
+#
+# Narrow-grant wrapper around /sbin/dhclient. Closes the broad
+# `/sbin/dhclient *` sudoers grant which is a documented sudo
+# escalation primitive — `dhclient -sf /tmp/exec.sh em0` runs the
+# `-sf` script as root.
+#
+# Allowed forms:
+#   dhclient <iface>           — bring iface up via DHCP
+#   dhclient -k <iface>        — release/kill the dhclient for iface
+
+set -eu
+
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    echo "usage: $0 [-k] <iface>" >&2
+    exit 2
+fi
+
+# Interface name: [a-z][a-z0-9_.]* — reject leading dash so a flag can't
+# masquerade as the iface, and reject path separators.
+valid_iface() {
+    case "$1" in
+        ""|-*)
+            return 1 ;;
+        *[!A-Za-z0-9._]*)
+            return 1 ;;
+    esac
+    return 0
+}
+
+case "$1" in
+    -k)
+        if [ $# -ne 2 ]; then
+            echo "aifw-sudo-dhclient: -k needs <iface>" >&2
+            exit 1
+        fi
+        valid_iface "$2" || { echo "aifw-sudo-dhclient: invalid iface: $2" >&2; exit 1; }
+        exec /sbin/dhclient -k -- "$2"
+        ;;
+    *)
+        if [ $# -ne 1 ]; then
+            echo "aifw-sudo-dhclient: too many args" >&2
+            exit 1
+        fi
+        valid_iface "$1" || { echo "aifw-sudo-dhclient: invalid iface: $1" >&2; exit 1; }
+        exec /sbin/dhclient -- "$1"
+        ;;
+esac

@@ -1,0 +1,93 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-tar xf <archive> -C <dir>
+#
+# Narrow-grant wrapper around /usr/bin/tar. Closes the broad
+# `/usr/bin/tar *` sudoers grant which is a documented sudo escalation
+# primitive — tar accepts `--use-compress-program=/tmp/exec.sh` and
+# `--checkpoint-action=exec=...` which run as root.
+#
+# Allowed form: extract-only, no script flags, src and dest restricted.
+#   tar xf <archive> -C <dir>
+#   tar -x -f <archive> -C <dir>
+
+set -eu
+
+# Reject the long-form flags that are PE primitives outright. We grep
+# for them across all args before any per-arg dispatch because they
+# could be placed in any position.
+for a in "$@"; do
+    case "$a" in
+        --use-compress-program*|--checkpoint*|--to-command*|-I|--use-compress-program=*|--newer-mtime*|--exclude-from*|--files-from*|--exclude*)
+            echo "aifw-sudo-tar: dangerous flag rejected: $a" >&2
+            exit 1
+            ;;
+    esac
+done
+
+ACTION_X=""
+ARCHIVE=""
+DEST=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        x|xf|-x)
+            ACTION_X="1"
+            # The combined `xf` form has the archive as the next positional arg.
+            if [ "$1" = "xf" ]; then
+                shift
+                [ $# -ge 1 ] || { echo "aifw-sudo-tar: xf needs <archive>" >&2; exit 1; }
+                ARCHIVE="$1"
+            fi
+            shift ;;
+        -f)
+            shift
+            [ $# -ge 1 ] || { echo "aifw-sudo-tar: -f needs <archive>" >&2; exit 1; }
+            ARCHIVE="$1"; shift ;;
+        -C)
+            shift
+            [ $# -ge 1 ] || { echo "aifw-sudo-tar: -C needs <dir>" >&2; exit 1; }
+            DEST="$1"; shift ;;
+        -v|--verbose|-p|--preserve-permissions|--no-same-owner|--no-same-permissions|-z|-j|-J)
+            # Allow benign extract-time options.
+            shift ;;
+        -*)
+            echo "aifw-sudo-tar: unsupported flag: $1" >&2
+            exit 1 ;;
+        *)
+            echo "aifw-sudo-tar: unexpected positional arg: $1" >&2
+            exit 1 ;;
+    esac
+done
+
+if [ -z "$ACTION_X" ]; then
+    echo "aifw-sudo-tar: only extract (x/xf) is allowed" >&2
+    exit 1
+fi
+if [ -z "$ARCHIVE" ] || [ -z "$DEST" ]; then
+    echo "usage: $0 xf <archive> -C <dir>" >&2
+    exit 2
+fi
+
+case "$ARCHIVE$DEST" in
+    *..*|*//*)
+        echo "aifw-sudo-tar: '..' or '//' not allowed" >&2
+        exit 1 ;;
+esac
+
+# Archive must be in a staging dir.
+case "$ARCHIVE" in
+    /tmp/*|/var/db/aifw/*) ;;
+    *)
+        echo "aifw-sudo-tar: archive not in allowlist: $ARCHIVE" >&2
+        exit 1 ;;
+esac
+
+# Dest must be a staging / extract dir we own.
+case "$DEST" in
+    /tmp/*|/var/db/aifw/*) ;;
+    *)
+        echo "aifw-sudo-tar: dest not in allowlist: $DEST" >&2
+        exit 1 ;;
+esac
+
+exec /usr/bin/tar xf "$ARCHIVE" -C "$DEST"

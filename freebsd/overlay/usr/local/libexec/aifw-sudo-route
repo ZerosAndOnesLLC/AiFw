@@ -1,0 +1,108 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-route <add|delete> default <gw>
+# /usr/local/libexec/aifw-sudo-route <add|delete> <cidr> <gw> [fib <N>]
+#
+# Narrow-grant wrapper around /sbin/route. Closes the broad
+# `/sbin/route *` sudoers grant.
+#
+# Allowed forms:
+#   route add default <gw>
+#   route delete default
+#   route delete default <gw>
+#   route add <network>/<prefix> <gw> [-fib <N>]
+#   route delete <network>/<prefix> [<gw>] [-fib <N>]
+
+set -eu
+
+if [ $# -lt 2 ]; then
+    echo "usage: $0 <add|delete> default|<cidr> [<gw>] [-fib <N>]" >&2
+    exit 2
+fi
+
+ACTION="$1"; shift
+case "$ACTION" in
+    add|delete) ;;
+    *)
+        echo "aifw-sudo-route: action must be add|delete: $ACTION" >&2
+        exit 1
+        ;;
+esac
+
+# Validate an IPv4 / IPv6 address (no port). Conservative regex via case.
+valid_ip() {
+    case "$1" in
+        ""|-*) return 1 ;;
+        *[!0-9A-Fa-f:.]*) return 1 ;;
+    esac
+    return 0
+}
+
+# Validate a CIDR `a.b.c.d/N` or `addr/N` form.
+valid_cidr() {
+    case "$1" in
+        ""|-*) return 1 ;;
+        *[!0-9A-Fa-f:./]*) return 1 ;;
+        */*) ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+DEST="$1"; shift
+case "$DEST" in
+    default)
+        ;;
+    *)
+        valid_cidr "$DEST" || {
+            echo "aifw-sudo-route: dest must be 'default' or a CIDR: $DEST" >&2
+            exit 1
+        }
+        ;;
+esac
+
+# Optional <gw>
+GW=""
+if [ $# -gt 0 ]; then
+    case "$1" in
+        -fib) ;;
+        *)
+            valid_ip "$1" || {
+                echo "aifw-sudo-route: invalid gateway: $1" >&2
+                exit 1
+            }
+            GW="$1"; shift
+            ;;
+    esac
+fi
+
+# Optional `-fib <N>`
+FIB_ARGS=""
+if [ $# -gt 0 ]; then
+    if [ "$1" != "-fib" ] || [ $# -ne 2 ]; then
+        echo "aifw-sudo-route: unexpected trailing args: $*" >&2
+        exit 1
+    fi
+    case "$2" in
+        ""|*[!0-9]*)
+            echo "aifw-sudo-route: -fib must be a number: $2" >&2
+            exit 1 ;;
+    esac
+    FIB_ARGS="-fib $2"
+fi
+
+# Rebuild the argv. `route -fib N add default gw` is the canonical form on
+# FreeBSD (fib first). Our callers pass it after though, so we re-order.
+if [ -n "$FIB_ARGS" ]; then
+    # shellcheck disable=SC2086
+    if [ -n "$GW" ]; then
+        exec /sbin/route $FIB_ARGS "$ACTION" "$DEST" "$GW"
+    else
+        exec /sbin/route $FIB_ARGS "$ACTION" "$DEST"
+    fi
+fi
+
+if [ -n "$GW" ]; then
+    exec /sbin/route "$ACTION" "$DEST" "$GW"
+else
+    exec /sbin/route "$ACTION" "$DEST"
+fi

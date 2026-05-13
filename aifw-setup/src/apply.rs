@@ -76,16 +76,13 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     //
     //   1. `pfctl` and `shutdown` — restricted to a small set of exact
     //      forms (anchor scope, +10s grace, etc.).
-    //   2. Nine narrow wrapper scripts under
-    //      `/usr/local/libexec/aifw-sudo-*` — each enforces its own
-    //      internal allowlist of valid arguments (paths, services,
-    //      interfaces, rcvars). #204 closed the original 9 broad
-    //      grants (tee/wg/freebsd-update/pkg/service/chown/ifconfig/
-    //      install/sysrc) via this tier.
-    //   3. Remaining broad-wildcard grants for utilities AiFw still
-    //      calls directly (dhclient, route, cat, cp, rm, mkdir, chmod,
-    //      pkill, tar, tcpdump). These are out of #204's scope; a
-    //      future hardening pass could narrow them too.
+    //   2. Narrow wrapper scripts under `/usr/local/libexec/aifw-sudo-*`
+    //      — each enforces its own internal allowlist of valid arguments
+    //      (paths, services, interfaces, rcvars). #204 closed the original
+    //      9 broad grants (tee/wg/freebsd-update/pkg/service/chown/
+    //      ifconfig/install/sysrc); SEC-C2 closed the remaining seven
+    //      (dhclient/route/pkill/rm/mkdir/cp/tar/tcpdump) and dropped the
+    //      unused cat/chmod grants entirely.
     //
     // The full sudoers content is exposed as `sudoers_content()` so a
     // unit test can validate it structurally and CI can run
@@ -2387,7 +2384,7 @@ aifw ALL=(root) NOPASSWD: /sbin/pfctl -f /etc/pf.conf
 aifw ALL=(root) NOPASSWD: /sbin/shutdown -p +10s *
 aifw ALL=(root) NOPASSWD: /sbin/shutdown -r +10s *
 
-# --- Narrow wrapper scripts (GHSA-mjqh-2vx8-7hq7 follow-up #204) ---
+# --- Narrow wrapper scripts (GHSA-mjqh-2vx8-7hq7 follow-up #204; SEC-C2) ---
 # Each helper enforces its own internal allowlist of valid arguments —
 # paths, services, interfaces, rcvars.
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-write *
@@ -2399,19 +2396,14 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-chown *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-ifconfig *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-install *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-sysrc *
-
-# --- Remaining broad grants (out of #204 scope, possible future tightening) ---
-aifw ALL=(ALL) NOPASSWD: /sbin/dhclient *
-aifw ALL=(ALL) NOPASSWD: /sbin/route *
-aifw ALL=(ALL) NOPASSWD: /bin/cat *
-aifw ALL=(ALL) NOPASSWD: /bin/cp *
-aifw ALL=(ALL) NOPASSWD: /bin/rm *
-aifw ALL=(ALL) NOPASSWD: /bin/mkdir *
-aifw ALL=(ALL) NOPASSWD: /bin/chmod *
-aifw ALL=(ALL) NOPASSWD: /bin/pkill *
-aifw ALL=(ALL) NOPASSWD: /usr/bin/pkill *
-aifw ALL=(ALL) NOPASSWD: /usr/bin/tar *
-aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-dhclient *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-route *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-pkill *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-rm *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-mkdir *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-cp *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-tar *
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-tcpdump *
 
 # --- Detached restart driver ---
 # Required by aifw-core/src/updater.rs `restart_services()` so post-update
@@ -2528,11 +2520,23 @@ mod sudoers_tests {
             "/sbin/ifconfig *",
             "/usr/bin/install *",
             "/usr/sbin/sysrc *",
+            // SEC-C2: the seven broad-wildcard grants closed in v5.95.33.
+            "/sbin/dhclient *",
+            "/sbin/route *",
+            "/bin/cat *",
+            "/bin/cp *",
+            "/bin/rm *",
+            "/bin/mkdir *",
+            "/bin/chmod *",
+            "/bin/pkill *",
+            "/usr/bin/pkill *",
+            "/usr/bin/tar *",
+            "/usr/sbin/tcpdump *",
         ] {
             assert!(
                 !content.contains(forbidden),
                 "broad grant {forbidden:?} was re-introduced — should be \
-                 routed through the matching aifw-sudo-* helper (#204)"
+                 routed through the matching aifw-sudo-* helper"
             );
         }
     }

@@ -503,9 +503,9 @@ pub async fn configure_interface(
         match mode.as_str() {
             "dhcp" => {
                 // Kill any existing dhclient, remove static address, then start dhclient
-                let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
+                let _ = aifw_core::sudo::pkill_dhclient(&name).await;
                 let _ = aifw_core::sudo::ifconfig(&name, "delete", &[]).await;
-                let _ = sudo_cmd(&["/sbin/dhclient", &name]).await;
+                let _ = aifw_core::sudo::dhclient(&[&name]).await;
                 // Persist
                 let kv = format!("ifconfig_{}=DHCP", name);
                 let _ = aifw_core::sudo::sysrc(&[&kv]).await;
@@ -514,7 +514,7 @@ pub async fn configure_interface(
             }
             "static" => {
                 // Kill dhclient first so it doesn't overwrite our static IP
-                let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
+                let _ = aifw_core::sudo::pkill_dhclient(&name).await;
                 // Brief pause for dhclient to fully exit
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -544,8 +544,8 @@ pub async fn configure_interface(
                         let owns_default =
                             cur_gw_iface.as_deref() == Some(&name) || cur_gw_iface.is_none();
                         if owns_default {
-                            let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
-                            let _ = sudo_cmd(&["/sbin/route", "add", "default", gw]).await;
+                            let _ = aifw_core::sudo::route(&["delete", "default"]).await;
+                            let _ = aifw_core::sudo::route(&["add", "default", gw]).await;
                             let kv = format!("defaultrouter={}", gw);
                             let _ = aifw_core::sudo::sysrc(&[&kv]).await;
                             msgs.push(format!("Gateway set to {}", gw));
@@ -562,7 +562,7 @@ pub async fn configure_interface(
                     else {
                         let (_, cur_gw_iface) = get_default_gateway().await;
                         if cur_gw_iface.as_deref() == Some(&name) {
-                            let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
+                            let _ = aifw_core::sudo::route(&["delete", "default"]).await;
                             let _ = aifw_core::sudo::sysrc(&["-x", "defaultrouter"]).await;
                             msgs.push("Default gateway removed".to_string());
                         }
@@ -570,7 +570,7 @@ pub async fn configure_interface(
                 }
             }
             "none" => {
-                let _ = sudo_cmd(&["/usr/bin/pkill", "-f", &format!("dhclient {}", name)]).await;
+                let _ = aifw_core::sudo::pkill_dhclient(&name).await;
                 let _ = aifw_core::sudo::ifconfig(&name, "delete", &[]).await;
                 let key = format!("ifconfig_{}", name);
                 let _ = aifw_core::sudo::sysrc(&["-x", &key]).await;
@@ -585,8 +585,8 @@ pub async fn configure_interface(
         if !gw.is_empty() {
             let owns_default = cur_gw_iface.as_deref() == Some(&name) || cur_gw_iface.is_none();
             if owns_default {
-                let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
-                let _ = sudo_cmd(&["/sbin/route", "add", "default", gw]).await;
+                let _ = aifw_core::sudo::route(&["delete", "default"]).await;
+                let _ = aifw_core::sudo::route(&["add", "default", gw]).await;
                 let kv = format!("defaultrouter={}", gw);
                 let _ = aifw_core::sudo::sysrc(&[&kv]).await;
                 msgs.push(format!("Gateway set to {}", gw));
@@ -598,7 +598,7 @@ pub async fn configure_interface(
                 ));
             }
         } else if cur_gw_iface.as_deref() == Some(&name) {
-            let _ = sudo_cmd(&["/sbin/route", "delete", "default"]).await;
+            let _ = aifw_core::sudo::route(&["delete", "default"]).await;
             let _ = aifw_core::sudo::sysrc(&["-x", "defaultrouter"]).await;
             msgs.push("Default gateway removed".to_string());
         }
@@ -688,15 +688,6 @@ async fn get_iface_ipv4s(name: &str) -> Vec<String> {
 }
 
 /// Run a command safely with direct args (no shell interpolation).
-async fn sudo_cmd(args: &[&str]) -> bool {
-    Command::new("/usr/local/bin/sudo")
-        .args(args)
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Validate interface name — alphanumeric, underscore, hyphen, dot only. Max 15 chars.
 fn validate_iface_name(name: &str) -> bool {
     !name.is_empty()
