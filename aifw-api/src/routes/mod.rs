@@ -308,6 +308,9 @@ pub async fn logout(
             .map(|d| d.to_rfc3339())
             .unwrap_or_default();
         let _ = auth::revoke_access_token(&state.pool, &data.claims.jti, &exp).await;
+        // PERF-C12: invalidate the JTI cache so the just-revoked token
+        // can't ride the positive-cache TTL.
+        state.auth_jti_cache.remove(&data.claims.jti);
     }
     Ok(Json(MessageResponse {
         message: "Logged out".to_string(),
@@ -669,6 +672,9 @@ pub async fn update_user(
 ) -> Result<Json<ApiResponse<auth::User>>, StatusCode> {
     let actor_id = extract_user_id(&headers, &state)?;
     let user = auth::update_user(&state.pool, &id, &req).await?;
+    // PERF-C12: invalidate the user cache so disable / role change takes
+    // effect immediately instead of waiting out the TTL.
+    state.auth_user_cache.remove(&id);
     let details = format!("updated user {}", user.username);
     auth::log_user_audit(
         &state.pool,
@@ -695,6 +701,9 @@ pub async fn delete_user_handler(
         .await?
         .ok_or(StatusCode::NOT_FOUND)?;
     auth::delete_user(&state.pool, &id).await?;
+    // PERF-C12: invalidate the user cache so the deleted user can't
+    // continue authenticating with a still-valid token for AUTH_USER_CACHE_TTL.
+    state.auth_user_cache.remove(&id);
     auth::log_user_audit(
         &state.pool,
         &actor_id,

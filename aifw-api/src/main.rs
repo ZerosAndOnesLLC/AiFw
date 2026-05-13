@@ -189,6 +189,17 @@ pub struct AppState {
     /// and just forwards. Replaces per-client `build_update` cloning that
     /// scaled `O(n_states × n_clients)` per second (#178).
     pub ws_tick: tokio::sync::broadcast::Sender<Arc<String>>,
+    /// Auth-middleware caches (PERF-C12). Every authenticated request used
+    /// to issue 2-3 DB queries — user-by-id, JTI revocation, optional
+    /// permission resolution. A short TTL absorbs the hot path without
+    /// breaking the user-disable-takes-effect-within-Ns expectation.
+    pub auth_user_cache: Arc<dashmap::DashMap<String, (auth::User, std::time::Instant)>>,
+    pub auth_jti_cache: Arc<dashmap::DashMap<String, (bool, std::time::Instant)>>,
+    /// Shadow counter of `plugin_manager.read().await.running_count()` —
+    /// kept in sync by every register/unload call site. The auth middleware
+    /// uses this to skip the read lock + dispatch entirely when no plugins
+    /// are running (the common case).
+    pub plugin_running_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -1794,6 +1805,9 @@ async fn create_state_from_db(
         // reconnect storms and short producer/consumer hiccups without
         // forcing RecvError::Lagged on the rest of the subscribers.
         ws_tick: tokio::sync::broadcast::channel::<Arc<String>>(256).0,
+        auth_user_cache: Arc::new(dashmap::DashMap::new()),
+        auth_jti_cache: Arc::new(dashmap::DashMap::new()),
+        plugin_running_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }
 

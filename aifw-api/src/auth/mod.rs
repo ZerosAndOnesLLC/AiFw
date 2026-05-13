@@ -813,6 +813,15 @@ pub async fn verify_api_key(pool: &SqlitePool, key: &str) -> Result<(String, Str
 // Auth middleware
 // ============================================================
 
+/// PERF-C12: TTL for the user-by-id cache. Short enough that a disabled or
+/// role-changed user is locked out / re-scoped within the window; long
+/// enough that the dashboard's multi-Hz polls don't all hit SQLite.
+const AUTH_USER_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+/// PERF-C12: TTL for the JTI revocation cache. Once a token is revoked it
+/// stays revoked for its remaining lifetime; we cache the *positive*
+/// not-revoked result for 60 s so logout takes effect within the window.
+const AUTH_JTI_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub async fn auth_middleware(
     State(state): State<crate::AppState>,
     headers: HeaderMap,
@@ -820,6 +829,7 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Result<Response, StatusCode> {
     use aifw_common::permission::PermissionSet;
+    use std::time::Instant;
 
     // Credentials: Authorization: Bearer <jwt>, Authorization: ApiKey <key>,
     // or ?ticket=<id> (short-lived, single-use; see auth::ws_ticket).
@@ -830,7 +840,22 @@ pub async fn auth_middleware(
         if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
             let token_data = verify_access_token(token, &state.auth_settings)
                 .map_err(|_| StatusCode::UNAUTHORIZED)?;
-            if is_token_revoked(&state.pool, &token_data.claims.jti).await {
+            let jti = &token_data.claims.jti;
+            // JTI revocation: positive cache to skip the DB lookup. Cached
+            // entry value=true means revoked, value=false means not revoked.
+            let now = Instant::now();
+            let revoked = if let Some(entry) = state.auth_jti_cache.get(jti)
+                && entry.value().1 > now
+            {
+                entry.value().0
+            } else {
+                let r = is_token_revoked(&state.pool, jti).await;
+                state
+                    .auth_jti_cache
+                    .insert(jti.clone(), (r, now + AUTH_JTI_CACHE_TTL));
+                r
+            };
+            if revoked {
                 return Err(StatusCode::UNAUTHORIZED);
             }
             (
@@ -853,10 +878,23 @@ pub async fn auth_middleware(
             return Err(StatusCode::UNAUTHORIZED);
         };
 
-    // Check if user is still enabled
-    let user = get_user_by_id(&state.pool, &user_id)
-        .await?
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    // User-by-id with TTL cache. Disabled-user lockout has up to
+    // AUTH_USER_CACHE_TTL latency — acceptable trade for skipping a DB hit
+    // on every authenticated request.
+    let now = Instant::now();
+    let user = if let Some(entry) = state.auth_user_cache.get(&user_id)
+        && entry.value().1 > now
+    {
+        entry.value().0.clone()
+    } else {
+        let u = get_user_by_id(&state.pool, &user_id)
+            .await?
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        state
+            .auth_user_cache
+            .insert(user_id.clone(), (u.clone(), now + AUTH_USER_CACHE_TTL));
+        u
+    };
     if !user.enabled {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -877,7 +915,12 @@ pub async fn auth_middleware(
         }
     };
 
-    // Dispatch ApiRequest hook to plugins
+    // Dispatch ApiRequest hook to plugins. Short-circuit on the atomic
+    // shadow counter — no plugins running ⇒ no read-lock acquisition.
+    if state
+        .plugin_running_count
+        .load(std::sync::atomic::Ordering::Relaxed)
+        > 0
     {
         let mgr = state.plugin_manager.read().await;
         if mgr.running_count() > 0 {
