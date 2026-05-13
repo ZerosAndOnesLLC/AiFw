@@ -183,7 +183,7 @@ async fn push_cert_to_peers(
     cert_id: i64,
     fullchain: &str,
     privkey: &str,
-) -> anyhow::Result<()> {
+) -> aifw_common::Result<()> {
     let nodes = cluster_engine.list_nodes().await?;
     if nodes.is_empty() {
         return Ok(());
@@ -192,7 +192,8 @@ async fn push_cert_to_peers(
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+        .build()
+        .map_err(|e| aifw_common::AifwError::Other(format!("acme: reqwest build: {e}")))?;
 
     for n in nodes
         .iter()
@@ -292,7 +293,7 @@ pub async fn import_external_cert(
     cert_id: i64,
     fullchain_pem: &str,
     private_key_pem: &str,
-) -> anyhow::Result<()> {
+) -> aifw_common::Result<()> {
     let (leaf_pem, chain_pem) = split_pem_bundle(fullchain_pem);
     let expires_at = parse_cert_expiry(&leaf_pem);
 
@@ -319,8 +320,7 @@ pub async fn import_external_cert(
     .bind(Utc::now().to_rfc3339())
     .bind(cert_id)
     .execute(pool)
-    .await
-    .map_err(|e| anyhow::anyhow!("import_external_cert persist: {e}"))?;
+    .await?;
 
     Ok(())
 }
