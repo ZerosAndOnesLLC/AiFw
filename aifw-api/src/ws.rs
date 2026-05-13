@@ -7,6 +7,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use crate::AppState;
@@ -1319,11 +1320,18 @@ fn parse_pflog_line(line: &str) -> Option<BlockedPayload> {
     Some(entry)
 }
 
-type BlockedBuffer = std::sync::Arc<tokio::sync::RwLock<Vec<BlockedPayload>>>;
+// VecDeque keeps push (push_back) and trim (pop_front) both O(1) even under
+// high block rates (DDoS). Vec::drain(..N) on a 10k buffer was O(N) per
+// insert → O(N²) under sustained traffic above the cap.
+type BlockedBuffer = std::sync::Arc<tokio::sync::RwLock<VecDeque<BlockedPayload>>>;
 
 fn blocked_buffer() -> &'static BlockedBuffer {
     static BUF: std::sync::OnceLock<BlockedBuffer> = std::sync::OnceLock::new();
-    BUF.get_or_init(|| std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())))
+    BUF.get_or_init(|| {
+        std::sync::Arc::new(tokio::sync::RwLock::new(VecDeque::with_capacity(
+            PFLOG_MAX_ENTRIES,
+        )))
+    })
 }
 
 /// Call once on API startup to bootstrap from pflog file and start live capture.
@@ -1350,10 +1358,16 @@ pub fn start_pflog_collector(
             && output.status.success()
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut entries: Vec<BlockedPayload> =
-                stdout.lines().filter_map(parse_pflog_line).collect();
-            if entries.len() > PFLOG_MAX_ENTRIES {
-                entries.drain(..entries.len() - PFLOG_MAX_ENTRIES);
+            let entries_iter = stdout.lines().filter_map(parse_pflog_line);
+            // Keep only the last PFLOG_MAX_ENTRIES; iterating and dropping the
+            // front of a temporary Vec would be O(N²). Buffer the tail directly.
+            let mut entries: VecDeque<BlockedPayload> =
+                VecDeque::with_capacity(PFLOG_MAX_ENTRIES);
+            for e in entries_iter {
+                if entries.len() == PFLOG_MAX_ENTRIES {
+                    entries.pop_front();
+                }
+                entries.push_back(e);
             }
             let count = entries.len();
             *buf.write().await = entries;
@@ -1410,11 +1424,10 @@ pub fn start_pflog_collector(
                                 }
                             }
                             let mut buf = buf2.write().await;
-                            buf.push(entry);
-                            let excess = buf.len().saturating_sub(PFLOG_MAX_ENTRIES);
-                            if excess > 0 {
-                                buf.drain(..excess);
+                            if buf.len() == PFLOG_MAX_ENTRIES {
+                                buf.pop_front();
                             }
+                            buf.push_back(entry);
                         }
                     }
                 }
@@ -1435,7 +1448,7 @@ async fn collect_blocked_recent() -> Vec<BlockedPayload> {
     let buf = blocked_buffer();
     let all = buf.read().await;
     let skip = all.len().saturating_sub(WS_BLOCKED_LIMIT);
-    all[skip..].to_vec()
+    all.iter().skip(skip).cloned().collect()
 }
 
 async fn collect_services(pool: &sqlx::SqlitePool) -> Vec<ServiceStatusPayload> {
