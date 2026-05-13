@@ -1,10 +1,14 @@
-//! Server-side loop: accept connections, read one request, call handler,
-//! write one response, close. No persistent connection state.
+//! Server-side loop: accept connections, then serve request/response pairs
+//! on the same stream until the client closes or an idle/per-request timeout
+//! fires. Keeping connections alive removes the fork+connect cost on the
+//! client side (PERF-C13).
 //!
 //! Hardening:
-//! - Per-connection timeout (`READ_TIMEOUT`) covers read+handle+write so a
+//! - Per-request timeout (`REQUEST_TIMEOUT`) covers read+handle+write so a
 //!   stalled client cannot pin a worker forever (slowloris-style DoS where
 //!   the client sends a 16 MiB length prefix and then drips bytes).
+//! - Idle timeout (`IDLE_TIMEOUT`) closes connections that stay open with
+//!   no traffic — pooled clients reconnect on demand.
 //! - Concurrent connection cap (`MAX_INFLIGHT`) bounds in-flight requests
 //!   via a semaphore — beyond the cap, new accepts wait for a permit
 //!   instead of unboundedly spawning tasks.
@@ -21,10 +25,14 @@ use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 
-/// Max time a single connection may spend in read+handle+write before we
-/// drop it. Must accommodate the slowest legitimate IPC call (config
+/// Max time a single request may spend in read+handle+write before we drop
+/// the connection. Must accommodate the slowest legitimate IPC call (config
 /// roundtrips against an idle DB) but small enough to bound DoS impact.
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Max time a connection may sit idle (between requests) before we close it.
+/// Pooled clients reconnect on demand; this caps the cost of leaked streams.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Max concurrent in-flight IPC requests. Beyond this, the accept loop
 /// awaits a permit before spawning the next task. 64 is well above any
@@ -104,7 +112,7 @@ pub async fn serve<H: IpcHandler>(listener: UnixListener, handler: Arc<H>) {
                 tracing::warn!(peer_uid = uid, "rejecting unauthorized peer");
                 let mut s = stream;
                 let _ = tokio::time::timeout(
-                    READ_TIMEOUT,
+                    REQUEST_TIMEOUT,
                     write_frame(&mut s, &IpcResponse::Error("unauthorized peer".into())),
                 )
                 .await;
@@ -121,25 +129,44 @@ pub async fn serve<H: IpcHandler>(listener: UnixListener, handler: Arc<H>) {
 
         let handler = handler.clone();
         tokio::spawn(async move {
-            // The whole read+handle+write cycle has to complete inside
-            // READ_TIMEOUT; otherwise we close the connection silently.
-            let _ = tokio::time::timeout(READ_TIMEOUT, handle_one(stream, handler)).await;
+            serve_connection(stream, handler).await;
             drop(permit);
         });
     }
 }
 
-async fn handle_one<H: IpcHandler>(mut stream: UnixStream, handler: Arc<H>) {
-    let req: IpcRequest = match read_frame(&mut stream).await {
-        Ok(r) => r,
-        Err(FrameError::Io(_)) => return, // client closed
-        Err(e) => {
-            let _ = write_frame(&mut stream, &IpcResponse::Error(e.to_string())).await;
+/// Serve as many request/response pairs as the client wants on a single
+/// connection. Loops until the client closes, an IDLE_TIMEOUT fires, or a
+/// per-request REQUEST_TIMEOUT trips.
+async fn serve_connection<H: IpcHandler>(mut stream: UnixStream, handler: Arc<H>) {
+    loop {
+        // Wait for the next request, bounded by IDLE_TIMEOUT.
+        let read = tokio::time::timeout(IDLE_TIMEOUT, read_frame(&mut stream)).await;
+        let req: IpcRequest = match read {
+            Ok(Ok(r)) => r,
+            Ok(Err(FrameError::Io(_))) => return, // client closed
+            Ok(Err(e)) => {
+                let _ = tokio::time::timeout(
+                    REQUEST_TIMEOUT,
+                    write_frame(&mut stream, &IpcResponse::Error(e.to_string())),
+                )
+                .await;
+                return;
+            }
+            Err(_) => return, // idle timeout
+        };
+        // Each request is bounded by REQUEST_TIMEOUT (handle + write).
+        let resp = match tokio::time::timeout(REQUEST_TIMEOUT, handler.handle(req)).await {
+            Ok(r) => r,
+            Err(_) => IpcResponse::Error("request timeout".into()),
+        };
+        if tokio::time::timeout(REQUEST_TIMEOUT, write_frame(&mut stream, &resp))
+            .await
+            .is_err()
+        {
             return;
         }
-    };
-    let resp = handler.handle(req).await;
-    let _ = write_frame(&mut stream, &resp).await;
+    }
 }
 
 #[cfg(test)]

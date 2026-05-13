@@ -6,6 +6,7 @@
 
 use crate::framing::{read_frame, write_frame};
 use crate::proto::{AlertSummary, IdsStats, IpcRequest, IpcResponse, RuleSummary, RulesetSummary};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,6 +30,11 @@ pub enum IdsClientError {
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Soft cap on idle pooled streams. The server's serve_connection loops on a
+/// single stream, so we want to reuse a handful of long-lived connections
+/// rather than opening one per request.
+const POOL_MAX_IDLE: usize = 4;
+
 #[derive(Clone)]
 struct CacheEntry<T: Clone> {
     value: T,
@@ -47,6 +53,9 @@ struct Cache {
 pub struct IdsClient {
     socket_path: PathBuf,
     cache: Arc<Mutex<Cache>>,
+    // Idle pool — capped at POOL_MAX_IDLE entries. Streams that error get
+    // dropped rather than returned; the next call opens a fresh one.
+    pool: Arc<Mutex<VecDeque<UnixStream>>>,
 }
 
 impl IdsClient {
@@ -54,6 +63,7 @@ impl IdsClient {
         Self {
             socket_path: socket_path.into(),
             cache: Arc::new(Mutex::new(Cache::default())),
+            pool: Arc::new(Mutex::new(VecDeque::with_capacity(POOL_MAX_IDLE))),
         }
     }
 
@@ -61,21 +71,45 @@ impl IdsClient {
         &self.socket_path
     }
 
-    async fn raw_call(&self, req: IpcRequest) -> Result<IpcResponse, IdsClientError> {
+    /// Take a pooled stream if one's available, otherwise open a new
+    /// connection. The server keeps the stream alive across requests.
+    async fn acquire(&self) -> Result<UnixStream, IdsClientError> {
+        if let Some(s) = self.pool.lock().await.pop_front() {
+            return Ok(s);
+        }
         let connect = UnixStream::connect(&self.socket_path);
-        let mut stream = match tokio::time::timeout(REQUEST_TIMEOUT, connect).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(IdsClientError::Unavailable(e.to_string())),
-            Err(_) => return Err(IdsClientError::Timeout),
-        };
+        match tokio::time::timeout(REQUEST_TIMEOUT, connect).await {
+            Ok(Ok(s)) => Ok(s),
+            Ok(Err(e)) => Err(IdsClientError::Unavailable(e.to_string())),
+            Err(_) => Err(IdsClientError::Timeout),
+        }
+    }
+
+    /// Return a successfully-used stream to the pool. Streams that errored
+    /// during use are dropped instead so we don't reuse a broken connection.
+    async fn release(&self, stream: UnixStream) {
+        let mut pool = self.pool.lock().await;
+        if pool.len() < POOL_MAX_IDLE {
+            pool.push_back(stream);
+        }
+    }
+
+    async fn raw_call(&self, req: IpcRequest) -> Result<IpcResponse, IdsClientError> {
+        let mut stream = self.acquire().await?;
         let io = async {
             write_frame(&mut stream, &req).await?;
             let resp: IpcResponse = read_frame(&mut stream).await?;
             Ok::<_, IdsClientError>(resp)
         };
         match tokio::time::timeout(REQUEST_TIMEOUT, io).await {
-            Ok(Ok(resp)) => Ok(resp),
-            Ok(Err(e)) => Err(e),
+            Ok(Ok(resp)) => {
+                self.release(stream).await;
+                Ok(resp)
+            }
+            Ok(Err(e)) => {
+                // Drop the stream — likely broken (framing error, EOF, etc.)
+                Err(e)
+            }
             Err(_) => Err(IdsClientError::Timeout),
         }
     }
