@@ -717,34 +717,19 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
 
     let pool = db.pool().clone();
 
-    // Run auth migrations
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
-            totp_enabled INTEGER NOT NULL DEFAULT 0, totp_secret TEXT,
-            auth_provider TEXT NOT NULL DEFAULT 'local', created_at TEXT NOT NULL
-        )"#,
-    )
-    .execute(&pool)
-    .await
-    .map_err(|e| format!("migration error: {e}"))?;
-
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS recovery_codes (
-            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, code_hash TEXT NOT NULL,
-            used INTEGER NOT NULL DEFAULT 0
-        )"#,
-    )
-    .execute(&pool)
-    .await
-    .map_err(|e| format!("migration error: {e}"))?;
-
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS auth_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)"#,
-    )
-    .execute(&pool)
-    .await
-    .map_err(|e| format!("migration error: {e}"))?;
+    // Run auth migrations — schemas are sourced from aifw_common::schemas
+    // (QUAL-C5) so the wizard and aifw-api's startup migration share one
+    // definition that can't drift.
+    for sql in [
+        aifw_common::schemas::USERS_CREATE,
+        aifw_common::schemas::RECOVERY_CODES_CREATE,
+        aifw_common::schemas::AUTH_CONFIG_CREATE,
+    ] {
+        sqlx::query(sql)
+            .execute(&pool)
+            .await
+            .map_err(|e| format!("migration error: {e}"))?;
+    }
 
     // Create admin user
     let user_id = uuid::Uuid::new_v4().to_string();
@@ -819,9 +804,10 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
     seed_default_rules(&pool, config).await?;
 
     // Seed interface roles (WAN/LAN descriptions)
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS interface_roles (interface_name TEXT PRIMARY KEY, role TEXT NOT NULL, updated_at TEXT NOT NULL)"
-    ).execute(&pool).await.map_err(|e| format!("interface_roles table: {e}"))?;
+    sqlx::query(aifw_common::schemas::INTERFACE_ROLES_CREATE)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("interface_roles table: {e}"))?;
 
     let now = chrono::Utc::now().to_rfc3339();
     let _ = sqlx::query("INSERT OR REPLACE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'WAN', ?2)")
@@ -832,8 +818,10 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
     }
 
     // Seed DNS resolver config — rDNS enabled by default with forwarding to user's DNS servers
-    sqlx::query("CREATE TABLE IF NOT EXISTS dns_resolver_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        .execute(&pool).await.map_err(|e| format!("dns config table: {e}"))?;
+    sqlx::query(aifw_common::schemas::DNS_RESOLVER_CONFIG_CREATE)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("dns config table: {e}"))?;
 
     let dns_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM dns_resolver_config")
         .fetch_one(&pool)
@@ -937,9 +925,10 @@ rate_limit = 1000
     }
 
     // Seed DNS ACL entries — allow LAN subnet and localhost
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS dns_access_lists (id TEXT PRIMARY KEY, network TEXT NOT NULL, action TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)"
-    ).execute(&pool).await.map_err(|e| format!("dns acl table: {e}"))?;
+    sqlx::query(aifw_common::schemas::DNS_ACCESS_LISTS_CREATE)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("dns acl table: {e}"))?;
 
     let acl_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM dns_access_lists")
         .fetch_one(&pool)
@@ -981,22 +970,12 @@ rate_limit = 1000
         // written to rc.conf via aifw_daemon_env so the rc.d start script
         // passes AIFW_LOOPBACK_API_KEY to the daemon process.
         //
-        // Schema matches aifw-api/src/auth/mod.rs::migrate() — created here
-        // with IF NOT EXISTS so re-running setup is idempotent.
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS api_keys (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                key_hash TEXT NOT NULL,
-                prefix TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(|e| format!("api_keys table: {e}"))?;
+        // Schema is sourced from aifw_common::schemas (QUAL-C5) so the
+        // wizard and aifw-api's migrate can't drift.
+        sqlx::query(aifw_common::schemas::API_KEYS_CREATE)
+            .execute(&pool)
+            .await
+            .map_err(|e| format!("api_keys table: {e}"))?;
 
         // Two simple-format UUIDs = 64 hex chars of entropy.
         let loopback_key = format!(
@@ -1203,13 +1182,11 @@ async fn seed_dhcp_config(
     let pool_end = format!("{}.219", base);
     let gateway = lan_ip.to_string();
 
-    // Create DHCP config table
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS dhcp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| format!("dhcp config table: {e}"))?;
+    // Create DHCP config table — schema shared via aifw_common::schemas
+    sqlx::query(aifw_common::schemas::DHCP_CONFIG_CREATE)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("dhcp config table: {e}"))?;
 
     let dhcp_defaults = [
         ("enabled", "true"),

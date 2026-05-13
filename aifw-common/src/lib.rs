@@ -22,6 +22,7 @@ pub mod nat;
 pub mod permission;
 pub mod ratelimit;
 pub mod rule;
+pub mod schemas;
 #[cfg(unix)]
 pub mod single_instance;
 #[cfg(test)]

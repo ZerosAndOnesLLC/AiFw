@@ -114,17 +114,10 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS interface_roles (
-            interface_name TEXT PRIMARY KEY,
-            role TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-    "#,
-    )
-    .execute(pool)
-    .await?;
+    // QUAL-C5: shared with aifw-setup's first-boot migration
+    sqlx::query(aifw_common::schemas::INTERFACE_ROLES_CREATE)
+        .execute(pool)
+        .await?;
 
     // Seed WAN role from pf.conf if table is empty
     let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM interface_roles")

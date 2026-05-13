@@ -431,8 +431,10 @@ fn bad_request() -> StatusCode {
 // ============================================================
 
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(r#"CREATE TABLE IF NOT EXISTS dns_resolver_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)"#)
-        .execute(pool).await?;
+    // QUAL-C5: shared schema with aifw-setup
+    sqlx::query(aifw_common::schemas::DNS_RESOLVER_CONFIG_CREATE)
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         r#"
@@ -458,16 +460,15 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS dns_access_lists (
-            id TEXT PRIMARY KEY, network TEXT NOT NULL, action TEXT NOT NULL,
-            description TEXT, created_at TEXT NOT NULL
-        )
-    "#,
-    )
-    .execute(pool)
-    .await?;
+    // QUAL-C5: shared schema with aifw-setup. The shared version includes
+    // an `enabled` column the previous in-place version was missing —
+    // the ALTER TABLE just below brings already-deployed boxes up to date.
+    sqlx::query(aifw_common::schemas::DNS_ACCESS_LISTS_CREATE)
+        .execute(pool)
+        .await?;
+    let _ = sqlx::query("ALTER TABLE dns_access_lists ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+        .execute(pool)
+        .await;
 
     // Upgrade heal (v5.57.5): if forwarding is disabled but forwarding_servers
     // is populated, flip forwarding on. rDNS 1.12.8 has broken iterative

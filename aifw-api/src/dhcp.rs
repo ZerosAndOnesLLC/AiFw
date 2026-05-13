@@ -354,39 +354,14 @@ fn internal() -> StatusCode {
 // ============================================================
 
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS dhcp_config (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )
-    "#,
-    )
-    .execute(pool)
-    .await?;
+    // QUAL-C5: shared with aifw-setup's first-boot migration.
+    sqlx::query(aifw_common::schemas::DHCP_CONFIG_CREATE)
+        .execute(pool)
+        .await?;
 
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS dhcp_subnets (
-            id TEXT PRIMARY KEY,
-            network TEXT NOT NULL,
-            pool_start TEXT NOT NULL,
-            pool_end TEXT NOT NULL,
-            gateway TEXT NOT NULL,
-            dns_servers TEXT,
-            domain_name TEXT,
-            lease_time INTEGER,
-            preferred_time INTEGER,
-            subnet_type TEXT NOT NULL DEFAULT 'address',
-            delegated_length INTEGER,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            description TEXT,
-            created_at TEXT NOT NULL
-        )
-    "#,
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query(aifw_common::schemas::DHCP_SUBNETS_CREATE)
+        .execute(pool)
+        .await?;
 
     // Add new columns if they don't exist (migration from old schema)
     for col in [

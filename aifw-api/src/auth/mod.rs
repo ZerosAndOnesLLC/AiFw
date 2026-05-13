@@ -101,33 +101,15 @@ pub struct CreateApiKeyResponse {
 // ============================================================
 
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            totp_enabled INTEGER NOT NULL DEFAULT 0,
-            totp_secret TEXT,
-            auth_provider TEXT NOT NULL DEFAULT 'local',
-            created_at TEXT NOT NULL
-        )"#,
-    )
-    .execute(pool)
-    .await?;
+    // Shared schemas live in aifw_common::schemas (QUAL-C5) so the wizard
+    // and this migration always see the same DDL.
+    sqlx::query(aifw_common::schemas::USERS_CREATE)
+        .execute(pool)
+        .await?;
 
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS api_keys (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            key_hash TEXT NOT NULL,
-            prefix TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )"#,
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query(aifw_common::schemas::API_KEYS_CREATE)
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -144,17 +126,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS recovery_codes (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            code_hash TEXT NOT NULL,
-            used INTEGER NOT NULL DEFAULT 0,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )"#,
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query(aifw_common::schemas::RECOVERY_CODES_CREATE)
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS oauth_providers (
@@ -189,14 +163,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS auth_config (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )"#,
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query(aifw_common::schemas::AUTH_CONFIG_CREATE)
+        .execute(pool)
+        .await?;
 
     // Add role and enabled columns if they don't exist
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
@@ -206,21 +175,10 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
-    // Static routes
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS static_routes (
-            id TEXT PRIMARY KEY,
-            destination TEXT NOT NULL,
-            gateway TEXT NOT NULL,
-            interface TEXT,
-            metric INTEGER DEFAULT 0,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            description TEXT,
-            created_at TEXT NOT NULL
-        )"#,
-    )
-    .execute(pool)
-    .await?;
+    // Static routes — shared schema
+    sqlx::query(aifw_common::schemas::STATIC_ROUTES_CREATE)
+        .execute(pool)
+        .await?;
 
     // Add fib column (0 = main FIB). Multi-WAN (#132) routes can target
     // additional FIBs created via routing instances.
