@@ -10,6 +10,7 @@ pub mod db;
 pub mod ddns;
 pub mod dns_blocklists;
 pub mod error;
+pub mod migrations;
 pub mod engine;
 pub mod geoip;
 pub mod ha;

@@ -59,6 +59,14 @@ impl Database {
     }
 
     async fn migrate(&self) -> Result<()> {
+        // QUAL-C6: run versioned migrations first. New schema changes go
+        // through aifw-core/migrations/NNNN_*.sql; the in-place
+        // `CREATE TABLE IF NOT EXISTS` below stays for engines that
+        // haven't been folded into the versioned framework yet.
+        crate::migrations::run(&self.pool)
+            .await
+            .map_err(|e| AifwError::Database(format!("sqlx migrate: {e}")))?;
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS rules (

@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.95.37"
+version = "5.95.38"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -43,7 +43,7 @@ argon2 = { version = "0.5", features = ["std"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
