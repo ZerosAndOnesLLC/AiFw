@@ -19,6 +19,9 @@ async-trait = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
 cron = "0.16"
+arc-swap = "1"
+ip_network = "0.4"
+ip_network_table = "0.2"
 aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-route53 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }

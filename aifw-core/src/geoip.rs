@@ -2,20 +2,47 @@ use aifw_common::{
     AifwError, CountryCode, GeoIpAction, GeoIpLookupResult, GeoIpRule, GeoIpRuleStatus, Result,
 };
 use aifw_pf::PfBackend;
+use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
+use ip_network::{IpNetwork, Ipv4Network, Ipv6Network};
+use ip_network_table::IpNetworkTable;
 use sqlx::sqlite::SqlitePool;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
+
+/// In-memory geo-IP index built once at load time.
+///
+/// `lookup_table` is a treebitmap (longest-prefix match trie) keyed by the
+/// network → country code. A 70k-CIDR US block takes ~tens of MB of memory
+/// and resolves to O(W) per lookup where W is the address bit width
+/// (32 for v4, 128 for v6). The legacy code did an O(N×M) linear scan of
+/// every country's CIDR list on each lookup.
+struct GeoIpIndex {
+    /// Treebitmap for longest-prefix match. Value is the country code.
+    lookup_table: IpNetworkTable<String>,
+    /// Per-country CIDR list — preserved for pfctl table population
+    /// (get_country_cidrs / apply_rules).
+    by_country: HashMap<String, Vec<(IpAddr, u8)>>,
+}
+
+impl GeoIpIndex {
+    fn empty() -> Self {
+        Self {
+            lookup_table: IpNetworkTable::new(),
+            by_country: HashMap::new(),
+        }
+    }
+}
 
 pub struct GeoIpEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
     anchor: String,
-    /// In-memory country -> CIDRs index for fast lookup
-    index: Arc<RwLock<HashMap<String, Vec<(IpAddr, u8)>>>>,
+    /// Atomic snapshot of the geo-IP index. Lookups acquire an Arc with no
+    /// lock; reloads build a fresh index off-thread and swap.
+    index: Arc<ArcSwap<GeoIpIndex>>,
 }
 
 impl GeoIpEngine {
@@ -24,7 +51,7 @@ impl GeoIpEngine {
             pool,
             pf,
             anchor: "aifw-geoip".to_string(),
-            index: Arc::new(RwLock::new(HashMap::new())),
+            index: Arc::new(ArcSwap::from_pointee(GeoIpIndex::empty())),
         }
     }
 
@@ -175,23 +202,37 @@ impl GeoIpEngine {
             "loaded geo-ip database"
         );
 
-        *self.index.write().await = country_cidrs;
+        // Build the lookup trie once. Cost is paid here (load time), not on
+        // every per-packet / per-policy lookup.
+        let mut lookup_table: IpNetworkTable<String> = IpNetworkTable::new();
+        for (country, cidrs) in &country_cidrs {
+            for &(addr, prefix) in cidrs {
+                if let Some(net) = build_ip_network(addr, prefix) {
+                    lookup_table.insert(net, country.clone());
+                }
+            }
+        }
+
+        self.index.store(Arc::new(GeoIpIndex {
+            lookup_table,
+            by_country: country_cidrs,
+        }));
         Ok(aggregated)
     }
 
-    /// Lookup which country an IP belongs to
+    /// Lookup which country an IP belongs to. O(W) longest-prefix match.
     pub async fn lookup(&self, ip: IpAddr) -> GeoIpLookupResult {
-        let index = self.index.read().await;
-        for (country, cidrs) in index.iter() {
-            for (net, prefix) in cidrs {
-                if ip_in_network(ip, *net, *prefix) {
-                    return GeoIpLookupResult {
-                        ip,
-                        country: Some(CountryCode(country.clone())),
-                        network: Some(format!("{net}/{prefix}")),
-                    };
-                }
-            }
+        let index = self.index.load();
+        if let Some((net, country)) = index.lookup_table.longest_match(ip) {
+            let (network_ip, prefix) = match net {
+                IpNetwork::V4(n) => (IpAddr::V4(n.network_address()), n.netmask()),
+                IpNetwork::V6(n) => (IpAddr::V6(n.network_address()), n.netmask()),
+            };
+            return GeoIpLookupResult {
+                ip,
+                country: Some(CountryCode(country.clone())),
+                network: Some(format!("{network_ip}/{prefix}")),
+            };
         }
         GeoIpLookupResult {
             ip,
@@ -202,8 +243,9 @@ impl GeoIpEngine {
 
     /// Get all CIDRs for a specific country
     pub async fn get_country_cidrs(&self, country: &str) -> Vec<(IpAddr, u8)> {
-        let index = self.index.read().await;
+        let index = self.index.load();
         index
+            .by_country
             .get(&country.to_uppercase())
             .cloned()
             .unwrap_or_default()
@@ -249,36 +291,19 @@ impl GeoIpEngine {
 
     /// Get database statistics
     pub async fn db_stats(&self) -> (usize, usize) {
-        let index = self.index.read().await;
-        let countries = index.len();
-        let total: usize = index.values().map(|v| v.len()).sum();
+        let index = self.index.load();
+        let countries = index.by_country.len();
+        let total: usize = index.by_country.values().map(|v| v.len()).sum();
         (countries, total)
     }
 }
 
-fn ip_in_network(ip: IpAddr, network: IpAddr, prefix: u8) -> bool {
-    match (ip, network) {
-        (IpAddr::V4(ip4), IpAddr::V4(net4)) => {
-            if prefix == 0 {
-                return true;
-            }
-            if prefix > 32 {
-                return false;
-            }
-            let mask = u32::MAX << (32 - prefix);
-            (u32::from(ip4) & mask) == (u32::from(net4) & mask)
-        }
-        (IpAddr::V6(ip6), IpAddr::V6(net6)) => {
-            if prefix == 0 {
-                return true;
-            }
-            if prefix > 128 {
-                return false;
-            }
-            let mask = u128::MAX << (128 - prefix);
-            (u128::from(ip6) & mask) == (u128::from(net6) & mask)
-        }
-        _ => false,
+/// Build an `IpNetwork` from an (address, prefix) pair, returning `None` if
+/// the prefix is out of range for the address family.
+fn build_ip_network(addr: IpAddr, prefix: u8) -> Option<IpNetwork> {
+    match addr {
+        IpAddr::V4(v4) => Ipv4Network::new(v4, prefix).ok().map(IpNetwork::V4),
+        IpAddr::V6(v6) => Ipv6Network::new(v6, prefix).ok().map(IpNetwork::V6),
     }
 }
 
