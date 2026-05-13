@@ -416,32 +416,30 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     state.conntrack.refresh().await.map_err(|e| e.to_string())?;
     let conns = state.conntrack.get_connections().await;
 
-    // Dispatch plugin hooks for new/closed connections
+    // Dispatch plugin hooks for new/closed connections. Skipped entirely when
+    // no plugins are running — previously we paid for the HashSet diff
+    // (50k connections × format!() × 2) every tick even with zero plugins.
+    type ConnKey = (std::net::IpAddr, u16, std::net::IpAddr, u16);
     {
         use std::collections::HashSet;
-        static PREV_CONNS: std::sync::OnceLock<tokio::sync::RwLock<HashSet<String>>> =
-            std::sync::OnceLock::new();
-        let prev_lock = PREV_CONNS.get_or_init(|| tokio::sync::RwLock::new(HashSet::new()));
+        let plugins_active = state.plugin_manager.read().await.running_count() > 0;
+        if plugins_active {
+            static PREV_CONNS: std::sync::OnceLock<tokio::sync::RwLock<HashSet<ConnKey>>> =
+                std::sync::OnceLock::new();
+            let prev_lock = PREV_CONNS.get_or_init(|| tokio::sync::RwLock::new(HashSet::new()));
 
-        let current_keys: HashSet<String> = conns
-            .iter()
-            .map(|c| {
-                format!(
-                    "{}:{}:{}:{}",
-                    c.src_addr, c.src_port, c.dst_addr, c.dst_port
-                )
-            })
-            .collect();
-        let prev_keys = prev_lock.read().await.clone();
+            let current_keys: HashSet<ConnKey> = conns
+                .iter()
+                .map(|c| (c.src_addr, c.src_port, c.dst_addr, c.dst_port))
+                .collect();
+            // Snapshot under read lock, drop the guard, then drop the plugin
+            // manager guard before any dispatch.await — avoids holding read
+            // locks across slow plugin I/O.
+            let prev_keys = prev_lock.read().await.clone();
 
-        // New connections
-        let mgr = state.plugin_manager.read().await;
-        if mgr.running_count() > 0 {
+            let mgr = state.plugin_manager.read().await;
             for c in &conns {
-                let key = format!(
-                    "{}:{}:{}:{}",
-                    c.src_addr, c.src_port, c.dst_addr, c.dst_port
-                );
+                let key = (c.src_addr, c.src_port, c.dst_addr, c.dst_port);
                 if !prev_keys.contains(&key) {
                     let event = aifw_plugins::HookEvent {
                         hook: aifw_plugins::HookPoint::ConnectionNew,
@@ -462,32 +460,26 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                     }
                 }
             }
-            // Closed connections
-            for key in &prev_keys {
-                if !current_keys.contains(key) {
-                    let parts: Vec<&str> = key.split(':').collect();
-                    if parts.len() >= 4 {
-                        let event = aifw_plugins::HookEvent {
-                            hook: aifw_plugins::HookPoint::ConnectionClosed,
-                            data: aifw_plugins::hooks::HookEventData::Connection {
-                                src_ip: parts[0].parse().unwrap_or(std::net::IpAddr::V4(
-                                    std::net::Ipv4Addr::UNSPECIFIED,
-                                )),
-                                dst_ip: parts[2].parse().unwrap_or(std::net::IpAddr::V4(
-                                    std::net::Ipv4Addr::UNSPECIFIED,
-                                )),
-                                src_port: parts[1].parse().unwrap_or(0),
-                                dst_port: parts[3].parse().unwrap_or(0),
-                                protocol: String::new(),
-                                state: "closed".to_string(),
-                            },
-                        };
-                        let _ = mgr.dispatch(&event).await;
-                    }
+            // Closed connections — tuple keys mean no string-parse fallback.
+            for &(src_ip, src_port, dst_ip, dst_port) in &prev_keys {
+                if !current_keys.contains(&(src_ip, src_port, dst_ip, dst_port)) {
+                    let event = aifw_plugins::HookEvent {
+                        hook: aifw_plugins::HookPoint::ConnectionClosed,
+                        data: aifw_plugins::hooks::HookEventData::Connection {
+                            src_ip,
+                            dst_ip,
+                            src_port,
+                            dst_port,
+                            protocol: String::new(),
+                            state: "closed".to_string(),
+                        },
+                    };
+                    let _ = mgr.dispatch(&event).await;
                 }
             }
+            drop(mgr);
+            *prev_lock.write().await = current_keys;
         }
-        *prev_lock.write().await = current_keys;
     }
 
     let connections: Vec<ConnectionPayload> = conns
