@@ -66,7 +66,7 @@ pub async fn query(
 
     // How many points from this tier cover the requested range?
     // Fall back to whatever the tier currently holds if the range exceeds the tier's window.
-    let points_needed = ((range + interval - 1) / interval) as usize;
+    let points_needed = range.div_ceil(interval) as usize;
     let effective_limit = q
         .limit
         .map(|l| l.min(points_needed))

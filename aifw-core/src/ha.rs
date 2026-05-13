@@ -505,11 +505,10 @@ impl ClusterEngine {
     /// this prevents the password from leaking into tracing logs on failure.
     fn redact_password_in_argv(argv: &[String]) -> Vec<String> {
         let mut out = argv.to_vec();
-        if let Some(pos) = out.iter().position(|s| s == "pass") {
-            if pos + 1 < out.len() {
+        if let Some(pos) = out.iter().position(|s| s == "pass")
+            && pos + 1 < out.len() {
                 out[pos + 1] = "<redacted>".to_string();
             }
-        }
         out
     }
 
@@ -607,15 +606,14 @@ pub async fn current_local_role() -> aifw_common::ClusterRole {
         .output()
         .await
         .ok();
-    if let Some(o) = live {
-        if o.status.success() {
+    if let Some(o) = live
+        && o.status.success() {
             match String::from_utf8_lossy(&o.stdout).trim() {
                 "master" => return aifw_common::ClusterRole::Primary,
                 "backup" => return aifw_common::ClusterRole::Secondary,
                 _ => {} // fall through to sysrc fallback
             }
         }
-    }
     tokio::process::Command::new("sysrc")
         .arg("-n")
         .arg("aifw_cluster_role")

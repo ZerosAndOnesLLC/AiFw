@@ -303,8 +303,11 @@ fn detect_nics() -> Vec<NicInfo> {
                 features.contains("tx-tcp-segmentation: on") || check_sys_flag(&name, "tso");
             let has_lro =
                 features.contains("large-receive-offload: on") || check_sys_flag(&name, "lro");
-            let has_rxcsum = features.contains("rx-checksum: on") || true; // most modern NICs
-            let has_txcsum = features.contains("tx-checksum") || true;
+            // rx/tx checksum offload: assume yes on Linux. Modern NICs default
+            // these on and `features` doesn't always surface them. The flag is
+            // advisory — actual offload negotiation happens in the kernel.
+            let has_rxcsum = true;
+            let has_txcsum = true;
 
             // RSS queues
             let rss_queues = count_rss_queues(&name);

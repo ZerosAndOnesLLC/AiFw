@@ -1075,11 +1075,7 @@ async fn generate_rdns_zones(pool: &SqlitePool) -> Vec<(String, String)> {
             domain.clone()
         };
         let entry = domain_records.entry(domain_key.clone()).or_default();
-        let name = if domain.is_empty() {
-            hostname.clone()
-        } else {
-            hostname.clone()
-        };
+        let name = hostname.clone();
         match rtype.as_str() {
             "A" => {
                 entry.push(format!("{:<24} IN A       {}", name, value));

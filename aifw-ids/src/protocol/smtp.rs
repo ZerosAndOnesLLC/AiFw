@@ -101,7 +101,7 @@ impl SmtpParser {
             if code.bytes().all(|b| b.is_ascii_digit()) {
                 buffers.insert("smtp.reply_code".into(), code.as_bytes().to_vec());
                 if line.len() > 4 {
-                    buffers.insert("smtp.reply_msg".into(), line[4..].as_bytes().to_vec());
+                    buffers.insert("smtp.reply_msg".into(), line.as_bytes()[4..].to_vec());
                 }
                 // Greeting banner
                 if code == "220" {

@@ -24,3 +24,6 @@ chrono = { workspace = true }
 anyhow = "1"
 libc = "0.2"
 nix = { version = "0.31", features = ["term"] }
+
+[lints]
+workspace = true

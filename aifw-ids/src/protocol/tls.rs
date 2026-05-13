@@ -172,9 +172,9 @@ impl TlsParser {
                         buffers.insert("tls.sni".into(), sni.as_bytes().to_vec());
                     }
                 }
-                0x000a => {
+                0x000a
                     // Supported groups / elliptic curves
-                    if ext_len >= 2 {
+                    if ext_len >= 2 => {
                         let list_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
                         let mut i = 2;
                         while i + 2 <= 2 + list_len && pos + i + 2 <= ext_end {
@@ -185,10 +185,9 @@ impl TlsParser {
                             i += 2;
                         }
                     }
-                }
-                0x000b => {
+                0x000b
                     // EC point formats
-                    if ext_len >= 1 {
+                    if ext_len >= 1 => {
                         let list_len = data[pos] as usize;
                         for i in 0..list_len {
                             if pos + 1 + i < ext_end {
@@ -196,10 +195,9 @@ impl TlsParser {
                             }
                         }
                     }
-                }
-                EXT_SUPPORTED_VERSIONS => {
+                EXT_SUPPORTED_VERSIONS
                     // Override version with highest supported version
-                    if ext_len >= 3 {
+                    if ext_len >= 3 => {
                         let list_len = data[pos] as usize;
                         let mut highest = 0u16;
                         let mut i = 1;
@@ -214,7 +212,6 @@ impl TlsParser {
                             buffers.insert("tls.version".into(), b"1.3".to_vec());
                         }
                     }
-                }
                 EXT_ALPN => {
                     if ext_len >= 2
                         && let Some(alpn) = self.parse_alpn(&data[pos..pos + ext_len])

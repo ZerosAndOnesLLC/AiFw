@@ -16,3 +16,6 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 toml = "0.8"
+
+[lints]
+workspace = true

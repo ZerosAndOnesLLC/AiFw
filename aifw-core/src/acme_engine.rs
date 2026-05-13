@@ -127,15 +127,14 @@ pub async fn renew_due(
                 if let Some(cert_row) = acme::load_cert(pool, c.id).await {
                     let fullchain = build_fullchain(&cert_row);
                     let key = cert_row.key_pem.unwrap_or_default();
-                    if !fullchain.is_empty() && !key.is_empty() {
-                        if let Err(e) = push_cert_to_peers(pool, ce, c.id, &fullchain, &key).await {
+                    if !fullchain.is_empty() && !key.is_empty()
+                        && let Err(e) = push_cert_to_peers(pool, ce, c.id, &fullchain, &key).await {
                             tracing::warn!(
                                 cert_id = c.id,
                                 error = %e,
                                 "acme: failed to push renewed cert to cluster peers"
                             );
                         }
-                    }
                 }
             }
         } else {
@@ -260,7 +259,7 @@ pub async fn warn_expiring(pool: &SqlitePool) {
         let Some(days) = c.days_until_expiry() else {
             continue;
         };
-        if days > WARN_DAYS || days < 0 {
+        if !(0..=WARN_DAYS).contains(&days) {
             continue;
         }
         // Suppress noise: only warn if last attempt > 23h ago (or never).
@@ -364,8 +363,8 @@ pub async fn ensure_account(
     contact_email: &str,
 ) -> Result<(AcmeAccount, Account), String> {
     let row = acme::load_default_account(pool).await;
-    if let Some(row) = row {
-        if let Some(ref pem) = row.key_pem {
+    if let Some(row) = row
+        && let Some(ref pem) = row.key_pem {
             // Re-hydrate an instant-acme Account from the stored credentials.
             // We stash AccountCredentials JSON in `key_pem` (it includes the
             // private key + URLs in one blob).
@@ -376,7 +375,6 @@ pub async fn ensure_account(
                 .map_err(|e| format!("acct from creds: {e}"))?;
             return Ok((row, account));
         }
-    }
 
     // Need to register a fresh account.
     let mailto = format!("mailto:{contact_email}");

@@ -25,3 +25,6 @@ serde_yaml_ng = "0.10"
 uuid = { workspace = true }
 argon2 = { workspace = true }
 chrono = { workspace = true }
+
+[lints]
+workspace = true

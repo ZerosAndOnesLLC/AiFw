@@ -332,23 +332,21 @@ async fn interface_ip(name: &str, want_v6: bool) -> Result<IpAddr, String> {
                 let addr = rest.split_whitespace().next().unwrap_or("");
                 // Strip scope id (fe80::1%vtnet0 -> fe80::1)
                 let addr = addr.split('%').next().unwrap_or(addr);
-                if let Ok(ip) = addr.parse::<IpAddr>() {
-                    if ip.is_ipv6() && !ip.is_loopback()
+                if let Ok(ip) = addr.parse::<IpAddr>()
+                    && ip.is_ipv6() && !ip.is_loopback()
                         && !addr.starts_with("fe80")          // link-local
                         && !addr.starts_with("fc")            // ULA
                         && !addr.starts_with("fd")
                     {
                         return Ok(ip);
                     }
-                }
             }
         } else if let Some(rest) = l.strip_prefix("inet ") {
             let addr = rest.split_whitespace().next().unwrap_or("");
-            if let Ok(ip) = addr.parse::<IpAddr>() {
-                if ip.is_ipv4() && !ip.is_loopback() && !addr.starts_with("169.254") {
+            if let Ok(ip) = addr.parse::<IpAddr>()
+                && ip.is_ipv4() && !ip.is_loopback() && !addr.starts_with("169.254") {
                     return Ok(ip);
                 }
-            }
         }
     }
     Err(format!(

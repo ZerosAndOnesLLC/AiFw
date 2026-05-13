@@ -1808,11 +1808,10 @@ async fn sample_pfsync_metrics() -> (u64, u64, u64) {
     let parse = |label: &str| -> u64 {
         for line in pfsync_text.lines() {
             let line = line.trim();
-            if let Some(rest) = line.strip_prefix(label) {
-                if let Some(num) = rest.split_whitespace().next() {
+            if let Some(rest) = line.strip_prefix(label)
+                && let Some(num) = rest.split_whitespace().next() {
                     return num.replace(',', "").parse().unwrap_or(0);
                 }
-            }
         }
         0
     };
@@ -1838,11 +1837,10 @@ async fn pfsync_state_count_from_si() -> u64 {
             let text = String::from_utf8_lossy(&o.stdout);
             for line in text.lines() {
                 let line = line.trim_start();
-                if let Some(rest) = line.strip_prefix("current entries") {
-                    if let Some(num) = rest.trim().split_whitespace().next() {
+                if let Some(rest) = line.strip_prefix("current entries")
+                    && let Some(num) = rest.split_whitespace().next() {
                         return num.parse().unwrap_or(0);
                     }
-                }
             }
             0
         }

@@ -45,11 +45,10 @@ pub fn verify(secret: &str, code: &str) -> bool {
         if generate_code(&secret_bytes, step + offset) == code_num {
             return true;
         }
-        if offset > 0 && step >= offset {
-            if generate_code(&secret_bytes, step - offset) == code_num {
+        if offset > 0 && step >= offset
+            && generate_code(&secret_bytes, step - offset) == code_num {
                 return true;
             }
-        }
     }
     false
 }
@@ -106,6 +105,7 @@ fn hmac_sha1(key: &[u8], msg: &[u8]) -> [u8; 20] {
     sha1(&outer)
 }
 
+#[allow(clippy::needless_range_loop)]
 fn sha1(data: &[u8]) -> [u8; 20] {
     let (mut h0, mut h1, mut h2, mut h3, mut h4) = (
         0x67452301u32,

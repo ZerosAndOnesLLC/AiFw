@@ -21,3 +21,6 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 chrono = { workspace = true }
 anyhow = "1"
+
+[lints]
+workspace = true

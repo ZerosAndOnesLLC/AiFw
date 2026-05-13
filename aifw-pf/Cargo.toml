@@ -14,3 +14,6 @@ tracing = { workspace = true }
 
 [features]
 freebsd-integration = []
+
+[lints]
+workspace = true

@@ -149,11 +149,11 @@ fn parse_yara_body(name: &str, body: &str, source: RuleSource) -> Result<Compile
             if let Some(eq_pos) = line.find('=') {
                 let value = line[eq_pos + 1..].trim();
 
-                if value.starts_with('"') {
+                if let Some(rest) = value.strip_prefix('"') {
                     // Text string
-                    let end = value[1..].find('"').map(|i| i + 1).unwrap_or(value.len());
-                    let text = &value[1..end];
-                    let nocase = value[end..].contains("nocase");
+                    let end = rest.find('"').unwrap_or(rest.len());
+                    let text = &rest[..end];
+                    let nocase = rest[end..].contains("nocase");
 
                     contents.push(ContentMatch {
                         pattern: unescape_yara_string(text),
@@ -183,11 +183,11 @@ fn parse_yara_body(name: &str, body: &str, source: RuleSource) -> Result<Compile
                             buffer: None,
                         });
                     }
-                } else if value.starts_with('/') {
+                } else if let Some(rest) = value.strip_prefix('/') {
                     // Regex
-                    let end = value[1..].find('/').map(|i| i + 1).unwrap_or(value.len());
-                    let pattern = &value[1..end];
-                    let flags = &value[end + 1..];
+                    let end = rest.find('/').unwrap_or(rest.len());
+                    let pattern = &rest[..end];
+                    let flags = rest.get(end + 1..).unwrap_or("");
                     let mut re_str = String::new();
                     if flags.contains('i') {
                         re_str.push_str("(?i)");

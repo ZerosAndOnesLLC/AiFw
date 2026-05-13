@@ -239,7 +239,7 @@ pub async fn enable_fibs(
     Json(req): Json<EnableFibsRequest>,
 ) -> Result<Json<ApiResponse<EnableFibsResponse>>, StatusCode> {
     let target_fibs = req.fibs.unwrap_or(16);
-    if target_fibs < 2 || target_fibs > 65536 || !target_fibs.is_power_of_two() {
+    if !(2..=65536).contains(&target_fibs) || !target_fibs.is_power_of_two() {
         return Err(bad_request());
     }
 

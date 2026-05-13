@@ -17,17 +17,14 @@ use crate::types::Interface;
 /// - Aggressive: ~1 s detection, requires future heartbeat daemon
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum CarpLatencyProfile {
+    #[default]
     Conservative,
     Tight,
     Aggressive,
 }
 
-impl Default for CarpLatencyProfile {
-    fn default() -> Self {
-        Self::Conservative
-    }
-}
 
 impl CarpLatencyProfile {
     /// Returns (advbase, primary_advskew, secondary_advskew) for this profile.

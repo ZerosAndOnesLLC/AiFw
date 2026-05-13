@@ -315,7 +315,7 @@ mod tests {
         let strings = set.to_strings();
         assert_eq!(strings, vec!["dashboard:view", "rules:read", "logs:view"]);
 
-        let str_refs: Vec<&str> = strings.iter().map(|s| *s).collect();
+        let str_refs: Vec<&str> = strings.to_vec();
         let restored = PermissionSet::from_strings(&str_refs);
         assert_eq!(set, restored);
     }

@@ -17,3 +17,6 @@ sqlx = { workspace = true }
 
 [features]
 postgres = []
+
+[lints]
+workspace = true

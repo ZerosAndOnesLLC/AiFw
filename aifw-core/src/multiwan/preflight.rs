@@ -120,6 +120,41 @@ fn derive_affected_flows(states: &[PfState], new_rules: &[String]) -> Vec<Affect
         .collect()
 }
 
+fn validate_mgmt_safety(
+    proposed: &[PolicyRule],
+    instances: &[RoutingInstance],
+    findings: &mut Vec<ValidationFinding>,
+) -> bool {
+    let mgmt_instance = instances.iter().find(|i| i.mgmt_reachable);
+    let Some(mgmt) = mgmt_instance else {
+        findings.push(ValidationFinding {
+            severity: "warning".into(),
+            message: "No management-reachable instance defined".into(),
+        });
+        return false;
+    };
+
+    // A policy that targets a non-mgmt instance with src_addr='any' or 'any/0'
+    // could move management traffic. Flag it.
+    let mut strand = false;
+    for p in proposed.iter().filter(|p| p.status == "active") {
+        if p.action_kind == "set_instance"
+            && p.target_id != mgmt.id
+            && (p.src_addr == "any" || p.src_addr == "0.0.0.0/0")
+        {
+            findings.push(ValidationFinding {
+                severity: "error".into(),
+                message: format!(
+                    "Policy '{}' with src=any moves ALL traffic away from mgmt FIB",
+                    p.name
+                ),
+            });
+            strand = true;
+        }
+    }
+    strand
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,39 +240,4 @@ mod tests {
         validate_mgmt_safety(&[], &[wan1, wan2], &mut findings);
         assert!(findings.iter().any(|f| f.severity == "warning"));
     }
-}
-
-fn validate_mgmt_safety(
-    proposed: &[PolicyRule],
-    instances: &[RoutingInstance],
-    findings: &mut Vec<ValidationFinding>,
-) -> bool {
-    let mgmt_instance = instances.iter().find(|i| i.mgmt_reachable);
-    let Some(mgmt) = mgmt_instance else {
-        findings.push(ValidationFinding {
-            severity: "warning".into(),
-            message: "No management-reachable instance defined".into(),
-        });
-        return false;
-    };
-
-    // A policy that targets a non-mgmt instance with src_addr='any' or 'any/0'
-    // could move management traffic. Flag it.
-    let mut strand = false;
-    for p in proposed.iter().filter(|p| p.status == "active") {
-        if p.action_kind == "set_instance"
-            && p.target_id != mgmt.id
-            && (p.src_addr == "any" || p.src_addr == "0.0.0.0/0")
-        {
-            findings.push(ValidationFinding {
-                severity: "error".into(),
-                message: format!(
-                    "Policy '{}' with src=any moves ALL traffic away from mgmt FIB",
-                    p.name
-                ),
-            });
-            strand = true;
-        }
-    }
-    strand
 }

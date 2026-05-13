@@ -656,17 +656,21 @@ mod tests {
 
     #[test]
     fn evaluate_transition_strict_down() {
-        let mut m = GatewayMetrics::default();
-        m.consec_fail = 3;
+        let m = GatewayMetrics {
+            consec_fail: 3,
+            ..GatewayMetrics::default()
+        };
         let s = evaluate_transition(GatewayState::Up, &m, 3, 5, 20.0, 5.0);
         assert_eq!(s, GatewayState::Down);
     }
 
     #[test]
     fn evaluate_transition_warning_on_loss() {
-        let mut m = GatewayMetrics::default();
-        m.consec_ok = 10;
-        m.recent_loss = 8.0;
+        let m = GatewayMetrics {
+            consec_ok: 10,
+            recent_loss: 8.0,
+            ..GatewayMetrics::default()
+        };
         let s = evaluate_transition(GatewayState::Down, &m, 3, 5, 20.0, 5.0);
         assert_eq!(s, GatewayState::Warning);
     }

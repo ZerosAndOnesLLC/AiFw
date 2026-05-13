@@ -50,3 +50,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 axum-test = "17"
+
+[lints]
+workspace = true

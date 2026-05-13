@@ -110,13 +110,6 @@ impl AutoResponder {
 
     /// Determine the appropriate response action for a threat score
     pub fn determine_action(&self, threat: &Threat) -> ResponseAction {
-        let threshold = self
-            .config
-            .overrides
-            .get(&threat.threat_type)
-            .copied()
-            .unwrap_or(self.config.alert_threshold);
-
         let score = threat.score.value();
 
         if score >= self.config.perm_block_threshold {
@@ -125,9 +118,8 @@ impl AutoResponder {
             ResponseAction::TempBlock
         } else if score >= self.config.rate_limit_threshold {
             ResponseAction::RateLimit
-        } else if score >= threshold {
-            ResponseAction::Alert
         } else {
+            // Below the rate-limit threshold (and any custom threshold): just alert.
             ResponseAction::Alert
         }
     }

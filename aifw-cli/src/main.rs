@@ -717,6 +717,9 @@ enum DhcpAction {
     Apply,
 }
 
+// One variant carries many large optional fields; boxing each variant would
+// add allocator overhead for a CLI command type that lives briefly on the stack.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum NatAction {
     /// Add a NAT rule

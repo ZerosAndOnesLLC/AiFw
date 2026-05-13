@@ -213,7 +213,7 @@ impl AlertBuffer {
                 *m.entry(a.classification.clone()).or_insert(0) += 1;
             }
             let mut v: Vec<(String, usize)> = m.into_iter().collect();
-            v.sort_by(|a, b| b.1.cmp(&a.1));
+            v.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
             v
         };
         AlertBufferStats {

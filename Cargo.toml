@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.95.17"
+version = "5.95.18"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -54,3 +54,14 @@ async-trait = "0.1"
 ratatui = "0.30"
 crossterm = "0.29"
 nix = { version = "0.31", features = ["fs", "process", "socket"] }
+
+# Workspace-wide clippy lint posture. Stylistic-only lints are allowed —
+# documented engine constructors legitimately have many parameters, the
+# `tests` mod-inside-`tests.rs` pattern is project convention, and several
+# engine signatures are intentionally complex types we don't want to alias.
+# Real code-smell lints stay denied (default-deny via -D warnings in CI).
+[workspace.lints.clippy]
+module_inception = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+should_implement_trait = "allow"

@@ -199,9 +199,11 @@ fn events_to_vec(mask: u32) -> Vec<String> {
     all.iter()
         .filter(|(_, ev)| {
             // bit() is crate-private — round-trip via enabled mask check:
-            let mut c = smtp::SmtpConfig::default();
-            c.enabled = true;
-            c.enabled_events = mask;
+            let c = smtp::SmtpConfig {
+                enabled: true,
+                enabled_events: mask,
+                ..smtp::SmtpConfig::default()
+            };
             c.is_event_enabled(*ev)
         })
         .map(|(k, _)| k.to_string())

@@ -507,7 +507,7 @@ mod tests {
     fn compile_set_gateway_emits_route_and_reply() {
         let gw = make_gw(Uuid::new_v4(), "em1", "203.0.113.1");
         let p = make_policy("set_gateway", gw.id);
-        let c = PolicyEngine::compile(&[p], &[], &[gw.clone()], &[], &HashMap::new());
+        let c = PolicyEngine::compile(&[p], &[], std::slice::from_ref(&gw), &[], &HashMap::new());
         assert_eq!(c.pbr.len(), 1);
         assert_eq!(c.reply.len(), 1);
         assert!(c.pbr[0].contains("route-to (em1 203.0.113.1)"));

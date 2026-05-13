@@ -32,6 +32,9 @@ impl std::fmt::Display for TuningTarget {
 }
 
 /// Generate all tuning recommendations based on detected hardware
+// Many push calls follow, several of them conditional on hardware profile.
+// vec![] would not be expressive enough.
+#[allow(clippy::vec_init_then_push)]
 pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
     let mut items = Vec::new();
 

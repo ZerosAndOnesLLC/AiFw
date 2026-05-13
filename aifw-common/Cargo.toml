@@ -15,3 +15,6 @@ tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
+
+[lints]
+workspace = true

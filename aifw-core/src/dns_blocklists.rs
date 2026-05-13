@@ -85,9 +85,10 @@ pub struct BlocklistSchedule {
     pub on_boot: bool,
     pub concurrency: i64,
     /// Master on/off for the entire DNS blocklisting feature. When false:
-    ///   - scheduler skips cron-driven refreshes,
-    ///   - refresh endpoints return an error,
-    ///   - on-disk blocklist files are removed and rDNS is reloaded.
+    /// - scheduler skips cron-driven refreshes,
+    /// - refresh endpoints return an error,
+    /// - on-disk blocklist files are removed and rDNS is reloaded.
+    ///
     /// Whitelist + custom blocks still apply (they are not blocklists).
     #[serde(default)]
     pub enabled: bool,

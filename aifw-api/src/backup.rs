@@ -1223,7 +1223,7 @@ fn is_option_override_safe(o: &aifw_core::config::DhcpOptionOverrideConfig) -> b
         "u8" => v.parse::<u8>().is_ok(),
         "u16" => v.parse::<u16>().is_ok(),
         "u32" => v.parse::<u32>().is_ok(),
-        "hex" => v.len() <= 510 && v.len() % 2 == 0 && v.chars().all(|c| c.is_ascii_hexdigit()),
+        "hex" => v.len() <= 510 && v.len().is_multiple_of(2) && v.chars().all(|c| c.is_ascii_hexdigit()),
         _ => false,
     }
 }

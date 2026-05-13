@@ -577,10 +577,7 @@ pub async fn import_opnsense(
     // Capture *pre*-apply state for the commit-confirm rollback target.
     // The previous design captured POST-apply, which meant the auto-revert
     // would "revert" to the just-applied state.
-    let pre_apply_snapshot_json = match crate::backup::capture_runtime_snapshot(&state).await {
-        Ok(s) => Some(s),
-        Err(_) => None,
-    };
+    let pre_apply_snapshot_json = crate::backup::capture_runtime_snapshot(&state).await.ok();
 
     // Pre-import snapshot for /api/v1/config/history — captures full
     // FirewallConfig including aliases + static_routes (added in this PR)

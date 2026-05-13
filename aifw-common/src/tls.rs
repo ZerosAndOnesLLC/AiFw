@@ -201,9 +201,10 @@ impl SniRule {
         let hostname = hostname.to_lowercase();
         let pattern = self.pattern.to_lowercase();
 
-        if pattern.starts_with("*.") {
-            let suffix = &pattern[1..]; // ".example.com"
-            hostname.ends_with(suffix) || hostname == pattern[2..]
+        if let Some(rest) = pattern.strip_prefix("*.") {
+            // suffix includes the leading '.', e.g. ".example.com"
+            let suffix = format!(".{rest}");
+            hostname.ends_with(&suffix) || hostname == rest
         } else {
             hostname == pattern
         }

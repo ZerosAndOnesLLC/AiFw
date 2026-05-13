@@ -82,7 +82,7 @@ impl ConnectionQuery {
             *bytes_by_ip.entry(s.dst_addr).or_default() += s.bytes_in;
         }
         let mut sorted: Vec<_> = bytes_by_ip.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
         sorted.truncate(limit);
         sorted
     }
@@ -94,7 +94,7 @@ impl ConnectionQuery {
             *counts.entry(s.protocol.to_lowercase()).or_default() += 1;
         }
         let mut sorted: Vec<_> = counts.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
         sorted
     }
 }

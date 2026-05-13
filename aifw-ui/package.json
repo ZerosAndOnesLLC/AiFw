@@ -1,12 +1,12 @@
 {
   "name": "aifw-ui",
-  "version": "5.95.17",
+  "version": "5.95.18",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint ."
   },
   "dependencies": {
     "lucide-react": "^1.7.0",

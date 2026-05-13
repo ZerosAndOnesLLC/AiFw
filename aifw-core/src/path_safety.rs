@@ -81,14 +81,13 @@ pub fn validate_export_path(dest: &str) -> Result<PathBuf, String> {
         if parent.as_os_str().is_empty() {
             break;
         }
-        if let Ok(meta) = std::fs::symlink_metadata(parent) {
-            if meta.file_type().is_symlink() {
+        if let Ok(meta) = std::fs::symlink_metadata(parent)
+            && meta.file_type().is_symlink() {
                 return Err(format!(
                     "symlink on path: {} is a symlink, refusing",
                     parent.display()
                 ));
             }
-        }
         ancestor = parent;
     }
 

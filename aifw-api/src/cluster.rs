@@ -143,11 +143,10 @@ async fn pfsync_state_count() -> u64 {
 fn parse_pfctl_si_state_count(stdout: &str) -> u64 {
     for line in stdout.lines() {
         let line = line.trim_start();
-        if let Some(rest) = line.strip_prefix("current entries") {
-            if let Some(num) = rest.trim().split_whitespace().next() {
+        if let Some(rest) = line.strip_prefix("current entries")
+            && let Some(num) = rest.split_whitespace().next() {
                 return num.parse().unwrap_or(0);
             }
-        }
     }
     0
 }
@@ -161,8 +160,8 @@ pub(crate) async fn read_local_role() -> String {
         .output()
         .await
         .ok();
-    if let Some(o) = live {
-        if o.status.success() {
+    if let Some(o) = live
+        && o.status.success() {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
             match s.as_str() {
                 "master" => return "primary".into(),
@@ -170,7 +169,6 @@ pub(crate) async fn read_local_role() -> String {
                 _ => {} // fall through to sysrc fallback
             }
         }
-    }
     tokio::process::Command::new("sysrc")
         .arg("-n")
         .arg("aifw_cluster_role")

@@ -25,3 +25,6 @@ libc = "0.2"
 nix = { version = "0.31", features = ["user"] }
 chrono = { workspace = true }
 uuid = { workspace = true }
+
+[lints]
+workspace = true

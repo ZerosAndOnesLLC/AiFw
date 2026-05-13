@@ -106,8 +106,8 @@ impl Plugin for WebhookPlugin {
                 dst_ip,
                 protocol,
                 ..
-            } => {
-                if self.notify_on_block && action == "block" {
+            }
+                if self.notify_on_block && action == "block" => {
                     self.queue_notification(
                         "rule_block",
                         &format!("Blocked {:?} -> {:?} ({})", src_ip, dst_ip, protocol),
@@ -119,7 +119,6 @@ impl Plugin for WebhookPlugin {
                     )
                     .await;
                 }
-            }
             HookEventData::Connection {
                 src_ip,
                 dst_ip,
@@ -127,8 +126,8 @@ impl Plugin for WebhookPlugin {
                 dst_port,
                 protocol,
                 ..
-            } => {
-                if self.notify_on_connection {
+            }
+                if self.notify_on_connection => {
                     self.queue_notification(
                         "new_connection",
                         &format!(
@@ -145,7 +144,6 @@ impl Plugin for WebhookPlugin {
                     )
                     .await;
                 }
-            }
             HookEventData::Log {
                 action, details, ..
             } => {

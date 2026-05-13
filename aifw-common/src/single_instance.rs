@@ -86,7 +86,7 @@ pub fn acquire_at(path: &Path) -> Result<InstanceLock, InstanceLockError> {
             let pid: i32 = buf.trim().parse().unwrap_or(0);
             return Err(InstanceLockError::AlreadyRunning(pid));
         }
-        return Err(InstanceLockError::LockFailed(errno.into()));
+        return Err(InstanceLockError::LockFailed(errno));
     }
 
     // Write our PID for diagnostics. Truncate first so a smaller PID (e.g.

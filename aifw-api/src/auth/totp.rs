@@ -150,6 +150,7 @@ fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; 20] {
     sha1(&outer)
 }
 
+#[allow(clippy::needless_range_loop)]
 fn sha1(data: &[u8]) -> [u8; 20] {
     let mut h0: u32 = 0x67452301;
     let mut h1: u32 = 0xEFCDAB89;

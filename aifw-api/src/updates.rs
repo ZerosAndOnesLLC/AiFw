@@ -395,7 +395,7 @@ pub async fn update_schedule(
             "thu" => "4",
             "fri" => "5",
             "sat" => "6",
-            "sun" | _ => "0",
+            _ => "0", // sun or any other value
         };
         let mut cron_cmd = String::from("/usr/local/sbin/aifw update os-check");
         if mw.auto_install {
