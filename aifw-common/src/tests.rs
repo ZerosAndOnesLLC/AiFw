@@ -1021,11 +1021,15 @@ mod tests {
             "secret".into(),
         );
 
-        let primary = vip.to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Primary));
-        let secondary = vip.to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Secondary));
+        let primary =
+            vip.to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Primary));
+        let secondary = vip
+            .to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Secondary));
 
-        let primary_skew = primary[0][primary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
-        let secondary_skew = secondary[0][secondary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
+        let primary_skew =
+            primary[0][primary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
+        let secondary_skew =
+            secondary[0][secondary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
 
         assert_eq!(primary_skew, "0");
         assert_eq!(secondary_skew, "100"); // Conservative profile's secondary skew

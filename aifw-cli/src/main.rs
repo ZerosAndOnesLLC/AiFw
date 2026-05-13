@@ -1204,7 +1204,12 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Update { action } => match action {
             UpdateAction::Check => commands::update_check().await?,
-            UpdateAction::Install { restart, yes, from, skip_checksum } => {
+            UpdateAction::Install {
+                restart,
+                yes,
+                from,
+                skip_checksum,
+            } => {
                 if let Some(path) = from {
                     commands::update_install_local(path, skip_checksum, restart || yes).await?
                 } else {
@@ -1282,9 +1287,11 @@ async fn main() -> anyhow::Result<()> {
             ClusterAction::Nodes { action } => match action {
                 NodesAction::List => commands::cluster_nodes_list().await?,
                 NodesAction::Show { id } => commands::cluster_nodes_show(&id).await?,
-                NodesAction::Add { name, address, role } => {
-                    commands::cluster_nodes_add(&name, &address, &role).await?
-                }
+                NodesAction::Add {
+                    name,
+                    address,
+                    role,
+                } => commands::cluster_nodes_add(&name, &address, &role).await?,
                 NodesAction::Remove { id } => commands::cluster_nodes_remove(&id).await?,
             },
             ClusterAction::Health { action } => match action {
@@ -1294,7 +1301,9 @@ async fn main() -> anyhow::Result<()> {
                     check_type,
                     target,
                     interval_secs,
-                } => commands::cluster_health_add(&name, &check_type, &target, interval_secs).await?,
+                } => {
+                    commands::cluster_health_add(&name, &check_type, &target, interval_secs).await?
+                }
                 HealthAction::Remove { id } => commands::cluster_health_remove(&id).await?,
                 HealthAction::Run => commands::cluster_health_run().await?,
             },

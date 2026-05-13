@@ -643,14 +643,16 @@ impl IdsEngine {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(id, sid, msg, rule_text, enabled, action_override)| RuleRow {
-            id,
-            sid: sid.unwrap_or(0) as u32,
-            msg: msg.unwrap_or_default(),
-            action: action_override.unwrap_or_else(|| "alert".to_string()),
-            enabled: enabled != 0,
-            raw: rule_text,
-        }))
+        Ok(row.map(
+            |(id, sid, msg, rule_text, enabled, action_override)| RuleRow {
+                id,
+                sid: sid.unwrap_or(0) as u32,
+                msg: msg.unwrap_or_default(),
+                action: action_override.unwrap_or_else(|| "alert".to_string()),
+                enabled: enabled != 0,
+                raw: rule_text,
+            },
+        ))
     }
 
     /// Toggle a rule on or off by id (the `ids_rules.id` UUID string).

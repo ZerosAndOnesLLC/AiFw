@@ -1397,7 +1397,10 @@ pub async fn update_ddns_config(
 
 pub async fn get_ha_config(State(state): State<AppState>) -> Result<Json<HaConfig>, StatusCode> {
     let mut cfg = load_ha_config(&state.pool).await;
-    let linked = state.cluster_engine.get_pfsync().await
+    let linked = state
+        .cluster_engine
+        .get_pfsync()
+        .await
         .ok()
         .flatten()
         .map(|p| p.dhcp_link)
@@ -1414,7 +1417,10 @@ pub async fn update_ha_config(
     State(state): State<AppState>,
     Json(config): Json<HaConfig>,
 ) -> Result<Json<HaConfig>, (StatusCode, Json<serde_json::Value>)> {
-    let linked = state.cluster_engine.get_pfsync().await
+    let linked = state
+        .cluster_engine
+        .get_pfsync()
+        .await
         .ok()
         .flatten()
         .map(|p| p.dhcp_link)
@@ -1553,7 +1559,11 @@ async fn derive_ha_peers_from_cluster(state: &AppState) -> (Option<String>, Opti
         peer_addrs.first().cloned()
     };
 
-    let peers = if peer_addrs.is_empty() { None } else { Some(peer_addrs) };
+    let peers = if peer_addrs.is_empty() {
+        None
+    } else {
+        Some(peer_addrs)
+    };
     (peer, peers)
 }
 

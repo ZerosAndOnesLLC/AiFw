@@ -10,8 +10,8 @@
 use aifw_common::ClusterRole;
 use aifw_core::ClusterEngine;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
 use tokio::time::interval;
@@ -89,10 +89,7 @@ impl ClusterReplicator {
         // single read, so they are always consistent with each other.
         let local_data = client
             .get(format!("{}/api/v1/cluster/snapshot", self.api_base))
-            .header(
-                "Authorization",
-                format!("ApiKey {}", self.self_api_key),
-            )
+            .header("Authorization", format!("ApiKey {}", self.self_api_key))
             .send()
             .await?
             .error_for_status()?
@@ -101,12 +98,10 @@ impl ClusterReplicator {
         let local_hash = aifw_core::sha256_hex(&local_data);
 
         let nodes = self.engine.list_nodes().await?;
-        for peer in nodes.iter().filter(|n| {
-            !matches!(
-                n.role,
-                ClusterRole::Primary | ClusterRole::Standalone
-            )
-        }) {
+        for peer in nodes
+            .iter()
+            .filter(|n| !matches!(n.role, ClusterRole::Primary | ClusterRole::Standalone))
+        {
             let key = match self.engine.peer_api_key(peer.id).await? {
                 Some(k) => k,
                 None => continue,
@@ -167,10 +162,7 @@ impl ClusterReplicator {
                         "primary",
                         "primary",
                         "split_brain_detected",
-                        Some(&format!(
-                            "peer {} also reports MASTER",
-                            peer.address
-                        )),
+                        Some(&format!("peer {} also reports MASTER", peer.address)),
                     )
                     .await;
             } else {
@@ -184,4 +176,3 @@ impl ClusterReplicator {
         Ok(())
     }
 }
-

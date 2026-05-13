@@ -625,7 +625,8 @@ pub async fn aifw_reboot(
         internal()
     })?;
     Ok(Json(MessageResponse {
-        message: "System rebooting in 1 minute. Cancel with `shutdown -c` on the console.".to_string(),
+        message: "System rebooting in 1 minute. Cancel with `shutdown -c` on the console."
+            .to_string(),
     }))
 }
 
@@ -654,14 +655,10 @@ pub async fn install_aifw_update_local(
     let mut expected_hash: Option<String> = None;
     let mut auto_restart = false;
 
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| {
-            tracing::warn!(?e, "multipart next_field error");
-            StatusCode::BAD_REQUEST
-        })?
-    {
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| {
+        tracing::warn!(?e, "multipart next_field error");
+        StatusCode::BAD_REQUEST
+    })? {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "tarball" => {
@@ -670,11 +667,7 @@ pub async fn install_aifw_update_local(
                 let mut file = tokio::fs::File::create(&path)
                     .await
                     .map_err(|_| internal())?;
-                while let Some(chunk) = field
-                    .chunk()
-                    .await
-                    .map_err(|_| StatusCode::BAD_REQUEST)?
-                {
+                while let Some(chunk) = field.chunk().await.map_err(|_| StatusCode::BAD_REQUEST)? {
                     file.write_all(&chunk).await.map_err(|_| internal())?;
                 }
                 file.flush().await.ok();
@@ -700,7 +693,12 @@ pub async fn install_aifw_update_local(
             }
             _ => {
                 // Drain unknown fields
-                while field.chunk().await.map_err(|_| StatusCode::BAD_REQUEST)?.is_some() {}
+                while field
+                    .chunk()
+                    .await
+                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .is_some()
+                {}
             }
         }
     }
@@ -712,19 +710,13 @@ pub async fn install_aifw_update_local(
 
     // Sanity-check size — refuse pathologically large uploads even if the
     // body-limit layer already capped them.
-    let meta = tokio::fs::metadata(&path)
-        .await
-        .map_err(|_| internal())?;
+    let meta = tokio::fs::metadata(&path).await.map_err(|_| internal())?;
     if meta.len() > 500 * 1024 * 1024 {
         let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    let result = aifw_core::updater::install_from_path(
-        &path,
-        expected_hash.as_deref(),
-    )
-    .await;
+    let result = aifw_core::updater::install_from_path(&path, expected_hash.as_deref()).await;
 
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
@@ -738,13 +730,7 @@ pub async fn install_aifw_update_local(
             Ok(Json(MessageResponse { message: msg }))
         }
         Err(e) => {
-            let _ = log_update(
-                &state.pool,
-                "install_local",
-                &format!("{e}"),
-                "error",
-            )
-            .await;
+            let _ = log_update(&state.pool, "install_local", &format!("{e}"), "error").await;
             tracing::warn!(?e, "install-local failed");
             Err(internal())
         }

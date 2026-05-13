@@ -18,9 +18,7 @@ pub struct DnsConfigResponse {
     pub servers: Vec<String>,
 }
 
-pub async fn get_dns(
-    State(state): State<AppState>,
-) -> Result<Json<DnsConfigResponse>, StatusCode> {
+pub async fn get_dns(State(state): State<AppState>) -> Result<Json<DnsConfigResponse>, StatusCode> {
     // Returns the rDNS upstream forwarders (what client DNS queries actually
     // get sent to). Pre-fix this read /etc/resolv.conf, which on a default
     // appliance is `127.0.0.1` — useless to a caller asking "what are my

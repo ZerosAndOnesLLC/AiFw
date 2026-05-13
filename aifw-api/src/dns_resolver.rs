@@ -1331,7 +1331,8 @@ pub async fn resolver_status(
     let is_rdns = config.backend == "rdns";
 
     let service_name = if is_rdns { "rdns" } else { "local_unbound" };
-    let running = aifw_core::sudo::service(service_name, "status").await
+    let running = aifw_core::sudo::service(service_name, "status")
+        .await
         .map(|o| o.status.success())
         .unwrap_or(false);
 

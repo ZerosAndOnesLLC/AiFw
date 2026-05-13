@@ -181,7 +181,9 @@ mod tests {
         let server = tokio::spawn(serve(listener, Arc::new(StubHandler)));
 
         let mut client = UnixStream::connect(&path).await.unwrap();
-        write_frame(&mut client, &IpcRequest::GetStats).await.unwrap();
+        write_frame(&mut client, &IpcRequest::GetStats)
+            .await
+            .unwrap();
         let resp: IpcResponse = read_frame(&mut client).await.unwrap();
         assert!(matches!(resp, IpcResponse::Stats(_)));
 

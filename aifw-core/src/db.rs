@@ -418,8 +418,7 @@ impl RuleRow {
                 dst_addr: Address::parse(&self.dst_addr)?,
                 dst_port: parse_port_range(self.dst_port_start, self.dst_port_end),
             },
-            ip_version: aifw_common::IpVersion::parse(&self.ip_version)
-                .unwrap_or_default(),
+            ip_version: aifw_common::IpVersion::parse(&self.ip_version).unwrap_or_default(),
             src_invert: self.src_invert,
             dst_invert: self.dst_invert,
             log: self.log,

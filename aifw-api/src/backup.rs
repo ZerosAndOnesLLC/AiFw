@@ -339,7 +339,6 @@ pub async fn check_config(
     }))
 }
 
-
 // ============================================================
 // Commit Confirm endpoints
 // ============================================================
@@ -571,12 +570,20 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         .map_err(|_| internal())?;
 
     let queues = state.shaping_engine.list_queues().await.unwrap_or_default();
-    let rate_limits = state.shaping_engine.list_rate_limits().await.unwrap_or_default();
+    let rate_limits = state
+        .shaping_engine
+        .list_rate_limits()
+        .await
+        .unwrap_or_default();
 
     let sni_rules = state.tls_engine.list_sni_rules().await.unwrap_or_default();
     let ja3 = state.tls_engine.list_ja3_blocks().await.unwrap_or_default();
 
-    let carp_vips = state.cluster_engine.list_carp_vips().await.unwrap_or_default();
+    let carp_vips = state
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .unwrap_or_default();
     let cluster_nodes = state.cluster_engine.list_nodes().await.unwrap_or_default();
     let pfsync = state.cluster_engine.get_pfsync().await.ok().flatten();
 
@@ -1496,7 +1503,9 @@ pub(crate) async fn apply_firewall_config(
     let _ = sqlx::query("DELETE FROM nat_rules")
         .execute(&state.pool)
         .await;
-    let _ = sqlx::query("DELETE FROM aliases").execute(&state.pool).await;
+    let _ = sqlx::query("DELETE FROM aliases")
+        .execute(&state.pool)
+        .await;
     let _ = sqlx::query("DELETE FROM static_routes")
         .execute(&state.pool)
         .await;
@@ -2302,7 +2311,6 @@ fn cluster_node_from_config(
     Some(node)
 }
 
-
 fn gethostname() -> Option<String> {
     std::fs::read_to_string("/etc/hostname")
         .ok()
@@ -2529,15 +2537,21 @@ pub(crate) async fn cluster_export_payload(
     .collect();
 
     // IDS suppressions
-    let suppressions: Vec<IdsSuppressionRecord> = sqlx::query_as::<_, (String, i64, String, Option<String>)>(
-        "SELECT id, sid, suppress_type, ip_cidr FROM ids_suppressions ORDER BY rowid ASC"
-    )
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(id, sid, suppress_type, ip_cidr)| IdsSuppressionRecord { id, sid, suppress_type, ip_cidr })
-    .collect();
+    let suppressions: Vec<IdsSuppressionRecord> =
+        sqlx::query_as::<_, (String, i64, String, Option<String>)>(
+            "SELECT id, sid, suppress_type, ip_cidr FROM ids_suppressions ORDER BY rowid ASC",
+        )
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, sid, suppress_type, ip_cidr)| IdsSuppressionRecord {
+            id,
+            sid,
+            suppress_type,
+            ip_cidr,
+        })
+        .collect();
 
     Ok(ClusterSnapshotPayload {
         firewall,
@@ -2549,12 +2563,9 @@ pub(crate) async fn cluster_export_payload(
 /// Apply a cluster snapshot payload (JSON string) to this node.
 /// Parses the payload, applies the firewall config, then syncs
 /// IDS rule overrides and suppressions from the DB.
-pub(crate) async fn apply_cluster_snapshot(
-    state: &AppState,
-    body: &str,
-) -> anyhow::Result<()> {
-    let payload: ClusterSnapshotPayload = serde_json::from_str(body)
-        .map_err(|e| anyhow::anyhow!("snapshot parse error: {e}"))?;
+pub(crate) async fn apply_cluster_snapshot(state: &AppState, body: &str) -> anyhow::Result<()> {
+    let payload: ClusterSnapshotPayload =
+        serde_json::from_str(body).map_err(|e| anyhow::anyhow!("snapshot parse error: {e}"))?;
 
     // Apply the same validation backup-import enforces (10k rule cap, schema
     // version match, hostname sanity, etc). A compromised peer or stolen
@@ -2570,12 +2581,11 @@ pub(crate) async fn apply_cluster_snapshot(
     // (which was captured on the master, where this node's outgoing key is absent).
     // We preserve them here and restore them after apply so this node can keep
     // authenticating to its peers.
-    let saved_keys: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, peer_api_key, peer_api_key_hash FROM cluster_nodes"
-    )
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    let saved_keys: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT id, peer_api_key, peer_api_key_hash FROM cluster_nodes")
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
 
     // Apply firewall config using an identity interface map (same-box restore)
     let iface_map = std::collections::HashMap::new();
@@ -2587,7 +2597,7 @@ pub(crate) async fn apply_cluster_snapshot(
     for (id, key, hash) in &saved_keys {
         if key.is_some() || hash.is_some() {
             let _ = sqlx::query(
-                "UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3"
+                "UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3",
             )
             .bind(key)
             .bind(hash)
@@ -2599,14 +2609,13 @@ pub(crate) async fn apply_cluster_snapshot(
 
     // Sync IDS rule overrides: apply enabled/action_override to ids_rules rows
     for ov in &payload.ids_rule_overrides {
-        let _ = sqlx::query(
-            "UPDATE ids_rules SET enabled = ?1, action_override = ?2 WHERE id = ?3"
-        )
-        .bind(ov.enabled)
-        .bind(&ov.action_override)
-        .bind(&ov.id)
-        .execute(&state.pool)
-        .await;
+        let _ =
+            sqlx::query("UPDATE ids_rules SET enabled = ?1, action_override = ?2 WHERE id = ?3")
+                .bind(ov.enabled)
+                .bind(&ov.action_override)
+                .bind(&ov.id)
+                .execute(&state.pool)
+                .await;
     }
 
     // Sync IDS suppressions: wipe and re-insert atomically so the IDS daemon

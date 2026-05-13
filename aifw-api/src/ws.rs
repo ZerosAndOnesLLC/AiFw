@@ -1361,8 +1361,7 @@ pub fn start_pflog_collector(
             let entries_iter = stdout.lines().filter_map(parse_pflog_line);
             // Keep only the last PFLOG_MAX_ENTRIES; iterating and dropping the
             // front of a temporary Vec would be O(N²). Buffer the tail directly.
-            let mut entries: VecDeque<BlockedPayload> =
-                VecDeque::with_capacity(PFLOG_MAX_ENTRIES);
+            let mut entries: VecDeque<BlockedPayload> = VecDeque::with_capacity(PFLOG_MAX_ENTRIES);
             for e in entries_iter {
                 if entries.len() == PFLOG_MAX_ENTRIES {
                     entries.pop_front();
@@ -1480,15 +1479,13 @@ async fn collect_services(pool: &sqlx::SqlitePool) -> Vec<ServiceStatusPayload> 
             // UI's Save writes the DB immediately, while Apply is what flushes
             // to sysrc — so the badge should follow the DB to match user intent.
             let enabled = if svc_name == "trafficcop" {
-                sqlx::query_as::<_, (String,)>(
-                    "SELECT value FROM tc_config WHERE key = 'enabled'",
-                )
-                .fetch_optional(pool)
-                .await
-                .ok()
-                .flatten()
-                .map(|(v,)| v == "true")
-                .unwrap_or(false)
+                sqlx::query_as::<_, (String,)>("SELECT value FROM tc_config WHERE key = 'enabled'")
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|(v,)| v == "true")
+                    .unwrap_or(false)
             } else {
                 // `sysrc -n` is a read; doesn't need root. Calling
                 // `/usr/sbin/sysrc` directly avoids the helper allowlist

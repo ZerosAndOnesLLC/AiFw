@@ -310,7 +310,12 @@ pub async fn install_from_path(
             .await
             .map_err(|e| UpdaterError::Install(e.to_string()))?
         {
-            if !entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+            if !entry
+                .file_type()
+                .await
+                .map(|t| t.is_file())
+                .unwrap_or(false)
+            {
                 continue;
             }
             let src = entry.path();
@@ -440,7 +445,12 @@ pub async fn install_from_path(
         info!("Installing rc.d scripts...");
         if let Ok(mut entries) = tokio::fs::read_dir(&rcd_src).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
-                if !entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                if !entry
+                    .file_type()
+                    .await
+                    .map(|t| t.is_file())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 let src = entry.path();
@@ -470,7 +480,12 @@ pub async fn install_from_path(
             .await;
         if let Ok(mut entries) = tokio::fs::read_dir(&libexec_src).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
-                if !entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                if !entry
+                    .file_type()
+                    .await
+                    .map(|t| t.is_file())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 let src = entry.path();
@@ -494,7 +509,12 @@ pub async fn install_from_path(
         info!("Installing utility scripts...");
         if let Ok(mut entries) = tokio::fs::read_dir(&sbin_src).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
-                if !entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+                if !entry
+                    .file_type()
+                    .await
+                    .map(|t| t.is_file())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 let src = entry.path();
@@ -530,7 +550,9 @@ pub async fn install_from_path(
                 .args(["/bin/cp", ver_src_str, VERSION_FILE])
                 .output()
                 .await
-                .map_err(|e| UpdaterError::Install(format!("Failed to update version file: {}", e)))?;
+                .map_err(|e| {
+                    UpdaterError::Install(format!("Failed to update version file: {}", e))
+                })?;
             if !output.status.success() {
                 warn!(
                     "Failed to update version file: {}",
@@ -792,9 +814,7 @@ pub async fn ensure_sudoers_write_helper() {
     let _ = tokio::fs::remove_file(stage).await;
     match result {
         Ok(o) if o.status.success() => {
-            info!(
-                "migrated sudoers: dropped /usr/bin/tee, added aifw-sudo-write helper grant"
-            )
+            info!("migrated sudoers: dropped /usr/bin/tee, added aifw-sudo-write helper grant")
         }
         Ok(o) => warn!(
             stderr = %String::from_utf8_lossy(&o.stderr),
@@ -880,9 +900,8 @@ pub async fn ensure_sudoers_freebsd_update_helper() {
         patched.push('\n');
     }
     if needs_helper {
-        patched.push_str(
-            "aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-freebsd-update *\n",
-        );
+        patched
+            .push_str("aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-freebsd-update *\n");
     }
 
     let stage = "/tmp/aifw-sudoers-freebsd-update-helper-patch";
@@ -1260,9 +1279,7 @@ pub async fn ensure_rcvars() {
 /// the libexec script (mid-upgrade from a pre-detached version). The
 /// fragility we're fixing beats no restart at all.
 pub async fn restart_services() {
-    if std::path::Path::new(RESTART_SCRIPT).exists()
-        && spawn_detached_restart().await.is_ok()
-    {
+    if std::path::Path::new(RESTART_SCRIPT).exists() && spawn_detached_restart().await.is_ok() {
         return;
     }
     // Either the libexec script isn't present (mid-transitional upgrade)

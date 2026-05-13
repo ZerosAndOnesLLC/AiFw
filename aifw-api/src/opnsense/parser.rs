@@ -114,7 +114,10 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
         match reader.read_event_into(&mut buf) {
             Err(e) => return Err(ParseError::Xml(e)),
             Ok(Event::Eof) => break,
-            Ok(Event::Decl(_)) | Ok(Event::Comment(_)) | Ok(Event::PI(_)) | Ok(Event::DocType(_)) => {}
+            Ok(Event::Decl(_))
+            | Ok(Event::Comment(_))
+            | Ok(Event::PI(_))
+            | Ok(Event::DocType(_)) => {}
             Ok(Event::Start(e)) => {
                 let name = std::str::from_utf8(e.name().as_ref())
                     .map_err(|err| ParseError::Malformed(err.to_string()))?
@@ -207,14 +210,23 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
 
 fn parse_system(node: &Node) -> OpnSystem {
     OpnSystem {
-        hostname: node.child("hostname").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
-        domain: node.child("domain").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+        hostname: node
+            .child("hostname")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
+        domain: node
+            .child("domain")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
         dns_servers: node
             .children("dnsserver")
             .map(|n| n.text.clone())
             .filter(|s| !s.is_empty())
             .collect(),
-        timezone: node.child("timezone").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+        timezone: node
+            .child("timezone")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
         timeservers: node
             .child("timeservers")
             .map(|n| {
@@ -229,11 +241,20 @@ fn parse_system(node: &Node) -> OpnSystem {
 
 fn parse_endpoint(node: &Node) -> OpnEndpoint {
     OpnEndpoint {
-        address: node.child("address").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
-        network: node.child("network").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+        address: node
+            .child("address")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
+        network: node
+            .child("network")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
         any: node.has_child("any"),
         not: node.has_child("not"),
-        port: node.child("port").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+        port: node
+            .child("port")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -254,7 +275,10 @@ fn parse_rule(node: &Node) -> OpnRule {
             .collect()
     };
 
-    let floating = node.child("floating").map(|n| n.text == "yes").unwrap_or(false);
+    let floating = node
+        .child("floating")
+        .map(|n| n.text == "yes")
+        .unwrap_or(false);
     // OPNsense `<quick>` semantics depend on whether the rule is floating.
     // Non-floating rules default to quick=yes (first match wins, the pf
     // default for AiFw rules). Floating rules default to quick=no (last
@@ -266,18 +290,36 @@ fn parse_rule(node: &Node) -> OpnRule {
     };
 
     OpnRule {
-        action: node.child("type").map(|n| n.text.clone()).unwrap_or_else(|| "pass".into()),
-        direction: node.child("direction").map(|n| n.text.clone()).unwrap_or_else(|| "in".into()),
+        action: node
+            .child("type")
+            .map(|n| n.text.clone())
+            .unwrap_or_else(|| "pass".into()),
+        direction: node
+            .child("direction")
+            .map(|n| n.text.clone())
+            .unwrap_or_else(|| "in".into()),
         interface,
         floating,
-        ipprotocol: node.child("ipprotocol").map(|n| AddrFamily::parse(&n.text)).unwrap_or(AddrFamily::Inet),
-        protocol: node.child("protocol").map(|n| n.text.clone()).unwrap_or_else(|| "any".into()),
+        ipprotocol: node
+            .child("ipprotocol")
+            .map(|n| AddrFamily::parse(&n.text))
+            .unwrap_or(AddrFamily::Inet),
+        protocol: node
+            .child("protocol")
+            .map(|n| n.text.clone())
+            .unwrap_or_else(|| "any".into()),
         source: node.child("source").map(parse_endpoint).unwrap_or_default(),
-        destination: node.child("destination").map(parse_endpoint).unwrap_or_default(),
+        destination: node
+            .child("destination")
+            .map(parse_endpoint)
+            .unwrap_or_default(),
         disabled: node.has_child("disabled"),
         log: node.has_child("log"),
         quick,
-        descr: node.child("descr").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+        descr: node
+            .child("descr")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -285,14 +327,32 @@ fn parse_nat(node: &Node) -> OpnNat {
     let mut nat = OpnNat::default();
     for r in node.children("rule") {
         nat.port_forwards.push(OpnNatPortForward {
-            interface: r.child("interface").map(|n| n.text.clone()).unwrap_or_else(|| "wan".into()),
-            protocol: r.child("protocol").map(|n| n.text.clone()).unwrap_or_else(|| "tcp".into()),
+            interface: r
+                .child("interface")
+                .map(|n| n.text.clone())
+                .unwrap_or_else(|| "wan".into()),
+            protocol: r
+                .child("protocol")
+                .map(|n| n.text.clone())
+                .unwrap_or_else(|| "tcp".into()),
             source: r.child("source").map(parse_endpoint).unwrap_or_default(),
-            destination: r.child("destination").map(parse_endpoint).unwrap_or_default(),
-            target: r.child("target").map(|n| n.text.clone()).unwrap_or_default(),
-            local_port: r.child("local-port").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+            destination: r
+                .child("destination")
+                .map(parse_endpoint)
+                .unwrap_or_default(),
+            target: r
+                .child("target")
+                .map(|n| n.text.clone())
+                .unwrap_or_default(),
+            local_port: r
+                .child("local-port")
+                .map(|n| n.text.clone())
+                .filter(|s| !s.is_empty()),
             disabled: r.has_child("disabled"),
-            descr: r.child("descr").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+            descr: r
+                .child("descr")
+                .map(|n| n.text.clone())
+                .filter(|s| !s.is_empty()),
         });
     }
     if let Some(out) = node.child("outbound") {
@@ -301,13 +361,28 @@ fn parse_nat(node: &Node) -> OpnNat {
         }
         for r in out.children("rule") {
             nat.outbound.push(OpnNatOutbound {
-                interface: r.child("interface").map(|n| n.text.clone()).unwrap_or_else(|| "wan".into()),
-                protocol: r.child("protocol").map(|n| n.text.clone()).unwrap_or_else(|| "any".into()),
+                interface: r
+                    .child("interface")
+                    .map(|n| n.text.clone())
+                    .unwrap_or_else(|| "wan".into()),
+                protocol: r
+                    .child("protocol")
+                    .map(|n| n.text.clone())
+                    .unwrap_or_else(|| "any".into()),
                 source: r.child("source").map(parse_endpoint).unwrap_or_default(),
-                destination: r.child("destination").map(parse_endpoint).unwrap_or_default(),
-                target: r.child("target").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+                destination: r
+                    .child("destination")
+                    .map(parse_endpoint)
+                    .unwrap_or_default(),
+                target: r
+                    .child("target")
+                    .map(|n| n.text.clone())
+                    .filter(|s| !s.is_empty()),
                 disabled: r.has_child("disabled"),
-                descr: r.child("descr").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+                descr: r
+                    .child("descr")
+                    .map(|n| n.text.clone())
+                    .filter(|s| !s.is_empty()),
                 nonat: r.has_child("nonat"),
                 staticnatport: r.has_child("staticnatport"),
             });
@@ -315,12 +390,27 @@ fn parse_nat(node: &Node) -> OpnNat {
     }
     for r in node.children("onetoone") {
         nat.onetoone.push(OpnNatOneToOne {
-            interface: r.child("interface").map(|n| n.text.clone()).unwrap_or_else(|| "wan".into()),
-            external: r.child("external").map(|n| n.text.clone()).unwrap_or_default(),
-            internal: r.child("internal").map(|n| n.text.clone()).unwrap_or_default(),
-            destination: r.child("destination").map(parse_endpoint).unwrap_or_default(),
+            interface: r
+                .child("interface")
+                .map(|n| n.text.clone())
+                .unwrap_or_else(|| "wan".into()),
+            external: r
+                .child("external")
+                .map(|n| n.text.clone())
+                .unwrap_or_default(),
+            internal: r
+                .child("internal")
+                .map(|n| n.text.clone())
+                .unwrap_or_default(),
+            destination: r
+                .child("destination")
+                .map(parse_endpoint)
+                .unwrap_or_default(),
             disabled: r.has_child("disabled"),
-            descr: r.child("descr").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+            descr: r
+                .child("descr")
+                .map(|n| n.text.clone())
+                .filter(|s| !s.is_empty()),
         });
     }
     nat
@@ -341,22 +431,37 @@ fn parse_alias(node: &Node) -> OpnAlias {
         .collect();
 
     OpnAlias {
-        name: node.child("name").map(|n| n.text.clone()).unwrap_or_default(),
+        name: node
+            .child("name")
+            .map(|n| n.text.clone())
+            .unwrap_or_default(),
         kind: node
             .child("type")
             .map(|n| n.text.clone())
             .unwrap_or_else(|| "host".into()),
         content,
-        descr: node.child("descr").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+        descr: node
+            .child("descr")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
         disabled: node.has_child("disabled"),
     }
 }
 
 fn parse_gateway(node: &Node) -> OpnGateway {
     OpnGateway {
-        name: node.child("name").map(|n| n.text.clone()).unwrap_or_default(),
-        interface: node.child("interface").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
-        gateway: node.child("gateway").map(|n| n.text.clone()).unwrap_or_default(),
+        name: node
+            .child("name")
+            .map(|n| n.text.clone())
+            .unwrap_or_default(),
+        interface: node
+            .child("interface")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
+        gateway: node
+            .child("gateway")
+            .map(|n| n.text.clone())
+            .unwrap_or_default(),
         ipprotocol: node
             .child("ipprotocol")
             .map(|n| AddrFamily::parse(&n.text))
@@ -378,11 +483,17 @@ fn parse_route(node: &Node, gw_map: &HashMap<String, String>) -> OpnRoute {
         .unwrap_or_else(|| gateway_name.clone());
 
     OpnRoute {
-        network: node.child("network").map(|n| n.text.clone()).unwrap_or_default(),
+        network: node
+            .child("network")
+            .map(|n| n.text.clone())
+            .unwrap_or_default(),
         gateway,
         gateway_name,
         disabled: node.has_child("disabled"),
-        descr: node.child("descr").map(|n| n.text.clone()).filter(|s| !s.is_empty()),
+        descr: node
+            .child("descr")
+            .map(|n| n.text.clone())
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -509,7 +620,11 @@ mod tests {
     #[test]
     fn rule_keeps_destination_port_distinct_from_source_port() {
         let cfg = parse(TINY).unwrap();
-        let ssh = cfg.rules.iter().find(|r| r.descr.as_deref() == Some("SSH to firewall")).unwrap();
+        let ssh = cfg
+            .rules
+            .iter()
+            .find(|r| r.descr.as_deref() == Some("SSH to firewall"))
+            .unwrap();
         assert!(ssh.source.any);
         assert_eq!(ssh.destination.port.as_deref(), Some("22"));
         assert_eq!(ssh.source.port, None); // proves first-match bug is gone
@@ -518,14 +633,22 @@ mod tests {
     #[test]
     fn rule_carries_ipv6_address_family() {
         let cfg = parse(TINY).unwrap();
-        let ssh = cfg.rules.iter().find(|r| r.descr.as_deref() == Some("SSH to firewall")).unwrap();
+        let ssh = cfg
+            .rules
+            .iter()
+            .find(|r| r.descr.as_deref() == Some("SSH to firewall"))
+            .unwrap();
         assert_eq!(ssh.ipprotocol, AddrFamily::Inet6);
     }
 
     #[test]
     fn self_closing_disabled_and_log_detected() {
         let cfg = parse(TINY).unwrap();
-        let ssh = cfg.rules.iter().find(|r| r.descr.as_deref() == Some("SSH to firewall")).unwrap();
+        let ssh = cfg
+            .rules
+            .iter()
+            .find(|r| r.descr.as_deref() == Some("SSH to firewall"))
+            .unwrap();
         assert!(ssh.log, "<log/> self-closing");
         let blocked = cfg.rules.iter().find(|r| r.action == "block").unwrap();
         assert!(blocked.disabled, "<disabled>1</disabled>");
@@ -589,7 +712,8 @@ mod tests {
 
     #[test]
     fn pfsense_root_recognized() {
-        let xml = r#"<?xml version="1.0"?><pfsense><system><hostname>p</hostname></system></pfsense>"#;
+        let xml =
+            r#"<?xml version="1.0"?><pfsense><system><hostname>p</hostname></system></pfsense>"#;
         let cfg = parse(xml).unwrap();
         assert_eq!(cfg.kind, ConfigKind::Pfsense);
     }

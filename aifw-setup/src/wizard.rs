@@ -1,4 +1,6 @@
-use crate::config::{DefaultPolicy, SetupConfig, SshAuthMethod, WanMode, WizardCarpVip, WizardClusterConfig};
+use crate::config::{
+    DefaultPolicy, SetupConfig, SshAuthMethod, WanMode, WizardCarpVip, WizardClusterConfig,
+};
 use crate::console;
 use crate::hwdetect::SystemProfile;
 use crate::tuning::{self, TuningItem};
@@ -108,7 +110,8 @@ fn set_root_password() {
                     let stderr = String::from_utf8_lossy(&out.stderr);
                     console::error(&format!(
                         "pw usermod failed (exit={:?}): {}",
-                        out.status.code(), stderr.trim()
+                        out.status.code(),
+                        stderr.trim()
                     ));
                     return;
                 }
@@ -608,7 +611,9 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
         if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
             break s;
         }
-        console::error("Interface name must contain only ASCII letters, digits, and dots (e.g. em0, igb1, ix0.10).");
+        console::error(
+            "Interface name must contain only ASCII letters, digits, and dots (e.g. em0, igb1, ix0.10).",
+        );
     };
 
     let peer_address = loop {
@@ -629,7 +634,10 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
             console::error("Password must be at least 8 characters.");
             continue;
         }
-        if pw.chars().any(|c| matches!(c, '"' | '\'' | '`' | '$' | '\\')) {
+        if pw
+            .chars()
+            .any(|c| matches!(c, '"' | '\'' | '`' | '$' | '\\'))
+        {
             console::error(
                 "CARP password may not contain quotes, backticks, dollar signs, or backslashes.",
             );
@@ -640,7 +648,10 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
 
     let mut vips = Vec::new();
     for iface_label in &["WAN", "LAN"] {
-        if !console::confirm(&format!("Add a CARP VIP on the {iface_label} interface?"), true) {
+        if !console::confirm(
+            &format!("Add a CARP VIP on the {iface_label} interface?"),
+            true,
+        ) {
             continue;
         }
         let default_iface = if *iface_label == "WAN" {
@@ -667,7 +678,8 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
         if interface.is_empty() {
             continue;
         }
-        let vip_str = console::prompt_required(&format!("Virtual IP on {interface} (e.g. 192.0.2.1):"));
+        let vip_str =
+            console::prompt_required(&format!("Virtual IP on {interface} (e.g. 192.0.2.1):"));
         let virtual_ip = match vip_str.parse::<std::net::IpAddr>() {
             Ok(ip) => ip,
             Err(_) => {

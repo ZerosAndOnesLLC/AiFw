@@ -311,19 +311,18 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         let _ = Command::new("sysrc")
             .args(["aifw_daemon_enable=YES"])
             .output();
-        let _ = Command::new("sysrc")
-            .args(["aifw_ids_enable=YES"])
-            .output();
-        let _ = Command::new("sysrc")
-            .args(["aifw_api_enable=YES"])
-            .output();
+        let _ = Command::new("sysrc").args(["aifw_ids_enable=YES"]).output();
+        let _ = Command::new("sysrc").args(["aifw_api_enable=YES"]).output();
         let _ = Command::new("sysrc")
             .args(["aifw_watchdog_enable=YES"])
             .output();
 
         // HA cluster rc.conf keys
         let cluster_enabled = config.cluster.is_some();
-        let _ = run_sysrc("aifw_cluster_enabled", if cluster_enabled { "YES" } else { "NO" });
+        let _ = run_sysrc(
+            "aifw_cluster_enabled",
+            if cluster_enabled { "YES" } else { "NO" },
+        );
         if let Some(c) = &config.cluster {
             let _ = run_sysrc("aifw_cluster_role", &c.role.to_string());
             let _ = run_sysrc("pfsync_enable", "YES");
@@ -345,7 +344,8 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
                     timing.advskew,
                     timing.advbase,
                     shell_quote_for_rcconf(&c.password),
-                    vip.virtual_ip, vip.prefix,
+                    vip.virtual_ip,
+                    vip.prefix,
                 );
                 let _ = run_sysrc_append(&key, &alias);
             }
@@ -360,9 +360,7 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
             .args(["aifw_daemon", "start"])
             .output();
         // aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
-        let _ = Command::new("service")
-            .args(["aifw_ids", "start"])
-            .output();
+        let _ = Command::new("service").args(["aifw_ids", "start"]).output();
         let _ = Command::new("service").args(["aifw_api", "start"]).output();
         // Watchdog last so it doesn't observe the others mid-startup and
         // try to "heal" them.

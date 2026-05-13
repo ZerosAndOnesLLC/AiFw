@@ -51,16 +51,11 @@ impl RoleWatcher {
                     let to_canon = aifw_common::ClusterRole::parse(&role)
                         .map(|r| r.to_string())
                         .unwrap_or_else(|_| role.clone());
-                    let body =
-                        serde_json::json!({"from": from_canon, "to": to_canon, "vhid": 0u8});
-                    let url =
-                        format!("{}/api/v1/cluster/internal/role-changed", self.api_base);
+                    let body = serde_json::json!({"from": from_canon, "to": to_canon, "vhid": 0u8});
+                    let url = format!("{}/api/v1/cluster/internal/role-changed", self.api_base);
                     match client
                         .post(&url)
-                        .header(
-                            "Authorization",
-                            format!("ApiKey {}", self.api_key),
-                        )
+                        .header("Authorization", format!("ApiKey {}", self.api_key))
                         .json(&body)
                         .send()
                         .await
@@ -104,11 +99,7 @@ pub(crate) async fn current_carp_role() -> String {
     match out {
         Ok(o) if o.status.success() => {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() {
-                "unknown".into()
-            } else {
-                s
-            }
+            if s.is_empty() { "unknown".into() } else { s }
         }
         _ => "unknown".into(),
     }

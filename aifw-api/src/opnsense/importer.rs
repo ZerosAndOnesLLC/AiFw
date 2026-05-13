@@ -219,10 +219,7 @@ pub async fn preview_opnsense(
     };
 
     let sys_ifaces = list_system_interfaces().await;
-    let need_mapping = cfg
-        .interface_names
-        .iter()
-        .any(|i| !sys_ifaces.contains(i));
+    let need_mapping = cfg.interface_names.iter().any(|i| !sys_ifaces.contains(i));
 
     let diff = build_diff(&state, &cfg).await;
     let skipped = report_skipped(&cfg);
@@ -293,7 +290,10 @@ fn build_plan(
             skip_reason = Some("invalid alias name".into());
         } else if existing_aliases.contains(&a.name) {
             skip_reason = Some("name collides with existing AiFw alias".into());
-        } else if !matches!(kind_lc.as_str(), "host" | "network" | "port" | "url" | "urltable") {
+        } else if !matches!(
+            kind_lc.as_str(),
+            "host" | "network" | "port" | "url" | "urltable"
+        ) {
             skip_reason = Some(format!("alias type '{}' not supported", a.kind));
         } else {
             available_aliases.insert(a.name.clone());
@@ -337,7 +337,8 @@ fn build_plan(
             if skip_reason.is_none() {
                 for p in [&src_port_repr, &dst_port_repr].into_iter().flatten() {
                     if parse_port_spec(p, &available_aliases).is_err() {
-                        skip_reason = Some(format!("port spec '{p}' not parseable as number/range"));
+                        skip_reason =
+                            Some(format!("port spec '{p}' not parseable as number/range"));
                         break;
                     }
                 }
@@ -398,7 +399,11 @@ fn build_plan(
             None => "masquerade".to_string(),
             Some(_) => "snat".to_string(),
         };
-        let skip = if n.disabled { Some("disabled".into()) } else { None };
+        let skip = if n.disabled {
+            Some("disabled".into())
+        } else {
+            None
+        };
         plan.nat.push(PlanNat {
             kind,
             interface: map_iface(&n.interface, iface_map),
@@ -411,7 +416,11 @@ fn build_plan(
         });
     }
     for n in &cfg.nat.onetoone {
-        let skip = if n.disabled { Some("disabled".into()) } else { None };
+        let skip = if n.disabled {
+            Some("disabled".into())
+        } else {
+            None
+        };
         plan.nat.push(PlanNat {
             kind: "binat".into(),
             interface: map_iface(&n.interface, iface_map),
@@ -453,7 +462,13 @@ fn build_plan(
 fn preview_rule_endpoints(
     r: &OpnRule,
     aliases: &HashSet<String>,
-) -> (String, Option<String>, String, Option<String>, Option<String>) {
+) -> (
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+) {
     let (src_addr, src_skip) = render_endpoint(&r.source, aliases);
     let (dst_addr, dst_skip) = render_endpoint(&r.destination, aliases);
     let src_port = r.source.port.clone();
@@ -476,7 +491,9 @@ fn render_endpoint(ep: &OpnEndpoint, aliases: &HashSet<String>) -> (String, Opti
         }
         return (
             addr.clone(),
-            Some(format!("address '{addr}' not an IP/CIDR and no alias matches")),
+            Some(format!(
+                "address '{addr}' not an IP/CIDR and no alias matches"
+            )),
         );
     }
     if let Some(net) = &ep.network {
@@ -485,9 +502,7 @@ fn render_endpoint(ep: &OpnEndpoint, aliases: &HashSet<String>) -> (String, Opti
         }
         return (
             net.clone(),
-            Some(format!(
-                "network keyword '{net}' has no AiFw equivalent",
-            )),
+            Some(format!("network keyword '{net}' has no AiFw equivalent",)),
         );
     }
     ("any".into(), None)
@@ -539,7 +554,10 @@ pub async fn import_opnsense(
     Json(req): Json<ImportRequest>,
 ) -> Result<Json<ImportResponse>, (StatusCode, String)> {
     if req.xml.len() > MAX_XML_BYTES {
-        return Err((StatusCode::PAYLOAD_TOO_LARGE, "XML body exceeds 10 MiB cap".into()));
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "XML body exceeds 10 MiB cap".into(),
+        ));
     }
 
     let cfg = parser::parse(&req.xml).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -578,15 +596,8 @@ pub async fn import_opnsense(
     // belt-and-braces for the case where the snapshot capture itself failed.
     let mut tracker = InsertedRows::default();
 
-    if let Err(reason) = apply_inner(
-        &state,
-        &cfg,
-        &req,
-        &mut summary,
-        &mut skipped,
-        &mut tracker,
-    )
-    .await
+    if let Err(reason) =
+        apply_inner(&state, &cfg, &req, &mut summary, &mut skipped, &mut tracker).await
     {
         tracing::warn!(reason = %reason, "OPNsense import failed mid-apply; rolling back");
         if let Some(v) = pre_import_version {
@@ -597,7 +608,10 @@ pub async fn import_opnsense(
             // Fallback: surgical cleanup of what we know we inserted.
             tracker.cleanup(&state).await;
         }
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("import failed: {reason}")));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("import failed: {reason}"),
+        ));
     }
 
     let mut commit_confirm_started = false;
@@ -614,7 +628,9 @@ pub async fn import_opnsense(
         {
             Ok(_) => commit_confirm_started = true,
             Err(StatusCode::CONFLICT) => {
-                tracing::warn!("commit-confirm already active — import succeeded but auto-revert window not armed");
+                tracing::warn!(
+                    "commit-confirm already active — import succeeded but auto-revert window not armed"
+                );
             }
             Err(code) => {
                 tracing::warn!(code = %code, "commit-confirm arm failed (import succeeded)");
@@ -623,14 +639,30 @@ pub async fn import_opnsense(
     }
 
     let mut bits: Vec<String> = Vec::new();
-    if summary.rules > 0 { bits.push(format!("{} firewall rules", summary.rules)); }
-    if summary.aliases > 0 { bits.push(format!("{} aliases", summary.aliases)); }
-    if summary.nat_port_forwards > 0 { bits.push(format!("{} port-forwards", summary.nat_port_forwards)); }
-    if summary.nat_outbound > 0 { bits.push(format!("{} outbound NAT rules", summary.nat_outbound)); }
-    if summary.nat_one_to_one > 0 { bits.push(format!("{} 1:1 NAT mappings", summary.nat_one_to_one)); }
-    if summary.static_routes > 0 { bits.push(format!("{} static routes", summary.static_routes)); }
-    if summary.dns_servers > 0 { bits.push(format!("{} DNS servers", summary.dns_servers)); }
-    if summary.hostname { bits.push("hostname".into()); }
+    if summary.rules > 0 {
+        bits.push(format!("{} firewall rules", summary.rules));
+    }
+    if summary.aliases > 0 {
+        bits.push(format!("{} aliases", summary.aliases));
+    }
+    if summary.nat_port_forwards > 0 {
+        bits.push(format!("{} port-forwards", summary.nat_port_forwards));
+    }
+    if summary.nat_outbound > 0 {
+        bits.push(format!("{} outbound NAT rules", summary.nat_outbound));
+    }
+    if summary.nat_one_to_one > 0 {
+        bits.push(format!("{} 1:1 NAT mappings", summary.nat_one_to_one));
+    }
+    if summary.static_routes > 0 {
+        bits.push(format!("{} static routes", summary.static_routes));
+    }
+    if summary.dns_servers > 0 {
+        bits.push(format!("{} DNS servers", summary.dns_servers));
+    }
+    if summary.hostname {
+        bits.push("hostname".into());
+    }
     let message = if bits.is_empty() {
         "Imported nothing — see skipped list".to_string()
     } else {
@@ -680,7 +712,16 @@ async fn apply_inner(
     let alias_name_set = apply_aliases(state, &cfg.aliases, summary, skipped, tracker).await;
 
     // Rules.
-    apply_rules(state, &cfg.rules, iface_map, &alias_name_set, summary, skipped, tracker).await;
+    apply_rules(
+        state,
+        &cfg.rules,
+        iface_map,
+        &alias_name_set,
+        summary,
+        skipped,
+        tracker,
+    )
+    .await;
 
     // NAT.
     apply_nat(state, &cfg.nat, iface_map, summary, skipped, tracker).await;
@@ -809,7 +850,10 @@ async fn apply_aliases(
             "port" => AliasType::Port,
             "url" | "urltable" => AliasType::UrlTable,
             "geoip" | "external" | "asn" | "macaddress" => {
-                skipped.push(format!("alias '{}' (type {} not supported)", a.name, a.kind));
+                skipped.push(format!(
+                    "alias '{}' (type {} not supported)",
+                    a.name, a.kind
+                ));
                 continue;
             }
             other => {
@@ -843,7 +887,8 @@ async fn apply_aliases(
 fn valid_alias_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 31
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 // --------------------------------------------------------------------- rules (H1, H2, H3, H4)
@@ -1010,18 +1055,18 @@ fn parse_port_spec(raw: &str, alias_names: &HashSet<String>) -> Result<PortRange
     } else {
         (raw, raw)
     };
-    let start: u16 = start_s
+    let start: u16 = start_s.parse().map_err(|_| {
+        // Last resort: an alias name that resolves to a single port. Without
+        // alias-content lookup we just reject so the caller can skip cleanly.
+        if alias_names.contains(raw) {
+            format!("port alias '{raw}' references not yet inlined")
+        } else {
+            format!("invalid port '{raw}'")
+        }
+    })?;
+    let end: u16 = end_s
         .parse()
-        .map_err(|_| {
-            // Last resort: an alias name that resolves to a single port. Without
-            // alias-content lookup we just reject so the caller can skip cleanly.
-            if alias_names.contains(raw) {
-                format!("port alias '{raw}' references not yet inlined")
-            } else {
-                format!("invalid port '{raw}'")
-            }
-        })?;
-    let end: u16 = end_s.parse().map_err(|_| format!("invalid port range '{raw}'"))?;
+        .map_err(|_| format!("invalid port range '{raw}'"))?;
     Ok(PortRange { start, end })
 }
 
@@ -1049,7 +1094,10 @@ async fn apply_nat(
 
     for n in &nat.port_forwards {
         if n.disabled {
-            skipped.push(format!("port-forward '{}' (disabled)", n.descr.as_deref().unwrap_or("")));
+            skipped.push(format!(
+                "port-forward '{}' (disabled)",
+                n.descr.as_deref().unwrap_or("")
+            ));
             continue;
         }
         match build_port_forward(n, iface_map, &empty) {
@@ -1067,10 +1115,18 @@ async fn apply_nat(
                             ));
                         }
                     }
-                    Err(e) => skipped.push(format!("port-forward '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
+                    Err(e) => skipped.push(format!(
+                        "port-forward '{}' ({})",
+                        n.descr.as_deref().unwrap_or(""),
+                        e
+                    )),
                 }
             }
-            Err(reason) => skipped.push(format!("port-forward '{}' ({})", n.descr.as_deref().unwrap_or(""), reason)),
+            Err(reason) => skipped.push(format!(
+                "port-forward '{}' ({})",
+                n.descr.as_deref().unwrap_or(""),
+                reason
+            )),
         }
     }
 
@@ -1084,7 +1140,10 @@ async fn apply_nat(
     } else {
         for n in &nat.outbound {
             if n.disabled {
-                skipped.push(format!("outbound NAT '{}' (disabled)", n.descr.as_deref().unwrap_or("")));
+                skipped.push(format!(
+                    "outbound NAT '{}' (disabled)",
+                    n.descr.as_deref().unwrap_or("")
+                ));
                 continue;
             }
             match build_outbound(n, iface_map, &empty) {
@@ -1095,17 +1154,28 @@ async fn apply_nat(
                             tracker.nat_ids.push(id);
                             summary.nat_outbound += 1;
                         }
-                        Err(e) => skipped.push(format!("outbound NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
+                        Err(e) => skipped.push(format!(
+                            "outbound NAT '{}' ({})",
+                            n.descr.as_deref().unwrap_or(""),
+                            e
+                        )),
                     }
                 }
-                Err(reason) => skipped.push(format!("outbound NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), reason)),
+                Err(reason) => skipped.push(format!(
+                    "outbound NAT '{}' ({})",
+                    n.descr.as_deref().unwrap_or(""),
+                    reason
+                )),
             }
         }
     }
 
     for n in &nat.onetoone {
         if n.disabled {
-            skipped.push(format!("1:1 NAT '{}' (disabled)", n.descr.as_deref().unwrap_or("")));
+            skipped.push(format!(
+                "1:1 NAT '{}' (disabled)",
+                n.descr.as_deref().unwrap_or("")
+            ));
             continue;
         }
         match build_one_to_one(n, iface_map, &empty) {
@@ -1116,10 +1186,18 @@ async fn apply_nat(
                         tracker.nat_ids.push(id);
                         summary.nat_one_to_one += 1;
                     }
-                    Err(e) => skipped.push(format!("1:1 NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), e)),
+                    Err(e) => skipped.push(format!(
+                        "1:1 NAT '{}' ({})",
+                        n.descr.as_deref().unwrap_or(""),
+                        e
+                    )),
                 }
             }
-            Err(reason) => skipped.push(format!("1:1 NAT '{}' ({})", n.descr.as_deref().unwrap_or(""), reason)),
+            Err(reason) => skipped.push(format!(
+                "1:1 NAT '{}' ({})",
+                n.descr.as_deref().unwrap_or(""),
+                reason
+            )),
         }
     }
 }
@@ -1142,7 +1220,8 @@ fn build_port_forward(
         advisories.push(format!("destination: {a}"));
     }
 
-    let target_ip = Address::parse(&n.target).map_err(|e| format!("redirect target '{}': {}", n.target, e))?;
+    let target_ip =
+        Address::parse(&n.target).map_err(|e| format!("redirect target '{}': {}", n.target, e))?;
     let redirect_port = match n.local_port.as_deref() {
         Some(p) => Some(parse_port_spec(p, aliases)?),
         None => dst_port.clone(),
@@ -1161,24 +1240,27 @@ fn build_port_forward(
     }
 
     let now = chrono::Utc::now();
-    Ok((NatRule {
-        id: Uuid::new_v4(),
-        nat_type: NatType::Dnat,
-        interface,
-        protocol,
-        src_addr,
-        src_port,
-        dst_addr,
-        dst_port: final_dst_port,
-        redirect: NatRedirect {
-            address: target_ip,
-            port: redirect_port,
+    Ok((
+        NatRule {
+            id: Uuid::new_v4(),
+            nat_type: NatType::Dnat,
+            interface,
+            protocol,
+            src_addr,
+            src_port,
+            dst_addr,
+            dst_port: final_dst_port,
+            redirect: NatRedirect {
+                address: target_ip,
+                port: redirect_port,
+            },
+            label: n.descr.clone(),
+            status: NatStatus::Active,
+            created_at: now,
+            updated_at: now,
         },
-        label: n.descr.clone(),
-        status: NatStatus::Active,
-        created_at: now,
-        updated_at: now,
-    }, advisories))
+        advisories,
+    ))
 }
 
 fn build_outbound(
@@ -1247,8 +1329,10 @@ fn build_one_to_one(
     aliases: &HashSet<String>,
 ) -> Result<NatRule, String> {
     let interface = Interface(map_iface(&n.interface, iface_map));
-    let external = Address::parse(&n.external).map_err(|e| format!("external '{}': {}", n.external, e))?;
-    let internal = Address::parse(&n.internal).map_err(|e| format!("internal '{}': {}", n.internal, e))?;
+    let external =
+        Address::parse(&n.external).map_err(|e| format!("external '{}': {}", n.external, e))?;
+    let internal =
+        Address::parse(&n.internal).map_err(|e| format!("internal '{}': {}", n.internal, e))?;
     let (dst_addr, _, _) = translate_endpoint_or_any(&n.destination, aliases);
 
     let now = chrono::Utc::now();
@@ -1356,7 +1440,10 @@ async fn apply_routes(
             continue;
         }
         if crate::routes::validate_route_target(gateway).is_err() {
-            skipped.push(format!("route {} (invalid gateway '{}')", r.network, gateway));
+            skipped.push(format!(
+                "route {} (invalid gateway '{}')",
+                r.network, gateway
+            ));
             continue;
         }
         let dup: Option<(i64,)> = sqlx::query_as(
@@ -1421,17 +1508,21 @@ async fn apply_dns_servers(state: &AppState, servers: &[String]) -> usize {
     // Mirror the legacy `auth_config.dns_servers` row so backup/restore
     // round-trips imported configs the same way as native ones.
     let json = serde_json::to_string(&valid).unwrap_or_else(|_| "[]".into());
-    let _ = sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dns_servers', ?1)")
-        .bind(&json)
-        .execute(&state.pool)
-        .await;
+    let _ =
+        sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('dns_servers', ?1)")
+            .bind(&json)
+            .execute(&state.pool)
+            .await;
 
     // Program rDNS upstream forwarders. Pre-fix this wrote `/etc/resolv.conf`
     // directly, which on an appliance where resolv.conf points at 127.0.0.1
     // (rDNS) bypassed the resolver for the box's own lookups *and* did
     // nothing for client queries because rDNS reads its forwarders from
     // `dns_resolver_config`, not `/etc/resolv.conf`.
-    if crate::dns_resolver::set_forwarders(state, &valid).await.is_err() {
+    if crate::dns_resolver::set_forwarders(state, &valid)
+        .await
+        .is_err()
+    {
         return 0;
     }
     valid.len()
@@ -1445,26 +1536,27 @@ async fn apply_hostname(state: &AppState, hostname: &str, domain: Option<&str>) 
     }
     // Read existing timezone — never clobber it. If unset (fresh appliance)
     // fall back to UTC, matching `apply_general`'s own default.
-    let existing_timezone: String = sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM system_config WHERE key = 'timezone'",
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten()
-    .map(|(v,)| v)
-    .unwrap_or_else(|| "UTC".to_string());
+    let existing_timezone: String =
+        sqlx::query_as::<_, (String,)>("SELECT value FROM system_config WHERE key = 'timezone'")
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|(v,)| v)
+            .unwrap_or_else(|| "UTC".to_string());
 
     // Persist to AiFw kv first so it survives reboot via system-settings UI.
-    let _ = sqlx::query("INSERT OR REPLACE INTO system_config (key, value) VALUES ('hostname', ?1)")
-        .bind(hostname)
-        .execute(&state.pool)
-        .await;
-    if let Some(d) = domain {
-        let _ = sqlx::query("INSERT OR REPLACE INTO system_config (key, value) VALUES ('domain', ?1)")
-            .bind(d)
+    let _ =
+        sqlx::query("INSERT OR REPLACE INTO system_config (key, value) VALUES ('hostname', ?1)")
+            .bind(hostname)
             .execute(&state.pool)
             .await;
+    if let Some(d) = domain {
+        let _ =
+            sqlx::query("INSERT OR REPLACE INTO system_config (key, value) VALUES ('domain', ?1)")
+                .bind(d)
+                .execute(&state.pool)
+                .await;
     }
     // Apply to the running system. On Linux dev builds this is a no-op
     // (apply_general(_) returns ok); on FreeBSD it writes /etc/rc.conf and
@@ -1506,7 +1598,10 @@ async fn restore_pre_import(state: &AppState, version: i64) -> Result<(), String
 // --------------------------------------------------------------------- helpers
 
 fn map_iface(name: &str, iface_map: &HashMap<String, String>) -> String {
-    iface_map.get(name).cloned().unwrap_or_else(|| name.to_string())
+    iface_map
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| name.to_string())
 }
 
 async fn list_system_interfaces() -> Vec<String> {
@@ -1551,12 +1646,7 @@ async fn build_diff(state: &AppState, cfg: &OpnConfig) -> PreviewDiff {
     for r in &cfg.rules {
         let sig = format!(
             "{}:{}:{}:{:?}:{:?}:{:?}",
-            r.action,
-            r.direction,
-            r.protocol,
-            r.interface,
-            r.source,
-            r.destination
+            r.action, r.direction, r.protocol, r.interface, r.source, r.destination
         );
         *sigs.entry(sig).or_default() += 1;
     }
@@ -1605,8 +1695,15 @@ fn report_skipped(cfg: &OpnConfig) -> Vec<String> {
         .rules
         .iter()
         .filter(|r| {
-            (r.source.network.as_deref().is_some_and(|n| !n.is_empty() && !is_alias_form(n)))
-                || (r.destination.network.as_deref().is_some_and(|n| !n.is_empty() && !is_alias_form(n)))
+            (r.source
+                .network
+                .as_deref()
+                .is_some_and(|n| !n.is_empty() && !is_alias_form(n)))
+                || (r
+                    .destination
+                    .network
+                    .as_deref()
+                    .is_some_and(|n| !n.is_empty() && !is_alias_form(n)))
         })
         .count();
     if net_keyword_rules > 0 {
@@ -1618,10 +1715,8 @@ fn report_skipped(cfg: &OpnConfig) -> Vec<String> {
 }
 
 fn is_alias_form(s: &str) -> bool {
-    s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        && !matches!(
-            s,
-            "lan" | "wan" | "lanip" | "wanip" | "(self)" | "any"
-        )
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && !matches!(s, "lan" | "wan" | "lanip" | "wanip" | "(self)" | "any")
         && !s.starts_with("opt")
 }

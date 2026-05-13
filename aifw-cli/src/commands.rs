@@ -1743,7 +1743,9 @@ pub async fn update_install(auto_restart: bool) -> anyhow::Result<()> {
         updater::restart_services_sync().await;
         println!("Done.");
     } else {
-        println!("Update installed. Run 'aifw update restart' (or 'aifw update reboot') when ready to activate it.");
+        println!(
+            "Update installed. Run 'aifw update restart' (or 'aifw update reboot') when ready to activate it."
+        );
     }
     Ok(())
 }
@@ -1826,7 +1828,8 @@ pub async fn update_install_local(
     // Build a multipart form.  Load the tarball into memory (50-100 MB is
     // fine for local use) to avoid pulling in a streaming-body dependency
     // beyond what reqwest multipart already provides.
-    let tarball_bytes = tokio::fs::read(&path).await
+    let tarball_bytes = tokio::fs::read(&path)
+        .await
         .map_err(|e| anyhow::anyhow!("failed to read tarball: {e}"))?;
 
     let filename = path
@@ -1837,15 +1840,18 @@ pub async fn update_install_local(
 
     let mut form = reqwest::multipart::Form::new().part(
         "tarball",
-        reqwest::multipart::Part::bytes(tarball_bytes)
-            .file_name(filename),
+        reqwest::multipart::Part::bytes(tarball_bytes).file_name(filename),
     );
 
     if !skip_checksum {
         // Expect <file>.sha256 next to the tarball.
         let sha_path = {
             let mut p = path.clone();
-            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             p.set_file_name(format!("{}.sha256", name));
             p
         };
@@ -1855,7 +1861,8 @@ pub async fn update_install_local(
                 sha_path.display()
             );
         }
-        let sha_content = tokio::fs::read_to_string(&sha_path).await
+        let sha_content = tokio::fs::read_to_string(&sha_path)
+            .await
             .map_err(|e| anyhow::anyhow!("failed to read sha256 sidecar: {e}"))?;
         form = form.text("sha256", sha_content);
     }
@@ -1876,7 +1883,9 @@ pub async fn update_install_local(
     if !token.is_empty() {
         req = req.header("Authorization", format!("Bearer {token}"));
     }
-    let resp = req.send().await
+    let resp = req
+        .send()
+        .await
         .map_err(|e| anyhow::anyhow!("upload failed: {e}"))?;
 
     if !resp.status().is_success() {
@@ -1885,8 +1894,7 @@ pub async fn update_install_local(
         anyhow::bail!("install-local failed: {} {}", status, body);
     }
 
-    let data: serde_json::Value = resp.json().await
-        .unwrap_or(serde_json::Value::Null);
+    let data: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
     let msg = data["message"].as_str().unwrap_or("install accepted");
     println!("{}", msg);
     println!("Check `aifw update history` for status.");
@@ -2956,7 +2964,10 @@ pub async fn cluster_status(json: bool) -> anyhow::Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&s)?);
     } else {
-        println!("Role:                 {}", s["role"].as_str().unwrap_or("?"));
+        println!(
+            "Role:                 {}",
+            s["role"].as_str().unwrap_or("?")
+        );
         println!("Peer reachable:       {}", s["peer_reachable"]);
         println!("pfsync state count:   {}", s["pfsync_state_count"]);
         if let Some(h) = s["last_snapshot_hash"].as_str() {
@@ -3177,9 +3188,7 @@ pub async fn cluster_verify(as_json: bool) -> anyhow::Result<()> {
             let stdout = String::from_utf8_lossy(&o.stdout);
             if !stdout.contains("carp:") {
                 if std::env::consts::OS == "freebsd" {
-                    failures.push(
-                        "no CARP VIPs configured (no 'carp:' lines in ifconfig)".into(),
-                    );
+                    failures.push("no CARP VIPs configured (no 'carp:' lines in ifconfig)".into());
                 } else {
                     failures.push(format!(
                         "CARP check skipped: not running on FreeBSD (host OS is {})",

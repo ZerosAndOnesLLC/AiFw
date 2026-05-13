@@ -31,9 +31,9 @@ const HELPER_SYSRC: &str = "/usr/local/libexec/aifw-sudo-sysrc";
 /// `freebsd/overlay/usr/local/libexec/aifw-sudo-write`. Adding a new
 /// write target requires editing the script, not just the call site.
 pub async fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    let path_str = path.to_str().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-utf8 path")
-    })?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-utf8 path"))?;
 
     let mut child = Command::new(SUDO)
         .args([HELPER_WRITE, path_str])

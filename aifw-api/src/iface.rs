@@ -724,12 +724,8 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
             // Create if not exists
             let _ = aifw_core::sudo::ifconfig(&vlan_name, "create", &[]).await;
             let vid_s = vid.to_string();
-            let _ = aifw_core::sudo::ifconfig(
-                &vlan_name,
-                "vlan",
-                &[&vid_s, "vlandev", parent],
-            )
-            .await;
+            let _ =
+                aifw_core::sudo::ifconfig(&vlan_name, "vlan", &[&vid_s, "vlandev", parent]).await;
             let mtu_s = mtu.to_string();
             let _ = aifw_core::sudo::ifconfig(&vlan_name, "mtu", &[&mtu_s]).await;
 

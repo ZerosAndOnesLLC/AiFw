@@ -4,8 +4,8 @@
 use aifw_common::{HealthCheck, HealthCheckType};
 use aifw_core::ClusterEngine;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -87,7 +87,7 @@ impl HealthProber {
                         let _ = self.notify_health(&client, &c.name, true, None).await;
                     }
                     st.failures = 0; // always reset so accumulated partial failures
-                                     // don't carry over and reduce the effective threshold
+                // don't carry over and reduce the effective threshold
                 } else {
                     st.failures += 1;
                     if st.failures >= c.failures_before_down && st.healthy {
@@ -151,9 +151,7 @@ impl HealthProber {
                             recovery_started = None;
                             tracing::info!("ha: clearing CARP demotion after hold-down");
                         } else {
-                            tracing::warn!(
-                                "ha: failed to clear CARP demotion during recovery"
-                            );
+                            tracing::warn!("ha: failed to clear CARP demotion during recovery");
                         }
                     }
                     _ => {}
@@ -169,24 +167,15 @@ impl HealthProber {
         healthy: bool,
         detail: Option<String>,
     ) -> anyhow::Result<()> {
-        let body =
-            serde_json::json!({"check": name, "healthy": healthy, "detail": detail});
-        let url = format!(
-            "{}/api/v1/cluster/internal/health-changed",
-            self.api_base
-        );
+        let body = serde_json::json!({"check": name, "healthy": healthy, "detail": detail});
+        let url = format!("{}/api/v1/cluster/internal/health-changed", self.api_base);
         let resp = client
             .post(&url)
-            .header(
-                "Authorization",
-                format!("ApiKey {}", self.api_key),
-            )
+            .header("Authorization", format!("ApiKey {}", self.api_key))
             .json(&body)
             .send()
             .await?;
-        if resp.status().as_u16() == 401
-            && !self.auth_warned.swap(true, Ordering::Relaxed)
-        {
+        if resp.status().as_u16() == 401 && !self.auth_warned.swap(true, Ordering::Relaxed) {
             tracing::warn!(
                 "ha: health_prober loopback auth failed \
                  (AIFW_LOOPBACK_API_KEY set but not registered)"
@@ -289,7 +278,10 @@ mod tests {
         apply_probe_result(&mut st, false, 3);
         // Third failure hits threshold
         let out = apply_probe_result(&mut st, false, 3);
-        assert!(out.became_unhealthy, "should transition to unhealthy at threshold");
+        assert!(
+            out.became_unhealthy,
+            "should transition to unhealthy at threshold"
+        );
         assert_eq!(out.failures_after, 3);
         assert!(!out.healthy_after);
     }
@@ -307,7 +299,10 @@ mod tests {
         assert_eq!(st.failures, 3);
 
         let out = apply_probe_result(&mut st, true, 3);
-        assert!(out.became_healthy, "should transition back to healthy on success");
+        assert!(
+            out.became_healthy,
+            "should transition back to healthy on success"
+        );
         assert!(!out.became_unhealthy);
         assert_eq!(out.failures_after, 0, "counter must reset on success");
         assert!(out.healthy_after);
@@ -328,7 +323,10 @@ mod tests {
         let out = apply_probe_result(&mut st, true, 3);
         assert!(!out.became_unhealthy);
         assert!(!out.became_healthy, "was already healthy — no transition");
-        assert_eq!(out.failures_after, 0, "counter must reset even during partial-failure run");
+        assert_eq!(
+            out.failures_after, 0,
+            "counter must reset even during partial-failure run"
+        );
         assert!(out.healthy_after);
     }
 
@@ -349,8 +347,14 @@ mod tests {
 
         // Single re-failure
         let out = apply_probe_result(&mut st, false, 3);
-        assert!(!out.became_unhealthy, "one failure should not immediately demote");
-        assert_eq!(out.failures_after, 1, "counter starts from 0 after recovery");
+        assert!(
+            !out.became_unhealthy,
+            "one failure should not immediately demote"
+        );
+        assert_eq!(
+            out.failures_after, 1,
+            "counter starts from 0 after recovery"
+        );
         assert!(out.healthy_after);
     }
 
@@ -368,7 +372,10 @@ mod tests {
         apply_probe_result(&mut st, false, 3);
         apply_probe_result(&mut st, false, 3);
         let out = apply_probe_result(&mut st, false, 3);
-        assert!(out.became_unhealthy, "should demote again after threshold reached");
+        assert!(
+            out.became_unhealthy,
+            "should demote again after threshold reached"
+        );
         assert!(!out.healthy_after);
     }
 
@@ -381,7 +388,10 @@ mod tests {
         }
         // 4th failure while already unhealthy
         let out = apply_probe_result(&mut st, false, 3);
-        assert!(!out.became_unhealthy, "already unhealthy — no new transition");
+        assert!(
+            !out.became_unhealthy,
+            "already unhealthy — no new transition"
+        );
         assert!(!out.healthy_after);
     }
 }

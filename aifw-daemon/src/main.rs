@@ -234,10 +234,7 @@ async fn main() -> anyhow::Result<()> {
         if !self_api_key.is_empty() {
             let api_base = aifw_common::DEFAULT_LOOPBACK_API_BASE.to_string();
 
-            let watcher = role_watcher::RoleWatcher::new(
-                api_base.clone(),
-                self_api_key.clone(),
-            );
+            let watcher = role_watcher::RoleWatcher::new(api_base.clone(), self_api_key.clone());
             tokio::spawn(watcher.run());
             info!("ha: role watcher started");
 

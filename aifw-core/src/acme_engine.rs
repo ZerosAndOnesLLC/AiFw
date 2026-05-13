@@ -128,9 +128,7 @@ pub async fn renew_due(
                     let fullchain = build_fullchain(&cert_row);
                     let key = cert_row.key_pem.unwrap_or_default();
                     if !fullchain.is_empty() && !key.is_empty() {
-                        if let Err(e) =
-                            push_cert_to_peers(pool, ce, c.id, &fullchain, &key).await
-                        {
+                        if let Err(e) = push_cert_to_peers(pool, ce, c.id, &fullchain, &key).await {
                             tracing::warn!(
                                 cert_id = c.id,
                                 error = %e,
@@ -197,7 +195,10 @@ async fn push_cert_to_peers(
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    for n in nodes.iter().filter(|n| matches!(n.role, ClusterRole::Secondary)) {
+    for n in nodes
+        .iter()
+        .filter(|n| matches!(n.role, ClusterRole::Secondary))
+    {
         let key = match cluster_engine.peer_api_key(n.id).await? {
             Some(k) => k,
             None => {
@@ -224,13 +225,12 @@ async fn push_cert_to_peers(
         {
             Ok(r) if r.status().is_success() => {
                 tracing::info!(cert_id, peer = %n.address, "acme: cert pushed to peer");
-                let _ = sqlx::query(
-                    "UPDATE cluster_nodes SET last_pushed_cert_at = ?1 WHERE id = ?2",
-                )
-                .bind(Utc::now().to_rfc3339())
-                .bind(n.id.to_string())
-                .execute(pool)
-                .await;
+                let _ =
+                    sqlx::query("UPDATE cluster_nodes SET last_pushed_cert_at = ?1 WHERE id = ?2")
+                        .bind(Utc::now().to_rfc3339())
+                        .bind(n.id.to_string())
+                        .execute(pool)
+                        .await;
             }
             Ok(r) => tracing::warn!(
                 cert_id,

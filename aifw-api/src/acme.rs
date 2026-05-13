@@ -373,9 +373,12 @@ pub async fn create_provider(
     .await
     .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
     let id = res.last_insert_rowid();
-    let provider = acme::load_provider(&state.pool, id)
-        .await
-        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after insert".into()))?;
+    let provider = acme::load_provider(&state.pool, id).await.ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "provider vanished after insert".into(),
+        )
+    })?;
     Ok(Json(provider.into()))
 }
 
@@ -417,9 +420,12 @@ pub async fn update_provider(
     .execute(&state.pool)
     .await
     .map_err(server)?;
-    let provider = acme::load_provider(&state.pool, id)
-        .await
-        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after insert".into()))?;
+    let provider = acme::load_provider(&state.pool, id).await.ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "provider vanished after insert".into(),
+        )
+    })?;
     Ok(Json(provider.into()))
 }
 

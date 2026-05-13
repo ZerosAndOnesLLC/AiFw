@@ -104,7 +104,10 @@ impl IdsClient {
         }
     }
 
-    pub async fn set_config(&self, config: aifw_common::ids::IdsConfig) -> Result<(), IdsClientError> {
+    pub async fn set_config(
+        &self,
+        config: aifw_common::ids::IdsConfig,
+    ) -> Result<(), IdsClientError> {
         let resp = self.raw_call(IpcRequest::SetConfig { config }).await?;
         match resp {
             IpcResponse::Ok => {
@@ -183,7 +186,9 @@ impl IdsClient {
                 return Ok(entry.value.clone());
             }
         }
-        let resp = self.raw_call(IpcRequest::GetRule { id: id.to_string() }).await?;
+        let resp = self
+            .raw_call(IpcRequest::GetRule { id: id.to_string() })
+            .await?;
         match resp {
             IpcResponse::Rule(r) => {
                 let mut cache = self.cache.lock().await;

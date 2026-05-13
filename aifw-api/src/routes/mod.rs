@@ -11,9 +11,9 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth;
 use aifw_common::{
-    Action, Address, Direction, Interface, IpsecMode, IpsecProtocol, IpsecSa, NatRedirect,
-    NatRule, NatStatus, NatType, PortRange, Protocol, Rule, RuleMatch, RuleStatus, StateTracking,
-    WgPeer, WgTunnel,
+    Action, Address, Direction, Interface, IpsecMode, IpsecProtocol, IpsecSa, NatRedirect, NatRule,
+    NatStatus, NatType, PortRange, Protocol, Rule, RuleMatch, RuleStatus, StateTracking, WgPeer,
+    WgTunnel,
 };
 
 // --- Resource sub-modules (#187 incremental split) ---
@@ -820,8 +820,6 @@ pub async fn import_config(
 // (list_system_rules, list_rules, get_rule, create_rule, update_rule,
 //  delete_rule, toggle_block_logging, reorder_rules)
 
-
-
 // --- Status ---
 
 pub async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
@@ -936,10 +934,7 @@ pub async fn list_connections(
     const DEFAULT_LIMIT: usize = 1_000;
     const MAX_LIMIT: usize = 10_000;
     let offset = q.offset.unwrap_or(0).min(connections.len());
-    let limit = q
-        .limit
-        .unwrap_or(DEFAULT_LIMIT)
-        .min(MAX_LIMIT);
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
     let end = offset.saturating_add(limit).min(connections.len());
     let page = connections[offset..end].to_vec();
     Ok(Json(ApiResponse { data: page }))
@@ -1647,7 +1642,6 @@ pub async fn delete_ipsec_sa(
         message: format!("IPsec SA {id} deleted"),
     }))
 }
-
 
 // --- System routing table ---
 

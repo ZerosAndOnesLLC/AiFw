@@ -104,9 +104,18 @@ mod tests {
         // regardless of cluster config — the pf.conf change is unconditional.
         let config = SetupConfig::default();
         let pf = apply::generate_pf_conf(&config);
-        assert!(pf.contains("set state-policy floating"), "expected floating: {pf}");
-        assert!(pf.contains("set skip on pfsync0"), "expected pfsync0 skip: {pf}");
-        assert!(!pf.contains("if-bound"), "should not contain if-bound: {pf}");
+        assert!(
+            pf.contains("set state-policy floating"),
+            "expected floating: {pf}"
+        );
+        assert!(
+            pf.contains("set skip on pfsync0"),
+            "expected pfsync0 skip: {pf}"
+        );
+        assert!(
+            !pf.contains("if-bound"),
+            "should not contain if-bound: {pf}"
+        );
     }
 
     #[test]

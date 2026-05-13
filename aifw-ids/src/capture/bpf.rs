@@ -247,8 +247,8 @@ impl Drop for BpfCapture {
 /// Open an available /dev/bpf device (tries bpf0..bpf255)
 fn open_bpf_device() -> Result<RawFd> {
     for i in 0..256 {
-        let path = CString::new(format!("/dev/bpf{i}"))
-            .expect("/dev/bpf{i} format has no interior null");
+        let path =
+            CString::new(format!("/dev/bpf{i}")).expect("/dev/bpf{i} format has no interior null");
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
         if fd >= 0 {
             return Ok(fd);

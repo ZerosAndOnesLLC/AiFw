@@ -49,12 +49,12 @@ pub struct OpnEndpoint {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OpnRule {
-    pub action: String,           // pass | block | reject
-    pub direction: String,        // in | out | any
-    pub interface: Vec<String>,   // typically one; floating rules carry many
+    pub action: String,         // pass | block | reject
+    pub direction: String,      // in | out | any
+    pub interface: Vec<String>, // typically one; floating rules carry many
     pub floating: bool,
     pub ipprotocol: AddrFamily,
-    pub protocol: String,         // any | tcp | udp | icmp | …
+    pub protocol: String, // any | tcp | udp | icmp | …
     pub source: OpnEndpoint,
     pub destination: OpnEndpoint,
     pub disabled: bool,
@@ -69,7 +69,7 @@ pub struct OpnNatPortForward {
     pub protocol: String,
     pub source: OpnEndpoint,
     pub destination: OpnEndpoint,
-    pub target: String,           // redirect IP
+    pub target: String,             // redirect IP
     pub local_port: Option<String>, // redirect port (single or range)
     pub disabled: bool,
     pub descr: Option<String>,
@@ -81,7 +81,7 @@ pub struct OpnNatOutbound {
     pub protocol: String,
     pub source: OpnEndpoint,
     pub destination: OpnEndpoint,
-    pub target: Option<String>,   // empty / absent = use interface address
+    pub target: Option<String>, // empty / absent = use interface address
     pub disabled: bool,
     pub descr: Option<String>,
     /// `<nonat>1</nonat>` — explicit "do not NAT this traffic" rule. Becomes
@@ -104,7 +104,7 @@ pub struct OpnNatOneToOne {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct OpnNat {
-    pub mode: Option<String>,                   // automatic | hybrid | manual | disabled
+    pub mode: Option<String>, // automatic | hybrid | manual | disabled
     pub port_forwards: Vec<OpnNatPortForward>,
     pub outbound: Vec<OpnNatOutbound>,
     pub onetoone: Vec<OpnNatOneToOne>,
@@ -113,8 +113,8 @@ pub struct OpnNat {
 #[derive(Debug, Clone, Serialize)]
 pub struct OpnAlias {
     pub name: String,
-    pub kind: String,             // host | network | port | url | urltable | geoip
-    pub content: Vec<String>,     // entries (may be alias references themselves)
+    pub kind: String,         // host | network | port | url | urltable | geoip
+    pub content: Vec<String>, // entries (may be alias references themselves)
     pub descr: Option<String>,
     pub disabled: bool,
 }
@@ -123,15 +123,15 @@ pub struct OpnAlias {
 pub struct OpnGateway {
     pub name: String,
     pub interface: Option<String>,
-    pub gateway: String,          // IP, or `dynamic` for DHCP-derived
+    pub gateway: String, // IP, or `dynamic` for DHCP-derived
     pub ipprotocol: AddrFamily,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OpnRoute {
     pub network: String,
-    pub gateway: String,          // resolves to the IP from <gateways> when possible
-    pub gateway_name: String,     // original name for diagnostics
+    pub gateway: String,      // resolves to the IP from <gateways> when possible
+    pub gateway_name: String, // original name for diagnostics
     pub disabled: bool,
     pub descr: Option<String>,
 }
@@ -147,8 +147,8 @@ pub struct OpnSystem {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct OpnConfig {
-    pub kind: ConfigKind,         // OPNsense vs pfSense, for downstream UX
-    pub version: Option<String>,  // <version> or root attribute
+    pub kind: ConfigKind,        // OPNsense vs pfSense, for downstream UX
+    pub version: Option<String>, // <version> or root attribute
     pub system: OpnSystem,
     pub aliases: Vec<OpnAlias>,
     pub gateways: Vec<OpnGateway>,

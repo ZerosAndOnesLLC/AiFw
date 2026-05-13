@@ -3,9 +3,9 @@ mod ai_analysis;
 mod aliases;
 mod auth;
 mod backup;
-mod cluster;
 mod backup_s3;
 mod ca;
+mod cluster;
 mod dhcp;
 mod dns_blocklists;
 mod dns_resolver;
@@ -209,9 +209,7 @@ impl AppState {
     /// Produces (snapshot_data_json, sha256_hex_hash) for cluster replication.
     /// Includes everything backup exports plus IDS rule overrides + suppressions.
     /// Hash is sha256 of the JSON bytes.
-    pub async fn cluster_snapshot_data(
-        &self,
-    ) -> Result<(String, String), aifw_common::AifwError> {
+    pub async fn cluster_snapshot_data(&self) -> Result<(String, String), aifw_common::AifwError> {
         let payload = crate::backup::cluster_export_payload(self)
             .await
             .map_err(|e| aifw_common::AifwError::Other(format!("export: {e:?}")))?;
@@ -936,10 +934,7 @@ pub fn build_router(
             "/api/v1/updates/aifw/restart",
             post(updates::aifw_restart_services),
         )
-        .route(
-            "/api/v1/updates/aifw/reboot",
-            post(updates::aifw_reboot),
-        )
+        .route("/api/v1/updates/aifw/reboot", post(updates::aifw_reboot))
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
 
     // Local-tarball install — needs a large body limit (500 MB) for the
@@ -1038,10 +1033,7 @@ pub fn build_router(
     let system_reboot = Router::new()
         .route("/api/v1/updates/reboot", post(updates::reboot_system))
         .route("/api/v1/updates/shutdown", post(updates::shutdown_system))
-        .route(
-            "/api/v1/multiwan/enable-fibs",
-            post(multiwan::enable_fibs),
-        )
+        .route("/api/v1/multiwan/enable-fibs", post(multiwan::enable_fibs))
         .layer(middleware::from_fn(perm_check!(Permission::SystemReboot)));
 
     // proxy:read
@@ -1319,11 +1311,11 @@ pub fn build_router(
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)));
 
     // ha:manage
-    let cluster_read = cluster::read_routes()
-        .layer(middleware::from_fn(perm_check!(Permission::HaManage)));
+    let cluster_read =
+        cluster::read_routes().layer(middleware::from_fn(perm_check!(Permission::HaManage)));
 
-    let cluster_write = cluster::write_routes()
-        .layer(middleware::from_fn(perm_check!(Permission::HaManage)));
+    let cluster_write =
+        cluster::write_routes().layer(middleware::from_fn(perm_check!(Permission::HaManage)));
 
     // Merge all permission-scoped groups into one protected router with auth
     let protected_routes = Router::new()
@@ -1585,9 +1577,15 @@ async fn create_state_from_db(
         .map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
     let cluster_engine = Arc::new(aifw_core::ClusterEngine::new(pool.clone(), pf.clone()));
-    cluster_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    cluster_engine
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let shaping_engine = Arc::new(ShapingEngine::new(pool.clone(), pf.clone()));
-    shaping_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+    shaping_engine
+        .migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let tls_engine = Arc::new(TlsEngine::new(pool.clone(), pf.clone()));
     tls_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
 
@@ -1619,13 +1617,11 @@ async fn create_state_from_db(
                 }
             });
         if let Some(name) = our_hostname {
-            let _ = sqlx::query(
-                "UPDATE cluster_nodes SET software_version = ?1 WHERE name = ?2",
-            )
-            .bind(our_version)
-            .bind(&name)
-            .execute(&pool)
-            .await;
+            let _ = sqlx::query("UPDATE cluster_nodes SET software_version = ?1 WHERE name = ?2")
+                .bind(our_version)
+                .bind(&name)
+                .execute(&pool)
+                .await;
         }
     }
 
@@ -1933,10 +1929,7 @@ async fn ensure_rc_services_enabled() {
     // don't kick ourselves) and aifw_watchdog last so it doesn't see
     // transient down-states from the others as "needs heal."
     for svc in ["aifw_ids", "aifw_watchdog"] {
-        let status = Command::new("service")
-            .args([svc, "status"])
-            .output()
-            .await;
+        let status = Command::new("service").args([svc, "status"]).output().await;
         let already_running = status.map(|o| o.status.success()).unwrap_or(false);
         if already_running {
             continue;

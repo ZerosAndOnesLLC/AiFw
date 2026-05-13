@@ -54,9 +54,7 @@ pub fn aggregate(points: &[MetricPoint], method: Aggregation) -> Option<MetricPo
         .map(|p| p.max)
         .fold(f64::NEG_INFINITY, f64::max);
     // Guarded by the is_empty check at the top of the function.
-    let last = points
-        .last()
-        .expect("points non-empty (checked above)");
+    let last = points.last().expect("points non-empty (checked above)");
     let ts = last.timestamp;
 
     let value = match method {

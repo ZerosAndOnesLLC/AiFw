@@ -578,10 +578,7 @@ impl VpnEngine {
             tokio::fs::write(&path, psk)
                 .await
                 .map_err(|e| AifwError::Pf(format!("Failed to write PSK: {e}")))?;
-            let _ = Command::new("chmod")
-                .args(["600", &path])
-                .output()
-                .await;
+            let _ = Command::new("chmod").args(["600", &path]).output().await;
             args.push("preshared-key".to_string());
             args.push(path.clone());
             Some(path)

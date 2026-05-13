@@ -75,7 +75,8 @@ pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
         key: "net.fibs".into(),
         value: "16".into(),
         target: TuningTarget::LoaderConf,
-        reason: "Forwarding tables for multi-WAN routing instances (16 = up to 15 WAN uplinks)".into(),
+        reason: "Forwarding tables for multi-WAN routing instances (16 = up to 15 WAN uplinks)"
+            .into(),
         enabled: true,
     });
 

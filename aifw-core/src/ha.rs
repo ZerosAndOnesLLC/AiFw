@@ -79,16 +79,21 @@ impl ClusterEngine {
             let _ = sqlx::query(stmt).execute(&self.pool).await;
         }
 
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS cluster_snapshot_state (
                 node_id TEXT PRIMARY KEY,
                 last_applied_hash TEXT NOT NULL,
                 last_applied_at TEXT NOT NULL,
                 last_applied_from TEXT NOT NULL
             );
-        "#).execute(&self.pool).await?;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS cluster_failover_events (
                 id TEXT PRIMARY KEY,
                 ts TEXT NOT NULL,
@@ -97,7 +102,10 @@ impl ClusterEngine {
                 cause TEXT NOT NULL,
                 detail TEXT
             );
-        "#).execute(&self.pool).await?;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_cluster_failover_events_ts ON cluster_failover_events(ts);")
             .execute(&self.pool).await?;
@@ -323,7 +331,10 @@ impl ClusterEngine {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
-            return Err(AifwError::NotFound(format!("cluster node {} not found", n.id)));
+            return Err(AifwError::NotFound(format!(
+                "cluster node {} not found",
+                n.id
+            )));
         }
         Ok(())
     }
@@ -361,7 +372,11 @@ impl ClusterEngine {
     }
 
     pub async fn record_failover_event(
-        &self, from: &str, to: &str, cause: &str, detail: Option<&str>,
+        &self,
+        from: &str,
+        to: &str,
+        cause: &str,
+        detail: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO cluster_failover_events (id, ts, from_role, to_role, cause, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
@@ -380,20 +395,23 @@ impl ClusterEngine {
         // Two simple-format UUIDs = 64 hex chars = 256 bits of getrandom-sourced entropy.
         let key = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let hash = sha256_hex(&key);
-        sqlx::query("UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3")
-            .bind(&key)
-            .bind(&hash)
-            .bind(node_id.to_string())
-            .execute(&self.pool).await?;
+        sqlx::query(
+            "UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3",
+        )
+        .bind(&key)
+        .bind(&hash)
+        .bind(node_id.to_string())
+        .execute(&self.pool)
+        .await?;
         Ok(key)
     }
 
     pub async fn peer_api_key(&self, node_id: Uuid) -> Result<Option<String>> {
-        let row: Option<(Option<String>,)> = sqlx::query_as(
-            "SELECT peer_api_key FROM cluster_nodes WHERE id = ?1"
-        )
-        .bind(node_id.to_string())
-        .fetch_optional(&self.pool).await?;
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT peer_api_key FROM cluster_nodes WHERE id = ?1")
+                .bind(node_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.and_then(|(k,)| k))
     }
 
@@ -450,7 +468,10 @@ impl ClusterEngine {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
-            return Err(AifwError::NotFound(format!("health check {} not found", check.id)));
+            return Err(AifwError::NotFound(format!(
+                "health check {} not found",
+                check.id
+            )));
         }
         Ok(())
     }
@@ -618,7 +639,10 @@ pub async fn current_local_role() -> aifw_common::ClusterRole {
 /// safe default is to assume BACKUP so that operations that should only run
 /// on the master (ACME renewal, cert push) are skipped rather than duplicated.
 pub async fn is_local_master() -> bool {
-    matches!(current_local_role().await, aifw_common::ClusterRole::Primary)
+    matches!(
+        current_local_role().await,
+        aifw_common::ClusterRole::Primary
+    )
 }
 
 // ============================================================
@@ -916,13 +940,13 @@ mod tests {
         ];
         let redacted = ClusterEngine::redact_password_in_argv(&argv);
         let pass_pos = redacted.iter().position(|s| s == "pass").unwrap();
-        assert_eq!(redacted[pass_pos + 1], "<redacted>", "password token not redacted");
-        assert_eq!(redacted[0], "ifconfig", "first arg changed");
         assert_eq!(
-            redacted[redacted.len() - 1],
-            "alias",
-            "last arg changed"
+            redacted[pass_pos + 1],
+            "<redacted>",
+            "password token not redacted"
         );
+        assert_eq!(redacted[0], "ifconfig", "first arg changed");
+        assert_eq!(redacted[redacted.len() - 1], "alias", "last arg changed");
     }
 
     #[test]
@@ -950,7 +974,10 @@ mod tests {
         ];
         let redacted = ClusterEngine::redact_password_in_argv(&argv);
         // No panic, and the argv is returned as-is since there is no value to redact
-        assert_eq!(redacted, argv, "malformed argv with trailing pass should be unchanged");
+        assert_eq!(
+            redacted, argv,
+            "malformed argv with trailing pass should be unchanged"
+        );
     }
 
     #[tokio::test]

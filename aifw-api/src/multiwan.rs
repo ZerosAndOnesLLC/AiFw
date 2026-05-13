@@ -259,8 +259,7 @@ pub async fn enable_fibs(
             if !new_content.is_empty() && !new_content.ends_with('\n') {
                 new_content.push('\n');
             }
-            new_content
-                .push_str("\n# AiFw — multi-WAN forwarding tables (added via UI)\n");
+            new_content.push_str("\n# AiFw — multi-WAN forwarding tables (added via UI)\n");
             new_content.push_str(&format!("net.fibs=\"{target_fibs}\"\n"));
             std::fs::write(path, new_content).map_err(|_| internal())?;
             false
@@ -286,11 +285,16 @@ pub async fn enable_fibs(
     };
 
     let message = if already_enabled {
-        "net.fibs is already configured in /boot/loader.conf — reboot to apply if not already".into()
+        "net.fibs is already configured in /boot/loader.conf — reboot to apply if not already"
+            .into()
     } else if reboot_scheduled {
-        format!("net.fibs={target_fibs} written to /boot/loader.conf — system rebooting in 10 seconds")
+        format!(
+            "net.fibs={target_fibs} written to /boot/loader.conf — system rebooting in 10 seconds"
+        )
     } else {
-        format!("net.fibs={target_fibs} written to /boot/loader.conf — reboot required to take effect")
+        format!(
+            "net.fibs={target_fibs} written to /boot/loader.conf — reboot required to take effect"
+        )
     };
 
     Ok(Json(ApiResponse {

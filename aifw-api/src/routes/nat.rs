@@ -2,8 +2,8 @@
 //! debug endpoint. Extracted from the legacy 4000-line `routes.rs`
 //! God module (#187).
 
-use super::*;
 use super::rules::ReorderRequest;
+use super::*;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateNatRuleRequest {

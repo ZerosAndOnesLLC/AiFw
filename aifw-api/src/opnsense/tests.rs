@@ -61,8 +61,8 @@ async fn preview_rejects_non_opnsense_xml() {
     let body: Value = resp.json();
     assert_eq!(body["valid"], false);
     assert!(
-        body["error"].as_str().unwrap_or("").contains("OPNsense") ||
-        body["error"].as_str().unwrap_or("").contains("pfSense")
+        body["error"].as_str().unwrap_or("").contains("OPNsense")
+            || body["error"].as_str().unwrap_or("").contains("pfSense")
     );
 }
 
@@ -100,7 +100,9 @@ async fn preview_reports_counts_and_skipped() {
     assert_eq!(body["counts"]["dns_servers"], 2);
     let skipped = body["skipped"].as_array().unwrap();
     assert!(
-        skipped.iter().any(|s| s.as_str().unwrap_or("").contains("network keywords")),
+        skipped
+            .iter()
+            .any(|s| s.as_str().unwrap_or("").contains("network keywords")),
         "skipped should call out network-keyword rules: {skipped:?}"
     );
 }
@@ -131,7 +133,10 @@ async fn import_applies_rules_with_ipv6_and_ports() {
         .await;
     list.assert_status_ok();
     let rules: Value = list.json();
-    let arr = rules["data"].as_array().or_else(|| rules.as_array()).unwrap();
+    let arr = rules["data"]
+        .as_array()
+        .or_else(|| rules.as_array())
+        .unwrap();
     let ssh = arr
         .iter()
         .find(|r| r["label"].as_str().unwrap_or("").contains("SSH"))
@@ -213,8 +218,14 @@ async fn import_default_does_not_change_dns_or_hostname() {
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
-    assert_eq!(body["applied"]["dns_servers"], 0, "DNS not applied without opt-in");
-    assert_eq!(body["applied"]["hostname"], false, "hostname not applied without opt-in");
+    assert_eq!(
+        body["applied"]["dns_servers"], 0,
+        "DNS not applied without opt-in"
+    );
+    assert_eq!(
+        body["applied"]["hostname"], false,
+        "hostname not applied without opt-in"
+    );
 }
 
 #[tokio::test]
@@ -233,7 +244,10 @@ async fn import_with_system_settings_opt_in_applies_them() {
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
-    assert_eq!(body["applied"]["dns_servers"], 2, "both DNS upstreams applied");
+    assert_eq!(
+        body["applied"]["dns_servers"], 2,
+        "both DNS upstreams applied"
+    );
     assert_eq!(body["applied"]["hostname"], true, "hostname applied");
 
     // C1: imported DNS servers should land in the rDNS forwarders config
@@ -340,7 +354,10 @@ async fn imported_ipv6_rule_round_trips_through_config_history() {
         .iter()
         .find(|r| r["label"].as_str().unwrap_or("").contains("SSH"))
         .expect("imported SSH rule in snapshot");
-    assert_eq!(ssh["ip_version"], "inet6", "ip_version round-trips through FirewallConfig");
+    assert_eq!(
+        ssh["ip_version"], "inet6",
+        "ip_version round-trips through FirewallConfig"
+    );
 }
 
 #[tokio::test]
@@ -370,7 +387,11 @@ async fn import_floating_rule_splits_per_interface() {
         .iter()
         .filter(|r| r["label"].as_str().unwrap_or("").contains("floating"))
         .collect();
-    assert_eq!(floating.len(), 2, "expected 2 floating rules (one per iface), got {floating:?}");
+    assert_eq!(
+        floating.len(),
+        2,
+        "expected 2 floating rules (one per iface), got {floating:?}"
+    );
     let ifaces: std::collections::HashSet<&str> = floating
         .iter()
         .filter_map(|r| r["interface"].as_str())
@@ -409,7 +430,9 @@ async fn import_skips_unresolved_dynamic_route() {
     assert_eq!(body["applied"]["static_routes"], 0);
     let skipped = body["skipped"].as_array().unwrap();
     assert!(
-        skipped.iter().any(|s| s.as_str().unwrap_or("").contains("WAN_DHCP")),
+        skipped
+            .iter()
+            .any(|s| s.as_str().unwrap_or("").contains("WAN_DHCP")),
         "dynamic gateway should be reported in skipped: {skipped:?}"
     );
 }
@@ -437,7 +460,11 @@ async fn preview_returns_dry_run_plan_with_translated_items() {
 
     // The medium fixture has 4 rules — one is a floating rule across 2
     // interfaces so the plan should show 5 entries.
-    assert_eq!(rules.len(), 5, "expected 5 plan rules (one floating splits): {rules:?}");
+    assert_eq!(
+        rules.len(),
+        5,
+        "expected 5 plan rules (one floating splits): {rules:?}"
+    );
     // The lanip-keyword rule should carry a skip_reason.
     let lanip_rule = rules
         .iter()
@@ -449,7 +476,10 @@ async fn preview_returns_dry_run_plan_with_translated_items() {
     assert_eq!(aliases.len(), 2);
     // NAT plan covers port-forward + outbound.
     assert!(nat.iter().any(|n| n["kind"] == "dnat"));
-    assert!(nat.iter().any(|n| n["kind"] == "masquerade" || n["kind"] == "snat"));
+    assert!(
+        nat.iter()
+            .any(|n| n["kind"] == "masquerade" || n["kind"] == "snat")
+    );
     // One route is in the fixture.
     assert_eq!(routes.len(), 1);
 }
@@ -465,7 +495,9 @@ async fn import_creates_pre_import_snapshot() {
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
-    let version = body["pre_import_version"].as_i64().expect("snapshot version");
+    let version = body["pre_import_version"]
+        .as_i64()
+        .expect("snapshot version");
 
     // H6: snapshot is in config history.
     let history = server
@@ -511,7 +543,9 @@ async fn pre_import_snapshot_restores_clean_baseline() {
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
-    let pre_version = body["pre_import_version"].as_i64().expect("snapshot version");
+    let pre_version = body["pre_import_version"]
+        .as_i64()
+        .expect("snapshot version");
     let imported_rule_count = body["applied"]["rules"].as_u64().unwrap_or(0);
     assert!(
         imported_rule_count > 0,
@@ -552,5 +586,8 @@ async fn pre_import_snapshot_restores_clean_baseline() {
         .or_else(|| aliases.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    assert_eq!(alias_count, 0, "imported aliases must be gone after restore");
+    assert_eq!(
+        alias_count, 0,
+        "imported aliases must be gone after restore"
+    );
 }

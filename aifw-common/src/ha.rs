@@ -142,7 +142,11 @@ impl CarpVip {
     /// command where `[0]` is the executable and the rest are its arguments.
     /// Pass them directly to `tokio::process::Command::new(&argv[0]).args(&argv[1..])`.
     pub fn to_ifconfig_argv(&self, timing: CarpTiming) -> Vec<Vec<String>> {
-        let af = if self.virtual_ip.is_ipv4() { "inet" } else { "inet6" };
+        let af = if self.virtual_ip.is_ipv4() {
+            "inet"
+        } else {
+            "inet6"
+        };
         vec![vec![
             "ifconfig".to_string(),
             self.interface.to_string(),

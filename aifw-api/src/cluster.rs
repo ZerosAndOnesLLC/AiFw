@@ -6,10 +6,10 @@ use aifw_common::{
     HealthCheckType, Interface, PfsyncConfig,
 };
 use axum::{
+    Extension, Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{get, post, put},
-    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -19,7 +19,6 @@ use uuid::Uuid;
 /// Only requests authenticated with this key are accepted on the
 /// `/cluster/internal/*` endpoints.
 const DAEMON_LOOPBACK_KEY_NAME: &str = "aifw-daemon-loopback";
-
 
 pub fn read_routes() -> Router<AppState> {
     Router::new()
@@ -92,10 +91,7 @@ pub struct StatusResponse {
 async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
     // Fetch nodes + local role first so we can identify the peer address,
     // then fan out state-count and ping concurrently.
-    let (role, nodes_result) = tokio::join!(
-        read_local_role(),
-        state.cluster_engine.list_nodes(),
-    );
+    let (role, nodes_result) = tokio::join!(read_local_role(), state.cluster_engine.list_nodes(),);
 
     let peer_addr = match &nodes_result {
         Ok(nodes) => {
@@ -106,15 +102,12 @@ async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse
     };
 
     // Fan out: pfsync state count + peer ping run concurrently.
-    let (pfsync_state_count, peer_reachable) = tokio::join!(
-        pfsync_state_count(),
-        async move {
-            match peer_addr {
-                Some(addr) => ping_once(&addr).await,
-                None => false,
-            }
-        },
-    );
+    let (pfsync_state_count, peer_reachable) = tokio::join!(pfsync_state_count(), async move {
+        match peer_addr {
+            Some(addr) => ping_once(&addr).await,
+            None => false,
+        }
+    },);
 
     let last_snapshot_hash = state
         .cluster_engine
@@ -322,9 +315,7 @@ async fn delete_carp(State(s): State<AppState>, Path(id): Path<Uuid>) -> StatusC
     }
 }
 
-async fn get_pfsync(
-    State(s): State<AppState>,
-) -> Result<Json<Option<PfsyncConfig>>, StatusCode> {
+async fn get_pfsync(State(s): State<AppState>) -> Result<Json<Option<PfsyncConfig>>, StatusCode> {
     s.cluster_engine
         .get_pfsync()
         .await
@@ -768,10 +759,7 @@ async fn is_carp_master_locally() -> bool {
     aifw_core::is_local_master().await
 }
 
-async fn apply_snapshot_data(
-    state: &AppState,
-    body: &str,
-) -> Result<String, anyhow::Error> {
+async fn apply_snapshot_data(state: &AppState, body: &str) -> Result<String, anyhow::Error> {
     let hash = aifw_core::sha256_hex(body);
     crate::backup::apply_cluster_snapshot(state, body).await?;
     Ok(hash)
@@ -833,10 +821,7 @@ struct CertPushReq {
     private_key_pem: String,
 }
 
-async fn cert_push(
-    State(s): State<AppState>,
-    Json(r): Json<CertPushReq>,
-) -> StatusCode {
+async fn cert_push(State(s): State<AppState>, Json(r): Json<CertPushReq>) -> StatusCode {
     // Master never accepts cert pushes — defends against a stale standby
     // pushing back during a network partition.
     if aifw_core::is_local_master().await {
@@ -881,14 +866,10 @@ struct HealthSummary {
 }
 
 async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>, StatusCode> {
-    let nodes = s
-        .cluster_engine
-        .list_nodes()
-        .await
-        .map_err(|e| {
-            tracing::warn!(?e, "health_summary: list_nodes");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let nodes = s.cluster_engine.list_nodes().await.map_err(|e| {
+        tracing::warn!(?e, "health_summary: list_nodes");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let local_role_str = read_local_role().await;
     let local_role = ClusterRole::parse(&local_role_str).unwrap_or(ClusterRole::Standalone);
@@ -971,7 +952,11 @@ async fn generate_loopback_key(
         None => {
             // Create a locked system user — no password, no login.
             let uid = Uuid::new_v4().to_string();
-            let dummy = crate::auth::hash_password(&format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()))?;
+            let dummy = crate::auth::hash_password(&format!(
+                "{}{}",
+                Uuid::new_v4().simple(),
+                Uuid::new_v4().simple()
+            ))?;
             sqlx::query(
                 "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, created_at) \
                  VALUES (?1, 'aifw-daemon', ?2, 0, 'system', ?3)",

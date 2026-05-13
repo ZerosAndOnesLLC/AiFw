@@ -1493,7 +1493,9 @@ mod tests {
             allow_registration: true,
             password_min_length: 8,
         };
-        let state = crate::create_app_state_in_memory(auth_settings).await.unwrap();
+        let state = crate::create_app_state_in_memory(auth_settings)
+            .await
+            .unwrap();
         // apply_cluster_snapshot queries ids_suppressions and ids_rules;
         // run the IDS migration so those tables exist in the in-memory DB.
         aifw_ids::IdsEngine::migrate(&state.pool).await.unwrap();
@@ -1564,7 +1566,9 @@ mod tests {
             allow_registration: true,
             password_min_length: 8,
         };
-        let state = crate::create_app_state_in_memory(auth_settings).await.unwrap();
+        let state = crate::create_app_state_in_memory(auth_settings)
+            .await
+            .unwrap();
 
         // Insert a Primary (self) and a Secondary (peer) node.
         let self_node = ClusterNode::new(
@@ -1614,7 +1618,9 @@ mod tests {
             allow_registration: true,
             password_min_length: 8,
         };
-        let state = crate::create_app_state_in_memory(auth_settings).await.unwrap();
+        let state = crate::create_app_state_in_memory(auth_settings)
+            .await
+            .unwrap();
 
         // Insert three nodes (a common test-data scenario)
         for (name, ip, role) in [
@@ -1648,6 +1654,10 @@ mod tests {
             .collect();
         // All 3 nodes are Primary/Secondary, none match Standalone —
         // so all 3 would be in the peer list (but the short-circuit prevents this).
-        assert_eq!(peer_addrs.len(), 3, "without short-circuit all 3 nodes would appear");
+        assert_eq!(
+            peer_addrs.len(),
+            3,
+            "without short-circuit all 3 nodes would appear"
+        );
     }
 }

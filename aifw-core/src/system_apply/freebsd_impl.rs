@@ -94,10 +94,7 @@ pub async fn apply_ssh(i: &SshInput) -> ApplyReport {
     let mut warnings: Vec<String> = Vec::new();
 
     // --- sysrc sshd_enable=YES|NO ---
-    let sshd_kv = format!(
-        "sshd_enable={}",
-        if i.enabled { "YES" } else { "NO" }
-    );
+    let sshd_kv = format!("sshd_enable={}", if i.enabled { "YES" } else { "NO" });
     if let Err(e) = run_sysrc_helper(&[&sshd_kv]).await {
         warnings.push(format!("sysrc sshd_enable failed: {}", e));
     }

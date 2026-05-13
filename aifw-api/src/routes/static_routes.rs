@@ -256,12 +256,7 @@ pub(crate) async fn apply_route_to_system(
             // end state, so treat it as a no-op. `route(8)` formats this as
             // "route: writing to routing socket: File exists" on FreeBSD.
             if err.contains("File exists") {
-                tracing::debug!(
-                    destination,
-                    gateway,
-                    fib,
-                    "route already present, skipping"
-                );
+                tracing::debug!(destination, gateway, fib, "route already present, skipping");
             } else {
                 tracing::warn!(destination, gateway, fib, error = %err, "route add failed");
             }
