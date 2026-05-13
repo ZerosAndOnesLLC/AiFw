@@ -34,6 +34,8 @@ anyhow = "1"
 sha2 = "0.10"
 hex = "0.4"
 dashmap = "6"
+nix = { workspace = true }
+libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 async-stream = "0.3"
 futures-util = "0.3"

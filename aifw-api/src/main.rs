@@ -14,6 +14,7 @@ mod iface;
 mod log_tail;
 mod metrics_series;
 mod multiwan;
+mod native_metrics;
 mod opnsense;
 mod plugins;
 mod reverse_proxy;

@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.95.34"
+version = "5.95.35"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -53,7 +53,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 ratatui = "0.30"
 crossterm = "0.29"
-nix = { version = "0.31", features = ["fs", "process", "socket"] }
+nix = { version = "0.31", features = ["fs", "process", "socket", "net", "fanotify", "feature", "hostname", "user"] }
 
 # Workspace-wide clippy lint posture. Stylistic-only lints are allowed —
 # documented engine constructors legitimately have many parameters, the

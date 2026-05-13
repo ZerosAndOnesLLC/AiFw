@@ -514,15 +514,11 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     }
     system.memory_breakdown = mem_cache.read().await.clone();
 
-    // Get per-interface byte counters via netstat -I and addresses via ifconfig
+    // Get per-interface byte counters via netstat -I; addresses come from
+    // native getifaddrs (single C-library walk instead of one ifconfig fork
+    // per interface).
     let mut interfaces = Vec::new();
-    let ifconfig_out = tokio::process::Command::new("ifconfig")
-        .arg("-l")
-        .output()
-        .await
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
+    let iface_infos = crate::native_metrics::iface_list();
 
     // Load interface roles (cached every 30 ticks)
     static IFACE_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -543,7 +539,8 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     }
     let roles = role_cache.read().await;
 
-    for iface_name in ifconfig_out.split_whitespace() {
+    for info in &iface_infos {
+        let iface_name = info.name.as_str();
         if iface_name.starts_with("lo")
             || iface_name.starts_with("pflog")
             || iface_name.starts_with("enc")
@@ -552,55 +549,8 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
             continue;
         }
 
-        // Get address + subnet via ifconfig <iface>
-        let (address, subnet) = if let Ok(ifc) = tokio::process::Command::new("ifconfig")
-            .arg(iface_name)
-            .output()
-            .await
-        {
-            let out = String::from_utf8_lossy(&ifc.stdout);
-            let mut addr = None;
-            let mut sn = None;
-            for line in out.lines() {
-                let trimmed = line.trim();
-                if let Some(rest) = trimmed.strip_prefix("inet ") {
-                    // "inet 10.0.0.1 netmask 0xffffff00 broadcast 10.0.0.255"
-                    let parts: Vec<&str> = rest.split_whitespace().collect();
-                    if !parts.is_empty() {
-                        addr = Some(parts[0].to_string());
-                        // Convert hex netmask to CIDR subnet
-                        if let Some(mask_hex) = parts
-                            .iter()
-                            .position(|&p| p == "netmask")
-                            .and_then(|i| parts.get(i + 1))
-                            && let Ok(mask) =
-                                u32::from_str_radix(mask_hex.trim_start_matches("0x"), 16)
-                        {
-                            let cidr = mask.count_ones();
-                            let ip: u32 = parts[0]
-                                .split('.')
-                                .filter_map(|o| o.parse::<u32>().ok())
-                                .enumerate()
-                                .fold(0u32, |acc, (i, o)| acc | (o << (24 - i * 8)));
-                            let net = ip & mask;
-                            sn = Some(format!(
-                                "{}.{}.{}.{}/{}",
-                                net >> 24,
-                                (net >> 16) & 0xff,
-                                (net >> 8) & 0xff,
-                                net & 0xff,
-                                cidr
-                            ));
-                        }
-                    }
-                    break;
-                }
-            }
-            (addr, sn)
-        } else {
-            (None, None)
-        };
-
+        let address = info.address.clone();
+        let subnet = info.subnet.clone();
         let role = roles.get(iface_name).cloned();
 
         if let Ok(output) = tokio::process::Command::new("netstat")
@@ -798,31 +748,15 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
 }
 
 async fn collect_system_metrics() -> SystemPayload {
+    use crate::native_metrics::sysctl;
     use tokio::process::Command;
 
-    // CPU usage via kern.cp_time delta
+    // CPU usage via kern.cp_time delta — native sysctlbyname; no fork.
     let cpu_usage = {
         use std::sync::Mutex;
         static PREV_CP: Mutex<Option<[u64; 5]>> = Mutex::new(None);
 
-        let out = Command::new("sysctl")
-            .args(["-n", "kern.cp_time"])
-            .output()
-            .await
-            .ok();
-        let cur: Option<[u64; 5]> = out.and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let v: Vec<u64> = s
-                .split_whitespace()
-                .filter_map(|x| x.parse().ok())
-                .collect();
-            if v.len() >= 5 {
-                Some([v[0], v[1], v[2], v[3], v[4]])
-            } else {
-                None
-            }
-        });
-
+        let cur: Option<[u64; 5]> = sysctl::read_u64_array("kern.cp_time");
         if let Some(cur) = cur {
             let mut prev_lock = PREV_CP.lock().expect("lock poisoned");
             let pct = if let Some(prev) = *prev_lock {
@@ -843,138 +777,42 @@ async fn collect_system_metrics() -> SystemPayload {
         }
     };
 
-    // Memory via sysctl
-    let (mem_total, mem_used, mem_pct) = async {
-        let total_out = Command::new("sysctl")
-            .args(["-n", "hw.physmem"])
-            .output()
-            .await
-            .ok()?;
-        let total: u64 = String::from_utf8_lossy(&total_out.stdout)
-            .trim()
-            .parse()
-            .ok()?;
-
-        let page_size_out = Command::new("sysctl")
-            .args(["-n", "hw.pagesize"])
-            .output()
-            .await
-            .ok()?;
-        let page_size: u64 = String::from_utf8_lossy(&page_size_out.stdout)
-            .trim()
-            .parse()
-            .ok()?;
-
-        let free_out = Command::new("sysctl")
-            .args(["-n", "vm.stats.vm.v_free_count"])
-            .output()
-            .await
-            .ok()?;
-        let free_pages: u64 = String::from_utf8_lossy(&free_out.stdout)
-            .trim()
-            .parse()
-            .ok()?;
-
-        let inactive_out = Command::new("sysctl")
-            .args(["-n", "vm.stats.vm.v_inactive_count"])
-            .output()
-            .await
-            .ok()?;
-        let inactive_pages: u64 = String::from_utf8_lossy(&inactive_out.stdout)
-            .trim()
-            .parse()
-            .ok()?;
-
-        let cache_out = Command::new("sysctl")
-            .args(["-n", "vm.stats.vm.v_cache_count"])
-            .output()
-            .await
-            .ok()
-            .and_then(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .trim()
-                    .parse::<u64>()
-                    .ok()
-            })
-            .unwrap_or(0);
-
-        let available = (free_pages + inactive_pages + cache_out) * page_size;
+    // Memory via native sysctlbyname — no fork.
+    let (mem_total, mem_used, mem_pct) = {
+        let total = sysctl::read_u64("hw.physmem").unwrap_or(0);
+        let page_size = sysctl::read_u64("hw.pagesize").unwrap_or(4096);
+        let free_pages = sysctl::read_u64("vm.stats.vm.v_free_count").unwrap_or(0);
+        let inactive_pages = sysctl::read_u64("vm.stats.vm.v_inactive_count").unwrap_or(0);
+        let cache_pages = sysctl::read_u64("vm.stats.vm.v_cache_count").unwrap_or(0);
+        let available = (free_pages + inactive_pages + cache_pages) * page_size;
         let used = total.saturating_sub(available);
         let pct = if total > 0 {
             (used as f64 / total as f64) * 100.0
         } else {
             0.0
         };
-        Some((total, used, pct))
-    }
-    .await
-    .unwrap_or((0, 0, 0.0));
+        (total, used, pct)
+    };
 
-    // Disk usage via df
-    let disks = async {
-        let out = Command::new("df")
-            .args(["-k", "-t", "ufs,zfs"])
-            .output()
-            .await
-            .ok()?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let mut disks = Vec::new();
-        for line in stdout.lines().skip(1) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 6 {
-                let total: u64 = parts[1].parse().unwrap_or(0) * 1024; // KB to bytes
-                let used: u64 = parts[2].parse().unwrap_or(0) * 1024;
-                let pct_str = parts[4].trim_end_matches('%');
-                let pct: f64 = pct_str.parse().unwrap_or(0.0);
-                disks.push(DiskPayload {
-                    filesystem: parts[0].to_string(),
-                    mount: parts[5].to_string(),
-                    total,
-                    used,
-                    pct,
-                });
-            }
-        }
-        Some(disks)
-    }
-    .await
-    .unwrap_or_default();
+    // Disk usage via statvfs (native; no `df` fork).
+    let disks: Vec<DiskPayload> = crate::native_metrics::disk_usage()
+        .into_iter()
+        .map(|d| DiskPayload {
+            filesystem: d.filesystem,
+            mount: d.mount,
+            total: d.total,
+            used: d.used,
+            pct: d.pct,
+        })
+        .collect();
 
-    // Uptime
-    let uptime_secs = async {
-        let out = Command::new("sysctl")
-            .args(["-n", "kern.boottime"])
-            .output()
-            .await
-            .ok()?;
-        let s = String::from_utf8_lossy(&out.stdout);
-        // Format: "{ sec = 1711561045, usec = 123456 } Thu Mar 27..."
-        let sec_str = s.split("sec = ").nth(1)?.split(',').next()?;
-        let boot: u64 = sec_str.trim().parse().ok()?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs();
-        Some(now.saturating_sub(boot))
-    }
-    .await
-    .unwrap_or(0);
+    // Uptime via native kern.boottime sysctlbyname / /proc/uptime.
+    let uptime_secs = crate::native_metrics::uptime_secs();
 
-    // Hostname
-    let hostname = async {
-        let out = Command::new("hostname").output().await.ok()?;
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }
-    .await
-    .unwrap_or_else(|| "aifw".to_string());
-
-    // OS version
-    let os_version = async {
-        let out = Command::new("freebsd-version").output().await.ok()?;
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }
-    .await
-    .unwrap_or_else(|| "FreeBSD".to_string());
+    // Hostname + OS version are cached once at startup (gethostname(3) +
+    // kern.osrelease) — no per-tick subprocess.
+    let hostname = crate::native_metrics::hostname();
+    let os_version = crate::native_metrics::os_version();
 
     // DNS servers
     let dns_servers = tokio::fs::read_to_string("/etc/resolv.conf")
@@ -1064,47 +902,20 @@ async fn collect_system_metrics() -> SystemPayload {
 
 /// Collect memory breakdown: OS categories, process RSS, IDS buffer, metrics, pf states, DB, ARC.
 pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
+    use crate::native_metrics::sysctl;
     use tokio::process::Command;
 
-    // OS-level memory categories via sysctl (FreeBSD page-based)
-    let page_size = async {
-        let out = Command::new("sysctl")
-            .args(["-n", "hw.pagesize"])
-            .output()
-            .await
-            .ok()?;
-        String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse::<u64>()
-            .ok()
-    }
-    .await
-    .unwrap_or(4096);
-    let pages_to_mb =
-        |key: &str| -> std::pin::Pin<Box<dyn std::future::Future<Output = f64> + Send + '_>> {
-            let key = key.to_string();
-            Box::pin(async move {
-                let out = Command::new("sysctl")
-                    .args(["-n", &key])
-                    .output()
-                    .await
-                    .ok();
-                let pages = out
-                    .and_then(|o| {
-                        String::from_utf8_lossy(&o.stdout)
-                            .trim()
-                            .parse::<u64>()
-                            .ok()
-                    })
-                    .unwrap_or(0);
-                (pages * page_size) as f64 / (1024.0 * 1024.0)
-            })
-        };
-    let active_mb = pages_to_mb("vm.stats.vm.v_active_count").await;
-    let inactive_mb = pages_to_mb("vm.stats.vm.v_inactive_count").await;
-    let wired_mb = pages_to_mb("vm.stats.vm.v_wire_count").await;
-    let cached_mb = pages_to_mb("vm.stats.vm.v_cache_count").await;
-    let free_mb = pages_to_mb("vm.stats.vm.v_free_count").await;
+    // OS-level memory categories via native sysctlbyname — no fork.
+    let page_size = sysctl::read_u64("hw.pagesize").unwrap_or(4096);
+    let pages_to_mb = |key: &str| -> f64 {
+        let pages = sysctl::read_u64(key).unwrap_or(0);
+        (pages * page_size) as f64 / (1024.0 * 1024.0)
+    };
+    let active_mb = pages_to_mb("vm.stats.vm.v_active_count");
+    let inactive_mb = pages_to_mb("vm.stats.vm.v_inactive_count");
+    let wired_mb = pages_to_mb("vm.stats.vm.v_wire_count");
+    let cached_mb = pages_to_mb("vm.stats.vm.v_cache_count");
+    let free_mb = pages_to_mb("vm.stats.vm.v_free_count");
 
     // Process RSS via ps (lightweight)
     let get_rss =
@@ -1173,21 +984,10 @@ pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
         .map(|m| m.len() as f64 / (1024.0 * 1024.0))
         .unwrap_or(0.0);
 
-    // ZFS ARC
-    let arc_mb = async {
-        let out = Command::new("sysctl")
-            .args(["-n", "kstat.zfs.misc.arcstats.size"])
-            .output()
-            .await
-            .ok()?;
-        let bytes = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse::<u64>()
-            .ok()?;
-        Some(bytes as f64 / (1024.0 * 1024.0))
-    }
-    .await
-    .unwrap_or(0.0);
+    // ZFS ARC via native sysctlbyname.
+    let arc_mb = sysctl::read_u64("kstat.zfs.misc.arcstats.size")
+        .map(|b| b as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
 
     MemoryBreakdown {
         active_mb,
