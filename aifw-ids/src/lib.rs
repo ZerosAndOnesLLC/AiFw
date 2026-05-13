@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use aifw_common::ids::{IdsAlert, IdsConfig, IdsMode, IdsStats};
 use aifw_pf::PfBackend;
-use crossbeam::channel;
 use sqlx::SqlitePool;
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tracing::{error, info, warn};
 
 use crate::action::ActionEngine;
@@ -65,8 +65,10 @@ pub struct IdsEngine {
     action: Arc<ActionEngine>,
     alert_pipeline: Arc<AlertPipeline>,
     alert_buffer: Option<Arc<crate::output::memory::AlertBuffer>>,
-    alert_tx: channel::Sender<IdsAlert>,
-    alert_rx: channel::Receiver<IdsAlert>,
+    alert_tx: mpsc::Sender<IdsAlert>,
+    // tokio::sync::mpsc is single-consumer; take() the receiver out of the
+    // engine in start(). The Mutex wraps an Option so the take is interior.
+    alert_rx: AsyncMutex<Option<mpsc::Receiver<IdsAlert>>>,
     counters: Arc<EngineCounters>,
     running: Arc<AtomicBool>,
 }
@@ -140,7 +142,8 @@ impl IdsEngine {
             pipeline
         });
 
-        let (alert_tx, alert_rx) = channel::bounded(channel_cap);
+        let (alert_tx, alert_rx) = mpsc::channel(channel_cap);
+        let alert_rx = AsyncMutex::new(Some(alert_rx));
 
         let counters = Arc::new(EngineCounters::default());
         counters.start_time.store(
@@ -385,24 +388,22 @@ impl IdsEngine {
 
         info!(mode = %self.config.config().mode, "IDS engine starting");
 
-        // Start the alert output consumer
+        // Start the alert output consumer. We take the single mpsc receiver
+        // out of the engine and move it into the spawn — recv().await blocks
+        // until a sender pushes (zero polling, zero idle CPU).
         let pipeline = self.alert_pipeline.clone();
-        let rx = self.alert_rx.clone();
+        let mut rx = self
+            .alert_rx
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| IdsError::Config("alert receiver already taken".into()))?;
         let counters = self.counters.clone();
-        let running = self.running.clone();
         tokio::spawn(async move {
-            while running.load(Ordering::Relaxed) {
-                match rx.try_recv() {
-                    Ok(alert) => {
-                        counters.alerts_total.fetch_add(1, Ordering::Relaxed);
-                        if let Err(e) = pipeline.emit(&alert).await {
-                            error!("alert pipeline error: {e}");
-                        }
-                    }
-                    Err(channel::TryRecvError::Empty) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                    Err(channel::TryRecvError::Disconnected) => break,
+            while let Some(alert) = rx.recv().await {
+                counters.alerts_total.fetch_add(1, Ordering::Relaxed);
+                if let Err(e) = pipeline.emit(&alert).await {
+                    error!("alert pipeline error: {e}");
                 }
             }
         });
@@ -577,7 +578,7 @@ impl IdsEngine {
     }
 
     /// Get the alert sender for submitting alerts from worker threads.
-    pub fn alert_sender(&self) -> &channel::Sender<IdsAlert> {
+    pub fn alert_sender(&self) -> &mpsc::Sender<IdsAlert> {
         &self.alert_tx
     }
 
@@ -716,7 +717,7 @@ fn detect_network_interfaces() -> Vec<String> {
 fn capture_interface_worker(
     iface: &str,
     detection: &std::sync::Arc<detect::DetectionEngine>,
-    alert_tx: &channel::Sender<IdsAlert>,
+    alert_tx: &mpsc::Sender<IdsAlert>,
     counters: &std::sync::Arc<EngineCounters>,
     running: &std::sync::Arc<AtomicBool>,
     _is_ips: bool,

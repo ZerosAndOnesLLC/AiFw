@@ -35,7 +35,6 @@ serde_yaml_ng = "0.10"
 libc = "0.2"
 
 # Performance
-crossbeam = "0.8"
 dashmap = "6"
 smallvec = "1"
 
