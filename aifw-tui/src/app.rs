@@ -133,7 +133,7 @@ impl App {
             self.nat_rules = nat;
         }
         let _ = self.conntrack.refresh().await;
-        self.connections = self.conntrack.get_connections().await;
+        self.connections = self.conntrack.get_connections().await.to_vec();
         self.conntrack_stats = self.conntrack.stats().await;
         self.top_talkers = self.conntrack.top_talkers(10).await;
         if let Ok(entries) = self.rule_engine.audit().list(100).await {

@@ -1575,7 +1575,14 @@ async fn create_state_from_db(
         .migrate()
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
-    let conntrack = Arc::new(ConnectionTracker::new(pf.clone()));
+    let conntrack = Arc::new(
+        ConnectionTracker::new(pf.clone())
+            .with_poll_interval(std::time::Duration::from_secs(2)),
+    );
+    // Background poller refreshes the snapshot on a 2s cadence so every
+    // request and every WS tick is an atomic ArcSwap load instead of a
+    // fresh `pfctl -ss -vv` shell-out + 50k-state clone.
+    let _conntrack_poller = conntrack.start_polling();
     let cluster_engine = Arc::new(aifw_core::ClusterEngine::new(pool.clone(), pf.clone()));
     cluster_engine
         .migrate()

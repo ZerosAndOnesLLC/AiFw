@@ -413,8 +413,9 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    state.conntrack.refresh().await.map_err(|e| e.to_string())?;
-    let conns = state.conntrack.get_connections().await;
+    // conntrack snapshot — refreshed by the background polling task started
+    // at boot, so this is an atomic ArcSwap load (no syscall, no clone).
+    let conns = state.conntrack.snapshot();
 
     // Dispatch plugin hooks for new/closed connections. Skipped entirely when
     // no plugins are running — previously we paid for the HashSet diff
@@ -438,7 +439,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
             let prev_keys = prev_lock.read().await.clone();
 
             let mgr = state.plugin_manager.read().await;
-            for c in &conns {
+            for c in conns.iter() {
                 let key = (c.src_addr, c.src_port, c.dst_addr, c.dst_port);
                 if !prev_keys.contains(&key) {
                     let event = aifw_plugins::HookEvent {
