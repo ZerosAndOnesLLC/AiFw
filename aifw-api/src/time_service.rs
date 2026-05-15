@@ -30,6 +30,10 @@ pub struct ApiResponse<T: Serialize> {
     pub data: T,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TimeConfig {
     pub enabled: bool,
@@ -38,6 +42,11 @@ pub struct TimeConfig {
     pub clock_discipline: bool,
     pub clock_step_threshold_ms: f64,
     pub clock_panic_threshold_ms: f64,
+    // Defaults to true so payloads from older UI builds (which don't send
+    // this field) keep the cold-boot bypass enabled rather than silently
+    // turning it off.
+    #[serde(default = "default_true")]
+    pub clock_allow_initial_step: bool,
     // NTP server
     pub ntp_enabled: bool,
     pub ntp_listen: String,
@@ -72,7 +81,11 @@ impl Default for TimeConfig {
             log_level: "info".to_string(),
             clock_discipline: true,
             clock_step_threshold_ms: 128.0,
-            clock_panic_threshold_ms: 1000.0,
+            // Matches rTIME's new default (ntpd-style 1000s steady-state
+            // panic). Cold-boot offsets larger than this are handled by the
+            // clock_allow_initial_step bypass.
+            clock_panic_threshold_ms: 1_000_000.0,
+            clock_allow_initial_step: true,
             ntp_enabled: true,
             ntp_listen: "0.0.0.0:123".to_string(),
             ntp_interfaces: vec![],
@@ -173,7 +186,59 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         }
     }
 
+    // Upgrade stale-default values from older installs. The shipped default
+    // for clock_panic_threshold_ms used to be 1000 (1s), tight enough that a
+    // VM suspend would strand the clock past the panic clamp and force the
+    // user out via TOTP. Bump it to the new default for any row that still
+    // matches the old default; rows the operator changed are left alone.
+    let _ = sqlx::query(
+        "UPDATE time_config SET value = '1000000' \
+         WHERE key = 'clock_panic_threshold_ms' AND value = '1000'",
+    )
+    .execute(pool)
+    .await;
+
+    // The toml is fully derived from DB state, so regenerate it on every
+    // startup. This applies new defaults / new fields (e.g.,
+    // allow_initial_step) without operator action on updater installs. If
+    // the content changed and rtime is enabled, restart rtime so it picks up
+    // the new config immediately — otherwise stale on-disk config would keep
+    // the cold-boot bypass disabled until the next manual apply.
+    if let Err(e) = regenerate_toml_and_restart_if_changed(pool).await {
+        tracing::warn!(error = %e, "time_service: rtime config regen failed (non-fatal)");
+    }
+
     Ok(())
+}
+
+/// Compare the freshly generated toml against what's on disk. If different,
+/// write the new toml and, if rtime is enabled, restart it. Returns Ok(true)
+/// when a write happened. Errors are reported but never fatal — the API must
+/// still start even if /usr/local/etc/rtime isn't writable yet (e.g., during
+/// first-boot before aifw-setup has run).
+async fn regenerate_toml_and_restart_if_changed(
+    pool: &SqlitePool,
+) -> Result<bool, std::io::Error> {
+    let new_toml = generate_rtime_config(pool).await;
+    let existing = tokio::fs::read_to_string(RTIME_CONFIG_PATH).await.ok();
+    if existing.as_deref() == Some(new_toml.as_str()) {
+        return Ok(false);
+    }
+
+    tokio::fs::create_dir_all("/usr/local/etc/rtime").await?;
+    tokio::fs::write(RTIME_CONFIG_PATH, &new_toml).await?;
+
+    // Restart rtime so the new config takes effect, but only if the operator
+    // has enabled it. We don't enable it here — that's an explicit user
+    // action via the UI.
+    let config = load_config(pool).await;
+    if config.enabled {
+        let _ = aifw_core::sudo::service("rtime", "restart").await;
+        tracing::info!("time_service: rtime.toml regenerated and rtime restarted");
+    } else {
+        tracing::info!("time_service: rtime.toml regenerated (rtime disabled, no restart)");
+    }
+    Ok(true)
 }
 
 async fn save_key(pool: &SqlitePool, key: &str, value: &str) {
@@ -205,6 +270,7 @@ async fn load_config(pool: &SqlitePool) -> TimeConfig {
         clock_panic_threshold_ms: s("clock_panic_threshold_ms")
             .and_then(|v| v.parse().ok())
             .unwrap_or(d.clock_panic_threshold_ms),
+        clock_allow_initial_step: b("clock_allow_initial_step", d.clock_allow_initial_step),
         ntp_enabled: b("ntp_enabled", d.ntp_enabled),
         ntp_listen: s("ntp_listen").cloned().unwrap_or(d.ntp_listen),
         ntp_interfaces: s("ntp_interfaces")
@@ -280,6 +346,16 @@ pub async fn update_config(
         p,
         "clock_panic_threshold_ms",
         &c.clock_panic_threshold_ms.to_string(),
+    )
+    .await;
+    save_key(
+        p,
+        "clock_allow_initial_step",
+        if c.clock_allow_initial_step {
+            "true"
+        } else {
+            "false"
+        },
     )
     .await;
     save_key(
@@ -608,6 +684,10 @@ async fn generate_rtime_config(pool: &SqlitePool) -> String {
     toml.push_str(&format!(
         "panic_threshold_ms = {}\n",
         c.clock_panic_threshold_ms
+    ));
+    toml.push_str(&format!(
+        "allow_initial_step = {}\n",
+        c.clock_allow_initial_step
     ));
     toml.push_str("interface = \"system\"\n\n");
 
