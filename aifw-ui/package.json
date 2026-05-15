@@ -1,6 +1,6 @@
 {
   "name": "aifw-ui",
-  "version": "5.96.3",
+  "version": "5.96.4",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "lucide-react": "^1.7.0",
-    "next": "^16.2.3",
+    "next": "^16.2.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^3.8.1"
