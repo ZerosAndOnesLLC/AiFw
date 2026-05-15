@@ -135,7 +135,7 @@ export default function InterfacesPage() {
   }, []);
 
   useEffect(() => {
-    fetchInterfaces();
+    queueMicrotask(fetchInterfaces);
     const interval = setInterval(fetchInterfaces, 10000);
     return () => clearInterval(interval);
   }, [fetchInterfaces]);

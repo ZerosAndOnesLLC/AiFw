@@ -62,7 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    refresh();
+    queueMicrotask(refresh);
     // Re-check on storage changes (e.g. login/logout in another tab)
     const handler = () => refresh();
     window.addEventListener("storage", handler);

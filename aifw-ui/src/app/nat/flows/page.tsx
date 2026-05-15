@@ -183,7 +183,7 @@ export default function NatFlowsPage() {
       }
     }
     prevBytes.current = Object.fromEntries(ifaces.map(i => [i.name, { in: i.bytes_in, out: i.bytes_out }]));
-    if (Object.keys(newRates).length > 0) setRates(newRates);
+    if (Object.keys(newRates).length > 0) queueMicrotask(() => setRates(newRates));
   }, [ws.status, ifaces]);
 
   // Compute per-subnet live rates from connection byte totals
@@ -208,7 +208,7 @@ export default function NatFlowsPage() {
       }
     }
     prevSubnetBytes.current = subnets;
-    if (Object.keys(newRates).length > 0) setSubnetLiveRates(newRates);
+    if (Object.keys(newRates).length > 0) queueMicrotask(() => setSubnetLiveRates(newRates));
   }, [ws.status, connections]);
 
   // Only include private (LAN) IPs as hosts

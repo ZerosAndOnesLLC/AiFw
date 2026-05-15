@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useWs } from "@/context/WsContext";
 
 interface BlockedEntry {
@@ -44,6 +44,11 @@ export default function BlockedTrafficPage() {
   const loading = !ws.connected;
 
   const [timePeriod, setTimePeriod] = useState(24);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => queueMicrotask(() => setNow(Date.now())), 30_000);
+    return () => clearInterval(id);
+  }, []);
   const [filterProto, setFilterProto] = useState<string>("all");
   const [filterIface, setFilterIface] = useState<string>("all");
   const [filterDir, setFilterDir] = useState<string>("all");
@@ -63,9 +68,9 @@ export default function BlockedTrafficPage() {
   // Available values for dropdowns (from all time-filtered data)
   const timeFiltered = useMemo(() => {
     if (timePeriod === 0) return allEntries;
-    const cutoff = Date.now() - timePeriod * 3600_000;
+    const cutoff = now - timePeriod * 3600_000;
     return allEntries.filter(e => parseTimestamp(e.timestamp) >= cutoff);
-  }, [allEntries, timePeriod]);
+  }, [allEntries, timePeriod, now]);
 
   const interfaces = useMemo(() => [...new Set(timeFiltered.map(e => e.interface).filter(Boolean))], [timeFiltered]);
   const protocols = useMemo(() => {

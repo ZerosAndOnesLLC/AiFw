@@ -50,7 +50,7 @@ export default function PluginsPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { fetchPlugins(); }, [fetchPlugins]);
+  useEffect(() => { queueMicrotask(fetchPlugins); }, [fetchPlugins]);
 
   const togglePlugin = async (name: string, enabled: boolean) => {
     try {

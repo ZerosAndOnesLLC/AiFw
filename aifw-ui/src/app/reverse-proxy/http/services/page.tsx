@@ -663,7 +663,7 @@ export default function HttpServicesPage() {
   }, []);
 
   useEffect(() => {
-    fetchServices();
+    queueMicrotask(fetchServices);
   }, [fetchServices]);
 
   /* ── Modal helpers ─────────────────── */

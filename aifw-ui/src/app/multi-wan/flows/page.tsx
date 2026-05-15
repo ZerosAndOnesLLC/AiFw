@@ -38,7 +38,7 @@ export default function FlowsPage() {
   }, []);
 
   useEffect(() => {
-    refresh();
+    queueMicrotask(refresh);
     if (!liveRefresh) return;
     const t = setInterval(refresh, 3000);
     return () => clearInterval(t);

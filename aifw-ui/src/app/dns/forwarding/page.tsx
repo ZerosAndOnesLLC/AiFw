@@ -30,8 +30,7 @@ export default function DnsForwardingPage() {
   const [dotEnabled, setDotEnabled] = useState(false);
   const [dotUpstream, setDotUpstream] = useState<string[]>([]);
   const [newDot, setNewDot] = useState("");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [fullConfig, setFullConfig] = useState<Record<string, any> | null>(null);
+  const [fullConfig, setFullConfig] = useState<Record<string, unknown> | null>(null);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });

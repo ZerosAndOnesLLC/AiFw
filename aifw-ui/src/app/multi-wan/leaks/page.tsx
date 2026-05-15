@@ -52,7 +52,7 @@ export default function LeaksPage() {
   }, []);
 
   useEffect(() => {
-    refresh();
+    queueMicrotask(refresh);
   }, [refresh]);
 
   function validate() {

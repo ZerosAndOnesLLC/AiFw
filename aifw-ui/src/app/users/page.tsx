@@ -275,8 +275,10 @@ export default function UsersPage() {
   }, []);
 
   useEffect(() => {
-    fetchUsers();
-    fetchRoles();
+    queueMicrotask(() => {
+      fetchUsers();
+      fetchRoles();
+    });
   }, [fetchUsers, fetchRoles]);
 
   // ── User handlers ──

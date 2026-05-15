@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
@@ -238,7 +239,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
       {/* Logo — links to About page */}
       <div className="border-b border-[var(--border)] flex items-center justify-between bg-black">
         <Link href="/about" className="flex-1 flex items-center justify-center py-2 hover:opacity-90 transition-opacity">
-          <img src="/logo-sidebar.png" alt="AiFw" className="w-[70%]" />
+          <Image src="/logo-sidebar.png" alt="AiFw" width={220} height={44} className="w-[70%] h-auto" priority unoptimized />
         </Link>
         {onClose && (
           <button onClick={onClose} className="lg:hidden text-[var(--text-muted)] hover:text-[var(--text-primary)]">

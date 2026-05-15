@@ -104,7 +104,7 @@ export default function VlansPage() {
   }, [fetchVlans, fetchInterfaces]);
 
   useEffect(() => {
-    fetchAll();
+    queueMicrotask(fetchAll);
   }, [fetchAll]);
 
   function openAdd() {

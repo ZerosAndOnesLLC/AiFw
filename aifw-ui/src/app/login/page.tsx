@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -66,7 +67,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <img src="/AiFw-1.png" alt="AiFw" className="h-48 mx-auto mb-2" />
+          <Image src="/AiFw-1.png" alt="AiFw" width={384} height={192} className="h-48 w-auto mx-auto mb-2" priority unoptimized />
         </div>
 
         {!totpRequired ? (

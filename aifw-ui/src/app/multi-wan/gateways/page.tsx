@@ -88,7 +88,7 @@ export default function GatewaysPage() {
   }, []);
 
   useEffect(() => {
-    refresh();
+    queueMicrotask(refresh);
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
   }, [refresh]);

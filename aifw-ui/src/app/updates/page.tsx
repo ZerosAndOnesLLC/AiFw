@@ -176,10 +176,12 @@ export default function UpdatesPage() {
   }, []);
 
   useEffect(() => {
-    // Load fast endpoints first, then slow ones in background
-    Promise.all([fetchSchedule(), fetchHistory()]).finally(() => setLoading(false));
-    fetchStatus();
-    fetchAifwStatus();
+    queueMicrotask(() => {
+      // Load fast endpoints first, then slow ones in background
+      Promise.all([fetchSchedule(), fetchHistory()]).finally(() => setLoading(false));
+      fetchStatus();
+      fetchAifwStatus();
+    });
   }, [fetchStatus, fetchSchedule, fetchHistory, fetchAifwStatus]);
 
   // Poll status while checking or installing
@@ -564,7 +566,7 @@ export default function UpdatesPage() {
           <p className="text-sm text-[var(--text-muted)]">
             The system will go down in about a minute. The page will become unreachable
             until the appliance finishes booting (typically 1–2 minutes).
-            Refresh manually once it's back.
+            Refresh manually once it&apos;s back.
           </p>
           <p className="text-xs text-[var(--text-muted)]">
             To cancel, run <code className="font-mono">shutdown -c</code> on the console.

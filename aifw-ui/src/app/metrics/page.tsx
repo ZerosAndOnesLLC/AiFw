@@ -164,9 +164,9 @@ export default function MetricsPage() {
     }
   }, [selected, rangeSecs]);
 
-  useEffect(() => { fetchList(); }, [fetchList]);
+  useEffect(() => { queueMicrotask(fetchList); }, [fetchList]);
   useEffect(() => {
-    fetchSeries();
+    queueMicrotask(fetchSeries);
     const id = setInterval(fetchSeries, refreshMs);
     return () => clearInterval(id);
   }, [fetchSeries, refreshMs]);

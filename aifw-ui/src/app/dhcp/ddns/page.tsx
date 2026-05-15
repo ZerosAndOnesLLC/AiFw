@@ -59,7 +59,7 @@ export default function DdnsConfigPage() {
     }
   }, []);
 
-  useEffect(() => { fetchConfig(); }, [fetchConfig]);
+  useEffect(() => { queueMicrotask(fetchConfig); }, [fetchConfig]);
 
   const saveConfig = async () => {
     setSaving(true);

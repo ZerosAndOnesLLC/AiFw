@@ -112,7 +112,7 @@ export default function ThreatsPage() {
   }, []);
 
   useEffect(() => {
-    fetchAlerts();
+    queueMicrotask(fetchAlerts);
     const interval = setInterval(fetchAlerts, 15_000);
     return () => clearInterval(interval);
   }, [fetchAlerts]);

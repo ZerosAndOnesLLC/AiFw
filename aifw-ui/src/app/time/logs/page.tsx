@@ -32,7 +32,7 @@ export default function TimeLogsPage() {
   }, [lines, search]);
 
   useEffect(() => {
-    fetchLogs();
+    queueMicrotask(fetchLogs);
     if (!autoRefresh) return;
     const interval = setInterval(fetchLogs, 5000);
     return () => clearInterval(interval);

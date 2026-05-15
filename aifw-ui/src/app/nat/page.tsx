@@ -74,7 +74,7 @@ export default function NatPage() {
   }, []);
 
   useEffect(() => {
-    fetchRules();
+    queueMicrotask(fetchRules);
   }, [fetchRules]);
 
   const resetForm = () => {

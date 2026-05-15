@@ -160,7 +160,7 @@ function CertsTab() {
     ]);
     setCerts(c); setProviders(p);
   }, []);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   function showToast(ok: boolean, msg: string) {
     setToast({ ok, msg });
@@ -357,7 +357,7 @@ function ExportTargetsPanel({ certId }: { certId: number }) {
   const reload = useCallback(async () => {
     setTargets(await api<ExportTarget[]>("GET", `/api/v1/acme/certs/${certId}/targets`));
   }, [certId]);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   async function remove(id: number) {
     if (!confirm("Delete this export target?")) return;
@@ -397,22 +397,24 @@ function AddExportTargetModal({ certId, onClose, onCreated }: { certId: number; 
 
   // Sane default config per kind.
   useEffect(() => {
-    if (kind === "file") {
-      setCfg(JSON.stringify({
-        cert_path: "/usr/local/etc/myservice/fullchain.pem",
-        key_path: "/usr/local/etc/myservice/key.pem",
-        owner: "myservice:myservice",
-        mode: "0644",
-        key_mode: "0600",
-      }, null, 2));
-    } else if (kind === "webhook") {
-      setCfg(JSON.stringify({
-        url: "https://my-config-server.example.com/cert-renewed",
-        auth_header: "Bearer ...",
-      }, null, 2));
-    } else {
-      setCfg(JSON.stringify({ reload_service: "aifw_api" }, null, 2));
-    }
+    queueMicrotask(() => {
+      if (kind === "file") {
+        setCfg(JSON.stringify({
+          cert_path: "/usr/local/etc/myservice/fullchain.pem",
+          key_path: "/usr/local/etc/myservice/key.pem",
+          owner: "myservice:myservice",
+          mode: "0644",
+          key_mode: "0600",
+        }, null, 2));
+      } else if (kind === "webhook") {
+        setCfg(JSON.stringify({
+          url: "https://my-config-server.example.com/cert-renewed",
+          auth_header: "Bearer ...",
+        }, null, 2));
+      } else {
+        setCfg(JSON.stringify({ reload_service: "aifw_api" }, null, 2));
+      }
+    });
   }, [kind]);
 
   async function submit() {
@@ -463,7 +465,7 @@ function ProvidersTab() {
   const reload = useCallback(async () => {
     setProviders(await api<DnsProvider[]>("GET", "/api/v1/acme/dns-providers"));
   }, []);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   function showToast(ok: boolean, msg: string) {
     setToast({ ok, msg }); setTimeout(() => setToast(null), 6000);
@@ -834,7 +836,7 @@ function AccountTab() {
     const a = await api<Account>("GET", "/api/v1/acme/account");
     setAcct(a); setEmail(a.contact_email); setDirUrl(a.directory_url);
   }, []);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   async function save() {
     setBusy(true);

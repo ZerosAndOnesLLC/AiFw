@@ -120,7 +120,7 @@ export default function ClusterDashboard() {
   };
 
   useEffect(() => {
-    refresh().catch(() => {}); // initial fetch only — WS events drive subsequent updates
+    queueMicrotask(() => { refresh().catch(() => {}); }); // initial fetch only — WS events drive subsequent updates
 
     // WebSocket for live cluster.metrics + cluster.role_changed.
     // Uses a single-use ticket from POST /auth/ws-ticket so the JWT
@@ -179,7 +179,6 @@ export default function ClusterDashboard() {
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       if (wsRef.current) wsRef.current.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!status) {

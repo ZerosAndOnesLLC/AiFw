@@ -80,14 +80,16 @@ export default function PortForwardPage() {
   }, []);
 
   useEffect(() => {
-    fetchRules();
-    fetchInterfaces();
+    queueMicrotask(() => {
+      fetchRules();
+      fetchInterfaces();
+    });
   }, [fetchRules, fetchInterfaces]);
 
   // Set default interface once loaded
   useEffect(() => {
     if (interfaces.length > 0 && !form.interface && !editingId) {
-      setForm((f) => ({ ...f, interface: interfaces[0].name }));
+      queueMicrotask(() => setForm((f) => ({ ...f, interface: interfaces[0].name })));
     }
   }, [interfaces, form.interface, editingId]);
 

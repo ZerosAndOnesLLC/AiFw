@@ -168,7 +168,7 @@ export default function PoliciesPage() {
   }, []);
 
   useEffect(() => {
-    refresh();
+    queueMicrotask(refresh);
     const t = setInterval(refresh, 15_000);
     return () => clearInterval(t);
   }, [refresh]);

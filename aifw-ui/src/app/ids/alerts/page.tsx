@@ -123,8 +123,10 @@ export default function IdsAlertsPage() {
   }, [page, severityFilter, srcIpFilter, ackFilter, clearFeedback]);
 
   useEffect(() => {
-    setLoading(true);
-    fetchAlerts();
+    queueMicrotask(() => {
+      setLoading(true);
+      fetchAlerts();
+    });
   }, [fetchAlerts]);
 
   async function handleAcknowledge(id: string) {

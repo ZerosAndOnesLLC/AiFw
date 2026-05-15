@@ -205,13 +205,15 @@ export default function TrafficPage() {
     prevTime.current = now;
 
     if (Object.keys(newRates).length > 0) {
-      setCurrentRates(newRates);
-      setRateHistories(prev => {
-        const next = { ...prev };
-        for (const [name, pt] of Object.entries(newPoints)) {
-          next[name] = [...(next[name] || []), pt].slice(-MAX_POINTS);
-        }
-        return next;
+      queueMicrotask(() => {
+        setCurrentRates(newRates);
+        setRateHistories(prev => {
+          const next = { ...prev };
+          for (const [name, pt] of Object.entries(newPoints)) {
+            next[name] = [...(next[name] || []), pt].slice(-MAX_POINTS);
+          }
+          return next;
+        });
       });
     }
   }, [ws.status, ws.interfaces]);

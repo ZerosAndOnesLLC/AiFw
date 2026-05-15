@@ -35,8 +35,10 @@ export default function ReverseProxyLogsPage() {
   }, [lines, search, logType]);
 
   useEffect(() => {
-    setLoading(true);
-    fetchLogs();
+    queueMicrotask(() => {
+      setLoading(true);
+      fetchLogs();
+    });
     if (!autoRefresh) return;
     const interval = setInterval(fetchLogs, 5000);
     return () => clearInterval(interval);

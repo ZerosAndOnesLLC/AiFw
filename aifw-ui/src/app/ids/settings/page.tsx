@@ -110,7 +110,7 @@ export default function IdsSettingsPage() {
   }, [clearFeedback]);
 
   useEffect(() => {
-    fetchConfig();
+    queueMicrotask(fetchConfig);
     // Fetch available system interfaces
     (async () => {
       try {

@@ -37,6 +37,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const histBuf = useRef<Record<string, unknown>[]>([]);
+  const connectRef = useRef<() => void>(() => {});
 
   const connect = useCallback(async () => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
@@ -92,13 +93,14 @@ export function WsProvider({ children }: { children: ReactNode }) {
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
-      reconRef.current = setTimeout(connect, 3000);
+      reconRef.current = setTimeout(() => connectRef.current(), 3000);
     };
 
     ws.onerror = () => ws.close();
   }, []);
 
   useEffect(() => {
+    connectRef.current = connect;
     connect();
     return () => {
       if (wsRef.current) wsRef.current.close();

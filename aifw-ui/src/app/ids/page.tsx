@@ -100,7 +100,7 @@ export default function IdsDashboardPage() {
   }, [loading, clearFeedback]);
 
   useEffect(() => {
-    fetchStats();
+    queueMicrotask(fetchStats);
     const interval = setInterval(fetchStats, 5000);
     return () => clearInterval(interval);
   }, [fetchStats]);

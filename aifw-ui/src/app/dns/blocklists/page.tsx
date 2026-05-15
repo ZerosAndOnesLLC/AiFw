@@ -116,7 +116,7 @@ export default function BlocklistsPage() {
     }
   }, []);
 
-  useEffect(() => { loadMaster(); }, [loadMaster]);
+  useEffect(() => { queueMicrotask(loadMaster); }, [loadMaster]);
 
   async function toggleMaster(next: boolean) {
     if (!next && !confirm("Disable DNS blocklisting? Every blocklist RPZ file will be removed and rDNS will reload. Whitelist and custom blocks are unaffected.")) return;
@@ -250,7 +250,7 @@ function SourcesTab() {
     }
   }, []);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   function showToast(msg: string, ok: boolean) {
     setToast({ msg, ok });
@@ -566,7 +566,7 @@ function PatternsTab({ kind, title, hint }: { kind: "whitelist" | "customblocks"
     setItems(data);
   }, [kind]);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   const validationError = pattern ? validateDomainPattern(pattern) : null;
 

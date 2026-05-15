@@ -63,7 +63,7 @@ export default function PendingBanner() {
     };
 
     // Fetch once immediately, then open SSE
-    fetchPending();
+    queueMicrotask(fetchPending);
     connect();
 
     return () => {

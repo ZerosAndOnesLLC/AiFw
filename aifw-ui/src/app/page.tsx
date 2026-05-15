@@ -186,7 +186,7 @@ export default function Dashboard() {
   const status = ws.status as StatusData | null;
   const system = ws.system as SystemData | null;
   const connections = (ws.connections || []) as unknown as Connection[];
-  const ifaces = (ws.interfaces || []) as unknown as InterfaceEntry[];
+  const ifaces = useMemo(() => (ws.interfaces || []) as unknown as InterfaceEntry[], [ws.interfaces]);
   const services = (ws.services || []) as unknown as { name: string; running: boolean; enabled: boolean }[];
   const ids = ws.ids as IdsData | null;
 

@@ -103,8 +103,10 @@ export default function IdsRulesPage() {
   }, [page, search, enabledFilter, clearFeedback]);
 
   useEffect(() => {
-    setLoading(true);
-    fetchRules();
+    queueMicrotask(() => {
+      setLoading(true);
+      fetchRules();
+    });
   }, [fetchRules]);
 
   async function handleToggleEnabled(rule: IdsRule) {

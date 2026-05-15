@@ -89,7 +89,7 @@ export default function IdsRulesetsPage() {
   }, [clearFeedback]);
 
   useEffect(() => {
-    fetchRulesets();
+    queueMicrotask(fetchRulesets);
   }, [fetchRulesets]);
 
   async function handleAddRuleset() {

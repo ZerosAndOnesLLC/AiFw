@@ -275,7 +275,9 @@ export default function HttpRoutersPage() {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetchRouters(), fetchEntrypoints(), fetchServices(), fetchMiddlewares()]);
+    queueMicrotask(() => {
+      Promise.all([fetchRouters(), fetchEntrypoints(), fetchServices(), fetchMiddlewares()]);
+    });
   }, [fetchRouters, fetchEntrypoints, fetchServices, fetchMiddlewares]);
 
   /* -- Form helpers -------------------------------------------------- */

@@ -127,10 +127,10 @@ export default function RoutesPage() {
   }, [fetchStaticRoutes, fetchSystemRoutes, fetchInterfaces, fetchInstances]);
 
   // Refetch system routes when the viewer FIB changes.
-  useEffect(() => { fetchSystemRoutes(systemFib); }, [systemFib, fetchSystemRoutes]);
+  useEffect(() => { queueMicrotask(() => fetchSystemRoutes(systemFib)); }, [systemFib, fetchSystemRoutes]);
 
   useEffect(() => {
-    fetchAll();
+    queueMicrotask(fetchAll);
   }, [fetchAll]);
 
   async function handleSubmit(e: React.FormEvent) {

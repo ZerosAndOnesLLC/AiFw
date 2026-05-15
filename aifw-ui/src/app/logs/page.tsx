@@ -47,7 +47,7 @@ export default function LogsPage() {
   }, []);
 
   useEffect(() => {
-    fetchLogs();
+    queueMicrotask(fetchLogs);
     const interval = setInterval(fetchLogs, 10_000);
     return () => clearInterval(interval);
   }, [fetchLogs]);

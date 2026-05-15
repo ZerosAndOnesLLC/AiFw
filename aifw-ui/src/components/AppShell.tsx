@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import Image from "next/image";
 import { useState, useEffect, useRef, useCallback } from "react";
 import AuthGuard from "./AuthGuard";
 import Sidebar from "./Sidebar";
@@ -26,7 +27,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   // Close sidebar on route change (mobile)
-  useEffect(() => { setSidebarOpen(false); }, [pathname]);
+  useEffect(() => { queueMicrotask(() => setSidebarOpen(false)); }, [pathname]);
 
   // Close sidebar on escape key
   useEffect(() => {
@@ -121,7 +122,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
                   </svg>
                 </button>
-                <img src="/logo-sidebar.png" alt="AiFw" className="h-6" />
+                <Image src="/logo-sidebar.png" alt="AiFw" width={120} height={24} className="h-6 w-auto" unoptimized />
               </div>
               <PendingBanner />
               <div className="p-4 lg:p-6 overflow-auto">

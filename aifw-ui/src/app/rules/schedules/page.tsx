@@ -76,7 +76,7 @@ export default function SchedulesPage() {
   }, []);
 
   useEffect(() => {
-    fetchSchedules();
+    queueMicrotask(fetchSchedules);
   }, [fetchSchedules]);
 
   const handleSubmit = async () => {

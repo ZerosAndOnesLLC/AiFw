@@ -82,7 +82,7 @@ export default function DdnsPage() {
     setProviders(p.filter((x) => x.kind === "cloudflare" || x.kind === "route53"));
     setConfig(c);
   }, []);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   function showToast(ok: boolean, msg: string) {
     setToast({ ok, msg });
@@ -348,7 +348,7 @@ function RecordModal({ initial, providers, onClose, onSaved }:
         </Field>
 
         <Field label={<>How to learn the IP <Help title="Source" size="xs">
-          <p><b>auto-public:</b> ask a public IP-echo service over HTTPS. Use this for the typical "what is my WAN IP" case behind ISP NAT.</p>
+          <p><b>auto-public:</b> ask a public IP-echo service over HTTPS. Use this for the typical &ldquo;what is my WAN IP&rdquo; case behind ISP NAT.</p>
           <p><b>interface:</b> read the primary IP off a named local interface. Use this when the appliance has a real public IP on its WAN NIC.</p>
           <p><b>explicit:</b> always publish a fixed IP. Useful for one-off manual records.</p>
         </Help></>}>

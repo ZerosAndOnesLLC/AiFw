@@ -15,8 +15,7 @@ interface DataTableProps<T> {
   emptyMessage?: string;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export default function DataTable<T extends Record<string, any>>({
+export default function DataTable<T extends Record<string, unknown>>({
   columns,
   data,
   keyField,

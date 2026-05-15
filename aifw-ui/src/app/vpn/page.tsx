@@ -273,11 +273,13 @@ export default function VpnPage() {
   }, []);
 
   useEffect(() => {
-    fetchTunnels();
-    fetchIpsec();
-    apiFetch<{ data: { name: string; role?: string }[] }>("/api/v1/interfaces")
-      .then(res => setInterfaces(res.data || []))
-      .catch(() => {});
+    queueMicrotask(() => {
+      fetchTunnels();
+      fetchIpsec();
+      apiFetch<{ data: { name: string; role?: string }[] }>("/api/v1/interfaces")
+        .then(res => setInterfaces(res.data || []))
+        .catch(() => {});
+    });
   }, [fetchTunnels, fetchIpsec]);
 
   /* ────────────────────────── WireGuard CRUD ────────────────────────── */

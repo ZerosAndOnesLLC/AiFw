@@ -72,7 +72,7 @@ export default function MultiWanPage() {
   }, [clearFeedback]);
 
   useEffect(() => {
-    fetchAll();
+    queueMicrotask(fetchAll);
   }, [fetchAll]);
 
   function validateInstance(): boolean {

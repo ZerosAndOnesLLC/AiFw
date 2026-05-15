@@ -339,7 +339,7 @@ export default function ClusterPage() {
   }, []);
 
   useEffect(() => {
-    reload().catch(() => {});
+    queueMicrotask(() => { reload().catch(() => {}); });
   }, [reload]);
 
   // ============================================================

@@ -58,7 +58,7 @@ export default function SlaPage() {
   }, [selectedGw, window]);
 
   useEffect(() => {
-    fetchSla();
+    queueMicrotask(fetchSla);
   }, [fetchSla]);
 
   const rtts = samples.map((s) => s.rtt_avg).filter((x): x is number => x != null);

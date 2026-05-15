@@ -99,7 +99,7 @@ export default function GeoIpPage() {
   }, [clearFeedback]);
 
   useEffect(() => {
-    fetchRules();
+    queueMicrotask(fetchRules);
   }, [fetchRules]);
 
   // ── Create rule ──

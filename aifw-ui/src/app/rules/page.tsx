@@ -131,7 +131,7 @@ export default function RulesPage() {
   const [blockLogging, setBlockLogging] = useState(true);
   const [interfaceFilter, setInterfaceFilter] = useState<string>(urlInterface || "all");
   // Sync filter with URL param
-  useEffect(() => { setInterfaceFilter(urlInterface || "all"); }, [urlInterface]);
+  useEffect(() => { queueMicrotask(() => setInterfaceFilter(urlInterface || "all")); }, [urlInterface]);
 
   const moveRule = async (ruleId: string, direction: "up" | "down") => {
     const idx = rules.findIndex(r => r.id === ruleId);
@@ -194,19 +194,21 @@ export default function RulesPage() {
   };
 
   useEffect(() => {
-    fetchRules();
+    queueMicrotask(() => {
+      fetchRules();
 
-    api.listSystemRules()
-      .then((d) => setSystemRules(d.data || []))
-      .catch(() => {});
+      api.listSystemRules()
+        .then((d) => setSystemRules(d.data || []))
+        .catch(() => {});
 
-    api.listInterfaces()
-      .then((d) => setInterfaces(d.data || []))
-      .catch(() => {});
+      api.listInterfaces()
+        .then((d) => setInterfaces(d.data || []))
+        .catch(() => {});
 
-    api.listSchedules()
-      .then((d) => setSchedules(d.data || []))
-      .catch(() => {});
+      api.listSchedules()
+        .then((d) => setSchedules(d.data || []))
+        .catch(() => {});
+    });
   }, [fetchRules]);
 
   /* ── Form submit ───────────────────────────────────────────────── */

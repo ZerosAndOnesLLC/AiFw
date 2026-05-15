@@ -85,13 +85,15 @@ export default function OutboundNatPage() {
   }, []);
 
   useEffect(() => {
-    fetchRules();
-    fetchInterfaces();
+    queueMicrotask(() => {
+      fetchRules();
+      fetchInterfaces();
+    });
   }, [fetchRules, fetchInterfaces]);
 
   useEffect(() => {
     if (interfaces.length > 0 && !form.interface && !editingId) {
-      setForm((f) => ({ ...f, interface: interfaces[0].name }));
+      queueMicrotask(() => setForm((f) => ({ ...f, interface: interfaces[0].name })));
     }
   }, [interfaces, form.interface, editingId]);
 

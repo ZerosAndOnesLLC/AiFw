@@ -476,7 +476,7 @@ export default function BackupPage() {
 
   // Poll commit confirm status
   useEffect(() => {
-    fetchCommitStatus();
+    queueMicrotask(fetchCommitStatus);
     const t = setInterval(fetchCommitStatus, 5000);
     return () => clearInterval(t);
   }, [fetchCommitStatus]);
@@ -1217,7 +1217,7 @@ function S3ArchiveTab() {
     }
   }, []);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   async function importNow(key: string) {
     if (!confirm(`Import ${key}?\n\nThis saves it as a new local version. It does NOT apply — you can diff then restore from the History tab.`)) return;

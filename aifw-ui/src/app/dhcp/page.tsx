@@ -133,7 +133,7 @@ export default function DhcpOverviewPage() {
     } catch {
       /* silent */
     }
-  }, []);
+  }, [setConfigRaw, setDnsInput]);
 
   const fetchInterfaces = useCallback(async () => {
     try {

@@ -78,7 +78,7 @@ export default function DashboardPage() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAt = useRef<number>(0);
   const pausedRef = useRef(paused);
-  pausedRef.current = paused;
+  useEffect(() => { pausedRef.current = paused; }, [paused]);
 
   // WebSocket lifecycle with backoff reconnect.
   //
@@ -188,7 +188,6 @@ export default function DashboardPage() {
       stopped = true;
       wsRef.current?.close();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const blockRate = useMemo(() => {

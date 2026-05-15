@@ -59,7 +59,7 @@ export default function AliasesPage() {
     }
   }, []);
 
-  useEffect(() => { fetchAliases(); }, [fetchAliases]);
+  useEffect(() => { queueMicrotask(fetchAliases); }, [fetchAliases]);
 
   const resetForm = () => {
     setForm(defaultForm);

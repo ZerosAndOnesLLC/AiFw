@@ -130,7 +130,7 @@ export default function TimeServicePage() {
     } catch { /* */ }
   }, []);
 
-  useEffect(() => { fetchStatus(); fetchConfig(); fetchSources(); fetchInterfaces(); }, [fetchStatus, fetchConfig, fetchSources, fetchInterfaces]);
+  useEffect(() => { queueMicrotask(() => { fetchStatus(); fetchConfig(); fetchSources(); fetchInterfaces(); }); }, [fetchStatus, fetchConfig, fetchSources, fetchInterfaces]);
   useEffect(() => { const t = setInterval(fetchStatus, 5000); return () => clearInterval(t); }, [fetchStatus]);
 
   const validate = (): boolean => {

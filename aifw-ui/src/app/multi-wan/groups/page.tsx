@@ -88,7 +88,7 @@ export default function GroupsPage() {
   }, []);
 
   useEffect(() => {
-    refresh();
+    queueMicrotask(refresh);
     const t = setInterval(refresh, 10_000);
     return () => clearInterval(t);
   }, [refresh]);
