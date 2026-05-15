@@ -267,17 +267,15 @@ export default function TimeServicePage() {
           className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded disabled:opacity-50">
           {actionLoading === "restart" ? "Restarting..." : "Restart"}
         </button>
+        <div className="flex-1" />
         {isDirty && (
-          <>
-            <div className="flex-1" />
-            <button onClick={saveConfig} disabled={saving} className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">
-              {saving ? "Saving..." : "Save Settings"}
-            </button>
-            <button onClick={applyConfig} disabled={applying} className="px-4 py-1.5 text-xs bg-purple-600 hover:bg-purple-700 text-white rounded disabled:opacity-50">
-              {applying ? "Applying..." : "Apply & Restart"}
-            </button>
-          </>
+          <button onClick={saveConfig} disabled={saving} className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">
+            {saving ? "Saving..." : "Save Settings"}
+          </button>
         )}
+        <button onClick={applyConfig} disabled={applying} className="px-4 py-1.5 text-xs bg-purple-600 hover:bg-purple-700 text-white rounded disabled:opacity-50">
+          {applying ? "Applying..." : "Apply & Restart"}
+        </button>
       </div>
       {actionMsg && <div className="bg-blue-900/30 border border-blue-700 rounded px-3 py-2 text-xs text-blue-300">{actionMsg}</div>}
 
