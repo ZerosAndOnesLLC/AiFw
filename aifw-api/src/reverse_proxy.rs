@@ -519,6 +519,53 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Heal sysrc drift on every aifw-api start. Save in the UI writes only
+    // the DB; Apply is what flushes rc.conf + service state. If a user
+    // saved-without-applying (the bug we just fixed in v5.96.3) their
+    // rc.conf can still say YES while the DB says false (or vice versa),
+    // so the service keeps running on next boot against the operator's
+    // intent. Mirror the rtime self-heal: read DB → reconcile sysrc +
+    // service state. Best-effort; non-fatal.
+    if let Err(e) = reconcile_trafficcop_service_state(pool).await {
+        tracing::warn!(error = %e, "reverse_proxy: trafficcop service-state reconcile failed (non-fatal)");
+    }
+
+    Ok(())
+}
+
+/// Reconcile `trafficcop_enable` in rc.conf and the live service state
+/// against the operator's intent stored in `tc_config.enabled`. Idempotent.
+async fn reconcile_trafficcop_service_state(pool: &SqlitePool) -> anyhow::Result<()> {
+    let config = load_global_config(pool).await;
+
+    // Read current rc.conf via the sysrc helper. `sysrc -n` is a read, so
+    // we can shell out directly without going through the sudoers
+    // allowlist round-trip.
+    let current_rc = tokio::process::Command::new("/usr/sbin/sysrc")
+        .args(["-n", "trafficcop_enable"])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "YES")
+        .unwrap_or(false);
+
+    if config.enabled == current_rc {
+        return Ok(());
+    }
+
+    if config.enabled {
+        let _ = aifw_core::sudo::sysrc(&["trafficcop_enable=YES"]).await;
+        let _ = aifw_core::sudo::service("trafficcop", "start").await;
+        tracing::info!(
+            "reverse_proxy: healed sysrc drift (DB enabled=true, rc.conf was NO) — trafficcop started"
+        );
+    } else {
+        let _ = aifw_core::sudo::service("trafficcop", "stop").await;
+        let _ = aifw_core::sudo::sysrc(&["trafficcop_enable=NO"]).await;
+        tracing::info!(
+            "reverse_proxy: healed sysrc drift (DB enabled=false, rc.conf was YES) — trafficcop stopped"
+        );
+    }
     Ok(())
 }
 
