@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useWs } from "@/context/WsContext";
+import { fetchApi } from "@/lib/api";
 
 function formatBytes(b: number): string {
   if (b >= 1e9) return `${(b/1e9).toFixed(1)} GB`; if (b >= 1e6) return `${(b/1e6).toFixed(1)} MB`;
@@ -29,6 +30,59 @@ function getSubnet24(ip: string): string {
   if (parts.length !== 4) return ip;
   return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
 }
+
+/* ───────────────────────── CIDR / routing helpers ─────────────────────────
+ *
+ * The page maps each connection's LAN-side host to the interface that
+ * actually carries it. Source-IP /24 ≠ interface is not enough: VPN
+ * interfaces route whole CIDRs (e.g. wg0 carries 172.29.0.0/16 via
+ * `split_routes`) whose addresses share no prefix with the wg interface's
+ * own /24. We build a route table from each interface's local subnet plus
+ * the wg tunnels' address / split_routes / peer allowed_ips, then pick the
+ * owning interface by longest-prefix match — exactly how the kernel routes.
+ */
+type Route = { iface: string; base: number; prefix: number };
+
+function ipToU32(ip: string): number | null {
+  const p = ip.split(".");
+  if (p.length !== 4) return null;
+  let v = 0;
+  for (const o of p) {
+    const n = Number(o);
+    if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+    v = v * 256 + n;
+  }
+  return v >>> 0;
+}
+
+function parseCidr(cidr: string): { base: number; prefix: number } | null {
+  const [ip, pfxStr] = cidr.trim().split("/");
+  const ipu = ipToU32(ip);
+  if (ipu === null) return null;
+  const prefix = pfxStr === undefined ? 32 : Number(pfxStr);
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return { base: (ipu & mask) >>> 0, prefix };
+}
+
+function cidrContains(r: Route, ipu: number): boolean {
+  const mask = r.prefix === 0 ? 0 : (0xffffffff << (32 - r.prefix)) >>> 0;
+  return ((ipu & mask) >>> 0) === r.base;
+}
+
+/** Longest-prefix match: returns the interface name that routes `ip`, or null. */
+function ifaceForIp(table: Route[], ip: string): string | null {
+  const u = ipToU32(ip);
+  if (u === null) return null;
+  let best: Route | null = null;
+  for (const r of table) {
+    if (cidrContains(r, u) && (!best || r.prefix > best.prefix)) best = r;
+  }
+  return best ? best.iface : null;
+}
+
+type WgTunnelLite = { id: string; interface: string; address: string | null; split_routes: string | null };
+type WgPeerLite = { allowed_ips: string };
 
 /* ────────────────────────── Pipe geometry helpers ──────────────────────────
  *
@@ -160,15 +214,55 @@ export default function NatFlowsPage() {
   const [rates, setRates] = useState<Record<string, { in: number; out: number }>>({});
   const prevSubnetBytes = useRef<Record<string, { in: number; out: number }>>({});
   const [subnetLiveRates, setSubnetLiveRates] = useState<Record<string, { in: number; out: number }>>({});
+  // Routed CIDRs carried by VPN interfaces, fetched from the WireGuard config.
+  // Lets us attribute e.g. 172.29.14.0/24 to wg0 (which routes 172.29.0.0/16)
+  // even though that subnet shares no prefix with wg0's own /24.
+  const [wgRoutes, setWgRoutes] = useState<Route[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRoutes() {
+      try {
+        const tRes = await fetchApi<{ data: WgTunnelLite[] }>("/api/v1/vpn/wg");
+        const routes: Route[] = [];
+        for (const t of tRes.data || []) {
+          if (!t.interface) continue;
+          const add = (cidr: string) => {
+            const c = parseCidr(cidr);
+            if (c) routes.push({ iface: t.interface, base: c.base, prefix: c.prefix });
+          };
+          if (t.address) add(t.address);
+          if (t.split_routes) for (const r of t.split_routes.split(/[,\s]+/)) if (r) add(r);
+          try {
+            const pRes = await fetchApi<{ data: WgPeerLite[] }>(`/api/v1/vpn/wg/${t.id}/peers`);
+            for (const p of pRes.data || [])
+              for (const a of (p.allowed_ips || "").split(/[,\s]+/)) if (a) add(a);
+          } catch { /* peers are optional — address/split_routes already cover the interface */ }
+        }
+        if (!cancelled) setWgRoutes(routes);
+      } catch { /* VPN endpoint unavailable — fall back to local-subnet matching only */ }
+    }
+    loadRoutes();
+    const iv = setInterval(loadRoutes, 30000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, []);
 
   const ifaces = ws.interfaces as Iface[];
   const connections = ws.connections as Conn[];
 
   const wanIfaces = ifaces.filter(i => i.role === "WAN");
-  // If no role assigned yet, treat the first interface as WAN
-  if (wanIfaces.length === 0 && ifaces.length > 0) wanIfaces.push(ifaces[0]);
+  // If no role assigned yet, treat the (deterministically) first interface as WAN
+  if (wanIfaces.length === 0 && ifaces.length > 0) {
+    const sorted = [...ifaces].sort((a, b) => a.name.localeCompare(b.name));
+    wanIfaces.push(sorted[0]);
+  }
+  wanIfaces.sort((a, b) => a.name.localeCompare(b.name));
   const wanNames = new Set(wanIfaces.map(i => i.name));
-  const lanIfaces = ifaces.filter(i => !wanNames.has(i.name));
+  // Sort LAN interfaces by name so column order — and the fallback target
+  // for unrouted subnets — is stable. The backend returns interfaces in
+  // non-deterministic HashMap order, which otherwise made traffic appear to
+  // jump between columns frame-to-frame.
+  const lanIfaces = ifaces.filter(i => !wanNames.has(i.name)).sort((a, b) => a.name.localeCompare(b.name));
 
   useEffect(() => {
     if (!ifaces.length) return;
@@ -183,7 +277,10 @@ export default function NatFlowsPage() {
       }
     }
     prevBytes.current = Object.fromEntries(ifaces.map(i => [i.name, { in: i.bytes_in, out: i.bytes_out }]));
-    if (Object.keys(newRates).length > 0) queueMicrotask(() => setRates(newRates));
+    // Merge rather than replace: an interface momentarily absent from a tick
+    // (the backend runs netstat per-interface and one can be missing under
+    // load) must keep its last rate instead of dropping to zero.
+    if (Object.keys(newRates).length > 0) queueMicrotask(() => setRates(prev => ({ ...prev, ...newRates })));
   }, [ws.status, ifaces]);
 
   // Compute per-subnet live rates from connection byte totals
@@ -267,34 +364,54 @@ export default function NatFlowsPage() {
     return subnetLiveRates[getSubnet24(sn.subnet)] || { in: 0, out: 0 };
   });
 
-  // Map subnets to their parent LAN interface by matching subnet prefix
+  // Route table: each LAN interface's locally-connected subnet plus any CIDRs
+  // its VPN tunnel routes. Longest-prefix match against this attributes every
+  // subnet to the interface that actually carries it.
+  const routeTable = useMemo<Route[]>(() => {
+    const rt: Route[] = [];
+    for (const iface of lanIfaces) {
+      if (iface.subnet) {
+        const c = parseCidr(iface.subnet);
+        if (c) rt.push({ iface: iface.name, base: c.base, prefix: c.prefix });
+      }
+    }
+    const lanNames = new Set(lanIfaces.map(i => i.name));
+    for (const r of wgRoutes) if (lanNames.has(r.iface)) rt.push(r);
+    return rt;
+  }, [lanIfaces, wgRoutes]);
+
+  // Map each subnet/host to the interface that routes it (longest-prefix).
   const ifaceSubnets = useMemo(() => {
     const map: Record<string, typeof displayItems> = {};
-    for (const iface of lanIfaces) {
-      map[iface.name] = [];
-    }
+    for (const iface of lanIfaces) map[iface.name] = [];
+    const fallback = lanIfaces[0]?.name; // deterministic — lanIfaces is sorted
     for (const item of displayItems) {
-      // Match subnet to interface by checking if the subnet falls within the interface's subnet
-      const itemPrefix = item.subnet.split(".").slice(0, 3).join(".");
-      let matched = false;
-      for (const iface of lanIfaces) {
-        if (iface.subnet) {
-          const ifPrefix = iface.subnet.split(".").slice(0, 3).join(".");
-          if (itemPrefix === ifPrefix) {
-            map[iface.name].push(item);
-            matched = true;
-            break;
-          }
-        }
-      }
-      if (!matched) {
-        // Fall back: assign to first LAN interface with items, or first LAN iface
-        const fallback = lanIfaces[0]?.name;
-        if (fallback && map[fallback]) map[fallback].push(item);
-      }
+      const repIp = item.subnet.split("/")[0]; // network addr (grouped) or host IP
+      const owner = ifaceForIp(routeTable, repIp);
+      const target = owner && map[owner] ? owner : fallback;
+      if (target && map[target]) map[target].push(item);
     }
     return map;
-  }, [displayItems, lanIfaces]);
+  }, [displayItems, lanIfaces, routeTable]);
+
+  // Per-interface live rate = sum of the connection-derived rates of the
+  // subnets routed through it. Driving the AiFw→interface pipe from this
+  // (instead of netstat byte counters) keeps the pipe consistent with the
+  // subnet cards beneath it and works for VPN interfaces whose kernel byte
+  // counters read zero (e.g. wg0 on FreeBSD).
+  const ifaceLiveRate = useMemo(() => {
+    const out: Record<string, { in: number; out: number }> = {};
+    for (const iface of lanIfaces) {
+      let inSum = 0, outSum = 0;
+      for (const item of ifaceSubnets[iface.name] || []) {
+        const sr = (groupBySubnet ? subnetLiveRates[item.subnet] : subnetLiveRates[getSubnet24(item.subnet)]) || { in: 0, out: 0 };
+        inSum += sr.in;
+        outSum += sr.out;
+      }
+      out[iface.name] = { in: inSum, out: outSum };
+    }
+    return out;
+  }, [ifaceSubnets, subnetLiveRates, groupBySubnet, lanIfaces]);
 
   // SVG topology layout
   const svgW = 800;
@@ -458,12 +575,12 @@ export default function NatFlowsPage() {
                       {lanIfaces.map((iface, idx) => {
                         const cx = fanSvgW / 2;
                         const ax = colCenters[idx];
-                        const ifRate = rates[iface.name] || { in: 0, out: 0 };
+                        const lr = ifaceLiveRate[iface.name] || { in: 0, out: 0 };
                         return (
                           <SvgPipe key={iface.name} id={`fw-${iface.name}`}
                             x1={cx} y1={0} x2={ax} y2={fanH}
                             cy1={fanH * 0.4} cy2={fanH * 0.5}
-                            rateIn={ifRate.out} rateOut={ifRate.in} />
+                            rateIn={lr.in} rateOut={lr.out} />
                         );
                       })}
                     </svg>
@@ -472,7 +589,7 @@ export default function NatFlowsPage() {
                 {/* Interface columns — each auto-sized to its subnet grid. */}
                 <div className="flex flex-wrap justify-center items-start" style={{ gap: lanGap }}>
                   {lanIfaces.map((iface, idx) => {
-                    const ifRate = rates[iface.name] || { in: 0, out: 0 };
+                    const lr = ifaceLiveRate[iface.name] || { in: 0, out: 0 };
                     const items = ifaceSubnets[iface.name] || [];
                     const isWg = iface.name.startsWith("wg");
                     const ifSubnetsW = items.length === 0
@@ -491,8 +608,8 @@ export default function NatFlowsPage() {
                           {iface.subnet && <span className="text-[9px] text-gray-500 ml-1.5">{iface.subnet}</span>}
                         </div>
                         <div className="flex gap-2 mt-0.5 text-[9px]">
-                          <span className="text-blue-400">{formatBps(ifRate.out)}</span>
-                          <span className="text-red-400">{formatBps(ifRate.in)}</span>
+                          <span className="text-blue-400">{formatBps(lr.in)}</span>
+                          <span className="text-red-400">{formatBps(lr.out)}</span>
                         </div>
 
                   {/* Fan-out to subnets */}
