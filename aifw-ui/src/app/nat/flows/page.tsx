@@ -212,12 +212,11 @@ export default function NatFlowsPage() {
   const [groupBySubnet, setGroupBySubnet] = useState(true);
   const prevBytes = useRef<Record<string, { in: number; out: number }>>({});
   const [rates, setRates] = useState<Record<string, { in: number; out: number }>>({});
-  const prevSubnetBytes = useRef<{
-    bytes: Record<string, { in: number; out: number }>;
-    total: number;
-    time: number;
-    decayed?: boolean;
-  }>({ bytes: {}, total: 0, time: 0 });
+  // Per-subnet byte baseline (+ when it was last seen to change) and the last
+  // computed rate, so each subnet can hold its rate independently between
+  // snapshot refreshes.
+  const prevSubnetBytes = useRef<Record<string, { in: number; out: number; time: number }>>({});
+  const subnetRatesRef = useRef<Record<string, { in: number; out: number }>>({});
   const [subnetLiveRates, setSubnetLiveRates] = useState<Record<string, { in: number; out: number }>>({});
   // Routed CIDRs carried by VPN interfaces, fetched from the WireGuard config.
   // Lets us attribute e.g. 172.29.14.0/24 to wg0 (which routes 172.29.0.0/16)
@@ -290,50 +289,66 @@ export default function NatFlowsPage() {
 
   // Compute per-subnet live rates from connection byte totals.
   //
-  // The conntrack snapshot refreshes every 5s (aifw-conntrack poll_interval)
-  // while the WS ticks at 1Hz, so identical connection byte totals arrive on
-  // ~5 consecutive ticks. A naive per-tick delta is zero on 4 of every 5
-  // ticks, which made the flows flicker. Instead we only advance the baseline
-  // when the snapshot actually changes, divide by the real elapsed time so the
-  // bps is correct regardless of cadence, and hold the last value in between.
-  // If nothing changes for longer than the poll window the transfer has
-  // stopped, so we let the rates decay to zero.
+  // The conntrack snapshot refreshes only every couple of seconds while the WS
+  // ticks at 1Hz, so a subnet's byte totals are identical for several
+  // consecutive ticks then jump. A naive per-tick delta is therefore zero on
+  // the in-between ticks, which made everything below the firewall flicker
+  // (the netstat-driven WAN pipes above it update every tick, so they stay
+  // smooth). Each subnet refreshes on its own schedule, so we track and hold
+  // each one independently: only recompute a subnet's rate when ITS bytes
+  // actually advance, divide by that subnet's real elapsed time so the bps is
+  // correct regardless of cadence, hold the last value in between, and decay
+  // to zero once a subnet goes quiet.
   useEffect(() => {
     if (!connections.length) return;
     const subnets: Record<string, { in: number; out: number }> = {};
-    let grandTotal = 0;
     for (const c of connections) {
       if (!isPrivateIp(c.src_addr)) continue;
       const sn = getSubnet24(c.src_addr);
       if (!subnets[sn]) subnets[sn] = { in: 0, out: 0 };
       subnets[sn].in += c.bytes_out || 0;   // bytes FROM dst (server→client) = downstream to client
       subnets[sn].out += c.bytes_in || 0;   // bytes FROM src (client→server) = upstream from client
-      grandTotal += (c.bytes_in || 0) + (c.bytes_out || 0);
     }
     const now = Date.now();
     const prev = prevSubnetBytes.current;
-    if (prev.total === grandTotal) {
-      // Snapshot hasn't advanced — hold the last rates. If it stalls past the
-      // poll window (5s + margin) the transfer has ended; decay to zero once.
-      if (prev.time && now - prev.time > 8000 && !prev.decayed) {
-        prevSubnetBytes.current = { ...prev, decayed: true };
-        queueMicrotask(() => setSubnetLiveRates({}));
-      }
-      return;
-    }
-    const dt = prev.time ? Math.max(0.001, (now - prev.time) / 1000) : 5;
-    const newRates: Record<string, { in: number; out: number }> = {};
+    const prevRates = subnetRatesRef.current;
+    const nextPrev: Record<string, { in: number; out: number; time: number }> = {};
+    const nextRates: Record<string, { in: number; out: number }> = {};
+    let dirty = false;
     for (const [sn, cur] of Object.entries(subnets)) {
-      const p = prev.bytes[sn];
-      if (p) {
-        newRates[sn] = {
+      const p = prev[sn];
+      const held = prevRates[sn] || { in: 0, out: 0 };
+      if (!p) {
+        // First sighting — establish a baseline, no rate yet.
+        nextPrev[sn] = { in: cur.in, out: cur.out, time: now };
+        nextRates[sn] = held;
+      } else if (cur.in !== p.in || cur.out !== p.out) {
+        // Snapshot advanced for this subnet — compute rate over its own elapsed time.
+        const dt = Math.max(0.001, (now - p.time) / 1000);
+        nextRates[sn] = {
           in: Math.max(0, ((cur.in - p.in) * 8) / dt),
           out: Math.max(0, ((cur.out - p.out) * 8) / dt),
         };
+        nextPrev[sn] = { in: cur.in, out: cur.out, time: now };
+        dirty = true;
+      } else if (now - p.time > 8000) {
+        // Quiet for >8s — let it fall to zero.
+        nextPrev[sn] = p;
+        nextRates[sn] = { in: 0, out: 0 };
+        if (held.in !== 0 || held.out !== 0) dirty = true;
+      } else {
+        // Unchanged but recent — hold the last rate so the pipe keeps flowing.
+        nextPrev[sn] = p;
+        nextRates[sn] = held;
       }
     }
-    prevSubnetBytes.current = { bytes: subnets, total: grandTotal, time: now };
-    if (Object.keys(newRates).length > 0) queueMicrotask(() => setSubnetLiveRates(newRates));
+    prevSubnetBytes.current = nextPrev;
+    subnetRatesRef.current = nextRates;
+    // Only push to state when a rate actually changed or a subnet appeared/left,
+    // so steady traffic doesn't trigger needless re-renders.
+    if (dirty || Object.keys(nextRates).length !== Object.keys(prevRates).length) {
+      queueMicrotask(() => setSubnetLiveRates(nextRates));
+    }
   }, [ws.status, connections]);
 
   // Only include private (LAN) IPs as hosts
