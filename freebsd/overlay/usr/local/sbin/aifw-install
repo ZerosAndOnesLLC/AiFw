@@ -327,6 +327,7 @@ write_rc_conf() {
     sysrc -f "$INSTALL_ROOT/etc/rc.conf" pflog_enable="YES"
     sysrc -f "$INSTALL_ROOT/etc/rc.conf" gateway_enable="YES"
     sysrc -f "$INSTALL_ROOT/etc/rc.conf" sshd_enable="YES"
+    sysrc -f "$INSTALL_ROOT/etc/rc.conf" rsyncd_enable="NO"
 
     # Enable/disable AiFw services based on whether setup was run
     if [ -f "$AIFW_CONF" ]; then

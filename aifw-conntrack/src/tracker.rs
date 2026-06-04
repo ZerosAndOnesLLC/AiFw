@@ -73,10 +73,10 @@ impl ConnectionTracker {
                             .filter(|s| s.age_secs > expiry_threshold)
                             .count();
                         if expired > 0 {
-                            warn!(
+                            debug!(
                                 count = expired,
-                                threshold = expiry_threshold,
-                                "detected expired connections exceeding threshold"
+                                threshold_secs = expiry_threshold,
+                                "connections older than expiry threshold"
                             );
                         }
                         debug!(count = new_states.len(), "polled connection states");

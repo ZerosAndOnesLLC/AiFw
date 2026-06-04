@@ -19,7 +19,31 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+
+    // `service rsyncd` (or any `service -e` enumeration) emits
+    // `WARNING: $rsyncd_enable is not set properly` when the rcvar is
+    // missing. rsync may be pulled in transitively but is never run by
+    // AiFw — set the rcvar to NO once so the noise stops on existing
+    // installs that predate the install-time default.
+    silence_rsyncd_warning().await;
+
     Ok(())
+}
+
+async fn silence_rsyncd_warning() {
+    let current = tokio::process::Command::new("/usr/sbin/sysrc")
+        .args(["-n", "rsyncd_enable"])
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if !matches!(
+        current.as_str(),
+        "YES" | "NO" | "TRUE" | "FALSE" | "0" | "1"
+    ) {
+        let _ = aifw_core::sudo::sysrc(&["rsyncd_enable=NO"]).await;
+    }
 }
 
 async fn get_kv(pool: &SqlitePool, key: &str) -> Option<String> {
