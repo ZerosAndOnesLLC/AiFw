@@ -1678,11 +1678,14 @@ pub async fn dhcp_apply(_db_path: &Path) -> anyhow::Result<()> {
 // Update commands
 // ============================================================
 
-pub async fn update_check() -> anyhow::Result<()> {
+pub async fn update_check(pre: bool) -> anyhow::Result<()> {
     use aifw_core::updater;
 
-    println!("Checking for AiFw updates...");
-    let info = updater::check_for_update().await?;
+    println!(
+        "Checking for AiFw updates{}...",
+        if pre { " (including pre-releases)" } else { "" }
+    );
+    let info = updater::check_for_update(pre).await?;
 
     println!("  Current version: v{}", info.current_version);
     println!("  Latest version:  v{}", info.latest_version);
@@ -1705,11 +1708,14 @@ pub async fn update_check() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn update_install(auto_restart: bool) -> anyhow::Result<()> {
+pub async fn update_install(auto_restart: bool, pre: bool) -> anyhow::Result<()> {
     use aifw_core::updater;
 
-    println!("Checking for AiFw updates...");
-    let info = updater::check_for_update().await?;
+    println!(
+        "Checking for AiFw updates{}...",
+        if pre { " (including pre-releases)" } else { "" }
+    );
+    let info = updater::check_for_update(pre).await?;
 
     if !info.update_available {
         println!(

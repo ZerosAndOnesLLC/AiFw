@@ -151,6 +151,48 @@ async fn save_config(pool: &SqlitePool, key: &str, value: &str) {
         .await;
 }
 
+/// Whether the operator opted this box into the pre-release update channel.
+/// Off by default so field appliances only ever see stable releases.
+async fn prereleases_enabled(pool: &SqlitePool) -> bool {
+    sqlx::query_as::<_, (String,)>(
+        "SELECT value FROM update_config WHERE key = 'aifw_include_prereleases'",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|(v,)| v == "true")
+    .unwrap_or(false)
+}
+
+#[derive(Deserialize)]
+pub struct PrereleaseToggle {
+    pub enabled: bool,
+}
+
+/// Enable/disable the pre-release update channel for THIS appliance. Lets a
+/// test box pull GitHub pre-releases via the normal in-app updater without
+/// those releases being promoted to stable "latest" for everyone else.
+pub async fn set_prerelease_channel(
+    State(state): State<AppState>,
+    Json(body): Json<PrereleaseToggle>,
+) -> Result<Json<MessageResponse>, StatusCode> {
+    save_config(
+        &state.pool,
+        "aifw_include_prereleases",
+        if body.enabled { "true" } else { "false" },
+    )
+    .await;
+    // Drop any cached check so the next status/check reflects the new channel.
+    save_config(&state.pool, "aifw_cached_info", "").await;
+    Ok(Json(MessageResponse {
+        message: format!(
+            "Pre-release channel {}",
+            if body.enabled { "enabled" } else { "disabled" }
+        ),
+    }))
+}
+
 // ============================================================
 // Handlers
 // ============================================================
@@ -476,6 +518,9 @@ pub async fn aifw_update_status(
         info.current_version = updater::get_current_version().await;
         info.running_version = updater::running_version().to_string();
         info.restart_pending = updater::restart_pending().await;
+        // Always reflect the live toggle state, even if the cached check
+        // predates a channel change.
+        info.include_prereleases = prereleases_enabled(&state.pool).await;
         return Ok(Json(info));
     }
 
@@ -496,13 +541,15 @@ pub async fn aifw_update_status(
         running_version: updater::running_version().to_string(),
         reboot_recommended: false,
         reboot_reason: None,
+        include_prereleases: prereleases_enabled(&state.pool).await,
     }))
 }
 
 pub async fn aifw_check_update(
     State(state): State<AppState>,
 ) -> Result<Json<AifwUpdateInfo>, StatusCode> {
-    let info = updater::check_for_update().await.map_err(|e| {
+    let pre = prereleases_enabled(&state.pool).await;
+    let info = updater::check_for_update(pre).await.map_err(|e| {
         tracing::error!("AiFw update check failed: {}", e);
         internal()
     })?;
@@ -542,7 +589,8 @@ pub async fn aifw_install_update(
         serde_json::from_str::<AifwUpdateInfo>(&json).map_err(|_| internal())?
     } else {
         // No cached info, check now
-        updater::check_for_update().await.map_err(|e| {
+        let pre = prereleases_enabled(&state.pool).await;
+        updater::check_for_update(pre).await.map_err(|e| {
             tracing::error!("AiFw update check failed: {}", e);
             internal()
         })?

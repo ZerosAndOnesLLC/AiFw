@@ -8,6 +8,11 @@ use tokio::process::Command;
 use tracing::{info, warn};
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/ZerosAndOnesLLC/AiFw/releases/latest";
+// Lists releases newest-first INCLUDING pre-releases (and drafts), unlike
+// /releases/latest which silently skips them. Used only when the operator
+// opts into the pre-release channel.
+const GITHUB_RELEASES_URL: &str =
+    "https://api.github.com/repos/ZerosAndOnesLLC/AiFw/releases?per_page=20";
 const VERSION_FILE: &str = "/usr/local/share/aifw/version";
 const BACKUP_DIR: &str = "/usr/local/share/aifw/backup";
 const BIN_DIR: &str = "/usr/local/sbin";
@@ -197,6 +202,12 @@ pub struct AifwUpdateInfo {
     /// the operator knows *why* reboot was recommended.
     #[serde(default)]
     pub reboot_reason: Option<String>,
+    /// Operator opted into the pre-release update channel (for test boxes).
+    /// When set, checks/installs consider GitHub pre-releases instead of just
+    /// the stable `/releases/latest`. Field appliances leave this off so they
+    /// only ever pull stable releases.
+    #[serde(default)]
+    pub include_prereleases: bool,
 }
 
 /// Read the current installed AiFw version.
@@ -227,11 +238,30 @@ pub async fn restart_pending() -> bool {
 }
 
 /// Check GitHub Releases for a newer AiFw version.
-pub async fn check_for_update() -> Result<AifwUpdateInfo, UpdaterError> {
+///
+/// When `include_prereleases` is false (field default) this consults
+/// `/releases/latest`, which only ever returns the newest *stable* release.
+/// When true (operator opted into the pre-release channel on a test box) it
+/// lists `/releases` and takes the newest non-draft entry, which may be a
+/// pre-release.
+pub async fn check_for_update(include_prereleases: bool) -> Result<AifwUpdateInfo, UpdaterError> {
     let current = get_current_version().await;
-    let json = http_get(GITHUB_API_URL).await?;
-    let release: serde_json::Value =
-        serde_json::from_str(&json).map_err(|e| UpdaterError::Json(e.to_string()))?;
+    let release: serde_json::Value = if include_prereleases {
+        let json = http_get(GITHUB_RELEASES_URL).await?;
+        let releases: serde_json::Value =
+            serde_json::from_str(&json).map_err(|e| UpdaterError::Json(e.to_string()))?;
+        releases
+            .as_array()
+            .and_then(|rs| {
+                rs.iter()
+                    .find(|r| !r["draft"].as_bool().unwrap_or(false))
+                    .cloned()
+            })
+            .ok_or_else(|| UpdaterError::Json("no releases found".to_string()))?
+    } else {
+        let json = http_get(GITHUB_API_URL).await?;
+        serde_json::from_str(&json).map_err(|e| UpdaterError::Json(e.to_string()))?
+    };
 
     let tag = release["tag_name"].as_str().unwrap_or("v0.0.0");
     let latest = tag.strip_prefix('v').unwrap_or(tag);
@@ -275,6 +305,7 @@ pub async fn check_for_update() -> Result<AifwUpdateInfo, UpdaterError> {
         running_version: running_version().to_string(),
         reboot_recommended,
         reboot_reason,
+        include_prereleases,
     })
 }
 

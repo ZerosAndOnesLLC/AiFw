@@ -947,6 +947,10 @@ pub fn build_router(
             post(updates::aifw_restart_services),
         )
         .route("/api/v1/updates/aifw/reboot", post(updates::aifw_reboot))
+        .route(
+            "/api/v1/updates/aifw/prerelease",
+            post(updates::set_prerelease_channel),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)));
 
     // Local-tarball install — needs a large body limit (500 MB) for the

@@ -55,6 +55,9 @@ interface AifwUpdateInfo {
   // modal's primary action from Restart to Reboot.
   reboot_recommended?: boolean;
   reboot_reason?: string | null;
+  // Operator opted this box into the pre-release update channel. When on,
+  // checks/installs consider GitHub pre-releases, not just stable releases.
+  include_prereleases?: boolean;
 }
 
 interface UpdateInstallResponse {
@@ -269,6 +272,25 @@ export default function UpdatesPage() {
       showFeedback("error", err instanceof Error ? err.message : "Failed to check for AiFw updates");
     } finally {
       setAifwChecking(false);
+    }
+  };
+
+  const handleTogglePrerelease = async (enabled: boolean) => {
+    // Optimistic — reflect the toggle immediately, revert on failure.
+    setAifwInfo((prev) => (prev ? { ...prev, include_prereleases: enabled } : prev));
+    try {
+      const res = await fetch("/api/v1/updates/aifw/prerelease", {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showFeedback("success", `Pre-release channel ${enabled ? "enabled" : "disabled"}`);
+      // Re-check against the new channel so the available version updates.
+      await handleAifwCheck();
+    } catch (err) {
+      setAifwInfo((prev) => (prev ? { ...prev, include_prereleases: !enabled } : prev));
+      showFeedback("error", err instanceof Error ? err.message : "Failed to change update channel");
     }
   };
 
@@ -678,6 +700,17 @@ export default function UpdatesPage() {
                 </span>
               )}
             </div>
+            <label className="flex items-center gap-2 pt-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={aifwInfo?.include_prereleases ?? false}
+                onChange={(e) => handleTogglePrerelease(e.target.checked)}
+                className="rounded border-gray-600"
+              />
+              <span className="text-xs text-[var(--text-secondary)]">
+                Include pre-releases (test channel)
+              </span>
+            </label>
           </div>
 
           <div className="flex flex-wrap gap-2 sm:flex-col sm:items-end">

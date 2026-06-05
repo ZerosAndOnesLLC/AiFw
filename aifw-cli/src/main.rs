@@ -273,7 +273,11 @@ enum HealthAction {
 #[derive(Subcommand)]
 enum UpdateAction {
     /// Check for AiFw firmware update from GitHub
-    Check,
+    Check {
+        /// Include pre-releases (test channel), not just stable releases.
+        #[arg(long)]
+        pre: bool,
+    },
     /// Download and install AiFw firmware update.
     ///
     /// Does NOT restart services automatically. Run `aifw update restart`
@@ -299,6 +303,10 @@ enum UpdateAction {
         /// is unavailable).
         #[arg(long)]
         skip_checksum: bool,
+        /// Include pre-releases (test channel) when fetching from GitHub.
+        /// Ignored with --from.
+        #[arg(long)]
+        pre: bool,
     },
     /// Rollback to previous AiFw firmware version.
     ///
@@ -1206,17 +1214,18 @@ async fn main() -> anyhow::Result<()> {
             ReverseProxyAction::ShowConfig => commands::rp_show_config(&cli.db).await?,
         },
         Commands::Update { action } => match action {
-            UpdateAction::Check => commands::update_check().await?,
+            UpdateAction::Check { pre } => commands::update_check(pre).await?,
             UpdateAction::Install {
                 restart,
                 yes,
                 from,
                 skip_checksum,
+                pre,
             } => {
                 if let Some(path) = from {
                     commands::update_install_local(path, skip_checksum, restart || yes).await?
                 } else {
-                    commands::update_install(restart || yes).await?
+                    commands::update_install(restart || yes, pre).await?
                 }
             }
             UpdateAction::Rollback { restart, yes } => {
