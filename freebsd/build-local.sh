@@ -103,6 +103,18 @@ echo "=== [3/6] Building Rust binaries (release) ==="
 echo "--- AiFw commit: $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown) ---"
 cargo build --release
 
+# --- Guard: the compiled binary version MUST match the release version ---
+# The version label, tarball name and version file all come from $VERSION,
+# but the binaries' version is baked in from Cargo.toml at compile time. If
+# those diverge — a stale cargo artifact that wasn't recompiled after a
+# version bump, or a $VERSION arg that doesn't match the checked-out
+# Cargo.toml — we'd ship a tarball whose binaries install as the WRONG
+# version. That shipped a "5.96.10" tarball containing 5.96.8 binaries,
+# making every appliance's in-app update a silent no-op. Fail loudly instead.
+BIN_VER="$("$PROJECT_ROOT/target/release/aifw" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+[ "$BIN_VER" = "$VERSION" ] || die "version mismatch: building v${VERSION} but target/release/aifw reports v${BIN_VER:-unknown}. Bump Cargo.toml and rebuild (try 'cargo clean -p aifw') before releasing."
+echo "--- Verified compiled aifw binary is v${VERSION} ---"
+
 # Helper: clone-or-update a companion repo and FAIL LOUDLY on pull errors.
 # Previous version used `git pull 2>/dev/null || true` which silently
 # swallowed stale-checkout / merge-conflict errors, causing releases to

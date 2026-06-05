@@ -97,6 +97,28 @@ if [ ! -f "$UPDATE_TARBALL" ]; then
     UPDATE_SHA=""
 fi
 
+# --- Guard: the tarball we're about to publish MUST actually contain ${VERSION} ---
+# release.sh reads a fixed path. A stale or mislabeled tarball sitting there
+# would be published under a v${VERSION} tag while its payload installs an
+# older build — the in-app updater then reports "updated" but the appliance
+# never moves (it stayed on 5.96.8 across several "upgrades"). Verify the
+# tarball's version file AND its compiled aifw binary before uploading.
+if [ -n "$UPDATE_TARBALL" ]; then
+    INNER="aifw-update-${VERSION}-amd64"
+    TVER="$(tar -xJOf "$UPDATE_TARBALL" "${INNER}/version" 2>/dev/null | tr -d '[:space:]')"
+    [ "$TVER" = "$VERSION" ] || die "update tarball version file is '${TVER:-missing}', expected ${VERSION} — stale/mismatched artifact at ${UPDATE_TARBALL}. Rebuild before releasing."
+    TMPV="$(mktemp -d)"
+    if tar -xJf "$UPDATE_TARBALL" -C "$TMPV" "${INNER}/bin/aifw" 2>/dev/null; then
+        BVER="$("$TMPV/${INNER}/bin/aifw" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+        if [ -n "$BVER" ] && [ "$BVER" != "$VERSION" ]; then
+            rm -rf "$TMPV"
+            die "update tarball binary is v${BVER}, expected v${VERSION} — refusing to publish a mislabeled update."
+        fi
+    fi
+    rm -rf "$TMPV"
+    echo "Verified update tarball payload is v${VERSION}"
+fi
+
 if [ -z "$ISO_UPLOAD" ] && [ -z "$IMG_UPLOAD" ] && [ -z "$UPDATE_TARBALL" ]; then
     die "No artifacts to release. Run build-local.sh first."
 fi

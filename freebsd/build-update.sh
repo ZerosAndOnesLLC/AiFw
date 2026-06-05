@@ -118,6 +118,16 @@ echo "=== [3/6] Building Rust binaries (release) ==="
 echo "--- AiFw commit: $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown) ---"
 cargo build --release
 
+# --- Guard: the compiled binary version MUST match the release version ---
+# $VERSION drives the tarball name + version file, but the binaries' version
+# is baked in from Cargo.toml at compile time. A divergence (stale cargo
+# artifact not recompiled after a bump, or a $VERSION arg that doesn't match
+# the checked-out Cargo.toml) ships binaries that install as the wrong
+# version — the silent no-op upgrade that stranded appliances on 5.96.8.
+BIN_VER="$("$PROJECT_ROOT/target/release/aifw" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+[ "$BIN_VER" = "$VERSION" ] || die "version mismatch: building v${VERSION} but target/release/aifw reports v${BIN_VER:-unknown}. Bump Cargo.toml and rebuild (try 'cargo clean -p aifw') before releasing."
+echo "--- Verified compiled aifw binary is v${VERSION} ---"
+
 # Clone-or-update a companion repo; fail loudly on pull errors.
 # (Same function as in build-local.sh — keep them in sync.)
 build_companion() {
@@ -238,6 +248,19 @@ mkdir -p "$STAGE_OUT"
 XZ_OPT='-9 -T0' tar -C /tmp -cJf "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"
 ( cd "$STAGE_OUT" && sha256 "aifw-update-${VERSION}-amd64.tar.xz" > "aifw-update-${VERSION}-amd64.tar.xz.sha256" )
 rm -rf "$TARBALL_DIR"
+
+# Unless the operator overrode the output path for test iteration, land the
+# artifacts in the release output dir that release.sh actually reads. Without
+# this the tarball stayed in the staging dir and release.sh could publish a
+# STALE tarball left in OUTPUTDIR under a fresh version tag.
+if [ -z "${AIFW_STAGE_OUT:-}" ]; then
+    OUTPUTDIR="/usr/obj/aifw-iso/output"
+    mkdir -p "$OUTPUTDIR"
+    mv "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz" "$OUTPUTDIR/"
+    mv "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz.sha256" "$OUTPUTDIR/"
+    rmdir "$STAGE_OUT" 2>/dev/null || true
+    STAGE_OUT="$OUTPUTDIR"
+fi
 
 echo ""
 echo "=== Complete ==="
