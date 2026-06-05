@@ -216,15 +216,35 @@ ASSETS=""
 [ -n "$IMG_UPLOAD" ]      && ASSETS="$ASSETS $IMG_UPLOAD $IMG_SHA_UPLOAD"
 [ -n "$UPDATE_TARBALL" ]  && ASSETS="$ASSETS $UPDATE_TARBALL $UPDATE_SHA"
 
+# Publish as a PRE-RELEASE by default so it can be tested before the
+# community auto-pulls it: the in-app updater's stable channel uses GitHub
+# /releases/latest, which skips pre-releases, so a pre-release is only seen
+# by boxes that opted into the pre-release channel (aifw update --pre / UI
+# toggle). Set AIFW_RELEASE_FINAL=1 to cut a stable release that every field
+# appliance will pull. Promote a tested pre-release later with:
+#     gh release edit <tag> --prerelease=false --latest
+if [ -n "${AIFW_RELEASE_FINAL:-}" ]; then
+    CREATE_PRE=""                 # omit --prerelease -> stable, becomes latest
+    EDIT_PRE="--prerelease=false"
+    echo "Publishing STABLE release (AIFW_RELEASE_FINAL set) — field appliances will pull this."
+else
+    CREATE_PRE="--prerelease"
+    EDIT_PRE="--prerelease=true"
+    echo "Publishing PRE-RELEASE (default) — only --pre / pre-release-channel boxes will pull it."
+    echo "  Set AIFW_RELEASE_FINAL=1 for a stable release, or promote later with:"
+    echo "    gh release edit ${TAG} --prerelease=false --latest"
+fi
+
 # Create release (or update if exists)
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "Release ${TAG} exists, uploading assets..."
     gh release upload "$TAG" $ASSETS --clobber
-    # Ensure it's not stuck as a draft
-    gh release edit "$TAG" --draft=false --title "AiFw v${VERSION}" --notes "$BODY" 2>/dev/null || true
+    # Ensure it's not stuck as a draft, and apply the chosen pre-release state.
+    gh release edit "$TAG" --draft=false $EDIT_PRE --title "AiFw v${VERSION}" --notes "$BODY" 2>/dev/null || true
 else
     gh release create "$TAG" \
         $ASSETS \
+        $CREATE_PRE \
         --title "AiFw v${VERSION}" \
         --notes "$BODY"
 fi
