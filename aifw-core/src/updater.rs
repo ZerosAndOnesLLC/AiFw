@@ -330,24 +330,59 @@ pub async fn install_from_path(
     info!("Backing up current installation...");
     backup_current().await?;
 
-    // Extract tarball into a sibling directory
-    let extract_dir = {
-        let parent = tarball_path
-            .parent()
-            .unwrap_or(std::path::Path::new("/tmp"));
-        parent.join("extracted")
-    };
+    // Extract the tarball into a dedicated, always-clean staging dir.
+    //
+    // The tarball is extracted as root (via the sudo-tar helper), so anything
+    // left over from a prior update is root-owned and the aifw user can't
+    // remove it with std fs. Previously these accumulated in
+    // <tarball_parent>/extracted and the installer selected one with
+    // read_dir().next_entry() — an ARBITRARY directory-order pick — so a stale
+    // older version (e.g. 5.96.8) got installed instead of the one just
+    // downloaded, making every in-app upgrade a silent no-op.
+    //
+    // Fix: stage in a fixed path inside the /tmp/aifw-* allowlist (so the sudo
+    // rm/tar helpers accept it), scrub it before AND after extraction (via the
+    // sudo helper, since the content is root-owned), and select the update dir
+    // DETERMINISTICALLY from the tarball's own top-level entry rather than
+    // trusting directory order.
+    const EXTRACT_DIR: &str = "/tmp/aifw-update-extract";
+    // Scrub current + legacy staging. Root-owned, so the sudo helper is
+    // required; best-effort because a clean run has nothing to remove.
+    let _ = crate::sudo::rm(&["-rf", EXTRACT_DIR]).await;
+    let _ = crate::sudo::rm(&["-rf", "/tmp/aifw-update/extracted"]).await;
+    let extract_dir = std::path::PathBuf::from(EXTRACT_DIR);
     tokio::fs::create_dir_all(&extract_dir)
         .await
         .map_err(|e| UpdaterError::Install(format!("Failed to create extract dir: {}", e)))?;
 
-    let extract_dir_str = extract_dir
-        .to_str()
-        .ok_or_else(|| UpdaterError::Install("extract_dir path is not UTF-8".into()))?;
+    // Read the tarball's top-level directory name straight from the archive,
+    // so we install exactly what we extracted regardless of any siblings.
+    let listing = Command::new("tar")
+        .args(["tf", tarball_str])
+        .output()
+        .await
+        .map_err(|e| UpdaterError::Install(format!("tar list failed: {}", e)))?;
+    if !listing.status.success() {
+        return Err(UpdaterError::Install(format!(
+            "tar list failed: {}",
+            String::from_utf8_lossy(&listing.stderr)
+        )));
+    }
+    let top_name = String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .find_map(|l| {
+            l.trim_start_matches("./")
+                .split('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| UpdaterError::Install("Empty tarball".to_string()))?;
+
     // Use the aifw-sudo-tar helper which rejects --use-compress-program /
     // --checkpoint-action / -I (SEC-C2 PE primitives). The helper also
     // restricts tarball + dest to staging dirs we already own.
-    let output = crate::sudo::tar(&["xf", tarball_str, "-C", extract_dir_str])
+    let output = crate::sudo::tar(&["xf", tarball_str, "-C", EXTRACT_DIR])
         .await
         .map_err(|e| UpdaterError::Install(format!("tar failed: {}", e)))?;
 
@@ -358,19 +393,13 @@ pub async fn install_from_path(
         )));
     }
 
-    // Find the extracted directory (aifw-update-VERSION-amd64/)
-    let mut entries = tokio::fs::read_dir(&extract_dir)
-        .await
-        .map_err(|e| UpdaterError::Install(e.to_string()))?;
-    let update_dir = if let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| UpdaterError::Install(e.to_string()))?
-    {
-        entry.path()
-    } else {
-        return Err(UpdaterError::Install("Empty tarball".to_string()));
-    };
+    let update_dir = extract_dir.join(&top_name);
+    if !update_dir.is_dir() {
+        return Err(UpdaterError::Install(format!(
+            "extracted dir '{}' not found (corrupt tarball?)",
+            top_name
+        )));
+    }
 
     // Install binaries. We iterate the tarball's bin/ directory rather than
     // the compiled-in `all_binaries()` list — that way a release that adds a
@@ -621,8 +650,10 @@ pub async fn install_from_path(
             .await;
     }
 
-    // Cleanup extract dir
-    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+    // Cleanup extract dir. Contents are root-owned (sudo-tar), so std fs
+    // remove_dir_all would fail silently and leak staging across updates —
+    // exactly what let stale dirs pile up before. Use the sudo helper.
+    let _ = crate::sudo::rm(&["-rf", EXTRACT_DIR]).await;
 
     let version_display = if installed_version.is_empty() {
         "unknown".to_string()
