@@ -2344,18 +2344,49 @@ run_rc_command "$1"
 #[cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
 pub fn sudoers_content() -> &'static str {
     "\
-# --- pfctl (restricted to aifw anchors) ---
+# --- pfctl (every form aifw-pf/aifw-core/aifw-api actually invokes) ---
+# Anchors are always aifw-prefixed; pf table names and addresses are
+# caller-supplied so those use wildcards. Each grant maps to a specific call
+# site — keep in sync with the pfctl invocations in aifw-pf/src/ioctl.rs,
+# aifw-core/src/pf_tuning.rs and aifw-api/src/main.rs. A test in apply.rs
+# (pfctl_sudoers_covers_invocations) guards against forms going missing
+# (the SEC-C2 narrowing dropped `-ss -vv`, breaking the connection list).
+# Per-anchor rule/NAT/queue load, flush and show:
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f -
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /usr/local/etc/aifw/anchors/aifw*
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -nf /tmp/aifw_pf_*.conf
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -F all
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -N -f /tmp/aifw_pf_*.conf
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sr
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -ss
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -k label -k aifw*
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sn
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sq
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -Fr
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -Fn
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -Fq
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -F all
+# Global status reads (-ss -vv feeds the connection list / NAT flows page):
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -si
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -sr
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -si
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss -v
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss -vv
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -vvsI
+# pf table management (aliases / geo-IP / plugin blocklists) — table name
+# and address are caller-supplied:
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -t * -T add *
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -t * -T delete *
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -t * -T replace -f -
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -t * -T flush
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -t * -T show
+# State kills — by rule label, by src/dst pair, by interface:
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -k label -k aifw*
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -k * -k *
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -k 0.0.0.0/0 -k 0.0.0.0/0 -i *
+# pf.conf validate/load + tuning merge:
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -f /etc/pf.conf
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -f /usr/local/etc/aifw/pf.conf.aifw
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -nf /tmp/aifw_pf_*.conf
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -nf /tmp/aifw-pf.conf.aifw.patched
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -m -f /usr/local/etc/aifw/pf-tuning.conf
 
 # --- shutdown (exact forms only; -p power-off or -r reboot with +10s grace) ---
 aifw ALL=(root) NOPASSWD: /sbin/shutdown -p +10s *
@@ -2474,6 +2505,53 @@ mod sudoers_tests {
                 after_paren.starts_with('/'),
                 "line {} command path is not absolute: {raw:?}",
                 lineno + 1
+            );
+        }
+    }
+
+    /// Every pfctl form the code shells out to (`sudo /sbin/pfctl …`) must
+    /// have a matching NOPASSWD grant. sudo matches the joined argument
+    /// string with fnmatch, so each expected string below is the grant body
+    /// that covers a specific call site in aifw-pf/src/ioctl.rs,
+    /// aifw-core/src/pf_tuning.rs and aifw-api/src/main.rs. The SEC-C2
+    /// narrowing dropped `-ss -vv` (and the table/kill/flush/tuning forms),
+    /// which silently emptied the connection list and broke the NAT Flows
+    /// page; this gate stops that from regressing again.
+    #[test]
+    fn pfctl_sudoers_covers_invocations() {
+        let content = sudoers_content();
+        // (call site, grant body that must appear verbatim in sudoers)
+        let required: &[(&str, &str)] = &[
+            ("load_rules", "/sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf"),
+            ("add_rule (stdin)", "/sbin/pfctl -a aifw* -f -"),
+            ("load_nat_rules", "/sbin/pfctl -a aifw* -N -f /tmp/aifw_pf_*.conf"),
+            ("get_rules", "/sbin/pfctl -a aifw* -sr"),
+            ("get_nat_rules", "/sbin/pfctl -a aifw* -sn"),
+            ("get_queues", "/sbin/pfctl -a aifw* -sq"),
+            ("flush_rules", "/sbin/pfctl -a aifw* -Fr"),
+            ("flush_nat_rules", "/sbin/pfctl -a aifw* -Fn"),
+            ("flush_queues", "/sbin/pfctl -a aifw* -Fq"),
+            ("get_stats (status)", "/sbin/pfctl -si"),
+            ("get_stats (rules)", "/sbin/pfctl -sr"),
+            ("get_states", "/sbin/pfctl -ss -vv"),
+            ("kill_states_for_label (list)", "/sbin/pfctl -ss -v"),
+            ("get_stats (ifaces)", "/sbin/pfctl -vvsI"),
+            ("add_table_entry", "/sbin/pfctl -t * -T add *"),
+            ("remove_table_entry", "/sbin/pfctl -t * -T delete *"),
+            ("replace_table_entries", "/sbin/pfctl -t * -T replace -f -"),
+            ("flush_table", "/sbin/pfctl -t * -T flush"),
+            ("get_table_entries", "/sbin/pfctl -t * -T show"),
+            ("kill_states (pair)", "/sbin/pfctl -k * -k *"),
+            ("kill_states_on_iface", "/sbin/pfctl -k 0.0.0.0/0 -k 0.0.0.0/0 -i *"),
+            ("patch pf.conf validate", "/sbin/pfctl -nf /tmp/aifw-pf.conf.aifw.patched"),
+            ("patch/dhcp pf.conf load", "/sbin/pfctl -f /usr/local/etc/aifw/pf.conf.aifw"),
+            ("pf tuning merge", "/sbin/pfctl -m -f /usr/local/etc/aifw/pf-tuning.conf"),
+        ];
+        for (site, grant) in required {
+            assert!(
+                content.contains(grant),
+                "pfctl form for `{site}` is not granted in sudoers — missing `{grant}`. \
+                 An uncovered form makes `sudo {grant}` prompt for a password and fail."
             );
         }
     }
