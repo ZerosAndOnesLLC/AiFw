@@ -27,6 +27,39 @@ log() {
 
 log "starting (pid $$)"
 
+# --- sudoers self-heal (in-place upgrade gap) ------------------------------
+# In-place tarball upgrades install new binaries and the narrow aifw-sudo-*
+# helpers, but the updater runs as the aifw uid and by design (SEC-C1) cannot
+# write /usr/local/etc/sudoers.d/aifw. This driver runs as root via the
+# `daemon -f` grant, so it is the correct privileged step to refresh the
+# sudoers file from the canonical, CI-tested definition baked into the signed
+# aifw-setup binary. Without this, an upgraded box keeps a stale sudoers that
+# lacks the helper grants the new code calls (e.g. aifw-sudo-service), and
+# operations like the DNS resolver apply/probe fail with
+# "sudo: a password is required". Idempotent and validated. Runs before the
+# service bounce so the restarted services come up with correct grants.
+refresh_sudoers() {
+    [ -x /usr/local/sbin/aifw-setup ] || return 0
+    _tmp=$(mktemp /tmp/aifw-sudoers.XXXXXX) || return 0
+    if /usr/local/sbin/aifw-setup --print-sudoers > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
+        # Validate before installing — a malformed sudoers file would void
+        # every NOPASSWD grant the appliance depends on.
+        if visudo -cf "$_tmp" >/dev/null 2>&1; then
+            if ! cmp -s "$_tmp" /usr/local/etc/sudoers.d/aifw 2>/dev/null; then
+                if install -m 440 -o root -g wheel "$_tmp" /usr/local/etc/sudoers.d/aifw; then
+                    log "refreshed /usr/local/etc/sudoers.d/aifw from aifw-setup"
+                else
+                    log "WARN failed to install refreshed sudoers"
+                fi
+            fi
+        else
+            log "WARN aifw-setup --print-sudoers failed visudo validation; sudoers unchanged"
+        fi
+    fi
+    rm -f "$_tmp"
+}
+refresh_sudoers
+
 # Settle: let the API HTTP response leave the box and the caller's tokio
 # runtime tear down before we touch services. Matches the 2-second delay
 # used by the previous in-process implementation.

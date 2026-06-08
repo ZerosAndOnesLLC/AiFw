@@ -1220,6 +1220,38 @@ async fn verify_sha256(file: &str, expected: &str) -> Result<bool, UpdaterError>
 mod tests {
     use super::*;
 
+    // Regression gate (#188-style): both root-run drivers must refresh the
+    // sudoers file from the canonical aifw-setup definition. An in-place
+    // tarball upgrade installs new aifw-sudo-* helpers but the aifw-uid
+    // updater cannot write sudoers (SEC-C1); these scripts are the only
+    // root-context hook that closes the gap. If someone strips the refresh,
+    // upgraded boxes silently regress to "sudo: a password is required" on
+    // every operation that calls a narrow helper (e.g. DNS resolver apply).
+    #[test]
+    fn test_restart_driver_refreshes_sudoers() {
+        for (name, script) in [
+            ("aifw-restart.sh", EMBEDDED_RESTART_SH),
+            ("aifw-watchdog.sh", EMBEDDED_WATCHDOG_SH),
+        ] {
+            assert!(
+                script.contains("aifw-setup --print-sudoers"),
+                "{name} must regenerate sudoers from aifw-setup"
+            );
+            assert!(
+                script.contains("visudo -cf"),
+                "{name} must validate sudoers with visudo before installing"
+            );
+            assert!(
+                script.contains("/usr/local/etc/sudoers.d/aifw"),
+                "{name} must install to the canonical sudoers path"
+            );
+            assert!(
+                script.contains("refresh_sudoers"),
+                "{name} must invoke the refresh_sudoers routine"
+            );
+        }
+    }
+
     #[test]
     fn test_version_newer() {
         assert!(version_newer("5.3.3", "5.3.4"));

@@ -44,6 +44,34 @@ heal_one()
 
 log "starting (pid $$, interval ${INTERVAL}s)"
 
+# --- sudoers self-heal (defense-in-depth) ----------------------------------
+# Mirror of the refresh in aifw-restart.sh. The restart driver is the primary
+# path (runs on every update/bounce); this runs once at watchdog startup — and
+# the watchdog restarts on every reboot — so a box heals even if it never sees
+# another update or the restart driver fell back to the in-process loop. Runs
+# as root via the `daemon -f` grant. Content comes from the signed aifw-setup
+# binary (SEC-C1: aifw uid cannot write sudoers, root can). Idempotent and
+# validated; a no-op once the file already matches.
+refresh_sudoers() {
+    [ -x /usr/local/sbin/aifw-setup ] || return 0
+    _tmp=$(mktemp /tmp/aifw-sudoers.XXXXXX) || return 0
+    if /usr/local/sbin/aifw-setup --print-sudoers > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
+        if visudo -cf "$_tmp" >/dev/null 2>&1; then
+            if ! cmp -s "$_tmp" /usr/local/etc/sudoers.d/aifw 2>/dev/null; then
+                if install -m 440 -o root -g wheel "$_tmp" /usr/local/etc/sudoers.d/aifw; then
+                    log "refreshed /usr/local/etc/sudoers.d/aifw from aifw-setup"
+                else
+                    log "WARN failed to install refreshed sudoers"
+                fi
+            fi
+        else
+            log "WARN aifw-setup --print-sudoers failed visudo validation; sudoers unchanged"
+        fi
+    fi
+    rm -f "$_tmp"
+}
+refresh_sudoers
+
 while true; do
     # Order: daemon first, then ids (aifw_api REQUIREs ids), then api.
     # Companions (rdns/rdhcpd/rtime/trafficcop) are intentionally not in
