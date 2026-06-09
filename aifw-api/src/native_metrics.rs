@@ -169,9 +169,7 @@ fn read_sysctl_string(name: &str) -> Option<String> {
     while buf.last() == Some(&0) {
         buf.pop();
     }
-    String::from_utf8(buf)
-        .ok()
-        .map(|s| s.trim().to_string())
+    String::from_utf8(buf).ok().map(|s| s.trim().to_string())
 }
 
 /// Single mounted filesystem.

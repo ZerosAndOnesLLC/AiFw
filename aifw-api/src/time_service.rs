@@ -216,9 +216,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 /// when a write happened. Errors are reported but never fatal — the API must
 /// still start even if /usr/local/etc/rtime isn't writable yet (e.g., during
 /// first-boot before aifw-setup has run).
-async fn regenerate_toml_and_restart_if_changed(
-    pool: &SqlitePool,
-) -> Result<bool, std::io::Error> {
+async fn regenerate_toml_and_restart_if_changed(pool: &SqlitePool) -> Result<bool, std::io::Error> {
     let new_toml = generate_rtime_config(pool).await;
     let existing = tokio::fs::read_to_string(RTIME_CONFIG_PATH).await.ok();
     if existing.as_deref() == Some(new_toml.as_str()) {

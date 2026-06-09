@@ -425,7 +425,6 @@ impl RulesetManager {
             RuleFormat::Suricata // default assumption
         }
     }
-
 }
 
 fn extract_sid(rule: &str) -> Option<u32> {

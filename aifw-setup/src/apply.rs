@@ -2532,7 +2532,10 @@ mod sudoers_tests {
         let required: &[(&str, &str)] = &[
             ("load_rules", "/sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf"),
             ("add_rule (stdin)", "/sbin/pfctl -a aifw* -f -"),
-            ("load_nat_rules", "/sbin/pfctl -a aifw* -N -f /tmp/aifw_pf_*.conf"),
+            (
+                "load_nat_rules",
+                "/sbin/pfctl -a aifw* -N -f /tmp/aifw_pf_*.conf",
+            ),
             ("get_rules", "/sbin/pfctl -a aifw* -sr"),
             ("get_nat_rules", "/sbin/pfctl -a aifw* -sn"),
             ("daemon pf drift auto-heal (global -sn)", "/sbin/pfctl -sn"),
@@ -2551,10 +2554,22 @@ mod sudoers_tests {
             ("flush_table", "/sbin/pfctl -t * -T flush"),
             ("get_table_entries", "/sbin/pfctl -t * -T show"),
             ("kill_states (pair)", "/sbin/pfctl -k * -k *"),
-            ("kill_states_on_iface", "/sbin/pfctl -k 0.0.0.0/0 -k 0.0.0.0/0 -i *"),
-            ("patch pf.conf validate", "/sbin/pfctl -nf /tmp/aifw-pf.conf.aifw.patched"),
-            ("patch/dhcp pf.conf load", "/sbin/pfctl -f /usr/local/etc/aifw/pf.conf.aifw"),
-            ("pf tuning merge", "/sbin/pfctl -m -f /usr/local/etc/aifw/pf-tuning.conf"),
+            (
+                "kill_states_on_iface",
+                "/sbin/pfctl -k 0.0.0.0/0 -k 0.0.0.0/0 -i *",
+            ),
+            (
+                "patch pf.conf validate",
+                "/sbin/pfctl -nf /tmp/aifw-pf.conf.aifw.patched",
+            ),
+            (
+                "patch/dhcp pf.conf load",
+                "/sbin/pfctl -f /usr/local/etc/aifw/pf.conf.aifw",
+            ),
+            (
+                "pf tuning merge",
+                "/sbin/pfctl -m -f /usr/local/etc/aifw/pf-tuning.conf",
+            ),
         ];
         for (site, grant) in required {
             assert!(

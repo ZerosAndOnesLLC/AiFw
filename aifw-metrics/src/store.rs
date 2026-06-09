@@ -37,7 +37,11 @@ impl MetricsStore {
         self.series
             .iter()
             .map(|entry| {
-                let latest = entry.value().lock().expect("series mutex poisoned").latest();
+                let latest = entry
+                    .value()
+                    .lock()
+                    .expect("series mutex poisoned")
+                    .latest();
                 (entry.key().clone(), latest)
             })
             .collect()
@@ -89,12 +93,10 @@ impl MetricsBackend for MetricsStore {
     }
 
     async fn latest(&self, name: &str) -> Result<Option<f64>, String> {
-        Ok(self.series.get(name).and_then(|e| {
-            e.value()
-                .lock()
-                .expect("series mutex poisoned")
-                .latest()
-        }))
+        Ok(self
+            .series
+            .get(name)
+            .and_then(|e| e.value().lock().expect("series mutex poisoned").latest()))
     }
 
     async fn list_metrics(&self) -> Result<Vec<String>, String> {

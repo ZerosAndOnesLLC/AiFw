@@ -2871,9 +2871,10 @@ const AIFW_API_BASE: &str = "http://127.0.0.1:8080";
 /// will respond 401 in that case.
 fn read_api_token() -> String {
     if let Ok(t) = std::env::var("AIFW_TOKEN")
-        && !t.is_empty() {
-            return t;
-        }
+        && !t.is_empty()
+    {
+        return t;
+    }
     std::fs::read_to_string("/var/db/aifw/cli.token")
         .unwrap_or_default()
         .trim()

@@ -82,10 +82,9 @@ pub async fn enable_plugin(
     if !enabled {
         let _ = mgr.unload(name).await;
         // Sync the atomic shadow counter (PERF-C12).
-        state.plugin_running_count.store(
-            mgr.running_count(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        state
+            .plugin_running_count
+            .store(mgr.running_count(), std::sync::atomic::Ordering::Relaxed);
         Ok(Json(MessageResponse {
             message: format!("Plugin '{name}' disabled."),
         }))
@@ -109,10 +108,9 @@ pub async fn enable_plugin(
                     },
                 )
                 .await;
-            state.plugin_running_count.store(
-                mgr.running_count(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            state
+                .plugin_running_count
+                .store(mgr.running_count(), std::sync::atomic::Ordering::Relaxed);
             Ok(Json(MessageResponse {
                 message: format!("Plugin '{name}' enabled and running."),
             }))

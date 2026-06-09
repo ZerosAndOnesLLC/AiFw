@@ -119,7 +119,10 @@ impl PfBackend for PfMock {
         let mut tables = self.tables.write().await;
         // Mock only tracks bare addresses, not prefixes — match the existing
         // add_table_entry contract.
-        tables.insert(table.to_string(), entries.iter().map(|(ip, _)| *ip).collect());
+        tables.insert(
+            table.to_string(),
+            entries.iter().map(|(ip, _)| *ip).collect(),
+        );
         Ok(())
     }
 

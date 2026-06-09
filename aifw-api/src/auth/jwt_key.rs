@@ -61,11 +61,12 @@ fn generate() -> String {
 
 async fn write_restricted(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("create {}: {e}", parent.display()))?;
-        }
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
 
     #[cfg(unix)]
     {

@@ -849,7 +849,6 @@ async fn write_embedded_script(name: &str, content: &str) {
 // sudoers file is now written by a root-running installer step
 // (deploy.sh / aifw-setup) and is immutable at aifw-uid runtime.
 
-
 /// Ensure each AiFw service has its rcvar set to YES in /etc/rc.conf.
 ///
 /// Appliances upgraded from versions predating a service (notably aifw_ids

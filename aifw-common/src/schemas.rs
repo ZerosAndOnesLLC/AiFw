@@ -48,14 +48,12 @@ pub const API_KEYS_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS api_keys (
     FOREIGN KEY (user_id) REFERENCES users(id)
 )"#;
 
-pub const INTERFACE_ROLES_CREATE: &str =
-    "CREATE TABLE IF NOT EXISTS interface_roles (interface_name TEXT PRIMARY KEY, role TEXT NOT NULL, updated_at TEXT NOT NULL)";
+pub const INTERFACE_ROLES_CREATE: &str = "CREATE TABLE IF NOT EXISTS interface_roles (interface_name TEXT PRIMARY KEY, role TEXT NOT NULL, updated_at TEXT NOT NULL)";
 
 pub const DNS_RESOLVER_CONFIG_CREATE: &str =
     "CREATE TABLE IF NOT EXISTS dns_resolver_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 
-pub const DNS_ACCESS_LISTS_CREATE: &str =
-    "CREATE TABLE IF NOT EXISTS dns_access_lists (id TEXT PRIMARY KEY, network TEXT NOT NULL, action TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)";
+pub const DNS_ACCESS_LISTS_CREATE: &str = "CREATE TABLE IF NOT EXISTS dns_access_lists (id TEXT PRIMARY KEY, network TEXT NOT NULL, action TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)";
 
 pub const DHCP_CONFIG_CREATE: &str =
     "CREATE TABLE IF NOT EXISTS dhcp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)";

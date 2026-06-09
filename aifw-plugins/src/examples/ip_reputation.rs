@@ -89,12 +89,13 @@ impl Plugin for IpReputationPlugin {
                 src_ip: Some(ip), ..
             }
             | HookEventData::Connection { src_ip: ip, .. }
-                if self.is_blocked(*ip).await => {
-                    tracing::warn!(%ip, "blocked by IP reputation");
-                    // Also add to pf table for kernel-level blocking
-                    let _ = ctx.add_to_table(&self.table_name, *ip).await;
-                    return HookAction::Block;
-                }
+                if self.is_blocked(*ip).await =>
+            {
+                tracing::warn!(%ip, "blocked by IP reputation");
+                // Also add to pf table for kernel-level blocking
+                let _ = ctx.add_to_table(&self.table_name, *ip).await;
+                return HookAction::Block;
+            }
             _ => {}
         }
         HookAction::Continue

@@ -57,13 +57,14 @@ impl EveOutput {
     /// open handle so the next emit reopens the fresh file.
     async fn check_rotation(&self) -> Result<()> {
         if let Ok(metadata) = tokio::fs::metadata(&self.path).await
-            && metadata.len() >= self.max_size {
-                let rotated = self.path.with_extension("json.1");
-                let _ = tokio::fs::remove_file(&rotated).await;
-                let _ = tokio::fs::rename(&self.path, &rotated).await;
-                let mut guard = self.file.lock().await;
-                *guard = None;
-            }
+            && metadata.len() >= self.max_size
+        {
+            let rotated = self.path.with_extension("json.1");
+            let _ = tokio::fs::remove_file(&rotated).await;
+            let _ = tokio::fs::rename(&self.path, &rotated).await;
+            let mut guard = self.file.lock().await;
+            *guard = None;
+        }
         Ok(())
     }
 }

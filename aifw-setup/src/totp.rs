@@ -45,10 +45,9 @@ pub fn verify(secret: &str, code: &str) -> bool {
         if generate_code(&secret_bytes, step + offset) == code_num {
             return true;
         }
-        if offset > 0 && step >= offset
-            && generate_code(&secret_bytes, step - offset) == code_num {
-                return true;
-            }
+        if offset > 0 && step >= offset && generate_code(&secret_bytes, step - offset) == code_num {
+            return true;
+        }
     }
     false
 }

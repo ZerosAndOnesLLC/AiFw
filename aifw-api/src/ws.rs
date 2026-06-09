@@ -1164,11 +1164,7 @@ pub fn start_pflog_collector(
         use tokio::io::{AsyncBufReadExt, BufReader};
         loop {
             let child = tokio::process::Command::new("/usr/local/bin/sudo")
-                .args([
-                    "/usr/local/libexec/aifw-sudo-tcpdump",
-                    "-i",
-                    "pflog0",
-                ])
+                .args(["/usr/local/libexec/aifw-sudo-tcpdump", "-i", "pflog0"])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
                 .spawn();

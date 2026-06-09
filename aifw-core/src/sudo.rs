@@ -113,10 +113,7 @@ pub async fn write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 
 /// Spawn `sudo <args>`, pipe `data` to stdin, collect output. Helper for
 /// the write_file fallback (both narrow + broad paths consume stdin).
-async fn run_with_stdin_pipe(
-    args: &[&str],
-    data: &[u8],
-) -> std::io::Result<std::process::Output> {
+async fn run_with_stdin_pipe(args: &[&str], data: &[u8]) -> std::io::Result<std::process::Output> {
     let mut child = Command::new(SUDO)
         .args(args)
         .stdin(std::process::Stdio::piped())

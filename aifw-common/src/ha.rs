@@ -25,7 +25,6 @@ pub enum CarpLatencyProfile {
     Aggressive,
 }
 
-
 impl CarpLatencyProfile {
     /// Returns (advbase, primary_advskew, secondary_advskew) for this profile.
     pub fn skews(self) -> (u8, u8, u8) {

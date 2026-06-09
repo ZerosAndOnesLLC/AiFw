@@ -1592,8 +1592,7 @@ async fn create_state_from_db(
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(
-        ConnectionTracker::new(pf.clone())
-            .with_poll_interval(std::time::Duration::from_secs(2)),
+        ConnectionTracker::new(pf.clone()).with_poll_interval(std::time::Duration::from_secs(2)),
     );
     // Background poller refreshes the snapshot on a 2s cadence so every
     // request and every WS tick is an atomic ArcSwap load instead of a
@@ -1835,9 +1834,10 @@ async fn sample_pfsync_metrics() -> (u64, u64, u64) {
         for line in pfsync_text.lines() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix(label)
-                && let Some(num) = rest.split_whitespace().next() {
-                    return num.replace(',', "").parse().unwrap_or(0);
-                }
+                && let Some(num) = rest.split_whitespace().next()
+            {
+                return num.replace(',', "").parse().unwrap_or(0);
+            }
         }
         0
     };
@@ -1864,9 +1864,10 @@ async fn pfsync_state_count_from_si() -> u64 {
             for line in text.lines() {
                 let line = line.trim_start();
                 if let Some(rest) = line.strip_prefix("current entries")
-                    && let Some(num) = rest.split_whitespace().next() {
-                        return num.parse().unwrap_or(0);
-                    }
+                    && let Some(num) = rest.split_whitespace().next()
+                {
+                    return num.parse().unwrap_or(0);
+                }
             }
             0
         }

@@ -337,16 +337,19 @@ async fn interface_ip(name: &str, want_v6: bool) -> Result<IpAddr, String> {
                         && !addr.starts_with("fe80")          // link-local
                         && !addr.starts_with("fc")            // ULA
                         && !addr.starts_with("fd")
-                    {
-                        return Ok(ip);
-                    }
+                {
+                    return Ok(ip);
+                }
             }
         } else if let Some(rest) = l.strip_prefix("inet ") {
             let addr = rest.split_whitespace().next().unwrap_or("");
             if let Ok(ip) = addr.parse::<IpAddr>()
-                && ip.is_ipv4() && !ip.is_loopback() && !addr.starts_with("169.254") {
-                    return Ok(ip);
-                }
+                && ip.is_ipv4()
+                && !ip.is_loopback()
+                && !addr.starts_with("169.254")
+            {
+                return Ok(ip);
+            }
         }
     }
     Err(format!(

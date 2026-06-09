@@ -311,10 +311,7 @@ impl RuleDatabase {
     /// exclusive ownership; existing readers continue with the previous Arc.
     pub fn add_rules(&self, new_rules: Vec<CompiledRule>) {
         let existing = self.raw_rules.load_full();
-        let mut combined: Vec<CompiledRule> = existing
-            .as_deref()
-            .cloned()
-            .unwrap_or_default();
+        let mut combined: Vec<CompiledRule> = existing.as_deref().cloned().unwrap_or_default();
         combined.extend(new_rules);
         let rules = Arc::new(combined);
         let compiled = Arc::new(CompiledRuleset::build(rules.clone()));

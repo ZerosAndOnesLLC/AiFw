@@ -191,22 +191,18 @@ impl App {
 
     pub fn select_down(&mut self) {
         match self.tab {
-            Tab::Rules
-                if !self.rules.is_empty() => {
-                    self.rules_selected = (self.rules_selected + 1).min(self.rules.len() - 1);
-                }
-            Tab::Nat
-                if !self.nat_rules.is_empty() => {
-                    self.nat_selected = (self.nat_selected + 1).min(self.nat_rules.len() - 1);
-                }
-            Tab::Connections
-                if !self.connections.is_empty() => {
-                    self.conn_selected = (self.conn_selected + 1).min(self.connections.len() - 1);
-                }
-            Tab::Logs
-                if !self.audit_entries.is_empty() => {
-                    self.log_selected = (self.log_selected + 1).min(self.audit_entries.len() - 1);
-                }
+            Tab::Rules if !self.rules.is_empty() => {
+                self.rules_selected = (self.rules_selected + 1).min(self.rules.len() - 1);
+            }
+            Tab::Nat if !self.nat_rules.is_empty() => {
+                self.nat_selected = (self.nat_selected + 1).min(self.nat_rules.len() - 1);
+            }
+            Tab::Connections if !self.connections.is_empty() => {
+                self.conn_selected = (self.conn_selected + 1).min(self.connections.len() - 1);
+            }
+            Tab::Logs if !self.audit_entries.is_empty() => {
+                self.log_selected = (self.log_selected + 1).min(self.audit_entries.len() - 1);
+            }
             _ => {}
         }
     }

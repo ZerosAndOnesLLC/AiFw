@@ -106,19 +106,18 @@ impl Plugin for WebhookPlugin {
                 dst_ip,
                 protocol,
                 ..
+            } if self.notify_on_block && action == "block" => {
+                self.queue_notification(
+                    "rule_block",
+                    &format!("Blocked {:?} -> {:?} ({})", src_ip, dst_ip, protocol),
+                    serde_json::json!({
+                        "src_ip": src_ip,
+                        "dst_ip": dst_ip,
+                        "protocol": protocol,
+                    }),
+                )
+                .await;
             }
-                if self.notify_on_block && action == "block" => {
-                    self.queue_notification(
-                        "rule_block",
-                        &format!("Blocked {:?} -> {:?} ({})", src_ip, dst_ip, protocol),
-                        serde_json::json!({
-                            "src_ip": src_ip,
-                            "dst_ip": dst_ip,
-                            "protocol": protocol,
-                        }),
-                    )
-                    .await;
-                }
             HookEventData::Connection {
                 src_ip,
                 dst_ip,
@@ -126,24 +125,23 @@ impl Plugin for WebhookPlugin {
                 dst_port,
                 protocol,
                 ..
+            } if self.notify_on_connection => {
+                self.queue_notification(
+                    "new_connection",
+                    &format!(
+                        "{}:{} -> {}:{} ({})",
+                        src_ip, src_port, dst_ip, dst_port, protocol
+                    ),
+                    serde_json::json!({
+                        "src_ip": src_ip.to_string(),
+                        "dst_ip": dst_ip.to_string(),
+                        "src_port": src_port,
+                        "dst_port": dst_port,
+                        "protocol": protocol,
+                    }),
+                )
+                .await;
             }
-                if self.notify_on_connection => {
-                    self.queue_notification(
-                        "new_connection",
-                        &format!(
-                            "{}:{} -> {}:{} ({})",
-                            src_ip, src_port, dst_ip, dst_port, protocol
-                        ),
-                        serde_json::json!({
-                            "src_ip": src_ip.to_string(),
-                            "dst_ip": dst_ip.to_string(),
-                            "src_port": src_port,
-                            "dst_port": dst_port,
-                            "protocol": protocol,
-                        }),
-                    )
-                    .await;
-                }
             HookEventData::Log {
                 action, details, ..
             } => {
