@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.96.17"
+version = "5.96.18"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -54,6 +54,16 @@ async-trait = "0.1"
 ratatui = "0.30"
 crossterm = "0.29"
 nix = { version = "0.31", features = ["fs", "process", "socket", "net", "fanotify", "feature", "hostname", "user"] }
+anyhow = "1"
+sha2 = "0.10"
+hex = "0.4"
+rcgen = "0.14"
+libc = "0.2"
+time = "0.3"
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Workspace-wide clippy lint posture. Stylistic-only lints are allowed —
 # documented engine constructors legitimately have many parameters, the

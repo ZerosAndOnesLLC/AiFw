@@ -16,8 +16,8 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
-sha2 = "0.10"
-hex = "0.4"
+sha2 = { workspace = true }
+hex = { workspace = true }
 cron = "0.16"
 arc-swap = "1"
 ip_network = "0.4"
@@ -28,12 +28,12 @@ aws-sdk-route53 = { version = "1", default-features = false, features = ["defaul
 aws-credential-types = "1"
 aws-smithy-runtime-api = "1"
 instant-acme = "0.7"
-rcgen = "0.14"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rcgen = { workspace = true }
+reqwest = { workspace = true }
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 
 [dev-dependencies]
-anyhow = "1"
+anyhow = { workspace = true }
 
 [lints]
 workspace = true

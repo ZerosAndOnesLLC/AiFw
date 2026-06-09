@@ -21,8 +21,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 argon2 = { workspace = true }
 chrono = { workspace = true }
-anyhow = "1"
-libc = "0.2"
+anyhow = { workspace = true }
+libc = { workspace = true }
 nix = { version = "0.31", features = ["term"] }
 
 [lints]
