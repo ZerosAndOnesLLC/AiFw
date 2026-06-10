@@ -41,6 +41,7 @@ impl<'de> Deserialize<'de> for Address {
                     return Ok(Address::Single(ip));
                 }
                 if let Some(s) = map.get("Table").and_then(|v| v.as_str()) {
+                    Address::validate_table_name(s).map_err(serde::de::Error::custom)?;
                     return Ok(Address::Table(s.to_string()));
                 }
                 Ok(Address::Any)
@@ -62,6 +63,29 @@ impl fmt::Display for Address {
 }
 
 impl Address {
+    /// Validate a pf table name. pf table names are letters, digits, `_` and
+    /// `-`, 1-31 characters. Rejecting anything else (notably whitespace and
+    /// newlines) prevents pf rule injection: `Display` renders a table as
+    /// `<{name}>` straight into pf rule text, so an embedded newline would let
+    /// the rest of the name be parsed by pf as a separate rule.
+    pub fn validate_table_name(name: &str) -> crate::Result<()> {
+        if name.is_empty() || name.len() > 31 {
+            return Err(crate::AifwError::Validation(
+                "pf table name must be 1-31 characters".to_string(),
+            ));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(crate::AifwError::Validation(
+                "pf table name contains invalid characters (allowed: alphanumeric, _, -)"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn parse(s: &str) -> crate::Result<Self> {
         let s = s.trim();
         if s.eq_ignore_ascii_case("any")
@@ -71,7 +95,9 @@ impl Address {
             return Ok(Address::Any);
         }
         if s.starts_with('<') && s.ends_with('>') {
-            return Ok(Address::Table(s[1..s.len() - 1].to_string()));
+            let name = &s[1..s.len() - 1];
+            Address::validate_table_name(name)?;
+            return Ok(Address::Table(name.to_string()));
         }
         if let Some((ip_str, prefix_str)) = s.split_once('/') {
             let ip: IpAddr = ip_str

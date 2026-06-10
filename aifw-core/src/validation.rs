@@ -96,16 +96,7 @@ fn validate_address(addr: &Address) -> Result<()> {
             }
         }
         Address::Table(name) => {
-            if name.is_empty() {
-                return Err(AifwError::Validation(
-                    "table name cannot be empty".to_string(),
-                ));
-            }
-            if name.len() > 31 {
-                return Err(AifwError::Validation(
-                    "table name exceeds pf maximum of 31 characters".to_string(),
-                ));
-            }
+            Address::validate_table_name(name)?;
         }
         _ => {}
     }

@@ -47,6 +47,30 @@ mod tests {
     }
 
     #[test]
+    fn test_address_parse_table_rejects_injection() {
+        // SEC-H6: a newline in the table name would render `<x\n...>` and let pf
+        // parse the rest as a separate rule. Reject it (and other non-table chars).
+        assert!(Address::parse("<x\n pass quick all keep state #>").is_err());
+        assert!(Address::parse("<bad name>").is_err());
+        assert!(Address::parse("<bad;name>").is_err());
+        assert!(Address::parse("<>").is_err());
+    }
+
+    #[test]
+    fn test_address_deserialize_table_rejects_injection() {
+        // The serde map form `{"Table": "..."}` constructs Address::Table without
+        // going through parse() — it must validate the name too.
+        let bad = r#"{"Table":"x\n pass quick all"}"#;
+        assert!(serde_json::from_str::<Address>(bad).is_err());
+
+        let good = r#"{"Table":"blocklist"}"#;
+        assert_eq!(
+            serde_json::from_str::<Address>(good).unwrap(),
+            Address::Table("blocklist".to_string())
+        );
+    }
+
+    #[test]
     fn test_address_display() {
         assert_eq!(Address::Any.to_string(), "any");
         assert_eq!(

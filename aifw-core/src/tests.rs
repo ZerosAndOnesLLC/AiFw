@@ -78,6 +78,18 @@ mod tests {
         assert!(validate_rule(&rule).is_err());
     }
 
+    #[test]
+    fn test_validate_rejects_table_name_injection() {
+        // SEC-H6: a table name with a newline renders into pf rule text and lets
+        // pf parse the second line as its own rule. validate_rule must reject it.
+        let mut rule = make_test_rule();
+        rule.rule_match.src_addr = Address::Table("x\n pass quick all keep state #".to_string());
+        assert!(validate_rule(&rule).is_err());
+
+        rule.rule_match.src_addr = Address::Table("blocklist".to_string());
+        assert!(validate_rule(&rule).is_ok());
+    }
+
     #[tokio::test]
     async fn test_engine_add_list_rules() {
         let db = Database::new_in_memory().await.unwrap();
