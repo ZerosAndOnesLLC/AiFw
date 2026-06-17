@@ -273,7 +273,7 @@ impl RulesetManager {
                 Option<String>,
                 String,
             ),
-        >(&sql);
+        >(sqlx::AssertSqlSafe(sql));
 
         for bind in &binds {
             query = query.bind(bind);

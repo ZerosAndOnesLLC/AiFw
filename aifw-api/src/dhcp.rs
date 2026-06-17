@@ -377,17 +377,20 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "options TEXT NOT NULL DEFAULT '[]'",
     ] {
         let col_name = col.split_whitespace().next().unwrap_or("");
-        let check = sqlx::query_scalar::<_, i32>(&format!(
+        let check = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM pragma_table_info('dhcp_subnets') WHERE name='{}'",
             col_name
-        ))
+        )))
         .fetch_one(pool)
         .await
         .unwrap_or(0);
         if check == 0 {
-            let _ = sqlx::query(&format!("ALTER TABLE dhcp_subnets ADD COLUMN {}", col))
-                .execute(pool)
-                .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE dhcp_subnets ADD COLUMN {}",
+                col
+            )))
+            .execute(pool)
+            .await;
         }
     }
 

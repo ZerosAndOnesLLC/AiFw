@@ -644,7 +644,7 @@ pub async fn delete_source(pool: &SqlitePool, id: i64) -> Result<(), String> {
 
 pub async fn list_patterns(pool: &SqlitePool, table: &str) -> Vec<PatternEntry> {
     let q = format!("SELECT id, pattern, note FROM {table} ORDER BY pattern");
-    sqlx::query_as::<_, (i64, String, Option<String>)>(&q)
+    sqlx::query_as::<_, (i64, String, Option<String>)>(sqlx::AssertSqlSafe(q))
         .fetch_all(pool)
         .await
         .unwrap_or_default()
@@ -660,7 +660,7 @@ pub async fn insert_pattern(
 ) -> Result<PatternEntry, String> {
     validate_pattern(&req.pattern)?;
     let q = format!("INSERT INTO {table} (pattern, note) VALUES (?, ?)");
-    let res = sqlx::query(&q)
+    let res = sqlx::query(sqlx::AssertSqlSafe(q))
         .bind(&req.pattern)
         .bind(&req.note)
         .execute(pool)
@@ -675,7 +675,7 @@ pub async fn insert_pattern(
 
 pub async fn delete_pattern(pool: &SqlitePool, table: &str, id: i64) -> Result<(), String> {
     let q = format!("DELETE FROM {table} WHERE id=?");
-    sqlx::query(&q)
+    sqlx::query(sqlx::AssertSqlSafe(q))
         .bind(id)
         .execute(pool)
         .await

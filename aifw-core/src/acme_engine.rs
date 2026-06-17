@@ -22,8 +22,8 @@ use crate::ha::ClusterEngine;
 use aifw_common::ClusterRole;
 use chrono::{DateTime, Utc};
 use instant_acme::{
-    Account, AuthorizationStatus, ChallengeType as InstantChallengeType, Identifier,
-    KeyAuthorization, NewAccount, NewOrder, Order, OrderStatus,
+    Account, AuthorizationStatus, ChallengeType as InstantChallengeType, Identifier, NewAccount,
+    NewOrder, Order, OrderStatus,
 };
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -373,7 +373,9 @@ pub async fn ensure_account(
         // private key + URLs in one blob).
         let creds: instant_acme::AccountCredentials =
             serde_json::from_str(pem).map_err(|e| format!("acct creds parse: {e}"))?;
-        let account = Account::from_credentials(creds)
+        let account = Account::builder()
+            .map_err(|e| format!("acct builder: {e}"))?
+            .from_credentials(creds)
             .await
             .map_err(|e| format!("acct from creds: {e}"))?;
         return Ok((row, account));
@@ -386,7 +388,9 @@ pub async fn ensure_account(
         terms_of_service_agreed: true,
         only_return_existing: false,
     };
-    let (account, creds) = Account::create(&new_account, directory_url, None)
+    let (account, creds) = Account::builder()
+        .map_err(|e| format!("acct builder: {e}"))?
+        .create(&new_account, directory_url.to_string(), None)
         .await
         .map_err(|e| format!("ACME account create: {e}"))?;
     let creds_json = serde_json::to_string(&creds).map_err(|e| format!("creds serialize: {e}"))?;
@@ -450,9 +454,7 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
 
     // Place the order.
     let mut order: Order = account
-        .new_order(&NewOrder {
-            identifiers: &identifiers,
-        })
+        .new_order(&NewOrder::new(&identifiers))
         .await
         .map_err(|e| format!("new_order: {e}"))?;
 
@@ -476,7 +478,10 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
     let mut params = rcgen::CertificateParams::new(
         identifiers
             .iter()
-            .map(|Identifier::Dns(d)| d.clone())
+            .filter_map(|id| match id {
+                Identifier::Dns(d) => Some(d.clone()),
+                _ => None,
+            })
             .collect::<Vec<_>>(),
     )
     .map_err(|e| format!("rcgen params: {e}"))?;
@@ -490,7 +495,7 @@ async fn issue_inner(pool: &SqlitePool, cert: &mut AcmeCert) -> Result<DateTime<
         .map_err(|e| format!("csr build: {e}"))?;
 
     order
-        .finalize(csr.der())
+        .finalize_csr(csr.der())
         .await
         .map_err(|e| format!("finalize: {e}"))?;
 
@@ -549,48 +554,41 @@ async fn solve_all_authorizations(
     solver: &dyn DnsSolver,
     planted: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
-    let authorizations = order
-        .authorizations()
-        .await
-        .map_err(|e| format!("authorizations: {e}"))?;
-
-    // Plant every TXT first, then ask the CA to validate them all in
-    // parallel. Doing it serially per auth would multiply propagation
-    // delay across SANs.
-    let mut to_signal: Vec<String> = Vec::new();
-    for auth in &authorizations {
+    // Walk every authorization, plant its TXT record, and signal the CA that
+    // the challenge is ready. instant-acme 0.8 exposes authorizations as an
+    // async iterator of borrowed handles, so we process each in turn; the CA
+    // validates them asynchronously and we poll for the aggregate result
+    // below, so SAN validation still proceeds in parallel server-side.
+    let mut authorizations = order.authorizations();
+    while let Some(result) = authorizations.next().await {
+        let mut auth = result.map_err(|e| format!("authorizations: {e}"))?;
         if !matches!(auth.status, AuthorizationStatus::Pending) {
             continue;
         }
-        let challenge = auth
-            .challenges
-            .iter()
-            .find(|c| c.r#type == InstantChallengeType::Dns01)
-            .ok_or_else(|| format!("no DNS-01 challenge for {:?}", auth.identifier))?;
-        let key_auth: KeyAuthorization = order.key_authorization(challenge);
-        let dns_value = key_auth.dns_value();
 
-        let Identifier::Dns(host) = &auth.identifier;
-        let host = host.clone();
-        // For wildcards (*.example.com) the TXT record is on the base name.
-        let base = host.strip_prefix("*.").unwrap_or(&host);
-        let fqdn = format!("_acme-challenge.{base}");
+        // The base identifier carries the bare domain even for wildcards
+        // (the wildcard bit lives separately), so the TXT record goes on it
+        // directly — no `*.` prefix to strip.
+        let Identifier::Dns(host) = auth.identifier().identifier.clone() else {
+            return Err("DNS-01 challenge on a non-DNS identifier".into());
+        };
+
+        let mut challenge = auth
+            .challenge(InstantChallengeType::Dns01)
+            .ok_or_else(|| format!("no DNS-01 challenge for {host}"))?;
+        let dns_value = challenge.key_authorization().dns_value();
+        let fqdn = format!("_acme-challenge.{host}");
 
         solver
             .add_txt(&fqdn, &dns_value)
             .await
             .map_err(|e| format!("TXT add for {fqdn}: {e}"))?;
         planted.push((fqdn.clone(), dns_value.clone()));
-        to_signal.push(challenge.url.clone());
-    }
 
-    // Tell CA every challenge is ready. instant-acme caps at one signal per
-    // call so we loop.
-    for url in &to_signal {
-        order
-            .set_challenge_ready(url)
+        challenge
+            .set_ready()
             .await
-            .map_err(|e| format!("set_challenge_ready({url}): {e}"))?;
+            .map_err(|e| format!("set_challenge_ready({fqdn}): {e}"))?;
     }
 
     // Poll for valid. ACME servers settle in seconds normally; cap at

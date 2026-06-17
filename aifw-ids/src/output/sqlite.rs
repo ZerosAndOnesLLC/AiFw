@@ -109,7 +109,7 @@ impl SqliteOutput {
                 bool,
                 String,
             ),
-        >(&sql);
+        >(sqlx::AssertSqlSafe(sql));
 
         for val in &bind_values {
             query = query.bind(val);
@@ -235,9 +235,9 @@ impl SqliteOutput {
 
     /// Purge alerts older than N days.
     pub async fn purge_old(&self, days: u32) -> Result<u64> {
-        let result = sqlx::query(&format!(
+        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM ids_alerts WHERE timestamp < datetime('now', '-{days} days')"
-        ))
+        )))
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -279,11 +279,11 @@ impl SqliteOutput {
     /// Get top N alerting signatures over the last 24 hours.
     /// See `count_by_severity` for the rationale on the time window.
     pub async fn top_signatures(&self, limit: u32) -> Result<Vec<(String, i64)>> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(&format!(
+        let rows: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT signature_msg, count(*) as cnt FROM ids_alerts \
              WHERE timestamp >= datetime('now', '-1 day') \
              GROUP BY signature_msg ORDER BY cnt DESC LIMIT {limit}"
-        ))
+        )))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -292,11 +292,11 @@ impl SqliteOutput {
     /// Get top N source IPs over the last 24 hours.
     /// See `count_by_severity` for the rationale on the time window.
     pub async fn top_sources(&self, limit: u32) -> Result<Vec<(String, i64)>> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(&format!(
+        let rows: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT src_ip, count(*) as cnt FROM ids_alerts \
              WHERE timestamp >= datetime('now', '-1 day') \
              GROUP BY src_ip ORDER BY cnt DESC LIMIT {limit}"
-        ))
+        )))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)

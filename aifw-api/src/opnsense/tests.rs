@@ -31,7 +31,7 @@ async fn test_app() -> (TestServer, AuthSettings) {
         .await
         .unwrap();
     let app = crate::build_router(state, None, "*", false);
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
     (server, auth_settings)
 }
 

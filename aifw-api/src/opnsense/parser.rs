@@ -153,7 +153,7 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
             }
             Ok(Event::Text(t)) => {
                 let s = t
-                    .unescape()
+                    .xml10_content()
                     .map_err(|err| ParseError::Malformed(err.to_string()))?
                     .into_owned();
                 let trimmed = s.trim();
@@ -190,6 +190,39 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                     last.text.push('\n');
                 }
                 last.text.push_str(&s);
+            }
+            // quick-xml 0.40 surfaces character (`&#NN;`) and predefined entity
+            // (`&amp;` etc.) references as standalone events instead of folding
+            // them into the adjacent Text. Resolve them inline so values like
+            // notes containing `&` survive round-tripping, matching the prior
+            // `unescape()` behaviour.
+            Ok(Event::GeneralRef(r)) => {
+                let resolved = match r.resolve_char_ref() {
+                    Ok(Some(ch)) => ch.to_string(),
+                    Ok(None) => {
+                        let name = r
+                            .decode()
+                            .map_err(|err| ParseError::Malformed(err.to_string()))?;
+                        match name.as_ref() {
+                            "amp" => "&".to_string(),
+                            "lt" => "<".to_string(),
+                            "gt" => ">".to_string(),
+                            "quot" => "\"".to_string(),
+                            "apos" => "'".to_string(),
+                            other => {
+                                return Err(ParseError::Malformed(format!(
+                                    "unknown entity reference &{other};"
+                                )));
+                            }
+                        }
+                    }
+                    Err(err) => return Err(ParseError::Malformed(err.to_string())),
+                };
+                stack
+                    .last_mut()
+                    .expect("stack non-empty (root pushed at function entry)")
+                    .text
+                    .push_str(&resolved);
             }
         }
         buf.clear();

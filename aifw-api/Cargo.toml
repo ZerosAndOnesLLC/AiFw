@@ -39,7 +39,7 @@ libc = { workspace = true }
 reqwest = { workspace = true }
 async-stream = "0.3"
 futures-util = "0.3"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.2", features = ["tokio-comp", "connection-manager"] }
 clap = { workspace = true, features = ["env"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rcgen = { workspace = true }
@@ -48,11 +48,11 @@ time = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
-quick-xml = "0.36"
+quick-xml = "0.40"
 thiserror = { workspace = true }
 
 [dev-dependencies]
-axum-test = "17"
+axum-test = "20"
 
 [lints]
 workspace = true

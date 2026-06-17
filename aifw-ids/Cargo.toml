@@ -18,7 +18,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 
 # Packet capture & parsing
-etherparse = "0.19"
+etherparse = "0.20"
 
 # Pattern matching
 aho-corasick = "1"

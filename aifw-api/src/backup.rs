@@ -1504,7 +1504,7 @@ pub(crate) async fn apply_firewall_config(
         "aliases",
         "static_routes",
     ] {
-        if let Err(e) = sqlx::query(&format!("DELETE FROM {table}"))
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
         {
@@ -1745,7 +1745,7 @@ pub(crate) async fn apply_firewall_config(
     let shaping = aifw_core::shaping::ShapingEngine::new(state.pool.clone(), state.pf.clone());
     let _ = shaping.migrate().await;
     for table in ["queues", "rate_limits"] {
-        if let Err(e) = sqlx::query(&format!("DELETE FROM {table}"))
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
         {
@@ -1783,7 +1783,7 @@ pub(crate) async fn apply_firewall_config(
     let tls_engine = aifw_core::tls::TlsEngine::new(state.pool.clone(), state.pf.clone());
     let _ = tls_engine.migrate().await;
     for table in ["sni_rules", "ja3_blocklist"] {
-        if let Err(e) = sqlx::query(&format!("DELETE FROM {table}"))
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
         {
@@ -1803,7 +1803,7 @@ pub(crate) async fn apply_firewall_config(
     let ha_engine = aifw_core::ha::ClusterEngine::new(state.pool.clone(), state.pf.clone());
     let _ = ha_engine.migrate().await;
     for table in ["carp_vips", "pfsync_config", "cluster_nodes"] {
-        if let Err(e) = sqlx::query(&format!("DELETE FROM {table}"))
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
         {

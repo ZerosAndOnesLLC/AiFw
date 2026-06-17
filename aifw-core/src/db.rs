@@ -201,9 +201,9 @@ impl Database {
     }
 
     pub async fn get_rule(&self, id: Uuid) -> Result<Option<Rule>> {
-        let row = sqlx::query_as::<_, RuleRow>(&format!(
+        let row = sqlx::query_as::<_, RuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {RULE_COLUMNS} FROM rules WHERE id = ?1"
-        ))
+        )))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
@@ -212,9 +212,9 @@ impl Database {
     }
 
     pub async fn list_rules(&self) -> Result<Vec<Rule>> {
-        let rows = sqlx::query_as::<_, RuleRow>(&format!(
+        let rows = sqlx::query_as::<_, RuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {RULE_COLUMNS} FROM rules ORDER BY priority ASC, created_at ASC"
-        ))
+        )))
         .fetch_all(&self.pool)
         .await?;
 
@@ -222,10 +222,10 @@ impl Database {
     }
 
     pub async fn list_active_rules(&self) -> Result<Vec<Rule>> {
-        let rows = sqlx::query_as::<_, RuleRow>(&format!(
+        let rows = sqlx::query_as::<_, RuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {RULE_COLUMNS} FROM rules \
              WHERE status = 'active' ORDER BY priority ASC, created_at ASC"
-        ))
+        )))
         .fetch_all(&self.pool)
         .await?;
 
