@@ -48,11 +48,11 @@ time = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
-quick-xml = "0.40"
+quick-xml = "0.41"
 thiserror = { workspace = true }
 
 [dev-dependencies]
-axum-test = "20"
+axum-test = "21"
 
 [lints]
 workspace = true
