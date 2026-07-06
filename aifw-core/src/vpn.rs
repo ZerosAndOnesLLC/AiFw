@@ -82,6 +82,12 @@ impl VpnEngine {
             .execute(&self.pool)
             .await;
 
+        // Shared with aifw-setup / aifw-api (QUAL-C5) — wan_interface() below
+        // reads it to build the WireGuard outbound NAT rule.
+        sqlx::query(aifw_common::schemas::INTERFACE_ROLES_CREATE)
+            .execute(&self.pool)
+            .await?;
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS ipsec_sas (
@@ -496,9 +502,12 @@ impl VpnEngine {
             .execute(&self.pool)
             .await;
 
-        // Open WAN UDP for this tunnel's listen-port in the aifw-vpn anchor.
-        // Without this, handshake packets are dropped by the default block rule.
-        let _ = self.rebuild_vpn_pf_anchor().await;
+        // Refresh the aifw-vpn anchor: opens WAN UDP for this tunnel's
+        // listen-port (without it, handshakes are dropped by the default
+        // block rule) and adds outbound NAT so clients reach the internet.
+        if let Err(e) = self.apply_vpn_rules().await {
+            tracing::warn!(%id, error = %e, "failed to refresh aifw-vpn anchor after start");
+        }
 
         tracing::info!(%id, iface, "WireGuard tunnel started");
         Ok(())
@@ -517,38 +526,13 @@ impl VpnEngine {
             .execute(&self.pool)
             .await;
 
-        // Close the WAN pass rule for this tunnel by recomputing from remaining
+        // Close this tunnel's pass + NAT rules by recomputing from remaining
         // up tunnels only.
-        let _ = self.rebuild_vpn_pf_anchor().await;
+        if let Err(e) = self.apply_vpn_rules().await {
+            tracing::warn!(%id, error = %e, "failed to refresh aifw-vpn anchor after stop");
+        }
 
         tracing::info!(%id, iface, "WireGuard tunnel stopped");
-        Ok(())
-    }
-
-    /// Rebuild the `aifw-vpn` filter anchor from the set of currently-up
-    /// WireGuard tunnels. Emits one UDP pass rule per listen_port, optionally
-    /// scoped to the tunnel's listen_interface when set.
-    ///
-    /// Idempotent: replaces the anchor's contents, so stopped tunnels disappear
-    /// and started tunnels appear.
-    pub async fn rebuild_vpn_pf_anchor(&self) -> Result<()> {
-        let tunnels = self.list_wg_tunnels().await?;
-        let mut rules: Vec<String> = Vec::new();
-        for t in tunnels.iter().filter(|t| t.status == VpnStatus::Up) {
-            let iface_clause = match t.listen_interface.as_deref() {
-                Some(iface) if !iface.is_empty() && iface != "any" => format!(" on {iface}"),
-                _ => String::new(),
-            };
-            rules.push(format!(
-                "pass in quick{iface_clause} proto udp to any port {} keep state label \"wg-{}\"",
-                t.listen_port, t.name
-            ));
-        }
-        self.pf
-            .load_rules("aifw-vpn", &rules)
-            .await
-            .map_err(|e| AifwError::Pf(e.to_string()))?;
-        tracing::info!(count = rules.len(), "aifw-vpn anchor rebuilt");
         Ok(())
     }
 
@@ -715,11 +699,13 @@ impl VpnEngine {
     // Apply VPN pf rules
     // ============================================================
 
-    /// Collect all VPN pf rules without loading them.
+    /// Collect VPN pf filter (pass) rules without loading them. Only tunnels
+    /// marked up contribute rules — a stopped tunnel must not hold its
+    /// listen-port open. IPsec SAs are always included.
     pub async fn collect_vpn_rules(&self) -> Result<Vec<String>> {
         let mut pf_rules = Vec::new();
         let tunnels = self.list_wg_tunnels().await?;
-        for t in &tunnels {
+        for t in tunnels.iter().filter(|t| t.status == VpnStatus::Up) {
             pf_rules.extend(t.to_pf_rules());
         }
         let sas = self.list_ipsec_sas().await?;
@@ -729,8 +715,52 @@ impl VpnEngine {
         Ok(pf_rules)
     }
 
+    /// Collect outbound NAT rules for up WireGuard tunnels so clients reach
+    /// the internet through the WAN (#469). These load into the `aifw-vpn`
+    /// nat-anchor declared in pf.conf — do NOT mix them into the filter-rule
+    /// extras, pfctl requires translation rules before filter rules.
+    pub async fn collect_vpn_nat_rules(&self) -> Result<Vec<String>> {
+        let tunnels = self.list_wg_tunnels().await?;
+        let up: Vec<&WgTunnel> = tunnels
+            .iter()
+            .filter(|t| t.status == VpnStatus::Up)
+            .collect();
+        if up.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(wan) = self.wan_interface().await else {
+            tracing::warn!(
+                "no WAN interface role assigned — WireGuard clients will not be NAT'd to the internet"
+            );
+            return Ok(Vec::new());
+        };
+        Ok(up.iter().filter_map(|t| t.to_nat_rule(&wan)).collect())
+    }
+
+    /// Resolve the WAN interface from the interface_roles table (seeded by
+    /// the setup wizard, editable via the Interfaces page).
+    async fn wan_interface(&self) -> Option<String> {
+        match sqlx::query_scalar::<_, String>(
+            "SELECT interface_name FROM interface_roles WHERE role = 'WAN' ORDER BY interface_name LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to look up WAN interface for VPN NAT");
+                None
+            }
+        }
+    }
+
+    /// Load the full VPN rule set (NAT + filter) into the `aifw-vpn` anchor.
+    /// Idempotent: replaces the anchor's contents, so stopped tunnels
+    /// disappear and started tunnels appear.
     pub async fn apply_vpn_rules(&self) -> Result<()> {
-        let pf_rules = self.collect_vpn_rules().await?;
+        // NAT rules must precede filter rules within a pfctl ruleset load.
+        let mut pf_rules = self.collect_vpn_nat_rules().await?;
+        pf_rules.extend(self.collect_vpn_rules().await?);
 
         tracing::info!(count = pf_rules.len(), "applying VPN pf rules");
         self.pf

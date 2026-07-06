@@ -781,18 +781,25 @@ mod tests {
         let engine = crate::vpn::VpnEngine::new(db.pool().clone(), pf);
         engine.migrate().await.unwrap();
 
-        engine
-            .add_wg_tunnel(WgTunnel::new(
-                "wg0".to_string(),
-                Interface("wg0".to_string()),
-                51820,
-                Address::Network(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
-                    24,
-                ),
-            ))
-            .await
-            .unwrap();
+        // WAN role drives the auto-generated WireGuard outbound NAT rule
+        sqlx::query(
+            "INSERT INTO interface_roles (interface_name, role, updated_at) VALUES ('em0', 'WAN', '2026-01-01T00:00:00Z')",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let mut tunnel = WgTunnel::new(
+            "wg0".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                24,
+            ),
+        );
+        tunnel.status = VpnStatus::Up;
+        engine.add_wg_tunnel(tunnel).await.unwrap();
 
         engine
             .add_ipsec_sa(IpsecSa::new(
@@ -808,11 +815,50 @@ mod tests {
         engine.apply_vpn_rules().await.unwrap();
 
         let pf_rules = mock.get_rules("aifw-vpn").await.unwrap();
-        // 2 WG rules + 5 IPsec rules (tunnel mode)
-        assert_eq!(pf_rules.len(), 7);
+        // 1 NAT rule + 2 WG rules + 5 IPsec rules (tunnel mode)
+        assert_eq!(pf_rules.len(), 8);
+        // NAT must precede filter rules or pfctl rejects the ruleset
+        assert_eq!(pf_rules[0], "nat on em0 from 10.0.0.0/24 to any -> (em0)");
         assert!(pf_rules.iter().any(|r| r.contains("port 51820")));
         assert!(pf_rules.iter().any(|r| r.contains("proto esp")));
         assert!(pf_rules.iter().any(|r| r.contains("on enc0")));
+    }
+
+    #[tokio::test]
+    async fn test_vpn_down_tunnel_emits_no_rules() {
+        let db = Database::new_in_memory().await.unwrap();
+        let mock = Arc::new(aifw_pf::PfMock::new());
+        let pf: Arc<dyn PfBackend> = mock.clone();
+        let engine = crate::vpn::VpnEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO interface_roles (interface_name, role, updated_at) VALUES ('em0', 'WAN', '2026-01-01T00:00:00Z')",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Status defaults to Down — must not open the listen port or NAT
+        engine
+            .add_wg_tunnel(WgTunnel::new(
+                "wg0".to_string(),
+                Interface("wg0".to_string()),
+                51820,
+                Address::Network(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                    24,
+                ),
+            ))
+            .await
+            .unwrap();
+
+        engine.apply_vpn_rules().await.unwrap();
+        let pf_rules = mock.get_rules("aifw-vpn").await.unwrap();
+        assert!(
+            pf_rules.is_empty(),
+            "down tunnel leaked rules: {pf_rules:?}"
+        );
     }
 
     // --- Geo-IP engine tests ---

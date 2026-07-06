@@ -84,6 +84,37 @@ impl WgTunnel {
             ),
         ]
     }
+
+    /// Network CIDR of the tunnel subnet, masked to the network boundary
+    /// (e.g. address 10.10.0.1/24 → "10.10.0.0/24").
+    pub fn network_cidr(&self) -> String {
+        address_network_cidr(&self.address)
+    }
+
+    /// Outbound NAT rule so tunnel clients reach the internet through the
+    /// WAN (#469). Only IPv4 tunnel subnets are NAT'd — returns None for
+    /// IPv6 / alias / any addresses so we never masquerade 0.0.0.0/0.
+    pub fn to_nat_rule(&self, wan_if: &str) -> Option<String> {
+        use std::net::IpAddr;
+        match &self.address {
+            Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _) => Some(format!(
+                "nat on {wan_if} from {} to any -> ({wan_if})",
+                self.network_cidr()
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// AllowedIPs for a full-tunnel client config, scoped to the address
+/// families the tunnel's inner network can carry.
+fn full_tunnel_allowed_ips(addr: &Address) -> &'static str {
+    use std::net::IpAddr;
+    match addr {
+        Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _) => "0.0.0.0/0",
+        Address::Single(IpAddr::V6(_)) | Address::Network(IpAddr::V6(_), _) => "::/0",
+        _ => "0.0.0.0/0, ::/0",
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,8 +211,14 @@ impl WgPeer {
                 .unwrap_or_else(|| address_network_cidr(&tunnel.address));
             conf.push_str(&format!("AllowedIPs = {routes}\n"));
         } else {
-            // Route all traffic through the VPN
-            conf.push_str("AllowedIPs = 0.0.0.0/0, ::/0\n");
+            // Route all traffic through the VPN — but only the address
+            // families the tunnel's inner network actually carries. Emitting
+            // ::/0 for a v4-only tunnel blackholes all IPv6 traffic on
+            // dual-stack clients (#469).
+            conf.push_str(&format!(
+                "AllowedIPs = {}\n",
+                full_tunnel_allowed_ips(&tunnel.address)
+            ));
         }
         if let Some(ka) = self.persistent_keepalive {
             conf.push_str(&format!("PersistentKeepalive = {ka}\n"));
@@ -705,5 +742,73 @@ mod split_tunnel_tests {
         let cfg = peer.to_client_config(&tunnel, "1.2.3.4", true);
         assert!(cfg.contains("AllowedIPs = 172.29.240.0/24"));
         assert!(!cfg.contains("172.29.240.1/24"));
+    }
+
+    fn test_tunnel(address: Address) -> WgTunnel {
+        WgTunnel {
+            id: Uuid::new_v4(),
+            name: "wg0".into(),
+            interface: crate::types::Interface("wg0".into()),
+            private_key: "x".into(),
+            public_key: "y".into(),
+            listen_port: 51820,
+            address,
+            dns: None,
+            mtu: None,
+            listen_interface: None,
+            split_routes: None,
+            status: VpnStatus::Down,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn test_peer(tunnel_id: Uuid) -> WgPeer {
+        WgPeer {
+            id: Uuid::new_v4(),
+            tunnel_id,
+            name: "peer1".into(),
+            public_key: "pk".into(),
+            preshared_key: None,
+            client_private_key: Some("cpk".into()),
+            endpoint: None,
+            allowed_ips: vec![Address::Network("10.10.0.2".parse().unwrap(), 32)],
+            persistent_keepalive: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn full_tunnel_v4_omits_v6_route() {
+        let tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        let cfg = test_peer(tunnel.id).to_client_config(&tunnel, "vpn.example.com", false);
+        assert!(cfg.contains("AllowedIPs = 0.0.0.0/0\n"));
+        assert!(!cfg.contains("::/0"));
+    }
+
+    #[test]
+    fn full_tunnel_v6_emits_v6_route_only() {
+        let tunnel = test_tunnel(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        let cfg = test_peer(tunnel.id).to_client_config(&tunnel, "vpn.example.com", false);
+        assert!(cfg.contains("AllowedIPs = ::/0\n"));
+        assert!(!cfg.contains("0.0.0.0/0"));
+    }
+
+    #[test]
+    fn nat_rule_masks_to_network_boundary() {
+        let tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        assert_eq!(
+            tunnel.to_nat_rule("em0").as_deref(),
+            Some("nat on em0 from 10.10.0.0/24 to any -> (em0)")
+        );
+    }
+
+    #[test]
+    fn nat_rule_skipped_for_non_v4_addresses() {
+        let v6 = test_tunnel(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        assert_eq!(v6.to_nat_rule("em0"), None);
+        let any = test_tunnel(Address::Any);
+        assert_eq!(any.to_nat_rule("em0"), None);
     }
 }
