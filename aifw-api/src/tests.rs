@@ -180,6 +180,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rule_ip_version_round_trips() {
+        // #472: the UI's address-family selection was silently dropped —
+        // CreateRuleRequest had no ip_version field. Every family the API
+        // accepts must round-trip through create → get, including the
+        // legacy UI value "inet46" (canonicalized to "both").
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        for (sent, stored) in [
+            ("inet", "inet"),
+            ("inet6", "inet6"),
+            ("both", "both"),
+            ("inet46", "both"),
+        ] {
+            let resp = server
+                .post("/api/v1/rules")
+                .authorization_bearer(&token)
+                .json(&json!({
+                    "action": "pass",
+                    "direction": "in",
+                    "protocol": "tcp",
+                    "ip_version": sent,
+                }))
+                .await;
+            resp.assert_status(StatusCode::CREATED);
+            let body: Value = resp.json();
+            assert_eq!(body["data"]["ip_version"], stored, "create with {sent}");
+            let id = body["data"]["id"].as_str().unwrap();
+
+            let resp = server
+                .get(&format!("/api/v1/rules/{id}"))
+                .authorization_bearer(&token)
+                .await;
+            resp.assert_status_ok();
+            let body: Value = resp.json();
+            assert_eq!(body["data"]["ip_version"], stored, "get after {sent}");
+
+            // Update must round-trip too (and not reset the family)
+            let resp = server
+                .put(&format!("/api/v1/rules/{id}"))
+                .authorization_bearer(&token)
+                .json(&json!({
+                    "action": "pass",
+                    "direction": "in",
+                    "protocol": "tcp",
+                    "ip_version": sent,
+                }))
+                .await;
+            resp.assert_status_ok();
+            let body: Value = resp.json();
+            assert_eq!(body["data"]["ip_version"], stored, "update with {sent}");
+        }
+
+        // Garbage is rejected, not silently defaulted
+        let resp = server
+            .post("/api/v1/rules")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "action": "pass",
+                "direction": "in",
+                "protocol": "tcp",
+                "ip_version": "ipvx",
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn test_get_rule() {
         let (server, _) = test_app().await;
         let token = create_user_and_login(&server).await;

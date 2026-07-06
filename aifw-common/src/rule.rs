@@ -28,7 +28,8 @@ impl IpVersion {
         match s.to_lowercase().as_str() {
             "inet" | "ipv4" | "4" => Ok(IpVersion::Inet),
             "inet6" | "ipv6" | "6" => Ok(IpVersion::Inet6),
-            "both" | "any" | "*" | "" => Ok(IpVersion::Both),
+            // "inet46" is the legacy web-UI value for dual-family (#472)
+            "both" | "any" | "*" | "" | "inet46" => Ok(IpVersion::Both),
             _ => Err(crate::AifwError::Validation(format!(
                 "unknown ip version: {s}"
             ))),
