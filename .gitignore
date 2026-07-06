@@ -31,3 +31,4 @@ freebsd/ui-export/
 
 # Project instructions
 CLAUDE.md
+Cargo.lock
