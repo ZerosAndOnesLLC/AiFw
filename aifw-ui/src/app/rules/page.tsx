@@ -47,7 +47,7 @@ const defaultForm: RuleForm = {
   disabled: false,
   interface: "any",
   direction: "in",
-  ip_version: "inet",
+  ip_version: "both",
   protocol: "tcp",
   src_type: "any",
   src_addr: "",
@@ -89,7 +89,7 @@ const ACTIONS = [
 const IP_VERSIONS = [
   { value: "inet", label: "IPv4" },
   { value: "inet6", label: "IPv6" },
-  { value: "inet46", label: "IPv4+IPv6" },
+  { value: "both", label: "IPv4+IPv6" },
 ];
 
 const STATE_TYPES = [
@@ -298,7 +298,7 @@ export default function RulesPage() {
       disabled: rule.status === "disabled",
       interface: rule.interface || "any",
       direction: rule.direction,
-      ip_version: rule.ip_version || "inet",
+      ip_version: rule.ip_version || "both",
       protocol: rule.protocol,
       src_type: srcIsAny ? "any" : "address",
       src_addr: srcIsAny ? "" : srcParts.ip,
@@ -350,7 +350,7 @@ export default function RulesPage() {
         action: rule.action,
         direction: rule.direction,
         protocol: rule.protocol,
-        ip_version: rule.ip_version || "inet",
+        ip_version: rule.ip_version || "both",
         interface: rule.interface || undefined,
         src_addr: rule.rule_match.src_addr,
         src_port_start: rule.rule_match.src_port ? rule.rule_match.src_port.start : null,
@@ -401,8 +401,8 @@ export default function RulesPage() {
 
   const ipVersionLabel = (v?: string): string => {
     if (v === "inet6") return "IPv6";
-    if (v === "inet46") return "IPv4+6";
-    return "IPv4";
+    if (v === "inet") return "IPv4";
+    return "IPv4+6"; // "both" (and legacy "inet46")
   };
 
   const actionLabel = (a: string): string => {

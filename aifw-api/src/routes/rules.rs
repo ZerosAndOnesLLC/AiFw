@@ -17,6 +17,9 @@ pub struct CreateRuleRequest {
     pub dst_port_start: Option<u16>,
     pub dst_port_end: Option<u16>,
     pub interface: Option<String>,
+    /// "inet" | "inet6" | "both" (legacy UI alias "inet46" accepted).
+    /// Absent = keep existing on update, default Both on create (#472).
+    pub ip_version: Option<String>,
     pub priority: Option<i32>,
     pub log: Option<bool>,
     pub quick: Option<bool>,
@@ -136,6 +139,9 @@ pub async fn create_rule(
     };
 
     let mut rule = Rule::new(action, direction, protocol, rule_match);
+    if let Some(ref v) = req.ip_version {
+        rule.ip_version = aifw_common::IpVersion::parse(v).map_err(|_| bad_request())?;
+    }
     if let Some(p) = req.priority {
         rule.priority = p;
     }
@@ -203,6 +209,9 @@ pub async fn update_rule(
         _ => return Err(bad_request()),
     };
     rule.protocol = Protocol::parse(&req.protocol).map_err(|_| bad_request())?;
+    if let Some(ref v) = req.ip_version {
+        rule.ip_version = aifw_common::IpVersion::parse(v).map_err(|_| bad_request())?;
+    }
     rule.rule_match.src_addr = req
         .src_addr
         .as_deref()
