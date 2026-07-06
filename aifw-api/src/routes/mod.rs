@@ -1354,8 +1354,8 @@ pub async fn start_wg_tunnel(
         tracing::error!("Failed to start tunnel: {e}");
         internal()
     })?;
-    // Apply VPN pf rules and re-inject into the aifw anchor
-    let _ = state.vpn_engine.apply_vpn_rules().await;
+    // start_tunnel refreshed the aifw-vpn anchor (pass + NAT); also
+    // re-inject the pass rules into the aifw anchor ahead of its block rule
     if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
         state.rule_engine.set_extra_rules(vpn_rules).await;
         let _ = state.rule_engine.apply_rules().await;
@@ -1375,6 +1375,11 @@ pub async fn stop_wg_tunnel(
         .stop_tunnel(uuid)
         .await
         .map_err(|_| internal())?;
+    // Drop this tunnel's pass rules from the aifw anchor extras too
+    if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
+        state.rule_engine.set_extra_rules(vpn_rules).await;
+        let _ = state.rule_engine.apply_rules().await;
+    }
     Ok(Json(MessageResponse {
         message: "Tunnel stopped".to_string(),
     }))

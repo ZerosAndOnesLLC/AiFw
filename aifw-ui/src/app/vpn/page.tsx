@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useWs } from "@/context/WsContext";
+import Help, { HelpBanner } from "./Help";
 
 /* ────────────────────────── Types ────────────────────────── */
 
@@ -527,6 +528,28 @@ export default function VpnPage() {
         </p>
       </div>
 
+      <HelpBanner title="WireGuard in four steps" storageKey="vpn-overview">
+        <p>
+          <b>1.</b> Create a tunnel — pick a private subnet that doesn&apos;t
+          overlap your LAN (e.g. <code>10.10.0.1/24</code>).{" "}
+          <b>2.</b> Start it. <b>3.</b> Add a peer for each device.{" "}
+          <b>4.</b> Open the peer&apos;s config and import it in the WireGuard
+          app on the device.
+        </p>
+        <p>
+          Starting a tunnel handles the plumbing for you: the UDP listen port
+          is opened, traffic on the tunnel interface is allowed, and the
+          tunnel subnet is NAT&apos;d to the internet through the WAN — no
+          manual firewall or NAT rules needed. If the firewall sits behind
+          another router, forward the listen port (UDP) to it there.
+        </p>
+        <p>
+          Peers can <i>connect</i> to the firewall over IPv4 or IPv6, but
+          traffic <i>inside</i> the tunnel is IPv4-only for now — client
+          configs are generated accordingly.
+        </p>
+      </HelpBanner>
+
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <SummaryCard label="WG Tunnels" value={tunnels.length} color="cyan" />
@@ -614,7 +637,15 @@ export default function VpnPage() {
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>Listen Port</label>
+                    <label className={labelCls}>
+                      Listen Port{" "}
+                      <Help title="Listen port" size="xs">
+                        UDP port peers connect to (51820 is the convention).
+                        It is opened in the firewall automatically when the
+                        tunnel starts. Behind another router? Forward this
+                        UDP port to the firewall there.
+                      </Help>
+                    </label>
                     <input
                       type="number"
                       value={wgForm.listen_port}
@@ -624,7 +655,16 @@ export default function VpnPage() {
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>Address (CIDR)</label>
+                    <label className={labelCls}>
+                      Address (CIDR){" "}
+                      <Help title="Tunnel address" size="xs">
+                        The firewall&apos;s IP <i>inside</i> the VPN, plus the
+                        tunnel subnet size — e.g. <code>10.10.0.1/24</code>.
+                        Peers get other IPs from this subnet. Use a private
+                        range that doesn&apos;t overlap your LAN or any
+                        network you connect from. IPv4 only for now.
+                      </Help>
+                    </label>
                     <input
                       type="text"
                       value={wgForm.address}
@@ -634,7 +674,14 @@ export default function VpnPage() {
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>Listen Interface</label>
+                    <label className={labelCls}>
+                      Listen Interface{" "}
+                      <Help title="Listen interface" size="xs">
+                        Restricts which interface accepts WireGuard
+                        handshakes. <b>Any</b> is fine for most setups; pick
+                        your WAN to be strict.
+                      </Help>
+                    </label>
                     <select
                       value={wgForm.listen_interface}
                       onChange={(e) => setWgForm((f) => ({ ...f, listen_interface: e.target.value }))}
@@ -651,7 +698,16 @@ export default function VpnPage() {
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
                   <div>
-                    <label className={labelCls}>DNS Servers</label>
+                    <label className={labelCls}>
+                      DNS Servers{" "}
+                      <Help title="DNS for clients" size="xs">
+                        Pushed to devices while connected. Use the tunnel
+                        address (e.g. <code>10.10.0.1</code>) to resolve
+                        through this firewall&apos;s DNS — including any
+                        blocklists — or leave empty to keep each
+                        device&apos;s own DNS.
+                      </Help>
+                    </label>
                     <input
                       type="text"
                       value={wgForm.dns}
@@ -661,7 +717,14 @@ export default function VpnPage() {
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>MTU</label>
+                    <label className={labelCls}>
+                      MTU{" "}
+                      <Help title="MTU" size="xs">
+                        Leave empty for the default (1420). Lower it (e.g.
+                        1380) only if large transfers stall while small
+                        pages load fine — common on PPPoE links.
+                      </Help>
+                    </label>
                     <input
                       type="number"
                       value={wgForm.mtu}
@@ -671,7 +734,14 @@ export default function VpnPage() {
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>Private Key (optional)</label>
+                    <label className={labelCls}>
+                      Private Key (optional){" "}
+                      <Help title="Private key" size="xs">
+                        Leave empty — a keypair is generated for you. Only
+                        paste a key here when migrating an existing
+                        WireGuard server so peers keep working.
+                      </Help>
+                    </label>
                     <input
                       type="password"
                       value={wgForm.private_key}
@@ -720,7 +790,14 @@ export default function VpnPage() {
             {wgLoading ? (
               <div className="text-center py-12 text-gray-500">Loading tunnels...</div>
             ) : tunnels.length === 0 ? (
-              <div className="text-center py-12 text-gray-500">No WireGuard tunnels configured</div>
+              <div className="text-center py-12 text-gray-500">
+                <p>No WireGuard tunnels configured</p>
+                <p className="text-xs mt-2 max-w-md mx-auto">
+                  Click <b>Add Tunnel</b> to get started — firewall rules and
+                  NAT are set up automatically when the tunnel starts, so
+                  peers can reach the internet right away.
+                </p>
+              </div>
             ) : (
               <div className="divide-y divide-gray-700/50">
                 {tunnels.map((tunnel) => {
@@ -829,7 +906,16 @@ export default function VpnPage() {
                                   />
                                 </div>
                                 <div>
-                                  <label className={labelCls}>Client IP</label>
+                                  <label className={labelCls}>
+                                    Client IP{" "}
+                                    <Help title="Client IP" size="xs">
+                                      This device&apos;s address inside the
+                                      tunnel, e.g. <code>10.10.0.2/32</code>.
+                                      Every peer needs its own — <b>Auto</b>{" "}
+                                      picks the next free IP in the tunnel
+                                      subnet.
+                                    </Help>
+                                  </label>
                                   <div className="flex gap-1">
                                     <input
                                       type="text"
@@ -844,7 +930,16 @@ export default function VpnPage() {
                                   </div>
                                 </div>
                                 <div>
-                                  <label className={labelCls}>Keepalive (sec)</label>
+                                  <label className={labelCls}>
+                                    Keepalive (sec){" "}
+                                    <Help title="Persistent keepalive" size="xs">
+                                      Sends a packet every N seconds so NAT
+                                      routers along the way don&apos;t drop
+                                      the connection. Use <b>25</b> for
+                                      phones and laptops; leave empty for
+                                      site-to-site peers with public IPs.
+                                    </Help>
+                                  </label>
                                   <input
                                     type="number"
                                     value={peerForm.keepalive}
@@ -879,7 +974,16 @@ export default function VpnPage() {
                                   </div>
                                 )}
                                 <div>
-                                  <label className={labelCls}>Endpoint (optional)</label>
+                                  <label className={labelCls}>
+                                    Endpoint (optional){" "}
+                                    <Help title="Peer endpoint" size="xs">
+                                      Only for site-to-site links where the
+                                      firewall should dial <i>out</i> to a
+                                      peer at a fixed address. Leave empty
+                                      for roaming devices (phones, laptops)
+                                      — they connect in to this firewall.
+                                    </Help>
+                                  </label>
                                   <input
                                     type="text"
                                     value={peerForm.endpoint}
@@ -1267,12 +1371,19 @@ export default function VpnPage() {
               </div>
               <p className="text-xs text-gray-400 mb-3">
                 {configTab === "full"
-                  ? "Routes ALL traffic through the VPN. Your IP will appear as the firewall\u2019s WAN address."
-                  : "Only routes traffic destined for the VPN subnet. Internet traffic uses your normal connection."}
+                  ? "Everything goes through the VPN: the device reaches the internet via the firewall\u2019s WAN address. Use this on untrusted networks (public Wi-Fi) or to apply the firewall\u2019s filtering everywhere. IPv6 traffic stays on the device\u2019s normal connection \u2014 the tunnel carries IPv4 only for now."
+                  : "Only the VPN subnet (plus any split-tunnel routes configured on the tunnel) goes through the VPN \u2014 use this to reach home/office devices while everything else uses the device\u2019s normal connection. Faster, but internet traffic is not protected by the VPN."}
               </p>
               <pre className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-sm font-mono text-green-400 whitespace-pre-wrap select-all overflow-x-auto">
                 {configTab === "full" ? configModal.fullTunnel : configModal.splitTunnel}
               </pre>
+              <p className="text-xs text-gray-500 mt-3">
+                To use it: copy the config, then in the WireGuard app on the
+                device choose <b>Add tunnel</b> and paste (or save it as a{" "}
+                <code>.conf</code> file and import). If the tunnel here
+                isn&apos;t started yet, start it first \u2014 nothing will connect
+                until it is.
+              </p>
             </div>
           </div>
         </div>
