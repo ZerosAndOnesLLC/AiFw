@@ -218,6 +218,10 @@ if [ -d "$PROJECT_ROOT/freebsd/overlay/usr/local/libexec" ]; then
     cp -a "$PROJECT_ROOT/freebsd/overlay/usr/local/libexec/"* "$TARBALL_DIR/libexec/" 2>/dev/null || true
 fi
 
+# Everything the appliance executes must carry the x bit regardless of
+# checkout modes — sudo reports a 644 helper as "command not found" (#469).
+chmod 755 "$TARBALL_DIR"/rc.d/* "$TARBALL_DIR"/sbin/* "$TARBALL_DIR"/libexec/* 2>/dev/null || true
+
 echo "$VERSION" > "$TARBALL_DIR/version"
 
 # Write a BUILD_MANIFEST so stale companion repos are visible at build time.

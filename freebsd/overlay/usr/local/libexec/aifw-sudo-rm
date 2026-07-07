@@ -8,6 +8,7 @@
 #
 # Allowed paths (strict prefix or exact match):
 #   /usr/local/share/aifw/ui/*     — UI staging area (updater)
+#   /usr/local/share/aifw/backup/* — pre-upgrade snapshot (updater)
 #   /usr/local/etc/rdns/rpz/*      — rDNS RPZ zone files
 #   /usr/local/etc/rdns/blocklists/* — rDNS blocklist files
 #   /tmp/aifw-*                    — temp staging files we own
@@ -51,6 +52,7 @@ esac
 
 case "$TARGET" in
     /usr/local/share/aifw/ui|/usr/local/share/aifw/ui/*) ;;
+    /usr/local/share/aifw/backup|/usr/local/share/aifw/backup/*) ;;
     /usr/local/etc/rdns/rpz|/usr/local/etc/rdns/rpz/*) ;;
     /usr/local/etc/rdns/blocklists|/usr/local/etc/rdns/blocklists/*) ;;
     /tmp/aifw-*|/tmp/aifw_*) ;;

@@ -125,7 +125,7 @@ jobs:
             echo "=== Building update tarball ==="
             VERSION="${{ steps.version.outputs.version }}"
             TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
-            mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui" "$TARBALL_DIR/rc.d" "$TARBALL_DIR/sbin"
+            mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui" "$TARBALL_DIR/rc.d" "$TARBALL_DIR/sbin" "$TARBALL_DIR/libexec"
             # Copy all binaries from freebsd/release/ into tarball
             for bin in freebsd/release/*; do
               [ -f "$bin" ] && cp "$bin" "$TARBALL_DIR/bin/"
@@ -133,6 +133,11 @@ jobs:
             cp -a freebsd/ui-export/* "$TARBALL_DIR/ui/"
             cp -a freebsd/overlay/usr/local/etc/rc.d/* "$TARBALL_DIR/rc.d/"
             cp -a freebsd/overlay/usr/local/sbin/* "$TARBALL_DIR/sbin/"
+            # libexec scripts (restart driver, watchdog, narrow-grant sudo
+            # helpers). The updater iterates <tarball>/libexec/ on install —
+            # without this, CI-built tarballs never ship helper updates (#469).
+            cp -a freebsd/overlay/usr/local/libexec/* "$TARBALL_DIR/libexec/"
+            chmod 755 "$TARBALL_DIR"/rc.d/* "$TARBALL_DIR"/sbin/* "$TARBALL_DIR"/libexec/*
             echo "$VERSION" > "$TARBALL_DIR/version"
             mkdir -p /usr/obj/aifw-iso/output
             tar -C /tmp -cJf "/usr/obj/aifw-iso/output/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"

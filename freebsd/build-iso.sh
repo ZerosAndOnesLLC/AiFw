@@ -154,6 +154,10 @@ if [ -d "$OVERLAY_DIR" ]; then
     chmod 755 "$STAGEDIR/usr/local/etc/rc.d/"* 2>/dev/null || true
     chmod 755 "$STAGEDIR/usr/local/sbin/aifw-console" 2>/dev/null || true
     chmod 755 "$STAGEDIR/usr/local/sbin/aifw-install" 2>/dev/null || true
+    # sudo helpers + restart/watchdog drivers must be executable: sudo
+    # reports a 644 helper as "command not found", which bricked the
+    # in-app updater on ISO installs (#469).
+    chmod 755 "$STAGEDIR/usr/local/libexec/"* 2>/dev/null || true
 fi
 
 # Create required directories from manifest
