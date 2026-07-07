@@ -567,10 +567,7 @@ pub async fn install_from_path(
     let libexec_src = update_dir.join("libexec");
     if libexec_src.exists() {
         info!("Installing libexec scripts...");
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/mkdir", "-p", "/usr/local/libexec"])
-            .output()
-            .await;
+        let _ = crate::sudo::mkdir(&["-p", "/usr/local/libexec"]).await;
         if let Ok(mut entries) = tokio::fs::read_dir(&libexec_src).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 if !entry
@@ -626,10 +623,7 @@ pub async fn install_from_path(
 
     // Ensure required directories exist (new services may need them)
     for dir in &manifest.directories {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/mkdir", "-p", dir])
-            .output()
-            .await;
+        let _ = crate::sudo::mkdir(&["-p", dir]).await;
     }
 
     // Read the installed version from the tarball's version file
@@ -639,9 +633,7 @@ pub async fn install_from_path(
             let ver_src_str = ver_src
                 .to_str()
                 .ok_or_else(|| UpdaterError::Install("ver_src path is not UTF-8".into()))?;
-            let output = Command::new("/usr/local/bin/sudo")
-                .args(["/bin/cp", ver_src_str, VERSION_FILE])
-                .output()
+            let output = crate::sudo::cp(&[ver_src_str, VERSION_FILE])
                 .await
                 .map_err(|e| {
                     UpdaterError::Install(format!("Failed to update version file: {}", e))
@@ -803,7 +795,12 @@ async fn write_embedded_script(name: &str, content: &str) {
     let path = format!("/usr/local/libexec/{}", name);
     if let Ok(existing) = tokio::fs::read_to_string(&path).await
         && existing == content
+        && is_executable(&path).await
     {
+        // Matching content alone isn't enough to skip: ISO installs before
+        // v5.97.6 laid these down mode 644 (#469), and sudo reports a
+        // non-executable helper as "command not found". Reinstalling with
+        // -m 755 below is the only self-heal path such a box has.
         return;
     }
     // Stage in /tmp first, then install -m 755 so the write is atomic
@@ -813,10 +810,7 @@ async fn write_embedded_script(name: &str, content: &str) {
         warn!(name, "failed to stage embedded script");
         return;
     }
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["/bin/mkdir", "-p", "/usr/local/libexec"])
-        .output()
-        .await;
+    let _ = crate::sudo::mkdir(&["-p", "/usr/local/libexec"]).await;
     // Prefer the narrow `aifw-sudo-install` helper when it's already on
     // disk. Otherwise fall back to direct `sudo /usr/bin/install`, which
     // the broad pre-#204 sudoers grant permits. This is the bootstrap path
@@ -838,6 +832,17 @@ async fn write_embedded_script(name: &str, content: &str) {
         Ok(o) => warn!(name, stderr = %String::from_utf8_lossy(&o.stderr), "install failed"),
         Err(e) => warn!(name, error = %e, "install errored"),
     }
+}
+
+/// True when any execute bit is set. The helpers are root-owned and run
+/// via sudo, so a single x bit anywhere is what sudo's path resolution
+/// requires; a 644 file fails with "command not found".
+async fn is_executable(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::metadata(path)
+        .await
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 // SEC-C1: ensure_sudoers_* functions removed.
@@ -1022,21 +1027,12 @@ pub async fn rollback() -> Result<String, UpdaterError> {
     // Restore UI
     let backup_ui = format!("{}/ui", BACKUP_DIR);
     if std::path::Path::new(&backup_ui).exists() {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/rm", "-rf", UI_DIR])
-            .output()
-            .await;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/cp", "-a", &backup_ui, UI_DIR])
-            .output()
-            .await;
+        let _ = crate::sudo::rm(&["-rf", UI_DIR]).await;
+        let _ = crate::sudo::cp(&["-a", &backup_ui, UI_DIR]).await;
     }
 
     // Restore version file
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["/bin/cp", &backup_ver, VERSION_FILE])
-        .output()
-        .await;
+    let _ = crate::sudo::cp(&[&backup_ver, VERSION_FILE]).await;
 
     info!("Rolled back to v{}", version);
     Ok(format!("Rolled back to v{}", version))
@@ -1045,32 +1041,16 @@ pub async fn rollback() -> Result<String, UpdaterError> {
 // --- Private helpers ---
 
 async fn backup_current() -> Result<(), UpdaterError> {
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args(["/bin/rm", "-rf", BACKUP_DIR])
-        .output()
-        .await;
-    let _ = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/bin/mkdir",
-            "-p",
-            &format!("{}/bin", BACKUP_DIR),
-            &format!("{}/rc.d", BACKUP_DIR),
-        ])
-        .output()
-        .await;
+    let _ = crate::sudo::rm(&["-rf", BACKUP_DIR]).await;
+    // The mkdir helper takes exactly one target, so create each dir
+    // separately (rather than one mkdir with two operands).
+    let _ = crate::sudo::mkdir(&["-p", &format!("{}/bin", BACKUP_DIR)]).await;
+    let _ = crate::sudo::mkdir(&["-p", &format!("{}/rc.d", BACKUP_DIR)]).await;
 
     for bin in &all_binaries() {
         let src = format!("{}/{}", BIN_DIR, bin);
         if std::path::Path::new(&src).exists() {
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args([
-                    "/bin/cp",
-                    "-p",
-                    &src,
-                    &format!("{}/bin/{}", BACKUP_DIR, bin),
-                ])
-                .output()
-                .await;
+            let _ = crate::sudo::cp(&["-p", &src, &format!("{}/bin/{}", BACKUP_DIR, bin)]).await;
         }
     }
 
@@ -1079,30 +1059,17 @@ async fn backup_current() -> Result<(), UpdaterError> {
     for script in &manifest.rc_scripts {
         let src = format!("/usr/local/etc/rc.d/{}", script);
         if std::path::Path::new(&src).exists() {
-            let _ = Command::new("/usr/local/bin/sudo")
-                .args([
-                    "/bin/cp",
-                    "-p",
-                    &src,
-                    &format!("{}/rc.d/{}", BACKUP_DIR, script),
-                ])
-                .output()
-                .await;
+            let _ =
+                crate::sudo::cp(&["-p", &src, &format!("{}/rc.d/{}", BACKUP_DIR, script)]).await;
         }
     }
 
     if std::path::Path::new(UI_DIR).exists() {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/cp", "-a", UI_DIR, &format!("{}/ui", BACKUP_DIR)])
-            .output()
-            .await;
+        let _ = crate::sudo::cp(&["-a", UI_DIR, &format!("{}/ui", BACKUP_DIR)]).await;
     }
 
     if std::path::Path::new(VERSION_FILE).exists() {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/bin/cp", VERSION_FILE, &format!("{}/version", BACKUP_DIR)])
-            .output()
-            .await;
+        let _ = crate::sudo::cp(&[VERSION_FILE, &format!("{}/version", BACKUP_DIR)]).await;
     }
 
     Ok(())
@@ -1276,5 +1243,58 @@ mod tests {
     fn test_extract_hash_plain() {
         let input = "abc123def456";
         assert_eq!(extract_hash(input), "abc123def456");
+    }
+
+    // Regression gate for #469: every overlay libexec script must carry the
+    // execute bit in git. Eight aifw-sudo-* helpers were committed mode 644,
+    // build-iso.sh's `cp -a` preserved that onto installed systems, and sudo
+    // reports a non-executable helper as "command not found" — bricking the
+    // in-app updater on every ISO install. The exec bit lives in the git
+    // index, so a plain checkout is enough to assert on.
+    #[test]
+    fn test_overlay_libexec_scripts_are_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../freebsd/overlay/usr/local/libexec");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("overlay libexec dir exists") {
+            let entry = entry.expect("readable dir entry");
+            if !entry.file_type().expect("file type").is_file() {
+                continue;
+            }
+            let mode = entry.metadata().expect("metadata").permissions().mode();
+            assert!(
+                mode & 0o111 != 0,
+                "{} is not executable (mode {:o}) — sudo will report it as \
+                 'command not found' on the appliance (#469)",
+                entry.path().display(),
+                mode
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no files found in {}", dir.display());
+    }
+
+    // The embedded self-heal list must cover every aifw-sudo-* helper in the
+    // overlay, or an upgraded box misses helpers that never shipped in its
+    // original image (the tarball libexec/ install covers them too, but CI
+    // tarballs lacked libexec/ entirely until v5.97.6 — belt and suspenders).
+    #[test]
+    fn test_embedded_helpers_cover_overlay() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../freebsd/overlay/usr/local/libexec");
+        for entry in std::fs::read_dir(&dir).expect("overlay libexec dir exists") {
+            let name = entry.expect("readable dir entry").file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("aifw-sudo-") {
+                continue;
+            }
+            assert!(
+                EMBEDDED_SUDO_HELPERS.iter().any(|(n, _)| *n == name),
+                "{} exists in the overlay but is missing from \
+                 EMBEDDED_SUDO_HELPERS in updater.rs",
+                name
+            );
+        }
     }
 }

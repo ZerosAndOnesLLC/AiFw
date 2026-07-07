@@ -27,8 +27,16 @@ const SUDO: &str = "/usr/local/bin/sudo";
 /// FreeBSD sudo emits one of these stderr strings on refusal:
 ///   - "sudo: a password is required"
 ///   - "Sorry, user aifw is not allowed to execute ..."
+///
+/// "command not found" is also a fallback trigger: sudo reports a helper
+/// that is missing *or non-executable* with that message. ISO images
+/// before v5.97.6 shipped eight helpers mode 644 (#469), which bricked
+/// the in-app updater at the tar-extract step even though the broad
+/// compat grant for the underlying binary was still in sudoers.
 fn sudo_refused(stderr: &str) -> bool {
-    stderr.contains("password is required") || stderr.contains("is not allowed to")
+    stderr.contains("password is required")
+        || stderr.contains("is not allowed to")
+        || stderr.contains("command not found")
 }
 
 /// Run a command via sudo, preferring the narrow helper path; if sudo

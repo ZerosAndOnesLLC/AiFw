@@ -11,9 +11,14 @@
 #   /usr/local/etc/rtime/*         — rTIME config tree
 #   /usr/local/etc/trafficcop/*    — TrafficCop config tree
 #   /usr/local/etc/sudoers.d       — exact: directory for the sudoers file
+#   /usr/local/libexec             — exact: helper script dir (updater)
+#   /usr/local/lib/aifw/*          — plugin dir (manifest.json directories)
 #   /usr/local/share/aifw/*        — UI / share assets
 #   /var/db/aifw/*                 — runtime state
+#   /var/db/rdhcpd/*               — rDHCP lease db (manifest.json)
 #   /var/log/aifw/*                — log dir
+#   /var/log/{rdhcpd,rdns,rtime,trafficcop} — companion service log dirs
+#   /var/run/{rdns,rtime}          — companion service runtime dirs
 #   /tmp/aifw-*                    — temp staging
 
 set -eu
@@ -55,9 +60,14 @@ case "$TARGET" in
     /usr/local/etc/rtime|/usr/local/etc/rtime/*) ;;
     /usr/local/etc/trafficcop|/usr/local/etc/trafficcop/*) ;;
     /usr/local/etc/sudoers.d) ;;
+    /usr/local/libexec) ;;
+    /usr/local/lib/aifw|/usr/local/lib/aifw/*) ;;
     /usr/local/share/aifw|/usr/local/share/aifw/*) ;;
     /var/db/aifw|/var/db/aifw/*) ;;
+    /var/db/rdhcpd|/var/db/rdhcpd/*) ;;
     /var/log/aifw|/var/log/aifw/*) ;;
+    /var/log/rdhcpd|/var/log/rdns|/var/log/rtime|/var/log/trafficcop) ;;
+    /var/run/rdns|/var/run/rtime) ;;
     /tmp/aifw-*|/tmp/aifw_*) ;;
     *)
         echo "aifw-sudo-mkdir: target not in allowlist: $TARGET" >&2
