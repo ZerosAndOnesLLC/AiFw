@@ -126,6 +126,20 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // SEC-H8: a short, non-secret prefix of the raw token lets rotate/revoke
+    // do an O(1) indexed lookup instead of Argon2-verifying every row. Legacy
+    // rows (pre-upgrade) have NULL prefix and simply won't match a lookup —
+    // those refresh tokens become invalid on upgrade (services restart anyway),
+    // forcing a harmless re-login.
+    let _ = sqlx::query("ALTER TABLE refresh_tokens ADD COLUMN token_prefix TEXT")
+        .execute(pool)
+        .await;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_prefix ON refresh_tokens(token_prefix)",
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(aifw_common::schemas::RECOVERY_CODES_CREATE)
         .execute(pool)
         .await?;
@@ -158,6 +172,19 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             created_at TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    // SEC-H9: short-lived CSRF state store. A `state` nonce is created at
+    // /oauth/{provider}/authorize and must be presented (and consumed) at the
+    // callback, binding the callback to a request this server initiated.
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS oauth_states (
+            state TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            created_at TEXT NOT NULL
         )"#,
     )
     .execute(pool)
@@ -354,8 +381,13 @@ pub async fn cleanup_revoked_tokens(pool: &SqlitePool) {
 // ============================================================
 
 /// Validate password meets minimum security requirements.
-pub fn validate_password(password: &str) -> Result<(), StatusCode> {
-    if password.len() < 8 {
+///
+/// `min_length` is the operator-configured `password_min_length`
+/// (`AuthSettings`). We floor it at 8 so a misconfigured-low setting can
+/// never weaken the baseline below the historical hardcoded minimum.
+pub fn validate_password(password: &str, min_length: u32) -> Result<(), StatusCode> {
+    let min = (min_length as usize).max(8);
+    if password.len() < min {
         return Err(StatusCode::BAD_REQUEST);
     }
     if !password.chars().any(|c| c.is_uppercase()) {
@@ -370,8 +402,12 @@ pub fn validate_password(password: &str) -> Result<(), StatusCode> {
     Ok(())
 }
 
-pub async fn create_user(pool: &SqlitePool, req: &CreateUserRequest) -> Result<User, StatusCode> {
-    validate_password(&req.password)?;
+pub async fn create_user(
+    pool: &SqlitePool,
+    req: &CreateUserRequest,
+    min_length: u32,
+) -> Result<User, StatusCode> {
+    validate_password(&req.password, min_length)?;
     let pw_hash = hash_password(&req.password)?;
     let role = req.role.as_deref().unwrap_or("viewer").to_string();
     let role_id = match role.as_str() {
@@ -444,6 +480,7 @@ pub async fn update_user(
     pool: &SqlitePool,
     user_id: &str,
     req: &UpdateUserRequest,
+    min_length: u32,
 ) -> Result<User, StatusCode> {
     let mut user = get_user_by_id(pool, user_id)
         .await?
@@ -453,7 +490,7 @@ pub async fn update_user(
         user.username = username.clone();
     }
     if let Some(ref password) = req.password {
-        validate_password(password)?;
+        validate_password(password, min_length)?;
         user.password_hash = hash_password(password)?;
     }
     if let Some(ref role) = req.role {
