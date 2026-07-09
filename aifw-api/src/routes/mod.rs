@@ -280,13 +280,48 @@ pub async fn totp_login(
 
 pub async fn refresh_token(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<auth::tokens::RefreshRequest>,
 ) -> Result<Json<auth::TokenPair>, StatusCode> {
-    let tokens =
-        auth::tokens::rotate_refresh_token(&state.pool, &req.refresh_token, &state.auth_settings)
-            .await
-            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // SEC-H8: rate-limit refresh like login. Key on the client IP (best
+    // effort, spoofable without a trusted-proxy allow-list) and on the
+    // token prefix so a spray of forged tokens from one source is capped.
+    // Falling back to the prefix as the IP key when there's no XFF avoids a
+    // single shared global bucket that would block unrelated clients.
+    let token_prefix = auth::tokens::refresh_prefix(&req.refresh_token).to_string();
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| format!("rfx:{token_prefix}"));
 
+    if state
+        .login_limiter
+        .is_blocked(&client_ip, &token_prefix)
+        .await
+    {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    let tokens = match auth::tokens::rotate_refresh_token(
+        &state.pool,
+        &req.refresh_token,
+        &state.auth_settings,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(_) => {
+            state
+                .login_limiter
+                .record_failure(&client_ip, &token_prefix)
+                .await;
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    };
+
+    state.login_limiter.clear(&client_ip, &token_prefix).await;
     Ok(Json(tokens))
 }
 
@@ -529,6 +564,11 @@ pub async fn oauth_authorize(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let oauth_state = Uuid::new_v4().to_string();
+    // SEC-H9: bind this state nonce so the callback can prove it originated
+    // from an authorize request this server issued.
+    auth::oauth::save_state(&state.pool, &oauth_state, &provider_name)
+        .await
+        .map_err(|_| internal())?;
     let redirect_uri = format!("/api/v1/auth/oauth/{}/callback", provider_name);
     let url = provider.authorize_url(&redirect_uri, &oauth_state);
 
@@ -539,8 +579,8 @@ pub async fn oauth_authorize(
 }
 
 pub async fn oauth_callback(
-    State(_state): State<AppState>,
-    Path(_provider_name): Path<String>,
+    State(state): State<AppState>,
+    Path(provider_name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<auth::oauth::CallbackQuery>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     // Validate required parameters are present
@@ -550,7 +590,14 @@ pub async fn oauth_callback(
     if query.state.is_empty() {
         return Err(bad_request());
     }
-    // OAuth token exchange is not yet implemented — return 501
+    // SEC-H9: the state nonce must match one we issued at /authorize for this
+    // provider and be unexpired. consume_state deletes it (single-use), so a
+    // replayed or forged callback is rejected before any token exchange.
+    if !auth::oauth::consume_state(&state.pool, &query.state, &provider_name).await {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    // State is valid, but the token exchange itself is not yet implemented
+    // (tracked in #170) — return 501 until that lands.
     Err(StatusCode::NOT_IMPLEMENTED)
 }
 
@@ -568,7 +615,7 @@ pub async fn register(
         password: req.password,
         role: Some("admin".to_string()),
     };
-    auth::validate_password(&admin_req.password)?;
+    auth::validate_password(&admin_req.password, state.auth_settings.password_min_length)?;
     let pw_hash = auth::hash_password(&admin_req.password)?;
     let user_id = uuid::Uuid::new_v4();
     let now = chrono::Utc::now().to_rfc3339();
@@ -611,7 +658,8 @@ pub async fn create_user(
     State(state): State<AppState>,
     Json(req): Json<auth::CreateUserRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<auth::User>>), StatusCode> {
-    let user = auth::create_user(&state.pool, &req).await?;
+    let user =
+        auth::create_user(&state.pool, &req, state.auth_settings.password_min_length).await?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: user })))
 }
 
@@ -671,7 +719,13 @@ pub async fn update_user(
     Json(req): Json<auth::UpdateUserRequest>,
 ) -> Result<Json<ApiResponse<auth::User>>, StatusCode> {
     let actor_id = extract_user_id(&headers, &state)?;
-    let user = auth::update_user(&state.pool, &id, &req).await?;
+    let user = auth::update_user(
+        &state.pool,
+        &id,
+        &req,
+        state.auth_settings.password_min_length,
+    )
+    .await?;
     // PERF-C12: invalidate the user cache so disable / role change takes
     // effect immediately instead of waiting out the TTL.
     state.auth_user_cache.remove(&id);

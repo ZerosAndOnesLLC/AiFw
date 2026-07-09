@@ -713,6 +713,155 @@ mod tests {
     // Security regression tests
     // ================================================================
 
+    /// Build a test server whose AuthSettings override `password_min_length`.
+    async fn test_app_min_len(min_length: u32) -> TestServer {
+        let auth_settings = AuthSettings {
+            jwt_secret: "test-secret-key".to_string(),
+            access_token_expiry_mins: 60,
+            refresh_token_expiry_days: 7,
+            require_totp: false,
+            require_totp_for_oauth: false,
+            auto_create_oauth_users: true,
+            max_login_attempts: 5,
+            lockout_duration_secs: 300,
+            allow_registration: true,
+            password_min_length: min_length,
+        };
+        let state = crate::create_app_state_in_memory(auth_settings)
+            .await
+            .unwrap();
+        TestServer::new(crate::build_router(state, None, "*", false))
+    }
+
+    /// SEC-H7 (#292): the configured `password_min_length` must be enforced,
+    /// not the hardcoded floor of 8.
+    #[tokio::test]
+    async fn test_password_min_length_enforced() {
+        let server = test_app_min_len(16).await;
+
+        // First-user bootstrap (register) must honor the 16-char minimum:
+        // a complexity-valid but 12-char password is rejected.
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username": "admin", "password": "ShortPass123"}))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+
+        // A 16-char password satisfies it.
+        let resp = server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username": "admin", "password": "LongEnoughPass12"}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+
+        // Log in and exercise the admin create-user path too.
+        let login = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username": "admin", "password": "LongEnoughPass12"}))
+            .await;
+        let token = login.json::<Value>()["tokens"]["access_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let resp = server
+            .post("/api/v1/auth/users")
+            .authorization_bearer(&token)
+            .json(&json!({"username": "bob", "password": "ShortPass123", "role": "viewer"}))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+
+        let resp = server
+            .post("/api/v1/auth/users")
+            .authorization_bearer(&token)
+            .json(&json!({"username": "bob", "password": "LongEnoughPass12", "role": "viewer"}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+    }
+
+    /// SEC-H8 (#293): the refresh endpoint is rate-limited so a spray of
+    /// forged tokens can't tie up the CPU indefinitely.
+    #[tokio::test]
+    async fn test_refresh_endpoint_rate_limited() {
+        let (server, _) = test_app().await;
+        // max_login_attempts is 5. A forged token with a fixed prefix keeps
+        // the rate-limit key stable across attempts.
+        let forged = "rfx_deadbeefdeadbeefdeadbeefdeadbeef";
+
+        // First failure returns 401 (invalid token), not yet blocked.
+        let resp = server
+            .post("/api/v1/auth/refresh")
+            .json(&json!({"refresh_token": forged}))
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+
+        // Exhaust the remaining attempts.
+        for _ in 0..4 {
+            server
+                .post("/api/v1/auth/refresh")
+                .json(&json!({"refresh_token": forged}))
+                .await;
+        }
+
+        // Now blocked.
+        let resp = server
+            .post("/api/v1/auth/refresh")
+            .json(&json!({"refresh_token": forged}))
+            .await;
+        resp.assert_status(StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// SEC-H9 (#294): the OAuth callback must reject a `state` it never
+    /// issued, and a valid state is single-use (replay-proof).
+    #[tokio::test]
+    async fn test_oauth_callback_state_binding() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // A forged state is rejected before any token exchange.
+        let resp = server
+            .get("/api/v1/auth/oauth/Google/callback?code=abc&state=forged-nonce")
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+
+        // Create the provider, then obtain a real state from /authorize.
+        server
+            .post("/api/v1/auth/oauth/providers")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "name": "Google",
+                "provider_type": "google",
+                "client_id": "test-client-id",
+                "client_secret": "test-secret"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let authorize = server.get("/api/v1/auth/oauth/Google/authorize").await;
+        authorize.assert_status_ok();
+        let state = authorize.json::<Value>()["state"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // A valid state passes the CSRF check — the 501 confirms it reached
+        // the (still-unimplemented, #170) token-exchange step.
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/Google/callback?code=abc&state={state}"
+            ))
+            .await;
+        resp.assert_status(StatusCode::NOT_IMPLEMENTED);
+
+        // Replaying the same (now-consumed) state is rejected.
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/Google/callback?code=abc&state={state}"
+            ))
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
     /// Helper: create admin + a viewer user, return (admin_token, viewer_token)
     async fn create_admin_and_viewer(server: &TestServer) -> (String, String) {
         let admin_token = create_user_and_login(server).await;

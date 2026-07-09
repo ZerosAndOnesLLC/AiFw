@@ -80,6 +80,35 @@ pub fn verify_access_token(
 // Refresh Tokens (DB-backed with rotation + family tracking)
 // ============================================================
 
+/// Length of the non-secret prefix stored alongside the Argon2 hash.
+/// The raw token is `rfx_<32 hex>` (36 chars); the first 12 (`rfx_` + 8 hex)
+/// are enough to index a lookup to at most a handful of rows. This is NOT a
+/// security boundary — the Argon2 hash still authenticates the token — it
+/// only bounds the number of `verify_password` calls per request (SEC-H8).
+const REFRESH_PREFIX_LEN: usize = 12;
+
+pub(crate) fn refresh_prefix(raw: &str) -> &str {
+    if raw.len() >= REFRESH_PREFIX_LEN {
+        &raw[..REFRESH_PREFIX_LEN]
+    } else {
+        raw
+    }
+}
+
+/// Delete revoked or expired refresh tokens. Called opportunistically on
+/// rotate so the table (and any same-prefix bucket) stays small. Best-effort:
+/// a failure here is non-fatal and must not block token issuance.
+async fn prune_refresh_tokens(pool: &SqlitePool) {
+    let now = Utc::now().to_rfc3339();
+    if let Err(e) = sqlx::query("DELETE FROM refresh_tokens WHERE revoked = 1 OR expires_at < ?1")
+        .bind(&now)
+        .execute(pool)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to prune refresh_tokens");
+    }
+}
+
 pub async fn create_refresh_token(
     pool: &SqlitePool,
     user_id: &str,
@@ -87,17 +116,19 @@ pub async fn create_refresh_token(
 ) -> Result<(String, String), String> {
     let raw_token = format!("rfx_{}", Uuid::new_v4().to_string().replace('-', ""));
     let token_hash = hash_password(&raw_token).map_err(|_| "hash error".to_string())?;
+    let prefix = refresh_prefix(&raw_token).to_string();
     let family_id = Uuid::new_v4().to_string();
     let expires = Utc::now() + Duration::days(settings.refresh_token_expiry_days);
     let id = Uuid::new_v4().to_string();
 
     sqlx::query(
-        r#"INSERT INTO refresh_tokens (id, user_id, token_hash, family_id, expires_at, revoked, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)"#,
+        r#"INSERT INTO refresh_tokens (id, user_id, token_hash, token_prefix, family_id, expires_at, revoked, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)"#,
     )
     .bind(&id)
     .bind(user_id)
     .bind(&token_hash)
+    .bind(&prefix)
     .bind(&family_id)
     .bind(expires.to_rfc3339())
     .bind(Utc::now().to_rfc3339())
@@ -137,11 +168,15 @@ pub async fn rotate_refresh_token(
     old_token: &str,
     settings: &AuthSettings,
 ) -> Result<TokenPair, String> {
-    // Find the matching refresh token by checking hashes
+    // SEC-H8: look up by the non-secret prefix so we Argon2-verify at most a
+    // handful of rows, not the whole table. A random/forged token whose prefix
+    // matches nothing returns zero rows and costs no verify.
+    let prefix = refresh_prefix(old_token);
     let rows = sqlx::query_as::<_, (String, String, String, String, bool, String)>(
         r#"SELECT id, user_id, token_hash, family_id, revoked, expires_at
-           FROM refresh_tokens ORDER BY created_at DESC"#,
+           FROM refresh_tokens WHERE token_prefix = ?1 ORDER BY created_at DESC"#,
     )
+    .bind(prefix)
     .fetch_all(pool)
     .await
     .map_err(|e| format!("db error: {e}"))?;
@@ -193,22 +228,27 @@ pub async fn rotate_refresh_token(
     // Issue new refresh token in the same family
     let new_raw = format!("rfx_{}", Uuid::new_v4().to_string().replace('-', ""));
     let new_hash = hash_password(&new_raw).map_err(|_| "hash error".to_string())?;
+    let new_prefix = refresh_prefix(&new_raw).to_string();
     let new_expires = Utc::now() + Duration::days(settings.refresh_token_expiry_days);
     let new_id = Uuid::new_v4().to_string();
 
     sqlx::query(
-        r#"INSERT INTO refresh_tokens (id, user_id, token_hash, family_id, expires_at, revoked, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)"#,
+        r#"INSERT INTO refresh_tokens (id, user_id, token_hash, token_prefix, family_id, expires_at, revoked, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)"#,
     )
     .bind(&new_id)
     .bind(&user_id)
     .bind(&new_hash)
+    .bind(&new_prefix)
     .bind(&family_id) // same family
     .bind(new_expires.to_rfc3339())
     .bind(Utc::now().to_rfc3339())
     .execute(pool)
     .await
     .map_err(|e| format!("db error: {e}"))?;
+
+    // Opportunistic cleanup of revoked/expired rows keeps the table bounded.
+    prune_refresh_tokens(pool).await;
 
     // Get username, enabled, and role for permission resolution
     let (username, enabled, role, role_id) =
@@ -241,9 +281,12 @@ pub async fn rotate_refresh_token(
 
 /// Revoke a specific refresh token (logout)
 pub async fn revoke_refresh_token(pool: &SqlitePool, token: &str) -> Result<(), String> {
+    // SEC-H8: scope to the prefix so logout verifies at most a few hashes.
+    let prefix = refresh_prefix(token);
     let rows = sqlx::query_as::<_, (String, String)>(
-        "SELECT id, token_hash FROM refresh_tokens WHERE revoked = 0",
+        "SELECT id, token_hash FROM refresh_tokens WHERE token_prefix = ?1 AND revoked = 0",
     )
+    .bind(prefix)
     .fetch_all(pool)
     .await
     .map_err(|e| format!("db error: {e}"))?;

@@ -167,6 +167,60 @@ pub async fn delete_provider(pool: &SqlitePool, id: Uuid) -> Result<(), String> 
     Ok(())
 }
 
+// ============================================================
+// SEC-H9: OAuth CSRF state store
+// ============================================================
+
+/// How long an issued `state` nonce remains valid between authorize and
+/// callback. OAuth round-trips complete in seconds; 10 minutes is generous
+/// while keeping the store self-cleaning.
+const OAUTH_STATE_TTL_SECS: i64 = 600;
+
+/// Persist a freshly-issued `state` nonce bound to a provider.
+pub async fn save_state(pool: &SqlitePool, state: &str, provider: &str) -> Result<(), String> {
+    sqlx::query(
+        "INSERT OR REPLACE INTO oauth_states (state, provider, created_at) VALUES (?1, ?2, ?3)",
+    )
+    .bind(state)
+    .bind(provider)
+    .bind(Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .map_err(|e| format!("db error: {e}"))?;
+    Ok(())
+}
+
+/// Consume a `state` nonce at the callback: it must exist, match the
+/// provider, and be unexpired. The row is deleted so a nonce is single-use
+/// (replay-proof). Returns true iff the state was valid. Expired rows are
+/// swept opportunistically.
+pub async fn consume_state(pool: &SqlitePool, state: &str, provider: &str) -> bool {
+    // Best-effort GC of stale nonces.
+    let cutoff = (Utc::now() - chrono::Duration::seconds(OAUTH_STATE_TTL_SECS)).to_rfc3339();
+    let _ = sqlx::query("DELETE FROM oauth_states WHERE created_at < ?1")
+        .bind(&cutoff)
+        .execute(pool)
+        .await;
+
+    let row = sqlx::query_as::<_, (String, String)>(
+        "DELETE FROM oauth_states WHERE state = ?1 RETURNING provider, created_at",
+    )
+    .bind(state)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+
+    match row {
+        Some((row_provider, created_at)) => {
+            let fresh = chrono::DateTime::parse_from_rfc3339(&created_at)
+                .map(|c| (Utc::now() - c.with_timezone(&Utc)).num_seconds() <= OAUTH_STATE_TTL_SECS)
+                .unwrap_or(false);
+            fresh && row_provider.eq_ignore_ascii_case(provider)
+        }
+        None => false,
+    }
+}
+
 fn url_encode(s: &str) -> String {
     s.replace(' ', "+")
         .replace(':', "%3A")
@@ -199,7 +253,6 @@ pub struct AuthorizeResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct CallbackQuery {
     pub code: String,
     pub state: String,
