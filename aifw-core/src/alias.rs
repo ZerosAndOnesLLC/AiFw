@@ -175,8 +175,25 @@ impl AliasEngine {
             AliasType::UrlTable => {
                 // Fetch URL and load IPs into table
                 for url in &alias.entries {
+                    let url = url.trim();
+                    // SEC-H2 (#287): reject SSRF / local-file targets before
+                    // fetching. https-only, no internal/metadata hosts; a bad
+                    // URL is skipped (not fatal) like any other fetch failure.
+                    if let Err(e) = crate::net_safety::validate_outbound_url(url).await {
+                        tracing::warn!(alias = %alias.name, url, error = %e, "skipping unsafe URL-table source");
+                        continue;
+                    }
                     if let Ok(output) = tokio::process::Command::new("curl")
-                        .args(["-sf", "--max-time", "30", url.trim()])
+                        .args([
+                            "-sf",
+                            "--proto",
+                            "=https",
+                            "--proto-redir",
+                            "=https",
+                            "--max-time",
+                            "30",
+                            url,
+                        ])
                         .output()
                         .await
                         && output.status.success()
