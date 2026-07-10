@@ -2263,6 +2263,10 @@ pub async fn get_ai_settings(
         let model = get_val(pool, &format!("ai_{p}_model"))
             .await
             .unwrap_or_default();
+        let tls_insecure = get_val(pool, &format!("ai_{p}_tls_insecure"))
+            .await
+            .map(|v| v == "true")
+            .unwrap_or(false);
 
         configs.push(serde_json::json!({
             "provider": p,
@@ -2270,6 +2274,7 @@ pub async fn get_ai_settings(
             "api_key_set": !api_key.is_empty(),
             "endpoint": endpoint,
             "model": model,
+            "tls_insecure": tls_insecure,
         }));
     }
 
@@ -2297,6 +2302,9 @@ pub struct UpdateAiSettingsRequest {
     pub endpoint: Option<String>,
     pub model: Option<String>,
     pub provider_enabled: Option<bool>,
+    /// SEC-H4 (#289): opt-in skip of TLS cert verification for a provider,
+    /// for local endpoints with self-signed certs. Off unless explicitly set.
+    pub tls_insecure: Option<bool>,
 }
 
 pub async fn update_ai_settings(
@@ -2334,6 +2342,14 @@ pub async fn update_ai_settings(
         if let Some(ref model) = req.model {
             save_val(pool, &format!("ai_{provider}_model"), model).await;
         }
+        if let Some(insecure) = req.tls_insecure {
+            save_val(
+                pool,
+                &format!("ai_{provider}_tls_insecure"),
+                if insecure { "true" } else { "false" },
+            )
+            .await;
+        }
         if let Some(enabled) = req.provider_enabled {
             save_val(
                 pool,
@@ -2349,9 +2365,17 @@ pub async fn update_ai_settings(
 
 // --- AI HTTP helpers (curl with fetch fallback for FreeBSD) ---
 
-async fn http_get_status(url: &str, auth: &str, provider: &str) -> Result<(String, bool), String> {
+async fn http_get_status(
+    url: &str,
+    auth: &str,
+    provider: &str,
+    tls_insecure: bool,
+) -> Result<(String, bool), String> {
+    // Reject non-http(s) schemes up front — gates both the curl and the
+    // fetch fallback (FreeBSD `fetch` honors file://).
+    crate::ai_analysis::require_http_url(url)?;
     // Try curl first, fall back to fetch (FreeBSD built-in)
-    let result = if let Ok(output) = build_curl_status(url, auth, provider).await {
+    let result = if let Ok(output) = build_curl_status(url, auth, provider, tls_insecure).await {
         output
     } else if let Ok(output) = build_fetch_status(url).await {
         output
@@ -2365,19 +2389,24 @@ async fn build_curl_status(
     url: &str,
     auth: &str,
     provider: &str,
+    tls_insecure: bool,
 ) -> Result<(String, bool), String> {
-    let mut args: Vec<String> = vec![
-        "-sk",
-        "--connect-timeout",
-        "5",
-        "-o",
-        "/dev/null",
-        "-w",
-        "%{http_code}",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect();
+    let mut args: Vec<String> = vec!["-s"].into_iter().map(String::from).collect();
+    if tls_insecure {
+        args.push("-k".to_string());
+    }
+    args.extend(
+        [
+            "--connect-timeout",
+            "5",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+        ]
+        .into_iter()
+        .map(String::from),
+    );
     if !auth.is_empty() {
         if provider == "claude" {
             args.extend([
@@ -2422,9 +2451,16 @@ async fn build_fetch_status(url: &str) -> Result<(String, bool), String> {
     ))
 }
 
-async fn http_get_body(url: &str, auth: &str, provider: &str) -> Result<String, String> {
+async fn http_get_body(
+    url: &str,
+    auth: &str,
+    provider: &str,
+    tls_insecure: bool,
+) -> Result<String, String> {
+    // Reject non-http(s) schemes up front — gates the fetch fallback too.
+    crate::ai_analysis::require_http_url(url)?;
     // Try curl first
-    if let Ok(body) = build_curl_body(url, auth, provider).await {
+    if let Ok(body) = build_curl_body(url, auth, provider, tls_insecure).await {
         return Ok(body);
     }
     // Fallback to fetch
@@ -2436,11 +2472,17 @@ async fn http_get_body(url: &str, auth: &str, provider: &str) -> Result<String, 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-async fn build_curl_body(url: &str, auth: &str, provider: &str) -> Result<String, String> {
-    let mut args: Vec<String> = vec!["-sk", "--connect-timeout", "5"]
-        .into_iter()
-        .map(String::from)
-        .collect();
+async fn build_curl_body(
+    url: &str,
+    auth: &str,
+    provider: &str,
+    tls_insecure: bool,
+) -> Result<String, String> {
+    let mut args: Vec<String> = vec!["-s"].into_iter().map(String::from).collect();
+    if tls_insecure {
+        args.push("-k".to_string());
+    }
+    args.extend(["--connect-timeout", "5"].into_iter().map(String::from));
     if !auth.is_empty() {
         if provider == "claude" {
             args.extend([
@@ -2492,6 +2534,7 @@ pub async fn test_ai_provider(
     let api_key = get_val(pool, &format!("ai_{provider}_api_key")).await;
     let endpoint = get_val(pool, &format!("ai_{provider}_endpoint")).await;
     let model = get_val(pool, &format!("ai_{provider}_model")).await;
+    let stored_insecure = get_val(pool, &format!("ai_{provider}_tls_insecure")).await == "true";
 
     // Allow request overrides for testing before saving
     let endpoint = req
@@ -2504,6 +2547,10 @@ pub async fn test_ai_provider(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or(api_key);
+    let tls_insecure = req
+        .get("tls_insecure")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(stored_insecure);
 
     if endpoint.is_empty() {
         return Ok(Json(
@@ -2536,10 +2583,11 @@ pub async fn test_ai_provider(
     };
 
     // Test connectivity — try curl, fall back to fetch (FreeBSD built-in)
-    let (status_code, success) = match http_get_status(&models_url, &auth_header, provider).await {
-        Ok((code, ok)) => (code, ok),
-        Err(_) => return Err(internal()),
-    };
+    let (status_code, success) =
+        match http_get_status(&models_url, &auth_header, provider, tls_insecure).await {
+            Ok((code, ok)) => (code, ok),
+            Err(_) => return Err(internal()),
+        };
 
     Ok(Json(serde_json::json!({
         "success": success,
@@ -2569,6 +2617,7 @@ pub async fn list_ai_models(
 
     let api_key = get_val(pool, &format!("ai_{provider}_api_key")).await;
     let endpoint = get_val(pool, &format!("ai_{provider}_endpoint")).await;
+    let tls_insecure = get_val(pool, &format!("ai_{provider}_tls_insecure")).await == "true";
 
     if endpoint.is_empty() {
         return Ok(Json(
@@ -2610,7 +2659,7 @@ pub async fn list_ai_models(
     } else {
         String::new()
     };
-    let body = http_get_body(&url, &auth, provider.as_str())
+    let body = http_get_body(&url, &auth, provider.as_str(), tls_insecure)
         .await
         .unwrap_or_default();
 

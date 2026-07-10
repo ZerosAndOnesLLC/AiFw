@@ -862,6 +862,65 @@ mod tests {
         resp.assert_status(StatusCode::UNAUTHORIZED);
     }
 
+    /// SEC-H4 (#289): the per-provider `tls_insecure` opt-in must persist and
+    /// round-trip through GET /settings/ai (default false).
+    #[tokio::test]
+    async fn test_ai_tls_insecure_roundtrip() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let ollama = |body: &Value| -> Value {
+            body["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["provider"] == "ollama")
+                .unwrap()
+                .clone()
+        };
+
+        // Default: not configured → tls_insecure false.
+        let resp = server
+            .get("/api/v1/settings/ai")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        assert_eq!(ollama(&resp.json::<Value>())["tls_insecure"], false);
+
+        // Opt in.
+        server
+            .put("/api/v1/settings/ai")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "provider": "ollama",
+                "endpoint": "http://127.0.0.1:11434",
+                "tls_insecure": true
+            }))
+            .await
+            .assert_status_ok();
+
+        let resp = server
+            .get("/api/v1/settings/ai")
+            .authorization_bearer(&token)
+            .await;
+        let cfg = ollama(&resp.json::<Value>());
+        assert_eq!(cfg["tls_insecure"], true);
+        assert_eq!(cfg["endpoint"], "http://127.0.0.1:11434");
+
+        // Opt back out.
+        server
+            .put("/api/v1/settings/ai")
+            .authorization_bearer(&token)
+            .json(&json!({"provider": "ollama", "tls_insecure": false}))
+            .await
+            .assert_status_ok();
+        let resp = server
+            .get("/api/v1/settings/ai")
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(ollama(&resp.json::<Value>())["tls_insecure"], false);
+    }
+
     /// Helper: create admin + a viewer user, return (admin_token, viewer_token)
     async fn create_admin_and_viewer(server: &TestServer) -> (String, String) {
         let admin_token = create_user_and_login(server).await;
