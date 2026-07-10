@@ -203,7 +203,7 @@ export default function SettingsPage() {
   // --- AI Providers ---
   const [aiEnabled, setAiEnabled] = useState(false);
   const [aiActiveProvider, setAiActiveProvider] = useState("");
-  const [aiProviders, setAiProviders] = useState<{ provider: string; enabled: boolean; api_key_set: boolean; endpoint: string; model: string }[]>([]);
+  const [aiProviders, setAiProviders] = useState<{ provider: string; enabled: boolean; api_key_set: boolean; endpoint: string; model: string; tls_insecure?: boolean }[]>([]);
   const [aiFeedback, setAiFeedback] = useState<SectionFeedback | null>(null);
   const [aiSaving, setAiSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(true);
@@ -211,6 +211,7 @@ export default function SettingsPage() {
   const [aiEditKey, setAiEditKey] = useState("");
   const [aiEditEndpoint, setAiEditEndpoint] = useState("");
   const [aiEditModel, setAiEditModel] = useState("");
+  const [aiEditTlsInsecure, setAiEditTlsInsecure] = useState(false);
   const [aiModels, setAiModels] = useState<string[]>([]);
   const [aiModelsLoading, setAiModelsLoading] = useState(false);
   const [aiTesting, setAiTesting] = useState(false);
@@ -810,6 +811,7 @@ export default function SettingsPage() {
       if (aiEditKey) body.api_key = aiEditKey;
       if (aiEditEndpoint) body.endpoint = aiEditEndpoint;
       if (aiEditModel) body.model = aiEditModel;
+      body.tls_insecure = aiEditTlsInsecure;
       const res = await authFetch(`${API}/api/v1/settings/ai`, {
         method: "PUT", headers: authHeaders(), body: JSON.stringify(body),
       });
@@ -858,9 +860,10 @@ export default function SettingsPage() {
     setAiTesting(true);
     setAiTestResult(null);
     try {
-      const body: Record<string, string> = { provider };
+      const body: Record<string, unknown> = { provider };
       if (aiEditEndpoint) body.endpoint = aiEditEndpoint;
       if (aiEditKey) body.api_key = aiEditKey;
+      body.tls_insecure = aiEditTlsInsecure;
       const res = await authFetch(`${API}/api/v1/settings/ai/test`, {
         method: "POST", headers: authHeaders(), body: JSON.stringify(body),
       });
@@ -1938,6 +1941,7 @@ export default function SettingsPage() {
                               setAiEditKey("");
                               setAiEditEndpoint(cfg?.endpoint || prov.defaultEndpoint);
                               setAiEditModel(cfg?.model || prov.defaultModel);
+                              setAiEditTlsInsecure(cfg?.tls_insecure ?? false);
                               setAiModels([]);
                               setAiTestResult(null);
                             }
@@ -2013,6 +2017,20 @@ export default function SettingsPage() {
                             )}
                           </div>
                         </div>
+                        <label className="flex items-start gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={aiEditTlsInsecure}
+                            onChange={e => setAiEditTlsInsecure(e.target.checked)}
+                            className="mt-0.5"
+                          />
+                          <span className="text-xs text-[var(--text-secondary)]">
+                            Skip TLS certificate verification
+                            <span className="block text-[10px] text-[var(--text-muted)]">
+                              Only for local endpoints with a self-signed cert. Leave off for public providers.
+                            </span>
+                          </span>
+                        </label>
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <button

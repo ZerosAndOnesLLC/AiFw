@@ -40,6 +40,13 @@ pub async fn run_analysis(pool: &SqlitePool) -> Result<u32, String> {
     let model = get_config(pool, &format!("ai_{provider}_model"))
         .await
         .unwrap_or_default();
+    // SEC-H4 (#289): TLS verification is on by default. Operators running a
+    // local endpoint with a self-signed cert can opt into skip-verify per
+    // provider instead of it being forced on for everyone.
+    let tls_insecure = get_config(pool, &format!("ai_{provider}_tls_insecure"))
+        .await
+        .map(|v| v == "true")
+        .unwrap_or(false);
 
     if endpoint.is_empty() {
         return Err("AI provider endpoint not configured".into());
@@ -111,7 +118,15 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
 
         // 5. Call the AI provider
         let start = std::time::Instant::now();
-        let response = call_ai_provider(&provider, &endpoint, &api_key, &model, &prompt).await;
+        let response = call_ai_provider(
+            &provider,
+            &endpoint,
+            &api_key,
+            &model,
+            &prompt,
+            tls_insecure,
+        )
+        .await;
         let duration_ms = start.elapsed().as_millis() as i64;
 
         match response {
@@ -188,14 +203,33 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
     Ok(classified)
 }
 
+/// Reject an AI endpoint URL whose scheme isn't http/https (e.g. `file://`,
+/// `gopher://`). Unlike the strict outbound guard used for threat-intel
+/// downloaders, this deliberately allows loopback/RFC1918 hosts because a
+/// local LLM (Ollama, LM Studio) is the common, legitimate case for #289.
+pub(crate) fn require_http_url(url: &str) -> Result<(), String> {
+    let l = url.trim().to_ascii_lowercase();
+    if l.starts_with("http://") || l.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(format!("AI endpoint must be http(s): {url}"))
+    }
+}
+
 /// Call the AI provider's chat completion API.
+///
+/// `tls_insecure` skips TLS certificate verification (`curl -k`). It is
+/// off by default and only enabled when the operator opts in per provider —
+/// intended for local endpoints with self-signed certs.
 async fn call_ai_provider(
     provider: &str,
     endpoint: &str,
     api_key: &str,
     model: &str,
     prompt: &str,
+    tls_insecure: bool,
 ) -> Result<String, String> {
+    require_http_url(endpoint)?;
     let (url, body) = match provider {
         "openai" | "lm_studio" => {
             let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
@@ -230,8 +264,11 @@ async fn call_ai_provider(
 
     let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
 
-    let mut args = vec![
-        "-sk".to_string(),
+    let mut args = vec!["-s".to_string()];
+    if tls_insecure {
+        args.push("-k".to_string());
+    }
+    args.extend([
         "--connect-timeout".to_string(),
         "30".to_string(),
         "-m".to_string(),
@@ -240,7 +277,7 @@ async fn call_ai_provider(
         "POST".to_string(),
         "-H".to_string(),
         "Content-Type: application/json".to_string(),
-    ];
+    ]);
 
     match provider {
         "claude" => {
@@ -449,4 +486,35 @@ pub async fn get_audit_log(
         .collect();
 
     Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_http_url_allows_http_and_https_including_local() {
+        // SEC-H4 (#289): local LLM endpoints (loopback/RFC1918, http) are the
+        // legitimate case and must be allowed — only the scheme is gated.
+        for ok in [
+            "http://127.0.0.1:11434",
+            "http://192.168.1.50:1234",
+            "https://api.openai.com",
+            "HTTPS://Example.com/v1",
+        ] {
+            assert!(require_http_url(ok).is_ok(), "should allow {ok}");
+        }
+    }
+
+    #[test]
+    fn require_http_url_rejects_non_http_schemes() {
+        for bad in [
+            "file:///etc/passwd",
+            "gopher://internal/",
+            "ftp://host/x",
+            "/etc/passwd",
+        ] {
+            assert!(require_http_url(bad).is_err(), "should reject {bad}");
+        }
+    }
 }
