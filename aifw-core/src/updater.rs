@@ -141,6 +141,25 @@ fn load_manifest() -> Manifest {
     serde_json::from_str(MANIFEST_JSON).expect("freebsd/manifest.json is invalid")
 }
 
+/// SEC-H11: reject a `tar tf` listing if any entry would escape the extract
+/// directory — an absolute path or a `..` path component. Pure so it can be
+/// unit-tested without touching the filesystem or a real tarball.
+fn validate_tar_listing(listing: &str) -> Result<(), String> {
+    for raw in listing.lines() {
+        let entry = raw.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let path = entry.trim_start_matches("./");
+        if entry.starts_with('/') || path.starts_with('/') || path.split('/').any(|c| c == "..") {
+            return Err(format!(
+                "refusing unsafe tarball: entry escapes extract dir: {entry}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// All binary names from manifest (local + external).
 fn all_binaries() -> Vec<String> {
     let m = load_manifest();
@@ -399,7 +418,15 @@ pub async fn install_from_path(
             String::from_utf8_lossy(&listing.stderr)
         )));
     }
-    let top_name = String::from_utf8_lossy(&listing.stdout)
+    let listing_text = String::from_utf8_lossy(&listing.stdout);
+
+    // SEC-H11: path-traversal guard. Extraction runs as root via the sudo
+    // helper, so an entry with an absolute path or a `..` component could
+    // write outside EXTRACT_DIR. bsdtar strips these by default, but we do
+    // not rely on that — reject the whole tarball up front.
+    validate_tar_listing(&listing_text).map_err(UpdaterError::Install)?;
+
+    let top_name = listing_text
         .lines()
         .find_map(|l| {
             l.trim_start_matches("./")
@@ -432,11 +459,18 @@ pub async fn install_from_path(
         )));
     }
 
-    // Install binaries. We iterate the tarball's bin/ directory rather than
-    // the compiled-in `all_binaries()` list — that way a release that adds a
-    // new binary (e.g. aifw-ids in 5.76) doesn't require the *running*
-    // updater to know about it. The tarball is the source of truth.
+    // Install binaries from the tarball's bin/ directory.
+    //
+    // SEC-H11: only install names on the compiled-in allowlist derived from
+    // the embedded manifest (`all_binaries()`). The local-upload install path
+    // has an optional (bypassable) checksum, so a malicious tarball can carry
+    // arbitrary `bin/<name>` files; without this gate an `UpdatesInstall`
+    // actor could plant a new root-owned `aifw-*` binary under a trusted name.
+    // Trade-off: a genuinely new binary in a future release is skipped by the
+    // *currently running* updater (logged loudly) until the core binaries
+    // update carries a manifest that lists it.
     info!("Installing binaries...");
+    let allowed: std::collections::HashSet<String> = all_binaries().into_iter().collect();
     let bin_src = update_dir.join("bin");
     let mut installed = 0u32;
     if bin_src.exists() {
@@ -461,6 +495,13 @@ pub async fn install_from_path(
                 Some(n) => n.to_string(),
                 None => continue,
             };
+            if !allowed.contains(&name) {
+                warn!(
+                    binary = %name,
+                    "refusing to install binary not on the manifest allowlist (SEC-H11)"
+                );
+                continue;
+            }
             let dst = format!("{}/{}", BIN_DIR, name);
             let src_str = src
                 .to_str()
@@ -1185,6 +1226,50 @@ async fn verify_sha256(file: &str, expected: &str) -> Result<bool, UpdaterError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SEC-H11 (#296): the tar-listing guard must reject any archive entry
+    // that would escape the extraction directory.
+    #[test]
+    fn tar_listing_rejects_traversal_and_absolute() {
+        for bad in [
+            "aifw-5.97/\n../evil",
+            "../../etc/cron.d/x",
+            "/etc/passwd",
+            "aifw-5.97/bin/../../../root/.ssh/authorized_keys",
+            "./../escape",
+        ] {
+            assert!(
+                validate_tar_listing(bad).is_err(),
+                "should reject listing: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tar_listing_accepts_normal_release() {
+        let ok = "aifw-5.97.9/\naifw-5.97.9/bin/\naifw-5.97.9/bin/aifw-api\n./aifw-5.97.9/ui/index.html\n";
+        assert!(validate_tar_listing(ok).is_ok());
+    }
+
+    // SEC-H11 (#296): the install allowlist is derived from the embedded
+    // manifest and must contain the core binaries but not arbitrary names.
+    #[test]
+    fn binary_allowlist_covers_core_but_not_arbitrary() {
+        let allowed: std::collections::HashSet<String> = all_binaries().into_iter().collect();
+        assert!(
+            allowed.contains("aifw-api"),
+            "core binary must be allowlisted"
+        );
+        assert!(
+            allowed.contains("aifw-daemon"),
+            "core binary must be allowlisted"
+        );
+        assert!(
+            !allowed.contains("aifw-evil"),
+            "arbitrary aifw-* name must not be allowlisted"
+        );
+        assert!(!allowed.contains("evil"));
+    }
 
     // Regression gate (#188-style): both root-run drivers must refresh the
     // sudoers file from the canonical aifw-setup definition. An in-place
