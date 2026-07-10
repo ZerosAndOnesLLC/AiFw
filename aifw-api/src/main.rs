@@ -299,6 +299,20 @@ struct Args {
     log_level: String,
 }
 
+/// SEC-H10: is this `Origin` allowed to open a WebSocket / SSE stream?
+/// Native clients (curl, native WS libraries) send no `Origin` and are allowed.
+/// A `None` policy means CORS is `*` (no meaningful allow-list) so any Origin
+/// passes; otherwise the Origin must be in the operator's configured list.
+pub fn origin_allowed(origin: Option<&str>, allowed: &Option<Vec<String>>) -> bool {
+    match origin {
+        None => true,
+        Some(o) => match allowed {
+            None => true,
+            Some(list) => list.iter().any(|a| a.eq_ignore_ascii_case(o)),
+        },
+    }
+}
+
 pub fn build_router(
     state: AppState,
     ui_dir: Option<&std::path::Path>,
@@ -320,6 +334,44 @@ pub fn build_router(
             .allow_origin(AllowOrigin::list(origins))
             .allow_methods(Any)
             .allow_headers(Any)
+    };
+
+    // SEC-H10: defense-in-depth Origin allow-list for the WebSocket / SSE
+    // upgrades. CORS headers don't gate WS upgrades (browsers skip preflight
+    // for them), so a leaked ws-ticket could otherwise be wired up from any
+    // origin. `None` policy means CORS is `*` and we can't allow-list — any
+    // Origin (or none) is accepted; the single-use ticket still gates.
+    let ws_origins: std::sync::Arc<Option<Vec<String>>> =
+        std::sync::Arc::new(if cors_origins == "*" {
+            None
+        } else {
+            Some(
+                cors_origins
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            )
+        });
+    let origin_guard = {
+        let ws_origins = ws_origins.clone();
+        middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let ws_origins = ws_origins.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    let origin = req
+                        .headers()
+                        .get(axum::http::header::ORIGIN)
+                        .and_then(|v| v.to_str().ok());
+                    if !origin_allowed(origin, &ws_origins) {
+                        tracing::warn!(?origin, "rejected WS/SSE upgrade: origin not allowed");
+                        return axum::http::StatusCode::FORBIDDEN.into_response();
+                    }
+                    next.run(req).await
+                }
+            },
+        )
     };
 
     // Public routes (no auth)
@@ -362,8 +414,14 @@ pub fn build_router(
         .route("/api/v1/metrics", get(routes::metrics))
         .route("/api/v1/metrics/list", get(metrics_series::list))
         .route("/api/v1/metrics/series", get(metrics_series::query))
-        .route("/api/v1/ws", get(ws::ws_handler))
-        .route("/api/v1/pending/stream", get(routes::pending_stream))
+        .route(
+            "/api/v1/ws",
+            get(ws::ws_handler).layer(origin_guard.clone()),
+        )
+        .route(
+            "/api/v1/pending/stream",
+            get(routes::pending_stream).layer(origin_guard.clone()),
+        )
         .route("/api/v1/pending", get(routes::get_pending))
         .layer(middleware::from_fn(perm_check!(Permission::DashboardView)));
 
@@ -538,7 +596,10 @@ pub fn build_router(
             get(dns_blocklists::list_customblocks),
         )
         .route("/api/v1/dns/stats", get(dns_blocklists::get_stats_snapshot))
-        .route("/api/v1/dns/stream", get(dns_blocklists::stream_metrics))
+        .route(
+            "/api/v1/dns/stream",
+            get(dns_blocklists::stream_metrics).layer(origin_guard.clone()),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::DnsRead)));
 
     // dns:write

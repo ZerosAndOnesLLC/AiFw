@@ -59,24 +59,38 @@ async fn pfctl(args: &[&str]) -> Result<String, PfError> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Run `sudo /sbin/pfctl <args>` feeding `input` on stdin (via `pfctl -f -`),
+/// so a ruleset is never staged in a world-writable `/tmp` file. Closes the
+/// SEC-H5 TOCTOU where a local user could swap the temp file between the
+/// aifw-user write and the root pfctl read. Shared by every rule/NAT/queue
+/// load path (the pattern `add_rule` always used).
+async fn pfctl_stdin(args: &[&str], input: &str) -> Result<std::process::Output, PfError> {
+    let mut child = Command::new("/usr/local/bin/sudo")
+        .arg("/sbin/pfctl")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| PfError::Rule(format!("pfctl spawn failed: {e}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin
+            .write_all(input.as_bytes())
+            .await
+            .map_err(|e| PfError::Rule(format!("pfctl stdin write failed: {e}")))?;
+        // `stdin` drops here, sending EOF before we wait for the process.
+    }
+    child
+        .wait_with_output()
+        .await
+        .map_err(|e| PfError::Rule(format!("pfctl wait failed: {e}")))
+}
+
 #[async_trait]
 impl PfBackend for PfIoctl {
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), PfError> {
-        let mut child = Command::new("/usr/local/bin/sudo")
-            .args(["/sbin/pfctl", "-a", anchor, "-f", "-"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| PfError::Rule(format!("pfctl add_rule spawn failed: {e}")))?;
-        if let Some(ref mut stdin) = child.stdin {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(rule.as_bytes()).await;
-        }
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| PfError::Rule(format!("pfctl add_rule failed: {e}")))?;
+        let output = pfctl_stdin(&["-a", anchor, "-f", "-"], rule).await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("syntax error") {
@@ -98,19 +112,9 @@ impl PfBackend for PfIoctl {
         let ruleset = rules.join("\n");
         tracing::debug!(anchor, rules = %ruleset, "loading pf rules");
 
-        // Write to temp file then load — avoids shell quoting issues with echo
-        let tmp = format!("/tmp/aifw_pf_{}.conf", anchor.replace('/', "_"));
-        tokio::fs::write(&tmp, &ruleset)
-            .await
-            .map_err(|e| PfError::Rule(format!("failed to write temp rules: {e}")))?;
-
-        let output = Command::new("/usr/local/bin/sudo")
-            .args(["/sbin/pfctl", "-a", anchor, "-f", &tmp])
-            .output()
-            .await
-            .map_err(|e| PfError::Rule(format!("pfctl load_rules failed: {e}")))?;
-
-        let _ = tokio::fs::remove_file(&tmp).await;
+        // SEC-H5: pipe the ruleset to `pfctl -f -` via stdin instead of staging
+        // it in a world-writable /tmp file that root then reads.
+        let output = pfctl_stdin(&["-a", anchor, "-f", "-"], &ruleset).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -416,18 +420,8 @@ impl PfBackend for PfIoctl {
         let ruleset = rules.join("\n");
         tracing::debug!(anchor, rules = %ruleset, "loading pf NAT rules");
 
-        let tmp = format!("/tmp/aifw_pf_nat_{}.conf", anchor.replace('/', "_"));
-        tokio::fs::write(&tmp, &ruleset)
-            .await
-            .map_err(|e| PfError::Rule(format!("failed to write temp NAT rules: {e}")))?;
-
-        let output = Command::new("/usr/local/bin/sudo")
-            .args(["/sbin/pfctl", "-a", anchor, "-N", "-f", &tmp])
-            .output()
-            .await
-            .map_err(|e| PfError::Rule(format!("pfctl load_nat failed: {e}")))?;
-
-        let _ = tokio::fs::remove_file(&tmp).await;
+        // SEC-H5: pipe via stdin (`pfctl -N -f -`) — no /tmp staging.
+        let output = pfctl_stdin(&["-a", anchor, "-N", "-f", "-"], &ruleset).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -455,16 +449,8 @@ impl PfBackend for PfIoctl {
             return self.flush_queues(anchor).await;
         }
         let ruleset = queues.join("\n");
-        let tmp = format!("/tmp/aifw_pf_queue_{}.conf", anchor.replace('/', "_"));
-        tokio::fs::write(&tmp, &ruleset)
-            .await
-            .map_err(|e| PfError::Rule(format!("failed to write temp queue rules: {e}")))?;
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/sbin/pfctl", "-a", anchor, "-f", &tmp])
-            .output()
-            .await
-            .map_err(|e| PfError::Rule(format!("pfctl load_queues failed: {e}")))?;
-        let _ = tokio::fs::remove_file(&tmp).await;
+        // SEC-H5: pipe via stdin — no /tmp staging.
+        let _ = pfctl_stdin(&["-a", anchor, "-f", "-"], &ruleset).await?;
         Ok(())
     }
 
