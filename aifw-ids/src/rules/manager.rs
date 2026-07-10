@@ -155,6 +155,14 @@ impl RulesetManager {
             .as_deref()
             .ok_or_else(|| crate::IdsError::Config("Ruleset has no source URL".into()))?;
 
+        // SEC-H1 (#286): reject SSRF / local-file targets before downloading a
+        // ruleset from an operator-set source_url. https-only, no
+        // internal/metadata hosts. Applies to both the `fetch` and `curl`
+        // paths below since it gates on the URL itself.
+        aifw_common::net_safety::validate_outbound_url(url)
+            .await
+            .map_err(|e| crate::IdsError::Config(format!("unsafe ruleset URL: {e}")))?;
+
         tracing::info!(url, ruleset = %ruleset.name, "downloading ruleset");
 
         // Download to temp file using fetch (FreeBSD) or curl
@@ -171,7 +179,16 @@ impl RulesetManager {
 
         if !downloaded {
             let output = Command::new("curl")
-                .args(["-sL", "-o", &tmp, url])
+                .args([
+                    "-sL",
+                    "--proto",
+                    "=https",
+                    "--proto-redir",
+                    "=https",
+                    "-o",
+                    &tmp,
+                    url,
+                ])
                 .output()
                 .await
                 .map_err(|e| crate::IdsError::Config(format!("download failed: {e}")))?;
@@ -449,6 +466,39 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         crate::IdsEngine::migrate(&pool).await.unwrap();
         pool
+    }
+
+    /// SEC-H1 (#286): download_and_store_rules must reject SSRF / local-file
+    /// source URLs before spawning fetch/curl. Every case fails validation
+    /// without a network or DNS round-trip (bad scheme or literal internal IP).
+    #[tokio::test]
+    async fn download_rejects_unsafe_urls() {
+        let pool = test_pool().await;
+        let mgr = RulesetManager::new(pool);
+
+        for bad in [
+            "file:///etc/passwd",
+            "http://example.com/emerging-all.rules",
+            "https://127.0.0.1/x.rules",
+            "https://169.254.169.254/x.rules",
+        ] {
+            let rs = IdsRuleset {
+                id: Uuid::new_v4(),
+                name: "bad".into(),
+                source_url: Some(bad.into()),
+                rule_format: RuleFormat::Suricata,
+                enabled: true,
+                auto_update: false,
+                update_interval_hours: 0,
+                last_updated: None,
+                rule_count: 0,
+                created_at: Utc::now(),
+            };
+            assert!(
+                mgr.download_and_store_rules(&rs).await.is_err(),
+                "should reject {bad}"
+            );
+        }
     }
 
     #[tokio::test]

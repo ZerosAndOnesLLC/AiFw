@@ -1,9 +1,10 @@
 //! SSRF guards for outbound HTTP from the daemon.
 //!
-//! Two classes of outbound request are operator-configurable and therefore
-//! reachable by anyone with admin API access: DDNS IP-echo URLs and ACME
-//! export webhooks. Without these checks, a compromised admin account can
-//! steer the daemon at 127.0.0.1, RFC1918, cloud metadata endpoints, etc.
+//! Several classes of outbound request are operator-configurable and therefore
+//! reachable by anyone with admin API access: DDNS IP-echo URLs, ACME export
+//! webhooks, IDS ruleset feeds, alias URL-tables, and DNS blocklists. Without
+//! these checks, a compromised admin account can steer the daemon at
+//! 127.0.0.1, RFC1918, cloud metadata endpoints, or `file://` local paths.
 //!
 //! DNS rebinding is partially mitigated: we resolve up front and check
 //! every returned address. For complete protection the caller would need
@@ -21,7 +22,7 @@ use std::net::IpAddr;
 /// - loopback, private (RFC1918), link-local, CGNAT, ULA, multicast,
 ///   reserved, unspecified, and IPv4-mapped-private addresses are refused
 pub async fn validate_outbound_url(url_str: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(url_str).map_err(|e| format!("invalid URL: {e}"))?;
+    let url = url::Url::parse(url_str).map_err(|e| format!("invalid URL: {e}"))?;
     if url.scheme() != "https" {
         return Err(format!(
             "only https:// URLs are allowed (got {})",
@@ -167,6 +168,14 @@ mod tests {
     #[tokio::test]
     async fn rejects_http_scheme() {
         let err = validate_outbound_url("http://example.com/")
+            .await
+            .unwrap_err();
+        assert!(err.contains("https"));
+    }
+
+    #[tokio::test]
+    async fn rejects_file_scheme() {
+        let err = validate_outbound_url("file:///etc/passwd")
             .await
             .unwrap_err();
         assert!(err.contains("https"));

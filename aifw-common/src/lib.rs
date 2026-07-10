@@ -19,6 +19,7 @@ pub mod ha;
 pub mod ids;
 pub mod multiwan;
 pub mod nat;
+pub mod net_safety;
 pub mod permission;
 pub mod ratelimit;
 pub mod rule;

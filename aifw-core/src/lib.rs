@@ -16,7 +16,10 @@ pub mod ha;
 pub mod migrations;
 pub mod multiwan;
 pub mod nat;
-pub mod net_safety;
+/// SSRF guard for operator-configurable outbound HTTP. Relocated to
+/// `aifw-common` so downloaders in sibling crates (aifw-ids) can share it;
+/// re-exported here so existing `crate::net_safety::…` call sites keep working.
+pub use aifw_common::net_safety;
 pub mod path_safety;
 pub mod pf_tuning;
 pub mod s3_backup;

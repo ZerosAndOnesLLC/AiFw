@@ -688,9 +688,17 @@ pub async fn delete_pattern(pool: &SqlitePool, table: &str, id: i64) -> Result<(
 // ============================================================================
 
 async fn fetch(url: &str) -> Result<Vec<u8>, String> {
+    // SEC-H3 (#288): block SSRF / local-file reads via operator-set blocklist
+    // URLs — https-only, no internal/metadata targets. Redirects stay enabled
+    // (--proto-redir =https) so http→internal redirects are refused.
+    crate::net_safety::validate_outbound_url(url).await?;
     let out = tokio::process::Command::new("curl")
         .args([
             "-sfL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
             "--max-time",
             &HTTP_TIMEOUT_SECS.to_string(),
             "--max-filesize",
@@ -1147,6 +1155,22 @@ pub fn spawn_scheduler(pool: SqlitePool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SEC-H3 (#288): fetch() must reject SSRF / local-file URLs before it
+    /// ever spawns curl. All cases below fail validation without a network or
+    /// DNS round-trip (bad scheme or literal internal IP).
+    #[tokio::test]
+    async fn fetch_rejects_unsafe_urls() {
+        for bad in [
+            "file:///etc/passwd",
+            "http://example.com/list.txt",
+            "https://127.0.0.1/list.txt",
+            "https://10.0.0.1/list.txt",
+            "https://169.254.169.254/latest/meta-data/",
+        ] {
+            assert!(fetch(bad).await.is_err(), "should reject {bad}");
+        }
+    }
 
     #[test]
     fn parses_hosts_format() {
