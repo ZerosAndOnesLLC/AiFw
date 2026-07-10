@@ -20,6 +20,24 @@ use uuid::Uuid;
 /// `/cluster/internal/*` endpoints.
 const DAEMON_LOOPBACK_KEY_NAME: &str = "aifw-daemon-loopback";
 
+/// SEC-H12: reserved name for the inbound peer key that a node registers so a
+/// master can push snapshots / certs to it. Only requests authenticated with a
+/// key of this name (or the daemon-loopback key) may call `snapshot_put` /
+/// `cert_push`. The name is reserved — `create_api_key` refuses to mint it via
+/// the normal Users → API Keys path, so an operator can't self-grant peer
+/// privilege by naming a regular key this. See [`crate::auth::RESERVED_API_KEY_NAMES`].
+pub(crate) const PEER_KEY_NAME: &str = "aifw-cluster-peer";
+
+/// True if `auth` presents the reserved inbound peer key or the daemon-loopback
+/// key. Everything else — a broad `HaManage` JWT, an operator API key — is
+/// rejected on the replication endpoints (SEC-H12).
+fn is_authorized_peer(auth: &crate::auth::AuthUser) -> bool {
+    matches!(
+        auth.api_key_name.as_deref(),
+        Some(PEER_KEY_NAME) | Some(DAEMON_LOOPBACK_KEY_NAME)
+    )
+}
+
 pub fn read_routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/cluster/carp", get(list_carp))
@@ -67,6 +85,8 @@ pub fn write_routes() -> Router<AppState> {
             "/api/v1/cluster/loopback-key/generate",
             post(generate_loopback_key),
         )
+        // SEC-H12: import the inbound peer key so a master can push to us.
+        .route("/api/v1/cluster/peer-key", post(register_peer_key))
         // Internal endpoints — called by aifw-daemon's RoleWatcher and HealthProber.
         // Protected by the same Permission::HaManage middleware as the rest of
         // cluster_write; the daemon authenticates via AIFW_LOOPBACK_API_KEY.
@@ -674,15 +694,26 @@ async fn snapshot_get(State(s): State<AppState>) -> Result<String, StatusCode> {
     Ok(data)
 }
 
-async fn snapshot_put(State(s): State<AppState>, body: String) -> StatusCode {
+async fn snapshot_put(
+    State(s): State<AppState>,
+    Extension(auth): Extension<crate::auth::AuthUser>,
+    body: String,
+) -> StatusCode {
+    // SEC-H12: only a registered peer / the daemon may replace the DB. A broad
+    // HaManage credential is no longer sufficient.
+    if !is_authorized_peer(&auth) {
+        tracing::warn!(
+            key_name = ?auth.api_key_name,
+            "snapshot_put: rejected non-peer caller"
+        );
+        return StatusCode::FORBIDDEN;
+    }
     // Master never accepts pushes — split-brain protection
     if is_carp_master_locally().await {
         return StatusCode::CONFLICT;
     }
     match apply_snapshot_data(&s, &body).await {
         Ok(hash) => {
-            // Use Uuid::nil as node_id placeholder (peer identity improvable later
-            // once per-peer API key is cross-referenced with the authenticated key)
             let _ = s
                 .cluster_engine
                 .record_snapshot_apply(Uuid::nil(), &hash, "peer")
@@ -821,7 +852,20 @@ struct CertPushReq {
     private_key_pem: String,
 }
 
-async fn cert_push(State(s): State<AppState>, Json(r): Json<CertPushReq>) -> StatusCode {
+async fn cert_push(
+    State(s): State<AppState>,
+    Extension(auth): Extension<crate::auth::AuthUser>,
+    Json(r): Json<CertPushReq>,
+) -> StatusCode {
+    // SEC-H12: only a registered peer / the daemon may push a cert + private
+    // key. A broad HaManage credential is no longer sufficient.
+    if !is_authorized_peer(&auth) {
+        tracing::warn!(
+            key_name = ?auth.api_key_name,
+            "cert_push: rejected non-peer caller"
+        );
+        return StatusCode::FORBIDDEN;
+    }
     // Master never accepts cert pushes — defends against a stale standby
     // pushing back during a network partition.
     if aifw_core::is_local_master().await {
@@ -862,6 +906,9 @@ async fn cert_push(State(s): State<AppState>, Json(r): Json<CertPushReq>) -> Sta
 struct HealthSummary {
     missing_peer_keys: Vec<String>,
     loopback_key_missing: bool,
+    /// SEC-H12: true when this node has no inbound peer key registered under
+    /// the reserved name, so a master's snapshot/cert push would be refused.
+    inbound_peer_key_missing: bool,
     warnings: Vec<String>,
 }
 
@@ -895,6 +942,16 @@ async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>
     .unwrap_or(0)
         == 0;
 
+    // SEC-H12: a standby needs a registered inbound peer key or the master's
+    // snapshot/cert push is now refused (a broad HaManage key no longer works).
+    let inbound_peer_key_missing =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM api_keys WHERE name = ?1")
+            .bind(PEER_KEY_NAME)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap_or(0)
+            == 0;
+
     let mut warnings: Vec<String> = Vec::new();
     if !missing.is_empty() {
         warnings.push(format!(
@@ -907,10 +964,16 @@ async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>
             "Loopback API key not registered — cluster background tasks (replicator, role watcher, health prober) are disabled. Generate it below or re-run aifw-setup.".to_string(),
         );
     }
+    if inbound_peer_key_missing && local_role != ClusterRole::Standalone {
+        warnings.push(
+            "No inbound peer key registered — this node will REFUSE snapshot/cert pushes from the master. Generate a peer key on the master for this node, copy it, and register it here via 'Register Peer Key'.".to_string(),
+        );
+    }
 
     Ok(Json(HealthSummary {
         missing_peer_keys: missing,
         loopback_key_missing,
+        inbound_peer_key_missing,
         warnings,
     }))
 }
@@ -927,6 +990,93 @@ async fn health_summary(State(s): State<AppState>) -> Result<Json<HealthSummary>
 // without a CARP-enabled FreeBSD host. These cases are deferred to FreeBSD CI.
 // See: aifw-core/src/ha.rs::current_local_role (is_local_master delegates here).
 // ============================================================
+
+#[derive(Deserialize)]
+struct PeerKeyReq {
+    /// The raw peer API key value generated on the master (via
+    /// `POST /cluster/nodes/{id}/generate-key`), copied here by the operator.
+    key: String,
+}
+
+/// SEC-H12: register (import) the inbound peer API key on this node under the
+/// reserved [`PEER_KEY_NAME`], so the master can authenticate to `snapshot_put`
+/// / `cert_push`. Replaces any existing inbound peer key (a node accepts pushes
+/// from a single master). Mirrors `generate_loopback_key`, but imports a known
+/// value rather than generating one.
+async fn register_peer_key(
+    State(s): State<AppState>,
+    Json(r): Json<PeerKeyReq>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let key = r.key.trim().to_string();
+    if key.len() < 32 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let prefix = key[..12].to_string();
+    let hash = crate::auth::hash_password(&key)?;
+
+    // Reuse (or create) the locked aifw-daemon system user that also owns the
+    // loopback key.
+    let user_id: String = match sqlx::query_scalar::<_, String>(
+        "SELECT id FROM users WHERE username = 'aifw-daemon' LIMIT 1",
+    )
+    .fetch_optional(&s.pool)
+    .await
+    .map_err(|e| {
+        tracing::warn!(?e, "register_peer_key: user lookup");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })? {
+        Some(id) => id,
+        None => {
+            let uid = Uuid::new_v4().to_string();
+            let dummy = crate::auth::hash_password(&format!(
+                "{}{}",
+                Uuid::new_v4().simple(),
+                Uuid::new_v4().simple()
+            ))?;
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, created_at) \
+                 VALUES (?1, 'aifw-daemon', ?2, 0, 'system', ?3)",
+            )
+            .bind(&uid)
+            .bind(&dummy)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&s.pool)
+            .await
+            .map_err(|e| {
+                tracing::warn!(?e, "register_peer_key: user insert");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            uid
+        }
+    };
+
+    // A node accepts pushes from one master — replace any prior inbound key.
+    let _ = sqlx::query("DELETE FROM api_keys WHERE name = ?1")
+        .bind(PEER_KEY_NAME)
+        .execute(&s.pool)
+        .await;
+
+    sqlx::query(
+        "INSERT INTO api_keys (id, name, key_hash, prefix, user_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(PEER_KEY_NAME)
+    .bind(&hash)
+    .bind(&prefix)
+    .bind(&user_id)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&s.pool)
+    .await
+    .map_err(|e| {
+        tracing::warn!(?e, "register_peer_key: api_key insert");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    tracing::info!("ha: registered inbound peer key for replication");
+    Ok(Json(
+        serde_json::json!({ "message": "Peer key registered" }),
+    ))
+}
 
 async fn generate_loopback_key(
     State(s): State<AppState>,

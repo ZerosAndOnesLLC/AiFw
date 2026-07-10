@@ -755,11 +755,20 @@ pub async fn use_recovery_code(pool: &SqlitePool, user_id: &str, code: &str) -> 
 // API key operations
 // ============================================================
 
+/// API key names reserved for internal cluster identities (the daemon loopback
+/// key and the inbound peer key). `create_api_key` refuses to mint these via
+/// the normal Users → API Keys path so an operator can't self-grant peer /
+/// daemon privilege by naming a regular key one of them (SEC-H12).
+pub const RESERVED_API_KEY_NAMES: &[&str] = &["aifw-daemon-loopback", "aifw-cluster-peer"];
+
 pub async fn create_api_key(
     pool: &SqlitePool,
     user_id: Uuid,
     name: &str,
 ) -> Result<CreateApiKeyResponse, StatusCode> {
+    if RESERVED_API_KEY_NAMES.contains(&name) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let raw_key = format!("aifw_{}", Uuid::new_v4().to_string().replace('-', ""));
     let prefix = raw_key[..12].to_string();
     let key_hash = hash_password(&raw_key)?;
