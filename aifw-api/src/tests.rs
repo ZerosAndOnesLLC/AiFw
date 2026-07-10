@@ -976,6 +976,61 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
     }
 
+    /// Build a test server with a specific CORS/WS origin allow-list.
+    async fn test_app_cors(origins: &str) -> TestServer {
+        let auth_settings = AuthSettings {
+            jwt_secret: "test-secret-key".to_string(),
+            access_token_expiry_mins: 60,
+            refresh_token_expiry_days: 7,
+            require_totp: false,
+            require_totp_for_oauth: false,
+            auto_create_oauth_users: true,
+            max_login_attempts: 5,
+            lockout_duration_secs: 300,
+            allow_registration: true,
+            password_min_length: 8,
+        };
+        let state = crate::create_app_state_in_memory(auth_settings)
+            .await
+            .unwrap();
+        TestServer::new(crate::build_router(state, None, origins, false))
+    }
+
+    /// SEC-H10 (#295): the WS/SSE Origin policy.
+    #[test]
+    fn test_origin_allowed_policy() {
+        // No policy (CORS = "*"): any origin, and no origin, allowed.
+        assert!(crate::origin_allowed(Some("https://evil.test"), &None));
+        assert!(crate::origin_allowed(None, &None));
+
+        // Allow-list: only listed origins; case-insensitive; native (no
+        // Origin) clients still allowed.
+        let allow = Some(vec!["https://ui.example".to_string()]);
+        assert!(crate::origin_allowed(Some("https://ui.example"), &allow));
+        assert!(crate::origin_allowed(Some("HTTPS://UI.EXAMPLE"), &allow));
+        assert!(crate::origin_allowed(None, &allow));
+        assert!(!crate::origin_allowed(Some("https://evil.example"), &allow));
+    }
+
+    /// SEC-H10 (#295): a WebSocket upgrade from a disallowed browser Origin is
+    /// rejected (403) before it reaches the handler, even with valid auth.
+    #[tokio::test]
+    async fn test_ws_rejects_disallowed_origin() {
+        use axum::http::{HeaderName, HeaderValue};
+        let server = test_app_cors("https://ui.example").await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .get("/api/v1/ws")
+            .authorization_bearer(&token)
+            .add_header(
+                HeaderName::from_static("origin"),
+                HeaderValue::from_static("https://evil.example"),
+            )
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
     /// Helper: create admin + a viewer user, return (admin_token, viewer_token)
     async fn create_admin_and_viewer(server: &TestServer) -> (String, String) {
         let admin_token = create_user_and_login(server).await;

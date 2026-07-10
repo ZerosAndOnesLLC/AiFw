@@ -2351,11 +2351,13 @@ pub fn sudoers_content() -> &'static str {
 # aifw-core/src/pf_tuning.rs and aifw-api/src/main.rs. A test in apply.rs
 # (pfctl_sudoers_covers_invocations) guards against forms going missing
 # (the SEC-C2 narrowing dropped `-ss -vv`, breaking the connection list).
-# Per-anchor rule/NAT/queue load, flush and show:
+# Per-anchor rule/NAT/queue load, flush and show. Rule/NAT/queue loads pipe
+# via stdin (`-f -` / `-N -f -`) so no ruleset is ever staged in a
+# world-writable /tmp file (SEC-H5); the old `-f /tmp/aifw_pf_*.conf` grants
+# were removed with that fix.
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f -
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -N -f -
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /usr/local/etc/aifw/anchors/aifw*
-aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -N -f /tmp/aifw_pf_*.conf
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sr
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sn
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sq
@@ -2530,12 +2532,11 @@ mod sudoers_tests {
         let content = sudoers_content();
         // (call site, grant body that must appear verbatim in sudoers)
         let required: &[(&str, &str)] = &[
-            ("load_rules", "/sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf"),
+            // SEC-H5: rule/NAT/queue loads pipe via stdin, not a /tmp file.
+            ("load_rules (stdin)", "/sbin/pfctl -a aifw* -f -"),
             ("add_rule (stdin)", "/sbin/pfctl -a aifw* -f -"),
-            (
-                "load_nat_rules",
-                "/sbin/pfctl -a aifw* -N -f /tmp/aifw_pf_*.conf",
-            ),
+            ("load_queues (stdin)", "/sbin/pfctl -a aifw* -f -"),
+            ("load_nat_rules (stdin)", "/sbin/pfctl -a aifw* -N -f -"),
             ("get_rules", "/sbin/pfctl -a aifw* -sr"),
             ("get_nat_rules", "/sbin/pfctl -a aifw* -sn"),
             ("daemon pf drift auto-heal (global -sn)", "/sbin/pfctl -sn"),
@@ -2576,6 +2577,19 @@ mod sudoers_tests {
                 content.contains(grant),
                 "pfctl form for `{site}` is not granted in sudoers — missing `{grant}`. \
                  An uncovered form makes `sudo {grant}` prompt for a password and fail."
+            );
+        }
+
+        // SEC-H5 regression guard: the world-writable /tmp rule-load grants
+        // must NOT come back. Rule/NAT loads now pipe via stdin; a grant that
+        // fnmatch-covers `/tmp/aifw_pf_*.conf` would reopen the TOCTOU.
+        for forbidden in [
+            "/sbin/pfctl -a aifw* -f /tmp/aifw_pf_*.conf",
+            "/sbin/pfctl -a aifw* -N -f /tmp/aifw_pf_*.conf",
+        ] {
+            assert!(
+                !content.contains(forbidden),
+                "SEC-H5: removed /tmp pfctl load grant reappeared: `{forbidden}`"
             );
         }
     }
