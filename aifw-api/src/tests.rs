@@ -921,6 +921,61 @@ mod tests {
         assert_eq!(ollama(&resp.json::<Value>())["tls_insecure"], false);
     }
 
+    /// SEC-H12 (#297): cluster snapshot/cert push must reject a broad HaManage
+    /// credential (a JWT, or any non-peer key) — only a registered peer key or
+    /// the daemon-loopback key is accepted.
+    #[tokio::test]
+    async fn test_cluster_replication_endpoints_reject_non_peer() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await; // admin JWT (has HaManage)
+
+        // snapshot_put (String body) — admin JWT is not a peer → 403.
+        let resp = server
+            .put("/api/v1/cluster/snapshot")
+            .authorization_bearer(&token)
+            .text("{}")
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+
+        // cert_push (valid JSON so the handler body runs) — also 403.
+        let resp = server
+            .post("/api/v1/cluster/cert-push")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "cert_id": 1,
+                "fullchain_pem": "x",
+                "private_key_pem": "y"
+            }))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    /// SEC-H12 (#297): the reserved cluster key names can't be minted through
+    /// the normal Users → API Keys path (would otherwise self-grant peer
+    /// privilege).
+    #[tokio::test]
+    async fn test_reserved_api_key_names_rejected() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        for name in ["aifw-cluster-peer", "aifw-daemon-loopback"] {
+            let resp = server
+                .post("/api/v1/auth/api-keys")
+                .authorization_bearer(&token)
+                .json(&json!({ "name": name }))
+                .await;
+            resp.assert_status(StatusCode::BAD_REQUEST);
+        }
+
+        // A normal name still works.
+        let resp = server
+            .post("/api/v1/auth/api-keys")
+            .authorization_bearer(&token)
+            .json(&json!({ "name": "my-key" }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+    }
+
     /// Helper: create admin + a viewer user, return (admin_token, viewer_token)
     async fn create_admin_and_viewer(server: &TestServer) -> (String, String) {
         let admin_token = create_user_and_login(server).await;

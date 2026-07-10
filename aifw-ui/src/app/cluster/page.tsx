@@ -54,6 +54,7 @@ type HealthCheck = {
 type HealthSummary = {
   missing_peer_keys: string[];
   loopback_key_missing: boolean;
+  inbound_peer_key_missing: boolean;
   warnings: string[];
 };
 
@@ -252,6 +253,10 @@ export default function ClusterPage() {
   // Loopback key success message
   const [loopbackMsg, setLoopbackMsg] = useState<string | null>(null);
 
+  // Inbound peer key registration (SEC-H12)
+  const [peerKeyInput, setPeerKeyInput] = useState("");
+  const [peerKeyMsg, setPeerKeyMsg] = useState<string | null>(null);
+
   // CARP VIP form
   const defaultVipForm = {
     vhid: "",
@@ -394,6 +399,29 @@ export default function ClusterPage() {
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to generate loopback key");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Register the inbound peer key so a master can push snapshots/certs here.
+  const registerPeerKey = async () => {
+    const key = peerKeyInput.trim();
+    if (key.length < 32) {
+      setError("Peer key looks too short — paste the full key generated on the master.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await fetchApi<{ message: string }>("/api/v1/cluster/peer-key", {
+        method: "POST",
+        body: JSON.stringify({ key }),
+      });
+      setPeerKeyMsg(r.message || "Peer key registered.");
+      setPeerKeyInput("");
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to register peer key");
     } finally {
       setBusy(false);
     }
@@ -793,6 +821,46 @@ export default function ClusterPage() {
         </div>
       )}
 
+      {/* SEC-H12: register the inbound peer key so the master can push here */}
+      <div
+        className={`rounded p-3 text-sm ${
+          summary?.inbound_peer_key_missing
+            ? "bg-yellow-500/10 border border-yellow-500/40"
+            : "bg-[var(--bg-card)] border border-[var(--border)]"
+        }`}
+      >
+        <div className="font-semibold mb-1">Register Peer Key</div>
+        <div className="text-xs opacity-80 mb-2">
+          Paste the peer key generated on the master (via &quot;Generate Peer
+          Key&quot; for this node) so this node accepts snapshot / cert pushes
+          from it. A broad HaManage key is no longer accepted.
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="password"
+            value={peerKeyInput}
+            onChange={(e) => setPeerKeyInput(e.target.value)}
+            placeholder="Paste peer API key"
+            className="flex-1 bg-[var(--bg-input)] border border-[var(--border)] rounded px-2 py-1.5 text-sm font-mono"
+          />
+          <button
+            onClick={registerPeerKey}
+            disabled={busy || !peerKeyInput.trim()}
+            className="px-3 py-1.5 rounded bg-[var(--accent)] hover:opacity-90 disabled:opacity-50 whitespace-nowrap text-sm"
+          >
+            Register
+          </button>
+        </div>
+        {peerKeyMsg && (
+          <div className="text-xs text-green-400 mt-2 flex justify-between">
+            <span>{peerKeyMsg}</span>
+            <button onClick={() => setPeerKeyMsg(null)} className="underline">
+              dismiss
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Status banner (existing) */}
       <StatusBanner />
 
@@ -815,10 +883,10 @@ export default function ClusterPage() {
             Peer API key for {generatedKey.nodeName}
           </div>
           <div className="text-xs opacity-80 mb-2">
-            This key is shown ONCE. Copy it and register it on the peer node as
-            an API key (in the peer&apos;s Users &#x2192; API Keys page) before
-            dismissing. This local node will use it to authenticate to{" "}
-            {generatedKey.nodeName}.
+            This key is shown ONCE. Copy it and register it on{" "}
+            {generatedKey.nodeName} via its cluster page &rarr;{" "}
+            &quot;Register Peer Key&quot; before dismissing. This local node
+            will use it to authenticate to {generatedKey.nodeName}.
           </div>
           <code className="block break-all bg-[var(--bg-card)] p-2 rounded mb-2">
             {generatedKey.key}
