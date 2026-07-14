@@ -43,12 +43,8 @@ impl ConnectionTracker {
 
     /// Refresh the state table from pf once. Useful for tests and one-shot
     /// callers; production code should rely on `start_polling`.
-    pub async fn refresh(&self) -> aifw_common::Result<()> {
-        let new_states = self
-            .pf
-            .get_states()
-            .await
-            .map_err(|e| aifw_common::AifwError::Pf(e.to_string()))?;
+    pub async fn refresh(&self) -> crate::Result<()> {
+        let new_states = self.pf.get_states().await?;
         debug!(count = new_states.len(), "refreshed connection states");
         self.states.store(Arc::new(new_states));
         Ok(())

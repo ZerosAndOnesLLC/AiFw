@@ -67,11 +67,11 @@ pub trait Plugin: Send + Sync {
     fn info(&self) -> PluginInfo;
 
     /// Initialize the plugin with its configuration
-    async fn init(&mut self, config: &PluginConfig, ctx: &PluginContext) -> Result<(), String>;
+    async fn init(&mut self, config: &PluginConfig, ctx: &PluginContext) -> crate::Result<()>;
 
     /// Handle a hook event. Return an action to influence firewall behavior.
     async fn on_hook(&self, event: &HookEvent, ctx: &PluginContext) -> HookAction;
 
     /// Graceful shutdown
-    async fn shutdown(&mut self) -> Result<(), String>;
+    async fn shutdown(&mut self) -> crate::Result<()>;
 }

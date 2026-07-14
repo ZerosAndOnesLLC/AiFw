@@ -6,6 +6,7 @@
 pub mod backend;
 pub mod collector;
 pub mod config;
+pub mod error;
 pub mod ring;
 pub mod series;
 pub mod store;
@@ -16,6 +17,7 @@ mod tests;
 pub use backend::MetricsBackend;
 pub use collector::MetricsCollector;
 pub use config::MetricsConfig;
+pub use error::{MetricsError, Result};
 pub use ring::RingBuffer;
 pub use series::{Aggregation, MetricPoint, MetricSeries};
 pub use store::MetricsStore;

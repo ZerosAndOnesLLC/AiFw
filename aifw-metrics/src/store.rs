@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Mutex;
 
+use crate::Result;
 use crate::backend::{MetricQueryResult, MetricsBackend};
+use crate::error::MetricsError;
 use crate::series::{Aggregation, MetricPoint, MetricSeries, Tier};
 
 /// Default local metrics store using in-memory ring buffers.
@@ -56,7 +58,7 @@ impl Default for MetricsStore {
 
 #[async_trait]
 impl MetricsBackend for MetricsStore {
-    async fn record(&self, name: &str, value: f64) -> Result<(), String> {
+    async fn record(&self, name: &str, value: f64) -> Result<()> {
         let entry = self
             .series
             .entry(name.to_string())
@@ -74,11 +76,11 @@ impl MetricsBackend for MetricsStore {
         name: &str,
         tier: Tier,
         last_n: Option<usize>,
-    ) -> Result<MetricQueryResult, String> {
+    ) -> Result<MetricQueryResult> {
         let entry = self
             .series
             .get(name)
-            .ok_or_else(|| format!("metric '{name}' not found"))?;
+            .ok_or_else(|| MetricsError::NotFound(name.to_string()))?;
         let s = entry.value().lock().expect("series mutex poisoned");
         let points: Vec<MetricPoint> = match last_n {
             Some(n) => s.get_last(tier, n).into_iter().cloned().collect(),
@@ -92,18 +94,18 @@ impl MetricsBackend for MetricsStore {
         })
     }
 
-    async fn latest(&self, name: &str) -> Result<Option<f64>, String> {
+    async fn latest(&self, name: &str) -> Result<Option<f64>> {
         Ok(self
             .series
             .get(name)
             .and_then(|e| e.value().lock().expect("series mutex poisoned").latest()))
     }
 
-    async fn list_metrics(&self) -> Result<Vec<String>, String> {
+    async fn list_metrics(&self) -> Result<Vec<String>> {
         Ok(self.series.iter().map(|e| e.key().clone()).collect())
     }
 
-    async fn summary(&self) -> Result<Vec<(String, f64)>, String> {
+    async fn summary(&self) -> Result<Vec<(String, f64)>> {
         Ok(self
             .series
             .iter()

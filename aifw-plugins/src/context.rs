@@ -2,6 +2,8 @@ use aifw_pf::PfBackend;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::error::PluginError;
+
 /// Tables that plugins are allowed to modify (plugin-specific tables only).
 const PLUGIN_ALLOWED_TABLE_PREFIX: &str = "plugin_";
 
@@ -42,28 +44,28 @@ impl PluginContext {
     }
 
     /// Add an IP to a pf table (restricted to plugin_ prefixed tables)
-    pub async fn add_to_table(&self, table: &str, ip: std::net::IpAddr) -> Result<(), String> {
+    pub async fn add_to_table(&self, table: &str, ip: std::net::IpAddr) -> crate::Result<()> {
         if !Self::is_table_allowed(table) {
-            return Err(format!(
+            return Err(PluginError::Table(format!(
                 "plugins can only modify tables with prefix '{PLUGIN_ALLOWED_TABLE_PREFIX}'"
-            ));
+            )));
         }
         self.pf
             .add_table_entry(table, ip)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| PluginError::Table(e.to_string()))
     }
 
     /// Remove an IP from a pf table (restricted to plugin_ prefixed tables)
-    pub async fn remove_from_table(&self, table: &str, ip: std::net::IpAddr) -> Result<(), String> {
+    pub async fn remove_from_table(&self, table: &str, ip: std::net::IpAddr) -> crate::Result<()> {
         if !Self::is_table_allowed(table) {
-            return Err(format!(
+            return Err(PluginError::Table(format!(
                 "plugins can only modify tables with prefix '{PLUGIN_ALLOWED_TABLE_PREFIX}'"
-            ));
+            )));
         }
         self.pf
             .remove_table_entry(table, ip)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| PluginError::Table(e.to_string()))
     }
 }
