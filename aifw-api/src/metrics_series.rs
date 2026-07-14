@@ -47,11 +47,10 @@ pub struct SeriesResponse {
 }
 
 pub async fn list(State(state): State<AppState>) -> Result<Json<SeriesListResponse>, StatusCode> {
-    let mut names = state
-        .metrics_store
-        .list_metrics()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut names = state.metrics_store.list_metrics().await.map_err(|e| {
+        tracing::error!(error = %e, "metrics_series: failed to list series");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     names.sort();
     Ok(Json(SeriesListResponse { names }))
 }

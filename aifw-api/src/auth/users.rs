@@ -84,7 +84,7 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<User>, StatusCode> {
     )
     .fetch_all(pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| { tracing::error!(error = %e, "auth: failed to list users"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok(rows
         .into_iter()
@@ -158,7 +158,7 @@ pub async fn update_user(
     .bind(user.enabled)
     .execute(pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| { tracing::error!(error = %e, "auth: failed to update user"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok(user)
 }
@@ -168,7 +168,10 @@ pub async fn delete_user(pool: &SqlitePool, user_id: &str) -> Result<(), StatusC
         .bind(user_id)
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: failed to delete user");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -218,7 +221,7 @@ pub async fn list_user_audit_log(
     .bind(limit)
     .fetch_all(pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| { tracing::error!(error = %e, "auth: failed to query user audit log"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok(rows
         .into_iter()
@@ -246,7 +249,7 @@ pub async fn get_user_by_username(
     .bind(username)
     .fetch_optional(pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| { tracing::error!(error = %e, "auth: failed to query user by username"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok(row.map(
         |(id, username, pw, totp_on, totp_sec, provider, role, role_id, enabled, ca)| User {
@@ -271,7 +274,7 @@ pub async fn get_user_by_id(pool: &SqlitePool, user_id: &str) -> Result<Option<U
     .bind(user_id)
     .fetch_optional(pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| { tracing::error!(error = %e, "auth: failed to query user by id"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok(row.map(
         |(id, username, pw, totp_on, totp_sec, provider, role, role_id, enabled, ca)| User {

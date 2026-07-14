@@ -37,7 +37,10 @@ pub fn hash_password(password: &str) -> Result<String, StatusCode> {
     hasher()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: password hashing failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {

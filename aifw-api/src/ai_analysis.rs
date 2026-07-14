@@ -464,7 +464,7 @@ pub async fn get_audit_log(
     .bind(limit)
     .fetch_all(&state.pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| { tracing::error!(error = %e, "ai_analysis: failed to query audit log"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     let entries: Vec<serde_json::Value> = rows
         .into_iter()

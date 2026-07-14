@@ -132,7 +132,10 @@ pub async fn get_plugin_config(
     .bind(&name)
     .fetch_optional(&state.pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| {
+        tracing::error!(error = %e, "plugins: failed to query plugin config");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let (enabled, settings) = row.unwrap_or((0, None));
     let settings_json: serde_json::Value = settings
