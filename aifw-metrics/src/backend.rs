@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::series::{MetricPoint, Tier};
 
 /// Response type for metric queries
@@ -15,7 +16,7 @@ pub struct MetricQueryResult {
 #[async_trait]
 pub trait MetricsBackend: Send + Sync {
     /// Record a metric value
-    async fn record(&self, name: &str, value: f64) -> Result<(), String>;
+    async fn record(&self, name: &str, value: f64) -> Result<()>;
 
     /// Query metric data for a given tier
     async fn query(
@@ -23,14 +24,14 @@ pub trait MetricsBackend: Send + Sync {
         name: &str,
         tier: Tier,
         last_n: Option<usize>,
-    ) -> Result<MetricQueryResult, String>;
+    ) -> Result<MetricQueryResult>;
 
     /// Get the latest value for a metric
-    async fn latest(&self, name: &str) -> Result<Option<f64>, String>;
+    async fn latest(&self, name: &str) -> Result<Option<f64>>;
 
     /// List all available metric names
-    async fn list_metrics(&self) -> Result<Vec<String>, String>;
+    async fn list_metrics(&self) -> Result<Vec<String>>;
 
     /// Get a summary of all metrics (latest values)
-    async fn summary(&self) -> Result<Vec<(String, f64)>, String>;
+    async fn summary(&self) -> Result<Vec<(String, f64)>>;
 }

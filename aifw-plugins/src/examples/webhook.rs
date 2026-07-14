@@ -86,7 +86,7 @@ impl Plugin for WebhookPlugin {
         }
     }
 
-    async fn init(&mut self, config: &PluginConfig, _ctx: &PluginContext) -> Result<(), String> {
+    async fn init(&mut self, config: &PluginConfig, _ctx: &PluginContext) -> crate::Result<()> {
         self.url = config
             .get_str("url")
             .unwrap_or("http://localhost:9999/webhook")
@@ -161,7 +161,7 @@ impl Plugin for WebhookPlugin {
         HookAction::Continue
     }
 
-    async fn shutdown(&mut self) -> Result<(), String> {
+    async fn shutdown(&mut self) -> crate::Result<()> {
         let pending = self.notifications.read().await.len();
         tracing::info!(pending, "webhook plugin shutting down");
         Ok(())

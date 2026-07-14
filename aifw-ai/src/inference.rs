@@ -1,14 +1,16 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::error::{AiError, Result};
+
 /// Trait for ML inference backends (ONNX, etc.)
 #[async_trait]
 pub trait InferenceBackend: Send + Sync {
     /// Run inference on a feature vector, return anomaly score (0.0-1.0)
-    async fn predict(&self, features: &[f64]) -> Result<f64, String>;
+    async fn predict(&self, features: &[f64]) -> Result<f64>;
 
     /// Load or reload a model from the given path
-    async fn load_model(&mut self, path: &str) -> Result<(), String>;
+    async fn load_model(&mut self, path: &str) -> Result<()>;
 
     /// Get model info
     fn model_info(&self) -> ModelInfo;
@@ -48,12 +50,12 @@ impl Default for StubInference {
 
 #[async_trait]
 impl InferenceBackend for StubInference {
-    async fn predict(&self, features: &[f64]) -> Result<f64, String> {
+    async fn predict(&self, features: &[f64]) -> Result<f64> {
         // Simple heuristic-based "prediction" for development:
         // High connection rate + high unique ports = likely scan
         // High SYN count + low established = likely DDoS
         if features.len() < self.info.input_size {
-            return Err("feature vector too short".to_string());
+            return Err(AiError::Inference("feature vector too short".to_string()));
         }
 
         let conn_count = features[0];
@@ -84,7 +86,7 @@ impl InferenceBackend for StubInference {
         Ok(score.min(1.0))
     }
 
-    async fn load_model(&mut self, path: &str) -> Result<(), String> {
+    async fn load_model(&mut self, path: &str) -> Result<()> {
         tracing::info!(path, "stub: model load (no-op)");
         self.info.loaded = true;
         self.info.name = path.to_string();

@@ -85,7 +85,7 @@ impl Plugin for WasmPlugin {
         self.info.clone()
     }
 
-    async fn init(&mut self, _config: &PluginConfig, _ctx: &PluginContext) -> Result<(), String> {
+    async fn init(&mut self, _config: &PluginConfig, _ctx: &PluginContext) -> crate::Result<()> {
         // WASM sandbox is not yet implemented — refuse to load WASM plugins
         // to prevent running untrusted code without proper isolation.
         if !self.config.wasm_path.as_os_str().is_empty() {
@@ -93,7 +93,7 @@ impl Plugin for WasmPlugin {
                 wasm = ?self.config.wasm_path,
                 "WASM plugin loading is disabled — sandbox not implemented"
             );
-            return Err("WASM plugin loading is disabled: sandbox not yet implemented. Only native Rust plugins are supported.".to_string());
+            return Err("WASM plugin loading is disabled: sandbox not yet implemented. Only native Rust plugins are supported.".into());
         }
         self.state = PluginState::Running;
         Ok(())
@@ -113,7 +113,7 @@ impl Plugin for WasmPlugin {
         HookAction::Continue
     }
 
-    async fn shutdown(&mut self) -> Result<(), String> {
+    async fn shutdown(&mut self) -> crate::Result<()> {
         self.state = PluginState::Stopped;
         Ok(())
     }

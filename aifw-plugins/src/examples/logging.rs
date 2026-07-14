@@ -72,7 +72,7 @@ impl Plugin for LoggingPlugin {
         }
     }
 
-    async fn init(&mut self, config: &PluginConfig, _ctx: &PluginContext) -> Result<(), String> {
+    async fn init(&mut self, config: &PluginConfig, _ctx: &PluginContext) -> crate::Result<()> {
         if let Some(max) = config.get_u64("max_entries") {
             self.max_entries = max as usize;
         }
@@ -124,7 +124,7 @@ impl Plugin for LoggingPlugin {
         HookAction::Continue
     }
 
-    async fn shutdown(&mut self) -> Result<(), String> {
+    async fn shutdown(&mut self) -> crate::Result<()> {
         let count = self.log_buffer.read().await.len();
         tracing::info!(entries = count, "logging plugin shutting down");
         Ok(())

@@ -55,7 +55,7 @@ impl Plugin for IpReputationPlugin {
         }
     }
 
-    async fn init(&mut self, config: &PluginConfig, _ctx: &PluginContext) -> Result<(), String> {
+    async fn init(&mut self, config: &PluginConfig, _ctx: &PluginContext) -> crate::Result<()> {
         if let Some(table) = config.get_str("table_name") {
             self.table_name = table.to_string();
         }
@@ -101,7 +101,7 @@ impl Plugin for IpReputationPlugin {
         HookAction::Continue
     }
 
-    async fn shutdown(&mut self) -> Result<(), String> {
+    async fn shutdown(&mut self) -> crate::Result<()> {
         let size = self.blocklist.read().await.len();
         tracing::info!(blocklist_size = size, "IP reputation plugin shutting down");
         Ok(())

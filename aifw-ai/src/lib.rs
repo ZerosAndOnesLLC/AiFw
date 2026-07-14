@@ -4,6 +4,7 @@
 //! see the crate README for current status and caveats.
 
 pub mod detectors;
+pub mod error;
 pub mod features;
 pub mod inference;
 pub mod response;
@@ -12,6 +13,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+pub use error::{AiError, Result};
 pub use features::TrafficFeatures;
 pub use inference::InferenceBackend;
 pub use response::{AutoResponder, ResponseAction, ResponseConfig};

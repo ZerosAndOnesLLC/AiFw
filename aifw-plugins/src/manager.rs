@@ -32,12 +32,12 @@ impl PluginManager {
         &mut self,
         plugin: Box<dyn Plugin>,
         config: PluginConfig,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         let info = plugin.info();
         let name = info.name.clone();
 
         if self.plugins.contains_key(&name) {
-            return Err(format!("plugin '{name}' already registered"));
+            return Err(format!("plugin '{name}' already registered").into());
         }
 
         info!(plugin = %name, version = %info.version, "registering plugin");
@@ -70,7 +70,7 @@ impl PluginManager {
     }
 
     /// Unload a plugin by name
-    pub async fn unload(&mut self, name: &str) -> Result<(), String> {
+    pub async fn unload(&mut self, name: &str) -> crate::Result<()> {
         let mut loaded = self
             .plugins
             .remove(name)

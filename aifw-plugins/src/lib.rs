@@ -6,6 +6,7 @@
 
 pub mod context;
 pub mod discovery;
+pub mod error;
 pub mod examples;
 pub mod hooks;
 pub mod manager;
@@ -16,6 +17,7 @@ pub mod wasm;
 mod tests;
 
 pub use context::PluginContext;
+pub use error::{PluginError, Result};
 pub use hooks::{HookAction, HookEvent, HookPoint};
 pub use manager::PluginManager;
 pub use plugin::{Plugin, PluginConfig, PluginInfo, PluginState};
