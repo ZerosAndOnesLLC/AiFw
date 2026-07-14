@@ -12,7 +12,7 @@ path = "src/main.rs"
 aifw-common = { workspace = true }
 aifw-pf = { workspace = true }
 aifw-core = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "fs", "process", "time"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }

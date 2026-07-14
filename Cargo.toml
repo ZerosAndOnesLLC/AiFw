@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.97.29"
+version = "5.97.30"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -40,7 +40,12 @@ tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "set-header", "compression-gzip", "compression-br"] }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 argon2 = { version = "0.5", features = ["std"] }
-tokio = { version = "1", features = ["full"] }
+# tokio base carries no runtime features (PERF-H3 #347). Every crate — library
+# and binary alike — opts into exactly the features it uses (no crate uses
+# "full"). Cargo unions features per build graph, so validate a library crate's
+# minimal set in isolation with `cargo check -p <crate>`; binaries are covered
+# by the workspace union build + test suite.
+tokio = { version = "1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }

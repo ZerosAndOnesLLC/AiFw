@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 aifw-common = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync", "io-util", "process", "rt", "macros"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

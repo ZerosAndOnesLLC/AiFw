@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "net", "io-util", "macros"] }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 aifw-common = { workspace = true }

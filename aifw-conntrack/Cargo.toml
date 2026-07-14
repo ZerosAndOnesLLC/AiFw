@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 aifw-common = { workspace = true }
 aifw-pf = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "macros"] }
 tracing = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
