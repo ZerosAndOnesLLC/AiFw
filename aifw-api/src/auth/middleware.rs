@@ -1,7 +1,6 @@
 //! The request auth middleware plus the RBAC guards: `auth_middleware`
 //! resolves a JWT / API-key / WS-ticket credential into an `AuthUser`
-//! extension, and `require_perm` / `require_admin` / the `perm_check!`
-//! macro gate routes on a permission.
+//! extension, and the `perm_check!` macro gates routes on a permission.
 
 use axum::{
     extract::{Request, State},
@@ -169,34 +168,16 @@ fn query_ticket(q: Option<&str>) -> Option<String> {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AuthUser {
     pub user_id: String,
+    /// Populated for logging/audit context and future per-request use; not
+    /// currently read by any guard (authz keys off `user_id` + `permissions`).
+    #[allow(dead_code)]
     pub username: String,
     pub permissions: aifw_common::PermissionSet,
     pub role: String,
     /// Set when the request authenticated via an API key; None for JWT/ticket auth.
     pub api_key_name: Option<String>,
-}
-
-/// Permission check middleware. Reads `AuthUser` from request extensions
-/// (set by auth_middleware) and checks if the user has the required permission.
-#[allow(dead_code)]
-pub async fn require_perm(
-    perm: aifw_common::Permission,
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let auth_user = request
-        .extensions()
-        .get::<AuthUser>()
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    if !auth_user.permissions.has(perm) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    Ok(next.run(request).await)
 }
 
 /// Macro to create a permission-check middleware closure for use with `from_fn`.
@@ -214,27 +195,4 @@ macro_rules! perm_check {
             Ok::<_, axum::http::StatusCode>(next.run(request).await)
         }
     };
-}
-
-/// Legacy alias — checks users:write permission (admin-level).
-/// Kept for backward compatibility; new code should use perm_check! directly.
-#[allow(dead_code)]
-pub async fn require_admin(
-    State(_state): State<crate::AppState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let auth_user = request
-        .extensions()
-        .get::<AuthUser>()
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    if !auth_user
-        .permissions
-        .has(aifw_common::Permission::UsersWrite)
-    {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    Ok(next.run(request).await)
 }

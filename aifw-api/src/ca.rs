@@ -48,6 +48,7 @@ pub struct GenerateCaRequest {
     pub common_name: Option<String>,
     pub organization: Option<String>,
     pub validity_days: Option<u32>,
+    // Not yet wired through to key generation — see #489.
     #[allow(dead_code)]
     pub key_type: Option<String>, // "ec" | "rsa2048" | "rsa4096"
 }

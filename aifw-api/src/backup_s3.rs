@@ -6,11 +6,7 @@
 
 use aifw_core::s3_backup as s3;
 use aifw_core::smtp_notify as smtp;
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -363,10 +359,3 @@ pub async fn test_smtp(
         }),
     }
 }
-
-// ============================================================================
-// Unused-but-required path extractor stub so axum's route tooling compiles
-// if/when we add a /restore-by-path variant. Keeping it out of public API.
-// ============================================================================
-#[allow(dead_code)]
-pub(crate) async fn _path_noop(Path(_p): Path<String>) {}

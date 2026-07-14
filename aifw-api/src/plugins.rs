@@ -202,7 +202,8 @@ pub async fn discover_plugins() -> Result<Json<serde_json::Value>, StatusCode> {
     })))
 }
 
-/// Dispatch a hook event to all plugins (called internally by other modules)
+/// Dispatch a hook event to all plugins. Currently uncalled — see #488 for
+/// wiring this into the event paths that should notify plugins.
 #[allow(dead_code)]
 pub async fn dispatch_hook(
     state: &AppState,

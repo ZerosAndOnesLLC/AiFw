@@ -29,8 +29,8 @@ pub async fn is_token_revoked(pool: &SqlitePool, jti: &str) -> bool {
         .is_some()
 }
 
-/// Clean up expired entries from the blacklist (called periodically).
-#[allow(dead_code)]
+/// Clean up expired entries from the blacklist. Spawned on an hourly timer in
+/// `main.rs` so the `revoked_tokens` table doesn't grow without bound.
 pub async fn cleanup_revoked_tokens(pool: &SqlitePool) {
     let now = chrono::Utc::now().to_rfc3339();
     let _ = sqlx::query("DELETE FROM revoked_tokens WHERE expires_at < ?1")
