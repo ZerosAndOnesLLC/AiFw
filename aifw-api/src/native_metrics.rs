@@ -236,6 +236,10 @@ fn use_freebsd_getmntinfo(out: &mut Vec<DiskInfo>) {
     }
 }
 
+/// # Safety
+///
+/// `p` must be either null or a pointer to a nul-terminated C string that
+/// remains valid for the duration of the call.
 #[cfg(target_os = "freebsd")]
 unsafe fn c_str_to_string(p: *const libc::c_char) -> String {
     if p.is_null() {

@@ -70,6 +70,9 @@ impl CaptureBackend for BpfCapture {
 
         // Set buffer size
         let mut buf_size = config.buffer_size as libc::c_uint;
+        // SAFETY: `fd` is a valid bpf descriptor from open_bpf_device; both
+        // ioctls read/write the single `c_uint` pointed to by `&mut buf_size`,
+        // which lives on the stack for the whole block.
         unsafe {
             if libc::ioctl(fd, BIOCSBLEN, &mut buf_size) < 0 {
                 // If we can't set it, read the default
@@ -86,6 +89,9 @@ impl CaptureBackend for BpfCapture {
         let copy_len = name_bytes.len().min(15);
         ifr.ifr_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
 
+        // SAFETY: `fd` is valid and `ifr` is a fully-initialized `Ifreq` whose
+        // name field was bounded to 15 bytes above. On failure we close `fd`
+        // (still valid here) before returning.
         unsafe {
             if libc::ioctl(fd, BIOCSETIF, &ifr) < 0 {
                 let err = std::io::Error::last_os_error();
@@ -98,12 +104,14 @@ impl CaptureBackend for BpfCapture {
 
         // Enable immediate mode (don't wait for buffer to fill)
         let enable: libc::c_uint = 1;
+        // SAFETY: `fd` is valid; `&enable` points to a live stack `c_uint`.
         unsafe {
             libc::ioctl(fd, BIOCIMMEDIATE, &enable);
         }
 
         // Enable promiscuous mode if requested
         if config.promiscuous {
+            // SAFETY: `fd` is valid; BIOCPROMISC takes no argument.
             unsafe {
                 libc::ioctl(fd, BIOCPROMISC);
             }
@@ -114,6 +122,7 @@ impl CaptureBackend for BpfCapture {
             tv_sec: 0,
             tv_usec: (config.timeout_ms as libc::c_long) * 1000,
         };
+        // SAFETY: `fd` is valid; `&timeout` points to a live stack `Timeval`.
         unsafe {
             libc::ioctl(fd, BIOCSRTIMEOUT, &timeout);
         }
@@ -147,6 +156,9 @@ impl CaptureBackend for BpfCapture {
     fn next_packet(&mut self) -> Option<RawPacket> {
         // If we've consumed all packets in the current buffer, read more
         if self.buf_pos >= self.buf_read {
+            // SAFETY: `self.fd` is a valid bpf descriptor and `self.buffer` is a
+            // `Vec<u8>` of `self.buf_len` bytes, so writing up to `buf_len` bytes
+            // through its pointer stays in bounds.
             let n = unsafe {
                 libc::read(
                     self.fd,
@@ -167,6 +179,10 @@ impl CaptureBackend for BpfCapture {
             return None;
         }
 
+        // SAFETY: the bounds check above guarantees at least
+        // `size_of::<BpfHeader>()` bytes remain at `buf_pos`. BpfHeader is
+        // `#[repr(C)]` POD, so reinterpreting the kernel-filled bytes is valid;
+        // the borrow lives only as long as `self.buffer` is untouched below.
         let hdr = unsafe { &*(self.buffer.as_ptr().add(self.buf_pos) as *const BpfHeader) };
 
         let caplen = hdr.bh_caplen as usize;
@@ -220,6 +236,8 @@ impl CaptureBackend for BpfCapture {
             bs_recv: 0,
             bs_drop: 0,
         };
+        // SAFETY: `self.fd` is valid; BIOCGSTATS writes a `struct bpf_stat`
+        // into the live stack `bpf_stats`.
         unsafe {
             if libc::ioctl(self.fd, BIOCGSTATS, &mut bpf_stats) == 0 {
                 stats.packets_received = bpf_stats.bs_recv as u64;
@@ -231,6 +249,9 @@ impl CaptureBackend for BpfCapture {
 
     fn close(&mut self) {
         if self.fd >= 0 {
+            // SAFETY: `self.fd` is a valid, open descriptor (guarded by >= 0)
+            // that we own; it is set to -1 immediately after so we never
+            // double-close.
             unsafe {
                 libc::close(self.fd);
             }
@@ -251,6 +272,8 @@ fn open_bpf_device() -> Result<RawFd> {
     for i in 0..256 {
         let path =
             CString::new(format!("/dev/bpf{i}")).expect("/dev/bpf{i} format has no interior null");
+        // SAFETY: `path` is a valid nul-terminated C string that outlives the
+        // call; `open` merely reads it and returns a new descriptor or -1.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
         if fd >= 0 {
             return Ok(fd);
