@@ -22,7 +22,7 @@ impl CaptureBackend for NetmapCapture {
     }
 
     fn next_packet(&mut self) -> Option<RawPacket> {
-        // TODO: implement netmap ring buffer read via NIOCREGIF ioctl
+        // TODO(#484): implement netmap ring buffer read via NIOCREGIF ioctl
         None
     }
 

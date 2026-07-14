@@ -469,7 +469,7 @@ impl VpnEngine {
         // ListenAddress for explicit binding; if AiFw ever migrates to one,
         // this is where the per-iface bind would be wired.
         //
-        // TODO: WG role-change subscriber for explicit wg-quick down on BACKUP
+        // TODO(#486): WG role-change subscriber for explicit wg-quick down on BACKUP
         // (default-false `wg_deconfigure_on_backup` flag, deferred — out of
         // scope for Commit 9 #222).
         let listen_port_s = tunnel.listen_port.to_string();
