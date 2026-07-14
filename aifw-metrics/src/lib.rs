@@ -1,3 +1,8 @@
+//! # aifw-metrics
+//!
+//! Time-series metrics collection and storage: pluggable collectors feed a
+//! ring-buffered series store, exposed to the API for dashboards and history.
+
 pub mod backend;
 pub mod collector;
 pub mod config;

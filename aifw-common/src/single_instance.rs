@@ -75,6 +75,10 @@ pub fn acquire_at(path: &Path) -> Result<InstanceLock, InstanceLockError> {
     };
 
     let fd = file.as_raw_fd();
+    // SAFETY: `fd` is a valid, open file descriptor owned by `file` (kept alive
+    // for the duration of the call), and `flock` is a fully-initialized
+    // `struct flock` living on the stack. `fcntl(F_SETLK)` only reads through
+    // the pointer for the duration of the call.
     let res = unsafe { nix::libc::fcntl(fd, nix::libc::F_SETLK, &flock) };
     if res == -1 {
         let errno = nix::errno::Errno::last();
@@ -157,6 +161,9 @@ mod tests {
         let path = tmp_lock("conflict");
         let _ = std::fs::remove_file(&path);
 
+        // SAFETY: single-threaded test harness at this point; between fork and
+        // exec/exit the child only calls async-signal-safe operations (acquire
+        // the lock, sleep, exit), satisfying the post-fork constraints.
         match unsafe { fork() }.expect("fork") {
             ForkResult::Child => {
                 let _lock = acquire_at(&path).expect("child acquire");

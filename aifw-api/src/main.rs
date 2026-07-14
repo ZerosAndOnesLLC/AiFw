@@ -1214,6 +1214,8 @@ async fn main() -> anyhow::Result<()> {
     let _instance_lock = match aifw_common::single_instance::acquire("aifw-api") {
         Ok(lock) => Some(lock),
         Err(aifw_common::single_instance::InstanceLockError::AlreadyRunning(pid)) => {
+            // stderr, not tracing: the subscriber isn't initialized until below,
+            // so this pre-init startup diagnostic would otherwise be dropped.
             eprintln!("aifw-api: another instance is already running (pid {pid})");
             std::process::exit(1);
         }

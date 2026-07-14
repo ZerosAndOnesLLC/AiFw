@@ -1,3 +1,10 @@
+//! # aifw-ids
+//!
+//! Intrusion detection/prevention engine: packet capture, protocol decode,
+//! flow tracking, Suricata-format rule parsing and matching, and alert
+//! output sinks (SQLite, EVE JSON, syslog, in-memory). Runs in IDS (alert)
+//! or IPS (drop) mode; configuration and rules live in SQLite and hot-reload.
+
 pub mod action;
 pub mod capture;
 pub mod config;
