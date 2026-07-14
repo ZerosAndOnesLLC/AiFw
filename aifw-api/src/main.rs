@@ -1485,6 +1485,20 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Prune expired entries from the JWT revocation blacklist hourly so the
+    // `revoked_tokens` table doesn't grow unbounded (revoked tokens are only
+    // meaningful until they expire on their own).
+    {
+        let pool = state.pool.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                auth::cleanup_revoked_tokens(&pool).await;
+            }
+        });
+    }
+
     // Single global dashboard-WS producer (#178). Builds the per-tick
     // payload once and broadcasts to every connected client via
     // `state.ws_tick`, replacing per-client `build_update` cloning.

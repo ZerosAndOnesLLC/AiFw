@@ -43,7 +43,16 @@ impl IpcHandler for EngineHandler {
                 }
             }
             IpcRequest::GetStats => {
-                let cfg = self.engine.load_config().await.ok();
+                let cfg = match self.engine.load_config().await {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        tracing::warn!(
+                            ?e,
+                            "failed to load IDS config for GetStats; reporting mode=unknown"
+                        );
+                        None
+                    }
+                };
                 let mode = cfg
                     .as_ref()
                     .map(|c| format!("{:?}", c.mode).to_lowercase())

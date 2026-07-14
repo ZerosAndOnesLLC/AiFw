@@ -577,13 +577,31 @@ pub async fn import_opnsense(
     // Capture *pre*-apply state for the commit-confirm rollback target.
     // The previous design captured POST-apply, which meant the auto-revert
     // would "revert" to the just-applied state.
-    let pre_apply_snapshot_json = crate::backup::capture_runtime_snapshot(&state).await.ok();
+    let pre_apply_snapshot_json = match crate::backup::capture_runtime_snapshot(&state).await {
+        Ok(snap) => Some(snap),
+        Err(e) => {
+            tracing::warn!(
+                ?e,
+                "failed to capture pre-apply snapshot; commit-confirm rollback target unavailable"
+            );
+            None
+        }
+    };
 
     // Pre-import snapshot for /api/v1/config/history — captures full
     // FirewallConfig including aliases + static_routes (added in this PR)
     // so the manual one-click restore can revert everything the importer
     // changes that's covered by `apply_firewall_config`.
-    let pre_import_version = save_pre_import_snapshot(&state).await.ok();
+    let pre_import_version = match save_pre_import_snapshot(&state).await {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(
+                ?e,
+                "failed to save pre-import snapshot; one-click restore point unavailable"
+            );
+            None
+        }
+    };
 
     let mut summary = AppliedCounts::default();
     let mut skipped: Vec<String> = Vec::new();

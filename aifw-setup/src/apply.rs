@@ -329,8 +329,8 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
             // At runtime, aifw-daemon's recover_kernel_state_for_role re-applies
             // the actual stored profile via ifconfig, so any operator change via
             // the cluster API takes effect on next service restart. rc.conf is
-            // rewritten only when re-running setup. TODO: when the cluster API
-            // changes the profile (in #217), have it also rewrite the rc.conf
+            // rewritten only when re-running setup. TODO(#217): when the cluster
+            // API changes the profile, have it also rewrite the rc.conf
             // aliases so reboot doesn't briefly fall back to Conservative.
             let timing = aifw_common::CarpLatencyProfile::default().timing_for(c.role);
             for vip in &c.vips {

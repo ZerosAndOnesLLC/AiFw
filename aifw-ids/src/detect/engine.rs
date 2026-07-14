@@ -370,7 +370,7 @@ impl DetectionEngine {
 
         // Variable references (not expanded here — would need config)
         if constraint.starts_with('$') {
-            return true; // TODO: expand variables
+            return true; // TODO(#485): expand variables
         }
 
         // Negation

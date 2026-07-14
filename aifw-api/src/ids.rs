@@ -405,11 +405,12 @@ pub async fn delete_ruleset(
 // ============ Rules ============
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct RulesQuery {
     pub ruleset_id: Option<String>,
     pub enabled: Option<bool>,
+    /// Free-text search — accepted but not yet applied in `list_rules`; see #490.
     #[serde(default)]
+    #[allow(dead_code)]
     pub q: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,

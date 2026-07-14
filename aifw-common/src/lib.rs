@@ -1,12 +1,13 @@
-// ============================================================
-// Loopback API constants
-// ============================================================
+//! # aifw-common
+//!
+//! Shared types for AiFw: rules, NAT, VPN, TLS, geo-IP, HA, IDS, and metrics,
+//! plus the loopback API constants used to reach the local `aifw-api` process.
 
 /// Default loopback API port. Used by daemon background tasks and CLI
 /// to reach the local aifw-api process. The actual listen port is
 /// configured via `aifw-api --listen` but defaults to this value.
 ///
-/// TODO: when peer ports become configurable per-node, store on
+/// TODO(#487): when peer ports become configurable per-node, store on
 /// cluster_nodes and use that instead.
 pub const DEFAULT_LOOPBACK_API_PORT: u16 = 8080;
 pub const DEFAULT_LOOPBACK_API_BASE: &str = "https://127.0.0.1:8080";

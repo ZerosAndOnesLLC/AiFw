@@ -1455,7 +1455,7 @@ pub async fn update_ha_config(
         &config.node_id.map(|v| v.to_string()).unwrap_or_default(),
     )
     .await;
-    // TODO: when the cluster cert store lands (#222 / #217 follow-up), reuse the
+    // TODO(#222): when the cluster cert store lands (#217 follow-up), reuse the
     // per-peer API key/cert from cluster_nodes instead of saving DHCP-specific
     // TLS material here.
     save_ha_key(

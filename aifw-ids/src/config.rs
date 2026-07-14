@@ -5,6 +5,22 @@ use sqlx::SqlitePool;
 
 use crate::Result;
 
+/// Parse a stored numeric config value, warning (instead of silently coercing
+/// to `None`) when the persisted string can't be parsed.
+fn parse_u32_field(field: &str, value: &str) -> Option<u32> {
+    match value.parse() {
+        Ok(v) => Some(v),
+        Err(_) => {
+            tracing::warn!(
+                field,
+                value,
+                "ids config: ignoring unparseable numeric value"
+            );
+            None
+        }
+    }
+}
+
 /// Runtime configuration for the IDS engine.
 /// Wraps `IdsConfig` with thread-safe interior mutability for hot-reload.
 pub struct RuntimeConfig {
@@ -136,19 +152,20 @@ impl RuntimeConfig {
                     cfg.syslog_target = Some(value);
                 }
                 "worker_count" => {
-                    cfg.worker_count = value.parse().ok();
+                    cfg.worker_count = parse_u32_field("worker_count", &value);
                 }
                 "flow_table_size" => {
-                    cfg.flow_table_size = value.parse().ok();
+                    cfg.flow_table_size = parse_u32_field("flow_table_size", &value);
                 }
                 "stream_depth" => {
-                    cfg.stream_depth = value.parse().ok();
+                    cfg.stream_depth = parse_u32_field("stream_depth", &value);
                 }
                 "flow_stream_depth_kb" => {
-                    cfg.flow_stream_depth_kb = value.parse().ok();
+                    cfg.flow_stream_depth_kb = parse_u32_field("flow_stream_depth_kb", &value);
                 }
                 "flow_reassembly_budget_mb" => {
-                    cfg.flow_reassembly_budget_mb = value.parse().ok();
+                    cfg.flow_reassembly_budget_mb =
+                        parse_u32_field("flow_reassembly_budget_mb", &value);
                 }
                 _ => {}
             }
