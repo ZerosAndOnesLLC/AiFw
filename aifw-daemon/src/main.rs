@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     let db = Database::new(&args.db).await?;
     let pool = db.pool().clone();
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
-    let engine = RuleEngine::new(db, pf.clone()).with_anchor(args.anchor.clone());
+    let engine = RuleEngine::new(pool.clone(), pf.clone()).with_anchor(args.anchor.clone());
     let nat_engine = NatEngine::new(pool.clone(), pf.clone());
     let alias_engine = AliasEngine::new(pool.clone(), pf.clone());
 

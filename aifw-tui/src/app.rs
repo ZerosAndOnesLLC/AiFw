@@ -88,7 +88,7 @@ impl App {
         let pool = db.pool().clone();
         let pf: Arc<dyn PfBackend> = Arc::from(aifw_pf::create_backend());
 
-        let rule_engine = Arc::new(RuleEngine::new(db, pf.clone()));
+        let rule_engine = Arc::new(RuleEngine::new(pool.clone(), pf.clone()));
         let nat_engine = Arc::new(NatEngine::new(pool.clone(), pf.clone()));
         nat_engine.migrate().await?;
         let shaping_engine = Arc::new(ShapingEngine::new(pool.clone(), pf.clone()));

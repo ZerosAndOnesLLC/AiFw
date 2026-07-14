@@ -94,7 +94,7 @@ mod tests {
     async fn test_engine_add_list_rules() {
         let db = Database::new_in_memory().await.unwrap();
         let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
-        let engine = RuleEngine::new(db, pf);
+        let engine = RuleEngine::new(db.pool().clone(), pf);
 
         let rule = make_test_rule();
         let id = rule.id;
@@ -109,7 +109,7 @@ mod tests {
     async fn test_engine_delete_rule() {
         let db = Database::new_in_memory().await.unwrap();
         let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
-        let engine = RuleEngine::new(db, pf);
+        let engine = RuleEngine::new(db.pool().clone(), pf);
 
         let rule = make_test_rule();
         let id = rule.id;
@@ -124,7 +124,7 @@ mod tests {
     async fn test_engine_delete_nonexistent() {
         let db = Database::new_in_memory().await.unwrap();
         let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
-        let engine = RuleEngine::new(db, pf);
+        let engine = RuleEngine::new(db.pool().clone(), pf);
 
         let result = engine.delete_rule(uuid::Uuid::new_v4()).await;
         assert!(result.is_err());
@@ -135,7 +135,7 @@ mod tests {
         let db = Database::new_in_memory().await.unwrap();
         let mock = Arc::new(aifw_pf::PfMock::new());
         let pf: Arc<dyn PfBackend> = mock.clone();
-        let engine = RuleEngine::new(db, pf);
+        let engine = RuleEngine::new(db.pool().clone(), pf);
 
         engine.add_rule(make_test_rule()).await.unwrap();
 
@@ -170,7 +170,7 @@ mod tests {
         let db = Database::new_in_memory().await.unwrap();
         let mock = Arc::new(aifw_pf::PfMock::new());
         let pf: Arc<dyn PfBackend> = mock.clone();
-        let engine = RuleEngine::new(db, pf);
+        let engine = RuleEngine::new(db.pool().clone(), pf);
 
         engine.add_rule(make_test_rule()).await.unwrap();
         engine.apply_rules().await.unwrap();
@@ -254,7 +254,7 @@ mod tests {
     async fn test_audit_trail() {
         let db = Database::new_in_memory().await.unwrap();
         let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
-        let engine = RuleEngine::new(db, pf);
+        let engine = RuleEngine::new(db.pool().clone(), pf);
 
         let rule = make_test_rule();
         let id = rule.id;
@@ -273,7 +273,7 @@ mod tests {
         let db = Database::new_in_memory().await.unwrap();
         let mock = Arc::new(aifw_pf::PfMock::new());
         let pf: Arc<dyn PfBackend> = mock.clone();
-        let engine = RuleEngine::new(db, pf);
+        let engine = RuleEngine::new(db.pool().clone(), pf);
 
         engine.add_rule(make_test_rule()).await.unwrap();
         engine.apply_rules().await.unwrap();

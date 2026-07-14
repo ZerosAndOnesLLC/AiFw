@@ -46,6 +46,14 @@ impl Database {
         Ok(db)
     }
 
+    /// Wrap an existing [`SqlitePool`] without opening a new connection or
+    /// running migrations. Used by engines (e.g. [`crate::RuleEngine`]) that
+    /// take a shared pool for constructor consistency but still need the
+    /// typed `Database` query helpers.
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
     pub async fn new_in_memory() -> Result<Self> {
         let opts = SqliteConnectOptions::from_str("sqlite::memory:")?;
         let pool = SqlitePoolOptions::new()

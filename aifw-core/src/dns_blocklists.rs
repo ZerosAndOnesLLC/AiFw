@@ -132,7 +132,7 @@ pub struct RefreshOutcome {
 // Schema + seed
 // ============================================================================
 
-pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS dns_blocklist_source (

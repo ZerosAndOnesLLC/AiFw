@@ -252,7 +252,7 @@ pub struct AcmeExportTarget {
 // Schema
 // =============================================================================
 
-pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS acme_account (

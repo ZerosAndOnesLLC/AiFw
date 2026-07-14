@@ -37,7 +37,7 @@ impl ConfigManager {
         self
     }
 
-    pub async fn migrate(&self) -> Result<(), String> {
+    pub async fn migrate(&self) -> aifw_common::Result<()> {
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS config_versions (
                 version INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,8 +52,7 @@ impl ConfigManager {
             )"#,
         )
         .execute(&self.pool)
-        .await
-        .map_err(|e| format!("migration error: {e}"))?;
+        .await?;
 
         // Hash lookups happen on every auto-snapshot — one index pays for itself
         // after the first handful of saves.
@@ -61,8 +60,7 @@ impl ConfigManager {
             "CREATE INDEX IF NOT EXISTS idx_config_versions_created_at ON config_versions(created_at DESC)",
         )
         .execute(&self.pool)
-        .await
-        .map_err(|e| format!("migration error: {e}"))?;
+        .await?;
 
         Ok(())
     }
