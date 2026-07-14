@@ -164,19 +164,22 @@ impl VpnEngine {
     }
 
     pub async fn list_wg_tunnels(&self) -> Result<Vec<WgTunnel>> {
-        let rows =
-            sqlx::query_as::<_, WgTunnelRow>("SELECT * FROM wg_tunnels ORDER BY created_at ASC")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, WgTunnelRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {WG_TUNNEL_COLUMNS} FROM wg_tunnels ORDER BY created_at ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(|r| r.into_tunnel()).collect()
     }
 
     pub async fn get_wg_tunnel(&self, id: Uuid) -> Result<WgTunnel> {
-        let row = sqlx::query_as::<_, WgTunnelRow>("SELECT * FROM wg_tunnels WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| AifwError::NotFound(format!("WG tunnel {id} not found")))?;
+        let row = sqlx::query_as::<_, WgTunnelRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {WG_TUNNEL_COLUMNS} FROM wg_tunnels WHERE id = ?1"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AifwError::NotFound(format!("WG tunnel {id} not found")))?;
         row.into_tunnel()
     }
 
@@ -309,9 +312,9 @@ impl VpnEngine {
     }
 
     pub async fn list_wg_peers(&self, tunnel_id: Uuid) -> Result<Vec<WgPeer>> {
-        let rows = sqlx::query_as::<_, WgPeerRow>(
-            "SELECT * FROM wg_peers WHERE tunnel_id = ?1 ORDER BY created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, WgPeerRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {WG_PEER_COLUMNS} FROM wg_peers WHERE tunnel_id = ?1 ORDER BY created_at ASC"
+        )))
         .bind(tunnel_id.to_string())
         .fetch_all(&self.pool)
         .await?;
@@ -319,11 +322,13 @@ impl VpnEngine {
     }
 
     pub async fn get_wg_peer(&self, id: Uuid) -> Result<WgPeer> {
-        let row = sqlx::query_as::<_, WgPeerRow>("SELECT * FROM wg_peers WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| AifwError::NotFound(format!("WG peer {id} not found")))?;
+        let row = sqlx::query_as::<_, WgPeerRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {WG_PEER_COLUMNS} FROM wg_peers WHERE id = ?1"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AifwError::NotFound(format!("WG peer {id} not found")))?;
         row.into_peer()
     }
 
@@ -398,10 +403,11 @@ impl VpnEngine {
     }
 
     pub async fn list_ipsec_sas(&self) -> Result<Vec<IpsecSa>> {
-        let rows =
-            sqlx::query_as::<_, IpsecSaRow>("SELECT * FROM ipsec_sas ORDER BY created_at ASC")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, IpsecSaRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {IPSEC_SA_COLUMNS} FROM ipsec_sas ORDER BY created_at ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(|r| r.into_sa()).collect()
     }
 
@@ -776,6 +782,15 @@ impl VpnEngine {
 // Row types
 // ============================================================
 
+/// Explicit column list for `WgTunnelRow` selects (#348). `SELECT *` triggers
+/// a sqlx-sqlite column-count panic and blocks column pruning; the `wg_tunnels`
+/// table gained `listen_interface`/`split_routes` via ALTER TABLE, so an
+/// explicit list keeps the column count deterministic. Order matches the
+/// CREATE TABLE (base columns then ALTER-added columns).
+const WG_TUNNEL_COLUMNS: &str = "id, name, interface, private_key, public_key, \
+    listen_port, address, dns, mtu, status, created_at, updated_at, \
+    listen_interface, split_routes";
+
 #[derive(sqlx::FromRow)]
 struct WgTunnelRow {
     id: String,
@@ -815,6 +830,13 @@ impl WgTunnelRow {
         })
     }
 }
+
+/// Explicit column list for `WgPeerRow` selects (#348). `client_private_key`
+/// was added via ALTER TABLE, so an explicit list (rather than `SELECT *`)
+/// keeps the column count deterministic and avoids the sqlx-sqlite panic.
+const WG_PEER_COLUMNS: &str = "id, tunnel_id, name, public_key, preshared_key, \
+    endpoint, allowed_ips, persistent_keepalive, created_at, updated_at, \
+    client_private_key";
 
 #[derive(sqlx::FromRow)]
 struct WgPeerRow {
@@ -856,6 +878,11 @@ impl WgPeerRow {
         })
     }
 }
+
+/// Explicit column list for `IpsecSaRow` selects (#348). Avoids `SELECT *`,
+/// which triggers a sqlx-sqlite column-count panic and blocks column pruning.
+const IPSEC_SA_COLUMNS: &str = "id, name, src_addr, dst_addr, protocol, mode, \
+    spi, enc_algo, auth_algo, status, created_at, updated_at";
 
 #[derive(sqlx::FromRow)]
 struct IpsecSaRow {

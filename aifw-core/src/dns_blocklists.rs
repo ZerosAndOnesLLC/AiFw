@@ -411,6 +411,13 @@ pub fn validate_pattern(p: &str) -> Result<(), String> {
 // Loaders
 // ============================================================================
 
+/// Explicit column list for `dns_blocklist_source` selects (PERF-H4 #348).
+/// `SELECT *` here triggers a sqlx-sqlite column-count panic that blocks
+/// pruning; an explicit list keeps the count deterministic. Columns are in
+/// `CREATE TABLE` schema order and cover every field `row_to_source` reads.
+const DNS_BLOCKLIST_SOURCE_COLUMNS: &str = "id, name, category, url, format, enabled, \
+    action, redirect_ip, last_updated, last_sha256, rule_count, last_error, built_in";
+
 fn row_to_source(row: &sqlx::sqlite::SqliteRow) -> BlocklistSource {
     BlocklistSource {
         id: row.get("id"),
@@ -430,23 +437,27 @@ fn row_to_source(row: &sqlx::sqlite::SqliteRow) -> BlocklistSource {
 }
 
 pub async fn load_source(pool: &SqlitePool, id: i64) -> Option<BlocklistSource> {
-    sqlx::query("SELECT * FROM dns_blocklist_source WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| row_to_source(&r))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {DNS_BLOCKLIST_SOURCE_COLUMNS} FROM dns_blocklist_source WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| row_to_source(&r))
 }
 
 pub async fn load_all_sources(pool: &SqlitePool) -> Vec<BlocklistSource> {
-    sqlx::query("SELECT * FROM dns_blocklist_source ORDER BY category, name")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(row_to_source)
-        .collect()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {DNS_BLOCKLIST_SOURCE_COLUMNS} FROM dns_blocklist_source ORDER BY category, name"
+    )))
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .iter()
+    .map(row_to_source)
+    .collect()
 }
 
 pub async fn load_schedule(pool: &SqlitePool) -> BlocklistSchedule {

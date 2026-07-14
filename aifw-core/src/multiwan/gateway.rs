@@ -193,20 +193,24 @@ impl GatewayEngine {
     }
 
     pub async fn list(&self) -> Result<Vec<Gateway>> {
-        let rows = sqlx::query("SELECT * FROM multiwan_gateways ORDER BY name ASC")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {GATEWAY_COLUMNS} FROM multiwan_gateways ORDER BY name ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?;
         Ok(rows.iter().map(row_to_gw).collect())
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Gateway> {
-        let row = sqlx::query("SELECT * FROM multiwan_gateways WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?
-            .ok_or_else(|| AifwError::NotFound(format!("gateway {id} not found")))?;
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {GATEWAY_COLUMNS} FROM multiwan_gateways WHERE id = ?1"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?
+        .ok_or_else(|| AifwError::NotFound(format!("gateway {id} not found")))?;
         Ok(row_to_gw(&row))
     }
 
@@ -492,6 +496,16 @@ impl GatewayEngine {
         Ok(())
     }
 }
+
+/// Explicit column list for `multiwan_gateways` selects (schema order).
+/// `SELECT *` triggers a sqlx-sqlite column-count panic (#348), so every
+/// query names its columns. Must match the `CREATE TABLE` in `migrate()`
+/// and every `.get(...)` in `row_to_gw`.
+const GATEWAY_COLUMNS: &str = "id, name, instance_id, interface, next_hop, ip_version, \
+    monitor_kind, monitor_target, monitor_port, monitor_expect, interval_ms, timeout_ms, \
+    loss_pct_down, loss_pct_up, latency_ms_down, latency_ms_up, consec_fail_down, consec_ok_up, \
+    weight, dampening_secs, dscp_tag, enabled, state, last_rtt_ms, last_jitter_ms, last_loss_pct, \
+    last_mos, last_probe_ts, created_at, updated_at";
 
 fn row_to_gw(r: &sqlx::sqlite::SqliteRow) -> Gateway {
     Gateway {

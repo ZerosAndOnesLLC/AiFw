@@ -345,6 +345,11 @@ fn parse_dt(s: Option<String>) -> Option<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
+/// Explicit column list for `acme_account` selects (#348). `SELECT *` triggers
+/// a sqlx-sqlite column-count panic and blocks column pruning; an explicit list
+/// keeps the count deterministic. Columns in `CREATE TABLE` schema order.
+const ACME_ACCOUNT_COLUMNS: &str = "id, directory_url, contact_email, key_pem, created_at";
+
 fn row_to_account(row: &sqlx::sqlite::SqliteRow) -> AcmeAccount {
     AcmeAccount {
         id: row.get("id"),
@@ -356,22 +361,26 @@ fn row_to_account(row: &sqlx::sqlite::SqliteRow) -> AcmeAccount {
 }
 
 pub async fn load_account(pool: &SqlitePool, id: i64) -> Option<AcmeAccount> {
-    sqlx::query("SELECT * FROM acme_account WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| row_to_account(&r))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACME_ACCOUNT_COLUMNS} FROM acme_account WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| row_to_account(&r))
 }
 
 pub async fn load_default_account(pool: &SqlitePool) -> Option<AcmeAccount> {
-    sqlx::query("SELECT * FROM acme_account ORDER BY id LIMIT 1")
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| row_to_account(&r))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACME_ACCOUNT_COLUMNS} FROM acme_account ORDER BY id LIMIT 1"
+    )))
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| row_to_account(&r))
 }
 
 pub async fn save_account(
@@ -411,6 +420,13 @@ pub async fn save_account(
     .map_err(|e| e.to_string())
 }
 
+/// Explicit column list for `acme_cert` selects (#348). Avoids the sqlx-sqlite
+/// column-count panic and enables column pruning. Columns in `CREATE TABLE`
+/// schema order.
+const ACME_CERT_COLUMNS: &str = "id, common_name, sans, challenge_type, dns_provider_id, \
+    auto_renew, renew_days_before_expiry, status, issued_at, expires_at, last_renew_attempt, \
+    last_renew_error, cert_pem, chain_pem, key_pem";
+
 fn row_to_cert(row: &sqlx::sqlite::SqliteRow) -> AcmeCert {
     let sans_json: String = row.get("sans");
     let sans: Vec<String> = serde_json::from_str(&sans_json).unwrap_or_default();
@@ -434,23 +450,27 @@ fn row_to_cert(row: &sqlx::sqlite::SqliteRow) -> AcmeCert {
 }
 
 pub async fn load_cert(pool: &SqlitePool, id: i64) -> Option<AcmeCert> {
-    sqlx::query("SELECT * FROM acme_cert WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| row_to_cert(&r))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACME_CERT_COLUMNS} FROM acme_cert WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| row_to_cert(&r))
 }
 
 pub async fn load_all_certs(pool: &SqlitePool) -> Vec<AcmeCert> {
-    sqlx::query("SELECT * FROM acme_cert ORDER BY common_name")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(row_to_cert)
-        .collect()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACME_CERT_COLUMNS} FROM acme_cert ORDER BY common_name"
+    )))
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .iter()
+    .map(row_to_cert)
+    .collect()
 }
 
 pub async fn certs_due_for_renewal(pool: &SqlitePool) -> Vec<AcmeCert> {
@@ -460,6 +480,11 @@ pub async fn certs_due_for_renewal(pool: &SqlitePool) -> Vec<AcmeCert> {
         .filter(|c| c.needs_renewal())
         .collect()
 }
+
+/// Explicit column list for `acme_dns_provider` selects (#348). Avoids the
+/// sqlx-sqlite column-count panic and enables column pruning. Columns in
+/// `CREATE TABLE` schema order.
+const ACME_DNS_PROVIDER_COLUMNS: &str = "id, name, kind, api_token, aws_secret_key, zone, extra";
 
 fn row_to_provider(row: &sqlx::sqlite::SqliteRow) -> AcmeDnsProvider {
     let extra_str: String = row.get("extra");
@@ -478,24 +503,34 @@ fn row_to_provider(row: &sqlx::sqlite::SqliteRow) -> AcmeDnsProvider {
 }
 
 pub async fn load_provider(pool: &SqlitePool, id: i64) -> Option<AcmeDnsProvider> {
-    sqlx::query("SELECT * FROM acme_dns_provider WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| row_to_provider(&r))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACME_DNS_PROVIDER_COLUMNS} FROM acme_dns_provider WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| row_to_provider(&r))
 }
 
 pub async fn load_all_providers(pool: &SqlitePool) -> Vec<AcmeDnsProvider> {
-    sqlx::query("SELECT * FROM acme_dns_provider ORDER BY name")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(row_to_provider)
-        .collect()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACME_DNS_PROVIDER_COLUMNS} FROM acme_dns_provider ORDER BY name"
+    )))
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .iter()
+    .map(row_to_provider)
+    .collect()
 }
+
+/// Explicit column list for `acme_export_target` selects (#348). Avoids the
+/// sqlx-sqlite column-count panic and enables column pruning. Columns in
+/// `CREATE TABLE` schema order.
+const ACME_EXPORT_TARGET_COLUMNS: &str =
+    "id, cert_id, kind, config, last_run_at, last_run_ok, last_run_error";
 
 fn row_to_target(row: &sqlx::sqlite::SqliteRow) -> AcmeExportTarget {
     let cfg_str: String = row.get("config");
@@ -513,14 +548,16 @@ fn row_to_target(row: &sqlx::sqlite::SqliteRow) -> AcmeExportTarget {
 }
 
 pub async fn load_targets_for_cert(pool: &SqlitePool, cert_id: i64) -> Vec<AcmeExportTarget> {
-    sqlx::query("SELECT * FROM acme_export_target WHERE cert_id = ? ORDER BY id")
-        .bind(cert_id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(row_to_target)
-        .collect()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACME_EXPORT_TARGET_COLUMNS} FROM acme_export_target WHERE cert_id = ? ORDER BY id"
+    )))
+    .bind(cert_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .iter()
+    .map(row_to_target)
+    .collect()
 }
 
 // =============================================================================

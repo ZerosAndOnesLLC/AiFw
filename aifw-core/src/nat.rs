@@ -84,10 +84,12 @@ impl NatEngine {
     }
 
     pub async fn get_rule(&self, id: Uuid) -> Result<NatRule> {
-        let row = sqlx::query_as::<_, NatRuleRow>("SELECT * FROM nat_rules WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query_as::<_, NatRuleRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {NAT_RULE_COLUMNS} FROM nat_rules WHERE id = ?1"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
 
         row.map(|r| r.into_nat_rule())
             .transpose()?
@@ -95,18 +97,19 @@ impl NatEngine {
     }
 
     pub async fn list_rules(&self) -> Result<Vec<NatRule>> {
-        let rows =
-            sqlx::query_as::<_, NatRuleRow>("SELECT * FROM nat_rules ORDER BY created_at ASC")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, NatRuleRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {NAT_RULE_COLUMNS} FROM nat_rules ORDER BY created_at ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
 
         rows.into_iter().map(|r| r.into_nat_rule()).collect()
     }
 
     pub async fn list_active_rules(&self) -> Result<Vec<NatRule>> {
-        let rows = sqlx::query_as::<_, NatRuleRow>(
-            "SELECT * FROM nat_rules WHERE status = 'active' ORDER BY created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, NatRuleRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {NAT_RULE_COLUMNS} FROM nat_rules WHERE status = 'active' ORDER BY created_at ASC"
+        )))
         .fetch_all(&self.pool)
         .await?;
 
@@ -297,6 +300,14 @@ fn validate_nat_rule(rule: &NatRule) -> Result<()> {
 
     Ok(())
 }
+
+/// Explicit column list for `NatRuleRow` selects, in schema order. Replaces
+/// `SELECT *` which triggers a sqlx-sqlite column-count panic and blocks
+/// column pruning (#348).
+const NAT_RULE_COLUMNS: &str = "id, nat_type, interface, protocol, src_addr, \
+    src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
+    redirect_addr, redirect_port_start, redirect_port_end, label, status, \
+    created_at, updated_at";
 
 #[derive(sqlx::FromRow)]
 struct NatRuleRow {

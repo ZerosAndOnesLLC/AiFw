@@ -192,9 +192,11 @@ impl ClusterEngine {
     }
 
     pub async fn list_carp_vips(&self) -> Result<Vec<CarpVip>> {
-        let rows = sqlx::query_as::<_, CarpVipRow>("SELECT * FROM carp_vips ORDER BY vhid ASC")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query_as::<_, CarpVipRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {CARP_VIPS_COLUMNS} FROM carp_vips ORDER BY vhid ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(|r| r.into_vip()).collect()
     }
 
@@ -266,9 +268,11 @@ impl ClusterEngine {
     }
 
     pub async fn get_pfsync(&self) -> Result<Option<PfsyncConfig>> {
-        let row = sqlx::query_as::<_, PfsyncRow>("SELECT * FROM pfsync_config LIMIT 1")
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query_as::<_, PfsyncRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {PFSYNC_CONFIG_COLUMNS} FROM pfsync_config LIMIT 1"
+        )))
+        .fetch_optional(&self.pool)
+        .await?;
         row.map(|r| r.into_config()).transpose()
     }
 
@@ -303,10 +307,11 @@ impl ClusterEngine {
     }
 
     pub async fn list_nodes(&self) -> Result<Vec<ClusterNode>> {
-        let rows =
-            sqlx::query_as::<_, ClusterNodeRow>("SELECT * FROM cluster_nodes ORDER BY name ASC")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, ClusterNodeRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {CLUSTER_NODES_COLUMNS} FROM cluster_nodes ORDER BY name ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(|r| r.into_node()).collect()
     }
 
@@ -444,10 +449,11 @@ impl ClusterEngine {
     }
 
     pub async fn list_health_checks(&self) -> Result<Vec<HealthCheck>> {
-        let rows =
-            sqlx::query_as::<_, HealthCheckRow>("SELECT * FROM health_checks ORDER BY name ASC")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, HealthCheckRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {HEALTH_CHECKS_COLUMNS} FROM health_checks ORDER BY name ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(|r| r.into_check()).collect()
     }
 
@@ -688,6 +694,12 @@ async fn read_local_role() -> aifw_common::ClusterRole {
 // Row types
 // ============================================================
 
+/// Explicit column list for `CarpVipRow` selects (#348). `SELECT *` triggers a
+/// sqlx-sqlite column-count panic and blocks column pruning; an explicit list
+/// keeps the count deterministic and matches the `CarpVipRow` fields exactly.
+const CARP_VIPS_COLUMNS: &str =
+    "id, vhid, virtual_ip, prefix, interface, password, status, created_at, updated_at";
+
 #[derive(sqlx::FromRow)]
 struct CarpVipRow {
     id: String,
@@ -725,6 +737,12 @@ impl CarpVipRow {
     }
 }
 
+/// Explicit column list for `PfsyncRow` selects (#348). `SELECT *` triggers a
+/// sqlx-sqlite column-count panic and blocks column pruning; an explicit list
+/// keeps the count deterministic and matches the `PfsyncRow` fields exactly.
+const PFSYNC_CONFIG_COLUMNS: &str = "id, sync_interface, sync_peer, defer_mode, enabled, \
+    created_at, latency_profile, heartbeat_iface, heartbeat_interval_ms, dhcp_link";
+
 #[derive(sqlx::FromRow)]
 struct PfsyncRow {
     id: String,
@@ -761,6 +779,14 @@ impl PfsyncRow {
         })
     }
 }
+
+/// Explicit column list for `ClusterNodeRow` selects (#348). `SELECT *` triggers
+/// a sqlx-sqlite column-count panic and blocks column pruning; an explicit list
+/// keeps the count deterministic and matches the `ClusterNodeRow` fields exactly.
+/// Note: `peer_api_key`/`peer_api_key_hash` exist on the table but are NOT part
+/// of `ClusterNodeRow`, so they are intentionally omitted here.
+const CLUSTER_NODES_COLUMNS: &str = "id, name, address, role, health, last_seen, \
+    config_version, created_at, software_version, last_pushed_cert_at";
 
 #[derive(sqlx::FromRow)]
 struct ClusterNodeRow {
@@ -805,6 +831,12 @@ impl ClusterNodeRow {
         })
     }
 }
+
+/// Explicit column list for `HealthCheckRow` selects (#348). `SELECT *` triggers
+/// a sqlx-sqlite column-count panic and blocks column pruning; an explicit list
+/// keeps the count deterministic and matches the `HealthCheckRow` fields exactly.
+const HEALTH_CHECKS_COLUMNS: &str = "id, name, check_type, interval_secs, timeout_secs, \
+    failures_before_down, target, enabled, created_at";
 
 #[derive(sqlx::FromRow)]
 struct HealthCheckRow {

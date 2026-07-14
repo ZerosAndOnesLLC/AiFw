@@ -129,9 +129,9 @@ impl AuditLog {
     }
 
     pub async fn list(&self, limit: i64) -> Result<Vec<AuditEntry>> {
-        let rows = sqlx::query_as::<_, AuditRow>(
-            "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?1",
-        )
+        let rows = sqlx::query_as::<_, AuditRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {AUDIT_LOG_COLUMNS} FROM audit_log ORDER BY timestamp DESC LIMIT ?1"
+        )))
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -140,9 +140,9 @@ impl AuditLog {
     }
 
     pub async fn list_for_rule(&self, rule_id: Uuid) -> Result<Vec<AuditEntry>> {
-        let rows = sqlx::query_as::<_, AuditRow>(
-            "SELECT * FROM audit_log WHERE rule_id = ?1 ORDER BY timestamp DESC",
-        )
+        let rows = sqlx::query_as::<_, AuditRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {AUDIT_LOG_COLUMNS} FROM audit_log WHERE rule_id = ?1 ORDER BY timestamp DESC"
+        )))
         .bind(rule_id.to_string())
         .fetch_all(&self.pool)
         .await?;
@@ -151,9 +151,9 @@ impl AuditLog {
     }
 
     pub async fn list_by_action(&self, action: AuditAction, limit: i64) -> Result<Vec<AuditEntry>> {
-        let rows = sqlx::query_as::<_, AuditRow>(
-            "SELECT * FROM audit_log WHERE action = ?1 ORDER BY timestamp DESC LIMIT ?2",
-        )
+        let rows = sqlx::query_as::<_, AuditRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {AUDIT_LOG_COLUMNS} FROM audit_log WHERE action = ?1 ORDER BY timestamp DESC LIMIT ?2"
+        )))
         .bind(action.to_string())
         .bind(limit)
         .fetch_all(&self.pool)
@@ -169,6 +169,10 @@ impl AuditLog {
         Ok(row.0)
     }
 }
+
+/// Explicit column list for `AuditRow` selects (#348). Avoids `SELECT *`,
+/// which triggers a sqlx-sqlite column-count panic and blocks column pruning.
+const AUDIT_LOG_COLUMNS: &str = "id, timestamp, action, rule_id, details, source";
 
 #[derive(sqlx::FromRow)]
 struct AuditRow {
