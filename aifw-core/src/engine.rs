@@ -1,5 +1,6 @@
 use aifw_common::{AifwError, Result, Rule, RuleStatus};
 use aifw_pf::PfBackend;
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -20,8 +21,9 @@ pub struct RuleEngine {
 }
 
 impl RuleEngine {
-    pub fn new(db: Database, pf: Arc<dyn PfBackend>) -> Self {
-        let audit = AuditLog::new(db.pool().clone());
+    pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
+        let audit = AuditLog::new(pool.clone());
+        let db = Database::from_pool(pool);
         Self {
             db,
             pf,

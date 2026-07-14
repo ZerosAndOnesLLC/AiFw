@@ -48,7 +48,7 @@ fn parse_direction(s: &str) -> anyhow::Result<Direction> {
 async fn create_engine(db_path: &Path) -> anyhow::Result<RuleEngine> {
     let db = Database::new(db_path).await?;
     let pf = Arc::from(aifw_pf::create_backend());
-    Ok(RuleEngine::new(db, pf))
+    Ok(RuleEngine::new(db.pool().clone(), pf))
 }
 
 pub async fn init(db_path: &Path) -> anyhow::Result<()> {
