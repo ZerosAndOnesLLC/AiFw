@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.97.27"
+version = "5.97.28"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -76,3 +76,13 @@ module_inception = "allow"
 too_many_arguments = "allow"
 type_complexity = "allow"
 should_implement_trait = "allow"
+
+# Release profile (PERF-H2 #346). LTO + single codegen unit enable cross-crate
+# inlining on hot paths (notably the aifw-ids ↔ aho-corasick prefilter);
+# strip shrinks binaries for faster cold start on the appliance.
+# `panic = "abort"` deliberately omitted: the long-running daemon/API must not
+# let a panic in one request handler abort the whole firewall process.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
