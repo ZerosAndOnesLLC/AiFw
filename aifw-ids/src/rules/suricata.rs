@@ -115,22 +115,22 @@ pub fn parse_rule(line: &str, source: RuleSource) -> Result<CompiledRule, String
             }
             "depth" => {
                 if let Some(last) = contents.last_mut() {
-                    last.depth = value.parse().ok();
+                    last.depth = parse_rule_num("depth", value);
                 }
             }
             "offset" => {
                 if let Some(last) = contents.last_mut() {
-                    last.offset = value.parse().ok();
+                    last.offset = parse_rule_num("offset", value);
                 }
             }
             "distance" => {
                 if let Some(last) = contents.last_mut() {
-                    last.distance = value.parse().ok();
+                    last.distance = parse_rule_num("distance", value);
                 }
             }
             "within" => {
                 if let Some(last) = contents.last_mut() {
-                    last.within = value.parse().ok();
+                    last.within = parse_rule_num("within", value);
                 }
             }
             "fast_pattern" => {
@@ -240,6 +240,23 @@ pub fn parse_rules(text: &str, source: RuleSource) -> Vec<CompiledRule> {
 }
 
 /// Set the buffer on the last content match.
+/// Parse a numeric content-option value, warning (instead of silently
+/// dropping) when a rule carries a malformed number so the operator can spot
+/// the typo'd rule.
+fn parse_rule_num<T: std::str::FromStr>(field: &str, value: &str) -> Option<T> {
+    match value.parse() {
+        Ok(v) => Some(v),
+        Err(_) => {
+            tracing::warn!(
+                field,
+                value,
+                "suricata rule: ignoring unparseable numeric option"
+            );
+            None
+        }
+    }
+}
+
 fn set_last_buffer(contents: &mut [ContentMatch], buffer: &str) {
     if let Some(last) = contents.last_mut() {
         last.buffer = Some(buffer.to_string());

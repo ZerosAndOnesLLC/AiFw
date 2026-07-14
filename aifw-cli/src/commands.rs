@@ -1815,6 +1815,7 @@ pub async fn update_install_local(
             size_mb
         );
         print!("Proceed? [y/N] ");
+        // best-effort prompt flush; a broken stdout pipe is unactionable here
         std::io::stdout().flush().ok();
         let mut line = String::new();
         std::io::stdin().lock().read_line(&mut line)?;
@@ -1923,6 +1924,7 @@ fn prompt_restart_yes() -> anyhow::Result<bool> {
     use std::io::{BufRead, Write};
 
     print!("Restart services now to activate? [y/N] ");
+    // best-effort prompt flush; a broken stdout pipe is unactionable here
     std::io::stdout().flush().ok();
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;

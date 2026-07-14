@@ -718,7 +718,9 @@ pub async fn install_aifw_update_local(
                 while let Some(chunk) = field.chunk().await.map_err(|_| StatusCode::BAD_REQUEST)? {
                     file.write_all(&chunk).await.map_err(|_| internal())?;
                 }
-                file.flush().await.ok();
+                if let Err(e) = file.flush().await {
+                    tracing::warn!(?e, "failed to flush uploaded tarball to disk");
+                }
                 tarball_path = Some(path);
             }
             "sha256" => {
