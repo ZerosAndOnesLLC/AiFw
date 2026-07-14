@@ -1,3 +1,11 @@
+//! # aifw-core
+//!
+//! Core firewall engines built on top of [`aifw_pf`] and [`aifw_common`]:
+//! rules, NAT, aliases, geo-IP, VPN, traffic shaping, HA/clustering, audit,
+//! ACME/TLS, DDNS, and the multiwan family. Each engine owns a pf anchor and
+//! an inline `migrate()` that creates its SQLite tables; the shared
+//! [`Database`] handle wraps the `SqlitePool` used throughout.
+
 pub mod acme;
 pub mod acme_dns;
 pub mod acme_engine;

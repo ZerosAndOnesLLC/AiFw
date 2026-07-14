@@ -1,3 +1,10 @@
+//! # aifw-pf
+//!
+//! Abstraction over FreeBSD `pf`. The [`backend::PfBackend`] trait is
+//! implemented by an in-memory mock (Linux/WSL, for development and tests)
+//! and an ioctl/pfctl backend (FreeBSD), selected at compile time via
+//! `#[cfg(target_os)]`. Use [`create_backend`] to get the right one.
+
 pub mod backend;
 pub mod error;
 #[cfg(test)]
@@ -16,6 +23,16 @@ pub use ioctl::PfIoctl;
 pub use mock::PfMock;
 pub use types::{PfState, PfStats, PfTableEntry};
 
+/// Return the [`PfBackend`] for the current platform.
+///
+/// Backend selection is compile-time via `#[cfg(target_os)]`, not a runtime
+/// flag: FreeBSD gets the real [`PfIoctl`] (pfctl/ioctl), every other target
+/// gets the in-memory [`PfMock`]. The two `cfg` arms are mutually exclusive
+/// and exhaustive, so exactly one is compiled in.
+///
+/// The `.expect` on FreeBSD is justified: the daemon cannot function without
+/// `/dev/pf`, and failing to open it is an unrecoverable boot-time condition
+/// that should abort loudly rather than silently degrade.
 pub fn create_backend() -> Box<dyn PfBackend> {
     #[cfg(not(target_os = "freebsd"))]
     {

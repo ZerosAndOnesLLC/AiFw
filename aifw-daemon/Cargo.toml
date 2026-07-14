@@ -22,7 +22,7 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
 libc = { workspace = true }
-nix = { version = "0.31", features = ["user"] }
+nix = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 

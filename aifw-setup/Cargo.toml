@@ -23,7 +23,7 @@ argon2 = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 libc = { workspace = true }
-nix = { version = "0.31", features = ["term"] }
+nix = { workspace = true, features = ["term"] }
 
 [lints]
 workspace = true

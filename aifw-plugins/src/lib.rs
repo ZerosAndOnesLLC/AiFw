@@ -1,3 +1,9 @@
+//! # aifw-plugins
+//!
+//! Plugin subsystem: discovers, loads, and manages the lifecycle of plugins,
+//! and dispatches hook events (with `HookAction` responses such as `Block`)
+//! at defined points like incoming API requests. See [`manager::PluginManager`].
+
 pub mod context;
 pub mod discovery;
 pub mod examples;
