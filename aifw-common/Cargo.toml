@@ -11,7 +11,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 sqlx = { workspace = true }
-tokio = { workspace = true, features = ["sync", "net"] }
+tokio = { workspace = true, features = ["sync", "net", "rt", "macros"] }
 url = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

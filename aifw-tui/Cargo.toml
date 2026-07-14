@@ -13,7 +13,7 @@ aifw-common = { workspace = true }
 aifw-pf = { workspace = true }
 aifw-core = { workspace = true }
 aifw-conntrack = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tracing = { workspace = true }

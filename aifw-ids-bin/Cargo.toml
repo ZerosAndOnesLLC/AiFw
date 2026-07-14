@@ -13,7 +13,7 @@ aifw-common = { workspace = true }
 aifw-ids = { workspace = true }
 aifw-ids-ipc = { workspace = true }
 aifw-pf = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
 sqlx = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }

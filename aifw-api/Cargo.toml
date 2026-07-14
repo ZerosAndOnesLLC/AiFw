@@ -17,7 +17,7 @@ aifw-plugins = { workspace = true }
 aifw-ids = { workspace = true }
 aifw-ids-ipc = { workspace = true }
 aifw-metrics = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs", "process", "time", "sync", "io-util"] }
 axum = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
