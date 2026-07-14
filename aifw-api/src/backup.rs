@@ -2505,7 +2505,7 @@ pub async fn put_retention(
     let mgr = ConfigManager::new(state.pool.clone());
     mgr.migrate()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     mgr.set_retention_limit(req.max_versions)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;

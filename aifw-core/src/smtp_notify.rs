@@ -159,7 +159,7 @@ impl SmtpConfig {
 // Schema
 // ============================================================================
 
-pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS smtp_notify_config (
             id             INTEGER PRIMARY KEY CHECK (id = 1),
