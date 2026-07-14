@@ -86,10 +86,11 @@ impl ShapingEngine {
     }
 
     pub async fn list_queues(&self) -> Result<Vec<QueueConfig>> {
-        let rows =
-            sqlx::query_as::<_, QueueRow>("SELECT * FROM queue_configs ORDER BY created_at ASC")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, QueueRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {QUEUE_COLUMNS} FROM queue_configs ORDER BY created_at ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(|r| r.into_queue()).collect()
     }
 
@@ -153,9 +154,9 @@ impl ShapingEngine {
     }
 
     pub async fn list_rate_limits(&self) -> Result<Vec<RateLimitRule>> {
-        let rows = sqlx::query_as::<_, RateLimitRow>(
-            "SELECT * FROM rate_limit_rules ORDER BY created_at ASC",
-        )
+        let rows = sqlx::query_as::<_, RateLimitRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {RATE_LIMIT_COLUMNS} FROM rate_limit_rules ORDER BY created_at ASC"
+        )))
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(|r| r.into_rate_limit()).collect()
@@ -268,6 +269,20 @@ impl ShapingEngine {
 }
 
 // --- Row types ---
+
+/// Explicit column list for `QueueRow` selects, in schema order. Replaces
+/// `SELECT *` which triggers a sqlx-sqlite column-count panic and blocks
+/// column pruning (#348).
+const QUEUE_COLUMNS: &str = "id, interface, queue_type, bandwidth_value, \
+    bandwidth_unit, name, traffic_class, bandwidth_pct, is_default, status, \
+    created_at, updated_at";
+
+/// Explicit column list for `RateLimitRow` selects, in schema order. Replaces
+/// `SELECT *` which triggers a sqlx-sqlite column-count panic and blocks
+/// column pruning (#348).
+const RATE_LIMIT_COLUMNS: &str = "id, name, interface, protocol, src_addr, \
+    dst_addr, dst_port_start, dst_port_end, max_connections, window_secs, \
+    overload_table, flush_states, status, created_at, updated_at";
 
 #[derive(sqlx::FromRow)]
 struct QueueRow {

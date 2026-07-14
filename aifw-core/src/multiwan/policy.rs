@@ -67,20 +67,24 @@ impl PolicyEngine {
     }
 
     pub async fn list(&self) -> Result<Vec<PolicyRule>> {
-        let rows = sqlx::query("SELECT * FROM multiwan_policies ORDER BY priority ASC")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {POLICY_COLUMNS} FROM multiwan_policies ORDER BY priority ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?;
         Ok(rows.iter().map(row_to_policy).collect())
     }
 
     pub async fn get(&self, id: Uuid) -> Result<PolicyRule> {
-        let row = sqlx::query("SELECT * FROM multiwan_policies WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?
-            .ok_or_else(|| AifwError::NotFound(format!("policy {id} not found")))?;
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {POLICY_COLUMNS} FROM multiwan_policies WHERE id = ?1"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?
+        .ok_or_else(|| AifwError::NotFound(format!("policy {id} not found")))?;
         Ok(row_to_policy(&row))
     }
 
@@ -384,6 +388,14 @@ fn if_some_proto(p: &str, out: &mut String) {
         out.push_str(&format!(" proto {p}"));
     }
 }
+
+/// Explicit column list for `multiwan_policies` selects (schema order).
+/// `SELECT *` triggers a sqlx-sqlite column-count panic (#348), so every
+/// query names its columns. Must match the `CREATE TABLE` in `migrate()`
+/// and every `.get(...)` in `row_to_policy`.
+const POLICY_COLUMNS: &str = "id, priority, name, status, ip_version, iface_in, src_addr, \
+    dst_addr, src_port, dst_port, protocol, dscp_in, geoip_country, schedule_id, action_kind, \
+    target_id, sticky, fallback_target_id, description, created_at, updated_at";
 
 fn row_to_policy(r: &sqlx::sqlite::SqliteRow) -> PolicyRule {
     PolicyRule {

@@ -66,20 +66,24 @@ impl GroupEngine {
     }
 
     pub async fn list(&self) -> Result<Vec<GatewayGroup>> {
-        let rows = sqlx::query("SELECT * FROM multiwan_groups ORDER BY name ASC")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {GROUP_COLUMNS} FROM multiwan_groups ORDER BY name ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?;
         Ok(rows.iter().map(row_to_group).collect())
     }
 
     pub async fn get(&self, id: Uuid) -> Result<GatewayGroup> {
-        let row = sqlx::query("SELECT * FROM multiwan_groups WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?
-            .ok_or_else(|| AifwError::NotFound(format!("group {id} not found")))?;
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {GROUP_COLUMNS} FROM multiwan_groups WHERE id = ?1"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?
+        .ok_or_else(|| AifwError::NotFound(format!("group {id} not found")))?;
         Ok(row_to_group(&row))
     }
 
@@ -271,6 +275,13 @@ fn prefer_up(s: GatewayState) -> u8 {
         _ => 0,
     }
 }
+
+/// Explicit column list for `multiwan_groups` selects (schema order).
+/// `SELECT *` triggers a sqlx-sqlite column-count panic (#348), so every
+/// query names its columns. Must match the `CREATE TABLE` in `migrate()`
+/// and every `.get(...)` in `row_to_group`.
+const GROUP_COLUMNS: &str = "id, name, policy, preempt, sticky, hysteresis_ms, \
+    kill_states_on_failover, created_at, updated_at";
 
 fn row_to_group(r: &sqlx::sqlite::SqliteRow) -> GatewayGroup {
     GatewayGroup {

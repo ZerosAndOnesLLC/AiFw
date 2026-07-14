@@ -46,20 +46,24 @@ impl LeakEngine {
     }
 
     pub async fn list(&self) -> Result<Vec<RouteLeak>> {
-        let rows = sqlx::query("SELECT * FROM multiwan_leaks ORDER BY name ASC")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {LEAK_COLUMNS} FROM multiwan_leaks ORDER BY name ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?;
         Ok(rows.iter().map(row_to_leak).collect())
     }
 
     pub async fn get(&self, id: Uuid) -> Result<RouteLeak> {
-        let row = sqlx::query("SELECT * FROM multiwan_leaks WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| AifwError::Database(e.to_string()))?
-            .ok_or_else(|| AifwError::NotFound(format!("leak {id} not found")))?;
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {LEAK_COLUMNS} FROM multiwan_leaks WHERE id = ?1"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AifwError::Database(e.to_string()))?
+        .ok_or_else(|| AifwError::NotFound(format!("leak {id} not found")))?;
         Ok(row_to_leak(&row))
     }
 
@@ -239,6 +243,13 @@ impl LeakEngine {
         Ok(())
     }
 }
+
+/// Explicit column list for `multiwan_leaks` selects (schema order).
+/// `SELECT *` triggers a sqlx-sqlite column-count panic (#348), so every
+/// query names its columns. Must match the `CREATE TABLE` in `migrate()`
+/// and every `.get(...)` in `row_to_leak`.
+const LEAK_COLUMNS: &str = "id, name, src_instance_id, dst_instance_id, prefix, protocol, \
+    ports, direction, enabled, created_at, updated_at";
 
 fn row_to_leak(r: &sqlx::sqlite::SqliteRow) -> RouteLeak {
     RouteLeak {

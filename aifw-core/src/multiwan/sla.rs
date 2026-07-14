@@ -21,6 +21,13 @@ pub struct SlaSample {
     pub up_seconds: u64,
 }
 
+/// Explicit column list for `multiwan_sla_samples` selects (schema order).
+/// `SELECT *` triggers a sqlx-sqlite column-count panic (#348) that blocks
+/// pruning, so every query names its columns. Must match the `CREATE TABLE`
+/// in `migrate()` and every `.get(...)` in `window`.
+const SLA_COLUMNS: &str = "gateway_id, bucket_ts, samples, rtt_avg, rtt_p95, rtt_p99, \
+    jitter_avg, loss_pct, mos_avg, up_seconds";
+
 pub struct SlaEngine {
     pool: SqlitePool,
 }
@@ -81,10 +88,10 @@ impl SlaEngine {
     /// Retrieve samples for a gateway within a rolling window.
     pub async fn window(&self, gw_id: Uuid, hours: i64) -> Result<Vec<SlaSample>> {
         let since = (Utc::now() - Duration::hours(hours)).to_rfc3339();
-        let rows = sqlx::query(
-            "SELECT * FROM multiwan_sla_samples WHERE gateway_id = ?1 AND bucket_ts >= ?2
-             ORDER BY bucket_ts ASC",
-        )
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {SLA_COLUMNS} FROM multiwan_sla_samples WHERE gateway_id = ?1 AND bucket_ts >= ?2
+             ORDER BY bucket_ts ASC"
+        )))
         .bind(gw_id.to_string())
         .bind(since)
         .fetch_all(&self.pool)

@@ -113,19 +113,22 @@ impl GeoIpEngine {
     }
 
     pub async fn list_rules(&self) -> Result<Vec<GeoIpRule>> {
-        let rows =
-            sqlx::query_as::<_, GeoIpRuleRow>("SELECT * FROM geoip_rules ORDER BY country ASC")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query_as::<_, GeoIpRuleRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {GEOIP_RULE_COLUMNS} FROM geoip_rules ORDER BY country ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
     pub async fn get_rule(&self, id: Uuid) -> Result<GeoIpRule> {
-        let row = sqlx::query_as::<_, GeoIpRuleRow>("SELECT * FROM geoip_rules WHERE id = ?1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| AifwError::NotFound(format!("geo-ip rule {id} not found")))?;
+        let row = sqlx::query_as::<_, GeoIpRuleRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {GEOIP_RULE_COLUMNS} FROM geoip_rules WHERE id = ?1"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AifwError::NotFound(format!("geo-ip rule {id} not found")))?;
         row.into_rule()
     }
 
@@ -308,6 +311,11 @@ fn build_ip_network(addr: IpAddr, prefix: u8) -> Option<IpNetwork> {
 }
 
 // --- Row types ---
+
+/// Explicit column list for `GeoIpRuleRow` selects, in schema order. Replaces
+/// `SELECT *` which triggers a sqlx-sqlite column-count panic and blocks
+/// column pruning (#348).
+const GEOIP_RULE_COLUMNS: &str = "id, country, action, label, status, created_at, updated_at";
 
 #[derive(sqlx::FromRow)]
 struct GeoIpRuleRow {

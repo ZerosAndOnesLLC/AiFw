@@ -222,6 +222,14 @@ fn parse_dt(s: Option<String>) -> Option<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
+/// Explicit column list for `ddns_record` selects (PERF-H4 #348).
+/// `SELECT *` here triggers a sqlx-sqlite column-count panic that blocks
+/// pruning; an explicit list keeps the count deterministic. Columns are in
+/// `CREATE TABLE` schema order and cover every field `row_to_record` reads.
+const DDNS_RECORD_COLUMNS: &str = "id, provider_id, hostname, record_type, source, \
+    interface, explicit_ip, ttl, enabled, last_ip, last_ipv6, last_updated, \
+    last_status, last_error";
+
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> DdnsRecord {
     DdnsRecord {
         id: row.get("id"),
@@ -242,23 +250,27 @@ fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> DdnsRecord {
 }
 
 pub async fn load_record(pool: &SqlitePool, id: i64) -> Option<DdnsRecord> {
-    sqlx::query("SELECT * FROM ddns_record WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| row_to_record(&r))
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {DDNS_RECORD_COLUMNS} FROM ddns_record WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| row_to_record(&r))
 }
 
 pub async fn load_all_records(pool: &SqlitePool) -> Vec<DdnsRecord> {
-    sqlx::query("SELECT * FROM ddns_record ORDER BY hostname")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(row_to_record)
-        .collect()
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {DDNS_RECORD_COLUMNS} FROM ddns_record ORDER BY hostname"
+    )))
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .iter()
+    .map(row_to_record)
+    .collect()
 }
 
 // =============================================================================

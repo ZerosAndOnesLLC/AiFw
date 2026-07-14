@@ -93,9 +93,11 @@ impl TlsEngine {
     }
 
     pub async fn list_sni_rules(&self) -> Result<Vec<SniRule>> {
-        let rows = sqlx::query_as::<_, SniRuleRow>("SELECT * FROM sni_rules ORDER BY pattern ASC")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query_as::<_, SniRuleRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {SNI_RULE_COLUMNS} FROM sni_rules ORDER BY pattern ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
@@ -203,6 +205,10 @@ impl TlsEngine {
 }
 
 // --- Row types ---
+
+/// Explicit column list for `SniRuleRow` selects (#348). Avoids `SELECT *`,
+/// which triggers a sqlx-sqlite column-count panic and blocks column pruning.
+const SNI_RULE_COLUMNS: &str = "id, pattern, action, label, status, created_at, updated_at";
 
 #[derive(sqlx::FromRow)]
 struct SniRuleRow {
