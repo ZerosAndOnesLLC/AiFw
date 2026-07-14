@@ -39,6 +39,8 @@ pub use alias::AliasEngine;
 pub use audit::{AuditAction, AuditLog};
 pub use config::{ConsoleConfig, ConsoleKind, FirewallConfig, SshAccessConfig, SystemConfig};
 pub use config_manager::ConfigManager;
+/// [`Database`] is re-exported from [`db::Database`] as the crate's primary
+/// entry point; prefer `aifw_core::Database` over the fully-qualified path.
 pub use db::Database;
 pub use engine::RuleEngine;
 pub use error::{CoreError, Result};

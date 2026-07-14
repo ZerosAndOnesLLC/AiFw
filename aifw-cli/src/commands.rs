@@ -1097,6 +1097,10 @@ pub async fn config_diff(db_path: &Path, v1: i64, v2: i64) -> anyhow::Result<()>
 // Static routes
 // ============================================================
 
+/// DDL for the `static_routes` table, shared by every routes_* command so the
+/// schema can't drift between call sites.
+const STATIC_ROUTES_DDL: &str = "CREATE TABLE IF NOT EXISTS static_routes (id TEXT PRIMARY KEY, destination TEXT NOT NULL, gateway TEXT NOT NULL, interface TEXT, metric INTEGER DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, description TEXT, created_at TEXT NOT NULL)";
+
 pub async fn routes_add(
     db_path: &Path,
     dest: &str,
@@ -1109,9 +1113,7 @@ pub async fn routes_add(
     let pool = db.pool();
 
     // Ensure table exists
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS static_routes (id TEXT PRIMARY KEY, destination TEXT NOT NULL, gateway TEXT NOT NULL, interface TEXT, metric INTEGER DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, description TEXT, created_at TEXT NOT NULL)",
-    ).execute(pool).await?;
+    sqlx::query(STATIC_ROUTES_DDL).execute(pool).await?;
 
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -1161,9 +1163,7 @@ pub async fn routes_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
 pub async fn routes_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let db = Database::new(db_path).await?;
     let pool = db.pool();
-    let _ = sqlx::query(
-        "CREATE TABLE IF NOT EXISTS static_routes (id TEXT PRIMARY KEY, destination TEXT NOT NULL, gateway TEXT NOT NULL, interface TEXT, metric INTEGER DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, description TEXT, created_at TEXT NOT NULL)",
-    ).execute(pool).await;
+    let _ = sqlx::query(STATIC_ROUTES_DDL).execute(pool).await;
 
     let rows = sqlx::query_as::<_, (String, String, String, Option<String>, i32, bool, Option<String>)>(
         "SELECT id, destination, gateway, interface, metric, enabled, description FROM static_routes ORDER BY metric ASC",

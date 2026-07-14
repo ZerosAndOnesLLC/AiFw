@@ -8,18 +8,26 @@ use crate::Result;
 /// Syslog alert output — sends alerts to a remote syslog server via UDP.
 pub struct SyslogOutput {
     target: String,
-    socket: Option<UdpSocket>,
+    socket: UdpSocket,
     facility: u8,
 }
 
 impl SyslogOutput {
-    pub fn new(target: String) -> Self {
-        let socket = UdpSocket::bind("0.0.0.0:0").ok();
-        Self {
+    /// Construct a syslog sink bound to an ephemeral local UDP port.
+    ///
+    /// Returns an error (rather than silently dropping every alert) if the
+    /// local socket cannot be bound, so the caller can refuse to register a
+    /// sink that would never emit.
+    pub fn new(target: String) -> Result<Self> {
+        let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| {
+            tracing::error!(error = %e, "failed to bind local UDP socket for syslog output");
+            e
+        })?;
+        Ok(Self {
             target,
             socket,
             facility: 4, // LOG_AUTH
-        }
+        })
     }
 
     pub fn with_facility(mut self, facility: u8) -> Self {
@@ -40,10 +48,7 @@ impl SyslogOutput {
 #[async_trait::async_trait]
 impl AlertOutput for SyslogOutput {
     async fn emit(&self, alert: &IdsAlert) -> Result<()> {
-        let socket = match &self.socket {
-            Some(s) => s,
-            None => return Ok(()),
-        };
+        let socket = &self.socket;
 
         let syslog_severity = Self::severity_to_syslog(alert.severity.0);
         let priority = (self.facility as u16) * 8 + syslog_severity as u16;

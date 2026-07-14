@@ -1,6 +1,7 @@
-// ============================================================
-// Loopback API constants
-// ============================================================
+//! # aifw-common
+//!
+//! Shared types for AiFw: rules, NAT, VPN, TLS, geo-IP, HA, IDS, and metrics,
+//! plus the loopback API constants used to reach the local `aifw-api` process.
 
 /// Default loopback API port. Used by daemon background tasks and CLI
 /// to reach the local aifw-api process. The actual listen port is

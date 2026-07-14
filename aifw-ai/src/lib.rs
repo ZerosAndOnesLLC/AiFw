@@ -1,3 +1,8 @@
+//! # aifw-ai
+//!
+//! **WIP** — AI/ML threat-detection engine. This crate is a work in progress;
+//! see the crate README for current status and caveats.
+
 pub mod detectors;
 pub mod features;
 pub mod inference;

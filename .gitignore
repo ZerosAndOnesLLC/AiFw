@@ -29,6 +29,5 @@ node_modules/
 freebsd/release/
 freebsd/ui-export/
 
-# Project instructions
-CLAUDE.md
+# CLAUDE.md is project policy and is tracked in the repo — do not ignore it.
 Cargo.lock
