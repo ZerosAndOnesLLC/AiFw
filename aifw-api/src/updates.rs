@@ -81,6 +81,39 @@ fn internal() -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
+/// Build a 500 whose body carries the underlying reason (#504). The updater
+/// used to return a bare `internal()` on every failure, so an operator saw
+/// only "HTTP 500" while the real cause sat in the logs — the exact wall
+/// that made #469 hard to diagnose.
+///
+/// When `detail` matches a privilege-refusal signature (a sudo helper the
+/// unprivileged `aifw` user isn't granted, or a non-executable helper that
+/// sudo reports as "command not found"), append the console-as-root
+/// workaround so the operator has an immediate next step.
+fn install_error(context: &str, detail: &str) -> (StatusCode, String) {
+    let mut msg = format!("{context}: {detail}");
+    if is_privilege_refusal(detail) {
+        msg.push_str(
+            "\n\nThis looks like the unprivileged updater being denied by sudo. \
+             Run the update from the console as root instead: \
+             `aifw update install --pre --restart`, then reboot.",
+        );
+    }
+    (StatusCode::INTERNAL_SERVER_ERROR, msg)
+}
+
+/// Detect the stderr fingerprints FreeBSD sudo emits when the `aifw` user
+/// lacks a grant, or when a helper exists but isn't executable. Mirrors the
+/// `sudo_refused` check in `aifw_core::sudo`.
+fn is_privilege_refusal(detail: &str) -> bool {
+    let d = detail.to_lowercase();
+    d.contains("not allowed to")
+        || d.contains("password is required")
+        || d.contains("command not found")
+        || d.contains("permission denied")
+        || d.contains("operation not permitted")
+}
+
 // ============================================================
 // DB
 // ============================================================
@@ -575,7 +608,7 @@ pub async fn aifw_check_update(
 
 pub async fn aifw_install_update(
     State(state): State<AppState>,
-) -> Result<Json<UpdateInstallResponse>, StatusCode> {
+) -> Result<Json<UpdateInstallResponse>, (StatusCode, String)> {
     // Get cached update info
     let cached = sqlx::query_as::<_, (String,)>(
         "SELECT value FROM update_config WHERE key = 'aifw_cached_info'",
@@ -586,13 +619,14 @@ pub async fn aifw_install_update(
     .flatten();
 
     let info = if let Some((json,)) = cached {
-        serde_json::from_str::<AifwUpdateInfo>(&json).map_err(|_| internal())?
+        serde_json::from_str::<AifwUpdateInfo>(&json)
+            .map_err(|e| install_error("cached update info is corrupt", &e.to_string()))?
     } else {
         // No cached info, check now
         let pre = prereleases_enabled(&state.pool).await;
         updater::check_for_update(pre).await.map_err(|e| {
             tracing::error!("AiFw update check failed: {}", e);
-            internal()
+            install_error("update check failed", &e.to_string())
         })?
     };
 
@@ -612,7 +646,7 @@ pub async fn aifw_install_update(
         tokio::spawn(async move {
             log_update(&pool, "aifw_install", &err, "failed").await;
         });
-        internal()
+        install_error("update install failed", &e.to_string())
     })?;
 
     log_update(&state.pool, "aifw_install", &msg, "completed").await;
@@ -634,10 +668,10 @@ pub async fn aifw_install_update(
 
 pub async fn aifw_rollback(
     State(state): State<AppState>,
-) -> Result<Json<UpdateInstallResponse>, StatusCode> {
+) -> Result<Json<UpdateInstallResponse>, (StatusCode, String)> {
     let msg = updater::rollback().await.map_err(|e| {
         tracing::error!("AiFw rollback failed: {}", e);
-        internal()
+        install_error("rollback failed", &e.to_string())
     })?;
 
     log_update(&state.pool, "aifw_rollback", &msg, "completed").await;
@@ -692,11 +726,14 @@ pub async fn aifw_reboot(
 pub async fn install_aifw_update_local(
     State(state): State<AppState>,
     mut multipart: axum::extract::Multipart,
-) -> Result<Json<MessageResponse>, StatusCode> {
+) -> Result<Json<MessageResponse>, (StatusCode, String)> {
+    let bad = |m: &str| (StatusCode::BAD_REQUEST, m.to_string());
+    let oops = |m: &str| (StatusCode::INTERNAL_SERVER_ERROR, m.to_string());
+
     let tmp_dir = format!("/tmp/aifw-update-local-{}", std::process::id());
     if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
         tracing::warn!(?e, "failed to create tmp dir for local upload");
-        return Err(internal());
+        return Err(oops("failed to create temp dir for upload"));
     }
 
     let mut tarball_path: Option<std::path::PathBuf> = None;
@@ -705,7 +742,7 @@ pub async fn install_aifw_update_local(
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| {
         tracing::warn!(?e, "multipart next_field error");
-        StatusCode::BAD_REQUEST
+        bad("malformed multipart upload")
     })? {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
@@ -714,9 +751,15 @@ pub async fn install_aifw_update_local(
                 let path = std::path::PathBuf::from(format!("{}/update.tar.xz", tmp_dir));
                 let mut file = tokio::fs::File::create(&path)
                     .await
-                    .map_err(|_| internal())?;
-                while let Some(chunk) = field.chunk().await.map_err(|_| StatusCode::BAD_REQUEST)? {
-                    file.write_all(&chunk).await.map_err(|_| internal())?;
+                    .map_err(|_| oops("failed to open temp file for upload"))?;
+                while let Some(chunk) = field
+                    .chunk()
+                    .await
+                    .map_err(|_| bad("upload stream error"))?
+                {
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|_| oops("failed to write uploaded tarball"))?;
                 }
                 if let Err(e) = file.flush().await {
                     tracing::warn!(?e, "failed to flush uploaded tarball to disk");
@@ -724,7 +767,10 @@ pub async fn install_aifw_update_local(
                 tarball_path = Some(path);
             }
             "sha256" => {
-                let v = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| bad("invalid sha256 field"))?;
                 // Accept both FreeBSD sha256 format ("SHA256 (file) = <hex>")
                 // and sha256sum format ("<hex>  filename") — extract_hash handles
                 // both, but here we just store the raw content and let
@@ -746,7 +792,7 @@ pub async fn install_aifw_update_local(
                 while field
                     .chunk()
                     .await
-                    .map_err(|_| StatusCode::BAD_REQUEST)?
+                    .map_err(|_| bad("upload stream error"))?
                     .is_some()
                 {}
             }
@@ -755,15 +801,20 @@ pub async fn install_aifw_update_local(
 
     let path = tarball_path.ok_or_else(|| {
         tracing::warn!("install-local: no tarball field in multipart");
-        StatusCode::BAD_REQUEST
+        bad("no tarball field in upload")
     })?;
 
     // Sanity-check size — refuse pathologically large uploads even if the
     // body-limit layer already capped them.
-    let meta = tokio::fs::metadata(&path).await.map_err(|_| internal())?;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| oops("could not stat uploaded tarball"))?;
     if meta.len() > 500 * 1024 * 1024 {
         let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "tarball exceeds the 500 MB limit".to_string(),
+        ));
     }
 
     let result = aifw_core::updater::install_from_path(&path, expected_hash.as_deref()).await;
@@ -782,7 +833,8 @@ pub async fn install_aifw_update_local(
         Err(e) => {
             let _ = log_update(&state.pool, "install_local", &format!("{e}"), "error").await;
             tracing::warn!(?e, "install-local failed");
-            Err(internal())
+            // #504: surface the real reason (+ root-console hint) instead of 500.
+            Err(install_error("update install failed", &e.to_string()))
         }
     }
 }
@@ -804,4 +856,46 @@ pub async fn aifw_restart_services(
     Ok(Json(MessageResponse {
         message: "Services restarting...".to_string(),
     }))
+}
+
+#[cfg(test)]
+mod install_error_tests {
+    use super::{install_error, is_privilege_refusal};
+    use axum::http::StatusCode;
+
+    #[test]
+    fn detects_sudo_refusal_signatures() {
+        assert!(is_privilege_refusal(
+            "tar extract failed: sudo: user aifw is not allowed to run aifw-sudo-tar"
+        ));
+        assert!(is_privilege_refusal("sudo: a password is required"));
+        assert!(is_privilege_refusal("aifw-sudo-tar: Command not found"));
+        assert!(is_privilege_refusal("open: Permission denied"));
+    }
+
+    #[test]
+    fn ignores_unrelated_errors() {
+        assert!(!is_privilege_refusal("Download failed: connection reset"));
+        assert!(!is_privilege_refusal("Checksum verification failed"));
+    }
+
+    #[test]
+    fn privilege_refusal_appends_console_hint() {
+        let (code, body) = install_error(
+            "update install failed",
+            "tar extract failed: aifw is not allowed to run aifw-sudo-tar",
+        );
+        assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body.contains("update install failed"));
+        assert!(body.contains("aifw-sudo-tar")); // original detail preserved
+        assert!(body.contains("console as root"));
+        assert!(body.contains("aifw update install"));
+    }
+
+    #[test]
+    fn plain_error_has_no_hint() {
+        let (_, body) = install_error("update check failed", "connection reset");
+        assert!(body.contains("connection reset"));
+        assert!(!body.contains("console as root"));
+    }
 }

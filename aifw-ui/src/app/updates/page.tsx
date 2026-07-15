@@ -352,7 +352,7 @@ export default function UpdatesPage() {
     setAifwInstalling(true);
     try {
       const res = await fetch("/api/v1/updates/aifw/install", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error((await res.text().catch(() => "")) || `HTTP ${res.status}`);
       const data: UpdateInstallResponse = await res.json();
       setAifwInstalling(false);
 
@@ -381,7 +381,7 @@ export default function UpdatesPage() {
     setAifwRollingBack(true);
     try {
       const res = await fetch("/api/v1/updates/aifw/rollback", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error((await res.text().catch(() => "")) || `HTTP ${res.status}`);
       const data: UpdateInstallResponse = await res.json();
       setAifwRollingBack(false);
 
@@ -471,7 +471,9 @@ export default function UpdatesPage() {
         const body = JSON.parse(xhr.responseText);
         if (body.message) message = body.message;
       } catch {
-        // keep default message
+        // Non-JSON body: on failure the API now returns the plain-text
+        // reason (#504) — show it instead of a bare status code.
+        if (!ok && xhr.responseText.trim()) message = xhr.responseText.trim();
       }
       setInstallLocalResult({ ok, message });
       if (ok) {
