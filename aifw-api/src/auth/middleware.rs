@@ -111,7 +111,10 @@ pub async fn auth_middleware(
             let (bits, name) =
                 tokens::resolve_token_permissions(&state.pool, &user.role, user.role_id.as_deref())
                     .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "auth: failed to resolve token permissions");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
             (PermissionSet::from_bits(bits), name)
         }
     };

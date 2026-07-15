@@ -283,15 +283,14 @@ async fn create_carp(
         Interface(r.interface),
         r.password,
     );
-    let vip = s
-        .cluster_engine
-        .add_carp_vip(vip)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    s.cluster_engine
-        .apply_ha_rules()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let vip = s.cluster_engine.add_carp_vip(vip).await.map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to add CARP VIP");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to apply HA rules after adding CARP VIP");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(vip))
 }
 
@@ -318,10 +317,10 @@ async fn update_carp(
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         })?;
-    s.cluster_engine
-        .apply_ha_rules()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to apply HA rules after updating CARP VIP");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(vip))
 }
 
@@ -336,11 +335,10 @@ async fn delete_carp(State(s): State<AppState>, Path(id): Path<Uuid>) -> StatusC
 }
 
 async fn get_pfsync(State(s): State<AppState>) -> Result<Json<Option<PfsyncConfig>>, StatusCode> {
-    s.cluster_engine
-        .get_pfsync()
-        .await
-        .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    s.cluster_engine.get_pfsync().await.map(Json).map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to get pfsync config");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 #[derive(Deserialize)]
@@ -363,7 +361,10 @@ async fn update_pfsync(
         .cluster_engine
         .get_pfsync()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|e| {
+            tracing::error!(error = %e, "cluster: failed to get pfsync config");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
         .unwrap_or_else(|| PfsyncConfig::new(Interface(r.sync_interface.clone())));
     p.sync_interface = Interface(r.sync_interface);
     p.sync_peer = r.sync_peer;
@@ -373,24 +374,22 @@ async fn update_pfsync(
     p.heartbeat_iface = r.heartbeat_iface.map(Interface);
     p.heartbeat_interval_ms = r.heartbeat_interval_ms;
     p.dhcp_link = r.dhcp_link;
-    let p = s
-        .cluster_engine
-        .set_pfsync(p)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    s.cluster_engine
-        .apply_ha_rules()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let p = s.cluster_engine.set_pfsync(p).await.map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to set pfsync config");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to apply HA rules after pfsync update");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(p))
 }
 
 async fn list_nodes(State(s): State<AppState>) -> Result<Json<Vec<ClusterNode>>, StatusCode> {
-    s.cluster_engine
-        .list_nodes()
-        .await
-        .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    s.cluster_engine.list_nodes().await.map(Json).map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to list nodes");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 #[derive(Deserialize)]
@@ -405,11 +404,10 @@ async fn create_node(
     Json(r): Json<NodeReq>,
 ) -> Result<Json<ClusterNode>, StatusCode> {
     let node = ClusterNode::new(r.name, r.address, r.role);
-    let node = s
-        .cluster_engine
-        .add_node(node)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let node = s.cluster_engine.add_node(node).await.map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to add node");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(node))
 }
 
@@ -474,7 +472,10 @@ async fn list_health(State(s): State<AppState>) -> Result<Json<Vec<HealthCheck>>
         .list_health_checks()
         .await
         .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        .map_err(|e| {
+            tracing::error!(error = %e, "cluster: failed to list health checks");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 #[derive(Deserialize)]
@@ -517,11 +518,10 @@ async fn create_health(
     h.timeout_secs = r.timeout_secs;
     h.failures_before_down = r.failures_before_down;
     h.enabled = r.enabled;
-    let h = s
-        .cluster_engine
-        .add_health_check(h)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let h = s.cluster_engine.add_health_check(h).await.map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to add health check");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(h))
 }
 

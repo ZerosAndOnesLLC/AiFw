@@ -37,7 +37,7 @@ pub async fn create_api_key(
         .bind(Utc::now().to_rfc3339())
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| { tracing::error!(error = %e, "auth: failed to insert API key"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok(CreateApiKeyResponse {
         id,
@@ -57,7 +57,7 @@ pub async fn verify_api_key(pool: &SqlitePool, key: &str) -> Result<(String, Str
     .bind(prefix)
     .fetch_all(pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| { tracing::error!(error = %e, "auth: failed to query API keys"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     for (key_hash, user_id, key_name) in rows {
         if verify_password(key, &key_hash) {

@@ -284,7 +284,7 @@ fn next_serial() -> String {
 pub async fn get_ca_info(State(state): State<AppState>) -> Result<Json<CaInfo>, StatusCode> {
     let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
         "SELECT subject, serial, not_before, not_after, fingerprint, algorithm FROM ca_root WHERE id = 1",
-    ).fetch_optional(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    ).fetch_optional(&state.pool).await.map_err(|e| { tracing::error!(error = %e, "ca: failed to query CA info"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     match row {
         Some((subject, serial, not_before, not_after, fingerprint, algorithm)) => {
@@ -319,10 +319,15 @@ pub async fn generate_ca(
     let days = req.validity_days.unwrap_or(3650);
     let serial = next_serial();
 
-    let key_pair = KeyPair::generate().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let key_pair = KeyPair::generate().map_err(|e| {
+        tracing::error!(error = %e, "ca: CA key generation failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    let mut params = CertificateParams::new(Vec::<String>::new())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
+        tracing::error!(error = %e, "ca: failed to build CA cert params");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     params
         .distinguished_name
         .push(DnType::CommonName, DnValue::Utf8String(cn.to_string()));
@@ -339,9 +344,10 @@ pub async fn generate_ca(
     params.not_before = time::OffsetDateTime::now_utc();
     params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(days as i64);
 
-    let cert = params
-        .self_signed(&key_pair)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let cert = params.self_signed(&key_pair).map_err(|e| {
+        tracing::error!(error = %e, "ca: failed to self-sign CA certificate");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let cert_pem = cert.pem();
     let key_pem = key_pair.serialize_pem();
     let fingerprint = sha256_fingerprint(&cert_pem);
@@ -359,7 +365,7 @@ pub async fn generate_ca(
     )
     .bind(&cert_pem).bind(&key_pem).bind(&subject).bind(&serial)
     .bind(&not_before).bind(&not_after).bind(&fingerprint).bind("ECDSA P-256").bind(&now)
-    .execute(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .execute(&state.pool).await.map_err(|e| { tracing::error!(error = %e, "ca: failed to persist CA to database"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok((
         StatusCode::CREATED,
@@ -379,7 +385,10 @@ pub async fn get_ca_cert_pem(State(state): State<AppState>) -> Result<String, St
     let row = sqlx::query_as::<_, (String,)>("SELECT cert_pem FROM ca_root WHERE id = 1")
         .fetch_optional(&state.pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "ca: failed to query CA cert PEM");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     row.map(|r| r.0).ok_or(StatusCode::NOT_FOUND)
 }
 
@@ -392,18 +401,27 @@ pub async fn issue_cert(
         sqlx::query_as::<_, (String, String)>("SELECT cert_pem, key_pem FROM ca_root WHERE id = 1")
             .fetch_optional(&state.pool)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|e| {
+                tracing::error!(error = %e, "ca: failed to load CA for signing");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
             .ok_or(StatusCode::BAD_REQUEST)?; // CA not initialized
 
-    let ca_key = KeyPair::from_pem(&ca.1).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let ca_key = KeyPair::from_pem(&ca.1).map_err(|e| {
+        tracing::error!(error = %e, "ca: failed to parse CA private key");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     // Rebuild CA cert params for signing
-    let mut ca_params = CertificateParams::new(Vec::<String>::new())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
+        tracing::error!(error = %e, "ca: failed to build CA params for signing");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let ca_cert = ca_params
-        .self_signed(&ca_key)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let ca_cert = ca_params.self_signed(&ca_key).map_err(|e| {
+        tracing::error!(error = %e, "ca: failed to rebuild CA certificate");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let days = req.validity_days.unwrap_or(365);
     let serial = next_serial();
@@ -426,9 +444,14 @@ pub async fn issue_cert(
         }
     }
 
-    let cert_key = KeyPair::generate().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut params = CertificateParams::new(Vec::<String>::new())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let cert_key = KeyPair::generate().map_err(|e| {
+        tracing::error!(error = %e, "ca: certificate key generation failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
+        tracing::error!(error = %e, "ca: failed to build certificate params");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     params.distinguished_name.push(
         DnType::CommonName,
         DnValue::Utf8String(req.common_name.clone()),
@@ -457,9 +480,10 @@ pub async fn issue_cert(
     // the source of truth for the embedded CA certificate.
     let _ = &ca_cert; // kept for code clarity; not passed to signed_by anymore
     let issuer = Issuer::new(ca_params, ca_key);
-    let cert = params
-        .signed_by(&cert_key, &issuer)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let cert = params.signed_by(&cert_key, &issuer).map_err(|e| {
+        tracing::error!(error = %e, "ca: failed to sign certificate");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let cert_pem = cert.pem();
     let key_pem = cert_key.serialize_pem();
@@ -473,7 +497,7 @@ pub async fn issue_cert(
     )
     .bind(&id).bind(&req.cert_type).bind(&req.common_name).bind(&sans_str).bind(&serial)
     .bind(&cert_pem).bind(&key_pem).bind(&not_before).bind(&not_after).bind(&now)
-    .execute(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .execute(&state.pool).await.map_err(|e| { tracing::error!(error = %e, "ca: failed to persist issued certificate"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok((
         StatusCode::CREATED,
@@ -491,7 +515,7 @@ pub async fn list_certs(
 ) -> Result<Json<ApiResponse<Vec<CertRecord>>>, StatusCode> {
     let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String, String, Option<String>, String)>(
         "SELECT id, cert_type, common_name, sans, serial, not_before, not_after, status, revoked_at, created_at FROM ca_certificates ORDER BY created_at DESC"
-    ).fetch_all(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    ).fetch_all(&state.pool).await.map_err(|e| { tracing::error!(error = %e, "ca: failed to list certificates"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     let certs: Vec<CertRecord> = rows
         .into_iter()
@@ -525,7 +549,7 @@ pub async fn get_cert(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let row = sqlx::query_as::<_, (String, String, String, String, String, String, String, String, String, Option<String>, String)>(
         "SELECT id, cert_type, common_name, sans, serial, cert_pem, not_before, not_after, status, revoked_at, created_at FROM ca_certificates WHERE id = ?1"
-    ).bind(&id).fetch_optional(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    ).bind(&id).fetch_optional(&state.pool).await.map_err(|e| { tracing::error!(error = %e, "ca: failed to query certificate"); StatusCode::INTERNAL_SERVER_ERROR })?
     .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(serde_json::json!({
@@ -567,7 +591,7 @@ pub async fn revoke_cert(
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let now = Utc::now().to_rfc3339();
     let result = sqlx::query("UPDATE ca_certificates SET status = 'revoked', revoked_at = ?1 WHERE id = ?2 AND status = 'active'")
-        .bind(&now).bind(&id).execute(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .bind(&now).bind(&id).execute(&state.pool).await.map_err(|e| { tracing::error!(error = %e, "ca: failed to revoke certificate"); StatusCode::INTERNAL_SERVER_ERROR })?;
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -584,7 +608,10 @@ pub async fn delete_cert(
         .bind(&id)
         .execute(&state.pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "ca: failed to delete certificate");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -597,7 +624,7 @@ pub async fn get_crl(State(state): State<AppState>) -> Result<String, StatusCode
     // Simple text-based CRL listing revoked serials
     let rows = sqlx::query_as::<_, (String, String, String)>(
         "SELECT serial, common_name, revoked_at FROM ca_certificates WHERE status = 'revoked' ORDER BY revoked_at DESC"
-    ).fetch_all(&state.pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    ).fetch_all(&state.pool).await.map_err(|e| { tracing::error!(error = %e, "ca: failed to query CRL"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     let mut crl = String::from("# AiFw Certificate Revocation List\n");
     crl.push_str(&format!("# Generated: {}\n", Utc::now().to_rfc3339()));

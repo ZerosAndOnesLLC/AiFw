@@ -17,7 +17,10 @@ pub async fn save_totp_secret(
         .bind(user_id)
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: failed to save TOTP secret");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(())
 }
 
@@ -26,7 +29,10 @@ pub async fn enable_totp(pool: &SqlitePool, user_id: &str) -> Result<(), StatusC
         .bind(user_id)
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: failed to enable TOTP");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(())
 }
 
@@ -35,13 +41,19 @@ pub async fn disable_totp(pool: &SqlitePool, user_id: &str) -> Result<(), Status
         .bind(user_id)
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: failed to disable TOTP");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     // Also delete recovery codes
     sqlx::query("DELETE FROM recovery_codes WHERE user_id = ?1")
         .bind(user_id)
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: failed to delete recovery codes on TOTP disable");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(())
 }
 
@@ -55,7 +67,10 @@ pub async fn save_recovery_codes(
         .bind(user_id)
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: failed to delete existing recovery codes");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     for code in codes {
         let code_hash = hash_password(code)?;
@@ -67,7 +82,10 @@ pub async fn save_recovery_codes(
         .bind(&code_hash)
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: failed to insert recovery code");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     }
     Ok(())
 }

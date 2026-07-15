@@ -14,7 +14,10 @@ pub async fn revoke_access_token(
         .bind(expires_at)
         .execute(pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth: failed to insert token revocation");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(())
 }
 
