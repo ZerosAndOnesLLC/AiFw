@@ -743,6 +743,35 @@ mod tests {
         );
         t.listen_port = 0;
         assert!(engine.add_wg_tunnel(t).await.is_err());
+
+        // PERF-H5: duplicate listen_port is rejected via the targeted query.
+        let first = WgTunnel::new(
+            "first".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Any,
+        );
+        engine.add_wg_tunnel(first).await.unwrap();
+
+        let dup = WgTunnel::new(
+            "second".to_string(),
+            Interface("wg1".to_string()),
+            51820,
+            Address::Any,
+        );
+        assert!(
+            engine.add_wg_tunnel(dup).await.is_err(),
+            "second tunnel on the same port must be rejected"
+        );
+
+        // A different port is fine.
+        let ok = WgTunnel::new(
+            "third".to_string(),
+            Interface("wg2".to_string()),
+            51821,
+            Address::Any,
+        );
+        assert!(engine.add_wg_tunnel(ok).await.is_ok());
     }
 
     #[tokio::test]
