@@ -205,6 +205,10 @@ pub struct AppState {
     /// uses this to skip the read lock + dispatch entirely when no plugins
     /// are running (the common case).
     pub plugin_running_count: Arc<std::sync::atomic::AtomicUsize>,
+    /// Debounce state for the auto-snapshot middleware (PERF-H8 #352):
+    /// mutations arriving within the debounce window coalesce into a
+    /// single config rebuild + save_if_changed.
+    pub auto_snapshot_pending: Arc<tokio::sync::Mutex<backup::AutoSnapshotPending>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -928,6 +932,9 @@ async fn create_state_from_db(
         auth_jti_cache: Arc::new(dashmap::DashMap::new()),
         auth_token_cache: Arc::new(dashmap::DashMap::new()),
         plugin_running_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        auto_snapshot_pending: Arc::new(tokio::sync::Mutex::new(
+            backup::AutoSnapshotPending::default(),
+        )),
     })
 }
 
