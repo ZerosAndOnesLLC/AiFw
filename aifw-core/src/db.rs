@@ -152,6 +152,15 @@ impl Database {
     }
 
     pub async fn insert_rule(&self, rule: &Rule) -> Result<()> {
+        Self::insert_rule_on(&self.pool, rule).await
+    }
+
+    /// Executor-generic variant so engines can run the insert inside a
+    /// transaction alongside its audit row (PERF-H6 #350).
+    pub(crate) async fn insert_rule_on<'e, E>(exec: E, rule: &Rule) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         sqlx::query(
             r#"
             INSERT INTO rules (id, priority, action, direction, interface, protocol,
@@ -208,7 +217,7 @@ impl Database {
         .bind(format!("{:?}", rule.ip_version).to_lowercase())
         .bind(rule.src_invert)
         .bind(rule.dst_invert)
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
 
         Ok(())
@@ -247,6 +256,15 @@ impl Database {
     }
 
     pub async fn update_rule(&self, rule: &Rule) -> Result<()> {
+        Self::update_rule_on(&self.pool, rule).await
+    }
+
+    /// Executor-generic variant so engines can run the update inside a
+    /// transaction alongside its audit row (PERF-H6 #350).
+    pub(crate) async fn update_rule_on<'e, E>(exec: E, rule: &Rule) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let result = sqlx::query(
             r#"
             UPDATE rules SET priority = ?2, action = ?3, direction = ?4, interface = ?5,
@@ -305,7 +323,7 @@ impl Database {
         .bind(format!("{:?}", rule.ip_version).to_lowercase())
         .bind(rule.src_invert)
         .bind(rule.dst_invert)
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -315,9 +333,18 @@ impl Database {
     }
 
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
+        Self::delete_rule_on(&self.pool, id).await
+    }
+
+    /// Executor-generic variant so engines can run the delete inside a
+    /// transaction alongside its audit row (PERF-H6 #350).
+    pub(crate) async fn delete_rule_on<'e, E>(exec: E, id: Uuid) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let result = sqlx::query("DELETE FROM rules WHERE id = ?1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(exec)
             .await?;
 
         if result.rows_affected() == 0 {

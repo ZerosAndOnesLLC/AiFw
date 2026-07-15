@@ -40,16 +40,20 @@ impl RuleEngine {
 
     pub async fn add_rule(&self, rule: Rule) -> Result<Rule> {
         validate_rule(&rule)?;
-        self.db.insert_rule(&rule).await?;
         let pf_syntax = rule.to_pf_rule(&self.anchor);
-        self.audit
-            .log(
-                AuditAction::RuleAdded,
-                Some(rule.id),
-                &format!("pf: {pf_syntax}"),
-                "engine",
-            )
-            .await?;
+        // PERF-H6 (#350): mutation + audit row commit together — one fsync
+        // instead of two per rule change.
+        let mut tx = self.db.pool().begin().await?;
+        Database::insert_rule_on(&mut *tx, &rule).await?;
+        AuditLog::log_on(
+            &mut *tx,
+            AuditAction::RuleAdded,
+            Some(rule.id),
+            &format!("pf: {pf_syntax}"),
+            "engine",
+        )
+        .await?;
+        tx.commit().await?;
         tracing::info!(id = %rule.id, label = ?rule.label, "rule added");
         Ok(rule)
     }
@@ -67,24 +71,33 @@ impl RuleEngine {
 
     pub async fn update_rule(&self, rule: Rule) -> Result<()> {
         validate_rule(&rule)?;
-        self.db.update_rule(&rule).await?;
-        self.audit
-            .log(
-                AuditAction::RuleUpdated,
-                Some(rule.id),
-                &format!("pf: {}", rule.to_pf_rule(&self.anchor)),
-                "engine",
-            )
-            .await?;
+        let mut tx = self.db.pool().begin().await?;
+        Database::update_rule_on(&mut *tx, &rule).await?;
+        AuditLog::log_on(
+            &mut *tx,
+            AuditAction::RuleUpdated,
+            Some(rule.id),
+            &format!("pf: {}", rule.to_pf_rule(&self.anchor)),
+            "engine",
+        )
+        .await?;
+        tx.commit().await?;
         tracing::info!(id = %rule.id, "rule updated");
         Ok(())
     }
 
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
-        self.db.delete_rule(id).await?;
-        self.audit
-            .log(AuditAction::RuleRemoved, Some(id), "rule deleted", "engine")
-            .await?;
+        let mut tx = self.db.pool().begin().await?;
+        Database::delete_rule_on(&mut *tx, id).await?;
+        AuditLog::log_on(
+            &mut *tx,
+            AuditAction::RuleRemoved,
+            Some(id),
+            "rule deleted",
+            "engine",
+        )
+        .await?;
+        tx.commit().await?;
         tracing::info!(%id, "rule deleted");
         Ok(())
     }
