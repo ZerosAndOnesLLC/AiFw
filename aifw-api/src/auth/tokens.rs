@@ -11,7 +11,7 @@ use super::password::hash_password;
 // JWT Access Tokens
 // ============================================================
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
     pub username: String,
