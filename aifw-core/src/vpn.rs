@@ -341,6 +341,27 @@ impl VpnEngine {
         rows.into_iter().map(|r| r.into_peer()).collect()
     }
 
+    /// PERF-H7: fetch every peer in one query and group by tunnel id. Callers
+    /// that need peers for many tunnels at once (e.g. config snapshot/backup)
+    /// use this instead of an N+1 loop of [`Self::list_wg_peers`].
+    pub async fn list_all_wg_peers_grouped(
+        &self,
+    ) -> Result<std::collections::HashMap<Uuid, Vec<WgPeer>>> {
+        let rows = sqlx::query_as::<_, WgPeerRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {WG_PEER_COLUMNS} FROM wg_peers ORDER BY tunnel_id ASC, created_at ASC"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut grouped: std::collections::HashMap<Uuid, Vec<WgPeer>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let peer = row.into_peer()?;
+            grouped.entry(peer.tunnel_id).or_default().push(peer);
+        }
+        Ok(grouped)
+    }
+
     pub async fn get_wg_peer(&self, id: Uuid) -> Result<WgPeer> {
         let row = sqlx::query_as::<_, WgPeerRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {WG_PEER_COLUMNS} FROM wg_peers WHERE id = ?1"

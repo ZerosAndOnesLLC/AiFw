@@ -599,13 +599,15 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
 
     let auth = &state.auth_settings;
 
+    // PERF-H7: one query for all peers, grouped by tunnel, instead of N+1.
+    let mut peers_by_tunnel = state
+        .vpn_engine
+        .list_all_wg_peers_grouped()
+        .await
+        .unwrap_or_default();
     let mut wireguard: Vec<WireguardTunnelConfig> = Vec::with_capacity(wg_tunnels.len());
     for t in &wg_tunnels {
-        let peers = state
-            .vpn_engine
-            .list_wg_peers(t.id)
-            .await
-            .unwrap_or_default();
+        let peers = peers_by_tunnel.remove(&t.id).unwrap_or_default();
         wireguard.push(WireguardTunnelConfig {
             id: t.id.to_string(),
             name: t.name.clone(),
