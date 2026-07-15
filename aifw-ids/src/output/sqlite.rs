@@ -85,8 +85,10 @@ impl SqliteOutput {
 
         // SQLx tuple FromRow maxes out at 16 fields. We pack classification|notes
         // into field 13 (replacing flow_id which is rarely used) and shift.
+        // PERF-H9: keep LIMIT/OFFSET as bind params so a single prepared
+        // statement is cached regardless of the paging window.
         let sql = format!(
-            "SELECT id, timestamp, signature_id, signature_msg, severity, src_ip, src_port, dst_ip, dst_port, protocol, action, rule_source, payload_excerpt, metadata, acknowledged, COALESCE(classification, 'unreviewed') || '|' || COALESCE(analyst_notes, '') FROM ids_alerts{where_clause} ORDER BY timestamp DESC LIMIT {limit} OFFSET {offset}"
+            "SELECT id, timestamp, signature_id, signature_msg, severity, src_ip, src_port, dst_ip, dst_port, protocol, action, rule_source, payload_excerpt, metadata, acknowledged, COALESCE(classification, 'unreviewed') || '|' || COALESCE(analyst_notes, '') FROM ids_alerts{where_clause} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
         );
 
         let mut query = sqlx::query_as::<
@@ -114,6 +116,7 @@ impl SqliteOutput {
         for val in &bind_values {
             query = query.bind(val);
         }
+        query = query.bind(limit as i64).bind(offset as i64);
 
         let rows = query.fetch_all(&self.pool).await?;
 
@@ -279,11 +282,13 @@ impl SqliteOutput {
     /// Get top N alerting signatures over the last 24 hours.
     /// See `count_by_severity` for the rationale on the time window.
     pub async fn top_signatures(&self, limit: u32) -> Result<Vec<(String, i64)>> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        // PERF-H9: bind LIMIT so this aggregate reuses one cached statement.
+        let rows: Vec<(String, i64)> = sqlx::query_as(
             "SELECT signature_msg, count(*) as cnt FROM ids_alerts \
              WHERE timestamp >= datetime('now', '-1 day') \
-             GROUP BY signature_msg ORDER BY cnt DESC LIMIT {limit}"
-        )))
+             GROUP BY signature_msg ORDER BY cnt DESC LIMIT ?",
+        )
+        .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -292,11 +297,13 @@ impl SqliteOutput {
     /// Get top N source IPs over the last 24 hours.
     /// See `count_by_severity` for the rationale on the time window.
     pub async fn top_sources(&self, limit: u32) -> Result<Vec<(String, i64)>> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        // PERF-H9: bind LIMIT so this aggregate reuses one cached statement.
+        let rows: Vec<(String, i64)> = sqlx::query_as(
             "SELECT src_ip, count(*) as cnt FROM ids_alerts \
              WHERE timestamp >= datetime('now', '-1 day') \
-             GROUP BY src_ip ORDER BY cnt DESC LIMIT {limit}"
-        )))
+             GROUP BY src_ip ORDER BY cnt DESC LIMIT ?",
+        )
+        .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
