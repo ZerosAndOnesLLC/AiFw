@@ -23,7 +23,13 @@ impl Database {
             // concurrently without blocking the dashboard / metrics loops.
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
-            .busy_timeout(std::time::Duration::from_secs(5));
+            .busy_timeout(std::time::Duration::from_secs(5))
+            // PERF-H1: default cache is 2 MB and mmap is off, so aggregate
+            // queries over multi-GB tables (e.g. ids_alerts on /ids/stats)
+            // fault in from disk. Run per-connection on connect.
+            .pragma("cache_size", "-65536") // ~64 MB page cache (negative = KiB)
+            .pragma("mmap_size", "268435456") // 256 MiB memory-mapped reads
+            .pragma("temp_store", "MEMORY"); // sorts/temp b-trees stay in RAM
 
         let pool = SqlitePoolOptions::new()
             .max_connections(20)
@@ -322,6 +328,41 @@ impl Database {
 
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+}
+
+#[cfg(test)]
+mod pragma_tests {
+    use super::*;
+
+    // PERF-H1 regression: the file-based pool must ship the tuned pragmas so
+    // aggregate scans over large tables don't fall back to disk. In-memory
+    // DBs don't exercise this path, so use a real temp file.
+    #[tokio::test]
+    async fn file_pool_applies_perf_pragmas() {
+        let path = std::env::temp_dir().join(format!("aifw-pragma-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.unwrap();
+
+        let cache_size: i64 = sqlx::query_scalar("PRAGMA cache_size")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(cache_size, -65536, "cache_size pragma not applied");
+
+        let temp_store: i64 = sqlx::query_scalar("PRAGMA temp_store")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(temp_store, 2, "temp_store should be MEMORY (2)");
+
+        let mmap_size: i64 = sqlx::query_scalar("PRAGMA mmap_size")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(mmap_size, 268435456, "mmap_size pragma not applied");
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
     }
 }
 

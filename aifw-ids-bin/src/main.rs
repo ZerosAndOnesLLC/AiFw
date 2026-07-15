@@ -70,6 +70,12 @@ async fn main() -> anyhow::Result<()> {
         .busy_timeout(Duration::from_secs(5))
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
+        // PERF-H1: match aifw-core's pool tuning. ids_alerts grows into the
+        // millions; without a bigger cache + mmap every aggregate scan hits
+        // disk. Applied per-connection on connect.
+        .pragma("cache_size", "-65536") // ~64 MB page cache (negative = KiB)
+        .pragma("mmap_size", "268435456") // 256 MiB memory-mapped reads
+        .pragma("temp_store", "MEMORY") // sorts/temp b-trees stay in RAM
         .foreign_keys(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(8)
