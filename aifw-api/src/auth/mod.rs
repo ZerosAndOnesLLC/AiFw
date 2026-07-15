@@ -26,7 +26,7 @@ pub use middleware::*;
 pub use migrate::*;
 pub use password::{hash_password, verify_password};
 pub use revocation::*;
-pub use tokens::{TokenPair, verify_access_token};
+pub use tokens::{Claims, TokenPair, verify_access_token};
 pub use totp_store::*;
 pub use types::*;
 pub use users::*;

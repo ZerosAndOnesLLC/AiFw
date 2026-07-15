@@ -194,6 +194,12 @@ pub struct AppState {
     /// breaking the user-disable-takes-effect-within-Ns expectation.
     pub auth_user_cache: Arc<dashmap::DashMap<String, (auth::User, std::time::Instant)>>,
     pub auth_jti_cache: Arc<dashmap::DashMap<String, (bool, std::time::Instant)>>,
+    /// PERF-H21: decoded-JWT cache keyed by the raw token string. The hot
+    /// path (WS polls re-sending the same Bearer token) skips the HMAC
+    /// verify, base64 decode, and JSON deserialize on a hit. The entry
+    /// deadline is capped at the token's own `exp`, so an expired token is
+    /// never served from cache.
+    pub auth_token_cache: Arc<dashmap::DashMap<String, (auth::Claims, std::time::Instant)>>,
     /// Shadow counter of `plugin_manager.read().await.running_count()` —
     /// kept in sync by every register/unload call site. The auth middleware
     /// uses this to skip the read lock + dispatch entirely when no plugins
@@ -920,6 +926,7 @@ async fn create_state_from_db(
         ws_tick: tokio::sync::broadcast::channel::<Arc<String>>(256).0,
         auth_user_cache: Arc::new(dashmap::DashMap::new()),
         auth_jti_cache: Arc::new(dashmap::DashMap::new()),
+        auth_token_cache: Arc::new(dashmap::DashMap::new()),
         plugin_running_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
 }

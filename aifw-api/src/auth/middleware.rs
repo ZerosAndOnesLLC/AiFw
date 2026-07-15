@@ -22,6 +22,23 @@ const AUTH_USER_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(
 /// stays revoked for its remaining lifetime; we cache the *positive*
 /// not-revoked result for 60 s so logout takes effect within the window.
 const AUTH_JTI_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// PERF-H21: cap on how long a decoded JWT is trusted from cache. Entries are
+/// also bounded by the token's own `exp`; this cap only limits how long a
+/// rotated `jwt_secret` could keep an old token accepted.
+const AUTH_TOKEN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// PERF-H21: soft ceiling on decoded-token cache entries. On reaching it we
+/// sweep expired entries before inserting, keeping memory bounded without a
+/// background task.
+const AUTH_TOKEN_CACHE_MAX: usize = 10_000;
+
+/// PERF-H21: seconds a decoded JWT may stay cached — the smaller of the
+/// token's remaining lifetime and [`AUTH_TOKEN_CACHE_TTL`]. Returns 0 for an
+/// already-expired token so it is effectively never cached, ensuring an
+/// expired token can't be served from a live cache entry.
+fn token_cache_ttl_secs(exp_unix: i64, now_unix: i64) -> u64 {
+    let remaining = (exp_unix - now_unix).max(0) as u64;
+    remaining.min(AUTH_TOKEN_CACHE_TTL.as_secs())
+}
 
 pub async fn auth_middleware(
     State(state): State<crate::AppState>,
@@ -39,12 +56,40 @@ pub async fn auth_middleware(
     // Resolve (user_id, perm_from_token, role_from_token, api_key_name) from the credential
     let (user_id, jwt_perm, jwt_role, api_key_name) =
         if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
-            let token_data = verify_access_token(token, &state.auth_settings)
-                .map_err(|_| StatusCode::UNAUTHORIZED)?;
-            let jti = &token_data.claims.jti;
+            // PERF-H21: reuse a previously decoded token. The entry deadline
+            // is capped at the token's `exp` on insert, so a live cache hit
+            // is always still within the token's validity window.
+            let now = Instant::now();
+            let claims = if let Some(entry) = state.auth_token_cache.get(token)
+                && entry.value().1 > now
+            {
+                entry.value().0.clone()
+            } else {
+                let claims = verify_access_token(token, &state.auth_settings)
+                    .map_err(|_| StatusCode::UNAUTHORIZED)?
+                    .claims;
+                // Cap TTL at the token's remaining lifetime (never negative),
+                // and at AUTH_TOKEN_CACHE_TTL so a rotated jwt_secret can't
+                // keep validating an old token for longer than that window.
+                let ttl = std::time::Duration::from_secs(token_cache_ttl_secs(
+                    claims.exp,
+                    chrono::Utc::now().timestamp(),
+                ));
+                // Bound memory: sweep expired entries when the map grows large
+                // (these caches are otherwise evicted only lazily).
+                if state.auth_token_cache.len() >= AUTH_TOKEN_CACHE_MAX {
+                    state
+                        .auth_token_cache
+                        .retain(|_, (_, deadline)| *deadline > now);
+                }
+                state
+                    .auth_token_cache
+                    .insert(token.to_string(), (claims.clone(), now + ttl));
+                claims
+            };
+            let jti = &claims.jti;
             // JTI revocation: positive cache to skip the DB lookup. Cached
             // entry value=true means revoked, value=false means not revoked.
-            let now = Instant::now();
             let revoked = if let Some(entry) = state.auth_jti_cache.get(jti)
                 && entry.value().1 > now
             {
@@ -59,12 +104,7 @@ pub async fn auth_middleware(
             if revoked {
                 return Err(StatusCode::UNAUTHORIZED);
             }
-            (
-                token_data.claims.sub,
-                token_data.claims.perm,
-                token_data.claims.role,
-                None,
-            )
+            (claims.sub, claims.perm, claims.role, None)
         } else if let Some(key) = auth_header.and_then(|h| h.strip_prefix("ApiKey ")) {
             let (uid, key_name) = verify_api_key(&state.pool, key).await?;
             (uid, None, None, Some(key_name)) // API keys don't carry JWT claims — will do DB lookup
@@ -198,4 +238,32 @@ macro_rules! perm_check {
             Ok::<_, axum::http::StatusCode>(next.run(request).await)
         }
     };
+}
+
+#[cfg(test)]
+mod token_cache_tests {
+    use super::{AUTH_TOKEN_CACHE_TTL, token_cache_ttl_secs};
+
+    // PERF-H21 safety: an already-expired token must yield a 0s TTL so it is
+    // never served from a live cache entry.
+    #[test]
+    fn expired_token_not_cached() {
+        assert_eq!(token_cache_ttl_secs(1_000, 2_000), 0);
+        assert_eq!(token_cache_ttl_secs(2_000, 2_000), 0);
+    }
+
+    // A token with lots of life left is capped at the rotation-safety window.
+    #[test]
+    fn long_lived_token_capped_at_ttl() {
+        let cap = AUTH_TOKEN_CACHE_TTL.as_secs();
+        assert_eq!(token_cache_ttl_secs(10_000, 0), cap);
+    }
+
+    // A token expiring inside the cap window is bounded by its own exp.
+    #[test]
+    fn short_lived_token_bounded_by_exp() {
+        let cap = AUTH_TOKEN_CACHE_TTL.as_secs() as i64;
+        // 10 seconds of life, which is below the cap.
+        assert_eq!(token_cache_ttl_secs(cap - 50 + 10, cap - 50), 10);
+    }
 }
