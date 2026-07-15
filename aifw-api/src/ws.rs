@@ -917,29 +917,14 @@ pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
     let cached_mb = pages_to_mb("vm.stats.vm.v_cache_count");
     let free_mb = pages_to_mb("vm.stats.vm.v_free_count");
 
-    // Process RSS via ps (lightweight)
-    let get_rss =
-        |pid_name: &str| -> std::pin::Pin<Box<dyn std::future::Future<Output = f64> + Send + '_>> {
-            let pid_name = pid_name.to_string();
-            Box::pin(async move {
-                let out = Command::new("ps").args(["aux"]).output().await.ok();
-                if let Some(out) = out {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    for line in stdout.lines() {
-                        if line.contains(&pid_name) && !line.contains("grep") {
-                            let parts: Vec<&str> = line.split_whitespace().collect();
-                            if parts.len() >= 6 {
-                                // RSS is in KB in column 5 (0-indexed)
-                                return parts[5].parse::<f64>().unwrap_or(0.0) / 1024.0;
-                            }
-                        }
-                    }
-                }
-                0.0
-            })
-        };
-    let api_rss_mb = get_rss("aifw-api").await;
-    let daemon_rss_mb = get_rss("aifw-daemon").await;
+    // Process RSS via a single O(1) syscall each — no `ps` fork (PERF-H12).
+    // The API is the current process; the daemon's pid comes from its
+    // rc.d pidfile. Missing/unreadable -> 0.0, same as the old ps miss.
+    use crate::native_metrics::{process_rss_mb, read_pidfile};
+    let api_rss_mb = process_rss_mb(std::process::id()).unwrap_or(0.0);
+    let daemon_rss_mb = read_pidfile("/var/run/aifw_daemon.pid")
+        .and_then(process_rss_mb)
+        .unwrap_or(0.0);
 
     // IDS alert buffer — lives in aifw-ids; stats over IPC (best-effort).
     // alerts_total isn't the buffer size, but it's the closest metric we
