@@ -721,6 +721,47 @@ mod tests {
         assert!(engine.list_wg_peers(tid).await.unwrap().is_empty());
     }
 
+    // PERF-H7: list_all_wg_peers_grouped returns one bucket per tunnel and
+    // matches the per-tunnel list_wg_peers results (no N+1 needed).
+    #[tokio::test]
+    async fn test_wg_peers_grouped() {
+        let engine = create_vpn_engine().await;
+
+        let t1 = WgTunnel::new(
+            "wg0".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Any,
+        );
+        let t2 = WgTunnel::new(
+            "wg1".to_string(),
+            Interface("wg1".to_string()),
+            51821,
+            Address::Any,
+        );
+        let (id1, id2) = (t1.id, t2.id);
+        engine.add_wg_tunnel(t1).await.unwrap();
+        engine.add_wg_tunnel(t2).await.unwrap();
+
+        let peer = |tid, name: &str, pk: &str, last: u8| {
+            let mut p = WgPeer::new(tid, name.to_string(), pk.to_string());
+            p.allowed_ips = vec![Address::Network(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, last)),
+                32,
+            )];
+            p
+        };
+        engine.add_wg_peer(peer(id1, "a", "pubA", 2)).await.unwrap();
+        engine.add_wg_peer(peer(id1, "b", "pubB", 3)).await.unwrap();
+        engine.add_wg_peer(peer(id2, "c", "pubC", 4)).await.unwrap();
+
+        let grouped = engine.list_all_wg_peers_grouped().await.unwrap();
+        assert_eq!(grouped.get(&id1).map(|v| v.len()), Some(2));
+        assert_eq!(grouped.get(&id2).map(|v| v.len()), Some(1));
+        // Empty tunnel (none added) has no bucket.
+        assert!(!grouped.contains_key(&uuid::Uuid::new_v4()));
+    }
+
     #[tokio::test]
     async fn test_wg_tunnel_validation() {
         let engine = create_vpn_engine().await;
