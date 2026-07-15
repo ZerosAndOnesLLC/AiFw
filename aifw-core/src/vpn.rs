@@ -109,6 +109,17 @@ impl VpnEngine {
         .execute(&self.pool)
         .await?;
 
+        // PERF-H5: index the columns the write-path validation queries hit so
+        // the duplicate-port and per-tunnel peer lookups don't scan.
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_wg_tunnels_listen_port ON wg_tunnels(listen_port);",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_wg_peers_tunnel_id ON wg_peers(tunnel_id);")
+            .execute(&self.pool)
+            .await?;
+
         Ok(())
     }
 
@@ -124,15 +135,19 @@ impl VpnEngine {
             return Err(AifwError::Validation("listen port required".to_string()));
         }
 
-        // Check for duplicate port across all tunnels
-        let existing = self.list_wg_tunnels().await?;
-        for t in &existing {
-            if t.id != tunnel.id && t.listen_port == tunnel.listen_port {
-                return Err(AifwError::Validation(format!(
-                    "Port {} is already used by tunnel '{}'",
-                    tunnel.listen_port, t.name
-                )));
-            }
+        // Check for duplicate port (PERF-H5: targeted query, not a full scan).
+        if let Some((name,)) = sqlx::query_as::<_, (String,)>(
+            "SELECT name FROM wg_tunnels WHERE listen_port = ?1 AND id != ?2 LIMIT 1",
+        )
+        .bind(tunnel.listen_port as i64)
+        .bind(tunnel.id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            return Err(AifwError::Validation(format!(
+                "Port {} is already used by tunnel '{}'",
+                tunnel.listen_port, name
+            )));
         }
 
         sqlx::query(
@@ -191,14 +206,19 @@ impl VpnEngine {
             return Err(AifwError::Validation("listen port required".to_string()));
         }
 
-        let existing = self.list_wg_tunnels().await?;
-        for t in &existing {
-            if t.id != tunnel.id && t.listen_port == tunnel.listen_port {
-                return Err(AifwError::Validation(format!(
-                    "Port {} is already used by tunnel '{}'",
-                    tunnel.listen_port, t.name
-                )));
-            }
+        // PERF-H5: targeted duplicate-port check, not a full-table scan.
+        if let Some((name,)) = sqlx::query_as::<_, (String,)>(
+            "SELECT name FROM wg_tunnels WHERE listen_port = ?1 AND id != ?2 LIMIT 1",
+        )
+        .bind(tunnel.listen_port as i64)
+        .bind(tunnel.id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            return Err(AifwError::Validation(format!(
+                "Port {} is already used by tunnel '{}'",
+                tunnel.listen_port, name
+            )));
         }
 
         let result = sqlx::query(
