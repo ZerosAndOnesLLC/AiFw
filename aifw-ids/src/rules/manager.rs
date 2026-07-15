@@ -273,7 +273,8 @@ impl RulesetManager {
             sql.push_str(" AND enabled = 1 AND ruleset_id IN (SELECT id FROM ids_rulesets WHERE enabled = 1)");
         }
         sql.push_str(" ORDER BY sid ASC, created_at ASC");
-        sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
+        // PERF-H9: bind LIMIT/OFFSET so paging reuses one cached statement.
+        sql.push_str(" LIMIT ? OFFSET ?");
 
         let mut query = sqlx::query_as::<
             _,
@@ -295,6 +296,7 @@ impl RulesetManager {
         for bind in &binds {
             query = query.bind(bind);
         }
+        query = query.bind(limit as i64).bind(offset as i64);
 
         let rows = query.fetch_all(&self.pool).await?;
 
