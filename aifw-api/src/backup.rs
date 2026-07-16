@@ -485,8 +485,11 @@ pub(crate) async fn commit_confirm_arm_with_snapshot(
                 tracing::warn!("Commit confirm expired after {timeout_secs}s — rolling back");
                 if let Some(inner) = store.write().await.take()
                     && let Ok(config) = serde_json::from_str::<FirewallConfig>(&inner.rollback_config) {
-                        let _ = apply_firewall_config(&rollback_state, &config, &InterfaceMap::new()).await;
-                        tracing::info!("Config rolled back successfully");
+                        if let Err(e) = apply_firewall_config(&rollback_state, &config, &InterfaceMap::new()).await {
+                            tracing::warn!(error = %e, "commit confirm rollback: apply_firewall_config failed");
+                        } else {
+                            tracing::info!("Config rolled back successfully");
+                        }
                     }
             }
             _ = cancel_rx => {
@@ -504,6 +507,8 @@ pub(crate) async fn commit_confirm_arm_with_snapshot(
 pub async fn commit_confirm_accept() -> Result<Json<MessageResponse>, StatusCode> {
     let mut store = commit_store().write().await;
     if let Some(inner) = store.take() {
+        // Safely ignorable: oneshot send only fails if the rollback timer task
+        // already exited (timer fired or task dropped) — nothing left to cancel.
         let _ = inner.cancel_tx.send(()); // Cancel the rollback timer
         Ok(Json(MessageResponse {
             message: "Configuration confirmed and accepted permanently.".to_string(),
@@ -1705,31 +1710,44 @@ pub(crate) async fn apply_firewall_config(
             .map(|s| format!("nameserver {s}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let _ = tokio::fs::write("/etc/resolv.conf", &content).await;
+        if let Err(e) = tokio::fs::write("/etc/resolv.conf", &content).await {
+            tracing::warn!(error = %e, "import: /etc/resolv.conf write failed");
+        }
     }
 
     let auth = &config.auth;
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('access_token_expiry_mins', ?1)",
     )
     .bind(auth.access_token_expiry_mins.to_string())
     .execute(&state.pool)
-    .await;
-    let _ = sqlx::query(
+    .await
+    {
+        tracing::warn!(key = "access_token_expiry_mins", error = %e, "import: auth config restore failed");
+    }
+    if let Err(e) = sqlx::query(
         "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('refresh_token_expiry_days', ?1)",
     )
     .bind(auth.refresh_token_expiry_days.to_string())
     .execute(&state.pool)
-    .await;
-    let _ =
+    .await
+    {
+        tracing::warn!(key = "refresh_token_expiry_days", error = %e, "import: auth config restore failed");
+    }
+    if let Err(e) =
         sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('require_totp', ?1)")
             .bind(if auth.require_totp { "true" } else { "false" })
             .execute(&state.pool)
-            .await;
+            .await
+    {
+        tracing::warn!(key = "require_totp", error = %e, "import: auth config restore failed");
+    }
 
     // Traffic shaping: queues + per-IP rate limits
     let shaping = aifw_core::shaping::ShapingEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = shaping.migrate().await;
+    if let Err(e) = shaping.migrate().await {
+        tracing::warn!(error = %e, "import: shaping migrate failed");
+    }
     for table in ["queues", "rate_limits"] {
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
@@ -1744,8 +1762,10 @@ pub(crate) async fn apply_firewall_config(
         };
         let mut qc = qc.clone();
         qc.interface = mapped;
-        if let Some(q) = queue_from_config(&qc) {
-            let _ = shaping.add_queue(q).await;
+        if let Some(q) = queue_from_config(&qc)
+            && let Err(e) = shaping.add_queue(q).await
+        {
+            tracing::warn!(queue = %qc.name, error = %e, "import: shaping queue restore failed");
         }
     }
     for rc in &config.rate_limits {
@@ -1758,16 +1778,24 @@ pub(crate) async fn apply_firewall_config(
         };
         let mut rc = rc.clone();
         rc.interface = iface_after;
-        if let Some(r) = rate_limit_from_config(&rc) {
-            let _ = shaping.add_rate_limit(r).await;
+        if let Some(r) = rate_limit_from_config(&rc)
+            && let Err(e) = shaping.add_rate_limit(r).await
+        {
+            tracing::warn!(error = %e, "import: rate limit restore failed");
         }
     }
-    let _ = shaping.apply_queues().await;
-    let _ = shaping.apply_rate_limits().await;
+    if let Err(e) = shaping.apply_queues().await {
+        tracing::warn!(error = %e, "import: shaping queues apply failed");
+    }
+    if let Err(e) = shaping.apply_rate_limits().await {
+        tracing::warn!(error = %e, "import: rate limits apply failed");
+    }
 
     // TLS: SNI rules + JA3 blocklist
     let tls_engine = aifw_core::tls::TlsEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = tls_engine.migrate().await;
+    if let Err(e) = tls_engine.migrate().await {
+        tracing::warn!(error = %e, "import: tls migrate failed");
+    }
     for table in ["sni_rules", "ja3_blocklist"] {
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
@@ -1777,17 +1805,23 @@ pub(crate) async fn apply_firewall_config(
         }
     }
     for sc in &config.tls.sni_rules {
-        if let Some(sni) = sni_rule_from_config(sc) {
-            let _ = tls_engine.add_sni_rule(sni).await;
+        if let Some(sni) = sni_rule_from_config(sc)
+            && let Err(e) = tls_engine.add_sni_rule(sni).await
+        {
+            tracing::warn!(pattern = %sc.pattern, error = %e, "import: sni rule restore failed");
         }
     }
     for hash in &config.tls.blocked_ja3 {
-        let _ = tls_engine.add_ja3_block(hash, "restored from backup").await;
+        if let Err(e) = tls_engine.add_ja3_block(hash, "restored from backup").await {
+            tracing::warn!(hash = %hash, error = %e, "import: ja3 block restore failed");
+        }
     }
 
     // HA: CARP VIPs + pfsync + cluster nodes
     let ha_engine = aifw_core::ha::ClusterEngine::new(state.pool.clone(), state.pf.clone());
-    let _ = ha_engine.migrate().await;
+    if let Err(e) = ha_engine.migrate().await {
+        tracing::warn!(error = %e, "import: ha migrate failed");
+    }
     for table in ["carp_vips", "pfsync_config", "cluster_nodes"] {
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
@@ -1802,8 +1836,10 @@ pub(crate) async fn apply_firewall_config(
         };
         let mut vc = vc.clone();
         vc.interface = mapped;
-        if let Some(vip) = carp_vip_from_config(&vc) {
-            let _ = ha_engine.add_carp_vip(vip).await;
+        if let Some(vip) = carp_vip_from_config(&vc)
+            && let Err(e) = ha_engine.add_carp_vip(vip).await
+        {
+            tracing::warn!(vip = %vc.virtual_ip, error = %e, "import: carp vip restore failed");
         }
     }
     if let Some(pc) = &config.ha.pfsync
@@ -1811,13 +1847,17 @@ pub(crate) async fn apply_firewall_config(
     {
         let mut pc = pc.clone();
         pc.sync_interface = mapped_sync;
-        if let Some(pfsync) = pfsync_from_config(&pc) {
-            let _ = ha_engine.set_pfsync(pfsync).await;
+        if let Some(pfsync) = pfsync_from_config(&pc)
+            && let Err(e) = ha_engine.set_pfsync(pfsync).await
+        {
+            tracing::warn!(error = %e, "import: pfsync restore failed");
         }
     }
     for nc in &config.ha.nodes {
-        if let Some(node) = cluster_node_from_config(nc) {
-            let _ = ha_engine.add_node(node).await;
+        if let Some(node) = cluster_node_from_config(nc)
+            && let Err(e) = ha_engine.add_node(node).await
+        {
+            tracing::warn!(error = %e, "import: cluster node restore failed");
         }
     }
 
@@ -1826,8 +1866,9 @@ pub(crate) async fn apply_firewall_config(
         if t.enabled
             && t.key == "pf.max_states"
             && let Ok(val) = t.value.parse::<u64>()
+            && let Err(e) = aifw_core::pf_tuning::set_max_states(&state.pool, val).await
         {
-            let _ = aifw_core::pf_tuning::set_max_states(&state.pool, val).await;
+            tracing::warn!(value = val, error = %e, "import: pf.max_states restore failed");
         }
     }
 
@@ -1837,9 +1878,15 @@ pub(crate) async fn apply_firewall_config(
     if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
         state.rule_engine.set_extra_rules(vpn_rules).await;
     }
-    let _ = state.rule_engine.apply_rules().await;
-    let _ = state.nat_engine.apply_rules().await;
-    let _ = state.geoip_engine.apply_rules().await;
+    if let Err(e) = state.rule_engine.apply_rules().await {
+        tracing::warn!(error = %e, "import: firewall rules apply failed");
+    }
+    if let Err(e) = state.nat_engine.apply_rules().await {
+        tracing::warn!(error = %e, "import: nat rules apply failed");
+    }
+    if let Err(e) = state.geoip_engine.apply_rules().await {
+        tracing::warn!(error = %e, "import: geoip rules apply failed");
+    }
 
     Ok(())
 }
@@ -1847,21 +1894,20 @@ pub(crate) async fn apply_firewall_config(
 async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSection) {
     // Wipe + re-insert for a clean restore. `auto_apply` at the end regenerates
     // the rDHCP TOML config and restarts the service.
-    let _ = sqlx::query("DELETE FROM dhcp_subnets")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM dhcp_reservations")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM dhcp_config")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM dhcp_ddns_config")
-        .execute(&state.pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM dhcp_ha_config")
-        .execute(&state.pool)
-        .await;
+    for table in [
+        "dhcp_subnets",
+        "dhcp_reservations",
+        "dhcp_config",
+        "dhcp_ddns_config",
+        "dhcp_ha_config",
+    ] {
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
+            .execute(&state.pool)
+            .await
+        {
+            tracing::warn!(table, error = %e, "dhcp restore: DELETE failed before restore");
+        }
+    }
 
     // --- global ----------------------------------------------
     let g = &dhcp.global;
@@ -1910,11 +1956,15 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         ),
         ("relay_rate_limit_pps", g.relay_rate_limit_pps.to_string()),
     ] {
-        let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
-            .bind(k)
-            .bind(v)
-            .execute(&state.pool)
-            .await;
+        if let Err(e) =
+            sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
+                .bind(k)
+                .bind(v)
+                .execute(&state.pool)
+                .await
+        {
+            tracing::warn!(key = k, error = %e, "dhcp restore: config insert failed");
+        }
     }
 
     // --- subnets ---------------------------------------------
@@ -1961,7 +2011,7 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         }
         let options_json =
             serde_json::to_string(&safe_options).unwrap_or_else(|_| "[]".to_string());
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "INSERT INTO dhcp_subnets \
              (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, \
               lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, \
@@ -1990,18 +2040,24 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         .bind(&options_json)
         .bind(&s.created_at)
         .execute(&state.pool)
-        .await;
+        .await
+        {
+            tracing::warn!(network = %s.network, error = %e, "dhcp restore: subnet insert failed");
+        }
     }
 
     // --- reservations ----------------------------------------
     for r in &dhcp.reservations {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "INSERT INTO dhcp_reservations (id, subnet_id, mac_address, ip_address, hostname, client_id, description, created_at) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"
         )
         .bind(&r.id).bind(&r.subnet_id).bind(&r.mac_address).bind(&r.ip_address)
         .bind(&r.hostname).bind(&r.client_id).bind(&r.description).bind(&r.created_at)
-        .execute(&state.pool).await;
+        .execute(&state.pool).await
+        {
+            tracing::warn!(ip = %r.ip_address, error = %e, "dhcp restore: reservation insert failed");
+        }
     }
 
     // --- DDNS ------------------------------------------------
@@ -2024,11 +2080,15 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         ("tsig_secret", d.tsig_secret.clone()),
         ("ttl", d.ttl.to_string()),
     ] {
-        let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
-            .bind(k)
-            .bind(v)
-            .execute(&state.pool)
-            .await;
+        if let Err(e) =
+            sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
+                .bind(k)
+                .bind(v)
+                .execute(&state.pool)
+                .await
+        {
+            tracing::warn!(key = k, error = %e, "dhcp restore: ddns config insert failed");
+        }
     }
 
     // --- DHCP HA ---------------------------------------------
@@ -2060,11 +2120,15 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         ("tls_key", h.tls_key.clone().unwrap_or_default()),
         ("tls_ca", h.tls_ca.clone().unwrap_or_default()),
     ] {
-        let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
-            .bind(k)
-            .bind(v)
-            .execute(&state.pool)
-            .await;
+        if let Err(e) =
+            sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
+                .bind(k)
+                .bind(v)
+                .execute(&state.pool)
+                .await
+        {
+            tracing::warn!(key = k, error = %e, "dhcp restore: ha config insert failed");
+        }
     }
 
     // Regenerate rDHCP TOML + restart service so the restored config takes effect.
@@ -2425,7 +2489,9 @@ pub async fn auto_snapshot_middleware(
             }
         };
         let mgr = ConfigManager::new(bg_state.pool.clone());
-        let _ = mgr.migrate().await;
+        if let Err(e) = mgr.migrate().await {
+            tracing::warn!(error = %e, "auto-snapshot: config manager migrate failed");
+        }
         let version = match mgr
             .save_if_changed(&cfg, &bg_actor, Some(&bg_comment))
             .await
@@ -2639,27 +2705,32 @@ pub(crate) async fn apply_cluster_snapshot(state: &AppState, body: &str) -> anyh
 
     // Restore local per-peer credentials wiped by apply_firewall_config.
     for (id, key, hash) in &saved_keys {
-        if key.is_some() || hash.is_some() {
-            let _ = sqlx::query(
+        if (key.is_some() || hash.is_some())
+            && let Err(e) = sqlx::query(
                 "UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3",
             )
             .bind(key)
             .bind(hash)
             .bind(id)
             .execute(&state.pool)
-            .await;
+            .await
+        {
+            tracing::warn!(node = %id, error = %e, "cluster snapshot: peer api key restore failed");
         }
     }
 
     // Sync IDS rule overrides: apply enabled/action_override to ids_rules rows
     for ov in &payload.ids_rule_overrides {
-        let _ =
+        if let Err(e) =
             sqlx::query("UPDATE ids_rules SET enabled = ?1, action_override = ?2 WHERE id = ?3")
                 .bind(ov.enabled)
                 .bind(&ov.action_override)
                 .bind(&ov.id)
                 .execute(&state.pool)
-                .await;
+                .await
+        {
+            tracing::warn!(rule = %ov.id, error = %e, "cluster snapshot: ids rule override sync failed");
+        }
     }
 
     // Sync IDS suppressions: wipe and re-insert atomically so the IDS daemon
@@ -2682,7 +2753,9 @@ pub(crate) async fn apply_cluster_snapshot(state: &AppState, body: &str) -> anyh
     tx.commit().await?;
 
     // Reload IDS config so suppressions take effect
-    let _ = state.ids_client.reload().await;
+    if let Err(e) = state.ids_client.reload().await {
+        tracing::warn!(error = %e, "cluster snapshot: ids reload failed");
+    }
 
     Ok(())
 }
