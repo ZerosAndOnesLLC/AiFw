@@ -101,6 +101,23 @@ impl AuditLog {
         details: &str,
         source: &str,
     ) -> Result<AuditEntry> {
+        Self::log_on(&self.pool, action, rule_id, details, source).await
+    }
+
+    /// Insert an audit entry on an arbitrary executor. Lets engines pair the
+    /// audit row with its mutation in a single transaction (PERF-H6 #350) so
+    /// a rule change costs one commit instead of two, and the audit trail
+    /// can never diverge from the mutated table.
+    pub async fn log_on<'e, E>(
+        exec: E,
+        action: AuditAction,
+        rule_id: Option<Uuid>,
+        details: &str,
+        source: &str,
+    ) -> Result<AuditEntry>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let entry = AuditEntry {
             id: Uuid::new_v4(),
             timestamp: Utc::now(),
@@ -122,7 +139,7 @@ impl AuditLog {
         .bind(entry.rule_id.map(|id| id.to_string()))
         .bind(&entry.details)
         .bind(&entry.source)
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
 
         Ok(entry)

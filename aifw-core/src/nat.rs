@@ -69,16 +69,20 @@ impl NatEngine {
 
     pub async fn add_rule(&self, rule: NatRule) -> Result<NatRule> {
         validate_nat_rule(&rule)?;
-        self.insert_rule(&rule).await?;
         let pf_syntax = rule.to_pf_rule();
-        self.audit
-            .log(
-                AuditAction::RuleAdded,
-                Some(rule.id),
-                &format!("nat: {pf_syntax}"),
-                "nat_engine",
-            )
-            .await?;
+        // PERF-H6 (#350): mutation + audit row commit together — one fsync
+        // instead of two per NAT rule change.
+        let mut tx = self.pool.begin().await?;
+        Self::insert_rule_on(&mut *tx, &rule).await?;
+        AuditLog::log_on(
+            &mut *tx,
+            AuditAction::RuleAdded,
+            Some(rule.id),
+            &format!("nat: {pf_syntax}"),
+            "nat_engine",
+        )
+        .await?;
+        tx.commit().await?;
         tracing::info!(id = %rule.id, nat_type = %rule.nat_type, "NAT rule added");
         Ok(rule)
     }
@@ -118,6 +122,7 @@ impl NatEngine {
 
     pub async fn update_rule(&self, rule: &NatRule) -> Result<()> {
         validate_nat_rule(rule)?;
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r#"
             UPDATE nat_rules SET nat_type = ?2, interface = ?3, protocol = ?4,
@@ -147,7 +152,7 @@ impl NatEngine {
             NatStatus::Disabled => "disabled",
         })
         .bind(chrono::Utc::now().to_rfc3339())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -157,36 +162,39 @@ impl NatEngine {
             )));
         }
 
-        self.audit
-            .log(
-                AuditAction::RuleUpdated,
-                Some(rule.id),
-                &format!("nat: {}", rule.to_pf_rule()),
-                "nat_engine",
-            )
-            .await?;
+        AuditLog::log_on(
+            &mut *tx,
+            AuditAction::RuleUpdated,
+            Some(rule.id),
+            &format!("nat: {}", rule.to_pf_rule()),
+            "nat_engine",
+        )
+        .await?;
+        tx.commit().await?;
         tracing::info!(id = %rule.id, "NAT rule updated");
         Ok(())
     }
 
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query("DELETE FROM nat_rules WHERE id = ?1")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
         if result.rows_affected() == 0 {
             return Err(AifwError::NotFound(format!("NAT rule {id} not found")));
         }
 
-        self.audit
-            .log(
-                AuditAction::RuleRemoved,
-                Some(id),
-                "NAT rule deleted",
-                "nat_engine",
-            )
-            .await?;
+        AuditLog::log_on(
+            &mut *tx,
+            AuditAction::RuleRemoved,
+            Some(id),
+            "NAT rule deleted",
+            "nat_engine",
+        )
+        .await?;
+        tx.commit().await?;
         tracing::info!(%id, "NAT rule deleted");
         Ok(())
     }
@@ -242,7 +250,10 @@ impl NatEngine {
         Ok(())
     }
 
-    async fn insert_rule(&self, rule: &NatRule) -> Result<()> {
+    async fn insert_rule_on<'e, E>(exec: E, rule: &NatRule) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         sqlx::query(
             r#"
             INSERT INTO nat_rules (id, nat_type, interface, protocol, src_addr,
@@ -272,7 +283,7 @@ impl NatEngine {
         })
         .bind(rule.created_at.to_rfc3339())
         .bind(rule.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
 
         Ok(())
