@@ -11,6 +11,7 @@ pub struct ProtocolRegistry {
 }
 
 impl ProtocolRegistry {
+    /// Create a registry with all built-in parsers (HTTP, TLS, DNS, SSH, SMTP)
     pub fn new() -> Self {
         let parsers: Vec<Box<dyn ProtocolParser>> = vec![
             Box::new(http::HttpParser),

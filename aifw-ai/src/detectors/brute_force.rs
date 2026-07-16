@@ -4,6 +4,8 @@ use super::Detector;
 use crate::features::TrafficFeatures;
 use crate::types::{Threat, ThreatEvidence, ThreatScore, ThreatType};
 
+/// Detects brute-force login attempts: many connections concentrated on a
+/// few (≤5) destination ports with a high failed-connection ratio
 pub struct BruteForceDetector {
     /// Max connections to auth-related ports before flagging
     pub max_auth_connections: u64,
@@ -12,6 +14,7 @@ pub struct BruteForceDetector {
 }
 
 impl BruteForceDetector {
+    /// Detector with default thresholds: 10 connections, 0.7 failed ratio
     pub fn new() -> Self {
         Self {
             max_auth_connections: 10,

@@ -10,16 +10,22 @@ use uuid::Uuid;
 /// Reserved table names that aliases cannot use.
 const RESERVED_NAMES: &[&str] = &["bruteforce", "ai_blocked"];
 
+/// Engine for named aliases (host/network/port/URL lists). Rows live in the
+/// `aliases` SQLite table; enabled host/network/URL aliases are mirrored
+/// into pf tables of the same name, while port aliases are expanded inline
+/// in rules and never touch pf.
 pub struct AliasEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
 }
 
 impl AliasEngine {
+    /// Build an alias engine over the shared SQLite pool and pf backend
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self { pool, pf }
     }
 
+    /// Create the `aliases` SQLite table if it doesn't exist
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -41,6 +47,9 @@ impl AliasEngine {
         Ok(())
     }
 
+    /// Fetch all aliases ordered by name. Malformed stored values (bad UUID,
+    /// unknown type, bad JSON entries) fall back to defaults rather than
+    /// failing the whole listing.
     pub async fn list(&self) -> Result<Vec<Alias>> {
         let rows = sqlx::query("SELECT id, name, alias_type, entries, description, enabled, created_at, updated_at FROM aliases ORDER BY name ASC")
             .fetch_all(&self.pool).await.map_err(|e| AifwError::Database(e.to_string()))?;
@@ -65,6 +74,7 @@ impl AliasEngine {
             .collect())
     }
 
+    /// Look up one alias by id. Fails with `NotFound` if it doesn't exist
     pub async fn get(&self, id: Uuid) -> Result<Alias> {
         let aliases = self.list().await?;
         aliases
@@ -73,6 +83,10 @@ impl AliasEngine {
             .ok_or_else(|| AifwError::NotFound(format!("alias {} not found", id)))
     }
 
+    /// Insert a new alias row and, if enabled, populate its pf table (URL
+    /// tables are fetched over HTTPS). Fails validation when the name isn't
+    /// 1-31 alphanumeric/`_`/`-` chars or is reserved (`bruteforce`,
+    /// `ai_blocked`).
     pub async fn add(&self, alias: Alias) -> Result<Alias> {
         self.validate_name(&alias.name)?;
         let entries_json = serde_json::to_string(&alias.entries)
@@ -92,6 +106,9 @@ impl AliasEngine {
         Ok(alias)
     }
 
+    /// Update an alias row, then flush and repopulate its pf table (only
+    /// re-synced when enabled). Fails with `NotFound` if the id doesn't
+    /// exist, or validation on a bad name.
     pub async fn update(&self, alias: Alias) -> Result<Alias> {
         self.validate_name(&alias.name)?;
         let entries_json = serde_json::to_string(&alias.entries)
@@ -118,6 +135,8 @@ impl AliasEngine {
         Ok(alias)
     }
 
+    /// Remove an alias, flushing its pf table first. Fails with `NotFound`
+    /// for an unknown id
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let alias = self.get(id).await?;
         let _ = self.pf.flush_table(&alias.name).await;

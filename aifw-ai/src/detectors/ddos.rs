@@ -4,6 +4,8 @@ use super::Detector;
 use crate::features::TrafficFeatures;
 use crate::types::{Threat, ThreatEvidence, ThreatScore, ThreatType};
 
+/// Detects DDoS activity via two signals: SYN floods (high SYN count with
+/// mostly failed connections) and raw connection-rate volume
 pub struct DdosDetector {
     /// Connections per second threshold
     pub max_conn_rate: f64,
@@ -12,6 +14,7 @@ pub struct DdosDetector {
 }
 
 impl DdosDetector {
+    /// Detector with default thresholds: 50 conn/s, 100 SYNs
     pub fn new() -> Self {
         Self {
             max_conn_rate: 50.0,

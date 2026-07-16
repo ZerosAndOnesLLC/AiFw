@@ -17,15 +17,22 @@ pub struct WebhookPlugin {
     notify_on_connection: bool,
 }
 
+/// One queued webhook payload
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WebhookNotification {
+    /// When the notification was queued (RFC 3339, UTC)
     pub timestamp: String,
+    /// Event kind: "rule_block", "new_connection", or "audit"
     pub event_type: String,
+    /// Human-readable summary of the event
     pub message: String,
+    /// Structured event details (IPs, ports, protocol, etc.)
     pub data: serde_json::Value,
 }
 
 impl WebhookPlugin {
+    /// Create the plugin with defaults: no URL, notify on blocks but not on
+    /// new connections (all overridable via config in `init`)
     pub fn new() -> Self {
         Self {
             url: String::new(),
@@ -35,10 +42,12 @@ impl WebhookPlugin {
         }
     }
 
+    /// Snapshot (clone) of all queued notifications, oldest first
     pub async fn get_notifications(&self) -> Vec<WebhookNotification> {
         self.notifications.read().await.clone()
     }
 
+    /// Number of notifications currently queued
     pub async fn notification_count(&self) -> usize {
         self.notifications.read().await.len()
     }

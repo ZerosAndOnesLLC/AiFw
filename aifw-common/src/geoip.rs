@@ -8,6 +8,8 @@ use uuid::Uuid;
 pub struct CountryCode(pub String);
 
 impl CountryCode {
+    /// Validate and normalize a country code (trimmed, uppercased).
+    /// Fails with `Validation` unless it is exactly 2 ASCII letters.
     pub fn new(code: &str) -> crate::Result<Self> {
         let code = code.trim().to_uppercase();
         if code.len() != 2 || !code.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -29,7 +31,9 @@ impl std::fmt::Display for CountryCode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum GeoIpAction {
+    /// Pass traffic from the country
     Allow,
+    /// Drop traffic from the country
     Block,
 }
 
@@ -43,6 +47,8 @@ impl std::fmt::Display for GeoIpAction {
 }
 
 impl GeoIpAction {
+    /// Parse from a case-insensitive string ("allow"/"pass", "block"/"deny").
+    /// Fails with `Validation` on anything else.
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().as_str() {
             "allow" | "pass" => Ok(GeoIpAction::Allow),
@@ -57,23 +63,35 @@ impl GeoIpAction {
 /// A geo-IP filtering rule
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoIpRule {
+    /// Unique rule ID
     pub id: Uuid,
+    /// Country whose networks this rule applies to
     pub country: CountryCode,
+    /// Whether to allow or block traffic from the country
     pub action: GeoIpAction,
+    /// Optional pf rule label; defaults to `geoip-<action>-<country>` when unset
     pub label: Option<String>,
+    /// Whether the rule is active or disabled
     pub status: GeoIpRuleStatus,
+    /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (UTC)
     pub updated_at: DateTime<Utc>,
 }
 
+/// Enabled/disabled state of a geo-IP rule
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum GeoIpRuleStatus {
+    /// Rule is enforced in pf
     Active,
+    /// Rule is stored but not pushed to pf
     Disabled,
 }
 
 impl GeoIpRule {
+    /// Create an active rule with a random ID, no label, and both timestamps
+    /// set to now
     pub fn new(country: CountryCode, action: GeoIpAction) -> Self {
         let now = Utc::now();
         Self {
@@ -115,8 +133,11 @@ impl GeoIpRule {
 /// A CIDR network entry from the GeoLite2 database
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GeoIpEntry {
+    /// Network base address
     pub network: IpAddr,
+    /// CIDR prefix length
     pub prefix: u8,
+    /// Country the network is registered to
     pub country: CountryCode,
 }
 
@@ -153,8 +174,11 @@ impl Default for GeoIpDbConfig {
 /// Lookup result for a single IP
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoIpLookupResult {
+    /// The IP that was looked up
     pub ip: IpAddr,
+    /// Country the IP belongs to, or `None` if not found in the database
     pub country: Option<CountryCode>,
+    /// Matching CIDR network (e.g. "1.2.3.0/24"), or `None` if not found
     pub network: Option<String>,
 }
 

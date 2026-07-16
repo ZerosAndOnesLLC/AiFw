@@ -8,17 +8,26 @@ use crate::types::Interface;
 // TLS Version
 // ============================================================
 
+/// SSL/TLS protocol version, ordered oldest to newest so `>=` comparisons
+/// implement minimum-version policy checks
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TlsVersion {
+    /// SSL 3.0 (wire version 3.0) — deprecated
     Ssl30,
+    /// TLS 1.0 (wire version 3.1) — deprecated
     Tls10,
+    /// TLS 1.1 (wire version 3.2) — deprecated
     Tls11,
+    /// TLS 1.2 (wire version 3.3)
     Tls12,
+    /// TLS 1.3 (wire version 3.4)
     Tls13,
 }
 
 impl TlsVersion {
+    /// Map an on-the-wire (major, minor) protocol version pair to a variant;
+    /// `None` if it isn't a known SSL/TLS version
     pub fn from_protocol_version(major: u8, minor: u8) -> Option<Self> {
         match (major, minor) {
             (3, 0) => Some(TlsVersion::Ssl30),
@@ -30,6 +39,8 @@ impl TlsVersion {
         }
     }
 
+    /// Parse from a case-insensitive string, ignoring dots ("tls1.2", "tlsv12",
+    /// "ssl3", ...). Fails with `Validation` on anything else.
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().replace('.', "").as_str() {
             "ssl30" | "ssl3" | "sslv3" => Ok(TlsVersion::Ssl30),
@@ -43,6 +54,7 @@ impl TlsVersion {
         }
     }
 
+    /// True for versions deprecated by RFC 8996 and earlier (SSLv3, TLS 1.0, TLS 1.1)
     pub fn is_deprecated(&self) -> bool {
         matches!(
             self,
@@ -110,11 +122,15 @@ impl std::fmt::Display for Ja3Fingerprint {
 /// JA3S fingerprint computed from a TLS ServerHello
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Ja3sFingerprint {
+    /// The raw JA3S string (version,cipher,extensions)
     pub raw: String,
+    /// MD5 hash of the raw string
     pub hash: String,
 }
 
 impl Ja3sFingerprint {
+    /// Compute a JA3S fingerprint from ServerHello components (negotiated
+    /// version, selected cipher suite, extension list)
     pub fn compute(tls_version: u16, cipher_suite: u16, extensions: &[u16]) -> Self {
         let exts = join_u16(extensions);
         let raw = format!("{tls_version},{cipher_suite},{exts}");
@@ -137,7 +153,9 @@ impl std::fmt::Display for Ja3sFingerprint {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SniAction {
+    /// Pass connections whose SNI matches
     Allow,
+    /// Drop connections whose SNI matches
     Block,
 }
 
@@ -151,6 +169,8 @@ impl std::fmt::Display for SniAction {
 }
 
 impl SniAction {
+    /// Parse from a case-insensitive string ("allow"/"pass", "block"/"deny").
+    /// Fails with `Validation` on anything else.
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().as_str() {
             "allow" | "pass" => Ok(SniAction::Allow),
@@ -165,23 +185,35 @@ impl SniAction {
 /// SNI-based filtering rule
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SniRule {
+    /// Unique rule ID
     pub id: Uuid,
+    /// Hostname pattern: exact match or wildcard prefix (`*.example.com`)
     pub pattern: String,
+    /// Whether matching connections are allowed or blocked
     pub action: SniAction,
+    /// Optional human-readable label
     pub label: Option<String>,
+    /// Whether the rule is active or disabled
     pub status: SniRuleStatus,
+    /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (UTC)
     pub updated_at: DateTime<Utc>,
 }
 
+/// Enabled/disabled state of an SNI rule
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SniRuleStatus {
+    /// Rule is enforced
     Active,
+    /// Rule is stored but not enforced
     Disabled,
 }
 
 impl SniRule {
+    /// Create an active rule with a random ID, no label, and both timestamps
+    /// set to now
     pub fn new(pattern: String, action: SniAction) -> Self {
         let now = Utc::now();
         Self {
@@ -215,31 +247,45 @@ impl SniRule {
 // Certificate info
 // ============================================================
 
+/// Summary of an X.509 certificate observed during TLS inspection,
+/// checked against a [`TlsPolicy`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CertInfo {
+    /// Subject distinguished name
     pub subject: String,
+    /// Issuer distinguished name
     pub issuer: String,
+    /// Certificate serial number
     pub serial: String,
+    /// Validity period start (UTC)
     pub not_before: DateTime<Utc>,
+    /// Validity period end (UTC)
     pub not_after: DateTime<Utc>,
+    /// Subject Alternative Names
     pub san: Vec<String>,
+    /// Whether the certificate is self-signed
     pub is_self_signed: bool,
+    /// Public key size in bits
     pub key_bits: u32,
 }
 
 impl CertInfo {
+    /// True if the current time is past `not_after`
     pub fn is_expired(&self) -> bool {
         Utc::now() > self.not_after
     }
 
+    /// True if the current time is before `not_before`
     pub fn is_not_yet_valid(&self) -> bool {
         Utc::now() < self.not_before
     }
 
+    /// True if the current time is within the validity period
     pub fn is_valid_time(&self) -> bool {
         !self.is_expired() && !self.is_not_yet_valid()
     }
 
+    /// True if the public key is under 2048 bits
     pub fn is_weak_key(&self) -> bool {
         self.key_bits < 2048
     }
@@ -252,6 +298,7 @@ impl CertInfo {
 /// TLS inspection and enforcement policy
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsPolicy {
+    /// Unique policy ID
     pub id: Uuid,
     /// Minimum allowed TLS version
     pub min_version: TlsVersion,
@@ -263,6 +310,7 @@ pub struct TlsPolicy {
     pub block_weak_keys: bool,
     /// Blocked JA3 fingerprint hashes
     pub blocked_ja3: Vec<String>,
+    /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
 }
 

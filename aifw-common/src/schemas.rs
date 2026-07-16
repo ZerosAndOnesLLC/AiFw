@@ -17,6 +17,7 @@
 //! every aifw-api startup and the constants here are only the initial
 //! shape.
 
+/// `users` table: local accounts with password hash, TOTP, and auth provider
 pub const USERS_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
@@ -27,6 +28,7 @@ pub const USERS_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS users (
     created_at TEXT NOT NULL
 )"#;
 
+/// `recovery_codes` table: hashed one-time 2FA recovery codes per user
 pub const RECOVERY_CODES_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS recovery_codes (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -35,9 +37,11 @@ pub const RECOVERY_CODES_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS recovery_c
     FOREIGN KEY (user_id) REFERENCES users(id)
 )"#;
 
+/// `auth_config` table: key/value store for auth settings (JWT secret, OAuth, ...)
 pub const AUTH_CONFIG_CREATE: &str =
     "CREATE TABLE IF NOT EXISTS auth_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 
+/// `api_keys` table: hashed API keys with display prefix, owned by a user
 pub const API_KEYS_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS api_keys (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -48,16 +52,21 @@ pub const API_KEYS_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS api_keys (
     FOREIGN KEY (user_id) REFERENCES users(id)
 )"#;
 
+/// `interface_roles` table: maps interface names to their role (wan/lan/...)
 pub const INTERFACE_ROLES_CREATE: &str = "CREATE TABLE IF NOT EXISTS interface_roles (interface_name TEXT PRIMARY KEY, role TEXT NOT NULL, updated_at TEXT NOT NULL)";
 
+/// `dns_resolver_config` table: key/value store for DNS resolver settings
 pub const DNS_RESOLVER_CONFIG_CREATE: &str =
     "CREATE TABLE IF NOT EXISTS dns_resolver_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 
+/// `dns_access_lists` table: per-network allow/deny entries for the DNS resolver
 pub const DNS_ACCESS_LISTS_CREATE: &str = "CREATE TABLE IF NOT EXISTS dns_access_lists (id TEXT PRIMARY KEY, network TEXT NOT NULL, action TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)";
 
+/// `dhcp_config` table: key/value store for DHCP server settings
 pub const DHCP_CONFIG_CREATE: &str =
     "CREATE TABLE IF NOT EXISTS dhcp_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 
+/// `dhcp_subnets` table: DHCP address pools per subnet (gateway, DNS, lease times)
 pub const DHCP_SUBNETS_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS dhcp_subnets (
     id TEXT PRIMARY KEY,
     network TEXT NOT NULL,
@@ -75,6 +84,7 @@ pub const DHCP_SUBNETS_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS dhcp_subnets
     created_at TEXT NOT NULL
 )"#;
 
+/// `static_routes` table: user-defined static routes (destination, gateway, metric)
 pub const STATIC_ROUTES_CREATE: &str = r#"CREATE TABLE IF NOT EXISTS static_routes (
     id TEXT PRIMARY KEY,
     destination TEXT NOT NULL,

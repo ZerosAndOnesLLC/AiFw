@@ -26,10 +26,16 @@ const APP_TAG: &str = "aifw-backup";
 // Config
 // ============================================================================
 
+/// Operator-facing S3 backup settings, persisted as the single row of the
+/// `s3_backup_config` table and serialized over the REST API (the secret is
+/// masked on read).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct S3Config {
+    /// Whether new config snapshots are uploaded to S3
     pub enabled: bool,
+    /// Target bucket name (required when enabled)
     pub bucket: String,
+    /// AWS region, e.g. "us-east-1"
     pub region: String,
     /// Optional custom endpoint for S3-compatible providers (MinIO, Backblaze,
     /// Wasabi, etc). When empty, the default AWS endpoint for `region` is used.
@@ -71,6 +77,8 @@ impl Default for S3Config {
 // Schema
 // ============================================================================
 
+/// Create the single-row `s3_backup_config` table if missing and seed
+/// row id 1 with defaults
 pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS s3_backup_config (
@@ -93,6 +101,8 @@ pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     Ok(())
 }
 
+/// Read the stored config row; a missing row or query failure yields
+/// `S3Config::default()` (disabled) rather than an error
 pub async fn load(pool: &SqlitePool) -> S3Config {
     sqlx::query_as::<_, (i64, String, String, Option<String>, String, i64, Option<String>, Option<String>)>(
         r#"SELECT enabled, bucket, region, endpoint, prefix, path_style, access_key_id, secret_access_key
@@ -198,6 +208,9 @@ fn normalize_prefix(p: &str) -> String {
     }
 }
 
+/// Build the S3 object key for a config version:
+/// `<prefix><hostname>/<sanitized-timestamp>-v<version>.json`. Timestamp
+/// comes first so lexicographic listing sorts chronologically.
 pub fn object_key(prefix: &str, version: i64, created_at: &str) -> String {
     // Sortable, collision-free, timestamp-first so lexicographic listing
     // returns newest-last (or reverse via `start-after`).
@@ -228,14 +241,19 @@ pub fn object_key(prefix: &str, version: i64, created_at: &str) -> String {
 // Operations
 // ============================================================================
 
+/// Outcome of [`test_connection`], serialized to the UI
 #[derive(Debug, Serialize)]
 pub struct TestResult {
+    /// True when write, read, and delete all succeeded
     pub ok: bool,
+    /// Human-readable summary, or the first failing step's error
     pub message: String,
     /// Whether each subtest succeeded. Useful in the UI for showing exactly
     /// which permission is missing (e.g. "write ok, read failed").
     pub write: bool,
+    /// s3:GetObject subtest succeeded
     pub read: bool,
+    /// s3:DeleteObject subtest succeeded
     pub delete: bool,
 }
 
@@ -320,10 +338,14 @@ fn summarize_sdk_error<E: std::fmt::Display, R>(err: &aws_sdk_s3::error::SdkErro
     format!("{err}")
 }
 
+/// One archived config version listed from the bucket
 #[derive(Debug, Clone, Serialize)]
 pub struct RemoteObject {
+    /// Full S3 object key
     pub key: String,
+    /// Object size in bytes
     pub size: i64,
+    /// S3 last-modified timestamp, when the API returned one
     pub last_modified: Option<String>,
 }
 

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+/// Configuration for the metrics subsystem (storage backend, collection
+/// cadence, retention)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsConfig {
     /// Backend type: "local" or "postgres"
@@ -14,10 +16,13 @@ pub struct MetricsConfig {
     pub persist_to_sqlite: bool,
 }
 
+/// Which metrics storage backend to use; serialized lowercase on the wire
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricsBackendType {
+    /// In-memory ring-buffer store (`MetricsStore`), the standalone default
     Local,
+    /// PostgreSQL-backed store; requires the `postgres` feature and `postgres_url`
     Postgres,
 }
 

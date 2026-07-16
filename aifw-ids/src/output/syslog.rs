@@ -30,6 +30,7 @@ impl SyslogOutput {
         })
     }
 
+    /// Builder: set the syslog facility number (default 4 = LOG_AUTH)
     pub fn with_facility(mut self, facility: u8) -> Self {
         self.facility = facility;
         self

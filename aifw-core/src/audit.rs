@@ -4,26 +4,42 @@ use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
+/// A single row in the audit trail recording who changed what and when
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
+    /// Unique id of this audit entry
     pub id: Uuid,
+    /// When the action happened (UTC)
     pub timestamp: DateTime<Utc>,
+    /// What kind of change was recorded
     pub action: AuditAction,
+    /// Firewall rule the action touched, if it was rule-scoped
     pub rule_id: Option<Uuid>,
+    /// Free-form human-readable description of the change
     pub details: String,
+    /// Origin of the change (e.g. API user, CLI, daemon)
     pub source: String,
 }
 
+/// Kind of event recorded in the audit log; serialized as snake_case wire/DB values
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditAction {
+    /// A firewall rule was created
     RuleAdded,
+    /// A firewall rule was deleted
     RuleRemoved,
+    /// An existing firewall rule was modified
     RuleUpdated,
+    /// The rule set was pushed into the pf anchor
     RulesApplied,
+    /// All rules were flushed from the pf anchor
     RulesFlushed,
+    /// The aifw daemon started
     DaemonStarted,
+    /// The aifw daemon stopped
     DaemonStopped,
+    /// A non-rule configuration change (also the fallback when parsing unknown action strings)
     ConfigChanged,
 }
 
@@ -58,15 +74,18 @@ impl AuditAction {
     }
 }
 
+/// SQLite-backed audit trail; every rule/config/daemon event lands in the `audit_log` table
 pub struct AuditLog {
     pool: SqlitePool,
 }
 
 impl AuditLog {
+    /// Create an audit log handle over an existing SQLite pool (call `migrate` before use)
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 
+    /// Create the `audit_log` table and its timestamp/action indexes if they don't exist
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -94,6 +113,7 @@ impl AuditLog {
         Ok(())
     }
 
+    /// Insert a new audit entry (timestamped now) into the log and return it
     pub async fn log(
         &self,
         action: AuditAction,
@@ -145,6 +165,7 @@ impl AuditLog {
         Ok(entry)
     }
 
+    /// Fetch the most recent audit entries, newest first, capped at `limit` rows
     pub async fn list(&self, limit: i64) -> Result<Vec<AuditEntry>> {
         let rows = sqlx::query_as::<_, AuditRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {AUDIT_LOG_COLUMNS} FROM audit_log ORDER BY timestamp DESC LIMIT ?1"
@@ -156,6 +177,7 @@ impl AuditLog {
         rows.into_iter().map(|r| r.into_entry()).collect()
     }
 
+    /// Fetch all audit entries for one firewall rule, newest first
     pub async fn list_for_rule(&self, rule_id: Uuid) -> Result<Vec<AuditEntry>> {
         let rows = sqlx::query_as::<_, AuditRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {AUDIT_LOG_COLUMNS} FROM audit_log WHERE rule_id = ?1 ORDER BY timestamp DESC"
@@ -167,6 +189,7 @@ impl AuditLog {
         rows.into_iter().map(|r| r.into_entry()).collect()
     }
 
+    /// Fetch the most recent audit entries of one action kind, newest first, capped at `limit`
     pub async fn list_by_action(&self, action: AuditAction, limit: i64) -> Result<Vec<AuditEntry>> {
         let rows = sqlx::query_as::<_, AuditRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {AUDIT_LOG_COLUMNS} FROM audit_log WHERE action = ?1 ORDER BY timestamp DESC LIMIT ?2"
@@ -179,6 +202,7 @@ impl AuditLog {
         rows.into_iter().map(|r| r.into_entry()).collect()
     }
 
+    /// Total number of entries in the audit log
     pub async fn count(&self) -> Result<i64> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_log")
             .fetch_one(&self.pool)

@@ -20,14 +20,23 @@ use std::time::Duration;
 /// not reorder — mask values are persisted in the DB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
+    /// A config snapshot was saved (bit 0)
     BackupSaved,
+    /// A backup upload to S3 succeeded (bit 1)
     S3UploadOk,
+    /// A backup upload to S3 failed (bit 2)
     S3UploadFailed,
+    /// A config restore completed successfully (bit 3)
     RestoreOk,
+    /// A config restore failed (bit 4)
     RestoreFailed,
+    /// Old backup versions were pruned by retention (bit 5)
     Pruned,
+    /// An ACME cert renewed successfully (bit 6)
     CertRenewedOk,
+    /// An ACME cert renewal failed (bit 7)
     CertRenewFailed,
+    /// An ACME cert is inside its expiry-warning window (bit 8)
     CertExpiringSoon,
 }
 
@@ -46,6 +55,8 @@ impl Event {
         }
     }
 
+    /// Human-readable event name used in the email body and the UI's
+    /// event-subscription list
     pub fn label(self) -> &'static str {
         match self {
             Event::BackupSaved => "Config snapshot saved",
@@ -60,6 +71,7 @@ impl Event {
         }
     }
 
+    /// Email subject line for this event (failures are marked "FAILED")
     pub fn subject(self) -> &'static str {
         match self {
             Event::BackupSaved => "AiFw: config snapshot saved",
@@ -88,13 +100,18 @@ fn default_enabled_mask() -> u32 {
 // Config
 // ============================================================================
 
+/// How the SMTP connection is encrypted. Wire values are lowercase
+/// (`none` / `starttls` / `implicittls`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum TlsMode {
+    /// Plaintext SMTP — no encryption (local relays only)
     None,
+    /// Plain connection upgraded via STARTTLS (typical on port 587; the default)
     #[default]
     StartTls,
+    /// TLS from the first byte (typical on port 465)
     ImplicitTls,
 }
 
@@ -115,17 +132,25 @@ impl TlsMode {
     }
 }
 
+/// SMTP notification settings — a singleton row (`smtp_notify_config`,
+/// id = 1). Mirrored to the API; the password is masked on read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmtpConfig {
+    /// Global on/off; when false no event mail is sent (test_send still works)
     pub enabled: bool,
+    /// SMTP server hostname; empty means unconfigured
     pub host: String,
+    /// SMTP server port (default 587)
     pub port: u16,
+    /// Connection encryption mode (default STARTTLS)
     pub tls: TlsMode,
+    /// SMTP auth username. Empty/None means no authentication
     #[serde(default)]
     pub username: Option<String>,
     /// Password is write-only — GET returns `""` if set, `null` otherwise.
     #[serde(default)]
     pub password: Option<String>,
+    /// RFC 5322 From address on outgoing mail (default `aifw@localhost`)
     pub from_address: String,
     /// Comma-separated list of RFC 5322 recipients.
     pub recipients: String,
@@ -150,6 +175,8 @@ impl Default for SmtpConfig {
 }
 
 impl SmtpConfig {
+    /// True when SMTP is globally enabled AND this event's bit is set in
+    /// `enabled_events`
     pub fn is_event_enabled(&self, ev: Event) -> bool {
         self.enabled && self.enabled_events & ev.bit() != 0
     }
@@ -159,6 +186,9 @@ impl SmtpConfig {
 // Schema
 // ============================================================================
 
+/// Create the `smtp_notify_config` table if missing, seed the singleton row,
+/// and back-fill the default event mask for legacy rows that stored 0.
+/// Idempotent; called once at startup
 pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS smtp_notify_config (
@@ -189,6 +219,8 @@ pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     Ok(())
 }
 
+/// Read the singleton SMTP config row, including the stored password.
+/// Falls back to defaults if the row is missing or the query fails
 pub async fn load(pool: &SqlitePool) -> SmtpConfig {
     sqlx::query_as::<_, (i64, String, i64, String, Option<String>, Option<String>, String, String, i64)>(
         r#"SELECT enabled, host, port, tls, username, password, from_address, recipients, enabled_events
@@ -212,7 +244,7 @@ pub async fn load(pool: &SqlitePool) -> SmtpConfig {
     .unwrap_or_default()
 }
 
-/// See [`s3_backup::save`] for the same `None` vs `Some("")` secret dance.
+/// See `s3_backup::save` for the same `None` vs `Some("")` secret dance.
 pub async fn save(pool: &SqlitePool, cfg: &SmtpConfig) -> Result<(), String> {
     let existing = load(pool).await;
     let final_password = match cfg.password.as_deref() {

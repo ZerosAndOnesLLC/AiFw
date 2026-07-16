@@ -6,14 +6,21 @@ use crate::ring::RingBuffer;
 /// A single metric data point
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricPoint {
+    /// When the point was recorded (or, for consolidated points, the
+    /// timestamp of the last folded sample)
     pub timestamp: DateTime<Utc>,
+    /// Recorded or aggregated value
     pub value: f64,
+    /// Minimum raw value folded into this point
     pub min: f64,
+    /// Maximum raw value folded into this point
     pub max: f64,
+    /// Number of raw samples folded into this point (1 for a live point)
     pub count: u64,
 }
 
 impl MetricPoint {
+    /// Single-sample point timestamped now, with min/max set to the value
     pub fn new(value: f64) -> Self {
         Self {
             timestamp: Utc::now(),
@@ -24,6 +31,7 @@ impl MetricPoint {
         }
     }
 
+    /// Builder: replace the auto-assigned timestamp
     pub fn with_timestamp(mut self, ts: DateTime<Utc>) -> Self {
         self.timestamp = ts;
         self
@@ -34,10 +42,15 @@ impl MetricPoint {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Aggregation {
+    /// Count-weighted mean of the folded values (for rates)
     Average,
+    /// Sum of the folded values (for counters)
     Sum,
+    /// Smallest folded value
     Min,
+    /// Largest folded value
     Max,
+    /// Most recent folded value (for gauges)
     Last,
 }
 
@@ -86,13 +99,18 @@ pub fn aggregate(points: &[MetricPoint], method: Aggregation) -> Option<MetricPo
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
+    /// 1-second resolution, 30-minute window
     Live,
+    /// 10-second resolution, 6-hour window
     Short,
+    /// 60-second resolution, 7-day window
     Mid,
+    /// 300-second resolution, 30-day window
     Long,
 }
 
 impl Tier {
+    /// Ring-buffer size (number of points) retained for this tier
     pub fn capacity(&self) -> usize {
         match self {
             Tier::Live => 1800,  // 30 min at 1 s
@@ -102,6 +120,7 @@ impl Tier {
         }
     }
 
+    /// Seconds between consecutive points in this tier
     pub fn interval_secs(&self) -> u64 {
         match self {
             Tier::Live => 1,
@@ -111,6 +130,7 @@ impl Tier {
         }
     }
 
+    /// Lowercase tier name used in query results and the REST API
     pub fn label(&self) -> &'static str {
         match self {
             Tier::Live => "live",
@@ -134,11 +154,17 @@ impl Tier {
 /// A multi-resolution time series for a single metric
 #[derive(Debug, Clone)]
 pub struct MetricSeries {
+    /// Metric name (e.g. "pf.states")
     pub name: String,
+    /// Method used when folding points into coarser tiers
     pub aggregation: Aggregation,
+    /// Live tier: 1-second points, 30-minute window
     pub live: RingBuffer<MetricPoint>,
+    /// Short tier: 10-second points, 6-hour window
     pub short: RingBuffer<MetricPoint>,
+    /// Mid tier: 60-second points, 7-day window
     pub mid: RingBuffer<MetricPoint>,
+    /// Long tier: 300-second points, 30-day window
     pub long: RingBuffer<MetricPoint>,
     short_acc: Vec<MetricPoint>,
     mid_acc: Vec<MetricPoint>,
@@ -146,6 +172,8 @@ pub struct MetricSeries {
 }
 
 impl MetricSeries {
+    /// Create an empty series with all four tier buffers sized to their
+    /// standard capacities
     pub fn new(name: &str, aggregation: Aggregation) -> Self {
         Self {
             name: name.to_string(),

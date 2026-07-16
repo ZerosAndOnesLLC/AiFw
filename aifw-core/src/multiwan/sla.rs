@@ -7,17 +7,28 @@ use sqlx::Row;
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
 
+/// One aggregated 1-minute bucket of probe statistics for a gateway
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlaSample {
+    /// Gateway the bucket belongs to
     pub gateway_id: Uuid,
+    /// Start of the 1-minute aggregation bucket (UTC)
     pub bucket_ts: DateTime<Utc>,
+    /// Number of probes aggregated into this bucket
     pub samples: u64,
+    /// Mean round-trip time over the bucket, in milliseconds
     pub rtt_avg: Option<f64>,
+    /// 95th-percentile round-trip time, in milliseconds
     pub rtt_p95: Option<f64>,
+    /// 99th-percentile round-trip time, in milliseconds
     pub rtt_p99: Option<f64>,
+    /// Mean jitter over the bucket, in milliseconds
     pub jitter_avg: Option<f64>,
+    /// Packet loss over the bucket as a percentage (0–100)
     pub loss_pct: Option<f64>,
+    /// Mean approximated MOS score (1.0–4.5) over the bucket
     pub mos_avg: Option<f64>,
+    /// Seconds within the bucket the gateway was in the Up state
     pub up_seconds: u64,
 }
 
@@ -28,15 +39,19 @@ pub struct SlaSample {
 const SLA_COLUMNS: &str = "gateway_id, bucket_ts, samples, rtt_avg, rtt_p95, rtt_p99, \
     jitter_avg, loss_pct, mos_avg, up_seconds";
 
+/// SLA history engine: stores per-gateway 1-minute probe aggregates in
+/// `multiwan_sla_samples` for windowed queries and retention pruning
 pub struct SlaEngine {
     pool: SqlitePool,
 }
 
 impl SlaEngine {
+    /// Create the engine over an existing SQLite pool (call `migrate` before use)
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 
+    /// Create the `multiwan_sla_samples` table if it doesn't exist
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"

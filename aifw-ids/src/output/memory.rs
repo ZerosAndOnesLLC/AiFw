@@ -248,6 +248,7 @@ pub struct MemoryOutput {
 }
 
 impl MemoryOutput {
+    /// Create an output that pushes every emitted alert into `buffer`
     pub fn new(buffer: Arc<AlertBuffer>) -> Self {
         Self { buffer }
     }
@@ -279,19 +280,30 @@ impl std::fmt::Debug for AlertBuffer {
     }
 }
 
+/// Usage snapshot of an [`AlertBuffer`], as returned by `AlertBuffer::stats`
 #[derive(Debug, Clone)]
 pub struct AlertBufferStats {
+    /// Number of alerts currently buffered
     pub count: usize,
+    /// Estimated memory use in MB (count × ~1200 bytes per alert)
     pub estimated_mb: f64,
+    /// Configured memory limit in MB
     pub max_mb: f64,
+    /// Estimated usage as a percentage of the limit, capped at 100
     pub usage_pct: f64,
+    /// Timestamp of the oldest buffered alert; `None` when empty
     pub oldest: Option<chrono::DateTime<chrono::Utc>>,
+    /// Timestamp of the newest buffered alert; `None` when empty
     pub newest: Option<chrono::DateTime<chrono::Utc>>,
+    /// Configured maximum alert age in seconds (0 disables age eviction)
     pub max_age_secs: usize,
+    /// Alert counts per classification label, sorted by count descending
     pub by_classification: Vec<(String, usize)>,
 }
 
 impl AlertBufferStats {
+    /// Render the stats as the JSON object served by the API
+    /// (MB values rounded to one decimal, timestamps as RFC 3339)
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "count": self.count,

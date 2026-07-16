@@ -9,11 +9,17 @@ use crate::flow::{Flow, FlowDirection};
 /// Detected application-layer protocol
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppProto {
+    /// HTTP/1.x
     Http,
+    /// TLS/SSL
     Tls,
+    /// DNS
     Dns,
+    /// SSH
     Ssh,
+    /// SMTP
     Smtp,
+    /// Payload didn't match any known protocol
     Unknown,
 }
 

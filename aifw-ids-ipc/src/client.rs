@@ -14,16 +14,22 @@ use thiserror::Error;
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
+/// Errors returned by [`IdsClient`] calls
 #[derive(Debug, Error)]
 pub enum IdsClientError {
+    /// Could not connect to the IDS socket (service down or socket missing)
     #[error("ids service unavailable: {0}")]
     Unavailable(String),
+    /// Connect or request/response exchange exceeded the 2-second timeout
     #[error("ids service timeout")]
     Timeout,
+    /// The server replied with an `IpcResponse::Error` message
     #[error("ids server error: {0}")]
     Server(String),
+    /// Failed to encode/decode a length-prefixed frame on the stream
     #[error("framing error: {0}")]
     Framing(#[from] crate::framing::FrameError),
+    /// The server replied with a response variant that doesn't match the request
     #[error("unexpected response shape")]
     UnexpectedResponse,
 }
@@ -50,6 +56,8 @@ struct Cache {
     alerts_tail: Option<CacheEntry<Vec<AlertSummary>>>,
 }
 
+/// Unix-socket client for the aifw-ids IPC with per-endpoint TTL caching
+/// of read responses and a small pool of reused connections
 pub struct IdsClient {
     socket_path: PathBuf,
     cache: Arc<Mutex<Cache>>,
@@ -59,6 +67,8 @@ pub struct IdsClient {
 }
 
 impl IdsClient {
+    /// Create a client for the IDS IPC socket at `socket_path`. No
+    /// connection is made until the first call.
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: socket_path.into(),
@@ -67,6 +77,7 @@ impl IdsClient {
         }
     }
 
+    /// Path of the Unix socket this client connects to
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
@@ -114,6 +125,8 @@ impl IdsClient {
         }
     }
 
+    /// Fetch the current IDS configuration from the service.
+    /// Served from a 5-second TTL cache when fresh.
     pub async fn get_config(&self) -> Result<aifw_common::ids::IdsConfig, IdsClientError> {
         {
             let cache = self.cache.lock().await;
@@ -138,6 +151,8 @@ impl IdsClient {
         }
     }
 
+    /// Replace the IDS configuration on the service. Invalidates every
+    /// cached read entry on success.
     pub async fn set_config(
         &self,
         config: aifw_common::ids::IdsConfig,
@@ -153,6 +168,8 @@ impl IdsClient {
         }
     }
 
+    /// Ask the service to reload its configuration and rules. Invalidates
+    /// the whole client cache whether or not the reload succeeds.
     pub async fn reload(&self) -> Result<(), IdsClientError> {
         let resp = self.raw_call(IpcRequest::Reload).await?;
         self.invalidate_all().await;
@@ -163,6 +180,8 @@ impl IdsClient {
         }
     }
 
+    /// Fetch runtime engine statistics (packet/alert counters, rates,
+    /// uptime). Served from a 2-second TTL cache when fresh.
     pub async fn get_stats(&self) -> Result<IdsStats, IdsClientError> {
         {
             let cache = self.cache.lock().await;
@@ -187,6 +206,8 @@ impl IdsClient {
         }
     }
 
+    /// List the configured rulesets with their enabled state and rule
+    /// counts. Served from a 30-second TTL cache when fresh.
     pub async fn list_rulesets(&self) -> Result<Vec<RulesetSummary>, IdsClientError> {
         {
             let cache = self.cache.lock().await;
@@ -211,6 +232,8 @@ impl IdsClient {
         }
     }
 
+    /// Look up a single rule by its `ids_rules.id` UUID string. Returns
+    /// `None` if the rule doesn't exist. Per-id 60-second TTL cache.
     pub async fn get_rule(&self, id: &str) -> Result<Option<RuleSummary>, IdsClientError> {
         {
             let cache = self.cache.lock().await;
@@ -240,6 +263,8 @@ impl IdsClient {
         }
     }
 
+    /// Enable or disable a single rule by id. On success, evicts that
+    /// rule's cache entry and the cached ruleset list.
     pub async fn set_rule(&self, id: &str, enabled: bool) -> Result<(), IdsClientError> {
         let resp = self
             .raw_call(IpcRequest::SetRule {
@@ -259,6 +284,8 @@ impl IdsClient {
         }
     }
 
+    /// Fetch the `count` most recent alerts (newest first). A 1-second
+    /// TTL cache is reused only if it already holds at least `count` entries.
     pub async fn tail_alerts(&self, count: u32) -> Result<Vec<AlertSummary>, IdsClientError> {
         {
             let cache = self.cache.lock().await;

@@ -2,15 +2,21 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::net::IpAddr;
 
+/// An address expression usable in pf rules. Serialized as a flat string
+/// ("any", "192.168.1.1", "10.0.0.0/8", "`<table>`").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Address {
+    /// Match any address (pf `any`)
     Any,
+    /// A single host IP
     Single(IpAddr),
+    /// A CIDR network: base address and prefix length
     Network(IpAddr, u8),
+    /// A pf table reference by name (rendered as `<name>`)
     Table(String),
 }
 
-/// Serialize Address as a flat string: "any", "10.0.0.0/8", "192.168.1.1", "<table>"
+/// Serialize Address as a flat string: "any", "10.0.0.0/8", "192.168.1.1", "`<table>`"
 impl Serialize for Address {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_string())
@@ -86,6 +92,9 @@ impl Address {
         Ok(())
     }
 
+    /// Parse from a flat string: "any" (also "interface"/"interface address"),
+    /// "`<table>`" (name validated), "ip/prefix", or a bare IP. Fails with
+    /// `Validation` on malformed input.
     pub fn parse(s: &str) -> crate::Result<Self> {
         let s = s.trim();
         if s.eq_ignore_ascii_case("any")
@@ -115,12 +124,17 @@ impl Address {
     }
 }
 
+/// A single TCP/UDP port number
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Port(pub u16);
 
+/// An inclusive port range; start == end represents a single port
+/// (displayed as `start:end` or just the port)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PortRange {
+    /// First port in the range (inclusive)
     pub start: u16,
+    /// Last port in the range (inclusive)
     pub end: u16,
 }
 
@@ -134,6 +148,7 @@ impl fmt::Display for PortRange {
     }
 }
 
+/// A network interface name (e.g. "em0"), passed through to pf verbatim
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Interface(pub String);
 

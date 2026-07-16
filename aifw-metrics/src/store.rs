@@ -20,6 +20,8 @@ pub struct MetricsStore {
 }
 
 impl MetricsStore {
+    /// Create an empty store; series recorded without prior `register` default
+    /// to `Aggregation::Average`
     pub fn new() -> Self {
         Self {
             series: DashMap::new(),

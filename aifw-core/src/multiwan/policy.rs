@@ -12,19 +12,25 @@ use uuid::Uuid;
 
 use super::group::{Selection, select};
 
+/// pf anchor holding the compiled policy-based routing (inbound match) rules
 pub const PBR_ANCHOR: &str = "aifw-pbr";
+/// pf anchor holding the reply-to rules that route return traffic back out the same gateway
 pub const REPLY_ANCHOR: &str = "aifw-mwan-reply";
 
+/// Policy-based routing engine: CRUD over `multiwan_policies` and compilation
+/// of active policies into pf rules in the PBR and reply anchors
 pub struct PolicyEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
 }
 
 impl PolicyEngine {
+    /// Create the engine over an existing pool and pf backend (call `migrate` before use)
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self { pool, pf }
     }
 
+    /// Create the `multiwan_policies` table and its priority index if they don't exist
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -66,6 +72,7 @@ impl PolicyEngine {
         Ok(())
     }
 
+    /// List all policy rules ordered by priority ascending (lowest evaluates first)
     pub async fn list(&self) -> Result<Vec<PolicyRule>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {POLICY_COLUMNS} FROM multiwan_policies ORDER BY priority ASC"
@@ -76,6 +83,7 @@ impl PolicyEngine {
         Ok(rows.iter().map(row_to_policy).collect())
     }
 
+    /// Fetch one policy rule by id. Fails with `NotFound` if it doesn't exist
     pub async fn get(&self, id: Uuid) -> Result<PolicyRule> {
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {POLICY_COLUMNS} FROM multiwan_policies WHERE id = ?1"
@@ -88,6 +96,7 @@ impl PolicyEngine {
         Ok(row_to_policy(&row))
     }
 
+    /// Insert a new policy rule (does not reload pf anchors; call `apply`)
     pub async fn add(&self, p: PolicyRule) -> Result<PolicyRule> {
         sqlx::query(
             r#"INSERT INTO multiwan_policies
@@ -124,6 +133,8 @@ impl PolicyEngine {
         Ok(p)
     }
 
+    /// Update a policy rule by id (refreshes `updated_at`). Fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn update(&self, p: PolicyRule) -> Result<PolicyRule> {
         let now = Utc::now();
         let res = sqlx::query(
@@ -166,6 +177,7 @@ impl PolicyEngine {
         Ok(updated)
     }
 
+    /// Delete a policy rule by id. Fails with `NotFound` if the id doesn't exist
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("DELETE FROM multiwan_policies WHERE id=?1")
             .bind(id.to_string())
@@ -255,9 +267,12 @@ impl PolicyEngine {
     }
 }
 
+/// pf rule strings produced by compiling the active policies, split by target anchor
 #[derive(Debug, Clone, Default)]
 pub struct CompiledPolicies {
+    /// Rules destined for the `aifw-pbr` anchor (forward-path routing)
     pub pbr: Vec<String>,
+    /// Rules destined for the `aifw-mwan-reply` anchor (return-path reply-to)
     pub reply: Vec<String>,
 }
 

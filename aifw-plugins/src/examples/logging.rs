@@ -12,14 +12,20 @@ pub struct LoggingPlugin {
     max_entries: usize,
 }
 
+/// One captured hook event in the [`LoggingPlugin`] buffer
 #[derive(Debug, Clone)]
 pub struct LogEntry {
+    /// When the event was captured (UTC)
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Which hook point fired
     pub hook: HookPoint,
+    /// Human-readable summary of the event payload
     pub message: String,
 }
 
 impl LoggingPlugin {
+    /// Create the plugin with an empty buffer capped at 10,000 entries
+    /// (overridable via `max_entries` config)
     pub fn new() -> Self {
         Self {
             log_buffer: RwLock::new(Vec::new()),
@@ -27,10 +33,12 @@ impl LoggingPlugin {
         }
     }
 
+    /// Snapshot (clone) of all buffered log entries, oldest first
     pub async fn get_entries(&self) -> Vec<LogEntry> {
         self.log_buffer.read().await.clone()
     }
 
+    /// Number of entries currently buffered
     pub async fn entry_count(&self) -> usize {
         self.log_buffer.read().await.len()
     }

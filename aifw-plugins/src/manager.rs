@@ -25,6 +25,7 @@ pub struct DispatchSet {
 }
 
 impl DispatchSet {
+    /// True if the snapshot contains no running plugins (dispatch would be a no-op)
     pub fn is_empty(&self) -> bool {
         self.plugins.is_empty()
     }
@@ -53,6 +54,7 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
+    /// Create an empty manager; plugins are added via `register`
     pub fn new(ctx: PluginContext) -> Self {
         Self {
             plugins: HashMap::new(),

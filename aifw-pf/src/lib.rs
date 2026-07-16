@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! # aifw-pf
 //!
 //! Abstraction over FreeBSD `pf`. The [`backend::PfBackend`] trait is
@@ -5,16 +6,21 @@
 //! and an ioctl/pfctl backend (FreeBSD), selected at compile time via
 //! `#[cfg(target_os)]`. Use [`create_backend`] to get the right one.
 
+/// The [`PfBackend`] trait — the cross-platform pf abstraction all engines code against
 pub mod backend;
+/// Crate error type ([`PfError`]) covering device, ioctl, rule, table, and anchor failures
 pub mod error;
 #[cfg(test)]
 mod tests;
+/// Data types returned by backends: state entries, counters, table entries
 pub mod types;
 
 // Both backends always compile so cargo check on any host catches
 // schema mismatches in the FreeBSD-only ioctl path. Only one is
 // selected at runtime by create_backend() below.
+/// Real FreeBSD backend — shells out to `sudo pfctl` (raw /dev/pf ioctl planned)
 pub mod ioctl;
+/// In-memory mock backend used on Linux/WSL for development and in tests
 pub mod mock;
 
 pub use backend::PfBackend;

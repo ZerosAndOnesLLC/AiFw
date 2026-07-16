@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Kind of NAT translation a [`NatRule`] performs (wire values are snake_case)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NatType {
@@ -34,6 +35,9 @@ impl std::fmt::Display for NatType {
 }
 
 impl NatType {
+    /// Parse from a case-insensitive string; accepts synonyms
+    /// ("rdr" for dnat, "masq" for masquerade). Fails with `Validation`
+    /// on anything else.
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().as_str() {
             "snat" => Ok(NatType::Snat),
@@ -49,17 +53,22 @@ impl NatType {
     }
 }
 
+/// Enabled/disabled state of a NAT rule
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NatStatus {
+    /// Rule is enforced in pf
     Active,
+    /// Rule is stored but not pushed to pf
     Disabled,
 }
 
 /// Redirect target for NAT rules
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NatRedirect {
+    /// Address traffic is translated to
     pub address: Address,
+    /// Optional target port (range); `None` keeps the original port
     pub port: Option<PortRange>,
 }
 
@@ -73,24 +82,40 @@ impl std::fmt::Display for NatRedirect {
     }
 }
 
+/// A NAT rule, rendered to pf `nat`/`rdr`/`binat` syntax via [`Self::to_pf_rules`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NatRule {
+    /// Unique rule ID
     pub id: Uuid,
+    /// Kind of translation (SNAT, DNAT, masquerade, ...)
     pub nat_type: NatType,
+    /// Interface the rule is applied on (`nat on <iface>`)
     pub interface: Interface,
+    /// Protocol to match; `Any` omits the `proto` clause
     pub protocol: crate::Protocol,
+    /// Source address to match
     pub src_addr: Address,
+    /// Optional source port (range) to match
     pub src_port: Option<PortRange>,
+    /// Destination address to match (for DNAT, the external address being redirected)
     pub dst_addr: Address,
+    /// Optional destination port (range) to match
     pub dst_port: Option<PortRange>,
+    /// Translation target (address and optional port)
     pub redirect: NatRedirect,
+    /// Optional display label; stored in the DB only — pf NAT rules don't support labels
     pub label: Option<String>,
+    /// Whether the rule is active or disabled
     pub status: NatStatus,
+    /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (UTC)
     pub updated_at: DateTime<Utc>,
 }
 
 impl NatRule {
+    /// Create an active rule with a random ID, no ports/label, and both
+    /// timestamps set to now
     pub fn new(
         nat_type: NatType,
         interface: Interface,

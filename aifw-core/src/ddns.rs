@@ -26,6 +26,8 @@ use std::time::Duration;
 // Types
 // =============================================================================
 
+/// Which DNS record family a DDNS entry keeps updated. Wire values are
+/// lowercase (`a` / `aaaa` / `both`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RecordType {
@@ -38,6 +40,7 @@ pub enum RecordType {
 }
 
 impl RecordType {
+    /// Wire/DB string for this record type (`"a"`, `"aaaa"`, or `"both"`)
     pub fn as_str(self) -> &'static str {
         match self {
             RecordType::A => "a",
@@ -45,6 +48,8 @@ impl RecordType {
             RecordType::Both => "both",
         }
     }
+    /// Parse a DB/wire string (case-insensitive); anything unrecognized
+    /// falls back to `A`
     pub fn from_str(s: &str) -> RecordType {
         match s.to_ascii_lowercase().as_str() {
             "aaaa" => RecordType::Aaaa,
@@ -67,6 +72,7 @@ pub enum IpSource {
 }
 
 impl IpSource {
+    /// Wire/DB string for this source (e.g. `"auto-public"`)
     pub fn as_str(self) -> &'static str {
         match self {
             IpSource::AutoPublic => "auto-public",
@@ -74,6 +80,7 @@ impl IpSource {
             IpSource::Explicit => "explicit",
         }
     }
+    /// Parse a DB/wire string; anything unrecognized falls back to `AutoPublic`
     pub fn from_str(s: &str) -> IpSource {
         match s {
             "interface" => IpSource::Interface,
@@ -83,14 +90,19 @@ impl IpSource {
     }
 }
 
+/// One dynamic-DNS entry: which hostname to keep updated, how to detect the
+/// IP, and the last-published state. Backed by the `ddns_record` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DdnsRecord {
+    /// Row id in `ddns_record`
     pub id: i64,
     /// FK into `acme_dns_provider` — same credential row used for ACME.
     pub provider_id: i64,
     /// FQDN to update (e.g. `home.example.com`).
     pub hostname: String,
+    /// Which record family to publish (A, AAAA, or both)
     pub record_type: RecordType,
+    /// How the IP to publish is detected (public echo / interface / fixed)
     pub source: IpSource,
     /// Local interface name when `source = Interface`. Ignored otherwise.
     pub interface: Option<String>,
@@ -100,13 +112,18 @@ pub struct DdnsRecord {
     /// TTL we publish on the record. Defaults to 60 — short enough that
     /// IP changes propagate quickly without risk of hot-spots.
     pub ttl: i32,
+    /// Disabled records are skipped by both the scheduler and force-update
     pub enabled: bool,
     /// Last IP we successfully published, so the scheduler can no-op when
     /// nothing has changed.
     pub last_ip: Option<String>,
+    /// Last IPv6 we successfully published (AAAA / Both records only)
     pub last_ipv6: Option<String>,
+    /// When the record was last processed (success or failure)
     pub last_updated: Option<DateTime<Utc>>,
+    /// Outcome of the last run: `"updated"`, `"unchanged"`, or `"error"`
     pub last_status: Option<String>,
+    /// Error detail from the last failed run; None after a success
     pub last_error: Option<String>,
 }
 
@@ -114,6 +131,8 @@ pub struct DdnsRecord {
 // Schema
 // =============================================================================
 
+/// Create the `ddns_record` and `ddns_config` tables if they don't exist and
+/// seed the singleton config row. Idempotent; called once at startup.
 pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query(
         r#"
@@ -162,10 +181,15 @@ pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     Ok(())
 }
 
+/// Global DDNS settings — a singleton row (`ddns_config`, id = 1) shared by
+/// all records.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DdnsConfig {
+    /// Seconds between scheduler sweeps. Valid range 60..86400; default 300
     pub poll_interval_secs: i64,
+    /// IP-echo service queried for the public IPv4 (default api.ipify.org)
     pub ip_echo_url_v4: String,
+    /// IP-echo service queried for the public IPv6 (default api6.ipify.org)
     pub ip_echo_url_v6: String,
 }
 
@@ -179,6 +203,9 @@ impl Default for DdnsConfig {
     }
 }
 
+/// Read the singleton DDNS config row, clamping the poll interval to a
+/// 60-second floor. Falls back to defaults if the row is missing or the
+/// query fails
 pub async fn load_config(pool: &SqlitePool) -> DdnsConfig {
     sqlx::query_as::<_, (i64, String, String)>(
         "SELECT poll_interval_secs, ip_echo_url_v4, ip_echo_url_v6 FROM ddns_config WHERE id = 1",
@@ -195,6 +222,9 @@ pub async fn load_config(pool: &SqlitePool) -> DdnsConfig {
     .unwrap_or_default()
 }
 
+/// Validate and persist the singleton DDNS config. Fails if the poll
+/// interval is outside 60..86400 or either echo URL is rejected by
+/// `net_safety::validate_outbound_url` (SSRF guard)
 pub async fn save_config(pool: &SqlitePool, c: &DdnsConfig) -> Result<(), String> {
     if c.poll_interval_secs < 60 || c.poll_interval_secs > 86400 {
         return Err("poll_interval_secs must be 60..86400".into());
@@ -249,6 +279,7 @@ fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> DdnsRecord {
     }
 }
 
+/// Fetch one DDNS record by row id. None if missing or on a query error
 pub async fn load_record(pool: &SqlitePool, id: i64) -> Option<DdnsRecord> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {DDNS_RECORD_COLUMNS} FROM ddns_record WHERE id = ?"
@@ -261,6 +292,7 @@ pub async fn load_record(pool: &SqlitePool, id: i64) -> Option<DdnsRecord> {
     .map(|r| row_to_record(&r))
 }
 
+/// Fetch every DDNS record ordered by hostname. Empty on query error
 pub async fn load_all_records(pool: &SqlitePool) -> Vec<DdnsRecord> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {DDNS_RECORD_COLUMNS} FROM ddns_record ORDER BY hostname"
@@ -283,6 +315,8 @@ pub async fn detect_ipv4(record: &DdnsRecord, cfg: &DdnsConfig) -> Result<IpAddr
     detect_ip(record, cfg, false).await
 }
 
+/// Resolve the IPv6 we should publish for this record, per its `source`.
+/// May hit the v6 IP-echo service or shell out to ifconfig
 pub async fn detect_ipv6(record: &DdnsRecord, cfg: &DdnsConfig) -> Result<IpAddr, String> {
     detect_ip(record, cfg, true).await
 }
@@ -493,10 +527,14 @@ pub async fn update_record(pool: &SqlitePool, record_id: i64) -> Result<UpdateOu
     })
 }
 
+/// Result of a single [`update_record`] run
 #[derive(Debug)]
 pub enum UpdateOutcome {
+    /// DNS was changed; each entry is (record type name, published IP)
     Updated(Vec<(String, IpAddr)>),
+    /// Detected IP matched the last-published value — no API call made
     Unchanged,
+    /// Record not processed; the string says why (e.g. "record disabled")
     Skipped(String),
 }
 

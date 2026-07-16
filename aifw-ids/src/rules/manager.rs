@@ -13,6 +13,8 @@ pub struct RulesetManager {
 }
 
 impl RulesetManager {
+    /// Create a manager over the SQLite pool holding the `ids_rulesets`
+    /// and `ids_rules` tables.
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }

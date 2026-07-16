@@ -19,24 +19,35 @@ pub struct FirewallConfig {
     /// Schema version for forward compatibility
     pub schema_version: u32,
 
+    /// Hostname, interfaces, DNS, API listen address, console/SSH access
     pub system: SystemConfig,
+    /// Token lifetimes and TOTP/OAuth login policy
     pub auth: AuthConfig,
+    /// Filter rules, ordered by priority
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
+    /// NAT rules (SNAT, DNAT/port-forward, masquerade, binat, NAT64/46)
     #[serde(default)]
     pub nat: Vec<NatRuleConfig>,
+    /// Traffic-shaping queue definitions
     #[serde(default)]
     pub queues: Vec<QueueConfigEntry>,
+    /// Per-source-IP connection rate limits
     #[serde(default)]
     pub rate_limits: Vec<RateLimitEntry>,
+    /// WireGuard tunnels and IPsec SAs
     #[serde(default)]
     pub vpn: VpnConfig,
+    /// Per-country geo-IP allow/block entries
     #[serde(default)]
     pub geoip: Vec<GeoIpEntry>,
+    /// TLS inspection policy (min version, cert checks, JA3/SNI rules)
     #[serde(default)]
     pub tls: TlsConfig,
+    /// High availability: CARP VIPs, pfsync, cluster nodes
     #[serde(default)]
     pub ha: HaConfig,
+    /// Tuning overrides (currently just the `pf.max_states` sysctl)
     #[serde(default)]
     pub tuning: Vec<TuningEntry>,
     /// DHCP subnets, reservations, global config, DDNS, HA. Added in a later
@@ -76,14 +87,21 @@ impl Default for FirewallConfig {
     }
 }
 
+/// A named pf alias as captured in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AliasConfig {
+    /// Unique alias ID (UUID string)
     pub id: String,
+    /// Alias name referenced from rules
     pub name: String,
+    /// Kind of entries — `host`, `network`, `port`, or `url_table`
     pub alias_type: String,
+    /// Member values (IPs, CIDRs, ports, or a URL depending on type)
     pub entries: Vec<String>,
+    /// Optional free-form note
     #[serde(default)]
     pub description: Option<String>,
+    /// Whether the alias is applied to pf (defaults to true on restore)
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -92,19 +110,28 @@ fn default_true() -> bool {
     true
 }
 
+/// A static route as captured in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticRouteConfig {
+    /// Unique route ID (UUID string)
     pub id: String,
+    /// Destination network in CIDR notation
     pub destination: String,
+    /// Next-hop gateway IP
     pub gateway: String,
+    /// Optional egress interface name; None = let the kernel pick
     #[serde(default)]
     pub interface: Option<String>,
+    /// Route metric (lower wins)
     #[serde(default)]
     pub metric: i32,
+    /// Whether the route is installed (defaults to true on restore)
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Optional free-form note
     #[serde(default)]
     pub description: Option<String>,
+    /// FreeBSD FIB (routing table) number; 0 = default table
     #[serde(default)]
     pub fib: u32,
 }
@@ -198,27 +225,43 @@ impl FirewallConfig {
 // Sub-config sections
 // ============================================================
 
+/// System-level settings: identity, interfaces, DNS, API endpoint, and
+/// console/SSH access
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemConfig {
+    /// System hostname (validated on restore: max 253 chars, no NUL/newline)
     pub hostname: String,
+    /// Upstream DNS resolver IPs (validated on restore)
     pub dns_servers: Vec<String>,
+    /// WAN-facing network interface name (e.g. `em0`)
     pub wan_interface: String,
+    /// LAN interface name; None = no LAN side configured
     pub lan_interface: Option<String>,
+    /// LAN interface address; None = no LAN side configured
     pub lan_ip: Option<String>,
+    /// Address the REST API binds to
     pub api_listen: String,
+    /// TCP port the REST API and web UI listen on (must be non-zero)
     pub api_port: u16,
+    /// Whether the API serves the web UI
     pub ui_enabled: bool,
 
+    /// DNS domain suffix for the appliance
     #[serde(default)]
     pub domain: String,
+    /// IANA timezone name (defaults to `UTC`)
     #[serde(default = "default_timezone")]
     pub timezone: String,
+    /// Banner text shown before login on console/SSH
     #[serde(default)]
     pub login_banner: String,
+    /// Message of the day shown after login
     #[serde(default)]
     pub motd: String,
+    /// Console output selection (video/serial/dual) and baud rate
     #[serde(default)]
     pub console: ConsoleConfig,
+    /// sshd access policy
     #[serde(default)]
     pub ssh: SshAccessConfig,
 }
@@ -248,19 +291,27 @@ impl Default for SystemConfig {
     }
 }
 
+/// Which console(s) the system uses for boot and login output
+/// (wire values are lowercase)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ConsoleKind {
+    /// VGA/video console only (the default)
     #[default]
     Video,
+    /// Serial console only
     Serial,
+    /// Both video and serial consoles
     Dual,
 }
 
+/// Console selection and serial line settings
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConsoleConfig {
+    /// Active console type(s)
     #[serde(default)]
     pub kind: ConsoleKind,
+    /// Serial console baud rate (defaults to 115200)
     #[serde(default = "default_baud")]
     pub baud: u32,
 }
@@ -278,11 +329,16 @@ impl Default for ConsoleConfig {
     }
 }
 
+/// sshd access policy applied to the appliance
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SshAccessConfig {
+    /// Whether sshd runs
     pub enabled: bool,
+    /// TCP port sshd listens on
     pub port: u16,
+    /// Allow password authentication (false = key-only)
     pub password_auth: bool,
+    /// Allow direct root login over SSH
     pub permit_root_login: bool,
 }
 
@@ -297,12 +353,18 @@ impl Default for SshAccessConfig {
     }
 }
 
+/// API authentication policy: token lifetimes and TOTP/OAuth requirements
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
+    /// JWT access-token lifetime in minutes
     pub access_token_expiry_mins: i64,
+    /// Refresh-token lifetime in days
     pub refresh_token_expiry_days: i64,
+    /// Require TOTP two-factor for password logins
     pub require_totp: bool,
+    /// Also require TOTP for OAuth-authenticated logins
     pub require_totp_for_oauth: bool,
+    /// Auto-create a local user on first OAuth login
     pub auto_create_oauth_users: bool,
 }
 
@@ -318,32 +380,53 @@ impl Default for AuthConfig {
     }
 }
 
+/// A filter rule as stored in a config snapshot (string-typed mirror of
+/// the rule engine's `FirewallRule`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {
+    /// Unique rule ID (UUID string)
     pub id: String,
+    /// Ordering key; lower values are emitted to pf first
     pub priority: i32,
+    /// `pass`, `block`, `block_drop`, or `block_return`
     pub action: String,
+    /// Traffic direction — `in`, `out`, or `any`
     pub direction: String,
+    /// Protocol match (e.g. `tcp`, `udp`, `icmp`, `any`)
     pub protocol: String,
+    /// Interface the rule applies on; None = all interfaces
     pub interface: Option<String>,
+    /// Source address/CIDR/alias; None = any
     pub src_addr: Option<String>,
+    /// Start of source port range; None = any port
     pub src_port_start: Option<u16>,
+    /// End of source port range (inclusive)
     pub src_port_end: Option<u16>,
+    /// Destination address/CIDR/alias; None = any
     pub dst_addr: Option<String>,
+    /// Start of destination port range; None = any port
     pub dst_port_start: Option<u16>,
+    /// End of destination port range (inclusive)
     pub dst_port_end: Option<u16>,
+    /// Log matching packets via pflog
     pub log: bool,
+    /// pf `quick` — stop rule evaluation on match
     pub quick: bool,
+    /// Optional human-readable label
     pub label: Option<String>,
+    /// `none`, `keep_state`, `modulate_state`, or `synproxy_state`
     pub state_tracking: String,
+    /// `active` or `disabled`
     pub status: String,
     /// Address family — `inet`, `inet6`, or `both`. Older backups predate
     /// this field; default to `both` so historical rules keep their
     /// dual-stack semantics on restore.
     #[serde(default = "default_ip_version")]
     pub ip_version: String,
+    /// Negate the source match (pf `!`)
     #[serde(default)]
     pub src_invert: bool,
+    /// Negate the destination match (pf `!`)
     #[serde(default)]
     pub dst_invert: bool,
 }
@@ -352,113 +435,197 @@ fn default_ip_version() -> String {
     "both".to_string()
 }
 
+/// A NAT rule as stored in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NatRuleConfig {
+    /// Unique rule ID (UUID string)
     pub id: String,
+    /// `snat`, `dnat`, `masquerade`, `binat`, `nat64`, or `nat46`
     pub nat_type: String,
+    /// Interface the translation applies on
     pub interface: String,
+    /// Protocol match (e.g. `tcp`, `udp`, `any`)
     pub protocol: String,
+    /// Source address/CIDR match; None = any
     pub src_addr: Option<String>,
+    /// Start of source port range; None = any port
     pub src_port_start: Option<u16>,
+    /// End of source port range (inclusive)
     pub src_port_end: Option<u16>,
+    /// Destination address/CIDR match; None = any
     pub dst_addr: Option<String>,
+    /// Start of destination port range; None = any port
     pub dst_port_start: Option<u16>,
+    /// End of destination port range (inclusive)
     pub dst_port_end: Option<u16>,
+    /// Translation target address
     pub redirect_addr: String,
+    /// Start of translated port range; None = keep original port
     pub redirect_port_start: Option<u16>,
+    /// End of translated port range (inclusive)
     pub redirect_port_end: Option<u16>,
+    /// Optional human-readable label
     pub label: Option<String>,
+    /// `active` or `disabled`
     pub status: String,
 }
 
+/// A traffic-shaping queue as stored in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueConfigEntry {
+    /// Unique queue ID (UUID string)
     pub id: String,
+    /// pf queue name
     pub name: String,
+    /// Interface the queue is attached to
     pub interface: String,
+    /// Queueing discipline — `codel`, `hfsc`, or `priq`
     pub queue_type: String,
+    /// Bandwidth amount, in units of `bandwidth_unit`
     pub bandwidth_value: u64,
+    /// Bandwidth unit — `bps`, `kbps`, `mbps`, or `gbps`
     pub bandwidth_unit: String,
+    /// Priority class — `voip`, `interactive`, `default`, or `bulk`
     pub traffic_class: String,
+    /// Percent of parent bandwidth (1-100); overrides the absolute value when set
     pub bandwidth_pct: Option<u8>,
+    /// Whether this is the interface's default queue
     pub default: bool,
+    /// `active` or `disabled`
     pub status: String,
 }
 
+/// A per-source-IP connection rate limit as stored in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitEntry {
+    /// Unique rule ID (UUID string)
     pub id: String,
+    /// Rule name
     pub name: String,
+    /// Interface the limit applies on; None = all interfaces
     pub interface: Option<String>,
+    /// Protocol match (e.g. `tcp`)
     pub protocol: String,
+    /// Start of destination port range; None = any port
     pub dst_port_start: Option<u16>,
+    /// End of destination port range (inclusive)
     pub dst_port_end: Option<u16>,
+    /// Max connections allowed per source IP within the window
     pub max_connections: u32,
+    /// Measurement window in seconds
     pub window_secs: u32,
+    /// pf table that offending source IPs are added to (and blocked from)
     pub overload_table: String,
+    /// Kill existing states from a source when it exceeds the limit
     pub flush_states: bool,
+    /// `active` or `disabled`
     pub status: String,
 }
 
+/// VPN section: WireGuard tunnels and IPsec SAs
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VpnConfig {
+    /// WireGuard tunnel definitions (including peers)
     pub wireguard: Vec<WireguardTunnelConfig>,
+    /// IPsec security association definitions
     pub ipsec: Vec<IpsecSaConfig>,
 }
 
+/// A WireGuard tunnel as stored in a config snapshot. Contains the
+/// tunnel's private key, so exports must be treated as secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireguardTunnelConfig {
+    /// Unique tunnel ID (UUID string)
     pub id: String,
+    /// Tunnel display name
     pub name: String,
+    /// WireGuard interface name (e.g. `wg0`)
     pub interface: String,
+    /// UDP port the tunnel listens on
     pub listen_port: u16,
+    /// Tunnel interface address (IP/prefix)
     pub address: String,
+    /// Local WireGuard private key (base64; sensitive)
     pub private_key: String,
+    /// Local WireGuard public key (base64)
     pub public_key: String,
+    /// Optional DNS server(s) for the tunnel
     pub dns: Option<String>,
+    /// Optional interface MTU override
     pub mtu: Option<u16>,
+    /// Peers configured on this tunnel
     pub peers: Vec<WireguardPeerConfig>,
 }
 
+/// A WireGuard peer entry within a tunnel
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireguardPeerConfig {
+    /// Unique peer ID (UUID string)
     pub id: String,
+    /// Peer display name
     pub name: String,
+    /// Peer's WireGuard public key (base64)
     pub public_key: String,
+    /// Optional preshared key for additional symmetric protection (sensitive)
     pub preshared_key: Option<String>,
+    /// Remote endpoint `host:port`; None = wait for the peer to connect
     pub endpoint: Option<String>,
+    /// CIDRs routed to / accepted from this peer
     pub allowed_ips: Vec<String>,
+    /// Keepalive interval in seconds; None = disabled
     pub persistent_keepalive: Option<u16>,
 }
 
+/// An IPsec security association as stored in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpsecSaConfig {
+    /// Unique SA ID (UUID string)
     pub id: String,
+    /// SA display name
     pub name: String,
+    /// Local endpoint address
     pub src_addr: String,
+    /// Remote endpoint address
     pub dst_addr: String,
+    /// IPsec protocol — `esp`, `ah`, or `esp_ah`
     pub protocol: String,
+    /// `tunnel` or `transport`
     pub mode: String,
+    /// Encryption algorithm (e.g. `aes-gcm-256`)
     pub enc_algo: String,
+    /// Authentication algorithm (e.g. `hmac-sha256`)
     pub auth_algo: String,
 }
 
+/// A per-country geo-IP filter entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoIpEntry {
+    /// Unique entry ID (UUID string)
     pub id: String,
+    /// ISO 3166-1 alpha-2 country code (e.g. `CN`)
     pub country: String,
+    /// `allow` or `block`
     pub action: String,
+    /// Optional human-readable label
     pub label: Option<String>,
+    /// `active` or `disabled`
     pub status: String,
 }
 
+/// TLS inspection policy applied to observed handshakes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
+    /// Minimum accepted TLS version (e.g. `tls12`)
     pub min_version: String,
+    /// Block connections presenting self-signed certificates
     pub block_self_signed: bool,
+    /// Block connections presenting expired certificates
     pub block_expired: bool,
+    /// Block certificates with weak keys
     pub block_weak_keys: bool,
+    /// JA3 client-fingerprint blocklist
     pub blocked_ja3: Vec<String>,
+    /// Per-SNI-pattern allow/block rules
     pub sni_rules: Vec<SniRuleConfig>,
 }
 
@@ -475,52 +642,84 @@ impl Default for TlsConfig {
     }
 }
 
+/// A TLS SNI hostname match rule
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SniRuleConfig {
+    /// Unique rule ID (UUID string)
     pub id: String,
+    /// SNI hostname pattern to match
     pub pattern: String,
+    /// `allow` or `block`
     pub action: String,
+    /// Optional human-readable label
     pub label: Option<String>,
 }
 
+/// High-availability section: CARP virtual IPs, pfsync, and cluster membership
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HaConfig {
+    /// CARP virtual IP definitions
     pub carp_vips: Vec<CarpVipConfig>,
+    /// pfsync state-sync settings; None = pfsync disabled
     pub pfsync: Option<PfsyncEntry>,
+    /// Known cluster nodes
     pub nodes: Vec<ClusterNodeConfig>,
 }
 
+/// A CARP virtual IP as stored in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CarpVipConfig {
+    /// Unique VIP ID (UUID string)
     pub id: String,
+    /// CARP virtual host ID, shared by all nodes advertising this VIP
     pub vhid: u8,
+    /// The shared virtual IP address
     pub virtual_ip: String,
+    /// Network prefix length for the VIP
     pub prefix: u8,
+    /// Interface the VIP is configured on
     pub interface: String,
+    /// CARP advertisement password (sensitive)
     pub password: String,
 }
 
+/// pfsync state-table synchronization settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PfsyncEntry {
+    /// Interface pfsync traffic is sent over
     pub sync_interface: String,
+    /// Unicast peer address; None = multicast on the sync interface
     pub sync_peer: Option<String>,
+    /// pf `defer` — hold initial packets until the state syncs to the peer
     pub defer: bool,
 }
 
+/// A node in the HA cluster as stored in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterNodeConfig {
+    /// Unique node ID (UUID string)
     pub id: String,
+    /// Node display name
     pub name: String,
+    /// Node IP address
     pub address: String,
+    /// `primary`, `secondary`, or `standalone`
     pub role: String,
 }
 
+/// A key/value tuning override captured in a snapshot. Currently only
+/// `pf.max_states` (target `sysctl`) is exported and honoured on restore.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuningEntry {
+    /// Tunable name (e.g. `pf.max_states`)
     pub key: String,
+    /// Tunable value, stringified
     pub value: String,
+    /// Where the tunable applies (currently always `sysctl`)
     pub target: String,
+    /// Human-readable justification recorded with the entry
     pub reason: String,
+    /// Whether the tunable is applied on restore
     pub enabled: bool,
 }
 
@@ -528,43 +727,69 @@ pub struct TuningEntry {
 // DHCP
 // ============================================================
 
+/// DHCP configuration section, mirroring the external rDHCP daemon's schema
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DhcpSection {
+    /// Server-wide rDHCP settings
     #[serde(default)]
     pub global: DhcpGlobalSection,
+    /// DHCP subnet / address-pool definitions
     #[serde(default)]
     pub subnets: Vec<DhcpSubnetConfig>,
+    /// Static MAC-to-IP reservations
     #[serde(default)]
     pub reservations: Vec<DhcpReservationConfig>,
+    /// Dynamic DNS update settings
     #[serde(default)]
     pub ddns: DhcpDdnsSection,
+    /// DHCP failover / HA settings
     #[serde(default)]
     pub dhcp_ha: DhcpHaSection,
 }
 
+/// Server-wide DHCP settings (mirrors the rDHCP `[global]` TOML schema)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhcpGlobalSection {
+    /// Whether the DHCP server runs
     pub enabled: bool,
+    /// Interfaces the server listens on
     pub interfaces: Vec<String>,
+    /// Answer authoritatively (NAK requests for unknown leases)
     pub authoritative: bool,
+    /// Default lease duration in seconds
     pub default_lease_time: u32,
+    /// Maximum lease duration in seconds
     pub max_lease_time: u32,
+    /// DNS servers handed to clients (option 6)
     pub dns_servers: Vec<String>,
+    /// Domain name handed to clients (option 15)
     pub domain_name: String,
+    /// Domain search list handed to clients (option 119)
     pub domain_search: Vec<String>,
+    /// NTP servers handed to clients (option 42)
     pub ntp_servers: Vec<String>,
+    /// WINS servers handed to clients (option 44)
     pub wins_servers: Vec<String>,
+    /// PXE next-server (siaddr); None = not set
     pub next_server: Option<String>,
+    /// PXE boot filename; None = not set
     pub boot_filename: Option<String>,
+    /// rDHCP log level (e.g. `info`)
     pub log_level: String,
+    /// rDHCP log format (e.g. `text`)
     pub log_format: String,
+    /// rDHCP control-API TCP port (default 9967)
     pub api_port: u16,
+    /// Number of rDHCP worker threads
     pub workers: u32,
     // DHCP relay — matches rDHCP [global] schema (see rDHCP feature/dhcpv4-accept-relayed).
+    /// Accept relayed requests (giaddr set)
     #[serde(default = "default_accept_relayed")]
     pub accept_relayed: bool,
+    /// Token-bucket burst size for relayed requests
     #[serde(default = "default_relay_rate_limit_burst")]
     pub relay_rate_limit_burst: u32,
+    /// Sustained relayed-request rate limit in packets per second
     #[serde(default = "default_relay_rate_limit_pps")]
     pub relay_rate_limit_pps: f64,
 }
@@ -605,24 +830,43 @@ impl Default for DhcpGlobalSection {
     }
 }
 
+/// A DHCP subnet / address pool. Optional per-subnet fields fall back to
+/// the global settings when None.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhcpSubnetConfig {
+    /// Unique subnet ID (UUID string)
     pub id: String,
+    /// Subnet in CIDR notation
     pub network: String,
+    /// First address of the dynamic pool
     pub pool_start: String,
+    /// Last address of the dynamic pool
     pub pool_end: String,
+    /// Default gateway handed to clients (option 3)
     pub gateway: String,
+    /// Comma-separated DNS server override; None = inherit global
     pub dns_servers: Option<String>,
+    /// Domain name override; None = inherit global
     pub domain_name: Option<String>,
+    /// Lease duration override in seconds; None = inherit global
     pub lease_time: Option<u32>,
+    /// Maximum lease duration override in seconds; None = inherit global
     pub max_lease_time: Option<u32>,
+    /// T1 renewal time in seconds; None = server default
     pub renewal_time: Option<u32>,
+    /// T2 rebinding time in seconds; None = server default
     pub rebinding_time: Option<u32>,
+    /// IPv6 preferred lifetime in seconds; None = server default
     pub preferred_time: Option<u32>,
+    /// `address` or `prefix-delegation` (IPv6 PD)
     pub subnet_type: String,
+    /// Delegated prefix length for prefix-delegation subnets
     pub delegated_length: Option<u8>,
+    /// Whether the subnet is served
     pub enabled: bool,
+    /// Optional free-form note
     pub description: Option<String>,
+    /// Relay agent IPs allowed to forward requests for this subnet
     #[serde(default)]
     pub trusted_relays: Vec<String>,
     /// Per-subnet NTP (DHCP option 42). Comma-separated IPv4 list; None = inherit.
@@ -631,54 +875,90 @@ pub struct DhcpSubnetConfig {
     /// Generic per-subnet DHCP option overrides (codes not covered by typed fields).
     #[serde(default)]
     pub options: Vec<DhcpOptionOverrideConfig>,
+    /// Creation timestamp (RFC 3339 string)
     pub created_at: String,
 }
 
+/// A raw per-subnet DHCP option override
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhcpOptionOverrideConfig {
+    /// DHCP option code
     pub code: u8,
+    /// How `value` is encoded — `ip`, `ips`, `string`, `u8`, `u16`, `u32`, or `hex`
     pub value_type: String,
+    /// Raw option value, parsed per `value_type`
     pub value: String,
 }
 
+/// A static DHCP reservation (fixed MAC-to-IP mapping)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DhcpReservationConfig {
+    /// Unique reservation ID (UUID string)
     pub id: String,
+    /// Owning subnet ID; None = not tied to a specific subnet
     pub subnet_id: Option<String>,
+    /// Client MAC address
     pub mac_address: String,
+    /// Fixed IP address handed to that MAC
     pub ip_address: String,
+    /// Optional hostname to assign to the client
     pub hostname: Option<String>,
+    /// Optional DHCP client identifier (option 61) to match on
     pub client_id: Option<String>,
+    /// Optional free-form note
     pub description: Option<String>,
+    /// Creation timestamp (RFC 3339 string)
     pub created_at: String,
 }
 
+/// Dynamic DNS (RFC 2136) update settings for DHCP leases
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DhcpDdnsSection {
+    /// Whether DDNS updates are sent for leases
     pub enabled: bool,
+    /// Forward DNS zone to update
     pub forward_zone: String,
+    /// IPv4 reverse zone (in-addr.arpa)
     pub reverse_zone_v4: String,
+    /// IPv6 reverse zone (ip6.arpa)
     pub reverse_zone_v6: String,
+    /// DNS server that receives the updates
     pub dns_server: String,
+    /// TSIG key name
     pub tsig_key: String,
+    /// TSIG algorithm (e.g. `hmac-sha256`)
     pub tsig_algorithm: String,
+    /// TSIG shared secret (sensitive)
     #[serde(default)]
     pub tsig_secret: String,
+    /// TTL in seconds for created records
     pub ttl: u32,
 }
 
+/// DHCP failover / HA settings (mirrors rDHCP's HA schema)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DhcpHaSection {
+    /// `standalone`, `active-active`, or `raft`
     pub mode: String,
+    /// Failover peer address (active-active mode)
     pub peer: Option<String>,
+    /// Local HA listen address (active-active mode)
     pub listen: Option<String>,
+    /// Address-pool split ratio between the peers (active-active mode)
     pub scope_split: Option<f64>,
+    /// Maximum client lead time in seconds (active-active mode)
     pub mclt: Option<u32>,
+    /// Seconds to wait before claiming the full pool after peer loss
     pub partner_down_delay: Option<u32>,
+    /// This node's ID (raft mode)
     pub node_id: Option<u64>,
+    /// Raft peer addresses (raft mode)
     pub peers: Option<Vec<String>>,
+    /// TLS certificate path for HA transport
     pub tls_cert: Option<String>,
+    /// TLS private key path for HA transport
     pub tls_key: Option<String>,
+    /// TLS CA certificate path for peer verification
     pub tls_ca: Option<String>,
 }
 

@@ -2,10 +2,15 @@
 //!
 //! Phased implementation tracked in working-plan.md (issue #132).
 
+/// Gateway CRUD, health-probe monitors, and the up/down state machine
 pub mod gateway;
+/// Gateway groups: membership, tiers/weights, and pure failover/LB selection logic
 pub mod group;
+/// Routing instances — each maps to a FreeBSD FIB — and their member interfaces
 pub mod instance;
+/// Route leaks: controlled cross-instance (cross-FIB) traffic exceptions
 pub mod leak;
+/// Policy-based routing rules compiled into the pf PBR/reply anchors
 pub mod policy;
 pub mod preflight;
 pub mod probe;

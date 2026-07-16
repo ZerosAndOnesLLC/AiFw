@@ -7,18 +7,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// pf anchor that holds the compiled route-leak rules
 pub const LEAK_ANCHOR: &str = "aifw-mwan-leak";
 
+/// Route-leak engine: CRUD over `multiwan_leaks` (controlled cross-FIB
+/// traffic exceptions) and compilation of enabled leaks into pf rules in
+/// the `aifw-mwan-leak` anchor
 pub struct LeakEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
 }
 
 impl LeakEngine {
+    /// Create the engine over an existing pool and pf backend (call `migrate` before use)
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self { pool, pf }
     }
 
+    /// Create the `multiwan_leaks` table if it doesn't exist
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -45,6 +51,7 @@ impl LeakEngine {
         Ok(())
     }
 
+    /// List all route leaks ordered by name
     pub async fn list(&self) -> Result<Vec<RouteLeak>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {LEAK_COLUMNS} FROM multiwan_leaks ORDER BY name ASC"
@@ -55,6 +62,7 @@ impl LeakEngine {
         Ok(rows.iter().map(row_to_leak).collect())
     }
 
+    /// Fetch one route leak by id. Fails with `NotFound` if it doesn't exist
     pub async fn get(&self, id: Uuid) -> Result<RouteLeak> {
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {LEAK_COLUMNS} FROM multiwan_leaks WHERE id = ?1"
@@ -67,6 +75,7 @@ impl LeakEngine {
         Ok(row_to_leak(&row))
     }
 
+    /// Insert a new route leak (does not reload the pf anchor; call `apply`)
     pub async fn add(&self, l: RouteLeak) -> Result<RouteLeak> {
         sqlx::query(
             r#"INSERT INTO multiwan_leaks
@@ -91,6 +100,8 @@ impl LeakEngine {
         Ok(l)
     }
 
+    /// Update a route leak by id (refreshes `updated_at`). Fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn update(&self, l: RouteLeak) -> Result<RouteLeak> {
         let now = Utc::now();
         let res = sqlx::query(
@@ -120,6 +131,9 @@ impl LeakEngine {
         Ok(updated)
     }
 
+    /// Delete a route leak by id. Refuses to delete leaks whose destination
+    /// instance is mgmt-reachable (that would strand admin access); fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         // Block deletion of mgmt-escape leaks. A mgmt-escape is identified as
         // a leak whose destination instance is mgmt_reachable — without it the
@@ -187,6 +201,8 @@ impl LeakEngine {
         out
     }
 
+    /// Compile all stored leaks and load the resulting rules into the
+    /// `aifw-mwan-leak` pf anchor, replacing its previous contents
     pub async fn apply(&self, instances: &[RoutingInstance]) -> Result<()> {
         let leaks = self.list().await?;
         let rules = Self::compile(&leaks, instances);

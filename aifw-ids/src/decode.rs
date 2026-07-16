@@ -27,10 +27,15 @@ pub struct DecodedPacket {
 /// Simplified protocol enum for classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketProtocol {
+    /// TCP (IP protocol 6)
     Tcp,
+    /// UDP (IP protocol 17)
     Udp,
+    /// ICMP for IPv4 (IP protocol 1)
     Icmpv4,
+    /// ICMPv6 (IP protocol 58)
     Icmpv6,
+    /// Any other transport; carries the raw IP protocol number
     Other(u8),
 }
 
@@ -49,15 +54,22 @@ impl std::fmt::Display for PacketProtocol {
 /// TCP flag bits
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TcpFlags {
+    /// SYN flag set
     pub syn: bool,
+    /// ACK flag set
     pub ack: bool,
+    /// FIN flag set
     pub fin: bool,
+    /// RST flag set
     pub rst: bool,
+    /// PSH flag set
     pub psh: bool,
+    /// URG flag set
     pub urg: bool,
 }
 
 impl TcpFlags {
+    /// Extract the flag bits from a parsed etherparse TCP header
     pub fn from_header(h: &etherparse::TcpHeader) -> Self {
         Self {
             syn: h.syn,
@@ -69,10 +81,12 @@ impl TcpFlags {
         }
     }
 
+    /// True for a bare SYN (connection-initiation packet, SYN without ACK)
     pub fn is_syn_only(&self) -> bool {
         self.syn && !self.ack
     }
 
+    /// True for a SYN+ACK (server's handshake reply)
     pub fn is_syn_ack(&self) -> bool {
         self.syn && self.ack
     }

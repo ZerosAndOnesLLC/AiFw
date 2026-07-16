@@ -1,19 +1,31 @@
 use aifw_pf::PfState;
 use std::net::IpAddr;
 
+/// Criteria for filtering pf state entries. Every field is optional;
+/// `None` means "match anything" for that dimension, and all set fields
+/// must match (AND semantics).
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionFilter {
+    /// Protocol name, compared case-insensitively (e.g. "tcp")
     pub protocol: Option<String>,
+    /// Exact source IP address
     pub src_addr: Option<IpAddr>,
+    /// Exact destination IP address
     pub dst_addr: Option<IpAddr>,
+    /// Exact source port
     pub src_port: Option<u16>,
+    /// Exact destination port
     pub dst_port: Option<u16>,
+    /// pf state string (e.g. "ESTABLISHED:ESTABLISHED"), compared case-insensitively
     pub state: Option<String>,
+    /// Only match connections at least this old, in seconds
     pub min_age_secs: Option<u64>,
+    /// Only match connections at most this old, in seconds
     pub max_age_secs: Option<u64>,
 }
 
 impl ConnectionFilter {
+    /// Whether the given pf state entry satisfies every set criterion
     pub fn matches(&self, s: &PfState) -> bool {
         if let Some(ref proto) = self.protocol
             && !s.protocol.eq_ignore_ascii_case(proto)
@@ -59,9 +71,11 @@ impl ConnectionFilter {
     }
 }
 
+/// Stateless query helpers over a slice of pf state entries
 pub struct ConnectionQuery;
 
 impl ConnectionQuery {
+    /// Return clones of the states matching the filter
     pub fn filter(states: &[PfState], filter: &ConnectionFilter) -> Vec<PfState> {
         states
             .iter()
@@ -70,10 +84,14 @@ impl ConnectionQuery {
             .collect()
     }
 
+    /// Count the states matching the filter without cloning them
     pub fn count(states: &[PfState], filter: &ConnectionFilter) -> usize {
         states.iter().filter(|s| filter.matches(s)).count()
     }
 
+    /// Top `limit` IPs by total bytes transferred, descending. Each state's
+    /// `bytes_out` is credited to its source IP and `bytes_in` to its
+    /// destination IP.
     pub fn top_talkers(states: &[PfState], limit: usize) -> Vec<(IpAddr, u64)> {
         use std::collections::HashMap;
         let mut bytes_by_ip: HashMap<IpAddr, u64> = HashMap::new();
@@ -87,6 +105,7 @@ impl ConnectionQuery {
         sorted
     }
 
+    /// Connection counts grouped by lowercased protocol name, most common first
     pub fn connections_by_protocol(states: &[PfState]) -> Vec<(String, usize)> {
         use std::collections::HashMap;
         let mut counts: HashMap<String, usize> = HashMap::new();

@@ -22,6 +22,8 @@ pub struct ConnectionTracker {
 }
 
 impl ConnectionTracker {
+    /// Create a tracker with an empty snapshot, a 5-second poll interval, and
+    /// a 3600-second expiry threshold. Call `start_polling` to begin refreshes.
     pub fn new(pf: Arc<dyn PfBackend>) -> Self {
         Self {
             pf,
@@ -31,11 +33,14 @@ impl ConnectionTracker {
         }
     }
 
+    /// Builder: set how often `start_polling` refreshes the snapshot (default 5 s)
     pub fn with_poll_interval(mut self, interval: Duration) -> Self {
         self.poll_interval = interval;
         self
     }
 
+    /// Builder: set the age in seconds beyond which a connection counts as
+    /// expired (default 3600) — used by `expired_connections` and poll logging
     pub fn with_expiry_threshold(mut self, secs: u64) -> Self {
         self.expiry_threshold_secs = secs;
         self

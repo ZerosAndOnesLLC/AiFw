@@ -3,9 +3,11 @@ use thiserror::Error;
 /// Errors produced by the connection-tracking / pflog subsystem.
 #[derive(Debug, Error)]
 pub enum ConntrackError {
+    /// Error from the underlying pf backend (state table read failed)
     #[error("pf error: {0}")]
     Pf(String),
 
+    /// Any other conntrack failure, carried as a plain message
     #[error("{0}")]
     Other(String),
 }

@@ -30,6 +30,8 @@ pub struct ActionEngine {
 }
 
 impl ActionEngine {
+    /// Create an action engine backed by the given pf backend (for block-table
+    /// writes) and runtime config (for the IDS/IPS mode check).
     pub fn new(pf: Arc<dyn PfBackend>, config: Arc<RuntimeConfig>) -> Self {
         Self { pf, config }
     }

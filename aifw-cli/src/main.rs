@@ -283,7 +283,7 @@ enum UpdateAction {
     /// Does NOT restart services automatically. Run `aifw update restart`
     /// (or pass --restart) once you're ready for the brief outage.
     ///
-    /// Pass --from <path> to install from a local .tar.xz tarball instead of
+    /// Pass `--from <path>` to install from a local .tar.xz tarball instead of
     /// fetching the latest GitHub release.  A sibling .sha256 sidecar is
     /// expected unless --skip-checksum is also passed.
     Install {
@@ -801,7 +801,7 @@ enum RulesAction {
         #[arg(long, default_value = "any")]
         proto: String,
 
-        /// Source address (IP, CIDR, "any", or <table>)
+        /// Source address (IP, CIDR, "any", or `<table>`)
         #[arg(long, default_value = "any")]
         src: String,
 

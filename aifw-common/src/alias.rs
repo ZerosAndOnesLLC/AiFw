@@ -5,13 +5,21 @@ use uuid::Uuid;
 /// A named alias grouping IPs, networks, ports, or URLs for use in firewall rules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Alias {
+    /// Unique alias ID
     pub id: Uuid,
+    /// Alias name, referenced from rules as a pf table
     pub name: String,
+    /// What kind of entries this alias holds
     pub alias_type: AliasType,
+    /// The entries themselves (IPs, CIDRs, ports, or a URL depending on type)
     pub entries: Vec<String>,
+    /// Optional human-readable description
     pub description: Option<String>,
+    /// Whether the alias is active (disabled aliases are not pushed to pf)
     pub enabled: bool,
+    /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (UTC)
     pub updated_at: DateTime<Utc>,
 }
 
@@ -30,6 +38,8 @@ pub enum AliasType {
 }
 
 impl AliasType {
+    /// Parse from a case-insensitive string ("host", "network", "port",
+    /// "url_table"/"urltable"/"url"). Returns `None` if unrecognized.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "host" => Some(Self::Host),
@@ -40,6 +50,7 @@ impl AliasType {
         }
     }
 
+    /// Canonical snake_case string form (matches the serde wire values)
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Host => "host",

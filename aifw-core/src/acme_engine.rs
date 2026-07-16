@@ -33,8 +33,11 @@ use std::time::Duration;
 /// can show a useful error without having to scrape logs.
 #[derive(Debug)]
 pub struct IssueOutcome {
+    /// True when the cert was issued and persisted
     pub ok: bool,
+    /// Human-readable success or failure detail, shown in the UI
     pub message: String,
+    /// New certificate expiry on success; `None` on failure
     pub expires_at: Option<DateTime<Utc>>,
 }
 
@@ -42,6 +45,10 @@ pub struct IssueOutcome {
 // Top-level entry points
 // =============================================================================
 
+/// Drive one cert row through the full ACME issue/renew flow: solve the
+/// DNS-01 challenges, finalize the order, and persist cert/chain/key. Sets
+/// the row's status to `renewing` first, then `active` (fanning out to
+/// export targets) or `failed`; errors come back in the outcome, never panic.
 pub async fn issue(pool: &SqlitePool, cert_id: i64) -> IssueOutcome {
     let mut cert = match acme::load_cert(pool, cert_id).await {
         Some(c) => c,

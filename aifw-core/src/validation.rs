@@ -1,6 +1,10 @@
 use aifw_common::{Address, AifwError, Protocol, Result, Rule};
 use std::net::IpAddr;
 
+/// Validate a filter rule before persisting: address prefix lengths and
+/// table names, port ranges (start <= end, TCP/UDP protocols only),
+/// priority within 0-10000, interface name shape, and pf-label characters.
+/// Fails with a `Validation` error describing the first offending field.
 pub fn validate_rule(rule: &Rule) -> Result<()> {
     validate_address(&rule.rule_match.src_addr)?;
     validate_address(&rule.rule_match.dst_addr)?;

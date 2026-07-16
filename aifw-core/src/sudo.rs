@@ -263,6 +263,10 @@ pub async fn sysrc(args: &[&str]) -> std::io::Result<std::process::Output> {
     sudo_with_fallback(&narrow, &fallback).await
 }
 
+/// Run `install [-m MODE] [-o OWNER] [-g GROUP] SRC DEST` as root via the
+/// `aifw-sudo-install` narrow helper, falling back to sudo'ing
+/// `/usr/bin/install` with the same argv if sudo refuses the helper (no
+/// grant). Pass `None` to omit a flag.
 pub async fn install(
     mode: Option<&str>,
     owner: Option<&str>,

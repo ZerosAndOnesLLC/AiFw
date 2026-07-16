@@ -5,11 +5,15 @@
 //! resolving.
 
 pub mod database;
+/// Ruleset download, SQLite storage, and compilation management
 pub mod manager;
 pub mod ruleset;
+/// Sigma rule model — parsed detection conditions and value modifiers
 pub mod sigma;
+/// Suricata rule-format parser (action proto addrs ports + options)
 pub mod suricata;
 pub mod types;
+/// YARA rule-format parser (native, no libyara dependency)
 pub mod yara;
 
 pub use database::*;

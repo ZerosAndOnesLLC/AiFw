@@ -15,6 +15,8 @@ pub struct IpReputationPlugin {
 }
 
 impl IpReputationPlugin {
+    /// Create the plugin with an empty blocklist and the default
+    /// "ip_reputation" pf table name (overridable via `table_name` config)
     pub fn new() -> Self {
         Self {
             blocklist: RwLock::new(HashSet::new()),
@@ -32,6 +34,7 @@ impl IpReputationPlugin {
         self.blocklist.read().await.contains(&ip)
     }
 
+    /// Number of IPs currently in the blocklist
     pub async fn blocklist_size(&self) -> usize {
         self.blocklist.read().await.len()
     }

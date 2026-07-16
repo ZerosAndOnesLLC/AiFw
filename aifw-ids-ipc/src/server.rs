@@ -39,8 +39,13 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// observed legitimate fan-out (aifw-api fires ~1 request/sec).
 const MAX_INFLIGHT: usize = 64;
 
+/// Application logic behind the IPC server: `serve` decodes each frame
+/// into an `IpcRequest` and calls `handle` to produce the reply.
 #[async_trait]
 pub trait IpcHandler: Send + Sync + 'static {
+    /// Process one request and return the response to send back. Must
+    /// complete within the server's 5-second per-request timeout or the
+    /// client receives an error instead.
     async fn handle(&self, req: IpcRequest) -> IpcResponse;
 }
 

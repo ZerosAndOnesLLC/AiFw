@@ -8,6 +8,9 @@ use sqlx::sqlite::SqlitePool;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// High-availability engine: manages CARP VIPs, pfsync, cluster nodes and
+/// health checks in SQLite and mirrors the derived pf rules into the
+/// `aifw-ha` anchor
 pub struct ClusterEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
@@ -15,6 +18,7 @@ pub struct ClusterEngine {
 }
 
 impl ClusterEngine {
+    /// Create the engine over an existing pool and pf backend, targeting the `aifw-ha` anchor
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self {
             pool,
@@ -23,6 +27,9 @@ impl ClusterEngine {
         }
     }
 
+    /// Create/upgrade the HA tables (carp_vips, cluster_nodes, snapshot state,
+    /// failover events, health_checks, pfsync_config); idempotent, column
+    /// additions/drops on re-run fail silently by design
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -160,6 +167,7 @@ impl ClusterEngine {
     // CARP VIP management
     // ============================================================
 
+    /// Store a new CARP virtual IP. Fails validation if VHID is 0 or the password is empty
     pub async fn add_carp_vip(&self, vip: CarpVip) -> Result<CarpVip> {
         if vip.vhid == 0 {
             return Err(AifwError::Validation("VHID must be > 0".to_string()));
@@ -191,6 +199,7 @@ impl ClusterEngine {
         Ok(vip)
     }
 
+    /// List all configured CARP VIPs ordered by VHID
     pub async fn list_carp_vips(&self) -> Result<Vec<CarpVip>> {
         let rows = sqlx::query_as::<_, CarpVipRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {CARP_VIPS_COLUMNS} FROM carp_vips ORDER BY vhid ASC"
@@ -200,6 +209,8 @@ impl ClusterEngine {
         rows.into_iter().map(|r| r.into_vip()).collect()
     }
 
+    /// Update an existing CARP VIP by id (refreshes `updated_at`). Fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn update_carp_vip(&self, v: &CarpVip) -> Result<()> {
         let result = sqlx::query(
             r#"UPDATE carp_vips SET vhid = ?1, virtual_ip = ?2, prefix = ?3,
@@ -222,6 +233,7 @@ impl ClusterEngine {
         Ok(())
     }
 
+    /// Delete a CARP VIP by id. Fails with `NotFound` if the id doesn't exist
     pub async fn delete_carp_vip(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM carp_vips WHERE id = ?1")
             .bind(id.to_string())
@@ -237,6 +249,7 @@ impl ClusterEngine {
     // pfsync
     // ============================================================
 
+    /// Store the pfsync configuration, replacing any existing one (singleton table)
     pub async fn set_pfsync(&self, config: PfsyncConfig) -> Result<PfsyncConfig> {
         // Replace any existing config
         sqlx::query("DELETE FROM pfsync_config")
@@ -267,6 +280,7 @@ impl ClusterEngine {
         Ok(config)
     }
 
+    /// Fetch the pfsync configuration, or `None` if pfsync has never been configured
     pub async fn get_pfsync(&self) -> Result<Option<PfsyncConfig>> {
         let row = sqlx::query_as::<_, PfsyncRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {PFSYNC_CONFIG_COLUMNS} FROM pfsync_config LIMIT 1"
@@ -280,6 +294,7 @@ impl ClusterEngine {
     // Cluster nodes
     // ============================================================
 
+    /// Register a peer node in the cluster. Fails validation if the name is empty
     pub async fn add_node(&self, node: ClusterNode) -> Result<ClusterNode> {
         if node.name.is_empty() {
             return Err(AifwError::Validation("node name required".to_string()));
@@ -306,6 +321,7 @@ impl ClusterEngine {
         Ok(node)
     }
 
+    /// List all registered cluster nodes ordered by name
     pub async fn list_nodes(&self) -> Result<Vec<ClusterNode>> {
         let rows = sqlx::query_as::<_, ClusterNodeRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {CLUSTER_NODES_COLUMNS} FROM cluster_nodes ORDER BY name ASC"
@@ -315,6 +331,7 @@ impl ClusterEngine {
         rows.into_iter().map(|r| r.into_node()).collect()
     }
 
+    /// Set a node's health status and bump its `last_seen` timestamp to now
     pub async fn update_node_health(&self, id: Uuid, health: NodeHealth) -> Result<()> {
         sqlx::query("UPDATE cluster_nodes SET health = ?1, last_seen = ?2 WHERE id = ?3")
             .bind(health.to_string())
@@ -325,6 +342,8 @@ impl ClusterEngine {
         Ok(())
     }
 
+    /// Update a node's name, address and role by id. Fails with `NotFound` if
+    /// the id doesn't exist
     pub async fn update_node(&self, n: &ClusterNode) -> Result<()> {
         let result = sqlx::query(
             r#"UPDATE cluster_nodes SET name = ?1, address = ?2, role = ?3 WHERE id = ?4"#,
@@ -344,6 +363,7 @@ impl ClusterEngine {
         Ok(())
     }
 
+    /// Remove a node from the cluster by id. Fails with `NotFound` if the id doesn't exist
     pub async fn delete_node(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM cluster_nodes WHERE id = ?1")
             .bind(id.to_string())
@@ -364,6 +384,8 @@ impl ClusterEngine {
         Ok(row.map(|r| r.0))
     }
 
+    /// Record that a config snapshot with the given hash was applied on this
+    /// node, upserting the per-node row in `cluster_snapshot_state`
     pub async fn record_snapshot_apply(&self, node_id: Uuid, hash: &str, from: &str) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO cluster_snapshot_state (node_id, last_applied_hash, last_applied_at, last_applied_from) VALUES (?1, ?2, ?3, ?4)"
@@ -376,6 +398,8 @@ impl ClusterEngine {
         Ok(())
     }
 
+    /// Append a role-transition event (e.g. backup -> master) with its cause
+    /// to the failover history table
     pub async fn record_failover_event(
         &self,
         from: &str,
@@ -396,6 +420,8 @@ impl ClusterEngine {
         Ok(())
     }
 
+    /// Generate a fresh 256-bit peer API key for a node, store it (plus its
+    /// SHA-256 hash) on the node row, and return the plaintext key
     pub async fn generate_peer_api_key(&self, node_id: Uuid) -> Result<String> {
         // Two simple-format UUIDs = 64 hex chars = 256 bits of getrandom-sourced entropy.
         let key = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -411,6 +437,8 @@ impl ClusterEngine {
         Ok(key)
     }
 
+    /// Fetch the stored plaintext peer API key for a node, or `None` if the
+    /// node doesn't exist or has no key generated yet
     pub async fn peer_api_key(&self, node_id: Uuid) -> Result<Option<String>> {
         let row: Option<(Option<String>,)> =
             sqlx::query_as("SELECT peer_api_key FROM cluster_nodes WHERE id = ?1")
@@ -424,6 +452,7 @@ impl ClusterEngine {
     // Health checks
     // ============================================================
 
+    /// Store a new HA health check definition (interval/timeout in seconds)
     pub async fn add_health_check(&self, check: HealthCheck) -> Result<HealthCheck> {
         sqlx::query(
             r#"
@@ -448,6 +477,7 @@ impl ClusterEngine {
         Ok(check)
     }
 
+    /// List all health check definitions ordered by name
     pub async fn list_health_checks(&self) -> Result<Vec<HealthCheck>> {
         let rows = sqlx::query_as::<_, HealthCheckRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {HEALTH_CHECKS_COLUMNS} FROM health_checks ORDER BY name ASC"
@@ -457,6 +487,7 @@ impl ClusterEngine {
         rows.into_iter().map(|r| r.into_check()).collect()
     }
 
+    /// Update a health check definition by id. Fails with `NotFound` if the id doesn't exist
     pub async fn update_health_check(&self, check: &HealthCheck) -> Result<()> {
         let result = sqlx::query(
             r#"UPDATE health_checks SET name=?1, check_type=?2, interval_secs=?3,
@@ -482,6 +513,7 @@ impl ClusterEngine {
         Ok(())
     }
 
+    /// Delete a health check by id. Fails with `NotFound` if the id doesn't exist
     pub async fn delete_health_check(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM health_checks WHERE id = ?1")
             .bind(id.to_string())
@@ -570,6 +602,8 @@ impl ClusterEngine {
         Ok(())
     }
 
+    /// Render pf rules from the stored CARP VIPs and pfsync config and load
+    /// them into the `aifw-ha` anchor. Does nothing when no HA rules exist
     pub async fn apply_ha_rules(&self) -> Result<()> {
         let mut pf_rules = Vec::new();
 
@@ -655,6 +689,7 @@ pub async fn is_local_master() -> bool {
 // Crypto helpers
 // ============================================================
 
+/// SHA-256 of a string, returned as lowercase hex (used for peer API key hashes)
 pub fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();

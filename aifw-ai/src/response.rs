@@ -73,9 +73,13 @@ impl Default for ResponseConfig {
 /// A temporary block with expiry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempBlock {
+    /// Blocked source IP (held in the configured pf block table)
     pub ip: IpAddr,
+    /// ID of the threat that triggered the block
     pub threat_id: Uuid,
+    /// When the block lapses; `expire_temp_blocks` removes it from pf after this
     pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// Human-readable reason, taken from the threat description
     pub reason: String,
 }
 
@@ -88,17 +92,25 @@ pub struct AutoResponder {
     history: Arc<RwLock<Vec<ResponseRecord>>>,
 }
 
+/// Audit record of one response taken against a threat
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseRecord {
+    /// ID of the threat responded to
     pub threat_id: Uuid,
+    /// Category of the threat
     pub threat_type: ThreatType,
+    /// Source IP the action targeted
     pub source_ip: IpAddr,
+    /// Threat score (0.0-1.0) at the time of the response
     pub score: f64,
+    /// Action that was taken
     pub action: ResponseAction,
+    /// When the response was executed
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
 impl AutoResponder {
+    /// Create a responder with empty temp-block and history lists
     pub fn new(pf: Arc<dyn PfBackend>, config: ResponseConfig) -> Self {
         Self {
             pf,
@@ -237,6 +249,7 @@ impl AutoResponder {
         self.history.read().await.clone()
     }
 
+    /// The response configuration this responder was created with
     pub fn config(&self) -> &ResponseConfig {
         &self.config
     }

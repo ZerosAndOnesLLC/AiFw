@@ -8,11 +8,19 @@ use std::path::Path;
 use std::str::FromStr;
 use uuid::Uuid;
 
+/// SQLite handle for the firewall database. Wraps the shared [`SqlitePool`]
+/// and owns the filter-rule (`rules` table) persistence helpers; other
+/// engines create their own tables against the same pool via their
+/// `migrate()` methods.
 pub struct Database {
     pool: SqlitePool,
 }
 
 impl Database {
+    /// Open (creating if missing) the SQLite database at `path` with WAL
+    /// journaling and tuned pragmas (64 MB cache, 256 MiB mmap), restrict
+    /// the file to mode 0600, and run migrations. Production path is
+    /// `/var/db/aifw/aifw.db`.
     pub async fn new(path: &Path) -> Result<Self> {
         use sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 
@@ -60,6 +68,8 @@ impl Database {
         Self { pool }
     }
 
+    /// Open a fresh in-memory SQLite database (single connection) and run
+    /// migrations. Used by tests.
     pub async fn new_in_memory() -> Result<Self> {
         let opts = SqliteConnectOptions::from_str("sqlite::memory:")?;
         let pool = SqlitePoolOptions::new()
@@ -151,6 +161,7 @@ impl Database {
         Ok(())
     }
 
+    /// Insert a filter rule into the `rules` table
     pub async fn insert_rule(&self, rule: &Rule) -> Result<()> {
         Self::insert_rule_on(&self.pool, rule).await
     }
@@ -223,6 +234,7 @@ impl Database {
         Ok(())
     }
 
+    /// Fetch a filter rule by id; `Ok(None)` when it doesn't exist
     pub async fn get_rule(&self, id: Uuid) -> Result<Option<Rule>> {
         let row = sqlx::query_as::<_, RuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {RULE_COLUMNS} FROM rules WHERE id = ?1"
@@ -234,6 +246,7 @@ impl Database {
         row.map(|r| r.into_rule()).transpose()
     }
 
+    /// All filter rules ordered by priority, then creation time
     pub async fn list_rules(&self) -> Result<Vec<Rule>> {
         let rows = sqlx::query_as::<_, RuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {RULE_COLUMNS} FROM rules ORDER BY priority ASC, created_at ASC"
@@ -244,6 +257,7 @@ impl Database {
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
+    /// Filter rules with status `active`, ordered by priority then creation time
     pub async fn list_active_rules(&self) -> Result<Vec<Rule>> {
         let rows = sqlx::query_as::<_, RuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {RULE_COLUMNS} FROM rules \
@@ -255,6 +269,8 @@ impl Database {
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
+    /// Update a filter rule in place (refreshing `updated_at`). Fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn update_rule(&self, rule: &Rule) -> Result<()> {
         Self::update_rule_on(&self.pool, rule).await
     }
@@ -332,6 +348,7 @@ impl Database {
         Ok(())
     }
 
+    /// Delete a filter rule by id. Fails with `NotFound` if it doesn't exist
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
         Self::delete_rule_on(&self.pool, id).await
     }
@@ -353,6 +370,7 @@ impl Database {
         Ok(())
     }
 
+    /// The underlying shared [`SqlitePool`]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }

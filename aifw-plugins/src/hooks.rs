@@ -59,7 +59,9 @@ impl std::fmt::Display for HookPoint {
 /// Event data passed to plugin hooks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookEvent {
+    /// Which hook point fired
     pub hook: HookPoint,
+    /// Hook-specific payload
     pub data: HookEventData,
 }
 
@@ -69,68 +71,111 @@ pub struct HookEvent {
 pub enum HookEventData {
     /// Rule evaluation event
     Rule {
+        /// Source IP, if known
         src_ip: Option<IpAddr>,
+        /// Destination IP, if known
         dst_ip: Option<IpAddr>,
+        /// Source port, if known
         src_port: Option<u16>,
+        /// Destination port, if known
         dst_port: Option<u16>,
+        /// Protocol name (e.g. "tcp", "udp")
         protocol: String,
+        /// Rule verdict (e.g. "pass", "block")
         action: String,
+        /// ID of the matched rule, if known
         rule_id: Option<String>,
     },
     /// Connection event
     Connection {
+        /// Source IP
         src_ip: IpAddr,
+        /// Destination IP
         dst_ip: IpAddr,
+        /// Source port
         src_port: u16,
+        /// Destination port
         dst_port: u16,
+        /// Protocol name (e.g. "tcp", "udp")
         protocol: String,
+        /// Connection state (e.g. "new", "established", "closed")
         state: String,
     },
     /// Log/audit event
     Log {
+        /// What happened (audit action name)
         action: String,
+        /// Free-form event details
         details: String,
+        /// Component that emitted the event
         source: String,
     },
     /// API request event
     Api {
+        /// HTTP method
         method: String,
+        /// Request path
         path: String,
+        /// Client address, if known
         remote_addr: Option<String>,
     },
     /// DNS query/response event
     Dns {
+        /// Queried domain name
         query_name: String,
+        /// Record type (e.g. "A", "AAAA", "TXT")
         query_type: String,
+        /// Client IP that sent the query, if known
         src_ip: Option<IpAddr>,
+        /// Response code (e.g. "NOERROR", "NXDOMAIN"); `None` for queries
         response_code: Option<String>,
     },
     /// DHCP lease event
     Dhcp {
+        /// Client MAC address
         mac_address: String,
+        /// Leased IP address
         ip_address: IpAddr,
+        /// Client-reported hostname, if any
         hostname: Option<String>,
+        /// Lease lifecycle action
         lease_action: String, // "assign", "renew", "release"
     },
     /// VPN event
     Vpn {
+        /// Tunnel/interface name
         tunnel_name: String,
+        /// Peer identifier, if known
         peer: Option<String>,
+        /// Tunnel state change
         action: String, // "up", "down", "handshake"
     },
     /// Timer tick
-    Tick { timestamp: u64 },
+    Tick {
+        /// Unix timestamp (seconds) of the tick
+        timestamp: u64,
+    },
     /// IDS alert event
     IdsAlertEvent {
+        /// Matched signature ID (SID), if signature-based
         signature_id: Option<u32>,
+        /// Signature/alert message text
         signature_msg: String,
+        /// Alert severity (lower is more severe, Suricata convention)
         severity: u8,
+        /// Source IP
         src_ip: IpAddr,
+        /// Destination IP
         dst_ip: IpAddr,
+        /// Source port, if applicable
         src_port: Option<u16>,
+        /// Destination port, if applicable
         dst_port: Option<u16>,
+        /// Protocol name (e.g. "tcp", "udp")
         protocol: String,
+        /// What the IDS did (e.g. "alert", "drop")
         action: String,
+        /// Ruleset/engine the rule came from
         rule_source: String,
     },
 }
@@ -150,9 +195,19 @@ pub enum HookAction {
     /// Log this event with extra context
     Log(String),
     /// Add an IP to a pf table (e.g., block list)
-    AddToTable { table: String, ip: IpAddr },
+    AddToTable {
+        /// Target pf table name
+        table: String,
+        /// Address to add
+        ip: IpAddr,
+    },
     /// Remove an IP from a pf table
-    RemoveFromTable { table: String, ip: IpAddr },
+    RemoveFromTable {
+        /// Target pf table name
+        table: String,
+        /// Address to remove
+        ip: IpAddr,
+    },
     /// Modify a value (e.g., rewrite DNS response)
     Modify(String),
     /// Multiple actions

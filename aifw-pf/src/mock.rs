@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use tokio::sync::RwLock;
 
+/// In-memory [`PfBackend`] used on Linux/WSL and in tests — the compile-time
+/// counterpart of the FreeBSD [`crate::PfIoctl`]. Stores rules, NAT rules,
+/// queues, tables, and states in `RwLock`ed maps; never touches real pf.
 pub struct PfMock {
     rules: RwLock<HashMap<String, Vec<String>>>,
     nat_rules: RwLock<HashMap<String, Vec<String>>>,
@@ -18,6 +21,7 @@ pub struct PfMock {
 }
 
 impl PfMock {
+    /// Create an empty mock backend with pf reported as running and one FIB
     pub fn new() -> Self {
         Self {
             rules: RwLock::new(HashMap::new()),

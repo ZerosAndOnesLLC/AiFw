@@ -9,8 +9,12 @@ use super::{CompiledRule, ContentMatch, PcrePattern};
 pub enum SigmaCondition {
     /// Match a keyword in a specific field
     Keyword {
+        /// Field name the values are matched against
         field: String,
+        /// Candidate values; any match satisfies the condition unless the
+        /// modifier is `All`
         values: Vec<String>,
+        /// How the values are compared (exact, contains, regex, ...)
         modifier: SigmaModifier,
     },
     /// AND all sub-conditions

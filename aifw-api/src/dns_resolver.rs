@@ -403,7 +403,7 @@ pub struct ResolverStatus {
     pub listening_tcp: bool,
     /// Last successful or rolled-back switch timestamp (RFC3339)
     pub last_switch_at: Option<String>,
-    /// "ok" | "ok_disabled" | "rolled_back: <reason>" | "failed: <reason>"
+    /// "ok" | "ok_disabled" | "rolled_back: `<reason>`" | "failed: `<reason>`"
     pub last_switch_result: Option<String>,
     /// Mirrors the config value — when false, UDP/TCP fields fall back to
     /// service-running state and switch_backend skips the rollback check.

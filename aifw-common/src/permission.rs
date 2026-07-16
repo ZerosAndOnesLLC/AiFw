@@ -4,42 +4,79 @@ use serde::{Deserialize, Serialize};
 /// Each variant has a fixed bit index used for the u64 bitmask in JWT claims.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Permission {
+    /// View the dashboard ("dashboard:view")
     DashboardView,
+    /// Read firewall rules ("rules:read")
     RulesRead,
+    /// Create/modify/delete firewall rules ("rules:write")
     RulesWrite,
+    /// Read NAT rules ("nat:read")
     NatRead,
+    /// Create/modify/delete NAT rules ("nat:write")
     NatWrite,
+    /// Read VPN configuration ("vpn:read")
     VpnRead,
+    /// Modify VPN configuration ("vpn:write")
     VpnWrite,
+    /// Read geo-IP rules ("geoip:read")
     GeoipRead,
+    /// Modify geo-IP rules ("geoip:write")
     GeoipWrite,
+    /// Read IDS config, rules, and alerts ("ids:read")
     IdsRead,
+    /// Modify IDS config, rules, and suppressions ("ids:write")
     IdsWrite,
+    /// Read DNS resolver configuration ("dns:read")
     DnsRead,
+    /// Modify DNS resolver configuration ("dns:write")
     DnsWrite,
+    /// Read DHCP configuration ("dhcp:read")
     DhcpRead,
+    /// Modify DHCP configuration ("dhcp:write")
     DhcpWrite,
+    /// Read aliases ("aliases:read")
     AliasesRead,
+    /// Modify aliases ("aliases:write")
     AliasesWrite,
+    /// Read interface configuration ("interfaces:read")
     InterfacesRead,
+    /// Modify interface configuration ("interfaces:write")
     InterfacesWrite,
+    /// View live connection/state table ("connections:view")
     ConnectionsView,
+    /// View logs ("logs:view")
     LogsView,
+    /// Read user accounts ("users:read")
     UsersRead,
+    /// Create/modify/delete user accounts ("users:write")
     UsersWrite,
+    /// Read system settings ("settings:read")
     SettingsRead,
+    /// Modify system settings ("settings:write")
     SettingsWrite,
+    /// Read installed plugins ("plugins:read")
     PluginsRead,
+    /// Install/configure/remove plugins ("plugins:write")
     PluginsWrite,
+    /// Check for updates ("updates:read")
     UpdatesRead,
+    /// Install updates ("updates:install")
     UpdatesInstall,
+    /// Read/download backups ("backup:read")
     BackupRead,
+    /// Create/restore backups ("backup:write")
     BackupWrite,
+    /// Reboot the system ("system:reboot")
     SystemReboot,
+    /// Read reverse proxy configuration ("proxy:read")
     ProxyRead,
+    /// Modify reverse proxy configuration ("proxy:write")
     ProxyWrite,
+    /// Read multi-WAN configuration ("multiwan:read")
     MultiWanRead,
+    /// Modify multi-WAN configuration ("multiwan:write")
     MultiWanWrite,
+    /// Manage HA cluster operations — demote, snapshot/cert push, failover ("ha:manage")
     HaManage,
 }
 
@@ -189,6 +226,7 @@ pub const ALL_PERMISSIONS: &[Permission] = &[
 pub struct PermissionSet(pub u64);
 
 impl PermissionSet {
+    /// Empty set (no permissions granted)
     pub fn new() -> Self {
         Self(0)
     }

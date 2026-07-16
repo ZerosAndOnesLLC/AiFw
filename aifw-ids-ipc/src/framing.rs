@@ -15,16 +15,26 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// instead of trusting the length prefix (PERF-H13 #357).
 const INITIAL_BODY_CAPACITY: usize = 64 * 1024;
 
+/// Errors from reading or writing a length-prefixed frame
 #[derive(Debug, Error)]
 pub enum FrameError {
+    /// Underlying stream I/O failed (includes truncated frame bodies / EOF)
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// Frame length exceeds the 16 MiB cap (value is the claimed byte count)
     #[error("frame too large: {0} bytes (max {max})", max = MAX_FRAME_BYTES)]
     TooLarge(u32),
+    /// Frame body was not valid JSON for the expected type
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 }
 
+/// Read one length-prefixed JSON frame from `reader` and deserialize it.
+///
+/// Fails with `TooLarge` if the 4-byte prefix claims more than 16 MiB, and
+/// with `Io` (UnexpectedEof) if the stream ends before the full body arrives.
+/// The body buffer grows with bytes actually received rather than trusting
+/// the claimed length up front.
 pub async fn read_frame<T, R>(reader: &mut R) -> Result<T, FrameError>
 where
     T: DeserializeOwned,
@@ -57,6 +67,8 @@ where
     Ok(msg)
 }
 
+/// Serialize `msg` as JSON and write it to `writer` as one length-prefixed
+/// frame, then flush. Fails with `TooLarge` if the encoded body exceeds 16 MiB.
 pub async fn write_frame<T, W>(writer: &mut W, msg: &T) -> Result<(), FrameError>
 where
     T: Serialize,

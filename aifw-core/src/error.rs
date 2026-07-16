@@ -19,28 +19,39 @@
 
 use thiserror::Error;
 
+/// Crate-local result alias over [`CoreError`]
 pub type Result<T> = std::result::Result<T, CoreError>;
 
+/// Error type for `aifw-core` engines. Converts from `sqlx::Error`,
+/// `aifw_pf::PfError`, and `aifw_common::AifwError` so migration from the
+/// shared error type is mechanical.
 #[derive(Debug, Error)]
 pub enum CoreError {
+    /// SQLite query or connection failure
     #[error("database error: {0}")]
     Database(String),
 
+    /// pf backend (pfctl/ioctl) failure
     #[error("pf backend error: {0}")]
     Pf(String),
 
+    /// Input rejected by validation before touching the DB or pf
     #[error("validation error: {0}")]
     Validation(String),
 
+    /// Requested row or entity does not exist
     #[error("not found: {0}")]
     NotFound(String),
 
+    /// Bad or missing configuration
     #[error("config error: {0}")]
     Config(String),
 
+    /// Underlying I/O failure
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Anything that doesn't fit the other variants
     #[error("{0}")]
     Other(String),
 }

@@ -52,6 +52,9 @@ pub struct WasmPlugin {
 }
 
 impl WasmPlugin {
+    /// Create the wrapper in the `Loaded` state. The plugin name falls back
+    /// to the .wasm file stem when not set in the config. Does not load or
+    /// validate the module — see `init` (which currently refuses to load).
     pub fn new(config: WasmPluginConfig) -> Self {
         let name = config.name.clone().unwrap_or_else(|| {
             config
@@ -74,6 +77,7 @@ impl WasmPlugin {
         }
     }
 
+    /// Current lifecycle state of the WASM plugin
     pub fn state(&self) -> PluginState {
         self.state
     }
