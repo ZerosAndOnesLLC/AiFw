@@ -121,6 +121,14 @@ AiFw rules live in isolated pf anchors (`aifw`, `aifw-nat`, `aifw-vpn`, `aifw-ge
 
 Next.js 15 with `output: "export"` (static HTML, no Node.js on appliance). Tailwind CSS 4, TypeScript. Served by the API via `--ui-dir` flag on port 8080.
 
+### UI Page Structure (#428)
+
+Pages stay presentational; an ESLint `max-lines` guard caps `src/app/**/page.tsx` at 1000 lines. Layer resource code as:
+
+- `src/lib/api/<resource>.ts` — TypeScript types + typed API functions wrapping the `api` client from `src/lib/api.ts` (no React here)
+- `src/hooks/use<Resource>.ts` — per-resource hooks owning state, loading, CRUD actions, and feedback (`useFeedback` for the success/error banner)
+- `src/app/<route>/components/` — route-local presentational components (props in, callbacks out; no fetching)
+
 ## External Components
 
 `freebsd/manifest.json` is the single source of truth listing all components. AiFw depends on companion services built from separate repos:
