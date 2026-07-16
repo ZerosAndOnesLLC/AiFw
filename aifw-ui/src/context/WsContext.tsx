@@ -12,13 +12,21 @@ interface WsData {
   services: Record<string, unknown>[];
   ids: Record<string, unknown> | null;
   connected: boolean;
-  history: Record<string, unknown>[];
+  /// Snapshot of the rolling status-update history (up to 1800 entries,
+  /// ~30 min at 1 Hz). Exposed as an imperative getter — not state — so
+  /// per-frame appends don't re-render every useWs() consumer
+  /// (PERF-H23 #367). Read it once when `historyLoaded` flips true and
+  /// build chart data incrementally from live updates afterwards.
+  getHistory: () => Record<string, unknown>[];
   historyLoaded: boolean;
 }
 
+/// Cap on buffered status-update frames (1 Hz → ~30 minutes).
+const HISTORY_MAX = 1800;
+
 const WsContext = createContext<WsData>({
   status: null, system: null, connections: [], interfaces: [], blocked: [], services: [],
-  ids: null, connected: false, history: [], historyLoaded: false,
+  ids: null, connected: false, getHistory: () => [], historyLoaded: false,
 });
 
 export function useWs() { return useContext(WsContext); }
@@ -32,7 +40,6 @@ export function WsProvider({ children }: { children: ReactNode }) {
   const [services, setServices] = useState<Record<string, unknown>[]>([]);
   const [ids, setIds] = useState<Record<string, unknown> | null>(null);
   const [connected, setConnected] = useState(false);
-  const [history, setHistory] = useState<Record<string, unknown>[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -63,7 +70,6 @@ export function WsProvider({ children }: { children: ReactNode }) {
 
         if (msg.type === "history" && Array.isArray(msg.data)) {
           histBuf.current = msg.data;
-          setHistory(msg.data);
           setHistoryLoaded(true);
           const last = msg.data[msg.data.length - 1];
           if (last?.status) setStatus(last.status);
@@ -84,8 +90,10 @@ export function WsProvider({ children }: { children: ReactNode }) {
           if (msg.blocked) setBlocked(msg.blocked);
           if (msg.services) setServices(msg.services);
           if (msg.ids) setIds(msg.ids);
-          histBuf.current = [...histBuf.current, msg].slice(-1800);
-          setHistory(histBuf.current);
+          // Append in place — no per-frame reallocation and no state update,
+          // so history growth never triggers React re-renders (PERF-H23 #367).
+          histBuf.current.push(msg);
+          if (histBuf.current.length > HISTORY_MAX) histBuf.current.shift();
         }
       } catch { /* ignore */ }
     };
@@ -108,8 +116,12 @@ export function WsProvider({ children }: { children: ReactNode }) {
     };
   }, [connect]);
 
+  // Stable identity; returns a copy so consumers can't mutate the buffer.
+  // Called rarely (chart seeding on mount / NIC change), never per frame.
+  const getHistory = useCallback(() => histBuf.current.slice(), []);
+
   return (
-    <WsContext.Provider value={{ status, system, connections, interfaces, blocked, services, ids, connected, history, historyLoaded }}>
+    <WsContext.Provider value={{ status, system, connections, interfaces, blocked, services, ids, connected, getHistory, historyLoaded }}>
       {children}
     </WsContext.Provider>
   );
