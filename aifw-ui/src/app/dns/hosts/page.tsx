@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { isValidHostname, isValidIPv4, isValidIPv6, isValidDomain } from "@/lib/validate";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -40,16 +41,6 @@ const defaultForm: HostForm = {
 const RECORD_TYPES = ["A", "AAAA", "MX", "CNAME", "TXT"];
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function fmtDate(iso: string): string {
   if (!iso) return "-";
@@ -99,9 +90,7 @@ export default function DnsHostsPage() {
 
   const fetchHosts = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dns/resolver/hosts", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: HostOverride[] }>("/api/v1/dns/resolver/hosts");
       setHosts(body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load host overrides");
@@ -174,17 +163,11 @@ export default function DnsHostsPage() {
       }
       if (form.description.trim()) payload.description = form.description.trim();
 
-      const url = editingId
-        ? `/api/v1/dns/resolver/hosts/${editingId}`
-        : "/api/v1/dns/resolver/hosts";
-      const method = editingId ? "PUT" : "POST";
-
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (editingId) {
+        await api.put(`/api/v1/dns/resolver/hosts/${editingId}`, payload);
+      } else {
+        await api.post("/api/v1/dns/resolver/hosts", payload);
+      }
 
       showFeedback("success", editingId ? "Host override updated" : "Host override created");
       closeModal();
@@ -198,11 +181,7 @@ export default function DnsHostsPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/dns/resolver/hosts/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/dns/resolver/hosts/${id}`);
       showFeedback("success", "Host override deleted");
       setDeleteId(null);
       await fetchHosts();
@@ -213,12 +192,7 @@ export default function DnsHostsPage() {
 
   const toggleEnabled = async (host: HostOverride) => {
     try {
-      const res = await fetch(`/api/v1/dns/resolver/hosts/${host.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ ...host, enabled: !host.enabled }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put(`/api/v1/dns/resolver/hosts/${host.id}`, { ...host, enabled: !host.enabled });
       await fetchHosts();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to toggle host override");

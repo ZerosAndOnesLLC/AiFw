@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -28,16 +29,6 @@ const defaultForm: DomainForm = {
 };
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function fmtDate(iso: string): string {
   if (!iso) return "-";
@@ -73,9 +64,7 @@ export default function DnsDomainsPage() {
 
   const fetchDomains = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dns/resolver/domains", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: DomainOverride[] }>("/api/v1/dns/resolver/domains");
       setDomains(body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load domain overrides");
@@ -129,17 +118,11 @@ export default function DnsDomainsPage() {
       };
       if (form.description.trim()) payload.description = form.description.trim();
 
-      const url = editingId
-        ? `/api/v1/dns/resolver/domains/${editingId}`
-        : "/api/v1/dns/resolver/domains";
-      const method = editingId ? "PUT" : "POST";
-
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (editingId) {
+        await api.put(`/api/v1/dns/resolver/domains/${editingId}`, payload);
+      } else {
+        await api.post("/api/v1/dns/resolver/domains", payload);
+      }
 
       showFeedback("success", editingId ? "Domain override updated" : "Domain override created");
       closeModal();
@@ -153,11 +136,7 @@ export default function DnsDomainsPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/dns/resolver/domains/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/dns/resolver/domains/${id}`);
       showFeedback("success", "Domain override deleted");
       setDeleteId(null);
       await fetchDomains();
@@ -168,12 +147,7 @@ export default function DnsDomainsPage() {
 
   const toggleEnabled = async (d: DomainOverride) => {
     try {
-      const res = await fetch(`/api/v1/dns/resolver/domains/${d.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ ...d, enabled: !d.enabled }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put(`/api/v1/dns/resolver/domains/${d.id}`, { ...d, enabled: !d.enabled });
       await fetchDomains();
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to toggle domain override");

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -118,16 +119,6 @@ const caServerPresets: Record<string, string> = {
 };
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function buildTlsOptionJson(form: TlsOptionForm): string {
   const cfg: Record<string, unknown> = {};
@@ -308,9 +299,7 @@ export default function TlsCertsPage() {
 
   const fetchCerts = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/tls/certs", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<TlsCert[] | { data?: TlsCert[] }>("/api/v1/reverse-proxy/tls/certs");
       setCerts(Array.isArray(body) ? body : body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load certificates");
@@ -319,9 +308,7 @@ export default function TlsCertsPage() {
 
   const fetchOptions = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/tls/options", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<TlsOption[] | { data?: TlsOption[] }>("/api/v1/reverse-proxy/tls/options");
       setTlsOptions(Array.isArray(body) ? body : body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load TLS options");
@@ -330,9 +317,7 @@ export default function TlsCertsPage() {
 
   const fetchResolvers = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/cert-resolvers", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<CertResolver[] | { data?: CertResolver[] }>("/api/v1/reverse-proxy/cert-resolvers");
       setResolvers(Array.isArray(body) ? body : body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load cert resolvers");
@@ -379,14 +364,10 @@ export default function TlsCertsPage() {
         cert_file: certForm.certFile.trim(),
         key_file: certForm.keyFile.trim(),
       };
-      const url = editingCertId
-        ? `/api/v1/reverse-proxy/tls/certs/${editingCertId}`
-        : "/api/v1/reverse-proxy/tls/certs";
-      const method = editingCertId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
+      if (editingCertId) {
+        await api.put(`/api/v1/reverse-proxy/tls/certs/${editingCertId}`, payload);
+      } else {
+        await api.post("/api/v1/reverse-proxy/tls/certs", payload);
       }
       showFeedback("success", editingCertId ? "Certificate updated" : "Certificate created");
       closeCertModal();
@@ -430,14 +411,10 @@ export default function TlsCertsPage() {
         name: optionForm.name.trim(),
         config_json: buildTlsOptionJson(optionForm),
       };
-      const url = editingOptionId
-        ? `/api/v1/reverse-proxy/tls/options/${editingOptionId}`
-        : "/api/v1/reverse-proxy/tls/options";
-      const method = editingOptionId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
+      if (editingOptionId) {
+        await api.put(`/api/v1/reverse-proxy/tls/options/${editingOptionId}`, payload);
+      } else {
+        await api.post("/api/v1/reverse-proxy/tls/options", payload);
       }
       showFeedback("success", editingOptionId ? "TLS option updated" : "TLS option created");
       closeOptionModal();
@@ -481,14 +458,10 @@ export default function TlsCertsPage() {
         name: resolverForm.name.trim(),
         config_json: buildCertResolverJson(resolverForm),
       };
-      const url = editingResolverId
-        ? `/api/v1/reverse-proxy/cert-resolvers/${editingResolverId}`
-        : "/api/v1/reverse-proxy/cert-resolvers";
-      const method = editingResolverId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
+      if (editingResolverId) {
+        await api.put(`/api/v1/reverse-proxy/cert-resolvers/${editingResolverId}`, payload);
+      } else {
+        await api.post("/api/v1/reverse-proxy/cert-resolvers", payload);
       }
       showFeedback("success", editingResolverId ? "Cert resolver updated" : "Cert resolver created");
       closeResolverModal();
@@ -511,8 +484,7 @@ export default function TlsCertsPage() {
     else url = `/api/v1/reverse-proxy/cert-resolvers/${id}`;
 
     try {
-      const res = await fetch(url, { method: "DELETE", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(url);
       const labels = { cert: "Certificate", option: "TLS option", resolver: "Cert resolver" };
       showFeedback("success", `${labels[type]} deleted`);
       setDeleteTarget(null);

@@ -1,18 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 import Card from "@/components/Card";
 import StatusBadge from "@/components/StatusBadge";
-
-const API = "";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
 
 interface GeoIpRule {
   id: string;
@@ -85,9 +76,7 @@ export default function GeoIpPage() {
   // ── Fetch all rules ──
   const fetchRules = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/geoip`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`Failed to fetch rules: ${res.status}`);
-      const json = await res.json();
+      const json = await api.get<{ data?: GeoIpRule[] }>("/api/v1/geoip");
       setRules(json.data || []);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to load rules";
@@ -110,15 +99,7 @@ export default function GeoIpPage() {
     setAdding(true);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/geoip`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ country_code: code, action: newAction }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Create failed: ${res.status}`);
-      }
+      await api.post("/api/v1/geoip", { country_code: code, action: newAction });
       setNewCountryCode("");
       setFeedback({ type: "success", message: `Rule for ${code} created` });
       clearFeedback();
@@ -137,19 +118,11 @@ export default function GeoIpPage() {
     setSaving(true);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/geoip/${id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          country_code: editCountryCode.trim().toUpperCase(),
-          action: editAction,
-          status: editStatus,
-        }),
+      await api.put(`/api/v1/geoip/${id}`, {
+        country_code: editCountryCode.trim().toUpperCase(),
+        action: editAction,
+        status: editStatus,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Update failed: ${res.status}`);
-      }
       setEditingId(null);
       setFeedback({ type: "success", message: "Rule updated" });
       clearFeedback();
@@ -169,19 +142,11 @@ export default function GeoIpPage() {
     setTogglingId(rule.id);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/geoip/${rule.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          country_code: rule.country_code,
-          action: rule.action,
-          status: newStatus,
-        }),
+      await api.put(`/api/v1/geoip/${rule.id}`, {
+        country_code: rule.country_code,
+        action: rule.action,
+        status: newStatus,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Toggle failed: ${res.status}`);
-      }
       setFeedback({ type: "success", message: `${rule.country_code} ${newStatus}` });
       clearFeedback();
       await fetchRules();
@@ -201,14 +166,7 @@ export default function GeoIpPage() {
     setDeletingId(id);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/geoip/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Delete failed: ${res.status}`);
-      }
+      await api.delete(`/api/v1/geoip/${id}`);
       setFeedback({ type: "success", message: `Rule for ${countryCode} deleted` });
       clearFeedback();
       await fetchRules();
@@ -240,14 +198,7 @@ export default function GeoIpPage() {
 
     setLookupLoading(true);
     try {
-      const res = await fetch(`${API}/api/v1/geoip/lookup/${encodeURIComponent(trimmed)}`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Lookup failed: ${res.status}`);
-      }
-      const data: LookupResult = await res.json();
+      const data = await api.get<LookupResult>(`/api/v1/geoip/lookup/${encodeURIComponent(trimmed)}`);
       setLookupResult(data);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Lookup failed";

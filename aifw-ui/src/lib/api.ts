@@ -1,24 +1,132 @@
 const API_BASE = "";
+const TOKEN_KEY = "aifw_token";
 
-export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
+/// Error thrown for any non-2xx response. `message` carries the
+/// server-provided error/message body field when one exists, so call
+/// sites can show it directly: `err instanceof Error ? err.message : ...`.
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export interface RequestOptions {
+  /// Skip the automatic token-clear + redirect to /login on 401.
+  /// Needed by the login/TOTP flow, where 401 means "bad credentials".
+  noAuthRedirect?: boolean;
+  /// Extra headers merged over the defaults.
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+function authToken(): string | null {
+  return typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+}
+
+/// Pull a human-readable message out of an error response. The API mostly
+/// returns `{ "error": ... }` or `{ "message": ... }` JSON bodies.
+async function errorMessage(res: Response): Promise<string> {
+  try {
+    const body = await res.clone().json();
+    if (body && typeof body === "object") {
+      const m = (body as Record<string, unknown>).error ?? (body as Record<string, unknown>).message;
+      if (typeof m === "string" && m) return m;
+    }
+  } catch {
+    /* not JSON */
+  }
+  try {
+    const text = await res.text();
+    if (text && text.length <= 512) return text;
+  } catch {
+    /* unreadable body */
+  }
+  return `API ${res.status}: ${res.statusText || "request failed"}`;
+}
+
+/// Core request: attaches the Bearer token, JSON-encodes plain bodies
+/// (FormData passes through untouched so the browser sets the multipart
+/// boundary), centralizes the 401 → /login redirect, and throws ApiError
+/// with the server's error message on any non-2xx status.
+async function request(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts: RequestOptions = {},
+): Promise<Response> {
+  const token = authToken();
+  const isForm = typeof FormData !== "undefined" && body instanceof FormData;
+  // Strings are passed through as-is (already-serialized JSON from legacy
+  // fetchApi callers); FormData passes through so the browser sets the
+  // multipart boundary; anything else is JSON-encoded.
+  const rawBody: BodyInit | undefined = isForm
+    ? (body as FormData)
+    : typeof body === "string"
+      ? body
+      : body !== undefined
+        ? JSON.stringify(body)
+        : undefined;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(body !== undefined && !isForm ? { "Content-Type": "application/json" } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(opts.headers ?? {}),
   };
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    body: rawBody,
+    signal: opts.signal,
+  });
+
   if (!res.ok) {
-    if (res.status === 401 && typeof window !== "undefined") {
-      localStorage.removeItem("aifw_token");
+    if (res.status === 401 && !opts.noAuthRedirect && typeof window !== "undefined") {
+      localStorage.removeItem(TOKEN_KEY);
       window.location.href = "/login";
     }
-    throw new Error(`API ${res.status}: ${res.statusText}`);
+    throw new ApiError(res.status, await errorMessage(res));
   }
-  return res.json();
+  return res;
+}
+
+/// Parse a JSON body, tolerating empty responses (204 / empty 200).
+async function parseJson<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+/// Back-compat JSON wrapper used by the named `api.*` methods below.
+/// Prefer the `api.get/post/...` verbs for new code (#429).
+export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await request(options?.method ?? "GET", path, options?.body ?? undefined, {});
+  return parseJson<T>(res);
 }
 
 export const api = {
+  // ---- Generic verbs (#429): the one true way to call the API. ----
+  get: <T>(path: string, opts?: RequestOptions) =>
+    request("GET", path, undefined, opts).then((r) => parseJson<T>(r)),
+  post: <T>(path: string, body?: unknown, opts?: RequestOptions) =>
+    request("POST", path, body, opts).then((r) => parseJson<T>(r)),
+  put: <T>(path: string, body?: unknown, opts?: RequestOptions) =>
+    request("PUT", path, body, opts).then((r) => parseJson<T>(r)),
+  patch: <T>(path: string, body?: unknown, opts?: RequestOptions) =>
+    request("PATCH", path, body, opts).then((r) => parseJson<T>(r)),
+  delete: <T>(path: string, opts?: RequestOptions) =>
+    request("DELETE", path, undefined, opts).then((r) => parseJson<T>(r)),
+  // Raw-body variants for PEM/config exports and file downloads.
+  getText: (path: string, opts?: RequestOptions) =>
+    request("GET", path, undefined, opts).then((r) => r.text()),
+  postText: (path: string, body?: unknown, opts?: RequestOptions) =>
+    request("POST", path, body, opts).then((r) => r.text()),
+  getBlob: (path: string, opts?: RequestOptions) =>
+    request("GET", path, undefined, opts).then((r) => r.blob()),
+  postBlob: (path: string, body?: unknown, opts?: RequestOptions) =>
+    request("POST", path, body, opts).then((r) => r.blob()),
   // Auth
   login: (username: string, password: string) =>
     fetchApi<{ token: string }>("/api/v1/auth/login", {

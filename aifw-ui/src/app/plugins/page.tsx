@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 interface PluginEntry {
   name: string;
@@ -17,15 +18,6 @@ interface PluginConfig {
   settings: Record<string, unknown>;
 }
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
-
 export default function PluginsPage() {
   const [plugins, setPlugins] = useState<PluginEntry[]>([]);
   const [total, setTotal] = useState(0);
@@ -39,13 +31,12 @@ export default function PluginsPage() {
 
   const fetchPlugins = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/plugins", { headers: authHeadersPlain() });
-      if (res.ok) {
-        const data = await res.json();
-        setPlugins(data.plugins || []);
-        setTotal(data.total || 0);
-        setRunning(data.running || 0);
-      }
+      const data = await api.get<{ plugins?: PluginEntry[]; total?: number; running?: number }>(
+        "/api/v1/plugins",
+      );
+      setPlugins(data.plugins || []);
+      setTotal(data.total || 0);
+      setRunning(data.running || 0);
     } catch { /* silent */ }
     setLoading(false);
   }, []);
@@ -54,15 +45,12 @@ export default function PluginsPage() {
 
   const togglePlugin = async (name: string, enabled: boolean) => {
     try {
-      const res = await fetch("/api/v1/plugins/toggle", {
-        method: "POST", headers: authHeaders(),
-        body: JSON.stringify({ name, enabled }),
+      const data = await api.post<{ message?: string }>("/api/v1/plugins/toggle", {
+        name,
+        enabled,
       });
-      if (res.ok) {
-        const data = await res.json();
-        setActionMsg(data.message || "Done");
-        fetchPlugins();
-      }
+      setActionMsg(data.message || "Done");
+      fetchPlugins();
     } catch { setActionMsg("Failed"); }
     setTimeout(() => setActionMsg(""), 3000);
   };
@@ -70,12 +58,9 @@ export default function PluginsPage() {
   const openConfig = async (name: string) => {
     setSelectedPlugin(name);
     try {
-      const res = await fetch(`/api/v1/plugins/${name}/config`, { headers: authHeadersPlain() });
-      if (res.ok) {
-        const data = await res.json();
-        setPluginConfig(data);
-        setConfigJson(JSON.stringify(data.settings || {}, null, 2));
-      }
+      const data = await api.get<PluginConfig>(`/api/v1/plugins/${name}/config`);
+      setPluginConfig(data);
+      setConfigJson(JSON.stringify(data.settings || {}, null, 2));
     } catch { /* */ }
   };
 
@@ -84,14 +69,11 @@ export default function PluginsPage() {
     setSavingConfig(true);
     try {
       const settings = JSON.parse(configJson);
-      const res = await fetch(`/api/v1/plugins/${selectedPlugin}/config`, {
-        method: "PUT", headers: authHeaders(),
-        body: JSON.stringify({ settings }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setActionMsg(data.message || "Saved");
-      }
+      const data = await api.put<{ message?: string }>(
+        `/api/v1/plugins/${selectedPlugin}/config`,
+        { settings },
+      );
+      setActionMsg(data.message || "Saved");
     } catch (e) {
       setActionMsg("Invalid JSON or save failed");
     }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
+import { api } from "@/lib/api";
 
 type Range = { label: string; secs: number };
 const RANGES: Range[] = [
@@ -17,11 +18,6 @@ interface SeriesResponse {
   tier: string;
   interval_secs: number;
   points: SeriesPoint[];
-}
-
-function authHeaders(): HeadersInit {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 /** Human-friendly metric value formatter. Picks units by magnitude. */
@@ -134,9 +130,7 @@ export default function MetricsPage() {
 
   const fetchList = useCallback(async () => {
     try {
-      const r = await fetch("/api/v1/metrics/list", { headers: authHeaders() });
-      if (!r.ok) throw new Error(`list failed (${r.status})`);
-      const j = await r.json();
+      const j = await api.get<{ names?: string[] }>("/api/v1/metrics/list");
       const n: string[] = j.names || [];
       setNames(n);
       if (!selected && n.length) setSelected(n[0]);
@@ -149,12 +143,10 @@ export default function MetricsPage() {
     if (!selected) return;
     setLoading(true);
     try {
-      const u = new URL(`/api/v1/metrics/series`, window.location.origin);
-      u.searchParams.set("name", selected);
-      u.searchParams.set("range_secs", String(rangeSecs));
-      const r = await fetch(u.toString(), { headers: authHeaders() });
-      if (!r.ok) throw new Error(`series failed (${r.status})`);
-      const j: SeriesResponse = await r.json();
+      const params = new URLSearchParams();
+      params.set("name", selected);
+      params.set("range_secs", String(rangeSecs));
+      const j = await api.get<SeriesResponse>(`/api/v1/metrics/series?${params.toString()}`);
       setData(j);
       setError(null);
     } catch (e) {

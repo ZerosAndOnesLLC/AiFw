@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -57,16 +58,6 @@ interface NetInterface {
 
 /* -- Helpers --------------------------------------------------------- */
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
-
 const defaultConfig: DhcpGlobalConfig = {
   enabled: false,
   interfaces: [],
@@ -115,9 +106,8 @@ export default function DhcpOverviewPage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/status", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setStatus(await res.json());
+      const data = await api.get<DhcpStatus>("/api/v1/dhcp/status");
+      setStatus(data);
     } catch {
       /* silent */
     }
@@ -125,9 +115,7 @@ export default function DhcpOverviewPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/v4/config", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: DhcpGlobalConfig = await res.json();
+      const data = await api.get<DhcpGlobalConfig>("/api/v1/dhcp/v4/config");
       setConfigRaw(data);
       setDnsInput((data.dns_servers || []).join(", "));
     } catch {
@@ -137,9 +125,7 @@ export default function DhcpOverviewPage() {
 
   const fetchInterfaces = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/interfaces", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: NetInterface[] }>("/api/v1/interfaces");
       const names = (body.data || [])
         .map((i: NetInterface) => i.name)
         .filter((n: string) => !n.startsWith("lo") && !n.startsWith("pflog"));
@@ -162,12 +148,8 @@ export default function DhcpOverviewPage() {
   const serviceAction = async (action: "start" | "stop" | "restart") => {
     setActionLoading(action);
     try {
-      const res = await fetch(`/api/v1/dhcp/${action}`, {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      const data = await res.json().catch(() => ({ message: "" }));
-      const msg = data.message || `DHCP ${action} completed`;
+      const data = await api.post<{ message?: string }>(`/api/v1/dhcp/${action}`);
+      const msg = data?.message || `DHCP ${action} completed`;
       if (msg.toLowerCase().includes("fail") || msg.toLowerCase().includes("error")) {
         showFeedback("error", msg);
       } else {
@@ -200,12 +182,7 @@ export default function DhcpOverviewPage() {
           .map((s) => s.trim())
           .filter(Boolean),
       };
-      const res = await fetch("/api/v1/dhcp/v4/config", {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put("/api/v1/dhcp/v4/config", payload);
       showFeedback("success", "Global settings saved");
       setIsDirty(false);
       await fetchConfig();
@@ -219,11 +196,7 @@ export default function DhcpOverviewPage() {
   const applyConfig = async () => {
     setApplying(true);
     try {
-      const res = await fetch("/api/v1/dhcp/v4/apply", {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.post("/api/v1/dhcp/v4/apply");
       showFeedback("success", "Configuration applied and rDHCP restarted");
       setIsDirty(false);
       await fetchStatus();

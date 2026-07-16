@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { api } from "@/lib/api";
 import { validateCIDR, isValidIP, isValidCIDR } from "@/lib/validate";
 
 type FieldErrors = Partial<Record<
@@ -48,14 +49,6 @@ const emptyForm: VlanForm = {
   description: "",
 };
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token");
-  return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
 export default function VlansPage() {
   const [vlans, setVlans] = useState<VlanConfig[]>([]);
   const [physicalInterfaces, setPhysicalInterfaces] = useState<string[]>([]);
@@ -69,9 +62,7 @@ export default function VlansPage() {
 
   const fetchVlans = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/vlans", { headers: authHeaders() });
-      if (!res.ok) throw new Error("Failed to fetch VLANs");
-      const json = await res.json();
+      const json = await api.get<{ data?: VlanConfig[] }>("/api/v1/vlans");
       setVlans(json.data || []);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to fetch VLANs");
@@ -80,11 +71,7 @@ export default function VlansPage() {
 
   const fetchInterfaces = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/interfaces/detailed", {
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error("Failed to fetch interfaces");
-      const json = await res.json();
+      const json = await api.get<{ data?: InterfaceInfo[] }>("/api/v1/interfaces/detailed");
       const physical = (json.data || [])
         .filter((i: InterfaceInfo) => !i.is_vlan && !i.name.startsWith("lo"))
         .map((i: InterfaceInfo) => i.name);
@@ -197,19 +184,10 @@ export default function VlansPage() {
     }
 
     try {
-      const url = editingId ? `/api/v1/vlans/${editingId}` : "/api/v1/vlans";
-      const method = editingId ? "PUT" : "POST";
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => null);
-        throw new Error(
-          errBody?.message ||
-            `Failed to ${editingId ? "update" : "create"} VLAN`
-        );
+      if (editingId) {
+        await api.put(`/api/v1/vlans/${editingId}`, body);
+      } else {
+        await api.post("/api/v1/vlans", body);
       }
       closeModal();
       await fetchVlans();
@@ -224,11 +202,7 @@ export default function VlansPage() {
     if (!confirm("Delete this VLAN? This action cannot be undone.")) return;
     setError(null);
     try {
-      const res = await fetch(`/api/v1/vlans/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error("Failed to delete VLAN");
+      await api.delete(`/api/v1/vlans/${id}`);
       await fetchVlans();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Delete failed");

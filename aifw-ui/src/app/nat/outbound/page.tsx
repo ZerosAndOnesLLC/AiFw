@@ -60,8 +60,7 @@ export default function OutboundNatPage() {
     [reordered[idx], reordered[targetIdx]] = [reordered[targetIdx], reordered[idx]];
     setRules(reordered);
     try {
-      const t = localStorage.getItem("aifw_token");
-      await fetch("/api/v1/nat/reorder", { method: "PUT", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify({ rule_ids: reordered.map(x => x.id) }) });
+      await api.put("/api/v1/nat/reorder", { rule_ids: reordered.map(x => x.id) });
     } catch { setError("Failed to save order"); }
   };
 
@@ -572,19 +571,14 @@ function PfNatOutput() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem("aifw_token") || "";
-    fetch("/api/v1/rules/system", { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json())
+    api.get<unknown>("/api/v1/rules/system")
       .then(d => {
         // Also fetch NAT rules from pf anchor
-        return fetch("/api/v1/status", { headers: { Authorization: `Bearer ${token}` } })
-          .then(r => r.json())
-          .then(() => d);
+        return api.get<unknown>("/api/v1/status").then(() => d);
       })
       .then(() => {
         // Fetch pf nat rules directly
-        fetch("/api/v1/nat/pf-output", { headers: { Authorization: `Bearer ${token}` } })
-          .then(r => r.ok ? r.json() : { data: [] })
+        api.get<{ data?: string[] }>("/api/v1/nat/pf-output")
           .then(d => setOutput(d.data || []))
           .catch(() => {});
       })

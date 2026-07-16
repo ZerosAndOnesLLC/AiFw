@@ -3,8 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { PERMISSION_CATEGORIES } from "@/lib/permissions";
-
-const API = "";
+import { api } from "@/lib/api";
 
 interface User {
   id: string;
@@ -39,11 +38,6 @@ interface AuditEntry {
 interface Feedback {
   type: "success" | "error";
   message: string;
-}
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 }
 
 function getCurrentUserId(): string | null {
@@ -238,9 +232,7 @@ export default function UsersPage() {
 
   const fetchUsers = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/auth/users`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<{ data?: User[] }>("/api/v1/auth/users");
       setUsers(data.data || []);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -253,9 +245,7 @@ export default function UsersPage() {
   const fetchAudit = useCallback(async () => {
     setAuditLoading(true);
     try {
-      const res = await fetch(`${API}/api/v1/auth/audit`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<{ data?: AuditEntry[] }>("/api/v1/auth/audit");
       setAuditEntries(data.data || []);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -267,9 +257,7 @@ export default function UsersPage() {
 
   const fetchRoles = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/auth/roles`, { headers: authHeaders() });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await api.get<{ roles?: Role[] }>("/api/v1/auth/roles");
       setRoles(data.roles || []);
     } catch { /* ignore */ }
   }, []);
@@ -287,11 +275,7 @@ export default function UsersPage() {
     if (!newUsername.trim() || !newPassword.trim()) return;
     setAdding(true);
     try {
-      const res = await fetch(`${API}/api/v1/auth/users`, {
-        method: "POST", headers: authHeaders(),
-        body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole }),
-      });
-      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || b.message || `HTTP ${res.status}`); }
+      await api.post("/api/v1/auth/users", { username: newUsername.trim(), password: newPassword, role: newRole });
       setFeedbackWithTimeout({ type: "success", message: `User "${newUsername.trim()}" created.` });
       setNewUsername(""); setNewPassword(""); setNewRole("viewer"); setShowAddForm(false);
       await fetchUsers();
@@ -309,8 +293,7 @@ export default function UsersPage() {
     try {
       const body: Record<string, unknown> = { username: editUsername.trim(), role: editRole, enabled: editEnabled };
       if (editPassword.trim()) body.password = editPassword;
-      const res = await fetch(`${API}/api/v1/auth/users/${editingId}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(body) });
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || d.message || `HTTP ${res.status}`); }
+      await api.put(`/api/v1/auth/users/${editingId}`, body);
       setFeedbackWithTimeout({ type: "success", message: "User updated." }); setEditingId(null); await fetchUsers();
     } catch (err: unknown) {
       setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` });
@@ -319,16 +302,14 @@ export default function UsersPage() {
 
   const handleToggleEnabled = async (u: User) => {
     try {
-      const res = await fetch(`${API}/api/v1/auth/users/${u.id}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify({ enabled: !u.enabled }) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put(`/api/v1/auth/users/${u.id}`, { enabled: !u.enabled });
       setFeedbackWithTimeout({ type: "success", message: `${u.username} ${!u.enabled ? "enabled" : "disabled"}.` }); await fetchUsers();
     } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
   };
 
   const handleDelete = async (u: User) => {
     try {
-      const res = await fetch(`${API}/api/v1/auth/users/${u.id}`, { method: "DELETE", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/auth/users/${u.id}`);
       setFeedbackWithTimeout({ type: "success", message: `User "${u.username}" deleted.` }); setDeletingId(null); await fetchUsers();
     } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
   };
@@ -338,11 +319,7 @@ export default function UsersPage() {
     if (!newRoleName.trim()) return;
     setRoleSaving(true);
     try {
-      const res = await fetch(`${API}/api/v1/auth/roles`, {
-        method: "POST", headers: authHeaders(),
-        body: JSON.stringify({ name: newRoleName.trim(), permissions: Array.from(newRolePerms), description: newRoleDesc.trim() || null }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.post("/api/v1/auth/roles", { name: newRoleName.trim(), permissions: Array.from(newRolePerms), description: newRoleDesc.trim() || null });
       setFeedbackWithTimeout({ type: "success", message: `Role "${newRoleName.trim()}" created` });
       setShowRoleForm(false); setNewRoleName(""); setNewRoleDesc(""); setNewRolePerms(new Set()); await fetchRoles();
     } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
@@ -357,11 +334,7 @@ export default function UsersPage() {
     if (!editingRoleId) return;
     setRoleSaving(true);
     try {
-      const res = await fetch(`${API}/api/v1/auth/roles/${editingRoleId}`, {
-        method: "PUT", headers: authHeaders(),
-        body: JSON.stringify({ name: editRoleName.trim() || undefined, permissions: Array.from(editRolePerms), description: editRoleDesc.trim() || null }),
-      });
-      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.message || `HTTP ${res.status}`); }
+      await api.put(`/api/v1/auth/roles/${editingRoleId}`, { name: editRoleName.trim() || undefined, permissions: Array.from(editRolePerms), description: editRoleDesc.trim() || null });
       setFeedbackWithTimeout({ type: "success", message: "Role updated" }); setEditingRoleId(null); await fetchRoles();
     } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
     finally { setRoleSaving(false); }
@@ -371,8 +344,7 @@ export default function UsersPage() {
     if (!confirm(`Delete role "${r.name}"? Users assigned to this role will need to be reassigned.`)) return;
     setDeletingRoleId(r.id);
     try {
-      const res = await fetch(`${API}/api/v1/auth/roles/${r.id}`, { method: "DELETE", headers: authHeaders() });
-      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.message || `HTTP ${res.status}`); }
+      await api.delete(`/api/v1/auth/roles/${r.id}`);
       setFeedbackWithTimeout({ type: "success", message: `Role "${r.name}" deleted` }); await fetchRoles();
     } catch (err: unknown) { setFeedbackWithTimeout({ type: "error", message: `Failed: ${err instanceof Error ? err.message : "Unknown"}` }); }
     finally { setDeletingRoleId(null); }

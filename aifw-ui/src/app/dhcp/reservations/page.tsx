@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { isValidMAC, validateIP } from "@/lib/validate";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -41,16 +42,6 @@ const defaultForm: ReservationForm = {
 
 /* -- Helpers --------------------------------------------------------- */
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
-
 function fmtDate(iso: string): string {
   if (!iso) return "-";
   return new Date(iso).toLocaleDateString("en-US", {
@@ -86,9 +77,7 @@ export default function DhcpReservationsPage() {
 
   const fetchReservations = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/v4/reservations", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: DhcpReservation[] }>("/api/v1/dhcp/v4/reservations");
       setReservations(body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load reservations");
@@ -97,9 +86,7 @@ export default function DhcpReservationsPage() {
 
   const fetchSubnets = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/v4/subnets", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: DhcpSubnet[] }>("/api/v1/dhcp/v4/subnets");
       setSubnets(body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load subnets");
@@ -172,17 +159,11 @@ export default function DhcpReservationsPage() {
       if (form.subnet_id) payload.subnet_id = form.subnet_id;
       if (form.description.trim()) payload.description = form.description.trim();
 
-      const url = editingId
-        ? `/api/v1/dhcp/v4/reservations/${editingId}`
-        : "/api/v1/dhcp/v4/reservations";
-      const method = editingId ? "PUT" : "POST";
-
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (editingId) {
+        await api.put(`/api/v1/dhcp/v4/reservations/${editingId}`, payload);
+      } else {
+        await api.post("/api/v1/dhcp/v4/reservations", payload);
+      }
 
       showFeedback("success", editingId ? "Reservation updated" : "Reservation created");
       closeModal();
@@ -196,11 +177,7 @@ export default function DhcpReservationsPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/dhcp/v4/reservations/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/dhcp/v4/reservations/${id}`);
       showFeedback("success", "Reservation deleted");
       setDeleteId(null);
       await fetchReservations();

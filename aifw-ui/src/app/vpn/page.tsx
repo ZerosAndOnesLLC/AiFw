@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useWs } from "@/context/WsContext";
+import { api } from "@/lib/api";
 import Help, { HelpBanner } from "./Help";
 
 /* ────────────────────────── Types ────────────────────────── */
@@ -60,23 +61,6 @@ function fmtDuration(secs: number): string {
   if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.floor(secs/60)}m ago`;
   return `${Math.floor(secs/3600)}h ${Math.floor((secs%3600)/60)}m ago`;
-}
-
-function authHeaders(): Record<string, string> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-  return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
-async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(url, { ...opts, headers: { ...authHeaders(), ...opts?.headers } });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(body || `Request failed (${res.status})`);
-  }
-  return res.json();
 }
 
 /* ────────────────────────── Default form values ────────────────────────── */
@@ -244,7 +228,7 @@ export default function VpnPage() {
 
   const fetchTunnels = useCallback(async () => {
     try {
-      const res = await apiFetch<{ data: WgTunnel[] }>("/api/v1/vpn/wg");
+      const res = await api.get<{ data: WgTunnel[] }>("/api/v1/vpn/wg");
       setTunnels(res.data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load WireGuard tunnels");
@@ -255,7 +239,7 @@ export default function VpnPage() {
 
   const fetchPeers = useCallback(async (tunnelId: string) => {
     try {
-      const res = await apiFetch<{ data: WgPeer[] }>(`/api/v1/vpn/wg/${tunnelId}/peers`);
+      const res = await api.get<{ data: WgPeer[] }>(`/api/v1/vpn/wg/${tunnelId}/peers`);
       setPeersByTunnel((prev) => ({ ...prev, [tunnelId]: res.data }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load peers");
@@ -264,7 +248,7 @@ export default function VpnPage() {
 
   const fetchIpsec = useCallback(async () => {
     try {
-      const res = await apiFetch<{ data: IpsecSa[] }>("/api/v1/vpn/ipsec");
+      const res = await api.get<{ data: IpsecSa[] }>("/api/v1/vpn/ipsec");
       setIpsecSas(res.data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load IPsec SAs");
@@ -277,7 +261,7 @@ export default function VpnPage() {
     queueMicrotask(() => {
       fetchTunnels();
       fetchIpsec();
-      apiFetch<{ data: { name: string; role?: string }[] }>("/api/v1/interfaces")
+      api.get<{ data: { name: string; role?: string }[] }>("/api/v1/interfaces")
         .then(res => setInterfaces(res.data || []))
         .catch(() => {});
     });
@@ -320,15 +304,9 @@ export default function VpnPage() {
       }
 
       if (editingWgId) {
-        await apiFetch(`/api/v1/vpn/wg/${editingWgId}`, {
-          method: "PUT",
-          body: JSON.stringify(body),
-        });
+        await api.put(`/api/v1/vpn/wg/${editingWgId}`, body);
       } else {
-        await apiFetch("/api/v1/vpn/wg", {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
+        await api.post("/api/v1/vpn/wg", body);
       }
       setWgForm(defaultWgForm);
       setEditingWgId(null);
@@ -359,7 +337,7 @@ export default function VpnPage() {
   const handleDeleteWg = async (id: string) => {
     setError(null);
     try {
-      await apiFetch(`/api/v1/vpn/wg/${id}`, { method: "DELETE" });
+      await api.delete(`/api/v1/vpn/wg/${id}`);
       setTunnels((prev) => prev.filter((t) => t.id !== id));
       setPeersByTunnel((prev) => {
         const next = { ...prev };
@@ -381,7 +359,7 @@ export default function VpnPage() {
   const handleStartTunnel = async (id: string) => {
     setError(null);
     try {
-      await apiFetch(`/api/v1/vpn/wg/${id}/start`, { method: "POST" });
+      await api.post(`/api/v1/vpn/wg/${id}/start`);
       await fetchTunnels();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start tunnel");
@@ -391,7 +369,7 @@ export default function VpnPage() {
   const handleStopTunnel = async (id: string) => {
     setError(null);
     try {
-      await apiFetch(`/api/v1/vpn/wg/${id}/stop`, { method: "POST" });
+      await api.post(`/api/v1/vpn/wg/${id}/stop`);
       await fetchTunnels();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to stop tunnel");
@@ -400,7 +378,7 @@ export default function VpnPage() {
 
   const handleAutoAssignIp = async (tunnelId: string) => {
     try {
-      const res = await apiFetch<{ next_ip: string }>(`/api/v1/vpn/wg/${tunnelId}/peers/next-ip`);
+      const res = await api.get<{ next_ip: string }>(`/api/v1/vpn/wg/${tunnelId}/peers/next-ip`);
       setPeerForm((f) => ({ ...f, allowed_ips: res.next_ip }));
     } catch {
       setError("No free IPs in tunnel subnet");
@@ -429,10 +407,7 @@ export default function VpnPage() {
       if (peerForm.preshared_key.trim()) {
         body.preshared_key = peerForm.preshared_key.trim();
       }
-      await apiFetch(`/api/v1/vpn/wg/${tunnelId}/peers`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      await api.post(`/api/v1/vpn/wg/${tunnelId}/peers`, body);
       setPeerForm(defaultPeerForm);
       setShowPeerForm(null);
       await fetchPeers(tunnelId);
@@ -445,7 +420,7 @@ export default function VpnPage() {
 
   const handleShowConfig = async (tunnelId: string, peer: WgPeer) => {
     try {
-      const res = await apiFetch<{ full_tunnel: string; split_tunnel: string }>(`/api/v1/vpn/wg/${tunnelId}/peers/${peer.id}/config`);
+      const res = await api.get<{ full_tunnel: string; split_tunnel: string }>(`/api/v1/vpn/wg/${tunnelId}/peers/${peer.id}/config`);
       setConfigModal({ peerName: peer.name || peer.public_key.slice(0, 12), fullTunnel: res.full_tunnel, splitTunnel: res.split_tunnel });
       setConfigTab("full");
       setConfigCopied(false);
@@ -466,7 +441,7 @@ export default function VpnPage() {
   const handleDeletePeer = async (tunnelId: string, peerId: string) => {
     setError(null);
     try {
-      await apiFetch(`/api/v1/vpn/wg/${tunnelId}/peers/${peerId}`, { method: "DELETE" });
+      await api.delete(`/api/v1/vpn/wg/${tunnelId}/peers/${peerId}`);
       setPeersByTunnel((prev) => ({
         ...prev,
         [tunnelId]: (prev[tunnelId] || []).filter((p) => p.id !== peerId),
@@ -484,15 +459,12 @@ export default function VpnPage() {
     setIpsecSubmitting(true);
     setError(null);
     try {
-      await apiFetch("/api/v1/vpn/ipsec", {
-        method: "POST",
-        body: JSON.stringify({
-          name: ipsecForm.name.trim(),
-          local_addr: ipsecForm.local_addr.trim(),
-          remote_addr: ipsecForm.remote_addr.trim(),
-          protocol: ipsecForm.protocol,
-          mode: ipsecForm.mode,
-        }),
+      await api.post("/api/v1/vpn/ipsec", {
+        name: ipsecForm.name.trim(),
+        local_addr: ipsecForm.local_addr.trim(),
+        remote_addr: ipsecForm.remote_addr.trim(),
+        protocol: ipsecForm.protocol,
+        mode: ipsecForm.mode,
       });
       setIpsecForm(defaultIpsecForm);
       setShowIpsecForm(false);
@@ -507,7 +479,7 @@ export default function VpnPage() {
   const handleDeleteIpsec = async (id: string) => {
     setError(null);
     try {
-      await apiFetch(`/api/v1/vpn/ipsec/${id}`, { method: "DELETE" });
+      await api.delete(`/api/v1/vpn/ipsec/${id}`);
       setIpsecSas((prev) => prev.filter((sa) => sa.id !== id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete IPsec SA");

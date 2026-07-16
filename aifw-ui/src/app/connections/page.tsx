@@ -55,15 +55,6 @@ function formatNumber(n: number): string {
   return String(n);
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-  const res = await fetch(path, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
 function SortHeader({
   label,
   sortKey,

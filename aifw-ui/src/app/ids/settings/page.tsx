@@ -1,16 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-const API = "";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
+import { api } from "@/lib/api";
 
 interface IdsConfig {
   mode: string;
@@ -83,9 +74,9 @@ export default function IdsSettingsPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/ids/config`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`Failed to fetch config: ${res.status}`);
-      const json = await res.json();
+      const json = await api.get<Partial<IdsConfig> & { data?: Partial<IdsConfig> }>(
+        "/api/v1/ids/config",
+      );
       const d = json.data || json;
       setConfig({
         mode: d.mode || "disabled",
@@ -114,9 +105,7 @@ export default function IdsSettingsPage() {
     // Fetch available system interfaces
     (async () => {
       try {
-        const res = await fetch(`${API}/api/v1/interfaces`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await api.get<{ data?: { name: string }[] }>("/api/v1/interfaces");
         const ifaces: string[] = (data.data || [])
           .map((i: { name: string }) => i.name)
           .filter((n: string) => !n.startsWith("lo") && !n.startsWith("pflog"));
@@ -129,15 +118,7 @@ export default function IdsSettingsPage() {
     setSaving(true);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/ids/config`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(config),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Save failed: ${res.status}`);
-      }
+      await api.put("/api/v1/ids/config", config);
       setFeedback({ type: "success", message: "Configuration saved" });
       clearFeedback();
     } catch (err: unknown) {

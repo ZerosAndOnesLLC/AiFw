@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -90,16 +91,6 @@ const defaultServiceForm: ServiceForm = {
 };
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function buildServiceConfigJson(form: ServiceForm): string {
   if (form.service_type === "weighted") {
@@ -208,9 +199,7 @@ export default function UdpPage() {
 
   const fetchRouters = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/udp/routers", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<UdpRouter[] | { data?: UdpRouter[] }>("/api/v1/reverse-proxy/udp/routers");
       setRouters(Array.isArray(body) ? body : body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load UDP routers");
@@ -219,9 +208,7 @@ export default function UdpPage() {
 
   const fetchServices = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/udp/services", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<UdpService[] | { data?: UdpService[] }>("/api/v1/reverse-proxy/udp/services");
       setServices(Array.isArray(body) ? body : body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load UDP services");
@@ -230,9 +217,7 @@ export default function UdpPage() {
 
   const fetchEntrypoints = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/entrypoints", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<EntryPoint[] | { data?: EntryPoint[] }>("/api/v1/reverse-proxy/entrypoints");
       setEntrypoints(Array.isArray(body) ? body : body.data || []);
     } catch {
       /* silent */
@@ -289,14 +274,10 @@ export default function UdpPage() {
         priority: parseInt(routerForm.priority, 10) || 0,
         enabled: routerForm.enabled,
       };
-      const url = editingRouterId
-        ? `/api/v1/reverse-proxy/udp/routers/${editingRouterId}`
-        : "/api/v1/reverse-proxy/udp/routers";
-      const method = editingRouterId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
+      if (editingRouterId) {
+        await api.put(`/api/v1/reverse-proxy/udp/routers/${editingRouterId}`, payload);
+      } else {
+        await api.post("/api/v1/reverse-proxy/udp/routers", payload);
       }
       showFeedback("success", editingRouterId ? "UDP router updated" : "UDP router created");
       closeRouterModal();
@@ -310,11 +291,7 @@ export default function UdpPage() {
 
   const handleDeleteRouter = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/udp/routers/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/reverse-proxy/udp/routers/${id}`);
       showFeedback("success", "UDP router deleted");
       setDeleteRouterId(null);
       await fetchRouters();
@@ -368,14 +345,10 @@ export default function UdpPage() {
         config_json: buildServiceConfigJson(serviceForm),
         enabled: serviceForm.enabled,
       };
-      const url = editingServiceId
-        ? `/api/v1/reverse-proxy/udp/services/${editingServiceId}`
-        : "/api/v1/reverse-proxy/udp/services";
-      const method = editingServiceId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
+      if (editingServiceId) {
+        await api.put(`/api/v1/reverse-proxy/udp/services/${editingServiceId}`, payload);
+      } else {
+        await api.post("/api/v1/reverse-proxy/udp/services", payload);
       }
       showFeedback("success", editingServiceId ? "UDP service updated" : "UDP service created");
       closeServiceModal();
@@ -389,11 +362,7 @@ export default function UdpPage() {
 
   const handleDeleteService = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/udp/services/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/reverse-proxy/udp/services/${id}`);
       showFeedback("success", "UDP service deleted");
       setDeleteServiceId(null);
       await fetchServices();

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { validateCIDR } from "@/lib/validate";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -28,16 +29,6 @@ const defaultForm: AclForm = {
 const ACL_ACTIONS = ["allow", "deny", "refuse", "allow_snoop"];
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function fmtDate(iso: string): string {
   if (!iso) return "-";
@@ -84,9 +75,7 @@ export default function DnsAclsPage() {
 
   const fetchAcls = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dns/resolver/acls", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: AccessListEntry[] }>("/api/v1/dns/resolver/acls");
       setAcls(body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load access lists");
@@ -121,12 +110,7 @@ export default function DnsAclsPage() {
       };
       if (form.description.trim()) payload.description = form.description.trim();
 
-      const res = await fetch("/api/v1/dns/resolver/acls", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.post("/api/v1/dns/resolver/acls", payload);
 
       showFeedback("success", "Access list entry created");
       setForm(defaultForm);
@@ -140,11 +124,7 @@ export default function DnsAclsPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/dns/resolver/acls/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/dns/resolver/acls/${id}`);
       showFeedback("success", "Access list entry deleted");
       setDeleteId(null);
       await fetchAcls();

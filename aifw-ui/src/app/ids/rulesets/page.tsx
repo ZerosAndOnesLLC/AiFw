@@ -1,16 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-const API = "";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
+import { api } from "@/lib/api";
 
 interface Ruleset {
   id: string;
@@ -74,9 +65,10 @@ export default function IdsRulesetsPage() {
 
   const fetchRulesets = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/ids/rulesets`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`Failed to fetch rulesets: ${res.status}`);
-      const json = await res.json();
+      type RulesetsPayload = Ruleset[] & { rulesets?: Ruleset[] };
+      const json = await api.get<RulesetsPayload & { data?: RulesetsPayload }>(
+        "/api/v1/ids/rulesets",
+      );
       const d = json.data || json;
       setRulesets(d.rulesets || d || []);
     } catch (err: unknown) {
@@ -98,21 +90,13 @@ export default function IdsRulesetsPage() {
     setAdding(true);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/ids/rulesets`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          name: newName.trim(),
-          source_url: newUrl.trim(),
-          rule_format: newFormat,
-          enabled: true,
-          auto_update: newAutoUpdate,
-        }),
+      await api.post("/api/v1/ids/rulesets", {
+        name: newName.trim(),
+        source_url: newUrl.trim(),
+        rule_format: newFormat,
+        enabled: true,
+        auto_update: newAutoUpdate,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Create failed: ${res.status}`);
-      }
       setFeedback({ type: "success", message: `Ruleset "${newName.trim()}" created` });
       clearFeedback();
       setNewName("");
@@ -134,16 +118,10 @@ export default function IdsRulesetsPage() {
     setTogglingId(ruleset.id);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/ids/rulesets/${ruleset.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ enabled: !ruleset.enabled }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Toggle failed: ${res.status}`);
-      }
-      const data = await res.json().catch(() => ({}));
+      const data = await api.put<{ data?: Ruleset } | undefined>(
+        `/api/v1/ids/rulesets/${ruleset.id}`,
+        { enabled: !ruleset.enabled },
+      );
       const updated = data?.data;
       const action = !ruleset.enabled ? "enabled" : "disabled";
       const ruleCount = updated?.rule_count ?? ruleset.rule_count;
@@ -172,14 +150,7 @@ export default function IdsRulesetsPage() {
     setDeletingId(ruleset.id);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/ids/rulesets/${ruleset.id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Delete failed: ${res.status}`);
-      }
+      await api.delete(`/api/v1/ids/rulesets/${ruleset.id}`);
       setFeedback({ type: "success", message: `Ruleset "${ruleset.name}" deleted` });
       clearFeedback();
       await fetchRulesets();

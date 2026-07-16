@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { api } from "@/lib/api";
 
 interface Schedule {
   id: string;
@@ -31,23 +32,6 @@ const defaultForm: ScheduleForm = {
   enabled: true,
 };
 
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-  const res = await fetch(path, { ...options, headers });
-  if (!res.ok) {
-    if (res.status === 401 && typeof window !== "undefined") {
-      localStorage.removeItem("aifw_token");
-      window.location.href = "/login";
-    }
-    throw new Error(`API ${res.status}: ${res.statusText}`);
-  }
-  return res.json();
-}
-
 export default function SchedulesPage() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -60,7 +44,7 @@ export default function SchedulesPage() {
   const fetchSchedules = useCallback(async () => {
     try {
       setError(null);
-      const res = await apiFetch<{ data: Record<string, unknown>[] }>("/api/v1/schedules");
+      const res = await api.get<{ data: Record<string, unknown>[] }>("/api/v1/schedules");
       // Normalize: API returns time_ranges/days_of_week as comma-separated strings
       const normalized: Schedule[] = (res.data || []).map((s) => ({
         ...s,
@@ -98,9 +82,9 @@ export default function SchedulesPage() {
       };
 
       if (editingId) {
-        await apiFetch(`/api/v1/schedules/${editingId}`, { method: "PUT", body: JSON.stringify(body) });
+        await api.put(`/api/v1/schedules/${editingId}`, body);
       } else {
-        await apiFetch("/api/v1/schedules", { method: "POST", body: JSON.stringify(body) });
+        await api.post("/api/v1/schedules", body);
       }
 
       setForm(defaultForm);
@@ -130,7 +114,7 @@ export default function SchedulesPage() {
     if (!confirm("Delete this schedule?")) return;
     setError(null);
     try {
-      await apiFetch(`/api/v1/schedules/${id}`, { method: "DELETE" });
+      await api.delete(`/api/v1/schedules/${id}`);
       await fetchSchedules();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete schedule");
@@ -140,15 +124,12 @@ export default function SchedulesPage() {
   const handleToggleEnabled = async (schedule: Schedule) => {
     setError(null);
     try {
-      await apiFetch(`/api/v1/schedules/${schedule.id}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          name: schedule.name,
-          description: schedule.description || undefined,
-          time_ranges: schedule.time_ranges,
-          days_of_week: schedule.days_of_week,
-          enabled: !schedule.enabled,
-        }),
+      await api.put(`/api/v1/schedules/${schedule.id}`, {
+        name: schedule.name,
+        description: schedule.description || undefined,
+        time_ranges: schedule.time_ranges,
+        days_of_week: schedule.days_of_week,
+        enabled: !schedule.enabled,
       });
       await fetchSchedules();
     } catch (err) {

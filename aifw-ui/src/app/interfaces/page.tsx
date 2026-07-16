@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { api } from "@/lib/api";
 
 interface InterfaceDetail {
   name: string;
@@ -82,14 +83,6 @@ function hexMaskToCidr(hex: string | null): number | null {
   return bits;
 }
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token");
-  return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
 function formatBytes(bytes: number): string {
   if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
   if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
@@ -114,11 +107,7 @@ export default function InterfacesPage() {
 
   const fetchInterfaces = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/interfaces/detailed", {
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error("Failed to fetch interfaces");
-      const json = await res.json();
+      const json = await api.get<{ data?: InterfaceDetail[] }>("/api/v1/interfaces/detailed");
       const filtered = (json.data || []).filter(
         (i: InterfaceDetail) => !i.name.startsWith("lo")
       );
@@ -188,19 +177,11 @@ export default function InterfacesPage() {
     }
 
     try {
-      const res = await fetch(
+      const data = await api.put<{ message?: string } | undefined>(
         `/api/v1/interfaces/config/${encodeURIComponent(editingName)}`,
-        {
-          method: "PUT",
-          headers: authHeaders(),
-          body: JSON.stringify(body),
-        }
+        body
       );
-      const data = await res.json().catch(() => ({ message: "" }));
-      if (!res.ok) {
-        throw new Error(data?.message || "Failed to update interface");
-      }
-      showFeedback("success", data.message || `Interface ${editingName} configured`);
+      showFeedback("success", data?.message || `Interface ${editingName} configured`);
       closeEdit();
       // Wait briefly for changes to take effect before refreshing
       setTimeout(() => fetchInterfaces(), 1500);

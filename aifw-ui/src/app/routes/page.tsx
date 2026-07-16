@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { api } from "@/lib/api";
 import { validateCIDR, validateIP } from "@/lib/validate";
 
 interface StaticRoute {
@@ -57,14 +58,6 @@ const emptyForm: RouteForm = {
   fib: 0,
 };
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token");
-  return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
 export default function RoutesPage() {
   const [staticRoutes, setStaticRoutes] = useState<StaticRoute[]>([]);
   const [systemRoutes, setSystemRoutes] = useState<SystemRoute[]>([]);
@@ -79,9 +72,7 @@ export default function RoutesPage() {
 
   const fetchStaticRoutes = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/routes", { headers: authHeaders() });
-      if (!res.ok) throw new Error("Failed to fetch static routes");
-      const json = await res.json();
+      const json = await api.get<{ data: StaticRoute[] }>("/api/v1/routes");
       setStaticRoutes(json.data);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to fetch static routes");
@@ -90,9 +81,7 @@ export default function RoutesPage() {
 
   const fetchSystemRoutes = useCallback(async (fib: number = systemFib) => {
     try {
-      const res = await fetch(`/api/v1/routes/system?fib=${fib}`, { headers: authHeaders() });
-      if (!res.ok) throw new Error("Failed to fetch system routes");
-      const json = await res.json();
+      const json = await api.get<{ data: SystemRoute[] }>(`/api/v1/routes/system?fib=${fib}`);
       setSystemRoutes(json.data);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to fetch system routes");
@@ -101,9 +90,7 @@ export default function RoutesPage() {
 
   const fetchInterfaces = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/interfaces", { headers: authHeaders() });
-      if (!res.ok) throw new Error("Failed to fetch interfaces");
-      const json = await res.json();
+      const json = await api.get<{ data: InterfaceInfo[] }>("/api/v1/interfaces");
       setInterfaces(json.data);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to fetch interfaces");
@@ -112,11 +99,9 @@ export default function RoutesPage() {
 
   const fetchInstances = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/multiwan/instances", { headers: authHeaders() });
-      if (!res.ok) return; // gracefully handle users without multiwan:read
-      const json = await res.json();
+      const json = await api.get<{ data?: RoutingInstance[] }>("/api/v1/multiwan/instances");
       setInstances(json.data || []);
-    } catch { /* optional */ }
+    } catch { /* optional — gracefully handle users without multiwan:read */ }
   }, []);
 
   const fetchAll = useCallback(async () => {
@@ -156,16 +141,10 @@ export default function RoutesPage() {
     if (form.description) body.description = form.description;
 
     try {
-      const url = editingId ? `/api/v1/routes/${editingId}` : "/api/v1/routes";
-      const method = editingId ? "PUT" : "POST";
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => null);
-        throw new Error(errBody?.message || `Failed to ${editingId ? "update" : "create"} route`);
+      if (editingId) {
+        await api.put(`/api/v1/routes/${editingId}`, body);
+      } else {
+        await api.post("/api/v1/routes", body);
       }
       setForm({ ...emptyForm });
       setEditingId(null);
@@ -199,11 +178,7 @@ export default function RoutesPage() {
     if (!confirm("Delete this static route?")) return;
     setError(null);
     try {
-      const res = await fetch(`/api/v1/routes/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error("Failed to delete route");
+      await api.delete(`/api/v1/routes/${id}`);
       await fetchStaticRoutes();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Delete failed");
@@ -213,12 +188,7 @@ export default function RoutesPage() {
   async function toggleEnabled(route: StaticRoute) {
     setError(null);
     try {
-      const res = await fetch(`/api/v1/routes/${route.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ ...route, enabled: !route.enabled }),
-      });
-      if (!res.ok) throw new Error("Failed to toggle route");
+      await api.put(`/api/v1/routes/${route.id}`, { ...route, enabled: !route.enabled });
       await fetchStaticRoutes();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Toggle failed");

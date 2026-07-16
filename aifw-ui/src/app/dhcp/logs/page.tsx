@@ -1,11 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
+import { api } from "@/lib/api";
 
 export default function DhcpLogsPage() {
   const [logs, setLogs] = useState<string[]>([]);
@@ -19,9 +15,7 @@ export default function DhcpLogsPage() {
     try {
       const params = new URLSearchParams({ lines: String(lines) });
       if (search) params.set("search", search);
-      const res = await fetch(`/api/v1/dhcp/logs?${params}`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<{ data?: string[] }>(`/api/v1/dhcp/logs?${params}`);
       setLogs(data.data || []);
       setError(null);
     } catch (err) {

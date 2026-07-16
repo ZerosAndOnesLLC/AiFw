@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
 
 interface UserProfile {
   id: string;
@@ -15,11 +16,6 @@ interface TotpSetup {
   secret: string;
   provisioning_uri: string;
   recovery_codes: string[];
-}
-
-function authHeaders(): HeadersInit {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
 export default function ProfilePage() {
@@ -60,8 +56,7 @@ export default function ProfilePage() {
   useEffect(() => {
     const userId = getUserId();
     if (!userId) return;
-    fetch(`/api/v1/auth/users/${userId}`, { headers: authHeaders() })
-      .then((r) => r.ok ? r.json() : Promise.reject())
+    api.get<{ data: UserProfile }>(`/api/v1/auth/users/${userId}`)
       .then((d) => setUser(d.data))
       .catch(() => showFeedback("error", "Failed to load profile"))
       .finally(() => setLoading(false));
@@ -79,24 +74,17 @@ export default function ProfilePage() {
     }
     setChangingPassword(true);
     try {
-      // Verify current password by attempting login
-      const loginRes = await fetch("/api/v1/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: user?.username, password: currentPassword }),
-      });
-      if (!loginRes.ok) {
+      // Verify current password by attempting login. A 401 here means
+      // "wrong password", not an expired session — skip the auth redirect.
+      try {
+        await api.post("/api/v1/auth/login", { username: user?.username, password: currentPassword }, { noAuthRedirect: true });
+      } catch {
         showFeedback("error", "Current password is incorrect");
         return;
       }
 
       const userId = getUserId();
-      const res = await fetch(`/api/v1/auth/users/${userId}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ password: newPassword }),
-      });
-      if (!res.ok) throw new Error();
+      await api.put(`/api/v1/auth/users/${userId}`, { password: newPassword });
       showFeedback("success", "Password changed successfully");
       setCurrentPassword("");
       setNewPassword("");
@@ -111,12 +99,7 @@ export default function ProfilePage() {
   const handleSetupTotp = async () => {
     setSettingUpTotp(true);
     try {
-      const res = await fetch("/api/v1/auth/totp/setup", {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error();
-      const data = await res.json();
+      const data = await api.post<TotpSetup>("/api/v1/auth/totp/setup");
       setTotpSetup(data);
       setRecoveryCodes(data.recovery_codes);
     } catch {
@@ -129,12 +112,9 @@ export default function ProfilePage() {
   const handleVerifyTotp = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/v1/auth/totp/verify", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ code: totpCode }),
-      });
-      if (!res.ok) throw new Error();
+      // The API answers 401 for a wrong TOTP code — expected input error,
+      // not session expiry, so skip the auth redirect.
+      await api.post("/api/v1/auth/totp/verify", { code: totpCode }, { noAuthRedirect: true });
       showFeedback("success", "MFA enabled successfully");
       setTotpSetup(null);
       setTotpCode("");
@@ -148,12 +128,8 @@ export default function ProfilePage() {
     e.preventDefault();
     setDisablingTotp(true);
     try {
-      const res = await fetch("/api/v1/auth/totp/disable", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ code: disableCode }),
-      });
-      if (!res.ok) throw new Error();
+      // 401 here means "wrong code" — keep the local error, no redirect.
+      await api.post("/api/v1/auth/totp/disable", { code: disableCode }, { noAuthRedirect: true });
       showFeedback("success", "MFA disabled");
       setShowDisable(false);
       setDisableCode("");
