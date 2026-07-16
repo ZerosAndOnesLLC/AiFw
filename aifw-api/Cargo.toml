@@ -53,6 +53,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 axum-test = "21"
+async-trait = { workspace = true }
 
 [lints]
 workspace = true
