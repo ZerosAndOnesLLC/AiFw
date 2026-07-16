@@ -28,6 +28,7 @@ pub const DEFAULT_MAX_STATES: u64 = 100_000;
 /// Sanity bounds. Below 1 k the resolver/HA will flap; above 4 M is past
 /// any reasonable hardware envelope and almost always indicates a typo.
 pub const MIN_STATES: u64 = 1_000;
+/// Upper sanity bound for `pf_max_states` (4 million state entries)
 pub const MAX_STATES: u64 = 4_000_000;
 
 /// Read the configured max-states value (the operator's wish), falling

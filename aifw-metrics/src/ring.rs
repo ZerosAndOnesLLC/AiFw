@@ -10,6 +10,8 @@ pub struct RingBuffer<T: Clone> {
 }
 
 impl<T: Clone> RingBuffer<T> {
+    /// Create an empty buffer holding at most `capacity` entries.
+    /// `capacity` must be non-zero — a zero-capacity buffer panics on `push`.
     pub fn new(capacity: usize) -> Self {
         Self {
             data: vec![None; capacity],
@@ -19,6 +21,7 @@ impl<T: Clone> RingBuffer<T> {
         }
     }
 
+    /// Append a value, overwriting the oldest entry once the buffer is full
     pub fn push(&mut self, value: T) {
         self.data[self.head] = Some(value);
         self.head = (self.head + 1) % self.capacity;
@@ -69,18 +72,22 @@ impl<T: Clone> RingBuffer<T> {
         self.data[idx].as_ref()
     }
 
+    /// Number of values currently stored (at most `capacity`)
     pub fn len(&self) -> usize {
         self.count
     }
 
+    /// Whether the buffer holds no values
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
 
+    /// Maximum number of values the buffer can hold
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Remove all values, keeping the capacity
     pub fn clear(&mut self) {
         self.data = vec![None; self.capacity];
         self.head = 0;

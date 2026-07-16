@@ -22,7 +22,9 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Semaphore;
 
+/// Directory where per-source RPZ zone files are written for rDNS to load
 pub const RPZ_DIR: &str = "/usr/local/etc/rdns/rpz";
+/// Unix socket used to tell rDNS to reload its RPZ zones (`reload-rpz`)
 pub const CONTROL_SOCKET: &str = "/var/run/rdns/control.sock";
 const MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 const HTTP_TIMEOUT_SECS: u64 = 30;
@@ -31,33 +33,56 @@ const HTTP_TIMEOUT_SECS: u64 = 30;
 // Types
 // ============================================================================
 
+/// One blocklist feed: where to download it, how to parse it, what RPZ action
+/// to apply, and the last-refresh state. Backed by `dns_blocklist_source`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlocklistSource {
+    /// Row id in `dns_blocklist_source`; also names the RPZ file (`blocklist-<id>.rpz`)
     pub id: i64,
+    /// Unique display name (e.g. "StevenBlack Hosts")
     pub name: String,
+    /// Grouping label for the UI (ads, tracking, malware, phishing, ...)
     pub category: String,
+    /// Download URL for the list (https enforced at fetch time)
     pub url: String,
+    /// Input format: `hosts`, `domains`, `adblock`, or `rpz` (passed through raw)
     pub format: String,
+    /// Disabled sources are skipped on refresh and their RPZ file is removed
     pub enabled: bool,
+    /// RPZ action for matches: `nxdomain`, `nodata`, `drop`, or `redirect`
     pub action: String,
+    /// Target IP when `action = "redirect"`. Ignored otherwise
     pub redirect_ip: Option<String>,
+    /// Unix timestamp of the last successful refresh (or unchanged check)
     pub last_updated: Option<i64>,
+    /// SHA-256 of the last downloaded body, used to skip rebuilds when unchanged
     pub last_sha256: Option<String>,
+    /// Number of RPZ rules written on the last successful refresh
     pub rule_count: i64,
+    /// Error from the last failed refresh; cleared on success
     pub last_error: Option<String>,
+    /// Seeded by AiFw — can be disabled but not deleted
     pub built_in: bool,
 }
 
+/// Request body for creating a blocklist source (`POST` via the API)
 #[derive(Debug, Deserialize)]
 pub struct NewBlocklistSource {
+    /// Unique display name
     pub name: String,
+    /// Grouping label for the UI (ads, tracking, malware, ...)
     pub category: String,
+    /// Download URL for the list
     pub url: String,
+    /// Input format: `hosts`, `domains`, `adblock`, or `rpz`
     pub format: String,
+    /// Whether the source starts enabled. Defaults to true when omitted
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// RPZ action for matches. Defaults to `"nxdomain"` when omitted
     #[serde(default = "default_action")]
     pub action: String,
+    /// Target IP, required when `action = "redirect"`
     pub redirect_ip: Option<String>,
 }
 
@@ -68,21 +93,35 @@ fn default_action() -> String {
     "nxdomain".into()
 }
 
+/// Partial-update request for a blocklist source — `None` fields keep their
+/// current value
 #[derive(Debug, Deserialize)]
 pub struct UpdateBlocklistSource {
+    /// New display name, if changing
     pub name: Option<String>,
+    /// New category, if changing
     pub category: Option<String>,
+    /// New download URL, if changing
     pub url: Option<String>,
+    /// New input format, if changing
     pub format: Option<String>,
+    /// New enabled state; disabling removes the source's RPZ file
     pub enabled: Option<bool>,
+    /// New RPZ action, if changing
     pub action: Option<String>,
+    /// New redirect target; empty string clears it, `None` keeps the current value
     pub redirect_ip: Option<String>,
 }
 
+/// Global refresh settings — a singleton row (`dns_blocklist_schedule`,
+/// id = 1) driving the daemon's cron scheduler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlocklistSchedule {
+    /// 6-field cron expression for automatic refreshes (default: 03:00 daily)
     pub cron: String,
+    /// Refresh all enabled sources shortly after the daemon starts
     pub on_boot: bool,
+    /// Max simultaneous source downloads during a refresh sweep (1..32)
     pub concurrency: i64,
     /// Master on/off for the entire DNS blocklisting feature. When false:
     /// - scheduler skips cron-driven refreshes,
@@ -105,26 +144,40 @@ impl Default for BlocklistSchedule {
     }
 }
 
+/// One row in a pattern table (`dns_whitelist` or `dns_blocklist_custom`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternEntry {
+    /// Row id in the pattern table
     pub id: i64,
+    /// Domain pattern, optionally wildcarded (`*.example.com`)
     pub pattern: String,
+    /// Optional operator note explaining why the entry exists
     pub note: Option<String>,
 }
 
+/// Request body for adding a whitelist / custom-block pattern
 #[derive(Debug, Deserialize)]
 pub struct NewPatternEntry {
+    /// Domain pattern, optionally wildcarded (`*.example.com`)
     pub pattern: String,
+    /// Optional operator note
     pub note: Option<String>,
 }
 
+/// Result of refreshing a single blocklist source, returned to the API
 #[derive(Debug, Serialize)]
 pub struct RefreshOutcome {
+    /// The source that was refreshed
     pub source_id: i64,
+    /// True on success (including "unchanged" and "disabled, file removed")
     pub ok: bool,
+    /// RPZ rules written (or kept, when the body was unchanged)
     pub rule_count: i64,
+    /// Size of the downloaded body in bytes; 0 if the fetch never ran
     pub bytes: usize,
+    /// SHA-256 hex digest of the downloaded body; empty if the fetch never ran
     pub sha256: String,
+    /// Why the refresh failed, when `ok` is false
     pub error: Option<String>,
 }
 
@@ -132,6 +185,9 @@ pub struct RefreshOutcome {
 // Schema + seed
 // ============================================================================
 
+/// Create the blocklist tables (`dns_blocklist_source`, `dns_blocklist_schedule`,
+/// `dns_whitelist`, `dns_blocklist_custom`), seed the singleton schedule row,
+/// and seed the built-in sources (disabled). Idempotent; called once at startup
 pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query(
         r#"
@@ -321,6 +377,9 @@ async fn seed_builtin_sources(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 // Validation
 // ============================================================================
 
+/// Quick static check on a blocklist URL: http/https scheme required, and
+/// obvious loopback / link-local / RFC 1918 literals are rejected. The full
+/// SSRF guard (DNS-resolving) runs later in `net_safety::validate_outbound_url`
 pub fn validate_url(url: &str) -> Result<(), String> {
     let url = url.trim();
     if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -359,6 +418,7 @@ pub fn validate_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Accept only the supported list formats: hosts, domains, adblock, rpz
 pub fn validate_format(format: &str) -> Result<(), String> {
     match format {
         "hosts" | "domains" | "adblock" | "rpz" => Ok(()),
@@ -366,6 +426,7 @@ pub fn validate_format(format: &str) -> Result<(), String> {
     }
 }
 
+/// Accept only the supported RPZ actions: nxdomain, nodata, drop, redirect
 pub fn validate_action(action: &str) -> Result<(), String> {
     match action {
         "nxdomain" | "nodata" | "drop" | "redirect" => Ok(()),
@@ -373,6 +434,8 @@ pub fn validate_action(action: &str) -> Result<(), String> {
     }
 }
 
+/// When `action` is `redirect`, require a parseable IPv4/IPv6 target.
+/// Any other action passes regardless of `ip`
 pub fn validate_redirect_ip(action: &str, ip: Option<&str>) -> Result<(), String> {
     if action != "redirect" {
         return Ok(());
@@ -384,6 +447,8 @@ pub fn validate_redirect_ip(action: &str, ip: Option<&str>) -> Result<(), String
     Ok(())
 }
 
+/// Validate a whitelist / custom-block domain pattern: RFC 1035 labels,
+/// at least one dot, optional leading `*.` wildcard
 pub fn validate_pattern(p: &str) -> Result<(), String> {
     let p = p.trim().trim_end_matches('.');
     let body = p.strip_prefix("*.").unwrap_or(p);
@@ -436,6 +501,7 @@ fn row_to_source(row: &sqlx::sqlite::SqliteRow) -> BlocklistSource {
     }
 }
 
+/// Fetch one blocklist source by row id. None if missing or on a query error
 pub async fn load_source(pool: &SqlitePool, id: i64) -> Option<BlocklistSource> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {DNS_BLOCKLIST_SOURCE_COLUMNS} FROM dns_blocklist_source WHERE id = ?"
@@ -448,6 +514,8 @@ pub async fn load_source(pool: &SqlitePool, id: i64) -> Option<BlocklistSource> 
     .map(|r| row_to_source(&r))
 }
 
+/// Fetch every blocklist source ordered by category then name. Empty on
+/// query error
 pub async fn load_all_sources(pool: &SqlitePool) -> Vec<BlocklistSource> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {DNS_BLOCKLIST_SOURCE_COLUMNS} FROM dns_blocklist_source ORDER BY category, name"
@@ -460,6 +528,8 @@ pub async fn load_all_sources(pool: &SqlitePool) -> Vec<BlocklistSource> {
     .collect()
 }
 
+/// Read the singleton schedule row, clamping concurrency to at least 1.
+/// Falls back to defaults if the row is missing or the query fails
 pub async fn load_schedule(pool: &SqlitePool) -> BlocklistSchedule {
     sqlx::query_as::<_, (String, i64, i64, i64)>(
         "SELECT cron, on_boot, concurrency, COALESCE(enabled, 0) FROM dns_blocklist_schedule WHERE id = 1"
@@ -474,6 +544,8 @@ pub async fn load_schedule(pool: &SqlitePool) -> BlocklistSchedule {
     .unwrap_or_default()
 }
 
+/// Validate and persist the singleton schedule row. Fails if the cron
+/// expression doesn't parse or concurrency is outside 1..32
 pub async fn put_schedule(pool: &SqlitePool, s: &BlocklistSchedule) -> Result<(), String> {
     cron::Schedule::try_from(s.cron.as_str()).map_err(|e| format!("invalid cron: {e}"))?;
     if s.concurrency < 1 || s.concurrency > 32 {
@@ -520,6 +592,7 @@ pub async fn set_enabled(pool: &SqlitePool, enabled: bool) -> Result<(), String>
     Ok(())
 }
 
+/// All whitelist (passthru) patterns from `dns_whitelist`. Empty on query error
 pub async fn load_whitelist(pool: &SqlitePool) -> Vec<String> {
     sqlx::query_as::<_, (String,)>("SELECT pattern FROM dns_whitelist")
         .fetch_all(pool)
@@ -530,6 +603,8 @@ pub async fn load_whitelist(pool: &SqlitePool) -> Vec<String> {
         .collect()
 }
 
+/// All admin custom-block patterns from `dns_blocklist_custom`. Empty on
+/// query error
 pub async fn load_custom_blocks(pool: &SqlitePool) -> Vec<String> {
     sqlx::query_as::<_, (String,)>("SELECT pattern FROM dns_blocklist_custom")
         .fetch_all(pool)
@@ -544,6 +619,8 @@ pub async fn load_custom_blocks(pool: &SqlitePool) -> Vec<String> {
 // CRUD
 // ============================================================================
 
+/// Validate and insert a new (non-built-in) blocklist source, returning the
+/// stored row. Does not download the list — that happens on the next refresh
 pub async fn create_source(
     pool: &SqlitePool,
     req: NewBlocklistSource,
@@ -578,6 +655,9 @@ pub async fn create_source(
         .ok_or_else(|| "post-insert read failed".into())
 }
 
+/// Apply a partial update to a source (unset fields keep current values),
+/// re-validating the merged result. Disabling removes the source's RPZ file
+/// and reloads rDNS
 pub async fn update_source(
     pool: &SqlitePool,
     id: i64,
@@ -632,6 +712,8 @@ pub async fn update_source(
         .ok_or_else(|| "post-update read failed".into())
 }
 
+/// Delete a user-added source, remove its RPZ file, and reload rDNS.
+/// Fails for built-in sources — those can only be disabled
 pub async fn delete_source(pool: &SqlitePool, id: i64) -> Result<(), String> {
     let existing = load_source(pool, id)
         .await
@@ -653,6 +735,9 @@ pub async fn delete_source(pool: &SqlitePool, id: i64) -> Result<(), String> {
 // Pattern table CRUD (whitelist / custom)
 // ============================================================================
 
+/// List all entries of a pattern table (`dns_whitelist` or
+/// `dns_blocklist_custom`), sorted by pattern. `table` is interpolated into
+/// SQL — callers must pass a fixed table name, never user input
 pub async fn list_patterns(pool: &SqlitePool, table: &str) -> Vec<PatternEntry> {
     let q = format!("SELECT id, pattern, note FROM {table} ORDER BY pattern");
     sqlx::query_as::<_, (i64, String, Option<String>)>(sqlx::AssertSqlSafe(q))
@@ -664,6 +749,9 @@ pub async fn list_patterns(pool: &SqlitePool, table: &str) -> Vec<PatternEntry> 
         .collect()
 }
 
+/// Validate and insert a pattern into a pattern table, returning the stored
+/// entry. `table` is interpolated into SQL — callers must pass a fixed table
+/// name, never user input
 pub async fn insert_pattern(
     pool: &SqlitePool,
     table: &str,
@@ -684,6 +772,8 @@ pub async fn insert_pattern(
     })
 }
 
+/// Delete a pattern row by id from a pattern table. No error if the id
+/// doesn't exist. `table` must be a fixed table name, never user input
 pub async fn delete_pattern(pool: &SqlitePool, table: &str, id: i64) -> Result<(), String> {
     let q = format!("DELETE FROM {table} WHERE id=?");
     sqlx::query(sqlx::AssertSqlSafe(q))
@@ -733,6 +823,10 @@ async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
+/// Extract the set of blocked domains from a downloaded list body according
+/// to its `format` (hosts / adblock / domains). Comments, localhost entries,
+/// and non-domain junk are dropped; domains are lowercased and de-wildcarded.
+/// `rpz` bodies return an empty set — they're written through verbatim
 pub fn parse_body(body: &[u8], format: &str) -> HashSet<String> {
     let body = String::from_utf8_lossy(body);
     let mut domains = HashSet::new();
@@ -780,6 +874,10 @@ pub fn parse_body(body: &[u8], format: &str) -> HashSet<String> {
     domains
 }
 
+/// Render a set of domains into an RPZ zone file body (SOA + NS header, then
+/// one record per domain sorted alphabetically). The record type follows
+/// `action`: CNAME `.` (nxdomain), CNAME `*.` (nodata), CNAME `rpz-drop.`
+/// (drop), or an A/AAAA record pointing at `redirect_ip` (redirect)
 pub fn build_rpz(
     domains: &HashSet<String>,
     action: &str,
@@ -863,14 +961,21 @@ async fn remove_blocklist_file(path: &std::path::Path) {
     }
 }
 
+/// Path of the RPZ zone file for a source id (`<RPZ_DIR>/blocklist-<id>.rpz`)
 pub fn rpz_path_for(id: i64) -> PathBuf {
     PathBuf::from(format!("{RPZ_DIR}/blocklist-{id}.rpz"))
 }
 
+/// Path of the shared whitelist/custom-blocks zone (`<RPZ_DIR>/custom.rpz`)
 pub fn custom_rpz_path() -> PathBuf {
     PathBuf::from(format!("{RPZ_DIR}/custom.rpz"))
 }
 
+/// Download, parse, and write one source's RPZ file, persisting the result
+/// (timestamp, sha, rule count, or error) on the row. Skips the rebuild when
+/// the downloaded body's SHA-256 matches the last run. Errors if blocklisting
+/// is globally disabled; a disabled source just gets its file removed.
+/// Does NOT reload rDNS — callers do that after a batch
 pub async fn refresh_source(pool: &SqlitePool, id: i64) -> RefreshOutcome {
     let mut outcome = RefreshOutcome {
         source_id: id,
@@ -989,6 +1094,10 @@ async fn record_error(pool: &SqlitePool, id: i64, err: &str) {
         .await;
 }
 
+/// Regenerate `custom.rpz` from the whitelist, admin custom blocks, and
+/// implicit passthrus for enabled DNS host/domain overrides (so overrides
+/// always win over blocklists). Writes the file via sudo install and returns
+/// the number of entries emitted. Does not reload rDNS
 pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
     let whitelist = load_whitelist(pool).await;
     let custom = load_custom_blocks(pool).await;
@@ -1077,6 +1186,9 @@ pub async fn rebuild_custom_rpz(pool: &SqlitePool) -> std::io::Result<i64> {
     Ok((whitelist.len() + custom.len() + implicit.len()) as i64)
 }
 
+/// Refresh every enabled source concurrently (bounded by the schedule's
+/// `concurrency`), rebuild `custom.rpz`, then reload rDNS once at the end.
+/// Returns immediately with no work if blocklisting is globally disabled
 pub async fn refresh_all(pool: &SqlitePool) -> Vec<RefreshOutcome> {
     let sched = load_schedule(pool).await;
     if !sched.enabled {

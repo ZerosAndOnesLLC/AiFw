@@ -48,8 +48,11 @@ pub struct RawPacket {
 /// Statistics from a capture backend
 #[derive(Debug, Clone, Default)]
 pub struct CaptureStats {
+    /// Packets delivered to the capture handle
     pub packets_received: u64,
+    /// Packets dropped because the kernel buffer was full
     pub packets_dropped: u64,
+    /// Packets dropped by the network interface itself
     pub packets_if_dropped: u64,
 }
 

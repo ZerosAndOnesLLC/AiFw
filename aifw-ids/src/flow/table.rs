@@ -28,6 +28,8 @@ pub struct FlowTable {
 const EVICT_BATCH: usize = 128;
 
 impl FlowTable {
+    /// Create a table capped at `max_flows` entries, with defaults of
+    /// 64 KB stream depth per direction and a 256 MB reassembly budget.
     pub fn new(max_flows: usize) -> Self {
         Self {
             table: DashMap::with_capacity(max_flows),
@@ -38,16 +40,20 @@ impl FlowTable {
         }
     }
 
+    /// Builder: set the per-direction reassembly buffer cap in bytes
     pub fn with_stream_depth(mut self, depth: usize) -> Self {
         self.max_stream_depth = depth;
         self
     }
 
+    /// Builder: set the table-wide reassembly byte budget; exceeding it
+    /// triggers batch eviction of the oldest flows
     pub fn with_reassembly_budget(mut self, bytes: usize) -> Self {
         self.reassembly_budget_bytes = bytes;
         self
     }
 
+    /// Configured maximum number of tracked flows
     pub fn max_flows(&self) -> usize {
         self.max_flows
     }
@@ -165,6 +171,7 @@ impl FlowTable {
         self.table.len()
     }
 
+    /// True when no flows are tracked
     pub fn is_empty(&self) -> bool {
         self.table.is_empty()
     }

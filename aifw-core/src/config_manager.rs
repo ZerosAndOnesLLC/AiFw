@@ -7,14 +7,23 @@ use crate::config::FirewallConfig;
 /// A stored config version
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigVersion {
+    /// Monotonic version number (SQLite autoincrement rowid)
     pub version: i64,
+    /// SHA-256 hash of the config JSON, used to de-dupe identical saves
     pub hash: String,
+    /// Whether this version is the currently applied config
     pub applied: bool,
+    /// RFC 3339 timestamp of when it was applied, if ever
     pub applied_at: Option<String>,
+    /// True if this version was superseded by a rollback to an older version
     pub rolled_back: bool,
+    /// Who created the version (username or system source)
     pub created_by: String,
+    /// RFC 3339 timestamp of when the version was saved
     pub created_at: String,
+    /// Optional operator-supplied note describing the change
     pub comment: Option<String>,
+    /// Total number of resources (rules, NAT entries, etc.) in the config
     pub resource_count: usize,
 }
 
@@ -25,6 +34,8 @@ pub struct ConfigManager {
 }
 
 impl ConfigManager {
+    /// Create a manager over an existing pool, writing flat-file backups
+    /// under the default `/usr/local/etc/aifw` directory
     pub fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
@@ -32,11 +43,13 @@ impl ConfigManager {
         }
     }
 
+    /// Override the directory used for `config.json` and its backups (builder-style)
     pub fn with_config_dir(mut self, dir: String) -> Self {
         self.config_dir = dir;
         self
     }
 
+    /// Create the `config_versions` table and its `created_at` index if they don't exist
     pub async fn migrate(&self) -> aifw_common::Result<()> {
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS config_versions (
@@ -82,6 +95,8 @@ impl ConfigManager {
         .unwrap_or(200)
     }
 
+    /// Persist a new retention cap (5–10000) and immediately prune history to it.
+    /// Fails if the limit is out of range or the DB write fails.
     pub async fn set_retention_limit(&self, limit: u32) -> Result<(), String> {
         if !(5..=10_000).contains(&limit) {
             return Err("retention must be between 5 and 10000".into());
@@ -389,23 +404,38 @@ impl ConfigManager {
     }
 }
 
+/// Summary comparison of two stored config versions (counts only, not field-level)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigDiff {
+    /// First (baseline) version number
     pub v1: i64,
+    /// Second (target) version number
     pub v2: i64,
+    /// SHA-256 hash of the baseline config
     pub v1_hash: String,
+    /// SHA-256 hash of the target config
     pub v2_hash: String,
+    /// Count delta for firewall rules
     pub rules_diff: Diff,
+    /// Count delta for NAT rules
     pub nat_diff: Diff,
+    /// Total resource count in the baseline version
     pub total_v1: usize,
+    /// Total resource count in the target version
     pub total_v2: usize,
+    /// True when both versions hash identically
     pub identical: bool,
 }
 
+/// Count delta for one resource category between two config versions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diff {
+    /// Net number of items added going from v1 to v2 (0 if the count shrank)
     pub added: usize,
+    /// Net number of items removed going from v1 to v2 (0 if the count grew)
     pub removed: usize,
+    /// Item count in v1
     pub v1_count: usize,
+    /// Item count in v2
     pub v2_count: usize,
 }

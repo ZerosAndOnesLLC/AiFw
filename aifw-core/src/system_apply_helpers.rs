@@ -79,6 +79,8 @@ pub fn replace_managed_block(content: &str, marker: &str, new_block: &str) -> St
     }
 }
 
+/// Validate an RFC 1123 single-label hostname: non-empty, at most 63 chars,
+/// starts with a letter or digit, alphanumerics and hyphens only
 pub fn validate_hostname(s: &str) -> Result<(), String> {
     if s.is_empty() {
         return Err("hostname must not be empty".into());
@@ -101,6 +103,8 @@ pub fn validate_hostname(s: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a DNS domain suffix: empty is allowed (no domain), otherwise no
+/// leading/trailing dot and only alphanumerics, hyphens, and dots
 pub fn validate_domain(s: &str) -> Result<(), String> {
     if s.is_empty() {
         return Ok(());
@@ -119,6 +123,7 @@ pub fn validate_domain(s: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate an SSH listen port: any non-zero u16 is accepted
 pub fn validate_ssh_port(port: u16) -> Result<(), String> {
     if port == 0 {
         return Err("ssh port must be 1–65535".into());
@@ -126,6 +131,8 @@ pub fn validate_ssh_port(port: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a serial console baud rate: must be one of the standard rates
+/// 9600, 19200, 38400, 57600, or 115200
 pub fn validate_baud(baud: u32) -> Result<(), String> {
     match baud {
         9600 | 19200 | 38400 | 57600 | 115200 => Ok(()),

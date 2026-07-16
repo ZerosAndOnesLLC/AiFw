@@ -25,6 +25,8 @@ pub struct DetectionEngine {
 }
 
 impl DetectionEngine {
+    /// Create a detection engine over the shared rule database and flow
+    /// table, with a fresh protocol registry and threshold tracker.
     pub fn new(rule_db: Arc<RuleDatabase>, flow_table: Arc<FlowTable>) -> Self {
         Self {
             rule_db,

@@ -33,6 +33,8 @@ pub struct SqliteOutput {
 }
 
 impl SqliteOutput {
+    /// Create a SQLite alert sink writing to the given pool's `ids_alerts`
+    /// table (the table is created by the engine's migration).
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }

@@ -16,31 +16,47 @@ use std::time::{Duration, Instant};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::process::Command;
 
+/// Result of a single health probe attempt
 #[derive(Debug, Clone)]
 pub struct ProbeOutcome {
+    /// Whether the probe succeeded
     pub success: bool,
+    /// Measured round-trip time in milliseconds (set only on success)
     pub rtt_ms: Option<f64>,
+    /// Failure detail when the probe failed
     pub error: Option<String>,
 }
 
+/// Parameters for one health probe
 #[derive(Debug, Clone)]
 pub struct ProbeSpec {
+    /// Which probe implementation to run
     pub kind: ProbeKind,
+    /// Host, IP, or URL to probe (interpretation depends on `kind`)
     pub target: String,
+    /// Port for TCP probes (defaults to 443 when absent)
     pub port: Option<u16>,
+    /// Expected result: HTTP status code for HTTP probes, hostname to resolve for DNS probes
     pub expect: Option<String>,
+    /// Probe timeout in milliseconds
     pub timeout_ms: u64,
 }
 
+/// The kind of health probe used to monitor a gateway
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeKind {
+    /// Ping via setuid `/sbin/ping` (the only probe that shells out)
     Icmp,
+    /// TCP connect to `target:port`
     Tcp,
+    /// HTTP GET expecting a specific status code (redirects not followed)
     Http,
+    /// UDP DNS query sent to `target` as the resolver
     Dns,
 }
 
 impl ProbeKind {
+    /// Canonical lowercase name as stored in the DB (`monitor_kind` column)
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Icmp => "icmp",
@@ -50,6 +66,7 @@ impl ProbeKind {
         }
     }
 
+    /// Parse a probe kind name (case-insensitive); `None` for unknown values
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "icmp" => Some(Self::Icmp),
@@ -61,6 +78,8 @@ impl ProbeKind {
     }
 }
 
+/// Run one health probe per the spec and return its outcome; never panics or
+/// errors — failures are reported inside `ProbeOutcome`
 pub async fn run_probe(spec: &ProbeSpec) -> ProbeOutcome {
     match spec.kind {
         ProbeKind::Icmp => icmp_probe(spec).await,

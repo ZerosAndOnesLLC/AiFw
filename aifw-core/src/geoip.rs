@@ -36,6 +36,10 @@ impl GeoIpIndex {
     }
 }
 
+/// Country-based blocking engine. Rules live in the `geoip_rules` /
+/// `geoip_config` SQLite tables; country CIDR sets populate pf tables under
+/// the `aifw-geoip` anchor. IP-to-country lookups hit a lock-free in-memory
+/// longest-prefix-match index that reloads swap in atomically.
 pub struct GeoIpEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
@@ -46,6 +50,9 @@ pub struct GeoIpEngine {
 }
 
 impl GeoIpEngine {
+    /// Build a geo-IP engine over the shared pool and pf backend, targeting
+    /// the `aifw-geoip` anchor. The in-memory index starts empty until
+    /// [`Self::load_database`] runs.
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self {
             pool,
@@ -55,6 +62,7 @@ impl GeoIpEngine {
         }
     }
 
+    /// Create the `geoip_rules` and `geoip_config` tables if missing
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -88,6 +96,8 @@ impl GeoIpEngine {
 
     // --- Rule CRUD ---
 
+    /// Insert a per-country block/allow rule row. pf tables aren't touched
+    /// until the geo-IP rules are next applied
     pub async fn add_rule(&self, rule: GeoIpRule) -> Result<GeoIpRule> {
         sqlx::query(
             r#"
@@ -112,6 +122,7 @@ impl GeoIpEngine {
         Ok(rule)
     }
 
+    /// All geo-IP rules ordered by country code
     pub async fn list_rules(&self) -> Result<Vec<GeoIpRule>> {
         let rows = sqlx::query_as::<_, GeoIpRuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {GEOIP_RULE_COLUMNS} FROM geoip_rules ORDER BY country ASC"
@@ -121,6 +132,7 @@ impl GeoIpEngine {
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
+    /// Fetch a geo-IP rule by id. Fails with `NotFound` if it doesn't exist
     pub async fn get_rule(&self, id: Uuid) -> Result<GeoIpRule> {
         let row = sqlx::query_as::<_, GeoIpRuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {GEOIP_RULE_COLUMNS} FROM geoip_rules WHERE id = ?1"
@@ -132,6 +144,7 @@ impl GeoIpEngine {
         row.into_rule()
     }
 
+    /// Update a geo-IP rule row. Fails with `NotFound` for an unknown id
     pub async fn update_rule(&self, rule: &GeoIpRule) -> Result<()> {
         let result = sqlx::query(
             r#"UPDATE geoip_rules SET country = ?2, action = ?3, label = ?4, status = ?5, updated_at = ?6 WHERE id = ?1"#,
@@ -157,6 +170,7 @@ impl GeoIpEngine {
         Ok(())
     }
 
+    /// Delete a geo-IP rule row. Fails with `NotFound` for an unknown id
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM geoip_rules WHERE id = ?1")
             .bind(id.to_string())

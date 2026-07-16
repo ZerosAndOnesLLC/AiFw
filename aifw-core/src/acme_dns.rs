@@ -5,7 +5,7 @@
 //! `remove_txt(...)` after the cert is issued (success or failure).
 //!
 //! Adding a new provider:
-//!  1. Add a variant to [`acme::DnsProviderKind`].
+//!  1. Add a variant to [`crate::acme::DnsProviderKind`].
 //!  2. Add a struct here that implements [`DnsSolver`].
 //!  3. Add a match arm in [`build_solver`].
 //!  4. Wire UI form fields for any provider-specific config in `extra`.
@@ -21,6 +21,7 @@ use std::time::Duration;
 /// reasons (the order has its own deadline) so 5 minutes is the cap.
 pub const PROPAGATION_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// A DNS provider that can publish and clean up DNS-01 challenge TXT records
 #[async_trait]
 pub trait DnsSolver: Send + Sync {
     /// Publish a TXT record `_acme-challenge.<host> = <value>`. Returns once
@@ -38,7 +39,11 @@ pub trait DnsSolver: Send + Sync {
 /// `route53:ChangeResourceRecordSets` already grant both.
 #[async_trait]
 pub trait DnsRecordWriter: Send + Sync {
+    /// Create or update the A record for `fqdn`. Fails if `ip` is not IPv4.
+    /// `ttl` is in seconds.
     async fn upsert_a(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String>;
+    /// Create or update the AAAA record for `fqdn`. Fails if `ip` is not
+    /// IPv6. `ttl` is in seconds.
     async fn upsert_aaaa(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String>;
 }
 
@@ -76,6 +81,8 @@ pub fn build_record_writer(p: &AcmeDnsProvider) -> Result<Box<dyn DnsRecordWrite
 // Cloudflare — REST API with a scoped API token (Zone:DNS:Edit)
 // =============================================================================
 
+/// Cloudflare DNS-01 solver / DDNS record writer using a scoped API token
+/// (`Zone:DNS:Edit`) against the v4 REST API
 pub struct Cloudflare {
     token: String,
     /// Cloudflare zone ID. Either supplied in `extra.zone_id` or resolved
@@ -328,6 +335,8 @@ fn urlencoding(s: &str) -> String {
 // Route 53 — uses the aws-sdk we already have for S3 backups
 // =============================================================================
 
+/// AWS Route 53 DNS-01 solver / DDNS record writer authenticated with an
+/// explicit access-key pair (`api_token` = access key id)
 pub struct Route53 {
     access_key: String,
     secret_key: String,
@@ -529,6 +538,8 @@ impl DnsRecordWriter for Route53 {
 // Manual — admin pastes the TXT into their DNS by hand
 // =============================================================================
 
+/// Operator-managed DNS: `add_txt` always errors with the exact TXT record
+/// to paste, so the operator adds it by hand and re-runs the issue
 pub struct Manual {
     name: String,
 }

@@ -17,16 +17,23 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
+/// Why acquiring the instance lock failed
 #[derive(Debug, thiserror::Error)]
 pub enum InstanceLockError {
+    /// The lock is held by another process; payload is its PID as recorded
+    /// in the lockfile (0 if unreadable)
     #[error("another instance is already running (pid {0})")]
     AlreadyRunning(i32),
+    /// The lockfile could not be opened or created
     #[error("could not open lockfile {path}: {source}")]
     OpenFailed {
+        /// Lockfile path that failed to open
         path: PathBuf,
+        /// Underlying I/O error
         #[source]
         source: std::io::Error,
     },
+    /// `fcntl(F_SETLK)` failed with an errno other than EAGAIN/EACCES
     #[error("lock syscall failed: {0}")]
     LockFailed(#[source] nix::Error),
 }
@@ -39,6 +46,7 @@ pub struct InstanceLock {
 }
 
 impl InstanceLock {
+    /// Path of the lockfile this lock holds
     pub fn path(&self) -> &Path {
         &self.path
     }

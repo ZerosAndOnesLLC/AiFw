@@ -18,6 +18,8 @@ pub struct PluginContext {
 }
 
 impl PluginContext {
+    /// Create a context wrapping the shared pf backend, with an empty
+    /// key-value store
     pub fn new(pf: Arc<dyn PfBackend>) -> Self {
         Self {
             pf,

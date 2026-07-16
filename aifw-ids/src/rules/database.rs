@@ -23,6 +23,8 @@ pub struct RuleDatabase {
 }
 
 impl RuleDatabase {
+    /// Create an empty database with no rules loaded; `ruleset()` returns
+    /// `None` until `load_rules` is called.
     pub fn new() -> Self {
         Self {
             ruleset: ArcSwapOption::const_empty(),

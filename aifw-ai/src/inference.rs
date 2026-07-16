@@ -16,11 +16,16 @@ pub trait InferenceBackend: Send + Sync {
     fn model_info(&self) -> ModelInfo;
 }
 
+/// Metadata about the currently loaded (or absent) inference model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
+    /// Model name; for the stub backend this becomes the last loaded path
     pub name: String,
+    /// Model version string
     pub version: String,
+    /// Expected length of the input feature vector
     pub input_size: usize,
+    /// Whether a model has been loaded via `load_model`
     pub loaded: bool,
 }
 
@@ -30,6 +35,7 @@ pub struct StubInference {
 }
 
 impl StubInference {
+    /// Stub backend expecting 13-element feature vectors, with no model loaded
     pub fn new() -> Self {
         Self {
             info: ModelInfo {

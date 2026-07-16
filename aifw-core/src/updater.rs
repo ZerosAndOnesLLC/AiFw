@@ -170,34 +170,53 @@ fn all_binaries() -> Vec<String> {
     bins
 }
 
+/// Failures from the self-update flow (release check, download, verify,
+/// install, rollback)
 #[derive(Debug, thiserror::Error)]
 pub enum UpdaterError {
+    /// GitHub API request failed
     #[error("HTTP request failed: {0}")]
     Http(String),
+    /// Release JSON couldn't be parsed
     #[error("JSON parse error: {0}")]
     Json(String),
+    /// Fetching the tarball or checksum asset failed
     #[error("Download failed: {0}")]
     Download(String),
+    /// Downloaded tarball didn't match its published SHA-256
     #[error("Checksum verification failed")]
     Checksum,
+    /// Extracting or installing the update failed
     #[error("Installation failed: {0}")]
     Install(String),
+    /// Rollback requested but no backup exists on disk
     #[error("No backup available")]
     NoBackup,
+    /// The release has no update tarball asset to install
     #[error("No update tarball found in release")]
     NoTarball,
 }
 
+/// Update status reported to the UI/API by the GitHub release check
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AifwUpdateInfo {
+    /// Version currently installed on disk
     pub current_version: String,
+    /// Newest version published on GitHub Releases
     pub latest_version: String,
+    /// True when `latest_version` is newer than `current_version`
     pub update_available: bool,
+    /// Release notes body from the GitHub release
     pub release_notes: String,
+    /// Release publish timestamp from GitHub
     pub published_at: String,
+    /// Download URL of the update tarball asset, if the release has one
     pub tarball_url: Option<String>,
+    /// Download URL of the tarball's SHA-256 checksum asset, if present
     pub checksum_url: Option<String>,
+    /// True when a rollback backup exists on disk
     pub has_backup: bool,
+    /// Version the on-disk backup was taken from, when known
     pub backup_version: Option<String>,
     /// On-disk version differs from the running binary's compiled-in
     /// version — install completed but services have not been restarted.

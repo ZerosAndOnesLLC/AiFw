@@ -4,9 +4,13 @@ use std::path::{Path, PathBuf};
 /// Plugin manifest — read from plugin.toml in each plugin directory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
+    /// Unique plugin name
     pub name: String,
+    /// Plugin version string (semver by convention)
     pub version: String,
+    /// Human-readable description of what the plugin does
     pub description: String,
+    /// Plugin author
     pub author: String,
     /// "native" or "wasm"
     pub plugin_type: String,
@@ -22,8 +26,11 @@ pub struct PluginManifest {
 /// A discovered plugin from the plugin directory
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveredPlugin {
+    /// Parsed plugin.toml manifest
     pub manifest: PluginManifest,
+    /// Plugin directory on disk
     pub path: PathBuf,
+    /// Whether the plugin is present under the system plugin directory
     pub installed: bool,
 }
 

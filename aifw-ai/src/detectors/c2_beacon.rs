@@ -4,6 +4,8 @@ use super::Detector;
 use crate::features::TrafficFeatures;
 use crate::types::{Threat, ThreatEvidence, ThreatScore, ThreatType};
 
+/// Detects command-and-control beaconing: repeated small-payload connections
+/// to at most a couple of destinations with low connection-duration variance
 pub struct C2BeaconDetector {
     /// Low duration variance indicates periodic beaconing
     pub max_duration_variance: f64,
@@ -12,6 +14,7 @@ pub struct C2BeaconDetector {
 }
 
 impl C2BeaconDetector {
+    /// Detector with default thresholds: variance 5.0, 5 connections minimum
     pub fn new() -> Self {
         Self {
             max_duration_variance: 5.0,

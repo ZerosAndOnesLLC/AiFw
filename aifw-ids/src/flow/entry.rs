@@ -13,8 +13,11 @@ use crate::protocol::AppProto;
 /// A tracked network flow (bidirectional connection).
 #[derive(Debug)]
 pub struct Flow {
+    /// Unique id assigned when the flow is first seen
     pub id: Uuid,
+    /// Canonical (direction-independent) 5-tuple key
     pub key: FlowKey,
+    /// Current TCP connection state
     pub state: FlowState,
     /// Packets from initiator → responder
     pub pkts_toserver: u64,
@@ -45,6 +48,10 @@ pub struct Flow {
 }
 
 impl Flow {
+    /// Create a flow from its first observed packet. The packet's source
+    /// becomes the initiator, its TCP flags seed the connection state, and
+    /// its payload seeds the toserver reassembly buffer (capped at
+    /// `max_stream_depth` bytes per direction).
     pub fn new(key: FlowKey, packet: &DecodedPacket, max_stream_depth: usize) -> Self {
         let src_ip = packet
             .src_ip

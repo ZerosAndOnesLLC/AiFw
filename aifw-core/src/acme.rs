@@ -36,35 +36,47 @@ use sqlx::{Row, SqlitePool};
 /// key is regenerated on first use; `key_pem` persists it across restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcmeAccount {
+    /// Row id in `acme_account`
     pub id: i64,
+    /// ACME v2 directory URL of the CA (e.g. `LE_PRODUCTION`)
     pub directory_url: String,
+    /// Contact email registered with the CA for expiry notices
     pub contact_email: String,
     /// Account private key in PEM. Returned as `None` to API callers — only
     /// the engine ever needs to read this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_pem: Option<String>,
+    /// When the account row was first created
     pub created_at: DateTime<Utc>,
 }
 
 /// Default to Let's Encrypt production. The UI presents a dropdown:
 /// production / staging / custom.
 pub const LE_PRODUCTION: &str = "https://acme-v02.api.letsencrypt.org/directory";
+/// Let's Encrypt staging directory — untrusted certs, but no rate limits;
+/// use for testing the issuance flow
 pub const LE_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
 
+/// ACME challenge used to prove domain control. Wire values are kebab-case
+/// (`dns-01` / `http-01`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChallengeType {
+    /// DNS-01: publish a TXT record; the only challenge that can validate wildcards
     Dns01,
+    /// HTTP-01: serve a token on port 80; requires the FQDN to be publicly reachable
     Http01,
 }
 
 impl ChallengeType {
+    /// Wire/DB string for this challenge (`"dns-01"` or `"http-01"`)
     pub fn as_str(self) -> &'static str {
         match self {
             ChallengeType::Dns01 => "dns-01",
             ChallengeType::Http01 => "http-01",
         }
     }
+    /// Parse a DB/wire string; anything unrecognized falls back to `Dns01`
     pub fn from_str(s: &str) -> ChallengeType {
         match s {
             "http-01" => ChallengeType::Http01,
@@ -73,17 +85,24 @@ impl ChallengeType {
     }
 }
 
+/// Lifecycle state of a managed certificate. Wire values are kebab-case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CertStatus {
+    /// Created but never successfully issued
     Pending,
+    /// Issued and not yet expired
     Active,
+    /// Last issue/renew attempt failed (see `last_renew_error`)
     Failed,
+    /// A renewal is currently in progress
     Renewing,
+    /// Past `expires_at` without a successful renewal
     Expired,
 }
 
 impl CertStatus {
+    /// Wire/DB string for this status (e.g. `"active"`)
     pub fn as_str(self) -> &'static str {
         match self {
             CertStatus::Pending => "pending",
@@ -93,6 +112,7 @@ impl CertStatus {
             CertStatus::Expired => "expired",
         }
     }
+    /// Parse a DB/wire string; anything unrecognized falls back to `Pending`
     pub fn from_str(s: &str) -> CertStatus {
         match s {
             "active" => CertStatus::Active,
@@ -104,22 +124,33 @@ impl CertStatus {
     }
 }
 
+/// One managed certificate: requested names, renewal policy, current status,
+/// and (once issued) the PEM material. Backed by the `acme_cert` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcmeCert {
+    /// Row id in `acme_cert`
     pub id: i64,
+    /// Subject common name (may be a wildcard like `*.example.com`)
     pub common_name: String,
     /// Including the CN. Empty = CN-only cert.
     pub sans: Vec<String>,
+    /// How domain control is proven (DNS-01 required for wildcards)
     pub challenge_type: ChallengeType,
     /// FK into `acme_dns_provider`. Required when challenge_type == Dns01.
     pub dns_provider_id: Option<i64>,
+    /// Whether the daemon's daily tick renews this cert automatically
     pub auto_renew: bool,
     /// Renew when `expires_at - days <= now`. Default 30.
     pub renew_days_before_expiry: i32,
+    /// Current lifecycle state (pending/active/failed/renewing/expired)
     pub status: CertStatus,
+    /// When the current cert was issued. None until first successful issue
     pub issued_at: Option<DateTime<Utc>>,
+    /// NotAfter of the current cert. None until first successful issue
     pub expires_at: Option<DateTime<Utc>>,
+    /// When issuance/renewal was last attempted (success or failure)
     pub last_renew_attempt: Option<DateTime<Utc>>,
+    /// Error message from the last failed attempt; None after a success
     pub last_renew_error: Option<String>,
     /// PEM of the leaf cert. None until first successful issue.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -151,17 +182,25 @@ impl AcmeCert {
     }
 }
 
+/// DNS provider backend used to publish DNS-01 TXT records. Wire values are
+/// kebab-case (e.g. `route53`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DnsProviderKind {
+    /// Cloudflare DNS API (scoped API token)
     Cloudflare,
+    /// AWS Route53 (access key + secret)
     Route53,
+    /// DigitalOcean DNS API
     DigitalOcean,
+    /// RFC 2136 dynamic DNS update against a nameserver (TSIG key in `extra`)
     Rfc2136,
+    /// No automation — the operator publishes the TXT record by hand
     Manual,
 }
 
 impl DnsProviderKind {
+    /// Wire/DB string for this provider kind (e.g. `"cloudflare"`)
     pub fn as_str(self) -> &'static str {
         match self {
             DnsProviderKind::Cloudflare => "cloudflare",
@@ -171,6 +210,7 @@ impl DnsProviderKind {
             DnsProviderKind::Manual => "manual",
         }
     }
+    /// Parse a DB/wire string; None if the value isn't a known provider kind
     pub fn from_str(s: &str) -> Option<DnsProviderKind> {
         Some(match s {
             "cloudflare" => DnsProviderKind::Cloudflare,
@@ -183,10 +223,15 @@ impl DnsProviderKind {
     }
 }
 
+/// A configured DNS provider that the engine uses to solve DNS-01 challenges
+/// for certs whose names fall under its `zone`. Backed by `acme_dns_provider`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcmeDnsProvider {
+    /// Row id in `acme_dns_provider`
     pub id: i64,
+    /// Unique display name chosen by the operator
     pub name: String,
+    /// Which provider API/mechanism to use for TXT record updates
     pub kind: DnsProviderKind,
     /// API token / access key for the provider. Write-only via API.
     #[serde(skip_serializing)]
@@ -203,6 +248,8 @@ pub struct AcmeDnsProvider {
     pub extra: serde_json::Value,
 }
 
+/// Where a freshly issued/renewed cert gets pushed. Wire values are
+/// kebab-case (e.g. `local-tls-store`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExportTargetKind {
@@ -215,6 +262,7 @@ pub enum ExportTargetKind {
 }
 
 impl ExportTargetKind {
+    /// Wire/DB string for this target kind (e.g. `"local-tls-store"`)
     pub fn as_str(self) -> &'static str {
         match self {
             ExportTargetKind::File => "file",
@@ -222,6 +270,7 @@ impl ExportTargetKind {
             ExportTargetKind::LocalTlsStore => "local-tls-store",
         }
     }
+    /// Parse a DB/wire string; None if the value isn't a known target kind
     pub fn from_str(s: &str) -> Option<ExportTargetKind> {
         Some(match s {
             "file" => ExportTargetKind::File,
@@ -232,19 +281,27 @@ impl ExportTargetKind {
     }
 }
 
+/// A per-cert delivery destination: after each successful issue/renew the
+/// cert + key are pushed here. Backed by the `acme_export_target` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcmeExportTarget {
+    /// Row id in `acme_export_target`
     pub id: i64,
+    /// The `acme_cert` row this target exports (cascade-deleted with it)
     pub cert_id: i64,
+    /// Delivery mechanism (file / webhook / local TLS store)
     pub kind: ExportTargetKind,
     /// Kind-specific config. Schema:
     ///   file:    { "cert_path": "...", "key_path": "...", "chain_path": "...",
-    ///              "owner": "user[:group]", "mode": "0644" }
+    ///              "owner": `user[:group]`, "mode": "0644" }
     ///   webhook: { "url": "https://...", "auth_header": "Bearer ..." }
     ///   local-tls-store: { "reload_service": "aifw_api" }
     pub config: serde_json::Value,
+    /// When this target last ran. None if it has never run
     pub last_run_at: Option<DateTime<Utc>>,
+    /// Whether the most recent run succeeded
     pub last_run_ok: bool,
+    /// Error message from the most recent failed run
     pub last_run_error: Option<String>,
 }
 
@@ -252,6 +309,9 @@ pub struct AcmeExportTarget {
 // Schema
 // =============================================================================
 
+/// Create the ACME tables (`acme_account`, `acme_dns_provider`, `acme_cert`,
+/// `acme_export_target`) and their indexes if they don't exist. Idempotent;
+/// called once at startup.
 pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query(
         r#"
@@ -360,6 +420,7 @@ fn row_to_account(row: &sqlx::sqlite::SqliteRow) -> AcmeAccount {
     }
 }
 
+/// Fetch one ACME account by row id. None if missing or on a query error
 pub async fn load_account(pool: &SqlitePool, id: i64) -> Option<AcmeAccount> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {ACME_ACCOUNT_COLUMNS} FROM acme_account WHERE id = ?"
@@ -372,6 +433,8 @@ pub async fn load_account(pool: &SqlitePool, id: i64) -> Option<AcmeAccount> {
     .map(|r| row_to_account(&r))
 }
 
+/// Fetch the oldest (lowest-id) ACME account, used when no account is named
+/// explicitly. None if no account has been created yet
 pub async fn load_default_account(pool: &SqlitePool) -> Option<AcmeAccount> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {ACME_ACCOUNT_COLUMNS} FROM acme_account ORDER BY id LIMIT 1"
@@ -383,6 +446,9 @@ pub async fn load_default_account(pool: &SqlitePool) -> Option<AcmeAccount> {
     .map(|r| row_to_account(&r))
 }
 
+/// Upsert an ACME account keyed on (directory_url, contact_email) and return
+/// its row id. On conflict, `key_pem` only overwrites the stored key when
+/// `Some` — passing `None` keeps the existing key
 pub async fn save_account(
     pool: &SqlitePool,
     directory_url: &str,
@@ -449,6 +515,8 @@ fn row_to_cert(row: &sqlx::sqlite::SqliteRow) -> AcmeCert {
     }
 }
 
+/// Fetch one cert (including PEM material) by row id. None if missing or on
+/// a query error
 pub async fn load_cert(pool: &SqlitePool, id: i64) -> Option<AcmeCert> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {ACME_CERT_COLUMNS} FROM acme_cert WHERE id = ?"
@@ -461,6 +529,7 @@ pub async fn load_cert(pool: &SqlitePool, id: i64) -> Option<AcmeCert> {
     .map(|r| row_to_cert(&r))
 }
 
+/// Fetch every cert ordered by common name. Empty on query error
 pub async fn load_all_certs(pool: &SqlitePool) -> Vec<AcmeCert> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {ACME_CERT_COLUMNS} FROM acme_cert ORDER BY common_name"
@@ -473,6 +542,8 @@ pub async fn load_all_certs(pool: &SqlitePool) -> Vec<AcmeCert> {
     .collect()
 }
 
+/// Certs with auto-renew on that are inside their renewal window (or already
+/// expired). Called by the daemon's daily renewal tick
 pub async fn certs_due_for_renewal(pool: &SqlitePool) -> Vec<AcmeCert> {
     load_all_certs(pool)
         .await
@@ -502,6 +573,8 @@ fn row_to_provider(row: &sqlx::sqlite::SqliteRow) -> AcmeDnsProvider {
     }
 }
 
+/// Fetch one DNS provider (including credentials) by row id. None if missing
+/// or on a query error
 pub async fn load_provider(pool: &SqlitePool, id: i64) -> Option<AcmeDnsProvider> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {ACME_DNS_PROVIDER_COLUMNS} FROM acme_dns_provider WHERE id = ?"
@@ -514,6 +587,7 @@ pub async fn load_provider(pool: &SqlitePool, id: i64) -> Option<AcmeDnsProvider
     .map(|r| row_to_provider(&r))
 }
 
+/// Fetch every DNS provider ordered by name. Empty on query error
 pub async fn load_all_providers(pool: &SqlitePool) -> Vec<AcmeDnsProvider> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {ACME_DNS_PROVIDER_COLUMNS} FROM acme_dns_provider ORDER BY name"
@@ -547,6 +621,8 @@ fn row_to_target(row: &sqlx::sqlite::SqliteRow) -> AcmeExportTarget {
     }
 }
 
+/// Fetch all export targets attached to a cert, oldest first. Empty on query
+/// error or when the cert has no targets
 pub async fn load_targets_for_cert(pool: &SqlitePool, cert_id: i64) -> Vec<AcmeExportTarget> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {ACME_EXPORT_TARGET_COLUMNS} FROM acme_export_target WHERE cert_id = ? ORDER BY id"

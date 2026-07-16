@@ -7,6 +7,10 @@ use sqlx::sqlite::SqlitePool;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// TLS inspection engine: SNI allow/block rules (`sni_rules` table) and a
+/// JA3 fingerprint blocklist (`ja3_blocklist` table), plus the TLS policy
+/// and MITM proxy config whose redirect rules load into the `aifw-tls`
+/// pf anchor.
 pub struct TlsEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
@@ -16,6 +20,8 @@ pub struct TlsEngine {
 }
 
 impl TlsEngine {
+    /// Build a TLS engine over the shared pool and pf backend with default
+    /// policy and MITM config, targeting the `aifw-tls` anchor
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self {
             pool,
@@ -26,16 +32,19 @@ impl TlsEngine {
         }
     }
 
+    /// Replace the TLS policy (builder style)
     pub fn with_policy(mut self, policy: TlsPolicy) -> Self {
         self.policy = policy;
         self
     }
 
+    /// Replace the MITM proxy config (builder style)
     pub fn with_mitm_config(mut self, config: MitmProxyConfig) -> Self {
         self.mitm_config = config;
         self
     }
 
+    /// Create the `sni_rules` and `ja3_blocklist` tables if missing
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -70,6 +79,7 @@ impl TlsEngine {
 
     // --- SNI rules ---
 
+    /// Insert an SNI rule row. Fails validation when the pattern is empty
     pub async fn add_sni_rule(&self, rule: SniRule) -> Result<SniRule> {
         if rule.pattern.is_empty() {
             return Err(AifwError::Validation("SNI pattern required".to_string()));
@@ -92,6 +102,7 @@ impl TlsEngine {
         Ok(rule)
     }
 
+    /// All SNI rules ordered by pattern
     pub async fn list_sni_rules(&self) -> Result<Vec<SniRule>> {
         let rows = sqlx::query_as::<_, SniRuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {SNI_RULE_COLUMNS} FROM sni_rules ORDER BY pattern ASC"
@@ -101,6 +112,7 @@ impl TlsEngine {
         rows.into_iter().map(|r| r.into_rule()).collect()
     }
 
+    /// Delete an SNI rule. Fails with `NotFound` for an unknown id
     pub async fn delete_sni_rule(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM sni_rules WHERE id = ?1")
             .bind(id.to_string())
@@ -125,6 +137,7 @@ impl TlsEngine {
 
     // --- JA3 blocklist ---
 
+    /// Insert or replace a JA3 fingerprint hash in the blocklist
     pub async fn add_ja3_block(&self, hash: &str, description: &str) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO ja3_blocklist (hash, description, created_at) VALUES (?1, ?2, ?3)",
@@ -138,6 +151,8 @@ impl TlsEngine {
         Ok(())
     }
 
+    /// Remove a JA3 hash from the blocklist; removing an absent hash is
+    /// not an error
     pub async fn remove_ja3_block(&self, hash: &str) -> Result<()> {
         sqlx::query("DELETE FROM ja3_blocklist WHERE hash = ?1")
             .bind(hash)
@@ -146,6 +161,8 @@ impl TlsEngine {
         Ok(())
     }
 
+    /// All blocked JA3 hashes as `(hash, description, created_at)` tuples,
+    /// newest first
     pub async fn list_ja3_blocks(&self) -> Result<Vec<(String, String, String)>> {
         let rows = sqlx::query_as::<_, (String, String, String)>(
             "SELECT hash, description, created_at FROM ja3_blocklist ORDER BY created_at DESC",
@@ -155,6 +172,8 @@ impl TlsEngine {
         Ok(rows)
     }
 
+    /// Whether a JA3 hash is on the blocklist; DB errors read as
+    /// "not blocked"
     pub async fn is_ja3_blocked(&self, hash: &str) -> bool {
         sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM ja3_blocklist WHERE hash = ?1")
             .bind(hash)
@@ -166,16 +185,21 @@ impl TlsEngine {
 
     // --- Policy ---
 
+    /// The configured TLS policy (minimum version etc.)
     pub fn policy(&self) -> &TlsPolicy {
         &self.policy
     }
 
+    /// The configured MITM proxy settings
     pub fn mitm_config(&self) -> &MitmProxyConfig {
         &self.mitm_config
     }
 
     // --- Apply to pf ---
 
+    /// Load the MITM proxy RDR rules (plus a comment marking the minimum
+    /// TLS version, which is enforced in the proxy layer, not pf) into the
+    /// `aifw-tls` anchor. No-op when there is nothing to apply
     pub async fn apply_rules(&self) -> Result<()> {
         let mut pf_lines = Vec::new();
 

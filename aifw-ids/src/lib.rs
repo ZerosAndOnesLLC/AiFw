@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! # aifw-ids
 //!
 //! Intrusion detection/prevention engine: packet capture, protocol decode,
@@ -5,9 +6,12 @@
 //! output sinks (SQLite, EVE JSON, syslog, in-memory). Runs in IDS (alert)
 //! or IPS (drop) mode; configuration and rules live in SQLite and hot-reload.
 
+/// Post-detection verdicts (pass/alert/drop/reject) and pf block-table enforcement
 pub mod action;
 pub mod capture;
+/// Runtime IDS configuration loaded from SQLite, with validation and hot-reload
 pub mod config;
+/// Raw-packet decoding into parsed headers and payload via etherparse
 pub mod decode;
 pub mod detect;
 pub mod flow;
@@ -34,18 +38,24 @@ use crate::rules::RuleDatabase;
 /// Errors produced by the IDS engine
 #[derive(Debug, thiserror::Error)]
 pub enum IdsError {
+    /// SQLite query or migration failed
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    /// Invalid or unloadable IDS configuration
     #[error("configuration error: {0}")]
     Config(String),
+    /// Packet capture backend failed (open, filter, or read)
     #[error("capture error: {0}")]
     Capture(String),
+    /// A rule could not be parsed into a `CompiledRule`
     #[error("rule parse error: {0}")]
     RuleParse(String),
+    /// Underlying file or socket I/O failed
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
 
+/// Crate-wide result alias using [`IdsError`]
 pub type Result<T> = std::result::Result<T, IdsError>;
 
 /// Alert channel capacity — bounded to prevent unbounded memory growth
@@ -54,10 +64,15 @@ const ALERT_CHANNEL_CAPACITY: usize = 10_000;
 /// Shared counters for engine statistics
 #[derive(Debug, Default)]
 pub struct EngineCounters {
+    /// Total packets run through the detection pipeline
     pub packets_inspected: AtomicU64,
+    /// Total alerts generated
     pub alerts_total: AtomicU64,
+    /// Total packets dropped by IPS enforcement
     pub drops_total: AtomicU64,
+    /// Total bytes of inspected traffic
     pub bytes_total: AtomicU64,
+    /// Engine start time as Unix seconds (used to derive uptime and rates)
     pub start_time: AtomicU64,
 }
 
@@ -678,11 +693,17 @@ impl IdsEngine {
 /// `RuleSummary` wire shape so the handler can map field-for-field.
 #[derive(Debug, Clone)]
 pub struct RuleRow {
+    /// Rule id (the `ids_rules.id` UUID string)
     pub id: String,
+    /// Suricata signature id (SID)
     pub sid: u32,
+    /// Rule message / description from the signature
     pub msg: String,
+    /// Effective action ("alert", "drop", "reject", "pass")
     pub action: String,
+    /// Whether the rule is enabled
     pub enabled: bool,
+    /// Raw rule text as stored in the database
     pub raw: String,
 }
 

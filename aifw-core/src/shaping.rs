@@ -8,6 +8,10 @@ use sqlx::sqlite::SqlitePool;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Traffic-shaping engine: bandwidth queues (`queue_configs` table) and
+/// connection rate limits (`rate_limit_rules` table). Queue definitions
+/// load into the base `aifw` anchor; rate-limit tables/rules load into
+/// `<anchor>-ratelimit`.
 pub struct ShapingEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
@@ -15,6 +19,8 @@ pub struct ShapingEngine {
 }
 
 impl ShapingEngine {
+    /// Build a shaping engine over the shared pool and pf backend,
+    /// targeting the default `aifw` anchor
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self {
             pool,
@@ -23,11 +29,13 @@ impl ShapingEngine {
         }
     }
 
+    /// Replace the base pf anchor (builder style)
     pub fn with_anchor(mut self, anchor: String) -> Self {
         self.anchor = anchor;
         self
     }
 
+    /// Create the `queue_configs` and `rate_limit_rules` tables if missing
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -79,12 +87,15 @@ impl ShapingEngine {
 
     // --- Queue operations ---
 
+    /// Insert a queue config row. pf isn't touched until
+    /// [`Self::apply_queues`]
     pub async fn add_queue(&self, config: QueueConfig) -> Result<QueueConfig> {
         self.insert_queue(&config).await?;
         tracing::info!(id = %config.id, name = %config.name, "queue added");
         Ok(config)
     }
 
+    /// All queue configs, oldest first
     pub async fn list_queues(&self) -> Result<Vec<QueueConfig>> {
         let rows = sqlx::query_as::<_, QueueRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {QUEUE_COLUMNS} FROM queue_configs ORDER BY created_at ASC"
@@ -94,6 +105,7 @@ impl ShapingEngine {
         rows.into_iter().map(|r| r.into_queue()).collect()
     }
 
+    /// Delete a queue config row. Fails with `NotFound` for an unknown id
     pub async fn delete_queue(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM queue_configs WHERE id = ?1")
             .bind(id.to_string())
@@ -106,6 +118,9 @@ impl ShapingEngine {
         Ok(())
     }
 
+    /// Render active queue configs (one parent queue per interface plus
+    /// each child queue) and load them into pf. Fails if the pf backend
+    /// rejects the queue definitions
     pub async fn apply_queues(&self) -> Result<()> {
         let queues = self.list_queues().await?;
         let active: Vec<_> = queues
@@ -134,6 +149,9 @@ impl ShapingEngine {
 
     // --- Rate limit operations ---
 
+    /// Insert a rate-limit rule row. Fails validation when
+    /// `max_connections` or `window_secs` is 0 or the overload table name
+    /// is empty. pf isn't touched until [`Self::apply_rate_limits`]
     pub async fn add_rate_limit(&self, rule: RateLimitRule) -> Result<RateLimitRule> {
         if rule.max_connections == 0 {
             return Err(AifwError::Validation(
@@ -153,6 +171,7 @@ impl ShapingEngine {
         Ok(rule)
     }
 
+    /// All rate-limit rules, oldest first
     pub async fn list_rate_limits(&self) -> Result<Vec<RateLimitRule>> {
         let rows = sqlx::query_as::<_, RateLimitRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {RATE_LIMIT_COLUMNS} FROM rate_limit_rules ORDER BY created_at ASC"
@@ -162,6 +181,7 @@ impl ShapingEngine {
         rows.into_iter().map(|r| r.into_rate_limit()).collect()
     }
 
+    /// Delete a rate-limit rule row. Fails with `NotFound` for an unknown id
     pub async fn delete_rate_limit(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM rate_limit_rules WHERE id = ?1")
             .bind(id.to_string())

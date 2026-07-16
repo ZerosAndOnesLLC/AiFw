@@ -10,42 +10,69 @@ use crate::store::MetricsStore;
 /// Well-known metric names
 pub mod names {
     // pf stats
+    /// Current pf state-table entry count (gauge)
     pub const PF_STATES: &str = "pf.states";
+    /// Cumulative packets in, as reported by pf (counter)
     pub const PF_PACKETS_IN: &str = "pf.packets_in";
+    /// Cumulative packets out, as reported by pf (counter)
     pub const PF_PACKETS_OUT: &str = "pf.packets_out";
+    /// Cumulative bytes in, as reported by pf (counter)
     pub const PF_BYTES_IN: &str = "pf.bytes_in";
+    /// Cumulative bytes out, as reported by pf (counter)
     pub const PF_BYTES_OUT: &str = "pf.bytes_out";
+    /// Number of loaded pf rules (gauge)
     pub const PF_RULES_COUNT: &str = "pf.rules_count";
+    /// Whether pf is enabled: 1.0 running, 0.0 stopped (gauge)
     pub const PF_RUNNING: &str = "pf.running";
 
     // Connection stats
+    /// Total tracked connections (gauge)
     pub const CONN_TOTAL: &str = "conn.total";
+    /// Tracked TCP connections (gauge)
     pub const CONN_TCP: &str = "conn.tcp";
+    /// Tracked UDP connections (gauge)
     pub const CONN_UDP: &str = "conn.udp";
+    /// Tracked ICMP/ICMPv6 connections (gauge)
     pub const CONN_ICMP: &str = "conn.icmp";
+    /// New connections per second (rate)
     pub const CONN_NEW_RATE: &str = "conn.new_rate";
 
     // Traffic rates (computed as delta / interval)
+    /// Inbound throughput in bits per second (rate)
     pub const TRAFFIC_BPS_IN: &str = "traffic.bps_in";
+    /// Outbound throughput in bits per second (rate)
     pub const TRAFFIC_BPS_OUT: &str = "traffic.bps_out";
+    /// Inbound packets per second (rate)
     pub const TRAFFIC_PPS_IN: &str = "traffic.pps_in";
+    /// Outbound packets per second (rate)
     pub const TRAFFIC_PPS_OUT: &str = "traffic.pps_out";
 
     // Threat stats
+    /// Total threats detected by the AI engine (gauge)
     pub const THREATS_TOTAL: &str = "threats.total";
+    /// Threats that resulted in a block (gauge)
     pub const THREATS_BLOCKED: &str = "threats.blocked";
+    /// Port-scan detections (rate)
     pub const THREATS_PORT_SCAN: &str = "threats.port_scan";
+    /// DDoS detections (rate)
     pub const THREATS_DDOS: &str = "threats.ddos";
+    /// Brute-force detections (rate)
     pub const THREATS_BRUTE_FORCE: &str = "threats.brute_force";
 
     // System
+    /// Active firewall rules configured in AiFw (gauge)
     pub const RULES_ACTIVE: &str = "system.rules_active";
+    /// Configured NAT rules (gauge)
     pub const NAT_RULES: &str = "system.nat_rules";
+    /// Configured traffic-shaping queues (gauge)
     pub const QUEUE_COUNT: &str = "system.queues";
+    /// Configured rate-limit entries (gauge)
     pub const RATELIMIT_COUNT: &str = "system.rate_limits";
 
     // API
+    /// REST API requests served (rate)
     pub const API_REQUESTS: &str = "api.requests";
+    /// REST API requests that returned an error (rate)
     pub const API_ERRORS: &str = "api.errors";
 }
 
@@ -61,6 +88,8 @@ pub struct MetricsCollector {
 }
 
 impl MetricsCollector {
+    /// Create a collector with a 1-second sampling interval and zeroed
+    /// rate baselines. Call `start` to begin collection.
     pub fn new(pf: Arc<dyn PfBackend>, store: Arc<MetricsStore>) -> Self {
         Self {
             pf,
@@ -73,6 +102,8 @@ impl MetricsCollector {
         }
     }
 
+    /// Builder: set the sampling interval (default 1 s). Also the divisor
+    /// for the computed traffic rates.
     pub fn with_interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
         self

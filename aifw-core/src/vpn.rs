@@ -9,6 +9,9 @@ use std::sync::Arc;
 use tokio::process::Command;
 use uuid::Uuid;
 
+/// VPN engine: WireGuard tunnels and peers (`wg_tunnels`, `wg_peers`
+/// tables) and IPsec SAs (`ipsec_sas` table). Tunnel lifecycle shells out
+/// to ifconfig/wg on FreeBSD; VPN pf rules use the `aifw-vpn` anchor.
 pub struct VpnEngine {
     pool: SqlitePool,
     pf: Arc<dyn PfBackend>,
@@ -16,6 +19,8 @@ pub struct VpnEngine {
 }
 
 impl VpnEngine {
+    /// Build a VPN engine over the shared pool and pf backend, targeting
+    /// the `aifw-vpn` anchor
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self {
             pool,
@@ -24,6 +29,9 @@ impl VpnEngine {
         }
     }
 
+    /// Create the `wg_tunnels`, `wg_peers`, `ipsec_sas`, and shared
+    /// `interface_roles` tables if missing, plus idempotent column adds and
+    /// the indexes used by write-path validation lookups
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -127,6 +135,10 @@ impl VpnEngine {
     // WireGuard tunnels
     // ============================================================
 
+    /// Insert a WireGuard tunnel row (including its private key). Fails
+    /// validation when the name is empty, the listen port is 0, or another
+    /// tunnel already uses that listen port. Does not bring the interface
+    /// up — see [`Self::start_tunnel`]
     pub async fn add_wg_tunnel(&self, tunnel: WgTunnel) -> Result<WgTunnel> {
         if tunnel.name.is_empty() {
             return Err(AifwError::Validation("tunnel name required".to_string()));
@@ -178,6 +190,7 @@ impl VpnEngine {
         Ok(tunnel)
     }
 
+    /// All WireGuard tunnels, oldest first
     pub async fn list_wg_tunnels(&self) -> Result<Vec<WgTunnel>> {
         let rows = sqlx::query_as::<_, WgTunnelRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {WG_TUNNEL_COLUMNS} FROM wg_tunnels ORDER BY created_at ASC"
@@ -187,6 +200,8 @@ impl VpnEngine {
         rows.into_iter().map(|r| r.into_tunnel()).collect()
     }
 
+    /// Fetch a WireGuard tunnel by id. Fails with `NotFound` if it doesn't
+    /// exist
     pub async fn get_wg_tunnel(&self, id: Uuid) -> Result<WgTunnel> {
         let row = sqlx::query_as::<_, WgTunnelRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {WG_TUNNEL_COLUMNS} FROM wg_tunnels WHERE id = ?1"
@@ -198,6 +213,9 @@ impl VpnEngine {
         row.into_tunnel()
     }
 
+    /// Update a tunnel's settings (including keys). Same validation as
+    /// [`Self::add_wg_tunnel`]: non-empty name, non-zero and non-duplicate
+    /// listen port. Fails with `NotFound` for an unknown id
     pub async fn update_wg_tunnel(&self, tunnel: WgTunnel) -> Result<WgTunnel> {
         if tunnel.name.is_empty() {
             return Err(AifwError::Validation("tunnel name required".to_string()));
@@ -255,6 +273,8 @@ impl VpnEngine {
         Ok(tunnel)
     }
 
+    /// Delete a tunnel and all of its peers. Fails with `NotFound` for an
+    /// unknown id
     pub async fn delete_wg_tunnel(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM wg_tunnels WHERE id = ?1")
             .bind(id.to_string())
@@ -276,6 +296,9 @@ impl VpnEngine {
     // WireGuard peers
     // ============================================================
 
+    /// Insert a peer on an existing tunnel. Fails validation when the
+    /// public key is empty, the tunnel doesn't exist, or one of the peer's
+    /// allowed IPs is already assigned to another peer in the same tunnel
     pub async fn add_wg_peer(&self, peer: WgPeer) -> Result<WgPeer> {
         if peer.public_key.is_empty() {
             return Err(AifwError::Validation(
@@ -331,6 +354,7 @@ impl VpnEngine {
         Ok(peer)
     }
 
+    /// Peers of one tunnel, oldest first
     pub async fn list_wg_peers(&self, tunnel_id: Uuid) -> Result<Vec<WgPeer>> {
         let rows = sqlx::query_as::<_, WgPeerRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {WG_PEER_COLUMNS} FROM wg_peers WHERE tunnel_id = ?1 ORDER BY created_at ASC"
@@ -362,6 +386,7 @@ impl VpnEngine {
         Ok(grouped)
     }
 
+    /// Fetch a peer by id. Fails with `NotFound` if it doesn't exist
     pub async fn get_wg_peer(&self, id: Uuid) -> Result<WgPeer> {
         let row = sqlx::query_as::<_, WgPeerRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {WG_PEER_COLUMNS} FROM wg_peers WHERE id = ?1"
@@ -373,6 +398,7 @@ impl VpnEngine {
         row.into_peer()
     }
 
+    /// Update a peer's settings; updating an unknown id is silently a no-op
     pub async fn update_wg_peer(&self, peer: &WgPeer) -> Result<()> {
         let allowed_ips: Vec<String> = peer.allowed_ips.iter().map(|a| a.to_string()).collect();
         sqlx::query(
@@ -397,6 +423,7 @@ impl VpnEngine {
         Ok(())
     }
 
+    /// Delete a peer. Fails with `NotFound` for an unknown id
     pub async fn delete_wg_peer(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM wg_peers WHERE id = ?1")
             .bind(id.to_string())
@@ -412,6 +439,8 @@ impl VpnEngine {
     // IPsec SAs
     // ============================================================
 
+    /// Insert an IPsec security-association row. Fails validation when the
+    /// name is empty
     pub async fn add_ipsec_sa(&self, sa: IpsecSa) -> Result<IpsecSa> {
         if sa.name.is_empty() {
             return Err(AifwError::Validation("SA name required".to_string()));
@@ -443,6 +472,7 @@ impl VpnEngine {
         Ok(sa)
     }
 
+    /// All IPsec SAs, oldest first
     pub async fn list_ipsec_sas(&self) -> Result<Vec<IpsecSa>> {
         let rows = sqlx::query_as::<_, IpsecSaRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {IPSEC_SA_COLUMNS} FROM ipsec_sas ORDER BY created_at ASC"
@@ -452,6 +482,7 @@ impl VpnEngine {
         rows.into_iter().map(|r| r.into_sa()).collect()
     }
 
+    /// Delete an IPsec SA. Fails with `NotFound` for an unknown id
     pub async fn delete_ipsec_sa(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM ipsec_sas WHERE id = ?1")
             .bind(id.to_string())

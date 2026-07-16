@@ -19,6 +19,7 @@ pub struct ThresholdTracker {
 }
 
 impl ThresholdTracker {
+    /// Create an empty tracker
     pub fn new() -> Self {
         Self {
             state: DashMap::new(),
@@ -93,6 +94,7 @@ impl ThresholdTracker {
         self.state.len()
     }
 
+    /// True when no (SID, IP) entries are being tracked
     pub fn is_empty(&self) -> bool {
         self.state.is_empty()
     }

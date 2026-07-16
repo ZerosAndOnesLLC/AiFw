@@ -5,25 +5,41 @@ use std::net::IpAddr;
 /// Parsed pflog entry representing a single logged packet event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PfLogEntry {
+    /// When the packet was logged (supplied by the caller, not parsed from the line)
     pub timestamp: DateTime<Utc>,
+    /// Number of the pf rule that matched the packet
     pub rule_number: u32,
+    /// What pf did with the packet (pass/block/match)
     pub action: PfLogAction,
+    /// Whether the packet was inbound or outbound
     pub direction: PfLogDirection,
+    /// Interface the packet was seen on (e.g. "em0")
     pub interface: String,
+    /// Protocol name as printed by tcpdump (e.g. "tcp", "udp"); "unknown" if absent
     pub protocol: String,
+    /// Source IP address
     pub src_addr: IpAddr,
+    /// Source port; 0 if the address had no port component
     pub src_port: u16,
+    /// Destination IP address
     pub dst_addr: IpAddr,
+    /// Destination port; 0 if the address had no port component
     pub dst_port: u16,
+    /// pf's reason for the log entry; currently always empty (not parsed)
     pub reason: String,
+    /// Packet length in bytes; 0 if not present in the line
     pub length: u32,
 }
 
+/// pf verdict recorded in a pflog entry; serialized lowercase on the wire
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PfLogAction {
+    /// Packet was allowed through
     Pass,
+    /// Packet was dropped
     Block,
+    /// Packet matched a `match` rule (no pass/block decision)
     Match,
 }
 
@@ -37,10 +53,13 @@ impl std::fmt::Display for PfLogAction {
     }
 }
 
+/// Traffic direction of a logged packet; serialized lowercase on the wire
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PfLogDirection {
+    /// Inbound packet
     In,
+    /// Outbound packet
     Out,
 }
 

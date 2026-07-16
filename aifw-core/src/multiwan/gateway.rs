@@ -13,17 +13,27 @@ use super::probe::{ProbeKind, ProbeOutcome, ProbeSpec, run_probe};
 /// Per-gateway hysteresis tracker computed from probe samples.
 #[derive(Debug, Default, Clone)]
 pub struct GatewayMetrics {
+    /// Consecutive failed probes (reset to 0 on success)
     pub consec_fail: u32,
+    /// Consecutive successful probes (reset to 0 on failure)
     pub consec_ok: u32,
+    /// Recent packet loss as a percentage (0–100), derived from the consecutive counters
     pub recent_loss: f64,
+    /// Round-trip time of the last successful probe, in milliseconds
     pub last_rtt_ms: Option<f64>,
+    /// Mean inter-probe RTT delta over the sample window, in milliseconds
     pub last_jitter_ms: Option<f64>,
+    /// Latest approximated MOS voice-quality score (1.0–4.5)
     pub last_mos: Option<f64>,
+    /// Timestamp of the most recent probe of any outcome
     pub last_probe_ts: Option<DateTime<Utc>>,
+    /// RTTs of last 20 probes for jitter calc
     pub samples: Vec<f64>, // RTTs of last 20 probes for jitter calc
 }
 
 impl GatewayMetrics {
+    /// Fold one probe outcome into the tracker: updates consecutive counters,
+    /// RTT/jitter/MOS on success, and the derived recent-loss percentage
     pub fn ingest(&mut self, outcome: &ProbeOutcome, ts: DateTime<Utc>) {
         self.last_probe_ts = Some(ts);
         if outcome.success {
@@ -100,6 +110,9 @@ pub fn evaluate_transition(
     current
 }
 
+/// Multi-WAN gateway engine: CRUD over `multiwan_gateways`, per-gateway
+/// background probe monitors, hysteresis-based state transitions, and a
+/// broadcast channel of state-change events
 pub struct GatewayEngine {
     pool: SqlitePool,
     metrics: Arc<RwLock<HashMap<Uuid, GatewayMetrics>>>,
@@ -108,6 +121,8 @@ pub struct GatewayEngine {
 }
 
 impl GatewayEngine {
+    /// Create the engine over an existing pool with an empty metrics map and
+    /// a 256-slot event broadcast channel
     pub fn new(pool: SqlitePool) -> Self {
         let (tx, _) = broadcast::channel(256);
         Self {
@@ -118,10 +133,13 @@ impl GatewayEngine {
         }
     }
 
+    /// Get a receiver for gateway state-transition events (lagging receivers drop old events)
     pub fn subscribe(&self) -> broadcast::Receiver<GatewayEvent> {
         self.events_tx.subscribe()
     }
 
+    /// Create the `multiwan_gateways` and `multiwan_gateway_events` tables
+    /// and their indexes if they don't exist
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -192,6 +210,7 @@ impl GatewayEngine {
         Ok(())
     }
 
+    /// List all gateways ordered by name
     pub async fn list(&self) -> Result<Vec<Gateway>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {GATEWAY_COLUMNS} FROM multiwan_gateways ORDER BY name ASC"
@@ -202,6 +221,7 @@ impl GatewayEngine {
         Ok(rows.iter().map(row_to_gw).collect())
     }
 
+    /// Fetch one gateway by id. Fails with `NotFound` if it doesn't exist
     pub async fn get(&self, id: Uuid) -> Result<Gateway> {
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {GATEWAY_COLUMNS} FROM multiwan_gateways WHERE id = ?1"
@@ -214,6 +234,7 @@ impl GatewayEngine {
         Ok(row_to_gw(&row))
     }
 
+    /// Insert a new gateway. Fails validation if the name is blank
     pub async fn add(&self, gw: Gateway) -> Result<Gateway> {
         if gw.name.trim().is_empty() {
             return Err(AifwError::Validation("gateway name required".into()));
@@ -265,6 +286,9 @@ impl GatewayEngine {
         Ok(gw)
     }
 
+    /// Update a gateway's configuration by id (probe state columns are left
+    /// untouched); refreshes `updated_at`. Fails with `NotFound` if the id
+    /// doesn't exist
     pub async fn update(&self, gw: Gateway) -> Result<Gateway> {
         let now = Utc::now();
         let result = sqlx::query(
@@ -310,6 +334,8 @@ impl GatewayEngine {
         Ok(updated)
     }
 
+    /// Stop the gateway's probe monitor and delete its row. Fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         self.stop_monitor(id).await;
         let res = sqlx::query("DELETE FROM multiwan_gateways WHERE id=?1")
@@ -323,6 +349,8 @@ impl GatewayEngine {
         Ok(())
     }
 
+    /// Fetch the most recent state-transition events for one gateway, newest
+    /// first, capped at `limit`
     pub async fn list_events(&self, gw_id: Uuid, limit: i64) -> Result<Vec<GatewayEvent>> {
         let rows = sqlx::query(
             "SELECT id, gateway_id, ts, from_state, to_state, reason, probe_snapshot_json
@@ -479,6 +507,7 @@ impl GatewayEngine {
         Ok(())
     }
 
+    /// Abort the background probe loop for one gateway, if running
     pub async fn stop_monitor(&self, gw_id: Uuid) {
         if let Some(h) = self.monitors.lock().await.remove(&gw_id) {
             h.abort();

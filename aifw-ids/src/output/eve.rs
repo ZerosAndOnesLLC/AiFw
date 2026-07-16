@@ -21,6 +21,8 @@ pub struct EveOutput {
 }
 
 impl EveOutput {
+    /// Create an EVE sink writing to `path`, with a 100 MB default rotation
+    /// size. The file is opened lazily on first emit.
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -29,6 +31,7 @@ impl EveOutput {
         }
     }
 
+    /// Builder: set the file size in bytes at which rotation kicks in
     pub fn with_max_size(mut self, bytes: u64) -> Self {
         self.max_size = bytes;
         self

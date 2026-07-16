@@ -4,6 +4,7 @@
 //! `capture::create_capture`, etc. keep resolving (#477).
 
 pub mod factory;
+/// pcap-based capture backend for development on Linux/WSL/macOS
 pub mod pcap;
 pub mod types;
 

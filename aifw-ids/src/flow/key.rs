@@ -15,12 +15,18 @@ pub enum FlowDirection {
 /// TCP connection state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowState {
+    /// Flow seen but no TCP handshake observed yet (also used for non-TCP)
     #[default]
     New,
+    /// Initiator's SYN seen, awaiting SYN+ACK
     SynSent,
+    /// Responder's SYN+ACK seen, awaiting final ACK
     SynAckSeen,
+    /// Handshake complete (or mid-stream pickup with ACK set)
     Established,
+    /// FIN observed; connection is closing
     FinWait,
+    /// Connection closed (FIN exchange complete or RST seen)
     Closed,
 }
 

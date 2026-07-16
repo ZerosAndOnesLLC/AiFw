@@ -3,12 +3,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Address family a rule applies to (wire values are lowercase)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum IpVersion {
+    /// IPv4 only (pf `inet`)
     Inet,
+    /// IPv6 only (pf `inet6`)
     Inet6,
+    /// Both families — no address-family keyword is emitted, matching pf's default
     #[default]
     Both,
 }
@@ -24,6 +28,9 @@ impl std::fmt::Display for IpVersion {
 }
 
 impl IpVersion {
+    /// Parse an address family from a string, case-insensitively. Accepts
+    /// aliases ("ipv4"/"4", "ipv6"/"6", "any"/"*"/""/"inet46" for both).
+    /// Fails with a validation error on any other input.
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().as_str() {
             "inet" | "ipv4" | "4" => Ok(IpVersion::Inet),
@@ -37,18 +44,28 @@ impl IpVersion {
     }
 }
 
+/// IP protocol a rule matches (wire values are lowercase; TcpUdp is "tcp/udp")
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
+    /// TCP
     Tcp,
+    /// UDP
     Udp,
+    /// ICMP (IPv4)
     Icmp,
+    /// ICMPv6
     Icmp6,
+    /// TCP and UDP together — renders as pf `{ tcp udp }`
     #[serde(rename = "tcp/udp")]
     TcpUdp,
+    /// IPsec ESP (Encapsulating Security Payload)
     Esp,
+    /// IPsec AH (Authentication Header)
     Ah,
+    /// GRE tunneling
     Gre,
+    /// Any protocol — no `proto` keyword is emitted in the pf rule
     Any,
 }
 
@@ -69,6 +86,9 @@ impl std::fmt::Display for Protocol {
 }
 
 impl Protocol {
+    /// Parse a protocol from a string, case-insensitively. Accepts aliases
+    /// for TcpUdp ("tcpudp", "tcp+udp", "{ tcp udp }") and Any ("*").
+    /// Fails with a validation error on any other input.
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().as_str() {
             "tcp" => Ok(Protocol::Tcp),
@@ -87,12 +107,17 @@ impl Protocol {
     }
 }
 
+/// What a rule does with matching traffic (wire values are lowercase)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
+    /// Allow the traffic
     Pass,
+    /// Block the traffic (pf default block behavior); block rules always log
     Block,
+    /// Block and silently drop the packet (pf `block drop`)
     BlockDrop,
+    /// Block and send TCP RST / ICMP unreachable back (pf `block return`)
     BlockReturn,
 }
 
@@ -121,6 +146,9 @@ impl Action {
         }
     }
 
+    /// Parse the stable DB-string identity produced by `as_db_str`
+    /// (plus legacy "blockdrop"/"blockreturn" spellings).
+    /// Returns None for unrecognized values.
     pub fn parse_db(s: &str) -> Option<Self> {
         match s {
             "pass" => Some(Action::Pass),
@@ -132,11 +160,15 @@ impl Action {
     }
 }
 
+/// Traffic direction a rule matches (wire values are lowercase)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
+    /// Inbound traffic only
     In,
+    /// Outbound traffic only
     Out,
+    /// Either direction — no direction keyword is emitted in the pf rule
     Any,
 }
 
@@ -150,13 +182,17 @@ impl std::fmt::Display for Direction {
     }
 }
 
+/// Whether a rule is applied to pf (wire values are lowercase)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleStatus {
+    /// Rule is loaded into the pf anchor
     Active,
+    /// Rule is stored but not loaded into pf
     Disabled,
 }
 
+/// pf state-tracking mode for a rule (wire values are snake_case)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -183,6 +219,7 @@ impl std::fmt::Display for StateTracking {
     }
 }
 
+/// pf state-binding policy (wire values are snake_case)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StatePolicy {
@@ -201,6 +238,8 @@ impl std::fmt::Display for StatePolicy {
     }
 }
 
+/// pf adaptive state-timeout thresholds (adaptive.start / adaptive.end):
+/// state timeouts scale down linearly between the two counts
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdaptiveTimeouts {
     /// Start adapting when state count exceeds this
@@ -215,10 +254,14 @@ impl std::fmt::Display for AdaptiveTimeouts {
     }
 }
 
+/// State-tracking options attached to a rule (only emitted for pass rules)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct StateOptions {
+    /// State-tracking mode (defaults to keep state)
     pub tracking: StateTracking,
+    /// State-binding policy; None uses the pf global default
     pub policy: Option<StatePolicy>,
+    /// Adaptive timeout thresholds; None disables adaptive scaling
     pub adaptive_timeouts: Option<AdaptiveTimeouts>,
     /// TCP timeout in seconds
     pub timeout_tcp: Option<u32>,
@@ -228,45 +271,75 @@ pub struct StateOptions {
     pub timeout_icmp: Option<u32>,
 }
 
+/// Source/destination match criteria of a rule
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuleMatch {
+    /// Source address to match
     pub src_addr: Address,
+    /// Source port or port range; None matches any source port
     pub src_port: Option<PortRange>,
+    /// Destination address to match
     pub dst_addr: Address,
+    /// Destination port or port range; None matches any destination port
     pub dst_port: Option<PortRange>,
 }
 
+/// A firewall filter rule, stored in the DB and rendered to pf syntax
+/// via `to_pf_rule`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
+    /// Unique identifier
     pub id: Uuid,
+    /// Ordering within the anchor — lower values are evaluated first (default 100)
     pub priority: i32,
+    /// Pass or block behavior for matching traffic
     pub action: Action,
+    /// Traffic direction to match
     pub direction: Direction,
+    /// Address family to match (defaults to both)
     #[serde(default)]
     pub ip_version: IpVersion,
+    /// Interface the rule applies on; None applies to all interfaces
     pub interface: Option<Interface>,
+    /// IP protocol to match
     pub protocol: Protocol,
+    /// Source/destination address and port criteria
     pub rule_match: RuleMatch,
+    /// Negate the source match (pf `!` prefix)
     #[serde(default)]
     pub src_invert: bool,
+    /// Negate the destination match (pf `!` prefix)
     #[serde(default)]
     pub dst_invert: bool,
+    /// Log matching packets to pflog; block rules log regardless of this flag
     pub log: bool,
+    /// Stop rule evaluation on match (pf `quick`; default true)
     pub quick: bool,
+    /// pf rule label used for per-rule counters and log correlation
     pub label: Option<String>,
+    /// Free-form admin note; not emitted into the pf rule
     #[serde(default)]
     pub description: Option<String>,
+    /// Gateway name for policy-based routing. Reserved: not persisted by the
+    /// DB layer and not emitted into the pf rule text by `to_pf_rule`.
     #[serde(default)]
     pub gateway: Option<String>,
+    /// State-tracking options (only emitted for pass rules)
     pub state_options: StateOptions,
+    /// Active (loaded into pf) or disabled
     pub status: RuleStatus,
+    /// Time schedule that enables/disables this rule; None means always on
     #[serde(default)]
     pub schedule_id: Option<String>,
+    /// Creation timestamp
     pub created_at: DateTime<Utc>,
+    /// Last modification timestamp
     pub updated_at: DateTime<Utc>,
 }
 
 impl Rule {
+    /// Create an active rule with defaults: priority 100, both address
+    /// families, all interfaces, quick on, no logging, keep-state tracking
     pub fn new(
         action: Action,
         direction: Direction,
@@ -298,6 +371,10 @@ impl Rule {
         }
     }
 
+    /// Render this rule as a single line of pf filter syntax.
+    /// Block rules always get `log` so blocked traffic shows up in pflog;
+    /// state options are only emitted for pass rules. The `anchor` argument
+    /// is unused here — callers place the rendered rule into the anchor.
     pub fn to_pf_rule(&self, anchor: &str) -> String {
         let mut parts = Vec::new();
 

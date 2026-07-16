@@ -4,6 +4,8 @@ use super::Detector;
 use crate::features::TrafficFeatures;
 use crate::types::{Threat, ThreatEvidence, ThreatScore, ThreatType};
 
+/// Detects port scanning: connections to many unique destination ports with
+/// a high failed-connection ratio
 pub struct PortScanDetector {
     /// Minimum unique ports to trigger detection
     pub min_unique_ports: u64,
@@ -12,6 +14,7 @@ pub struct PortScanDetector {
 }
 
 impl PortScanDetector {
+    /// Detector with default thresholds: 15 unique ports, 0.6 failed ratio
     pub fn new() -> Self {
         Self {
             min_unique_ports: 15,

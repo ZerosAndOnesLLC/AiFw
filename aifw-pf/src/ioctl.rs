@@ -30,9 +30,16 @@ fn extract_counter(line: &str, key: &str) -> Option<u64> {
     after.split_whitespace().next()?.parse().ok()
 }
 
+/// FreeBSD [`PfBackend`]: executes `sudo /sbin/pfctl` for every operation
+/// (a bridge until raw `/dev/pf` ioctls are implemented). Rulesets are fed
+/// to pfctl via stdin, never staged in temp files. The compile-time
+/// counterpart of the in-memory [`crate::PfMock`] used on other platforms.
 pub struct PfIoctl;
 
 impl PfIoctl {
+    /// Create the pfctl-backed backend. Currently infallible (holds no fd);
+    /// returns `Result` to keep the signature stable for the future raw
+    /// `/dev/pf` ioctl implementation.
     pub fn new() -> Result<Self, PfError> {
         Ok(Self)
     }

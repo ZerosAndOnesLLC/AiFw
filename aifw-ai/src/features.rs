@@ -6,7 +6,9 @@ use std::net::IpAddr;
 /// Extracted traffic features for a single source IP over a time window
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficFeatures {
+    /// Source IP these features were extracted for
     pub source_ip: IpAddr,
+    /// Length of the observation window in seconds
     pub window_secs: u64,
     /// Total connections in window
     pub connection_count: u64,

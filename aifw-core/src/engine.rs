@@ -10,6 +10,10 @@ use crate::validation::validate_rule;
 
 const DEFAULT_ANCHOR: &str = "aifw";
 
+/// Filter-rule engine: persists [`Rule`]s in the SQLite `rules` table and
+/// renders active ones into pf syntax loaded into the `aifw` anchor
+/// (override via [`Self::with_anchor`]). Every mutation commits its audit
+/// row in the same transaction.
 pub struct RuleEngine {
     db: Database,
     pf: Arc<dyn PfBackend>,
@@ -21,6 +25,8 @@ pub struct RuleEngine {
 }
 
 impl RuleEngine {
+    /// Build a rule engine over the shared pool and pf backend, targeting
+    /// the default `aifw` anchor
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         let audit = AuditLog::new(pool.clone());
         let db = Database::from_pool(pool);
@@ -33,11 +39,15 @@ impl RuleEngine {
         }
     }
 
+    /// Replace the target pf anchor (builder style)
     pub fn with_anchor(mut self, anchor: String) -> Self {
         self.anchor = anchor;
         self
     }
 
+    /// Validate and insert a rule; the rule row and its audit entry commit
+    /// in one transaction. pf is untouched until [`Self::apply_rules`].
+    /// Fails on validation or DB errors.
     pub async fn add_rule(&self, rule: Rule) -> Result<Rule> {
         validate_rule(&rule)?;
         let pf_syntax = rule.to_pf_rule(&self.anchor);
@@ -58,6 +68,7 @@ impl RuleEngine {
         Ok(rule)
     }
 
+    /// Fetch a rule by id. Fails with `NotFound` if it doesn't exist
     pub async fn get_rule(&self, id: Uuid) -> Result<Rule> {
         self.db
             .get_rule(id)
@@ -65,10 +76,14 @@ impl RuleEngine {
             .ok_or_else(|| AifwError::NotFound(format!("rule {id} not found")))
     }
 
+    /// All rules ordered by priority, then creation time
     pub async fn list_rules(&self) -> Result<Vec<Rule>> {
         self.db.list_rules().await
     }
 
+    /// Validate and update a rule; the update and its audit entry commit in
+    /// one transaction. Fails with `NotFound` for an unknown id. pf is
+    /// untouched until [`Self::apply_rules`].
     pub async fn update_rule(&self, rule: Rule) -> Result<()> {
         validate_rule(&rule)?;
         let mut tx = self.db.pool().begin().await?;
@@ -86,6 +101,8 @@ impl RuleEngine {
         Ok(())
     }
 
+    /// Delete a rule; the delete and its audit entry commit in one
+    /// transaction. Fails with `NotFound` for an unknown id
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
         let mut tx = self.db.pool().begin().await?;
         Database::delete_rule_on(&mut *tx, id).await?;
@@ -172,18 +189,22 @@ impl RuleEngine {
         Ok(())
     }
 
+    /// The engine's audit log handle
     pub fn audit(&self) -> &AuditLog {
         &self.audit
     }
 
+    /// The underlying pf backend
     pub fn pf(&self) -> &dyn PfBackend {
         self.pf.as_ref()
     }
 
+    /// The underlying database handle
     pub fn db(&self) -> &Database {
         &self.db
     }
 
+    /// The pf anchor this engine loads rules into
     pub fn anchor(&self) -> &str {
         &self.anchor
     }

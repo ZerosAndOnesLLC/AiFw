@@ -4,6 +4,8 @@ use super::Detector;
 use crate::features::TrafficFeatures;
 use crate::types::{Threat, ThreatEvidence, ThreatScore, ThreatType};
 
+/// Detects DNS tunneling: an unusually high DNS query count where DNS also
+/// dominates the source's overall connection mix
 pub struct DnsTunnelDetector {
     /// High DNS query count threshold
     pub max_dns_queries: u64,
@@ -12,6 +14,7 @@ pub struct DnsTunnelDetector {
 }
 
 impl DnsTunnelDetector {
+    /// Detector with default thresholds: 50 queries, 0.8 DNS ratio
     pub fn new() -> Self {
         Self {
             max_dns_queries: 50,

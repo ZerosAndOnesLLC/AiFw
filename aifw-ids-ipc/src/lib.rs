@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! IPC protocol between aifw-api and aifw-ids.
 //!
 //! Wire format: 4-byte big-endian length prefix + UTF-8 JSON body.

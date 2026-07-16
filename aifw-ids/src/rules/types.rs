@@ -8,11 +8,17 @@ use aifw_common::ids::{IdsAction, IdsSeverity, RuleSource};
 /// A compiled rule ready for matching
 #[derive(Debug, Clone)]
 pub struct CompiledRule {
+    /// Rule id (UUID string assigned at load time)
     pub id: String,
+    /// Suricata signature id; `None` for formats without SIDs
     pub sid: Option<u32>,
+    /// Rule message / description shown on alerts
     pub msg: String,
+    /// Severity assigned to alerts this rule generates
     pub severity: IdsSeverity,
+    /// Where the rule came from (ruleset, custom, etc.)
     pub source: RuleSource,
+    /// Action on match (alert, drop, reject, pass)
     pub action: IdsAction,
     /// Protocol constraint (tcp, udp, icmp, ip, or app-layer)
     pub protocol: Option<String>,
@@ -70,28 +76,40 @@ pub struct ContentMatch {
 /// A PCRE pattern
 #[derive(Debug, Clone)]
 pub struct PcrePattern {
+    /// The regular expression source text
     pub pattern: String,
+    /// Negated match (`!pcre`) — the rule matches when the regex does not
     pub negated: bool,
+    /// Sticky buffer to match against (e.g. "http.uri"); `None` = raw payload
     pub buffer: Option<String>,
 }
 
 /// Flow direction/state constraint
 #[derive(Debug, Clone)]
 pub struct FlowConstraint {
+    /// Only match on established connections
     pub established: bool,
+    /// Required direction: `Some(true)` = to_server, `Some(false)` =
+    /// to_client, `None` = either direction
     pub to_server: Option<bool>,
+    /// Match regardless of flow state (`flow:stateless`)
     pub stateless: bool,
 }
 
 /// Threshold/rate-limiting configuration for a rule
 #[derive(Debug, Clone)]
 pub struct ThresholdConfig {
+    /// How the count limits alerting (limit, threshold, or both)
     pub threshold_type: ThresholdType,
+    /// Which endpoint's IP the counter is keyed on
     pub track: TrackBy,
+    /// Hit count the threshold logic compares against
     pub count: u32,
+    /// Length of the tracking window in seconds
     pub seconds: u32,
 }
 
+/// How a rule's threshold count limits alerting within the time window
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThresholdType {
     /// Alert once per time window
@@ -102,18 +120,26 @@ pub enum ThresholdType {
     Both,
 }
 
+/// Which endpoint's IP a threshold counter is tracked by
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackBy {
+    /// Track per source IP
     BySrc,
+    /// Track per destination IP
     ByDst,
 }
 
 /// Flowbit operation
 #[derive(Debug, Clone)]
 pub enum FlowbitOp {
+    /// Set the named flowbit on the flow
     Set(String),
+    /// Only match if the named flowbit is set
     IsSet(String),
+    /// Clear the named flowbit
     Unset(String),
+    /// Flip the named flowbit
     Toggle(String),
+    /// Perform the flowbit side effects but suppress the alert
     NoAlert,
 }

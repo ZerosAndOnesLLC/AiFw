@@ -16,10 +16,13 @@ pub struct InstanceEngine {
 }
 
 impl InstanceEngine {
+    /// Create the engine over an existing pool and pf backend (call `migrate` before use)
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         Self { pool, pf }
     }
 
+    /// Create the instance tables if they don't exist and seed the default
+    /// routing instance (FIB 0, mgmt-reachable); idempotent
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -80,6 +83,7 @@ impl InstanceEngine {
         Ok(())
     }
 
+    /// List all routing instances ordered by FIB number
     pub async fn list(&self) -> Result<Vec<RoutingInstance>> {
         let rows = sqlx::query(
             "SELECT id, name, fib_number, description, mgmt_reachable, status, created_at, updated_at
@@ -92,6 +96,7 @@ impl InstanceEngine {
         Ok(rows.iter().map(row_to_instance).collect())
     }
 
+    /// Fetch one routing instance by id. Fails with `NotFound` if it doesn't exist
     pub async fn get(&self, id: Uuid) -> Result<RoutingInstance> {
         let row = sqlx::query(
             "SELECT id, name, fib_number, description, mgmt_reachable, status, created_at, updated_at
@@ -106,6 +111,8 @@ impl InstanceEngine {
         Ok(row_to_instance(&row))
     }
 
+    /// Insert a new routing instance. Fails validation if the name is blank
+    /// or the FIB number is outside the kernel's `net.fibs` range
     pub async fn add(&self, mut inst: RoutingInstance) -> Result<RoutingInstance> {
         if inst.name.trim().is_empty() {
             return Err(AifwError::Validation("instance name required".into()));
@@ -145,6 +152,8 @@ impl InstanceEngine {
         Ok(inst)
     }
 
+    /// Update a routing instance by id (refreshes `updated_at`). Fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn update(&self, inst: RoutingInstance) -> Result<RoutingInstance> {
         let now = Utc::now();
         let result = sqlx::query(
@@ -178,6 +187,8 @@ impl InstanceEngine {
         Ok(updated)
     }
 
+    /// Delete a routing instance by id (members cascade). Refuses to delete
+    /// the default instance; fails with `NotFound` if the id doesn't exist
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         if id == DEFAULT_INSTANCE_ID {
             return Err(AifwError::Validation(
@@ -195,6 +206,7 @@ impl InstanceEngine {
         Ok(())
     }
 
+    /// List the interfaces attached to a routing instance
     pub async fn list_members(&self, instance_id: Uuid) -> Result<Vec<InstanceMember>> {
         let rows = sqlx::query(
             "SELECT instance_id, interface FROM multiwan_instance_members WHERE instance_id = ?1",
@@ -248,6 +260,8 @@ impl InstanceEngine {
         })
     }
 
+    /// Detach an interface from an instance and return it to the default FIB.
+    /// Fails with `NotFound` if the interface wasn't a member
     pub async fn remove_member(&self, instance_id: Uuid, interface: &str) -> Result<()> {
         let result = sqlx::query(
             "DELETE FROM multiwan_instance_members WHERE instance_id = ?1 AND interface = ?2",

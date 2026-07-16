@@ -17,15 +17,19 @@ pub enum Selection {
     None,
 }
 
+/// Gateway group engine: CRUD over `multiwan_groups` and their tiered,
+/// weighted member gateways (failover/load-balancing sets)
 pub struct GroupEngine {
     pool: SqlitePool,
 }
 
 impl GroupEngine {
+    /// Create the engine over an existing SQLite pool (call `migrate` before use)
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 
+    /// Create the `multiwan_groups` and `multiwan_group_members` tables if they don't exist
     pub async fn migrate(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -65,6 +69,7 @@ impl GroupEngine {
         Ok(())
     }
 
+    /// List all gateway groups ordered by name
     pub async fn list(&self) -> Result<Vec<GatewayGroup>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {GROUP_COLUMNS} FROM multiwan_groups ORDER BY name ASC"
@@ -75,6 +80,7 @@ impl GroupEngine {
         Ok(rows.iter().map(row_to_group).collect())
     }
 
+    /// Fetch one gateway group by id. Fails with `NotFound` if it doesn't exist
     pub async fn get(&self, id: Uuid) -> Result<GatewayGroup> {
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {GROUP_COLUMNS} FROM multiwan_groups WHERE id = ?1"
@@ -87,6 +93,7 @@ impl GroupEngine {
         Ok(row_to_group(&row))
     }
 
+    /// Insert a new gateway group (members are added separately via `add_member`)
     pub async fn add(&self, g: GatewayGroup) -> Result<GatewayGroup> {
         sqlx::query(
             r#"INSERT INTO multiwan_groups
@@ -109,6 +116,8 @@ impl GroupEngine {
         Ok(g)
     }
 
+    /// Update a group's settings by id (refreshes `updated_at`). Fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn update(&self, g: GatewayGroup) -> Result<GatewayGroup> {
         let now = Utc::now();
         let res = sqlx::query(
@@ -136,6 +145,8 @@ impl GroupEngine {
         Ok(updated)
     }
 
+    /// Delete a group by id (memberships cascade). Fails with `NotFound` if
+    /// the id doesn't exist
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("DELETE FROM multiwan_groups WHERE id=?1")
             .bind(id.to_string())
@@ -148,6 +159,7 @@ impl GroupEngine {
         Ok(())
     }
 
+    /// List a group's members ordered by tier ascending, then weight descending
     pub async fn list_members(&self, group_id: Uuid) -> Result<Vec<GroupMember>> {
         let rows = sqlx::query(
             "SELECT group_id, gateway_id, tier, weight FROM multiwan_group_members
@@ -168,6 +180,7 @@ impl GroupEngine {
             .collect())
     }
 
+    /// Add a gateway to a group (upserts, so re-adding updates tier/weight)
     pub async fn add_member(&self, m: GroupMember) -> Result<GroupMember> {
         sqlx::query(
             "INSERT OR REPLACE INTO multiwan_group_members (group_id, gateway_id, tier, weight)
@@ -183,6 +196,7 @@ impl GroupEngine {
         Ok(m)
     }
 
+    /// Remove a gateway from a group. Fails with `NotFound` if it wasn't a member
     pub async fn remove_member(&self, group_id: Uuid, gateway_id: Uuid) -> Result<()> {
         let res =
             sqlx::query("DELETE FROM multiwan_group_members WHERE group_id=?1 AND gateway_id=?2")

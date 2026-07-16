@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 // --- Queue / Traffic Shaping types ---
 
+/// pf queueing discipline used by a [`QueueConfig`]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueType {
@@ -27,6 +28,8 @@ impl std::fmt::Display for QueueType {
 }
 
 impl QueueType {
+    /// Parse from a case-insensitive string ("codel", "hfsc", "priq"/"priority").
+    /// Fails with `Validation` on anything else.
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().as_str() {
             "codel" => Ok(QueueType::Codel),
@@ -39,6 +42,7 @@ impl QueueType {
     }
 }
 
+/// Traffic category for shaping, mapped to a priority via [`Self::priority`]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrafficClass {
@@ -64,6 +68,8 @@ impl std::fmt::Display for TrafficClass {
 }
 
 impl TrafficClass {
+    /// Parse from a case-insensitive string ("voip", "interactive", "default",
+    /// "bulk"). Fails with `Validation` on anything else.
     pub fn parse(s: &str) -> crate::Result<Self> {
         match s.to_lowercase().as_str() {
             "voip" => Ok(TrafficClass::Voip),
@@ -76,6 +82,7 @@ impl TrafficClass {
         }
     }
 
+    /// pf priq priority for this class (7 = highest/VoIP down to 1 = bulk)
     pub fn priority(&self) -> u8 {
         match self {
             TrafficClass::Voip => 7,
@@ -89,16 +96,23 @@ impl TrafficClass {
 /// Bandwidth specification
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Bandwidth {
+    /// Numeric value in the given unit
     pub value: u64,
+    /// Unit the value is expressed in
     pub unit: BandwidthUnit,
 }
 
+/// Unit for a [`Bandwidth`] value (decimal multiples of bits per second)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BandwidthUnit {
+    /// Bits per second
     Bps,
+    /// Kilobits per second (1,000 bps)
     Kbps,
+    /// Megabits per second (1,000,000 bps)
     Mbps,
+    /// Gigabits per second (1,000,000,000 bps)
     Gbps,
 }
 
@@ -114,6 +128,9 @@ impl std::fmt::Display for Bandwidth {
 }
 
 impl Bandwidth {
+    /// Parse a pf-style bandwidth string like "100Mb", "512Kb", "1Gb", or a
+    /// bare number (bits per second). Fails with `Validation` if the numeric
+    /// part doesn't parse.
     pub fn parse(s: &str) -> crate::Result<Self> {
         let s = s.trim();
         let (num_str, unit_str) = if s.ends_with("Gb") || s.ends_with("gb") {
@@ -142,6 +159,7 @@ impl Bandwidth {
         Ok(Bandwidth { value, unit })
     }
 
+    /// Convert to bits per second using decimal (1000-based) multipliers
     pub fn to_bits_per_sec(&self) -> u64 {
         match self.unit {
             BandwidthUnit::Bps => self.value,
@@ -155,28 +173,43 @@ impl Bandwidth {
 /// Queue configuration for an interface
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueConfig {
+    /// Unique queue ID
     pub id: Uuid,
+    /// Interface the queue is attached to
     pub interface: Interface,
+    /// Queueing discipline (codel/hfsc/priq)
     pub queue_type: QueueType,
+    /// Queue bandwidth (used verbatim unless `bandwidth_pct` is set)
     pub bandwidth: Bandwidth,
+    /// pf queue name
     pub name: String,
+    /// Traffic class this queue serves (drives priq priority)
     pub traffic_class: TrafficClass,
     /// Percentage of parent bandwidth (1-100)
     pub bandwidth_pct: Option<u8>,
+    /// Whether this is the interface's default queue for unmatched traffic
     pub default: bool,
+    /// Whether the queue is active or disabled
     pub status: QueueStatus,
+    /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (UTC)
     pub updated_at: DateTime<Utc>,
 }
 
+/// Enabled/disabled state of a queue
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum QueueStatus {
+    /// Queue is configured in pf
     Active,
+    /// Queue is stored but not pushed to pf
     Disabled,
 }
 
 impl QueueConfig {
+    /// Create an active, non-default queue with a random ID and both
+    /// timestamps set to now
     pub fn new(
         interface: Interface,
         queue_type: QueueType,
@@ -233,14 +266,23 @@ impl QueueConfig {
 
 // --- Per-IP Rate Limiting ---
 
+/// Per-source-IP connection rate limit, enforced via pf `max-src-conn-rate`
+/// with an overload table that offending IPs are added to
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitRule {
+    /// Unique rule ID
     pub id: Uuid,
+    /// Rule name, used in the pf label (`ratelimit-<name>`)
     pub name: String,
+    /// Interface to match; `None` applies on all interfaces
     pub interface: Option<Interface>,
+    /// Protocol to match; `Any` omits the `proto` clause
     pub protocol: crate::Protocol,
+    /// Source address to match; `Any` omits the `from` clause
     pub src_addr: Address,
+    /// Destination address to match; `Any` omits the `to` clause
     pub dst_addr: Address,
+    /// Optional destination port (range) to match
     pub dst_port: Option<PortRange>,
     /// Max connections per source IP in the time window
     pub max_connections: u32,
@@ -250,19 +292,27 @@ pub struct RateLimitRule {
     pub overload_table: String,
     /// Flush states from overloading source
     pub flush_states: bool,
+    /// Whether the rule is active or disabled
     pub status: RateLimitStatus,
+    /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (UTC)
     pub updated_at: DateTime<Utc>,
 }
 
+/// Enabled/disabled state of a rate limit rule
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RateLimitStatus {
+    /// Rule is enforced in pf
     Active,
+    /// Rule is stored but not pushed to pf
     Disabled,
 }
 
 impl RateLimitRule {
+    /// Create an active rule matching any interface/address/port, with state
+    /// flushing enabled, a random ID, and both timestamps set to now
     pub fn new(
         name: String,
         protocol: crate::Protocol,
@@ -354,10 +404,15 @@ impl RateLimitRule {
 /// SYN flood protection configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SynFloodConfig {
+    /// Interface to protect
     pub interface: Interface,
+    /// Max simultaneous TCP connections per source IP
     pub max_src_conn: u32,
+    /// Max new connections per source IP within the rate window
     pub max_src_conn_rate: u32,
+    /// Rate window length in seconds
     pub rate_window_secs: u32,
+    /// pf table that offending source IPs are added to (and blocked from)
     pub overload_table: String,
 }
 

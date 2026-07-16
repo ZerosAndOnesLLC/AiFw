@@ -14,40 +14,62 @@ use uuid::Uuid;
 
 use super::policy::PolicyEngine;
 
+/// An existing pf state (live connection) that a proposed change may reroute
 #[derive(Debug, Clone, Serialize)]
 pub struct AffectedFlow {
+    /// Source endpoint as "addr:port"
     pub src: String,
+    /// Destination endpoint as "addr:port"
     pub dst: String,
+    /// Protocol of the flow (e.g. tcp, udp)
     pub protocol: String,
+    /// Interface the flow currently uses, if known
     pub current_iface: Option<String>,
+    /// Interface the flow would use after the change (currently not predicted)
     pub future_iface: Option<String>,
+    /// Total bytes transferred so far (in + out)
     pub bytes: u64,
 }
 
+/// One safety finding from validating a proposed policy set
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationFinding {
+    /// info | warning | error
     pub severity: String, // info | warning | error
+    /// Human-readable description of the finding
     pub message: String,
 }
 
+/// Result of a pre-flight analysis: what a proposed multi-WAN change would do
 #[derive(Debug, Clone, Serialize)]
 pub struct BlastRadiusReport {
+    /// Live flows that may be rerouted by the change (capped at 50)
     pub affected_flows: Vec<AffectedFlow>,
+    /// True if the change would move management traffic off the mgmt FIB
     pub would_strand_mgmt: bool,
+    /// pf rules the proposed config adds relative to the current one
     pub new_rules: Vec<String>,
+    /// pf rules the proposed config removes relative to the current one
     pub removed_rules: Vec<String>,
+    /// Safety findings (mgmt-strand errors, missing-mgmt warnings, etc.)
     pub validation: Vec<ValidationFinding>,
 }
 
+/// Pre-flight engine: dry-runs a proposed policy set against the current one
+/// and the live pf state table without touching pf
 pub struct PreflightEngine {
     pf: Arc<dyn PfBackend>,
 }
 
 impl PreflightEngine {
+    /// Create the engine over a pf backend (used only to read the state table)
     pub fn new(pf: Arc<dyn PfBackend>) -> Self {
         Self { pf }
     }
 
+    /// Compile the current and proposed policy sets, diff the resulting pf
+    /// rules, sample live pf states that may be rerouted, and run mgmt-safety
+    /// validation. Read-only — never modifies pf
     pub async fn preview(
         &self,
         current_policies: &[PolicyRule],

@@ -4,12 +4,15 @@ use thiserror::Error;
 /// from [`crate::plugin::Plugin`] lifecycle hooks.
 #[derive(Debug, Error)]
 pub enum PluginError {
+    /// General plugin failure (also what bare `String`/`&str` errors convert into)
     #[error("plugin error: {0}")]
     Plugin(String),
 
+    /// pf table operation failed or was denied (non-`plugin_` prefixed table)
     #[error("pf table error: {0}")]
     Table(String),
 
+    /// Catch-all for errors that don't fit a more specific variant
     #[error("{0}")]
     Other(String),
 }

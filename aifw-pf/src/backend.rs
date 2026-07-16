@@ -2,6 +2,12 @@ use crate::types::{PfState, PfStats, PfTableEntry};
 use async_trait::async_trait;
 use std::net::IpAddr;
 
+/// Cross-platform abstraction over FreeBSD `pf`: anchored rule/NAT/queue
+/// loading, table manipulation, state inspection, and FIB assignment.
+///
+/// Implemented by [`crate::PfMock`] (in-memory, Linux/WSL development and
+/// tests) and [`crate::PfIoctl`] (real pfctl on FreeBSD); the right one is
+/// chosen at compile time via `#[cfg(target_os)]` in [`crate::create_backend`].
 #[async_trait]
 pub trait PfBackend: Send + Sync {
     /// Add a pf rule to the specified anchor

@@ -7,8 +7,11 @@ use crate::series::{MetricPoint, Tier};
 /// Response type for metric queries
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricQueryResult {
+    /// Metric name queried (e.g. "pf.states")
     pub name: String,
+    /// Resolution tier label the points came from ("live", "short", "mid", "long")
     pub tier: String,
+    /// Data points in chronological order (oldest first)
     pub points: Vec<MetricPoint>,
 }
 
