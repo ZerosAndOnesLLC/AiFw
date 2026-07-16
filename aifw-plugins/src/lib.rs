@@ -19,5 +19,5 @@ mod tests;
 pub use context::PluginContext;
 pub use error::{PluginError, Result};
 pub use hooks::{HookAction, HookEvent, HookPoint};
-pub use manager::PluginManager;
+pub use manager::{DispatchSet, PluginManager};
 pub use plugin::{Plugin, PluginConfig, PluginInfo, PluginState};

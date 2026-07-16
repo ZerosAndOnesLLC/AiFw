@@ -126,6 +126,39 @@ mod tests {
         assert!(actions.is_empty()); // Continue actions are filtered out
     }
 
+    // PERF-H17 (#361): dispatch goes through a snapshot detached from the
+    // manager, so a slow plugin can't hold callers off the manager lock.
+    #[tokio::test]
+    async fn test_dispatch_set_snapshot() {
+        let ctx = make_ctx();
+        let mut mgr = PluginManager::new(ctx);
+
+        mgr.register(Box::new(LoggingPlugin::new()), default_config())
+            .await
+            .unwrap();
+        let disabled = PluginConfig {
+            enabled: false,
+            settings: Default::default(),
+        };
+        mgr.register(Box::new(WebhookPlugin::new()), disabled)
+            .await
+            .unwrap();
+
+        // Only the running plugin lands in the snapshot.
+        let set = mgr.dispatch_set();
+        assert!(!set.is_empty());
+
+        // Dispatch goes through the snapshot; the manager isn't involved.
+        let actions = set.dispatch(&make_log_event()).await;
+        assert!(actions.is_empty()); // LoggingPlugin returns Continue
+        drop(set);
+
+        // Empty manager → empty snapshot.
+        mgr.unload("custom-logger").await.unwrap();
+        mgr.unload("webhook-notifier").await.unwrap();
+        assert!(mgr.dispatch_set().is_empty());
+    }
+
     #[tokio::test]
     async fn test_manager_disabled_plugin() {
         let ctx = make_ctx();
