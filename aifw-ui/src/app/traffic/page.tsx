@@ -124,15 +124,16 @@ export default function TrafficPage() {
   const visibleNics = allSelected ? ifaceNames.map(i => i.name) : [...selectedNics].filter(n => ifaceNames.some(i => i.name === n));
 
   const historyProcessed = useRef(false);
-  const lastHistoryLen = useRef(0);
+  const { historyLoaded: wsHistoryLoaded, getHistory: wsGetHistory } = ws;
 
-  // Pre-populate rate histories from WebSocket history (same pattern as dashboard)
+  // Seed rate histories from the buffered WS history once it has loaded
+  // (same pattern as dashboard). History lives behind ws.getHistory(), so
+  // per-frame appends never re-run this (PERF-H23 #367).
   useEffect(() => {
-    if (!ws.historyLoaded) return;
-    if (ws.history.length === 0) { historyProcessed.current = true; return; }
-    if (historyProcessed.current && ws.history.length === lastHistoryLen.current) return;
+    if (!wsHistoryLoaded || historyProcessed.current) return;
+    const rawHistory = wsGetHistory();
+    if (rawHistory.length === 0) { historyProcessed.current = true; return; }
 
-    const rawHistory = ws.history as Record<string, unknown>[];
     const prevByIf: Record<string, { bytes_in: number; bytes_out: number }> = {};
     const histories: Record<string, RatePoint[]> = {};
     let prevTs = 0;
@@ -165,9 +166,7 @@ export default function TrafficPage() {
     }
     Object.assign(prevIface.current, prevByIf);
     prevTime.current = Date.now();
-    lastHistoryLen.current = ws.history.length;
     historyProcessed.current = true;
-    setRateHistories(histories);
 
     // Set current rates from the last computed points
     const rates: Record<string, { in: number; out: number }> = {};
@@ -177,8 +176,11 @@ export default function TrafficPage() {
         rates[name] = { in: last.bpsIn, out: last.bpsOut };
       }
     }
-    setCurrentRates(rates);
-  }, [ws.historyLoaded, ws.history, ws.history.length]);
+    queueMicrotask(() => {
+      setRateHistories(histories);
+      setCurrentRates(rates);
+    });
+  }, [wsHistoryLoaded, wsGetHistory]);
 
   // Process live updates — all interfaces
   useEffect(() => {

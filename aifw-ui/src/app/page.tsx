@@ -219,13 +219,12 @@ export default function Dashboard() {
   const prevIfaceData = useRef<Record<string, { bytes_in: number; bytes_out: number }>>({});
   const prevT = useRef(0);
   const historyProcessed = useRef(false);
-  const lastHistoryLen = useRef(0);
 
-  const pickNic = (name: string) => {
+  const pickNic = useCallback((name: string) => {
     setSelectedNic(name);
     selectedNicRef.current = name;
     localStorage.setItem("aifw_dashboard_nic", name);
-  };
+  }, []);
 
   const pickTimeframe = (tf: string) => {
     setTimeframe(tf);
@@ -234,18 +233,20 @@ export default function Dashboard() {
 
   const tfPoints = TIMEFRAMES.find(t => t.key === timeframe)?.points ?? 300;
 
-  // Process history from context on mount / when history changes
-  useEffect(() => {
-    if (!ws.historyLoaded) return;
-    if (ws.history.length === 0) { historyProcessed.current = true; return; }
-    // Only reprocess full history once, or when NIC changes
-    if (historyProcessed.current && ws.history.length === lastHistoryLen.current) return;
+  const { historyLoaded: wsHistoryLoaded, getHistory: wsGetHistory } = ws;
 
-    const rawHistory = ws.history as Record<string, unknown>[];
+  // Seed the chart from the buffered history once it has loaded, and
+  // rebuild when the NIC changes. History lives behind ws.getHistory()
+  // (not state), so per-frame appends never re-run this (PERF-H23 #367).
+  useEffect(() => {
+    if (!wsHistoryLoaded) return;
+    const rawHistory = wsGetHistory();
+    if (rawHistory.length === 0) { historyProcessed.current = true; return; }
+
     const points: HistoryPoint[] = [];
     const prevByIf: Record<string, { bytes_in: number; bytes_out: number }> = {};
     let prevTs = 0;
-    let nic = selectedNicRef.current;
+    let nic = selectedNic;
 
     for (let idx = 0; idx < rawHistory.length; idx++) {
       const entry = rawHistory[idx];
@@ -279,21 +280,14 @@ export default function Dashboard() {
       });
     }
 
-    if (!selectedNicRef.current && nic) pickNic(nic);
     Object.assign(prevIfaceData.current, prevByIf);
     prevT.current = Date.now();
-    lastHistoryLen.current = ws.history.length;
     historyProcessed.current = true;
-    setHistory(points.slice(-MAX_PTS));
-  }, [ws.historyLoaded, ws.history, ws.history.length]);
-
-  // Reset history processing when NIC changes so it recomputes rates
-  useEffect(() => {
-    if (historyProcessed.current) {
-      historyProcessed.current = false;
-      lastHistoryLen.current = 0;
-    }
-  }, [selectedNic]);
+    queueMicrotask(() => {
+      if (!selectedNic && nic) pickNic(nic);
+      setHistory(points.slice(-MAX_PTS));
+    });
+  }, [wsHistoryLoaded, wsGetHistory, selectedNic, pickNic]);
 
   // Process live updates from ws.status/ws.interfaces changes
   useEffect(() => {
