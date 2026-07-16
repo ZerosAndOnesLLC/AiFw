@@ -1448,8 +1448,11 @@ async fn main() -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                let mgr = pmgr.read().await;
-                if mgr.running_count() > 0 {
+                // PERF-H17/PERF-M20 (#361/#389): snapshot under a short read
+                // lock; the 60s timer dispatch runs unlocked so cron-like
+                // plugins doing slow I/O don't block enable/disable.
+                let plugins = pmgr.read().await.dispatch_set();
+                if !plugins.is_empty() {
                     let event = aifw_plugins::HookEvent {
                         hook: aifw_plugins::HookPoint::Timer,
                         data: aifw_plugins::hooks::HookEventData::Tick {
@@ -1459,7 +1462,7 @@ async fn main() -> anyhow::Result<()> {
                                 .as_secs(),
                         },
                     };
-                    let _ = mgr.dispatch(&event).await;
+                    let _ = plugins.dispatch(&event).await;
                 }
             }
         });

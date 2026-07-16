@@ -1,16 +1,49 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::context::PluginContext;
-use crate::hooks::{HookAction, HookEvent};
+use crate::hooks::{HookAction, HookEvent, HookPoint};
 use crate::plugin::{Plugin, PluginConfig, PluginInfo, PluginState};
 
 struct LoadedPlugin {
-    plugin: Box<dyn Plugin>,
+    plugin: Arc<dyn Plugin>,
     #[allow(dead_code)]
     config: PluginConfig,
     state: PluginState,
     info: PluginInfo,
+}
+
+/// A snapshot of the running plugins plus the shared context, detached from
+/// the manager (PERF-H17 #361). Callers hold the manager lock only long
+/// enough to clone Arcs via [`PluginManager::dispatch_set`], then dispatch
+/// through the snapshot — so a slow plugin (e.g. a webhook HTTP POST) can't
+/// block enable/disable, which needs the manager `write()` lock.
+pub struct DispatchSet {
+    plugins: Vec<(String, Vec<HookPoint>, Arc<dyn Plugin>)>,
+    ctx: PluginContext,
+}
+
+impl DispatchSet {
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty()
+    }
+
+    /// Dispatch a hook event to every snapshotted plugin subscribed to it.
+    pub async fn dispatch(&self, event: &HookEvent) -> Vec<HookAction> {
+        let mut actions = Vec::new();
+        for (name, hooks, plugin) in &self.plugins {
+            if !hooks.contains(&event.hook) {
+                continue;
+            }
+            let action = plugin.on_hook(event, &self.ctx).await;
+            if action != HookAction::Continue {
+                tracing::debug!(plugin = %name, hook = %event.hook, "plugin returned action");
+                actions.push(action);
+            }
+        }
+        actions
+    }
 }
 
 /// Manages the lifecycle of all loaded plugins
@@ -42,30 +75,33 @@ impl PluginManager {
 
         info!(plugin = %name, version = %info.version, "registering plugin");
 
-        let mut loaded = LoadedPlugin {
-            plugin,
-            config: config.clone(),
-            state: PluginState::Loaded,
-            info,
-        };
-
-        if config.enabled {
-            match loaded.plugin.init(&config, &self.ctx).await {
+        // init() needs `&mut`, so it runs on the Box before the plugin is
+        // wrapped in the Arc that dispatch snapshots share.
+        let mut plugin = plugin;
+        let state = if config.enabled {
+            match plugin.init(&config, &self.ctx).await {
                 Ok(()) => {
-                    loaded.state = PluginState::Running;
                     info!(plugin = %name, "plugin initialized and running");
+                    PluginState::Running
                 }
                 Err(e) => {
-                    loaded.state = PluginState::Error;
                     error!(plugin = %name, error = %e, "plugin init failed");
                     return Err(e);
                 }
             }
         } else {
-            loaded.state = PluginState::Stopped;
-        }
+            PluginState::Stopped
+        };
 
-        self.plugins.insert(name, loaded);
+        self.plugins.insert(
+            name,
+            LoadedPlugin {
+                plugin: Arc::from(plugin),
+                config,
+                state,
+                info,
+            },
+        );
         Ok(())
     }
 
@@ -76,36 +112,53 @@ impl PluginManager {
             .remove(name)
             .ok_or_else(|| format!("plugin '{name}' not found"))?;
 
-        if loaded.state == PluginState::Running
-            && let Err(e) = loaded.plugin.shutdown().await
-        {
-            warn!(plugin = %name, error = %e, "plugin shutdown error");
+        if loaded.state == PluginState::Running {
+            // The plugin is already out of the map, so no new DispatchSet
+            // can include it. shutdown() needs `&mut`, which Arc::get_mut
+            // only yields once in-flight dispatch snapshots drop their
+            // clones — wait bounded for that.
+            let mut waited_ms = 0u32;
+            loop {
+                match Arc::get_mut(&mut loaded.plugin) {
+                    Some(plugin) => {
+                        if let Err(e) = plugin.shutdown().await {
+                            warn!(plugin = %name, error = %e, "plugin shutdown error");
+                        }
+                        break;
+                    }
+                    None if waited_ms < 5_000 => {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        waited_ms += 50;
+                    }
+                    None => {
+                        warn!(plugin = %name, "shutdown skipped: dispatch still in flight after 5s");
+                        break;
+                    }
+                }
+            }
         }
 
         info!(plugin = %name, "plugin unloaded");
         Ok(())
     }
 
+    /// Snapshot the running plugins for dispatch without holding the
+    /// manager lock (PERF-H17 #361).
+    pub fn dispatch_set(&self) -> DispatchSet {
+        DispatchSet {
+            plugins: self
+                .plugins
+                .iter()
+                .filter(|(_, l)| l.state == PluginState::Running)
+                .map(|(n, l)| (n.clone(), l.info.hooks.clone(), Arc::clone(&l.plugin)))
+                .collect(),
+            ctx: self.ctx.clone(),
+        }
+    }
+
     /// Dispatch a hook event to all plugins that are subscribed
     pub async fn dispatch(&self, event: &HookEvent) -> Vec<HookAction> {
-        let mut actions = Vec::new();
-
-        for (name, loaded) in &self.plugins {
-            if loaded.state != PluginState::Running {
-                continue;
-            }
-            if !loaded.info.hooks.contains(&event.hook) {
-                continue;
-            }
-
-            let action = loaded.plugin.on_hook(event, &self.ctx).await;
-            if action != HookAction::Continue {
-                tracing::debug!(plugin = %name, hook = %event.hook, "plugin returned action");
-                actions.push(action);
-            }
-        }
-
-        actions
+        self.dispatch_set().dispatch(event).await
     }
 
     /// Get a list of all registered plugins and their states

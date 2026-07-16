@@ -428,8 +428,10 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     type ConnKey = (std::net::IpAddr, u16, std::net::IpAddr, u16);
     {
         use std::collections::HashSet;
-        let plugins_active = state.plugin_manager.read().await.running_count() > 0;
-        if plugins_active {
+        // PERF-H17 (#361): snapshot the running plugins under a short read
+        // lock; all dispatching below happens without the manager lock.
+        let plugins = state.plugin_manager.read().await.dispatch_set();
+        if !plugins.is_empty() {
             static PREV_CONNS: std::sync::OnceLock<tokio::sync::RwLock<HashSet<ConnKey>>> =
                 std::sync::OnceLock::new();
             let prev_lock = PREV_CONNS.get_or_init(|| tokio::sync::RwLock::new(HashSet::new()));
@@ -438,12 +440,8 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                 .iter()
                 .map(|c| (c.src_addr, c.src_port, c.dst_addr, c.dst_port))
                 .collect();
-            // Snapshot under read lock, drop the guard, then drop the plugin
-            // manager guard before any dispatch.await — avoids holding read
-            // locks across slow plugin I/O.
             let prev_keys = prev_lock.read().await.clone();
 
-            let mgr = state.plugin_manager.read().await;
             for c in conns.iter() {
                 let key = (c.src_addr, c.src_port, c.dst_addr, c.dst_port);
                 if !prev_keys.contains(&key) {
@@ -458,7 +456,7 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                             state: c.state.clone(),
                         },
                     };
-                    let actions = mgr.dispatch(&event).await;
+                    let actions = plugins.dispatch(&event).await;
                     for action in actions {
                         if let aifw_plugins::HookAction::AddToTable { ref table, ip } = action {
                             let _ = state.pf.add_table_entry(table, ip).await;
@@ -480,10 +478,9 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
                             state: "closed".to_string(),
                         },
                     };
-                    let _ = mgr.dispatch(&event).await;
+                    let _ = plugins.dispatch(&event).await;
                 }
             }
-            drop(mgr);
             *prev_lock.write().await = current_keys;
         }
     }
@@ -1164,10 +1161,11 @@ pub fn start_pflog_collector(
                     let mut reader = BufReader::new(stdout).lines();
                     while let Ok(Some(line)) = reader.next_line().await {
                         if let Some(entry) = parse_pflog_line(&line) {
-                            // Dispatch PostRule hook for blocked/passed traffic
+                            // Dispatch PostRule hook for blocked/passed traffic.
+                            // PERF-H17 (#361): snapshot, then dispatch unlocked.
                             {
-                                let mgr = pmgr.read().await;
-                                if mgr.running_count() > 0 {
+                                let plugins = pmgr.read().await.dispatch_set();
+                                if !plugins.is_empty() {
                                     let event = aifw_plugins::HookEvent {
                                         hook: aifw_plugins::HookPoint::PostRule,
                                         data: aifw_plugins::hooks::HookEventData::Rule {
@@ -1188,7 +1186,7 @@ pub fn start_pflog_collector(
                                             rule_id: None,
                                         },
                                     };
-                                    let _ = mgr.dispatch(&event).await;
+                                    let _ = plugins.dispatch(&event).await;
                                 }
                             }
                             let mut buf = buf2.write().await;
