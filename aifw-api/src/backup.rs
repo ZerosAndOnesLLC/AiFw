@@ -2349,16 +2349,20 @@ fn gethostname() -> Option<String> {
 }
 
 // ============================================================
-// Auto-snapshot: every mutating HTTP request triggers a
+// Auto-snapshot: mutating HTTP requests trigger a
 // save_if_changed() so config history accrues without any
 // per-endpoint plumbing. The middleware only runs AFTER a
-// successful (2xx) response, and snapshotting runs in a
-// spawned task so the response is never blocked.
+// successful (2xx) response; snapshotting runs in a spawned
+// task so the response is never blocked, and is debounced so
+// a burst of mutations produces one snapshot (PERF-H8 #352).
 // ============================================================
 
 /// Routes where auto-snapshot would recurse or provide no value.
 /// Config-management routes already manage their own versions;
-/// WebSocket and streaming endpoints never change state.
+/// WebSocket and streaming endpoints never change state; and
+/// non-structural mutations (PERF-H8 #352) touch state that
+/// `build_current_config` doesn't capture, so rebuilding + hashing
+/// the config for them is guaranteed wasted work.
 fn should_skip_auto_snapshot(path: &str) -> bool {
     path.starts_with("/api/v1/config/")         // own subsystem
         || path.starts_with("/api/v1/auth/login")
@@ -2367,13 +2371,32 @@ fn should_skip_auto_snapshot(path: &str) -> bool {
         || path.starts_with("/api/v1/auth/register")
         || path.starts_with("/api/v1/auth/totp/login")
         || path.starts_with("/api/v1/auth/oauth/")
+        || path.starts_with("/api/v1/auth/ws-ticket") // ephemeral ticket
         || path.starts_with("/api/v1/dns/stream")  // WebSocket
         || path.starts_with("/api/v1/ws")          // WebSocket
         || path.starts_with("/api/v1/pending/stream")
         || path.starts_with("/api/v1/updates/")    // ship-via-package ops, not config
         || path.starts_with("/api/v1/reload")      // no config delta
         || path.starts_with("/api/v1/metrics")
+        || path.starts_with("/api/v1/ids/")        // alert acks/classifications, IDS state — not in FirewallConfig
+        || path.starts_with("/api/v1/ai/")         // analysis triggers
+        || path.starts_with("/api/v1/connections") // runtime state kills
+        || path.ends_with("/test") // test-fire endpoints (smtp/s3/ai)
 }
+
+/// Debounce state for auto-snapshots (PERF-H8 #352). Mutations landing
+/// while a snapshot is scheduled just fold into the pending one.
+#[derive(Default)]
+pub struct AutoSnapshotPending {
+    scheduled: bool,
+    coalesced: u32,
+    last_comment: String,
+}
+
+/// How long a scheduled auto-snapshot waits so that a burst of mutations
+/// (bulk edits, an admin clicking through the UI) produces one config
+/// version instead of one per request.
+const AUTO_SNAPSHOT_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub async fn auto_snapshot_middleware(
     State(state): State<AppState>,
@@ -2397,12 +2420,37 @@ pub async fn auto_snapshot_middleware(
     }
 
     // Hand off to a background task so the client response isn't blocked
-    // by rebuilding + hashing the config. `save_if_changed` is a no-op if
-    // the hash is unchanged, which most endpoints will be.
+    // by rebuilding + hashing the config. PERF-H8 (#352): the rebuild does
+    // ~15 DB list calls + full-JSON sha256, so it's debounced — the first
+    // qualifying mutation schedules one snapshot AUTO_SNAPSHOT_DEBOUNCE
+    // later, and everything arriving in between folds into it.
+    let spawn_worker = {
+        let mut pending = state.auto_snapshot_pending.lock().await;
+        pending.coalesced += 1;
+        pending.last_comment = format!("{method} {path}");
+        !std::mem::replace(&mut pending.scheduled, true)
+    };
+    if !spawn_worker {
+        return response;
+    }
+
     let bg_state = state.clone();
     let bg_actor = "auto".to_string();
-    let bg_comment = format!("{method} {path}");
     tokio::spawn(async move {
+        tokio::time::sleep(AUTO_SNAPSHOT_DEBOUNCE).await;
+        let (coalesced, last_comment) = {
+            let mut pending = bg_state.auto_snapshot_pending.lock().await;
+            pending.scheduled = false;
+            (
+                std::mem::take(&mut pending.coalesced),
+                std::mem::take(&mut pending.last_comment),
+            )
+        };
+        let bg_comment = if coalesced > 1 {
+            format!("{last_comment} (+{} coalesced)", coalesced - 1)
+        } else {
+            last_comment
+        };
         let cfg = match build_current_config(&bg_state).await {
             Ok(c) => c,
             Err(_) => {
@@ -2671,4 +2719,54 @@ pub(crate) async fn apply_cluster_snapshot(state: &AppState, body: &str) -> anyh
     let _ = state.ids_client.reload().await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod auto_snapshot_tests {
+    use super::should_skip_auto_snapshot;
+
+    // PERF-H8 (#352) regression: non-structural mutations (alert acks,
+    // classifications, test-fire endpoints) must not trigger a full
+    // config rebuild + hash.
+    #[test]
+    fn skips_non_structural_routes() {
+        for path in [
+            "/api/v1/ids/alerts/42/acknowledge",
+            "/api/v1/ids/alerts/42/classify",
+            "/api/v1/ids/suppressions",
+            "/api/v1/ids/config",
+            "/api/v1/ai/analyze",
+            "/api/v1/connections/1234",
+            "/api/v1/auth/ws-ticket",
+            "/api/v1/notify/smtp/test",
+            "/api/v1/settings/ai/test",
+            "/api/v1/backup/s3/test",
+            "/api/v1/config/save",
+            "/api/v1/updates/install",
+        ] {
+            assert!(
+                should_skip_auto_snapshot(path),
+                "{path} should skip auto-snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshots_structural_routes() {
+        for path in [
+            "/api/v1/rules",
+            "/api/v1/rules/reorder",
+            "/api/v1/nat",
+            "/api/v1/vpn/wg",
+            "/api/v1/geoip",
+            "/api/v1/aliases",
+            "/api/v1/dhcp/v4/subnets",
+            "/api/v1/settings/pf-tuning",
+        ] {
+            assert!(
+                !should_skip_auto_snapshot(path),
+                "{path} should auto-snapshot"
+            );
+        }
+    }
 }

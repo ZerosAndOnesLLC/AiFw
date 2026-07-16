@@ -205,6 +205,10 @@ pub struct AppState {
     /// uses this to skip the read lock + dispatch entirely when no plugins
     /// are running (the common case).
     pub plugin_running_count: Arc<std::sync::atomic::AtomicUsize>,
+    /// Debounce state for the auto-snapshot middleware (PERF-H8 #352):
+    /// mutations arriving within the debounce window coalesce into a
+    /// single config rebuild + save_if_changed.
+    pub auto_snapshot_pending: Arc<tokio::sync::Mutex<backup::AutoSnapshotPending>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -928,6 +932,9 @@ async fn create_state_from_db(
         auth_jti_cache: Arc::new(dashmap::DashMap::new()),
         auth_token_cache: Arc::new(dashmap::DashMap::new()),
         plugin_running_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        auto_snapshot_pending: Arc::new(tokio::sync::Mutex::new(
+            backup::AutoSnapshotPending::default(),
+        )),
     })
 }
 
@@ -1564,31 +1571,30 @@ async fn main() -> anyhow::Result<()> {
                     .as_ref()
                     .map(|s| s.flow_reassembly_bytes / 1024)
                     .unwrap_or(0);
-                let (ids_alerts_db,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ids_alerts")
-                    .fetch_one(&mem_state.pool)
-                    .await
-                    .unwrap_or((0,));
-                let rss_kb = tokio::process::Command::new("ps")
-                    .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-                    .output()
-                    .await
-                    .ok()
-                    .and_then(|o| {
-                        String::from_utf8_lossy(&o.stdout)
-                            .trim()
-                            .parse::<u64>()
-                            .ok()
-                    })
-                    .unwrap_or(0);
+                // PERF-H11: bound the heartbeat count to the last 24h so it
+                // rides idx_ids_alerts_ts instead of full-scanning a
+                // multi-million-row table every tick (and contending with
+                // ingestion). This is a health signal — recent persistence,
+                // not lifetime total — hence the _24h field name.
+                let (ids_alerts_db_24h,): (i64,) = sqlx::query_as(
+                    "SELECT COUNT(*) FROM ids_alerts WHERE timestamp >= datetime('now', '-1 day')",
+                )
+                .fetch_one(&mem_state.pool)
+                .await
+                .unwrap_or((0,));
+                // PERF-H12: native RSS syscall, not a `ps` fork (finishes the
+                // main.rs shell-out #356 also cited).
+                let rss_mb =
+                    crate::native_metrics::process_rss_mb(std::process::id()).unwrap_or(0.0);
 
                 tracing::info!(
                     target: "aifw_api::memstats",
-                    rss_mb = rss_kb / 1024,
+                    rss_mb = rss_mb,
                     ids_ipc_ok = ids_ipc_ok,
                     ids_alerts_total = ids_stats.as_ref().map(|s| s.alerts_total).unwrap_or(0),
                     flow_count = flow_count,
                     flow_reassembly_kb = flow_reassembly_kb,
-                    ids_alerts_db = ids_alerts_db,
+                    ids_alerts_db_24h = ids_alerts_db_24h,
                     ids_rules_loaded = ids_rules,
                     metrics_history_entries = hist_entries,
                     metrics_history_kb = hist_bytes / 1024,
