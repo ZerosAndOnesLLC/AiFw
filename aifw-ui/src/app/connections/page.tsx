@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import Card from "@/components/Card";
+import { useDocumentOffset } from "@/lib/useDocumentOffset";
 import StatusBadge from "@/components/StatusBadge";
 import { useWs } from "@/context/WsContext";
 
@@ -136,6 +138,23 @@ export default function ConnectionsPage() {
   const totalPacketsIn = connections.reduce((sum, c) => sum + c.packets_in, 0);
   const totalPacketsOut = connections.reduce((sum, c) => sum + c.packets_out, 0);
 
+  // Virtualize table rows (PERF-H24 #368): spacer <tr>s stand in for
+  // off-screen rows so the table only mounts rows near the viewport.
+  const tbodyRef = useRef<HTMLTableSectionElement | null>(null);
+  const tbodyOffset = useDocumentOffset(tbodyRef);
+  const rowVirtualizer = useWindowVirtualizer({
+    count: sortedConnections.length,
+    estimateSize: () => 38,
+    overscan: 15,
+    scrollMargin: tbodyOffset,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const scrollMargin = rowVirtualizer.options.scrollMargin;
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start - scrollMargin : 0;
+  const paddingBottom = virtualRows.length > 0
+    ? rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1].end - scrollMargin)
+    : 0;
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -210,8 +229,14 @@ export default function ConnectionsPage() {
                   <SortHeader label="Bytes In/Out" sortKey="bytes" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} className="w-32 text-left" />
                 </tr>
               </thead>
-              <tbody>
-                {sortedConnections.map((conn) => {
+              <tbody ref={tbodyRef}>
+                {paddingTop > 0 && (
+                  <tr aria-hidden="true">
+                    <td colSpan={7} style={{ height: paddingTop, padding: 0 }} />
+                  </tr>
+                )}
+                {virtualRows.map((virtualRow) => {
+                  const conn = sortedConnections[virtualRow.index];
                   const colors: Record<string, string> = {
                     tcp: "text-blue-400",
                     udp: "text-purple-400",
@@ -257,6 +282,11 @@ export default function ConnectionsPage() {
                     </tr>
                   );
                 })}
+                {paddingBottom > 0 && (
+                  <tr aria-hidden="true">
+                    <td colSpan={7} style={{ height: paddingBottom, padding: 0 }} />
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

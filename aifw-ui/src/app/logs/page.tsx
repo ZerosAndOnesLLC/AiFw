@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { api } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
+import { useDocumentOffset } from "@/lib/useDocumentOffset";
 
 interface AuditEntry {
   id: string;
@@ -57,6 +59,24 @@ export default function LogsPage() {
       return false;
     return true;
   });
+
+  // Virtualize table rows (PERF-H24 #368): spacer <tr>s stand in for
+  // off-screen rows so the table only mounts rows near the viewport.
+  const tbodyRef = useRef<HTMLTableSectionElement | null>(null);
+  const tbodyOffset = useDocumentOffset(tbodyRef);
+  const rowVirtualizer = useWindowVirtualizer({
+    count: filtered.length,
+    estimateSize: () => 38,
+    overscan: 15,
+    scrollMargin: tbodyOffset,
+    getItemKey: (index) => filtered[index]?.id ?? index,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const scrollMargin = rowVirtualizer.options.scrollMargin;
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start - scrollMargin : 0;
+  const paddingBottom = virtualRows.length > 0
+    ? rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1].end - scrollMargin)
+    : 0;
 
   if (loading) {
     return (
@@ -128,7 +148,7 @@ export default function LogsPage() {
                 <th className="text-left py-3 px-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Source</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody ref={tbodyRef}>
               {filtered.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="py-8 text-center text-gray-500">
@@ -136,7 +156,15 @@ export default function LogsPage() {
                   </td>
                 </tr>
               ) : (
-                filtered.map((entry) => (
+                <>
+                  {paddingTop > 0 && (
+                    <tr aria-hidden="true">
+                      <td colSpan={5} style={{ height: paddingTop, padding: 0 }} />
+                    </tr>
+                  )}
+                  {virtualRows.map((virtualRow) => {
+                    const entry = filtered[virtualRow.index];
+                    return (
                   <tr
                     key={entry.id}
                     className="border-b border-gray-700 hover:bg-gray-700/50 transition-colors"
@@ -169,7 +197,14 @@ export default function LogsPage() {
                       {entry.source}
                     </td>
                   </tr>
-                ))
+                    );
+                  })}
+                  {paddingBottom > 0 && (
+                    <tr aria-hidden="true">
+                      <td colSpan={5} style={{ height: paddingBottom, padding: 0 }} />
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>

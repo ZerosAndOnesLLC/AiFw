@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { api, ApiError } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
+import { useDocumentOffset } from "@/lib/useDocumentOffset";
 
 interface IdsAlert {
   id: string;
@@ -172,6 +174,18 @@ export default function ThreatsPage() {
     investigating: alerts.filter(a => a.classification === "investigating").length,
   };
 
+  // Virtualize the alert list (PERF-H24 #368): only rows near the viewport
+  // are mounted instead of up to 500 complex cards at once.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const listOffset = useDocumentOffset(listRef);
+  const rowVirtualizer = useWindowVirtualizer({
+    count: filtered.length,
+    estimateSize: () => 68,
+    overscan: 10,
+    scrollMargin: listOffset,
+    getItemKey: (index) => filtered[index]?.id ?? index,
+  });
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -338,14 +352,22 @@ export default function ThreatsPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-2">
-          {filtered.map(alert => {
+        <div ref={listRef} className="relative" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+          {rowVirtualizer.getVirtualItems().map(virtualRow => {
+            const alert = filtered[virtualRow.index];
             const sev = SEV_META[alert.severity] || SEV_META[4];
             const cls = CLASS_META[alert.classification] || CLASS_META.unreviewed;
             const isExpanded = expandedId === alert.id;
 
             return (
-              <div key={alert.id} className={`bg-[var(--bg-card)] border rounded-lg overflow-hidden transition-all ${
+              <div
+                key={alert.id}
+                data-index={virtualRow.index}
+                ref={rowVirtualizer.measureElement}
+                className="absolute top-0 left-0 w-full pb-2"
+                style={{ transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)` }}
+              >
+              <div className={`bg-[var(--bg-card)] border rounded-lg overflow-hidden transition-all ${
                 alert.classification === "confirmed" ? "border-red-500/30" :
                 alert.classification === "false_positive" ? "border-green-500/20 opacity-60" :
                 alert.classification === "investigating" ? "border-yellow-500/30" :
@@ -483,6 +505,7 @@ export default function ThreatsPage() {
                     </div>
                   </div>
                 )}
+              </div>
               </div>
             );
           })}
