@@ -190,7 +190,9 @@ pub struct IdsAlert {
     pub dst_ip: IpAddr,
     /// Destination port, if the protocol has one
     pub dst_port: Option<u16>,
-    /// Transport/application protocol name (e.g. "tcp", "udp")
+    /// Transport/application protocol name. Deliberately a String, not an
+    /// enum: the decoder emits arbitrary IP protocols ("proto-47") via
+    /// `PacketProtocol::Other`, so the value set is open (QUAL-H11 #431)
     pub protocol: String,
     /// Action the engine took (alert/drop/reject/pass)
     pub action: IdsAction,
@@ -204,15 +206,56 @@ pub struct IdsAlert {
     pub metadata: Option<HashMap<String, String>>,
     /// True once an operator has acknowledged the alert
     pub acknowledged: bool,
-    /// Classification: unreviewed, confirmed, false_positive, investigating
-    #[serde(default = "default_classification")]
-    pub classification: String,
+    /// Analyst triage state of the alert
+    #[serde(default)]
+    pub classification: AlertClassification,
     /// Free-form analyst notes
     pub analyst_notes: Option<String>,
 }
 
-fn default_classification() -> String {
-    "unreviewed".to_string()
+/// Analyst triage state of an IDS alert (serialized as snake_case)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertClassification {
+    /// No analyst has looked at the alert yet
+    #[default]
+    Unreviewed,
+    /// Confirmed as a real threat
+    Confirmed,
+    /// Determined to be a false positive
+    FalsePositive,
+    /// Under active investigation
+    Investigating,
+}
+
+impl AlertClassification {
+    /// Canonical snake_case string used in the DB and API
+    /// ("unreviewed", "confirmed", "false_positive", "investigating")
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreviewed => "unreviewed",
+            Self::Confirmed => "confirmed",
+            Self::FalsePositive => "false_positive",
+            Self::Investigating => "investigating",
+        }
+    }
+
+    /// Case-insensitive parse of the canonical string; `None` for anything else
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "unreviewed" => Some(Self::Unreviewed),
+            "confirmed" => Some(Self::Confirmed),
+            "false_positive" => Some(Self::FalsePositive),
+            "investigating" => Some(Self::Investigating),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AlertClassification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl IdsAlert {
@@ -244,7 +287,7 @@ impl IdsAlert {
             payload_excerpt: None,
             metadata: None,
             acknowledged: false,
-            classification: "unreviewed".to_string(),
+            classification: AlertClassification::Unreviewed,
             analyst_notes: None,
         }
     }

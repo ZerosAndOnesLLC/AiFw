@@ -252,10 +252,7 @@ impl SniRuleRow {
             pattern: self.pattern,
             action: SniAction::parse(&self.action)?,
             label: self.label,
-            status: match self.status.as_str() {
-                "active" => SniRuleStatus::Active,
-                _ => SniRuleStatus::Disabled,
-            },
+            status: SniRuleStatus::parse(&self.status)?,
             created_at: DateTime::parse_from_rfc3339(&self.created_at)
                 .map_err(|e| AifwError::Database(format!("{e}")))?
                 .with_timezone(&Utc),

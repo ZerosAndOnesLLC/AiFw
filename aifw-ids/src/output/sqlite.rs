@@ -1,4 +1,4 @@
-use aifw_common::ids::IdsAlert;
+use aifw_common::ids::{AlertClassification, IdsAlert};
 use chrono::{DateTime, Datelike, Duration, Utc};
 use sqlx::SqlitePool;
 
@@ -147,7 +147,12 @@ impl SqliteOutput {
                     payload_excerpt: row.12,
                     metadata: row.13.and_then(|s| serde_json::from_str(&s).ok()),
                     acknowledged: row.14,
-                    classification: row.15.split('|').next().unwrap_or("unreviewed").to_string(),
+                    classification: row
+                        .15
+                        .split('|')
+                        .next()
+                        .and_then(AlertClassification::parse)
+                        .unwrap_or_default(),
                     analyst_notes: {
                         let packed = &row.15;
                         packed.split_once('|').and_then(|(_, n)| {
@@ -198,7 +203,12 @@ impl SqliteOutput {
                 payload_excerpt: row.12,
                 metadata: row.13.and_then(|s| serde_json::from_str(&s).ok()),
                 acknowledged: row.14,
-                classification: row.15.split('|').next().unwrap_or("unreviewed").to_string(),
+                classification: row
+                    .15
+                    .split('|')
+                    .next()
+                    .and_then(AlertClassification::parse)
+                    .unwrap_or_default(),
                 analyst_notes: {
                     let packed = &row.15;
                     packed.split_once('|').and_then(|(_, n)| {
@@ -217,11 +227,11 @@ impl SqliteOutput {
     pub async fn classify(
         &self,
         id: uuid::Uuid,
-        classification: &str,
+        classification: AlertClassification,
         notes: Option<&str>,
     ) -> Result<()> {
         sqlx::query("UPDATE ids_alerts SET classification = ?, analyst_notes = ?, acknowledged = 1 WHERE id = ?")
-            .bind(classification)
+            .bind(classification.as_str())
             .bind(notes)
             .bind(id.to_string())
             .execute(&self.pool)

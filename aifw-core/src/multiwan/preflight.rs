@@ -5,7 +5,10 @@
 //! would be rerouted, whether management traffic would be stranded, and a diff
 //! of generated pf rules.
 
-use aifw_common::{Gateway, GatewayGroup, GroupMember, PolicyRule, Result, RoutingInstance};
+use aifw_common::{
+    Gateway, GatewayGroup, GroupMember, PolicyRule, PolicyStatus, Result, RouteAction,
+    RoutingInstance,
+};
 use aifw_pf::{PfBackend, PfState};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -159,8 +162,8 @@ fn validate_mgmt_safety(
     // A policy that targets a non-mgmt instance with src_addr='any' or 'any/0'
     // could move management traffic. Flag it.
     let mut strand = false;
-    for p in proposed.iter().filter(|p| p.status == "active") {
-        if p.action_kind == "set_instance"
+    for p in proposed.iter().filter(|p| p.status == PolicyStatus::Active) {
+        if p.action_kind == RouteAction::SetInstance
             && p.target_id != mgmt.id
             && (p.src_addr == "any" || p.src_addr == "0.0.0.0/0")
         {
@@ -180,7 +183,7 @@ fn validate_mgmt_safety(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aifw_common::{InstanceStatus, StickyMode};
+    use aifw_common::{InstanceStatus, MwIpVersion, MwProtocol, StickyMode};
     use chrono::Utc;
     use uuid::Uuid;
 
@@ -197,23 +200,23 @@ mod tests {
         }
     }
 
-    fn make_policy(target: Uuid, src: &str, status: &str) -> PolicyRule {
+    fn make_policy(target: Uuid, src: &str, status: PolicyStatus) -> PolicyRule {
         PolicyRule {
             id: Uuid::new_v4(),
             priority: 100,
             name: "p".into(),
-            status: status.into(),
-            ip_version: "v4".into(),
+            status,
+            ip_version: MwIpVersion::V4,
             iface_in: Some("em_lan".into()),
             src_addr: src.into(),
             dst_addr: "any".into(),
             src_port: None,
             dst_port: None,
-            protocol: "any".into(),
+            protocol: MwProtocol::Any,
             dscp_in: None,
             geoip_country: None,
             schedule_id: None,
-            action_kind: "set_instance".into(),
+            action_kind: RouteAction::SetInstance,
             target_id: target,
             sticky: StickyMode::None,
             fallback_target_id: None,
@@ -227,7 +230,7 @@ mod tests {
     fn policy_moving_any_to_non_mgmt_flags_strand() {
         let mgmt = make_inst(0, true);
         let wan2 = make_inst(1, false);
-        let p = make_policy(wan2.id, "any", "active");
+        let p = make_policy(wan2.id, "any", PolicyStatus::Active);
         let mut findings = Vec::new();
         let strand = validate_mgmt_safety(&[p], &[mgmt, wan2], &mut findings);
         assert!(strand);
@@ -238,7 +241,7 @@ mod tests {
     fn specific_subnet_does_not_strand() {
         let mgmt = make_inst(0, true);
         let wan2 = make_inst(1, false);
-        let p = make_policy(wan2.id, "10.0.0.0/24", "active");
+        let p = make_policy(wan2.id, "10.0.0.0/24", PolicyStatus::Active);
         let mut findings = Vec::new();
         let strand = validate_mgmt_safety(&[p], &[mgmt, wan2], &mut findings);
         assert!(!strand);
@@ -248,7 +251,7 @@ mod tests {
     fn disabled_policy_does_not_strand() {
         let mgmt = make_inst(0, true);
         let wan2 = make_inst(1, false);
-        let p = make_policy(wan2.id, "any", "disabled");
+        let p = make_policy(wan2.id, "any", PolicyStatus::Disabled);
         let mut findings = Vec::new();
         let strand = validate_mgmt_safety(&[p], &[mgmt, wan2], &mut findings);
         assert!(!strand);

@@ -215,7 +215,7 @@ pub async fn acknowledge_alert(
 
 #[derive(Debug, Deserialize)]
 pub struct ClassifyAlertRequest {
-    pub classification: String,
+    pub classification: aifw_common::AlertClassification,
     pub notes: Option<String>,
 }
 
@@ -225,12 +225,8 @@ pub async fn classify_alert(
     Json(req): Json<ClassifyAlertRequest>,
 ) -> Result<Json<MessageResponse>, StatusCode> {
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
-    let valid = ["unreviewed", "confirmed", "false_positive", "investigating"];
-    if !valid.contains(&req.classification.as_str()) {
-        return Err(bad_request());
-    }
     let out = aifw_ids::output::sqlite::SqliteOutput::new(state.pool.clone());
-    out.classify(uuid, &req.classification, req.notes.as_deref())
+    out.classify(uuid, req.classification, req.notes.as_deref())
         .await
         .map_err(|_| internal())?;
     Ok(Json(MessageResponse {

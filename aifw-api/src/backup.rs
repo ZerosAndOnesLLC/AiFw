@@ -392,9 +392,9 @@ pub(crate) async fn capture_runtime_snapshot(state: &AppState) -> Result<String,
             .map(|r| RuleConfig {
                 id: r.id.to_string(),
                 priority: r.priority,
-                action: enum_as_string(&r.action),
-                direction: enum_as_string(&r.direction),
-                protocol: enum_as_string(&r.protocol),
+                action: r.action,
+                direction: r.direction,
+                protocol: r.protocol,
                 interface: r.interface.as_ref().map(|i| i.0.clone()),
                 src_addr: Some(r.rule_match.src_addr.to_string()),
                 src_port_start: r.rule_match.src_port.as_ref().map(|p| p.start),
@@ -405,9 +405,9 @@ pub(crate) async fn capture_runtime_snapshot(state: &AppState) -> Result<String,
                 log: r.log,
                 quick: r.quick,
                 label: r.label.clone(),
-                state_tracking: enum_as_string(&r.state_options.tracking),
-                status: enum_as_string(&r.status),
-                ip_version: enum_as_string(&r.ip_version),
+                state_tracking: r.state_options.tracking,
+                status: r.status,
+                ip_version: r.ip_version,
                 src_invert: r.src_invert,
                 dst_invert: r.dst_invert,
             })
@@ -416,9 +416,9 @@ pub(crate) async fn capture_runtime_snapshot(state: &AppState) -> Result<String,
             .iter()
             .map(|n| NatRuleConfig {
                 id: n.id.to_string(),
-                nat_type: enum_as_string(&n.nat_type),
+                nat_type: n.nat_type,
                 interface: n.interface.0.clone(),
-                protocol: enum_as_string(&n.protocol),
+                protocol: n.protocol,
                 src_addr: Some(n.src_addr.to_string()),
                 src_port_start: n.src_port.as_ref().map(|p| p.start),
                 src_port_end: n.src_port.as_ref().map(|p| p.end),
@@ -429,7 +429,7 @@ pub(crate) async fn capture_runtime_snapshot(state: &AppState) -> Result<String,
                 redirect_port_start: n.redirect.port.as_ref().map(|p| p.start),
                 redirect_port_end: n.redirect.port.as_ref().map(|p| p.end),
                 label: n.label.clone(),
-                status: enum_as_string(&n.status),
+                status: n.status,
             })
             .collect(),
         aliases,
@@ -658,9 +658,9 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             .map(|r| RuleConfig {
                 id: r.id.to_string(),
                 priority: r.priority,
-                action: enum_as_string(&r.action),
-                direction: enum_as_string(&r.direction),
-                protocol: enum_as_string(&r.protocol),
+                action: r.action,
+                direction: r.direction,
+                protocol: r.protocol,
                 interface: r.interface.as_ref().map(|i| i.0.clone()),
                 src_addr: Some(r.rule_match.src_addr.to_string()),
                 src_port_start: r.rule_match.src_port.as_ref().map(|p| p.start),
@@ -671,9 +671,9 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 log: r.log,
                 quick: r.quick,
                 label: r.label.clone(),
-                state_tracking: enum_as_string(&r.state_options.tracking),
-                status: enum_as_string(&r.status),
-                ip_version: enum_as_string(&r.ip_version),
+                state_tracking: r.state_options.tracking,
+                status: r.status,
+                ip_version: r.ip_version,
                 src_invert: r.src_invert,
                 dst_invert: r.dst_invert,
             })
@@ -682,9 +682,9 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             .iter()
             .map(|n| NatRuleConfig {
                 id: n.id.to_string(),
-                nat_type: enum_as_string(&n.nat_type),
+                nat_type: n.nat_type,
                 interface: n.interface.0.clone(),
-                protocol: enum_as_string(&n.protocol),
+                protocol: n.protocol,
                 src_addr: Some(n.src_addr.to_string()),
                 src_port_start: n.src_port.as_ref().map(|p| p.start),
                 src_port_end: n.src_port.as_ref().map(|p| p.end),
@@ -695,7 +695,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 redirect_port_start: n.redirect.port.as_ref().map(|p| p.start),
                 redirect_port_end: n.redirect.port.as_ref().map(|p| p.end),
                 label: n.label.clone(),
-                status: enum_as_string(&n.status),
+                status: n.status,
             })
             .collect(),
         queues: queues
@@ -704,13 +704,13 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 id: q.id.to_string(),
                 name: q.name.clone(),
                 interface: q.interface.0.clone(),
-                queue_type: enum_as_string(&q.queue_type),
+                queue_type: q.queue_type,
                 bandwidth_value: q.bandwidth.value,
-                bandwidth_unit: enum_as_string(&q.bandwidth.unit),
-                traffic_class: enum_as_string(&q.traffic_class),
+                bandwidth_unit: q.bandwidth.unit,
+                traffic_class: q.traffic_class,
                 bandwidth_pct: q.bandwidth_pct,
                 default: q.default,
-                status: enum_as_string(&q.status),
+                status: q.status,
             })
             .collect(),
         rate_limits: rate_limits
@@ -719,14 +719,14 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 id: r.id.to_string(),
                 name: r.name.clone(),
                 interface: r.interface.as_ref().map(|i| i.0.clone()),
-                protocol: enum_as_string(&r.protocol),
+                protocol: r.protocol,
                 dst_port_start: r.dst_port.as_ref().map(|p| p.start),
                 dst_port_end: r.dst_port.as_ref().map(|p| p.end),
                 max_connections: r.max_connections,
                 window_secs: r.window_secs,
                 overload_table: r.overload_table.clone(),
                 flush_states: r.flush_states,
-                status: enum_as_string(&r.status),
+                status: r.status,
             })
             .collect(),
         vpn: VpnConfig {
@@ -738,8 +738,8 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                     name: s.name.clone(),
                     src_addr: s.src_addr.to_string(),
                     dst_addr: s.dst_addr.to_string(),
-                    protocol: enum_as_string(&s.protocol),
-                    mode: enum_as_string(&s.mode),
+                    protocol: s.protocol,
+                    mode: s.mode,
                     enc_algo: s.enc_algo.clone(),
                     auth_algo: s.auth_algo.clone(),
                 })
@@ -750,9 +750,9 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             .map(|g| GeoIpEntry {
                 id: g.id.to_string(),
                 country: g.country.0.clone(),
-                action: enum_as_string(&g.action),
+                action: g.action,
                 label: g.label.clone(),
-                status: enum_as_string(&g.status),
+                status: g.status,
             })
             .collect(),
         tls: TlsConfig {
@@ -766,7 +766,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 .map(|r| SniRuleConfig {
                     id: r.id.to_string(),
                     pattern: r.pattern.clone(),
-                    action: enum_as_string(&r.action),
+                    action: r.action,
                     label: r.label.clone(),
                 })
                 .collect(),
@@ -1487,8 +1487,7 @@ pub(crate) async fn apply_firewall_config(
     iface_map: &InterfaceMap,
 ) -> Result<(), StatusCode> {
     use aifw_common::{
-        Address, CountryCode, GeoIpAction, GeoIpRule, GeoIpRuleStatus, Interface, IpsecMode,
-        IpsecProtocol, IpsecSa, VpnStatus, WgPeer, WgTunnel,
+        Address, CountryCode, GeoIpRule, Interface, IpsecSa, VpnStatus, WgPeer, WgTunnel,
     };
 
     // Restore preludes — clear existing rows before re-populating from the
@@ -1614,19 +1613,11 @@ pub(crate) async fn apply_firewall_config(
         let Ok(country) = CountryCode::new(&gc.country) else {
             continue;
         };
-        let Ok(action) = GeoIpAction::parse(&gc.action) else {
-            continue;
-        };
-        let status = if gc.status == "disabled" {
-            GeoIpRuleStatus::Disabled
-        } else {
-            GeoIpRuleStatus::Active
-        };
         let id = uuid::Uuid::parse_str(&gc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
-        let mut rule = GeoIpRule::new(country, action);
+        let mut rule = GeoIpRule::new(country, gc.action);
         rule.id = id;
         rule.label = gc.label.clone();
-        rule.status = status;
+        rule.status = gc.status;
         let country = rule.country.0.clone();
         if let Err(e) = state.geoip_engine.add_rule(rule).await {
             tracing::warn!(country = %country, error = %e, "import: geo-ip rule restore failed");
@@ -1695,15 +1686,8 @@ pub(crate) async fn apply_firewall_config(
         let Ok(dst_addr) = Address::parse(&sac.dst_addr) else {
             continue;
         };
-        let Ok(protocol) = IpsecProtocol::parse(&sac.protocol) else {
-            continue;
-        };
-        let mode = match sac.mode.as_str() {
-            "transport" => IpsecMode::Transport,
-            _ => IpsecMode::Tunnel,
-        };
         let id = uuid::Uuid::parse_str(&sac.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
-        let mut sa = IpsecSa::new(sac.name.clone(), src_addr, dst_addr, protocol, mode);
+        let mut sa = IpsecSa::new(sac.name.clone(), src_addr, dst_addr, sac.protocol, sac.mode);
         sa.id = id;
         sa.enc_algo = sac.enc_algo.clone();
         sa.auth_algo = sac.auth_algo.clone();
@@ -2089,11 +2073,9 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
 
 fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::Rule> {
     use aifw_common::*;
-    let action: Action =
-        serde_json::from_value(serde_json::Value::String(rc.action.clone())).ok()?;
-    let direction: Direction =
-        serde_json::from_value(serde_json::Value::String(rc.direction.clone())).ok()?;
-    let protocol = Protocol::parse(&rc.protocol).ok()?;
+    let action = rc.action;
+    let direction = rc.direction;
+    let protocol = rc.protocol;
     let src_addr = rc
         .src_addr
         .as_deref()
@@ -2118,17 +2100,11 @@ fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::R
         (Some(s), None) => Some(PortRange { start: s, end: s }),
         _ => None,
     };
-    let tracking: StateTracking =
-        serde_json::from_value(serde_json::Value::String(rc.state_tracking.clone()))
-            .unwrap_or_default();
-    let status = if rc.status == "disabled" {
-        RuleStatus::Disabled
-    } else {
-        RuleStatus::Active
-    };
+    let tracking = rc.state_tracking;
+    let status = rc.status;
     let id = uuid::Uuid::parse_str(&rc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
     let now = chrono::Utc::now();
-    let ip_version = IpVersion::parse(&rc.ip_version).unwrap_or_default();
+    let ip_version = rc.ip_version;
     Some(Rule {
         id,
         priority: rc.priority,
@@ -2163,8 +2139,8 @@ fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::R
 
 fn nat_from_config(nc: &aifw_core::config::NatRuleConfig) -> Option<aifw_common::NatRule> {
     use aifw_common::*;
-    let nat_type = NatType::parse(&nc.nat_type).ok()?;
-    let protocol = Protocol::parse(&nc.protocol).ok()?;
+    let nat_type = nc.nat_type;
+    let protocol = nc.protocol;
     let src_addr = nc
         .src_addr
         .as_deref()
@@ -2195,11 +2171,7 @@ fn nat_from_config(nc: &aifw_core::config::NatRuleConfig) -> Option<aifw_common:
         (Some(s), None) => Some(PortRange { start: s, end: s }),
         _ => None,
     };
-    let status = if nc.status == "disabled" {
-        NatStatus::Disabled
-    } else {
-        NatStatus::Active
-    };
+    let status = nc.status;
     let id = uuid::Uuid::parse_str(&nc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
     let now = chrono::Utc::now();
     Some(NatRule {
@@ -2224,14 +2196,10 @@ fn nat_from_config(nc: &aifw_core::config::NatRuleConfig) -> Option<aifw_common:
 
 fn queue_from_config(qc: &aifw_core::config::QueueConfigEntry) -> Option<aifw_common::QueueConfig> {
     use aifw_common::*;
-    let queue_type: QueueType =
-        serde_json::from_value(serde_json::Value::String(qc.queue_type.clone())).ok()?;
-    let unit: BandwidthUnit =
-        serde_json::from_value(serde_json::Value::String(qc.bandwidth_unit.clone())).ok()?;
-    let traffic_class: TrafficClass =
-        serde_json::from_value(serde_json::Value::String(qc.traffic_class.clone())).ok()?;
-    let status: QueueStatus =
-        serde_json::from_value(serde_json::Value::String(qc.status.clone())).ok()?;
+    let queue_type = qc.queue_type;
+    let unit = qc.bandwidth_unit;
+    let traffic_class = qc.traffic_class;
+    let status = qc.status;
     let id = uuid::Uuid::parse_str(&qc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
     let now = chrono::Utc::now();
     Some(QueueConfig {
@@ -2256,9 +2224,8 @@ fn rate_limit_from_config(
     rc: &aifw_core::config::RateLimitEntry,
 ) -> Option<aifw_common::RateLimitRule> {
     use aifw_common::*;
-    let protocol = Protocol::parse(&rc.protocol).ok()?;
-    let status: RateLimitStatus =
-        serde_json::from_value(serde_json::Value::String(rc.status.clone())).ok()?;
+    let protocol = rc.protocol;
+    let status = rc.status;
     let dst_port = match (rc.dst_port_start, rc.dst_port_end) {
         (Some(s), Some(e)) => Some(PortRange { start: s, end: e }),
         (Some(s), None) => Some(PortRange { start: s, end: s }),
@@ -2286,10 +2253,9 @@ fn rate_limit_from_config(
 
 fn sni_rule_from_config(sc: &aifw_core::config::SniRuleConfig) -> Option<aifw_common::SniRule> {
     use aifw_common::*;
-    let action = SniAction::parse(&sc.action).ok()?;
     let id = uuid::Uuid::parse_str(&sc.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
     let now = chrono::Utc::now();
-    let mut rule = SniRule::new(sc.pattern.clone(), action);
+    let mut rule = SniRule::new(sc.pattern.clone(), sc.action);
     rule.id = id;
     rule.label = sc.label.clone();
     rule.created_at = now;

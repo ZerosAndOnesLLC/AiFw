@@ -1,4 +1,4 @@
-use aifw_common::{AifwError, Result, RouteLeak, RoutingInstance};
+use aifw_common::{AifwError, LeakDirection, MwProtocol, Result, RouteLeak, RoutingInstance};
 use aifw_pf::PfBackend;
 use chrono::Utc;
 use sqlx::Row;
@@ -59,7 +59,7 @@ impl LeakEngine {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| AifwError::Database(e.to_string()))?;
-        Ok(rows.iter().map(row_to_leak).collect())
+        rows.iter().map(row_to_leak).collect()
     }
 
     /// Fetch one route leak by id. Fails with `NotFound` if it doesn't exist
@@ -72,7 +72,7 @@ impl LeakEngine {
         .await
         .map_err(|e| AifwError::Database(e.to_string()))?
         .ok_or_else(|| AifwError::NotFound(format!("leak {id} not found")))?;
-        Ok(row_to_leak(&row))
+        row_to_leak(&row)
     }
 
     /// Insert a new route leak (does not reload the pf anchor; call `apply`)
@@ -88,9 +88,9 @@ impl LeakEngine {
         .bind(l.src_instance_id.to_string())
         .bind(l.dst_instance_id.to_string())
         .bind(&l.prefix)
-        .bind(&l.protocol)
+        .bind(l.protocol.as_str())
         .bind(l.ports.as_deref())
-        .bind(&l.direction)
+        .bind(l.direction.as_str())
         .bind(l.enabled as i64)
         .bind(l.created_at.to_rfc3339())
         .bind(l.updated_at.to_rfc3339())
@@ -115,9 +115,9 @@ impl LeakEngine {
         .bind(l.src_instance_id.to_string())
         .bind(l.dst_instance_id.to_string())
         .bind(&l.prefix)
-        .bind(&l.protocol)
+        .bind(l.protocol.as_str())
         .bind(l.ports.as_deref())
-        .bind(&l.direction)
+        .bind(l.direction.as_str())
         .bind(l.enabled as i64)
         .bind(now.to_rfc3339())
         .execute(&self.pool)
@@ -172,7 +172,7 @@ impl LeakEngine {
             let Some(dst) = inst.get(&l.dst_instance_id) else {
                 continue;
             };
-            let proto = if l.protocol == "any" || l.protocol.is_empty() {
+            let proto = if l.protocol == MwProtocol::Any {
                 String::new()
             } else {
                 format!(" proto {}", l.protocol)
@@ -188,7 +188,7 @@ impl LeakEngine {
                 prefix = l.prefix,
                 fib = dst.fib_number,
             ));
-            if l.direction == "bidirectional"
+            if l.direction == LeakDirection::Bidirectional
                 && let Some(src) = inst.get(&l.src_instance_id)
             {
                 out.push(format!(
@@ -246,9 +246,9 @@ impl LeakEngine {
                 src_instance_id: inst.id,
                 dst_instance_id: default.id,
                 prefix: "any".into(),
-                protocol: "any".into(),
+                protocol: MwProtocol::Any,
                 ports: None,
-                direction: "bidirectional".into(),
+                direction: LeakDirection::Bidirectional,
                 enabled: true,
                 created_at: now,
                 updated_at: now,
@@ -267,9 +267,15 @@ impl LeakEngine {
 const LEAK_COLUMNS: &str = "id, name, src_instance_id, dst_instance_id, prefix, protocol, \
     ports, direction, enabled, created_at, updated_at";
 
-fn row_to_leak(r: &sqlx::sqlite::SqliteRow) -> RouteLeak {
-    RouteLeak {
-        id: r.get::<String, _>("id").parse().unwrap_or_default(),
+fn row_to_leak(r: &sqlx::sqlite::SqliteRow) -> Result<RouteLeak> {
+    let id: String = r.get("id");
+    let bad_row = |field: &str, value: &str| {
+        AifwError::Database(format!("leak {id}: invalid {field} value {value:?}"))
+    };
+    let protocol_s: String = r.get("protocol");
+    let direction_s: String = r.get("direction");
+    Ok(RouteLeak {
+        id: id.parse().unwrap_or_default(),
         name: r.get("name"),
         src_instance_id: r
             .get::<String, _>("src_instance_id")
@@ -280,13 +286,14 @@ fn row_to_leak(r: &sqlx::sqlite::SqliteRow) -> RouteLeak {
             .parse()
             .unwrap_or_default(),
         prefix: r.get("prefix"),
-        protocol: r.get("protocol"),
+        protocol: MwProtocol::parse(&protocol_s).ok_or_else(|| bad_row("protocol", &protocol_s))?,
         ports: r.get("ports"),
-        direction: r.get("direction"),
+        direction: LeakDirection::parse(&direction_s)
+            .ok_or_else(|| bad_row("direction", &direction_s))?,
         enabled: r.get::<i64, _>("enabled") != 0,
         created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
         updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -318,9 +325,9 @@ mod tests {
             src_instance_id: src.id,
             dst_instance_id: dst.id,
             prefix: "10.0.0.0/24".into(),
-            protocol: "any".into(),
+            protocol: MwProtocol::Any,
             ports: None,
-            direction: "bidirectional".into(),
+            direction: LeakDirection::Bidirectional,
             enabled: true,
             created_at: now,
             updated_at: now,
@@ -343,9 +350,9 @@ mod tests {
             src_instance_id: src.id,
             dst_instance_id: dst.id,
             prefix: "any".into(),
-            protocol: "any".into(),
+            protocol: MwProtocol::Any,
             ports: None,
-            direction: "bidirectional".into(),
+            direction: LeakDirection::Bidirectional,
             enabled: false,
             created_at: now,
             updated_at: now,

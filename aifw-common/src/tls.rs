@@ -211,6 +211,20 @@ pub enum SniRuleStatus {
     Disabled,
 }
 
+impl SniRuleStatus {
+    /// Parse from a case-insensitive string ("active", "disabled").
+    /// Fails with `Validation` on anything else.
+    pub fn parse(s: &str) -> crate::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "active" => Ok(SniRuleStatus::Active),
+            "disabled" => Ok(SniRuleStatus::Disabled),
+            _ => Err(crate::AifwError::Validation(format!(
+                "unknown SNI rule status: {s}"
+            ))),
+        }
+    }
+}
+
 impl SniRule {
     /// Create an active rule with a random ID, no label, and both timestamps
     /// set to now

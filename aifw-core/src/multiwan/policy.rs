@@ -1,6 +1,6 @@
 use aifw_common::{
-    AifwError, Gateway, GatewayGroup, GatewayState, GroupMember, GroupPolicy, PolicyRule, Result,
-    RoutingInstance, StickyMode,
+    AifwError, Gateway, GatewayGroup, GatewayState, GroupMember, GroupPolicy, MwIpVersion,
+    MwProtocol, PolicyRule, PolicyStatus, Result, RouteAction, RoutingInstance, StickyMode,
 };
 use aifw_pf::PfBackend;
 use chrono::Utc;
@@ -80,7 +80,7 @@ impl PolicyEngine {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| AifwError::Database(e.to_string()))?;
-        Ok(rows.iter().map(row_to_policy).collect())
+        rows.iter().map(row_to_policy).collect()
     }
 
     /// Fetch one policy rule by id. Fails with `NotFound` if it doesn't exist
@@ -93,7 +93,7 @@ impl PolicyEngine {
         .await
         .map_err(|e| AifwError::Database(e.to_string()))?
         .ok_or_else(|| AifwError::NotFound(format!("policy {id} not found")))?;
-        Ok(row_to_policy(&row))
+        row_to_policy(&row)
     }
 
     /// Insert a new policy rule (does not reload pf anchors; call `apply`)
@@ -109,18 +109,18 @@ impl PolicyEngine {
         .bind(p.id.to_string())
         .bind(p.priority)
         .bind(&p.name)
-        .bind(&p.status)
-        .bind(&p.ip_version)
+        .bind(p.status.as_str())
+        .bind(p.ip_version.as_str())
         .bind(p.iface_in.as_deref())
         .bind(&p.src_addr)
         .bind(&p.dst_addr)
         .bind(p.src_port.as_deref())
         .bind(p.dst_port.as_deref())
-        .bind(&p.protocol)
+        .bind(p.protocol.as_str())
         .bind(p.dscp_in.map(|v| v as i64))
         .bind(p.geoip_country.as_deref())
         .bind(p.schedule_id.as_deref())
-        .bind(&p.action_kind)
+        .bind(p.action_kind.as_str())
         .bind(p.target_id.to_string())
         .bind(p.sticky.as_str())
         .bind(p.fallback_target_id.map(|u| u.to_string()))
@@ -149,18 +149,18 @@ impl PolicyEngine {
         .bind(p.id.to_string())
         .bind(p.priority)
         .bind(&p.name)
-        .bind(&p.status)
-        .bind(&p.ip_version)
+        .bind(p.status.as_str())
+        .bind(p.ip_version.as_str())
         .bind(p.iface_in.as_deref())
         .bind(&p.src_addr)
         .bind(&p.dst_addr)
         .bind(p.src_port.as_deref())
         .bind(p.dst_port.as_deref())
-        .bind(&p.protocol)
+        .bind(p.protocol.as_str())
         .bind(p.dscp_in.map(|v| v as i64))
         .bind(p.geoip_country.as_deref())
         .bind(p.schedule_id.as_deref())
-        .bind(&p.action_kind)
+        .bind(p.action_kind.as_str())
         .bind(p.target_id.to_string())
         .bind(p.sticky.as_str())
         .bind(p.fallback_target_id.map(|u| u.to_string()))
@@ -206,24 +206,24 @@ impl PolicyEngine {
         let gw_by_id: HashMap<Uuid, &Gateway> = gateways.iter().map(|g| (g.id, g)).collect();
         let grp_by_id: HashMap<Uuid, &GatewayGroup> = groups.iter().map(|g| (g.id, g)).collect();
 
-        for p in policies.iter().filter(|p| p.status == "active") {
+        for p in policies.iter().filter(|p| p.status == PolicyStatus::Active) {
             let label = format!("pbr:{}", p.id);
-            match p.action_kind.as_str() {
-                "set_instance" => {
+            match p.action_kind {
+                RouteAction::SetInstance => {
                     if let Some(inst) = inst_by_id.get(&p.target_id)
                         && let Some(line) = emit_set_instance(p, inst, &label)
                     {
                         pbr.push(line);
                     }
                 }
-                "set_gateway" => {
+                RouteAction::SetGateway => {
                     if let Some(gw) = gw_by_id.get(&p.target_id) {
                         let (out, rep) = emit_set_gateway(p, gw, &label);
                         pbr.push(out);
                         reply.push(rep);
                     }
                 }
-                "set_group" => {
+                RouteAction::SetGroup => {
                     if let Some(group) = grp_by_id.get(&p.target_id) {
                         let empty = Vec::new();
                         let members = group_members.get(&group.id).unwrap_or(&empty);
@@ -234,7 +234,6 @@ impl PolicyEngine {
                         }
                     }
                 }
-                _ => {}
             }
         }
         CompiledPolicies { pbr, reply }
@@ -390,16 +389,16 @@ fn emit_set_group(
     }
 }
 
-fn if_some_af(v: &str, out: &mut String) {
+fn if_some_af(v: &MwIpVersion, out: &mut String) {
     match v {
-        "v4" => out.push_str(" inet"),
-        "v6" => out.push_str(" inet6"),
-        _ => {}
+        MwIpVersion::V4 => out.push_str(" inet"),
+        MwIpVersion::V6 => out.push_str(" inet6"),
+        MwIpVersion::Both => {}
     }
 }
 
-fn if_some_proto(p: &str, out: &mut String) {
-    if p != "any" && !p.is_empty() {
+fn if_some_proto(p: &MwProtocol, out: &mut String) {
+    if *p != MwProtocol::Any {
         out.push_str(&format!(" proto {p}"));
     }
 }
@@ -412,23 +411,33 @@ const POLICY_COLUMNS: &str = "id, priority, name, status, ip_version, iface_in, 
     dst_addr, src_port, dst_port, protocol, dscp_in, geoip_country, schedule_id, action_kind, \
     target_id, sticky, fallback_target_id, description, created_at, updated_at";
 
-fn row_to_policy(r: &sqlx::sqlite::SqliteRow) -> PolicyRule {
-    PolicyRule {
-        id: r.get::<String, _>("id").parse().unwrap_or_default(),
+fn row_to_policy(r: &sqlx::sqlite::SqliteRow) -> Result<PolicyRule> {
+    let id: String = r.get("id");
+    let bad_row = |field: &str, value: &str| {
+        AifwError::Database(format!("policy {id}: invalid {field} value {value:?}"))
+    };
+    let status_s: String = r.get("status");
+    let ip_version_s: String = r.get("ip_version");
+    let protocol_s: String = r.get("protocol");
+    let action_kind_s: String = r.get("action_kind");
+    Ok(PolicyRule {
+        id: id.parse().unwrap_or_default(),
         priority: r.get("priority"),
         name: r.get("name"),
-        status: r.get("status"),
-        ip_version: r.get("ip_version"),
+        status: PolicyStatus::parse(&status_s).ok_or_else(|| bad_row("status", &status_s))?,
+        ip_version: MwIpVersion::parse(&ip_version_s)
+            .ok_or_else(|| bad_row("ip_version", &ip_version_s))?,
         iface_in: r.get("iface_in"),
         src_addr: r.get("src_addr"),
         dst_addr: r.get("dst_addr"),
         src_port: r.get("src_port"),
         dst_port: r.get("dst_port"),
-        protocol: r.get("protocol"),
+        protocol: MwProtocol::parse(&protocol_s).ok_or_else(|| bad_row("protocol", &protocol_s))?,
         dscp_in: r.get::<Option<i64>, _>("dscp_in").map(|v| v as u8),
         geoip_country: r.get("geoip_country"),
         schedule_id: r.get("schedule_id"),
-        action_kind: r.get("action_kind"),
+        action_kind: RouteAction::parse(&action_kind_s)
+            .ok_or_else(|| bad_row("action_kind", &action_kind_s))?,
         target_id: r.get::<String, _>("target_id").parse().unwrap_or_default(),
         sticky: StickyMode::parse(&r.get::<String, _>("sticky")).unwrap_or(StickyMode::None),
         fallback_target_id: r
@@ -437,7 +446,7 @@ fn row_to_policy(r: &sqlx::sqlite::SqliteRow) -> PolicyRule {
         description: r.get("description"),
         created_at: r.get::<String, _>("created_at").parse().unwrap_or_default(),
         updated_at: r.get::<String, _>("updated_at").parse().unwrap_or_default(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -458,23 +467,23 @@ mod tests {
         }
     }
 
-    fn make_policy(action: &str, target: Uuid) -> PolicyRule {
+    fn make_policy(action: RouteAction, target: Uuid) -> PolicyRule {
         PolicyRule {
             id: Uuid::new_v4(),
             priority: 100,
             name: "p".into(),
-            status: "active".into(),
-            ip_version: "v4".into(),
+            status: PolicyStatus::Active,
+            ip_version: MwIpVersion::V4,
             iface_in: Some("em_lan".into()),
             src_addr: "10.0.0.0/24".into(),
             dst_addr: "any".into(),
             src_port: None,
             dst_port: Some("443".into()),
-            protocol: "tcp".into(),
+            protocol: MwProtocol::Tcp,
             dscp_in: None,
             geoip_country: None,
             schedule_id: None,
-            action_kind: action.into(),
+            action_kind: action,
             target_id: target,
             sticky: StickyMode::None,
             fallback_target_id: None,
@@ -522,7 +531,7 @@ mod tests {
     #[test]
     fn compile_set_instance_emits_rtable() {
         let inst = make_inst(2);
-        let p = make_policy("set_instance", inst.id);
+        let p = make_policy(RouteAction::SetInstance, inst.id);
         let c = PolicyEngine::compile(&[p], &[inst], &[], &[], &HashMap::new());
         assert_eq!(c.pbr.len(), 1);
         assert!(c.pbr[0].contains("rtable 2"));
@@ -533,7 +542,7 @@ mod tests {
     #[test]
     fn compile_set_gateway_emits_route_and_reply() {
         let gw = make_gw(Uuid::new_v4(), "em1", "203.0.113.1");
-        let p = make_policy("set_gateway", gw.id);
+        let p = make_policy(RouteAction::SetGateway, gw.id);
         let c = PolicyEngine::compile(&[p], &[], std::slice::from_ref(&gw), &[], &HashMap::new());
         assert_eq!(c.pbr.len(), 1);
         assert_eq!(c.reply.len(), 1);
@@ -546,8 +555,8 @@ mod tests {
     #[test]
     fn disabled_policies_skipped() {
         let inst = make_inst(2);
-        let mut p = make_policy("set_instance", inst.id);
-        p.status = "disabled".into();
+        let mut p = make_policy(RouteAction::SetInstance, inst.id);
+        p.status = PolicyStatus::Disabled;
         let c = PolicyEngine::compile(&[p], &[inst], &[], &[], &HashMap::new());
         assert_eq!(c.pbr.len(), 0);
     }
