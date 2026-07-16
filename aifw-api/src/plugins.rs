@@ -212,6 +212,6 @@ pub async fn dispatch_hook(
     state: &AppState,
     event: aifw_plugins::HookEvent,
 ) -> Vec<aifw_plugins::HookAction> {
-    let mgr = state.plugin_manager.read().await;
-    mgr.dispatch(&event).await
+    let plugins = state.plugin_manager.read().await.dispatch_set();
+    plugins.dispatch(&event).await
 }

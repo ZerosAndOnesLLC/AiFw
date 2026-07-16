@@ -166,8 +166,10 @@ pub async fn auth_middleware(
         .load(std::sync::atomic::Ordering::Relaxed)
         > 0
     {
-        let mgr = state.plugin_manager.read().await;
-        if mgr.running_count() > 0 {
+        // PERF-H17 (#361): snapshot under a short read lock, dispatch after
+        // dropping it — a slow plugin can't block enable/disable (write()).
+        let plugins = state.plugin_manager.read().await.dispatch_set();
+        if !plugins.is_empty() {
             let method = request.method().to_string();
             let path = request.uri().path().to_string();
             let event = aifw_plugins::HookEvent {
@@ -178,7 +180,7 @@ pub async fn auth_middleware(
                     remote_addr: None,
                 },
             };
-            let actions = mgr.dispatch(&event).await;
+            let actions = plugins.dispatch(&event).await;
             for action in &actions {
                 if matches!(action, aifw_plugins::HookAction::Block) {
                     return Err(StatusCode::FORBIDDEN);
