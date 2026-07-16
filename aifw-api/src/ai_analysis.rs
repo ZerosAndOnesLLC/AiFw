@@ -63,42 +63,89 @@ pub async fn run_analysis(pool: &SqlitePool) -> Result<u32, String> {
         return Ok(0);
     }
 
-    // 3. Group by signature_id to deduplicate
-    let mut analyzed_sigs: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // 3. Deduplicate by signature_id up front — one LLM call per signature
+    //    per batch.
+    let mut seen_sigs: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let work: Vec<_> = raw_alerts
+        .iter()
+        .filter(|a| match a.signature_id.unwrap_or(0) {
+            0 => true,
+            sig => seen_sigs.insert(sig),
+        })
+        .collect();
+
+    // 4-8. PERF-H15 (#359): fan the LLM calls out AI_CONCURRENCY at a time.
+    // Sequentially, 20 alerts × a slow provider outgrew the 5-minute task
+    // interval and the backlog never drained.
+    use futures_util::StreamExt;
+    let futures: Vec<_> = work
+        .into_iter()
+        .map(|alert_obj| {
+            analyze_one(
+                pool,
+                &sqlite_out,
+                &provider,
+                &endpoint,
+                &api_key,
+                &model,
+                tls_insecure,
+                alert_obj,
+            )
+        })
+        .collect();
+    let mut results = futures_util::stream::iter(futures).buffer_unordered(AI_CONCURRENCY);
     let mut classified = 0u32;
+    while let Some(ok) = results.next().await {
+        classified += u32::from(ok);
+    }
 
-    for alert_obj in &raw_alerts {
-        let alert_id = &alert_obj.id.to_string();
-        let sig_id = alert_obj.signature_id.unwrap_or(0);
-        let sig_msg = &alert_obj.signature_msg;
-        let severity = alert_obj.severity.0 as i64;
-        let src_ip = &alert_obj.src_ip.to_string();
-        let src_port = alert_obj
-            .src_port
-            .map(|p| p.to_string())
-            .unwrap_or_default();
-        let dst_ip = &alert_obj.dst_ip.to_string();
-        let dst_port = alert_obj
-            .dst_port
-            .map(|p| p.to_string())
-            .unwrap_or_default();
-        let protocol = &alert_obj.protocol;
-        let payload = alert_obj.payload_excerpt.as_deref().unwrap_or("(none)");
+    Ok(classified)
+}
 
-        // Skip if we already analyzed this signature in this batch
-        if sig_id > 0 && analyzed_sigs.contains(&sig_id) {
-            continue;
-        }
+/// Concurrent LLM calls per analysis batch. AI providers all handle
+/// concurrency; only the provider-side rate limit matters, and 4 keeps a
+/// 20-alert batch well inside the 5-minute task interval even at high
+/// per-call latency.
+const AI_CONCURRENCY: usize = 4;
 
-        // 4. Build the prompt
-        let sev_label = match severity {
-            1 => "Critical",
-            2 => "High",
-            _ => "Medium",
-        };
+/// Analyze one alert: build the prompt, call the provider, apply the
+/// classification and write the audit row. Returns true if classified.
+#[allow(clippy::too_many_arguments)]
+async fn analyze_one(
+    pool: &SqlitePool,
+    sqlite_out: &aifw_ids::output::sqlite::SqliteOutput,
+    provider: &str,
+    endpoint: &str,
+    api_key: &str,
+    model: &str,
+    tls_insecure: bool,
+    alert_obj: &aifw_common::ids::IdsAlert,
+) -> bool {
+    let alert_id = alert_obj.id.to_string();
+    let sig_id = alert_obj.signature_id.unwrap_or(0);
+    let sig_msg = &alert_obj.signature_msg;
+    let severity = alert_obj.severity.0 as i64;
+    let src_ip = alert_obj.src_ip.to_string();
+    let src_port = alert_obj
+        .src_port
+        .map(|p| p.to_string())
+        .unwrap_or_default();
+    let dst_ip = alert_obj.dst_ip.to_string();
+    let dst_port = alert_obj
+        .dst_port
+        .map(|p| p.to_string())
+        .unwrap_or_default();
+    let protocol = &alert_obj.protocol;
+    let payload = alert_obj.payload_excerpt.as_deref().unwrap_or("(none)");
 
-        let prompt = format!(
-            r#"You are a network security analyst reviewing an IDS alert from an Emerging Threats (ET Open) ruleset on a FreeBSD firewall.
+    let sev_label = match severity {
+        1 => "Critical",
+        2 => "High",
+        _ => "Medium",
+    };
+
+    let prompt = format!(
+        r#"You are a network security analyst reviewing an IDS alert from an Emerging Threats (ET Open) ruleset on a FreeBSD firewall.
 
 Alert Details:
 - Signature: {sig_msg} (SID: {sig_id})
@@ -114,93 +161,82 @@ Classify this alert as one of:
 
 Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
 {{"classification": "false_positive|confirmed|investigating", "reason": "brief 1-2 sentence explanation"}}"#
-        );
+    );
 
-        // 5. Call the AI provider
-        let start = std::time::Instant::now();
-        let response = call_ai_provider(
-            &provider,
-            &endpoint,
-            &api_key,
-            &model,
-            &prompt,
-            tls_insecure,
-        )
-        .await;
-        let duration_ms = start.elapsed().as_millis() as i64;
+    let start = std::time::Instant::now();
+    let response =
+        call_ai_provider(provider, endpoint, api_key, model, &prompt, tls_insecure).await;
+    let duration_ms = start.elapsed().as_millis() as i64;
 
-        match response {
-            Ok(ai_response) => {
-                // 6. Parse the response (strip thinking tags, extract JSON)
-                let (classification, reason) = parse_ai_response(&ai_response);
-                // Store clean reason (not the full thinking chain)
-                let clean_reason = if reason.len() > 300 {
-                    format!("{}...", &reason[..297])
-                } else {
-                    reason.clone()
-                };
+    match response {
+        Ok(ai_response) => {
+            // Parse the response (strip thinking tags, extract JSON)
+            let (classification, reason) = parse_ai_response(&ai_response);
+            // Store clean reason (not the full thinking chain)
+            let clean_reason = if reason.len() > 300 {
+                format!("{}...", &reason[..297])
+            } else {
+                reason.clone()
+            };
 
-                // 7. Apply classification — DB update.
-                let notes_str = format!("AI ({provider}): {clean_reason}");
-                if sig_id > 0 {
-                    let _ = sqlx::query(
-                        "UPDATE ids_alerts SET classification = ?, analyst_notes = ?, acknowledged = 1 WHERE signature_id = ? AND classification = 'unreviewed'"
-                    )
-                    .bind(&classification)
-                    .bind(&notes_str)
-                    .bind(sig_id as i64)
-                    .execute(pool)
-                    .await;
-                    analyzed_sigs.insert(sig_id);
-                } else if let Ok(uuid) = Uuid::parse_str(alert_id) {
-                    let _ = sqlite_out
-                        .classify(uuid, &classification, Some(&notes_str))
-                        .await;
-                }
-
-                // 8. Log to audit
-                let log_id = Uuid::new_v4().to_string();
+            // Apply classification — DB update.
+            let notes_str = format!("AI ({provider}): {clean_reason}");
+            if sig_id > 0 {
                 let _ = sqlx::query(
-                    "INSERT INTO ai_audit_log (id, alert_id, signature_id, signature_msg, provider, model, prompt, response, classification, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "UPDATE ids_alerts SET classification = ?, analyst_notes = ?, acknowledged = 1 WHERE signature_id = ? AND classification = 'unreviewed'"
                 )
-                .bind(&log_id)
-                .bind(alert_id)
-                .bind(sig_id)
-                .bind(sig_msg)
-                .bind(&provider)
-                .bind(&model)
-                .bind(&prompt)
-                .bind(&ai_response)
                 .bind(&classification)
-                .bind(duration_ms)
-                .execute(pool).await;
-
-                classified += 1;
-                tracing::info!(sig_id, classification = %classification, reason = %reason, "AI classified alert");
+                .bind(&notes_str)
+                .bind(sig_id as i64)
+                .execute(pool)
+                .await;
+            } else if let Ok(uuid) = Uuid::parse_str(&alert_id) {
+                let _ = sqlite_out
+                    .classify(uuid, &classification, Some(&notes_str))
+                    .await;
             }
-            Err(e) => {
-                tracing::warn!(sig_id, error = %e, "AI analysis failed");
 
-                // Log the failure
-                let log_id = Uuid::new_v4().to_string();
-                let _ = sqlx::query(
-                    "INSERT INTO ai_audit_log (id, alert_id, signature_id, signature_msg, provider, model, prompt, response, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                )
-                .bind(&log_id)
-                .bind(alert_id)
-                .bind(sig_id)
-                .bind(sig_msg)
-                .bind(&provider)
-                .bind(&model)
-                .bind(&prompt)
-                .bind(format!("ERROR: {e}"))
-                .bind(duration_ms)
-                .execute(pool).await;
-            }
+            // Log to audit
+            let log_id = Uuid::new_v4().to_string();
+            let _ = sqlx::query(
+                "INSERT INTO ai_audit_log (id, alert_id, signature_id, signature_msg, provider, model, prompt, response, classification, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&log_id)
+            .bind(&alert_id)
+            .bind(sig_id)
+            .bind(sig_msg)
+            .bind(provider)
+            .bind(model)
+            .bind(&prompt)
+            .bind(&ai_response)
+            .bind(&classification)
+            .bind(duration_ms)
+            .execute(pool).await;
+
+            tracing::info!(sig_id, classification = %classification, reason = %reason, "AI classified alert");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(sig_id, error = %e, "AI analysis failed");
+
+            // Log the failure
+            let log_id = Uuid::new_v4().to_string();
+            let _ = sqlx::query(
+                "INSERT INTO ai_audit_log (id, alert_id, signature_id, signature_msg, provider, model, prompt, response, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&log_id)
+            .bind(&alert_id)
+            .bind(sig_id)
+            .bind(sig_msg)
+            .bind(provider)
+            .bind(model)
+            .bind(&prompt)
+            .bind(format!("ERROR: {e}"))
+            .bind(duration_ms)
+            .execute(pool).await;
+            false
         }
     }
-
-    Ok(classified)
 }
 
 /// Reject an AI endpoint URL whose scheme isn't http/https (e.g. `file://`,
