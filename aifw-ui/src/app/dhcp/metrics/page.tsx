@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { api } from "@/lib/api";
 
 interface PoolStats {
   subnet: string;
@@ -8,11 +9,6 @@ interface PoolStats {
   allocated: number;
   available: number;
   utilization: number;
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
 }
 
 export default function DhcpMetricsPage() {
@@ -25,9 +21,7 @@ export default function DhcpMetricsPage() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/pool-stats", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: PoolStats[] }>("/api/v1/dhcp/pool-stats");
       setStats(body.data || []);
     } catch {
       /* silent */
@@ -36,9 +30,7 @@ export default function DhcpMetricsPage() {
 
   const fetchRawMetrics = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/metrics", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setRawMetrics(await res.text());
+      setRawMetrics(await api.getText("/api/v1/dhcp/metrics"));
     } catch {
       setRawMetrics("# rDHCP metrics unavailable (service may not be running)");
     }

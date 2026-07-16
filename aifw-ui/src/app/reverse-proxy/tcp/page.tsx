@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -94,16 +95,6 @@ const defaultServiceForm: ServiceForm = {
 };
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function buildTlsJson(form: RouterForm): string | null {
   if (!form.tlsPassthrough && !form.tlsCertResolver.trim()) return null;
@@ -232,9 +223,7 @@ export default function TcpPage() {
 
   const fetchRouters = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/tcp/routers", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<TcpRouter[] | { data?: TcpRouter[] }>("/api/v1/reverse-proxy/tcp/routers");
       setRouters(Array.isArray(body) ? body : body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load TCP routers");
@@ -243,9 +232,7 @@ export default function TcpPage() {
 
   const fetchServices = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/tcp/services", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<TcpService[] | { data?: TcpService[] }>("/api/v1/reverse-proxy/tcp/services");
       setServices(Array.isArray(body) ? body : body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load TCP services");
@@ -254,9 +241,7 @@ export default function TcpPage() {
 
   const fetchEntrypoints = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/entrypoints", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<EntryPoint[] | { data?: EntryPoint[] }>("/api/v1/reverse-proxy/entrypoints");
       setEntrypoints(Array.isArray(body) ? body : body.data || []);
     } catch {
       /* silent */
@@ -317,14 +302,10 @@ export default function TcpPage() {
         tls_json: buildTlsJson(routerForm),
         enabled: routerForm.enabled,
       };
-      const url = editingRouterId
-        ? `/api/v1/reverse-proxy/tcp/routers/${editingRouterId}`
-        : "/api/v1/reverse-proxy/tcp/routers";
-      const method = editingRouterId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
+      if (editingRouterId) {
+        await api.put(`/api/v1/reverse-proxy/tcp/routers/${editingRouterId}`, payload);
+      } else {
+        await api.post("/api/v1/reverse-proxy/tcp/routers", payload);
       }
       showFeedback("success", editingRouterId ? "TCP router updated" : "TCP router created");
       closeRouterModal();
@@ -338,11 +319,7 @@ export default function TcpPage() {
 
   const handleDeleteRouter = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/tcp/routers/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/reverse-proxy/tcp/routers/${id}`);
       showFeedback("success", "TCP router deleted");
       setDeleteRouterId(null);
       await fetchRouters();
@@ -395,14 +372,10 @@ export default function TcpPage() {
         config_json: buildServiceConfigJson(serviceForm),
         enabled: serviceForm.enabled,
       };
-      const url = editingServiceId
-        ? `/api/v1/reverse-proxy/tcp/services/${editingServiceId}`
-        : "/api/v1/reverse-proxy/tcp/services";
-      const method = editingServiceId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(payload) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
+      if (editingServiceId) {
+        await api.put(`/api/v1/reverse-proxy/tcp/services/${editingServiceId}`, payload);
+      } else {
+        await api.post("/api/v1/reverse-proxy/tcp/services", payload);
       }
       showFeedback("success", editingServiceId ? "TCP service updated" : "TCP service created");
       closeServiceModal();
@@ -416,11 +389,7 @@ export default function TcpPage() {
 
   const handleDeleteService = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/tcp/services/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/reverse-proxy/tcp/services/${id}`);
       showFeedback("success", "TCP service deleted");
       setDeleteServiceId(null);
       await fetchServices();

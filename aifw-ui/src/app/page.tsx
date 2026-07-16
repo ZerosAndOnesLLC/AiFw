@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useWs } from "@/context/WsContext";
+import { api } from "@/lib/api";
 
 interface StatusData {
   pf_running: boolean; pf_states: number; pf_rules: number;
@@ -338,17 +339,16 @@ export default function Dashboard() {
   useEffect(() => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
-    const headers = { Authorization: `Bearer ${token}` };
     const fetchSvc = async () => {
       const [dnsRes, dhcpRes, timeRes] = await Promise.allSettled([
-        fetch("/api/v1/dns/resolver/status", { headers }).then(r => r.ok ? r.json() : null),
-        fetch("/api/v1/dhcp/status", { headers }).then(r => r.ok ? r.json() : null),
-        fetch("/api/v1/time/status", { headers }).then(r => r.ok ? r.json() : null),
+        api.get<{ running: boolean; version: string; total_hosts: number; total_domains: number; total_acls: number; queries_total: number; cache_hits: number; cache_misses: number }>("/api/v1/dns/resolver/status"),
+        api.get<{ running: boolean; version: string; total_subnets: number; active_leases: number; total_reservations: number }>("/api/v1/dhcp/status"),
+        api.get<{ running: boolean; version: string; sources_count: number }>("/api/v1/time/status"),
       ]);
       setSvcStatus({
-        dns: dnsRes.status === "fulfilled" ? dnsRes.value : null,
-        dhcp: dhcpRes.status === "fulfilled" ? dhcpRes.value : null,
-        time: timeRes.status === "fulfilled" ? timeRes.value : null,
+        dns: dnsRes.status === "fulfilled" ? dnsRes.value ?? null : null,
+        dhcp: dhcpRes.status === "fulfilled" ? dhcpRes.value ?? null : null,
+        time: timeRes.status === "fulfilled" ? timeRes.value ?? null : null,
       });
     };
     fetchSvc();
@@ -360,9 +360,8 @@ export default function Dashboard() {
   useEffect(() => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
-    fetch("/api/v1/cluster/status", { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.ok ? r.json() : null)
-      .then((s: { role?: string; peer_reachable?: boolean } | null) => {
+    api.get<{ role?: string; peer_reachable?: boolean }>("/api/v1/cluster/status")
+      .then((s) => {
         if (s && s.role && s.role !== "standalone") {
           setHaStatus({ role: s.role, peer_reachable: s.peer_reachable ?? false });
         }

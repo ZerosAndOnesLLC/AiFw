@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { api } from "@/lib/api";
 import Help, { HelpBanner } from "./Help";
 
 /* ---------- Types ---------- */
@@ -50,29 +51,6 @@ interface ExportTarget {
 }
 
 /* ---------- Helpers ---------- */
-
-function authHeaders(): HeadersInit {
-  const t = typeof window !== "undefined" ? localStorage.getItem("aifw_token") || "" : "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${t}` };
-}
-function authHeadersPlain(): HeadersInit {
-  const t = typeof window !== "undefined" ? localStorage.getItem("aifw_token") || "" : "";
-  return { Authorization: `Bearer ${t}` };
-}
-async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: body !== undefined ? authHeaders() : authHeadersPlain(),
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (res.status === 204) return undefined as T;
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(txt || `HTTP ${res.status}`);
-  }
-  const ct = res.headers.get("content-type") || "";
-  return ct.includes("application/json") ? res.json() : (undefined as T);
-}
 
 const DOMAIN_RE = /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 function validateDomain(d: string): string | null {
@@ -155,8 +133,8 @@ function CertsTab() {
 
   const reload = useCallback(async () => {
     const [c, p] = await Promise.all([
-      api<CertSummary[]>("GET", "/api/v1/acme/certs"),
-      api<DnsProvider[]>("GET", "/api/v1/acme/dns-providers"),
+      api.get<CertSummary[]>("/api/v1/acme/certs"),
+      api.get<DnsProvider[]>("/api/v1/acme/dns-providers"),
     ]);
     setCerts(c); setProviders(p);
   }, []);
@@ -170,7 +148,7 @@ function CertsTab() {
   async function renewNow(id: number) {
     setBusy(id);
     try {
-      const r = await api<{ ok: boolean; message: string }>("POST", `/api/v1/acme/certs/${id}/renew`);
+      const r = await api.post<{ ok: boolean; message: string }>(`/api/v1/acme/certs/${id}/renew`);
       showToast(r.ok, r.message);
       await reload();
     } catch (e) { showToast(false, String(e)); }
@@ -179,7 +157,7 @@ function CertsTab() {
   async function deleteCert(id: number) {
     if (!confirm("Delete this cert? It will not be revoked at the CA.")) return;
     try {
-      await api("DELETE", `/api/v1/acme/certs/${id}`);
+      await api.delete(`/api/v1/acme/certs/${id}`);
       await reload();
     } catch (e) { showToast(false, String(e)); }
   }
@@ -282,7 +260,7 @@ function AddCertModal({ providers, onClose, onCreated }:
     if (!valid) return;
     setBusy(true); setErr(null);
     try {
-      await api("POST", "/api/v1/acme/certs", {
+      await api.post("/api/v1/acme/certs", {
         common_name: cn.trim(),
         sans: sansArr,
         challenge_type: "dns-01",
@@ -355,13 +333,13 @@ function ExportTargetsPanel({ certId }: { certId: number }) {
   const [showAdd, setShowAdd] = useState(false);
 
   const reload = useCallback(async () => {
-    setTargets(await api<ExportTarget[]>("GET", `/api/v1/acme/certs/${certId}/targets`));
+    setTargets(await api.get<ExportTarget[]>(`/api/v1/acme/certs/${certId}/targets`));
   }, [certId]);
   useEffect(() => { queueMicrotask(reload); }, [reload]);
 
   async function remove(id: number) {
     if (!confirm("Delete this export target?")) return;
-    await api("DELETE", `/api/v1/acme/export-targets/${id}`);
+    await api.delete(`/api/v1/acme/export-targets/${id}`);
     await reload();
   }
 
@@ -421,7 +399,7 @@ function AddExportTargetModal({ certId, onClose, onCreated }: { certId: number; 
     setBusy(true); setErr(null);
     try {
       const parsed = JSON.parse(cfg);
-      await api("POST", `/api/v1/acme/certs/${certId}/targets`, { kind, config: parsed });
+      await api.post(`/api/v1/acme/certs/${certId}/targets`, { kind, config: parsed });
       onCreated();
     } catch (e) { setErr(String(e)); }
     finally { setBusy(false); }
@@ -463,7 +441,7 @@ function ProvidersTab() {
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const reload = useCallback(async () => {
-    setProviders(await api<DnsProvider[]>("GET", "/api/v1/acme/dns-providers"));
+    setProviders(await api.get<DnsProvider[]>("/api/v1/acme/dns-providers"));
   }, []);
   useEffect(() => { queueMicrotask(reload); }, [reload]);
 
@@ -474,7 +452,7 @@ function ProvidersTab() {
   async function test(id: number) {
     setTesting(id);
     try {
-      const r = await api<{ ok: boolean; message: string }>("POST", `/api/v1/acme/dns-providers/${id}/test`);
+      const r = await api.post<{ ok: boolean; message: string }>(`/api/v1/acme/dns-providers/${id}/test`);
       showToast(r.ok, r.message);
     } catch (e) { showToast(false, String(e)); }
     finally { setTesting(null); }
@@ -482,7 +460,7 @@ function ProvidersTab() {
 
   async function remove(id: number) {
     if (!confirm("Delete this provider? Certs using it will fail to renew.")) return;
-    await api("DELETE", `/api/v1/acme/dns-providers/${id}`);
+    await api.delete(`/api/v1/acme/dns-providers/${id}`);
     await reload();
   }
 
@@ -691,13 +669,13 @@ function ProviderModal({ initial, onClose, onSaved }: { initial: DnsProvider | n
     try {
       const body = buildBody();
       const created: DnsProvider = isNew
-        ? await api<DnsProvider>("POST", "/api/v1/acme/dns-providers", body)
-        : await api<DnsProvider>("PUT", `/api/v1/acme/dns-providers/${initial!.id}`, body);
+        ? await api.post<DnsProvider>("/api/v1/acme/dns-providers", body)
+        : await api.put<DnsProvider>(`/api/v1/acme/dns-providers/${initial!.id}`, body);
       if (testAfter) {
         setTesting(true);
         try {
-          const r = await api<{ ok: boolean; message: string }>(
-            "POST", `/api/v1/acme/dns-providers/${created.id}/test`,
+          const r = await api.post<{ ok: boolean; message: string }>(
+            `/api/v1/acme/dns-providers/${created.id}/test`,
           );
           setTestResult(r);
           if (!r.ok) { setBusy(false); setTesting(false); return; }
@@ -833,7 +811,7 @@ function AccountTab() {
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const reload = useCallback(async () => {
-    const a = await api<Account>("GET", "/api/v1/acme/account");
+    const a = await api.get<Account>("/api/v1/acme/account");
     setAcct(a); setEmail(a.contact_email); setDirUrl(a.directory_url);
   }, []);
   useEffect(() => { queueMicrotask(reload); }, [reload]);
@@ -841,7 +819,7 @@ function AccountTab() {
   async function save() {
     setBusy(true);
     try {
-      await api("PUT", "/api/v1/acme/account", { directory_url: dirUrl, contact_email: email });
+      await api.put("/api/v1/acme/account", { directory_url: dirUrl, contact_email: email });
       await reload();
       setToast({ ok: true, msg: "Saved. Account is registered with the CA on the first cert issue." });
     } catch (e) { setToast({ ok: false, msg: String(e) }); }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* ────────────────────────── Types ────────────────────────── */
 
@@ -70,11 +71,6 @@ interface FailoverConfig {
 }
 
 /* ────────────────────────── Helpers ────────────────────────── */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
 
 const defaultLbConfig: LbConfig = {
   servers: [{ url: "http://10.0.0.1:8080", weight: 1 }],
@@ -651,9 +647,7 @@ export default function HttpServicesPage() {
   const fetchServices = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch("/api/v1/reverse-proxy/http/services", { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      const json = await api.get<HttpService[] | { data?: HttpService[] }>("/api/v1/reverse-proxy/http/services");
       setServices(Array.isArray(json) ? json : json.data || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load services");
@@ -716,18 +710,10 @@ export default function HttpServicesPage() {
     };
 
     try {
-      const url = editingId
-        ? `/api/v1/reverse-proxy/http/services/${editingId}`
-        : "/api/v1/reverse-proxy/http/services";
-      const method = editingId ? "PUT" : "POST";
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => null);
-        throw new Error(errBody?.message || errBody?.error || `Failed to ${editingId ? "update" : "create"} service`);
+      if (editingId) {
+        await api.put(`/api/v1/reverse-proxy/http/services/${editingId}`, body);
+      } else {
+        await api.post("/api/v1/reverse-proxy/http/services", body);
       }
       closeModal();
       await fetchServices();
@@ -742,11 +728,7 @@ export default function HttpServicesPage() {
     if (!confirm("Delete this service? This action cannot be undone.")) return;
     setError(null);
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/http/services/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error("Failed to delete service");
+      await api.delete(`/api/v1/reverse-proxy/http/services/${id}`);
       await fetchServices();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");
@@ -756,17 +738,12 @@ export default function HttpServicesPage() {
   async function handleToggleEnabled(svc: HttpService) {
     setError(null);
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/http/services/${svc.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          name: svc.name,
-          service_type: svc.service_type,
-          config_json: svc.config_json,
-          enabled: !svc.enabled,
-        }),
+      await api.put(`/api/v1/reverse-proxy/http/services/${svc.id}`, {
+        name: svc.name,
+        service_type: svc.service_type,
+        config_json: svc.config_json,
+        enabled: !svc.enabled,
       });
-      if (!res.ok) throw new Error("Failed to toggle service");
       setServices((prev) => prev.map((s) => (s.id === svc.id ? { ...s, enabled: !s.enabled } : s)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Toggle failed");

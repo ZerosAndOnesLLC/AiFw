@@ -1,11 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
+import { api } from "@/lib/api";
 
 type LogType = "server" | "access";
 
@@ -22,9 +18,7 @@ export default function ReverseProxyLogsPage() {
     try {
       const params = new URLSearchParams({ lines: String(lines), log_type: logType });
       if (search) params.set("search", search);
-      const res = await fetch(`/api/v1/reverse-proxy/logs?${params}`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<string[]>(`/api/v1/reverse-proxy/logs?${params}`);
       setLogs(data || []);
       setError(null);
     } catch (err) {

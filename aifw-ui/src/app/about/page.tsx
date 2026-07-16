@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { api } from "@/lib/api";
 
 interface ServiceInfo {
   name: string;
@@ -37,11 +38,6 @@ interface AboutInfo {
   memory: MemoryBreakdown;
 }
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
-
 function fmtMb(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
   if (mb >= 1)    return `${mb.toFixed(0)} MB`;
@@ -62,23 +58,18 @@ export default function AboutPage() {
 
   useEffect(() => {
     (async () => {
-      const headers = authHeaders();
       const results: ServiceInfo[] = [];
 
       // /api/v1/about returns version + memory breakdown in one shot.
       try {
-        const res = await fetch("/api/v1/about", { headers });
-        if (res.ok) {
-          const data: AboutInfo = await res.json();
-          setAbout(data);
-          setAifwVersion(data.version);
-        }
+        const data = await api.get<AboutInfo>("/api/v1/about");
+        setAbout(data);
+        setAifwVersion(data.version);
       } catch {}
 
       // Firewall daemon
       try {
-        const res = await fetch("/api/v1/status", { headers });
-        const data = res.ok ? await res.json() : {};
+        const data = await api.get<{ version?: string; data?: { version?: string } }>("/api/v1/status");
         results.push({
           name: "AiFw Daemon",
           binary: "aifw-daemon",
@@ -103,8 +94,7 @@ export default function AboutPage() {
 
       // DNS
       try {
-        const res = await fetch("/api/v1/dns/resolver/status", { headers });
-        const data = res.ok ? await res.json() : {};
+        const data = await api.get<{ version?: string; running?: boolean }>("/api/v1/dns/resolver/status");
         results.push({
           name: "rDNS",
           binary: "rdns",
@@ -119,8 +109,8 @@ export default function AboutPage() {
 
       // DHCP
       try {
-        const res = await fetch("/api/v1/dhcp/status", { headers });
-        const data = res.ok ? await res.json() : {};
+        type SvcStatus = { version?: string; running?: boolean; status?: string };
+        const data = await api.get<SvcStatus & { data?: SvcStatus }>("/api/v1/dhcp/status");
         const d = data.data || data;
         results.push({
           name: "rDHCP",
@@ -136,8 +126,8 @@ export default function AboutPage() {
 
       // TrafficCop
       try {
-        const res = await fetch("/api/v1/reverse-proxy/status", { headers });
-        const data = res.ok ? await res.json() : {};
+        type SvcStatus = { version?: string; running?: boolean };
+        const data = await api.get<SvcStatus & { data?: SvcStatus }>("/api/v1/reverse-proxy/status");
         const d = data.data || data;
         results.push({
           name: "TrafficCop",

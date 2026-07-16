@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -31,16 +32,6 @@ interface Feedback {
 }
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 const defaultConfig: GlobalConfig = {
   enabled: false,
@@ -76,9 +67,7 @@ export default function ReverseProxyPage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/status", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setStatus(await res.json());
+      setStatus(await api.get<ReverseProxyStatus>("/api/v1/reverse-proxy/status"));
     } catch {
       /* silent */
     }
@@ -86,9 +75,7 @@ export default function ReverseProxyPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/config", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: GlobalConfig = await res.json();
+      const data = await api.get<GlobalConfig>("/api/v1/reverse-proxy/config");
       setConfigRaw(data);
     } catch {
       /* silent */
@@ -108,12 +95,8 @@ export default function ReverseProxyPage() {
   const serviceAction = async (action: "start" | "stop" | "restart") => {
     setActionLoading(action);
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/${action}`, {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      const data = await res.json().catch(() => ({ message: "" }));
-      const msg = data.message || `Reverse proxy ${action} completed`;
+      const data = await api.post<{ message?: string }>(`/api/v1/reverse-proxy/${action}`);
+      const msg = data?.message || `Reverse proxy ${action} completed`;
       if (msg.toLowerCase().includes("fail") || msg.toLowerCase().includes("error")) {
         showFeedback("error", msg);
       } else {
@@ -130,12 +113,7 @@ export default function ReverseProxyPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/v1/reverse-proxy/config", {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(config),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put("/api/v1/reverse-proxy/config", config);
       showFeedback("success", "Global settings saved");
       setIsDirty(false);
       await fetchConfig();
@@ -149,11 +127,7 @@ export default function ReverseProxyPage() {
   const handleApply = async () => {
     setApplying(true);
     try {
-      const res = await fetch("/api/v1/reverse-proxy/apply", {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.post("/api/v1/reverse-proxy/apply");
       showFeedback("success", "Configuration applied and service restarted");
       setIsDirty(false);
       await fetchStatus();
@@ -167,13 +141,8 @@ export default function ReverseProxyPage() {
   const handleValidate = async () => {
     setValidating(true);
     try {
-      const res = await fetch("/api/v1/reverse-proxy/validate", {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      showFeedback("success", data.message || "Configuration is valid");
+      const data = await api.post<{ message?: string }>("/api/v1/reverse-proxy/validate");
+      showFeedback("success", data?.message || "Configuration is valid");
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Configuration validation failed");
     } finally {

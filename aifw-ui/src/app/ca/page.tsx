@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* ── Types ─────────────────────────────────────────────────────── */
 
@@ -33,16 +34,6 @@ interface IssuedCertResponse {
 }
 
 /* ── Helpers ───────────────────────────────────────────────────── */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function downloadBlob(body: string, filename: string, mime = "application/x-pem-file") {
   const blob = new Blob([body], { type: mime });
@@ -127,9 +118,7 @@ export default function CaPage() {
 
   const fetchCa = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/ca", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setCaInfo(await res.json());
+      setCaInfo(await api.get<CaInfo>("/api/v1/ca"));
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load CA info");
     }
@@ -137,9 +126,7 @@ export default function CaPage() {
 
   const fetchCerts = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/ca/certs", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: CertRecord[] }>("/api/v1/ca/certs");
       setCerts(body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load certificates");
@@ -159,12 +146,7 @@ export default function CaPage() {
   const generateCa = async () => {
     setGenerating(true);
     try {
-      const res = await fetch("/api/v1/ca", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ common_name: genCn, organization: genOrg, validity_days: genDays }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.post("/api/v1/ca", { common_name: genCn, organization: genOrg, validity_days: genDays });
       showFeedback("success", "Root CA generated successfully");
       setConfirmRegen(false);
       await fetchCa();
@@ -177,9 +159,7 @@ export default function CaPage() {
 
   const downloadCaCert = async () => {
     try {
-      const res = await fetch("/api/v1/ca/cert.pem", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      downloadBlob(await res.text(), "aifw-ca.pem");
+      downloadBlob(await api.getText("/api/v1/ca/cert.pem"), "aifw-ca.pem");
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Download failed");
     }
@@ -196,24 +176,15 @@ export default function CaPage() {
         validity_days: issueDays,
       };
       if (issueSans.trim()) body.sans = issueSans.trim();
-      const res = await fetch("/api/v1/ca/certs", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const result: IssuedCertResponse = await res.json();
+      const result = await api.post<IssuedCertResponse>("/api/v1/ca/certs", body);
       showFeedback("success", `Certificate issued (ID: ${result.id})`);
 
       // Fetch full cert details to get the PEM
       if (result.certificate_pem) {
         setIssuedPem(result.certificate_pem);
       } else {
-        const detailRes = await fetch(`/api/v1/ca/certs/${result.id}`, { headers: authHeadersPlain() });
-        if (detailRes.ok) {
-          const detail = await detailRes.json();
-          if (detail.certificate_pem) setIssuedPem(detail.certificate_pem);
-        }
+        const detail = await api.get<{ certificate_pem?: string }>(`/api/v1/ca/certs/${result.id}`).catch(() => undefined);
+        if (detail?.certificate_pem) setIssuedPem(detail.certificate_pem);
       }
 
       setIssueCn("");
@@ -229,9 +200,7 @@ export default function CaPage() {
 
   const downloadCert = async (id: string, cn: string) => {
     try {
-      const res = await fetch(`/api/v1/ca/certs/${id}/cert.pem`, { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      downloadBlob(await res.text(), `${cn}.cert.pem`);
+      downloadBlob(await api.getText(`/api/v1/ca/certs/${id}/cert.pem`), `${cn}.cert.pem`);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Download failed");
     }
@@ -239,9 +208,7 @@ export default function CaPage() {
 
   const downloadKey = async (id: string, cn: string) => {
     try {
-      const res = await fetch(`/api/v1/ca/certs/${id}/key.pem`, { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      downloadBlob(await res.text(), `${cn}.key.pem`);
+      downloadBlob(await api.getText(`/api/v1/ca/certs/${id}/key.pem`), `${cn}.key.pem`);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Download failed");
     }
@@ -249,11 +216,7 @@ export default function CaPage() {
 
   const revokeCert = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/ca/certs/${id}/revoke`, {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.post(`/api/v1/ca/certs/${id}/revoke`);
       showFeedback("success", "Certificate revoked");
       setRevokeId(null);
       await fetchCerts();
@@ -264,11 +227,7 @@ export default function CaPage() {
 
   const deleteCert = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/ca/certs/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/ca/certs/${id}`);
       showFeedback("success", "Certificate deleted");
       setDeleteId(null);
       await fetchCerts();
@@ -279,9 +238,7 @@ export default function CaPage() {
 
   const downloadCrl = async () => {
     try {
-      const res = await fetch("/api/v1/ca/crl", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      downloadBlob(await res.text(), "aifw-crl.pem");
+      downloadBlob(await api.getText("/api/v1/ca/crl"), "aifw-crl.pem");
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "CRL download failed");
     }

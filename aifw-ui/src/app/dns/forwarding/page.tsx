@@ -1,17 +1,16 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
-/* -- Helpers --------------------------------------------------------- */
+/* -- Types ----------------------------------------------------------- */
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
+interface ForwardingConfig extends Record<string, unknown> {
+  forwarding_enabled?: boolean;
+  use_system_nameservers?: boolean;
+  forwarding_servers?: string[];
+  dot_enabled?: boolean;
+  dot_upstream?: string[];
 }
 
 /* -- Page ------------------------------------------------------------ */
@@ -41,9 +40,7 @@ export default function DnsForwardingPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dns/resolver/config", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const c = await res.json();
+      const c = await api.get<ForwardingConfig>("/api/v1/dns/resolver/config");
       setFullConfig(c);
       setForwardingEnabled(c.forwarding_enabled ?? false);
       setUseSystemNs(c.use_system_nameservers ?? false);
@@ -68,22 +65,17 @@ export default function DnsForwardingPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/v1/dns/resolver/config", {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          ...fullConfig,
-          forwarding_enabled: forwardingEnabled,
-          forwarding_servers: servers.filter(s => s.trim()),
-          use_system_nameservers: useSystemNs,
-          dot_enabled: dotEnabled,
-          dot_upstream: dotUpstream.filter(s => s.trim()),
-        }),
+      await api.put("/api/v1/dns/resolver/config", {
+        ...fullConfig,
+        forwarding_enabled: forwardingEnabled,
+        forwarding_servers: servers.filter(s => s.trim()),
+        use_system_nameservers: useSystemNs,
+        dot_enabled: dotEnabled,
+        dot_upstream: dotUpstream.filter(s => s.trim()),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showFeedback("success", "Forwarding configuration saved");
       // Apply config
-      await fetch("/api/v1/dns/resolver/apply", { method: "POST", headers: authHeaders() });
+      await api.post("/api/v1/dns/resolver/apply");
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Save failed");
     } finally {

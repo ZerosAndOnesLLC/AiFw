@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -48,16 +49,6 @@ interface Feedback {
 }
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function parseJsonArray(raw: string): string[] {
   try {
@@ -236,9 +227,7 @@ export default function HttpRoutersPage() {
 
   const fetchRouters = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/http/routers", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<HttpRouter[] | { data?: HttpRouter[] }>("/api/v1/reverse-proxy/http/routers");
       setRouters(Array.isArray(data) ? data : data.data || []);
     } catch {
       showFeedback("error", "Failed to load HTTP routers");
@@ -249,27 +238,21 @@ export default function HttpRoutersPage() {
 
   const fetchEntrypoints = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/entrypoints", { headers: authHeadersPlain() });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await api.get<Entrypoint[] | { data?: Entrypoint[] }>("/api/v1/reverse-proxy/entrypoints");
       setEntrypoints(Array.isArray(data) ? data : data.data || []);
     } catch { /* silent */ }
   }, []);
 
   const fetchServices = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/http/services", { headers: authHeadersPlain() });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await api.get<HttpService[] | { data?: HttpService[] }>("/api/v1/reverse-proxy/http/services");
       setServices(Array.isArray(data) ? data : data.data || []);
     } catch { /* silent */ }
   }, []);
 
   const fetchMiddlewares = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/http/middlewares", { headers: authHeadersPlain() });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await api.get<HttpMiddleware[] | { data?: HttpMiddleware[] }>("/api/v1/reverse-proxy/http/middlewares");
       setMiddlewares(Array.isArray(data) ? data : data.data || []);
     } catch { /* silent */ }
   }, []);
@@ -373,19 +356,10 @@ export default function HttpRoutersPage() {
         enabled: formEnabled,
       };
 
-      const url = editingId
-        ? `/api/v1/reverse-proxy/http/routers/${editingId}`
-        : "/api/v1/reverse-proxy/http/routers";
-      const method = editingId ? "PUT" : "POST";
-
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-        throw new Error(errData.message || errData.error || `HTTP ${res.status}`);
+      if (editingId) {
+        await api.put(`/api/v1/reverse-proxy/http/routers/${editingId}`, body);
+      } else {
+        await api.post("/api/v1/reverse-proxy/http/routers", body);
       }
 
       showFeedback("success", editingId ? "Router updated" : "Router created");
@@ -401,11 +375,7 @@ export default function HttpRoutersPage() {
   const handleDelete = async (id: string) => {
     setDeletingId(id);
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/http/routers/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/reverse-proxy/http/routers/${id}`);
       showFeedback("success", "Router deleted");
       setRouters((prev) => prev.filter((r) => r.id !== id));
     } catch (err) {
@@ -417,12 +387,7 @@ export default function HttpRoutersPage() {
 
   const handleToggleEnabled = async (router: HttpRouter) => {
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/http/routers/${router.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ ...router, enabled: !router.enabled }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put(`/api/v1/reverse-proxy/http/routers/${router.id}`, { ...router, enabled: !router.enabled });
       setRouters((prev) =>
         prev.map((r) => (r.id === router.id ? { ...r, enabled: !r.enabled } : r))
       );

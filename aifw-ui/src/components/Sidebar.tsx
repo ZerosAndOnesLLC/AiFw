@@ -5,6 +5,7 @@ import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
+import { api } from "@/lib/api";
 
 interface NavChild { href: string; label: string; permission?: string; }
 interface NavItem {
@@ -188,12 +189,12 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
   useEffect(() => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
-    fetch("/api/v1/interfaces", { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.ok ? r.json() : { data: [] })
+    api
+      .get<{ data?: { name: string; role?: string }[] }>("/api/v1/interfaces")
       .then((d) => {
         const ifaces = (d.data || [])
-          .filter((i: { name: string }) => !i.name.startsWith("lo") && !i.name.startsWith("pflog"))
-          .map((i: { name: string; role?: string }) => ({ name: i.name, role: i.role }));
+          .filter((i) => !i.name.startsWith("lo") && !i.name.startsWith("pflog"))
+          .map((i) => ({ name: i.name, role: i.role }));
         setInterfaces(ifaces);
       })
       .catch(() => {});

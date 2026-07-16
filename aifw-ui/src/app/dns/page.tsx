@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -75,16 +76,6 @@ interface NetInterface {
 }
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 const defaultConfig: ResolverConfig = {
   backend: "rdns",
@@ -172,9 +163,7 @@ export default function DnsResolverPage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dns/resolver/status", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setStatus(await res.json());
+      setStatus(await api.get<DnsStatus>("/api/v1/dns/resolver/status"));
     } catch {
       /* silent */
     }
@@ -182,9 +171,7 @@ export default function DnsResolverPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dns/resolver/config", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: ResolverConfig = await res.json();
+      const data = await api.get<ResolverConfig>("/api/v1/dns/resolver/config");
       setConfigRaw(data);
     } catch {
       /* silent */
@@ -193,9 +180,7 @@ export default function DnsResolverPage() {
 
   const fetchInterfaces = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/interfaces", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: NetInterface[] }>("/api/v1/interfaces");
       const names = (body.data || [])
         .map((i: NetInterface) => i.name)
         .filter((n: string) => !n.startsWith("lo") && !n.startsWith("pflog"));
@@ -229,11 +214,8 @@ export default function DnsResolverPage() {
   const serviceAction = async (action: "start" | "stop" | "restart") => {
     setActionLoading(action);
     try {
-      const res = await fetch(`/api/v1/dns/resolver/${action}`, {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      const data: ApplyReport | { message?: string } = await res.json().catch(() => ({}));
+      const data: ApplyReport | { message?: string } =
+        (await api.post<ApplyReport | { message?: string }>(`/api/v1/dns/resolver/${action}`)) ?? {};
       if ("probe_udp" in data) {
         reportToFeedback(data as ApplyReport, `DNS Resolver ${action} completed`);
       } else {
@@ -251,12 +233,7 @@ export default function DnsResolverPage() {
   const saveConfig = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/v1/dns/resolver/config", {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(config),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put("/api/v1/dns/resolver/config", config);
       showFeedback("success", "DNS Resolver settings saved");
       setIsDirty(false);
       await fetchConfig();
@@ -271,19 +248,9 @@ export default function DnsResolverPage() {
     setApplying(true);
     try {
       // Save config first, then apply
-      const saveRes = await fetch("/api/v1/dns/resolver/config", {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(config),
-      });
-      if (!saveRes.ok) throw new Error(`Save failed: HTTP ${saveRes.status}`);
+      await api.put("/api/v1/dns/resolver/config", config);
 
-      const res = await fetch("/api/v1/dns/resolver/apply", {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`Apply failed: HTTP ${res.status}`);
-      const data: ApplyReport = await res.json();
+      const data = await api.post<ApplyReport>("/api/v1/dns/resolver/apply");
       reportToFeedback(data, "Configuration applied");
       setIsDirty(false);
       // If server rolled back, the persisted backend may have flipped —

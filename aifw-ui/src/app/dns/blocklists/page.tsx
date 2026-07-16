@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import Help, { HelpBanner } from "../Help";
+import { api } from "@/lib/api";
 
 /* ---------- Types ---------- */
 
@@ -47,26 +48,6 @@ const CATEGORIES = ["ads", "tracking", "malware", "phishing", "crypto", "adult",
 
 /* ---------- Helpers ---------- */
 
-function authHeaders(): HeadersInit {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") || "" : "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: authHeaders(),
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (res.status === 204) return undefined as T;
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`${res.status}: ${txt || res.statusText}`);
-  }
-  const ct = res.headers.get("content-type") || "";
-  return ct.includes("application/json") ? res.json() : (undefined as T);
-}
-
 function fmtTime(t: number | null): string {
   if (!t) return "never";
   return new Date(t * 1000).toLocaleString();
@@ -109,7 +90,7 @@ export default function BlocklistsPage() {
 
   const loadMaster = useCallback(async () => {
     try {
-      const s = await api<BlocklistSchedule>("GET", "/api/v1/dns/blocklists/schedule");
+      const s = await api.get<BlocklistSchedule>("/api/v1/dns/blocklists/schedule");
       setMasterEnabled(s.enabled);
     } catch (e) {
       setMasterError(String(e));
@@ -123,7 +104,7 @@ export default function BlocklistsPage() {
     setMasterBusy(true);
     setMasterError(null);
     try {
-      await api("PUT", "/api/v1/dns/blocklists/enabled", { enabled: next });
+      await api.put("/api/v1/dns/blocklists/enabled", { enabled: next });
       setMasterEnabled(next);
     } catch (e) {
       setMasterError(String(e));
@@ -243,7 +224,7 @@ function SourcesTab() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await api<BlocklistSource[]>("GET", "/api/v1/dns/blocklists");
+      const data = await api.get<BlocklistSource[]>("/api/v1/dns/blocklists");
       setSources(data);
     } finally {
       setLoading(false);
@@ -259,7 +240,7 @@ function SourcesTab() {
 
   async function toggleEnabled(s: BlocklistSource) {
     try {
-      await api("PUT", `/api/v1/dns/blocklists/${s.id}`, { enabled: !s.enabled });
+      await api.put(`/api/v1/dns/blocklists/${s.id}`, { enabled: !s.enabled });
       await reload();
     } catch (e) {
       showToast(String(e), false);
@@ -270,7 +251,7 @@ function SourcesTab() {
     try {
       const body: Record<string, unknown> = { action };
       if (action === "redirect" && !s.redirect_ip) body.redirect_ip = "0.0.0.0";
-      await api("PUT", `/api/v1/dns/blocklists/${s.id}`, body);
+      await api.put(`/api/v1/dns/blocklists/${s.id}`, body);
       await reload();
     } catch (e) {
       showToast(String(e), false);
@@ -280,7 +261,7 @@ function SourcesTab() {
   async function refreshOne(id: number) {
     setRefreshingId(id);
     try {
-      const out = await api<RefreshOutcome>("POST", `/api/v1/dns/blocklists/${id}/refresh`);
+      const out = await api.post<RefreshOutcome>(`/api/v1/dns/blocklists/${id}/refresh`);
       showToast(out.ok ? `Refreshed: ${fmtNum(out.rule_count)} rules` : `Failed: ${out.error}`, out.ok);
       await reload();
     } catch (e) {
@@ -293,7 +274,7 @@ function SourcesTab() {
   async function refreshAll() {
     setRefreshingAll(true);
     try {
-      const outs = await api<RefreshOutcome[]>("POST", "/api/v1/dns/blocklists/refresh-all");
+      const outs = await api.post<RefreshOutcome[]>("/api/v1/dns/blocklists/refresh-all");
       const ok = outs.filter((o) => o.ok).length;
       showToast(`Refreshed ${ok}/${outs.length} sources`, ok === outs.length);
       await reload();
@@ -307,7 +288,7 @@ function SourcesTab() {
   async function remove(s: BlocklistSource) {
     if (!confirm(`Delete "${s.name}"?`)) return;
     try {
-      await api("DELETE", `/api/v1/dns/blocklists/${s.id}`);
+      await api.delete(`/api/v1/dns/blocklists/${s.id}`);
       await reload();
     } catch (e) {
       showToast(String(e), false);
@@ -459,7 +440,7 @@ function AddSourceModal({ onClose, onCreated }: { onClose: () => void; onCreated
     setBusy(true);
     setErr(null);
     try {
-      await api("POST", "/api/v1/dns/blocklists", {
+      await api.post("/api/v1/dns/blocklists", {
         name: name.trim(),
         category,
         url: url.trim(),
@@ -562,7 +543,7 @@ function PatternsTab({ kind, title, hint }: { kind: "whitelist" | "customblocks"
   const [err, setErr] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    const data = await api<PatternEntry[]>("GET", `/api/v1/dns/${kind}`);
+    const data = await api.get<PatternEntry[]>(`/api/v1/dns/${kind}`);
     setItems(data);
   }, [kind]);
 
@@ -575,7 +556,7 @@ function PatternsTab({ kind, title, hint }: { kind: "whitelist" | "customblocks"
     setBusy(true);
     setErr(null);
     try {
-      await api("POST", `/api/v1/dns/${kind}`, { pattern: pattern.trim(), note: note.trim() || null });
+      await api.post(`/api/v1/dns/${kind}`, { pattern: pattern.trim(), note: note.trim() || null });
       setPattern("");
       setNote("");
       await reload();
@@ -589,7 +570,7 @@ function PatternsTab({ kind, title, hint }: { kind: "whitelist" | "customblocks"
   async function remove(id: number) {
     if (!confirm("Delete this entry?")) return;
     try {
-      await api("DELETE", `/api/v1/dns/${kind}/${id}`);
+      await api.delete(`/api/v1/dns/${kind}/${id}`);
       await reload();
     } catch (e) {
       setErr(String(e));
@@ -670,7 +651,7 @@ function ScheduleTab() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    (async () => setSched(await api<BlocklistSchedule>("GET", "/api/v1/dns/blocklists/schedule")))();
+    (async () => setSched(await api.get<BlocklistSchedule>("/api/v1/dns/blocklists/schedule")))();
   }, []);
 
   if (!sched) return <div className="text-[var(--text-muted)]">Loading…</div>;
@@ -685,7 +666,7 @@ function ScheduleTab() {
     setErr(null);
     setOkMsg(null);
     try {
-      const next = await api<BlocklistSchedule>("PUT", "/api/v1/dns/blocklists/schedule", sched);
+      const next = await api.put<BlocklistSchedule>("/api/v1/dns/blocklists/schedule", sched);
       setSched(next);
       setOkMsg("Saved");
       setTimeout(() => setOkMsg(null), 2000);
@@ -700,7 +681,7 @@ function ScheduleTab() {
     setSaving(true);
     setErr(null);
     try {
-      await api("POST", "/api/v1/dns/blocklists/refresh-all");
+      await api.post("/api/v1/dns/blocklists/refresh-all");
       setOkMsg("Refresh kicked off");
       setTimeout(() => setOkMsg(null), 2000);
     } catch (e) {

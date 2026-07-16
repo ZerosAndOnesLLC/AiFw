@@ -1,11 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
+import { api } from "@/lib/api";
 
 export default function DnsLogsPage() {
   const [logs, setLogs] = useState<string[]>([]);
@@ -17,8 +13,7 @@ export default function DnsLogsPage() {
   const [backend, setBackend] = useState<"rdns" | "unbound">("rdns");
 
   useEffect(() => {
-    fetch(`/api/v1/dns/resolver/config`, { headers: authHeaders() })
-      .then((r) => (r.ok ? r.json() : null))
+    api.get<{ backend?: string }>(`/api/v1/dns/resolver/config`)
       .then((c) => { if (c?.backend === "unbound" || c?.backend === "rdns") setBackend(c.backend); })
       .catch(() => {});
   }, []);
@@ -27,9 +22,7 @@ export default function DnsLogsPage() {
     try {
       const params = new URLSearchParams({ lines: String(lines) });
       if (search) params.set("search", search);
-      const res = await fetch(`/api/v1/dns/resolver/logs?${params}`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<{ data?: string[] }>(`/api/v1/dns/resolver/logs?${params}`);
       setLogs(data.data || []);
       setError(null);
     } catch (err) {

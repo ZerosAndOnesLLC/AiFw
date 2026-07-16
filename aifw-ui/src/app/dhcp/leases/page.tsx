@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -17,16 +18,6 @@ interface DhcpLease {
 }
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function fmtDateTime(iso?: string): string {
   if (!iso) return "-";
@@ -75,9 +66,7 @@ export default function DhcpLeasesPage() {
 
   const fetchLeases = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/v4/leases", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: DhcpLease[] }>("/api/v1/dhcp/v4/leases");
       setLeases(body.data || []);
     } catch {
       /* silent on auto-refresh failures */
@@ -102,11 +91,7 @@ export default function DhcpLeasesPage() {
 
   const releaseLease = async (ip: string) => {
     try {
-      const res = await fetch(`/api/v1/dhcp/v4/leases/${encodeURIComponent(ip)}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/dhcp/v4/leases/${encodeURIComponent(ip)}`);
       showFeedback("success", `Lease for ${ip} released`);
       setReleaseIp(null);
       await fetchLeases();

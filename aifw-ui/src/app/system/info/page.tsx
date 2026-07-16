@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { api } from "@/lib/api";
 
 interface SysInfo {
   hostname: string; domain: string;
@@ -11,11 +12,6 @@ interface SysInfo {
   mem_total_bytes: number; mem_used_bytes: number;
   disk_total_bytes: number; disk_used_bytes: number;
   temperatures_c: { core: number; celsius: number }[];
-}
-
-function authFetch(url: string): Promise<Response> {
-  const token = typeof window !== "undefined" ? (localStorage.getItem("aifw_token") || "") : "";
-  return fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 }
 
 function fmtDuration(secs: number): string {
@@ -43,9 +39,7 @@ export default function SystemInfoPage() {
     async function tick() {
       if (document.visibilityState !== "visible") return;
       try {
-        const r = await authFetch("/api/v1/system/info");
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const d = await r.json();
+        const d = await api.get<SysInfo>("/api/v1/system/info");
         if (!cancelled) { setInfo(d); setErr(null); }
       } catch (e) {
         if (!cancelled) setErr(String(e));

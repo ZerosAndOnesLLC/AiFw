@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -65,16 +66,6 @@ interface DiffSummary {
 }
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "-";
@@ -143,9 +134,7 @@ export default function BackupPage() {
 
   const fetchHistory = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/config/history?limit=10000", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: ConfigVersion[] }>("/api/v1/config/history?limit=10000");
       setHistory(body.data || []);
     } catch {
       /* silent */
@@ -165,13 +154,7 @@ export default function BackupPage() {
   const saveSnapshot = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/v1/config/save", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ comment: comment || null }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.post<{ message?: string }>("/api/v1/config/save", { comment: comment || null });
       showFeedback("success", data.message || "Config snapshot saved");
       setComment("");
       await fetchHistory();
@@ -202,13 +185,7 @@ export default function BackupPage() {
   const sendRestore = async (version: number, interface_map: Record<string, string | null>) => {
     setRestoring(version);
     try {
-      const res = await fetch("/api/v1/config/restore", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ version, interface_map }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.post<{ message?: string }>("/api/v1/config/restore", { version, interface_map });
       showFeedback("success", data.message || "Restored");
       await fetchHistory();
       setRestorePending(null);
@@ -224,8 +201,7 @@ export default function BackupPage() {
     setRestoring(version);
     let preview: ImportPreview | null = null;
     try {
-      const res = await fetch(`/api/v1/config/restore-preview?version=${version}`, { headers: authHeadersPlain() });
-      if (res.ok) preview = await res.json();
+      preview = await api.get<ImportPreview>(`/api/v1/config/restore-preview?version=${version}`);
     } catch { /* fall through */ }
     setRestoring(null);
 
@@ -250,9 +226,7 @@ export default function BackupPage() {
     setDiffV1(v1);
     setDiffV2(v2);
     try {
-      const res = await fetch(`/api/v1/config/diff?v1=${v1}&v2=${v2}`, { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data: DiffSummary }>(`/api/v1/config/diff?v1=${v1}&v2=${v2}`);
       setDiff(body.data);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Diff failed");
@@ -266,9 +240,7 @@ export default function BackupPage() {
   const runCheck = async () => {
     setChecking(true);
     try {
-      const res = await fetch("/api/v1/config/check", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data: ConfigCheck }>("/api/v1/config/check");
       setCheck(body.data);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Check failed");
@@ -282,9 +254,7 @@ export default function BackupPage() {
   const handleExport = async () => {
     setExporting(true);
     try {
-      const res = await fetch("/api/v1/config/export", { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<unknown>("/api/v1/config/export");
       const json = JSON.stringify(data, null, 2);
       const blob = new Blob([json], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -314,18 +284,11 @@ export default function BackupPage() {
       setImportMap({});
       try {
         const parsed = JSON.parse(text);
-        const res = await fetch("/api/v1/config/import-preview", {
-          method: "POST",
-          headers: authHeaders(),
-          body: JSON.stringify(parsed),
-        });
-        if (res.ok) {
-          const data: ImportPreview = await res.json();
-          setImportPreview(data);
-          const defaults: Record<string, string> = {};
-          for (const m of data.interfaces_missing) defaults[m] = data.suggestions[m] ?? "__keep__";
-          setImportMap(defaults);
-        }
+        const data = await api.post<ImportPreview>("/api/v1/config/import-preview", parsed);
+        setImportPreview(data);
+        const defaults: Record<string, string> = {};
+        for (const m of data.interfaces_missing) defaults[m] = data.suggestions[m] ?? "__keep__";
+        setImportMap(defaults);
       } catch { /* leave preview null; import will still run without mapping */ }
     };
     reader.readAsText(file);
@@ -341,13 +304,7 @@ export default function BackupPage() {
     try {
       const data = JSON.parse(preview);
       const interface_map = importPreview ? buildInterfaceMapForApi(importPreview, importMap) : {};
-      const res = await fetch("/api/v1/config/import", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ ...data, interface_map }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.post<{ message?: string }>("/api/v1/config/import", { ...data, interface_map });
       showFeedback("success", body.message || "Config imported");
       setPreview(null);
       setImportPreview(null);
@@ -388,13 +345,10 @@ export default function BackupPage() {
   };
 
   const fetchOpnPreview = async (ifaceMap: Record<string, string>) => {
-    const res = await fetch("/api/v1/config/preview-opnsense", {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({ xml: opnXml, interface_map: ifaceMap }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    return await api.post<{ interfaces_found?: string[] } & Record<string, unknown>>(
+      "/api/v1/config/preview-opnsense",
+      { xml: opnXml, interface_map: ifaceMap },
+    );
   };
 
   const handleOpnPreview = async () => {
@@ -427,18 +381,12 @@ export default function BackupPage() {
     if (!opnXml.trim() || !opnPreview) return;
     setOpnImporting(true);
     try {
-      const res = await fetch("/api/v1/config/import-opnsense", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          xml: opnXml,
-          interface_map: opnIfaceMap,
-          commit_confirm: true,
-          import_system_settings: opnImportSystemSettings,
-        }),
+      const body = await api.post<{ message?: string }>("/api/v1/config/import-opnsense", {
+        xml: opnXml,
+        interface_map: opnIfaceMap,
+        commit_confirm: true,
+        import_system_settings: opnImportSystemSettings,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
       showFeedback("success", body.message || "OPNsense config imported");
       setOpnXml(""); setOpnPreview(null); setOpnIfaceMap({});
       if (opnFileRef.current) opnFileRef.current.value = "";
@@ -453,22 +401,18 @@ export default function BackupPage() {
 
   const fetchCommitStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/config/commit-confirm/status", { headers: authHeadersPlain() });
-      if (res.ok) {
-        const data = await res.json();
-        setCommitConfirm(data.active ? data : null);
-      }
+      const data = await api.get<{ active: boolean; seconds_remaining: number; description: string }>(
+        "/api/v1/config/commit-confirm/status",
+      );
+      setCommitConfirm(data.active ? data : null);
     } catch { /* silent */ }
   }, []);
 
   const handleCommitConfirm = async () => {
     try {
-      const res = await fetch("/api/v1/config/commit-confirm/confirm", { method: "POST", headers: authHeaders() });
-      if (res.ok) {
-        const body = await res.json();
-        showFeedback("success", body.message);
-        setCommitConfirm(null);
-      }
+      const body = await api.post<{ message: string }>("/api/v1/config/commit-confirm/confirm");
+      showFeedback("success", body.message);
+      setCommitConfirm(null);
     } catch (err) {
       showFeedback("error", "Failed to confirm");
     }
@@ -1204,12 +1148,7 @@ function S3ArchiveTab() {
     setError(null);
     setStatus(null);
     try {
-      const res = await fetch("/api/v1/backup/s3/list?max=1000", { headers: authHeadersPlain() });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || `HTTP ${res.status}`);
-      }
-      setItems(await res.json());
+      setItems(await api.get<S3Object[]>("/api/v1/backup/s3/list?max=1000"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1224,16 +1163,7 @@ function S3ArchiveTab() {
     setImporting(key);
     setStatus(null);
     try {
-      const res = await fetch("/api/v1/backup/s3/import", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ key }),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || `HTTP ${res.status}`);
-      }
-      const d = await res.json();
+      const d = await api.post<{ message?: string; version?: number }>("/api/v1/backup/s3/import", { key });
       setStatus(d.message || `Imported as version ${d.version}`);
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));

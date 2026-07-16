@@ -142,13 +142,8 @@ export default function RulesPage() {
     [reordered[idx], reordered[targetIdx]] = [reordered[targetIdx], reordered[idx]];
     setRules(reordered);
     try {
-      const token = localStorage.getItem("aifw_token");
-      const res = await fetch("/api/v1/rules/reorder", {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ rule_ids: reordered.map(r => r.id) }),
-      });
-      if (res.ok) setPendingChanges(true);
+      await api.put("/api/v1/rules/reorder", { rule_ids: reordered.map(r => r.id) });
+      setPendingChanges(true);
     } catch { setError("Failed to save rule order"); }
   };
 
@@ -179,17 +174,10 @@ export default function RulesPage() {
   };
 
   const applyBlockLogging = async () => {
-    const token = localStorage.getItem("aifw_token") || "";
     try {
-      const res = await fetch("/api/v1/rules/block-logging", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ enabled: blockLogging }),
-      });
-      if (res.ok) {
-        setBlockLoggingPending(false);
-        fetchRules();
-      }
+      await api.post("/api/v1/rules/block-logging", { enabled: blockLogging });
+      setBlockLoggingPending(false);
+      fetchRules();
     } catch { /* silent */ }
   };
 

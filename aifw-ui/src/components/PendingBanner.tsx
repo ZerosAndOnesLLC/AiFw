@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getWsTicket } from "@/lib/api";
+import { api, getWsTicket } from "@/lib/api";
 
 interface PendingState {
   firewall: boolean;
@@ -22,10 +22,7 @@ export default function PendingBanner() {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
     try {
-      const res = await fetch("/api/v1/pending", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) setPending(await res.json());
+      setPending(await api.get<PendingState>("/api/v1/pending"));
     } catch { /* silent */ }
   }, []);
 
@@ -77,21 +74,12 @@ export default function PendingBanner() {
   const applyChanges = async () => {
     setApplying(true);
     setFeedback(null);
-    const token = localStorage.getItem("aifw_token") || "";
     try {
       if (pending.firewall || pending.nat) {
-        const res = await fetch("/api/v1/reload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error(`Reload failed: HTTP ${res.status}`);
+        await api.post("/api/v1/reload");
       }
       if (pending.dns) {
-        const res = await fetch("/api/v1/dns/resolver/apply", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error(`DNS apply failed: HTTP ${res.status}`);
+        await api.post("/api/v1/dns/resolver/apply");
       }
       setPending({ firewall: false, nat: false, dns: false });
       setFeedback("Changes applied successfully");

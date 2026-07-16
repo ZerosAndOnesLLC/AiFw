@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 interface TimeConfig {
   enabled: boolean;
@@ -47,15 +48,6 @@ interface TimeStatus {
 
 interface NetInterface { name: string; }
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
-
 const defaultConfig: TimeConfig = {
   enabled: false, log_level: "info",
   clock_discipline: true, clock_step_threshold_ms: 128, clock_panic_threshold_ms: 1000,
@@ -101,32 +93,27 @@ export default function TimeServicePage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/time/status", { headers: authHeadersPlain() });
-      if (res.ok) setStatus(await res.json());
+      setStatus(await api.get<TimeStatus>("/api/v1/time/status"));
     } catch { /* */ }
   }, []);
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/time/config", { headers: authHeadersPlain() });
-      if (res.ok) setConfigRaw(await res.json());
+      setConfigRaw(await api.get<TimeConfig>("/api/v1/time/config"));
     } catch { /* */ }
   }, []);
 
   const fetchSources = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/time/sources", { headers: authHeadersPlain() });
-      if (res.ok) { const body = await res.json(); setSources(body.data || []); }
+      const body = await api.get<{ data?: NtpSource[] }>("/api/v1/time/sources");
+      setSources(body.data || []);
     } catch { /* */ }
   }, []);
 
   const fetchInterfaces = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/interfaces", { headers: authHeadersPlain() });
-      if (res.ok) {
-        const body = await res.json();
-        setInterfaces((body.data || []).map((i: NetInterface) => i.name).filter((n: string) => !n.startsWith("lo") && !n.startsWith("pflog")));
-      }
+      const body = await api.get<{ data?: NetInterface[] }>("/api/v1/interfaces");
+      setInterfaces((body.data || []).map((i: NetInterface) => i.name).filter((n: string) => !n.startsWith("lo") && !n.startsWith("pflog")));
     } catch { /* */ }
   }, []);
 
@@ -158,8 +145,7 @@ export default function TimeServicePage() {
     if (!validate()) return;
     setSaving(true);
     try {
-      const res = await fetch("/api/v1/time/config", { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
-      const body = await res.json();
+      const body = await api.put<{ message?: string }>("/api/v1/time/config", config);
       setActionMsg(body.message || "Saved");
       setIsDirty(false);
     } catch { setActionMsg("Save failed"); }
@@ -171,9 +157,8 @@ export default function TimeServicePage() {
     if (!validate()) return;
     setApplying(true);
     try {
-      await fetch("/api/v1/time/config", { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
-      const res = await fetch("/api/v1/time/apply", { method: "POST", headers: authHeaders() });
-      const body = await res.json();
+      await api.put("/api/v1/time/config", config);
+      const body = await api.post<{ message?: string }>("/api/v1/time/apply");
       setActionMsg(body.message || "Applied");
       setIsDirty(false);
       fetchStatus();
@@ -185,8 +170,7 @@ export default function TimeServicePage() {
   const serviceAction = async (action: string) => {
     setActionLoading(action);
     try {
-      const res = await fetch(`/api/v1/time/${action}`, { method: "POST", headers: authHeaders() });
-      const body = await res.json();
+      const body = await api.post<{ message?: string }>(`/api/v1/time/${action}`);
       setActionMsg(body.message || action);
       fetchStatus();
     } catch { setActionMsg(`${action} failed`); }
@@ -199,10 +183,7 @@ export default function TimeServicePage() {
     const pollErr = validatePollRange(newMinPoll, newMaxPoll);
     if (pollErr) { setErrors({ ...errors, newSource: pollErr }); return; }
     try {
-      await fetch("/api/v1/time/sources", {
-        method: "POST", headers: authHeaders(),
-        body: JSON.stringify({ address: newAddr, nts: newNts, min_poll: newMinPoll, max_poll: newMaxPoll, enabled: true }),
-      });
+      await api.post("/api/v1/time/sources", { address: newAddr, nts: newNts, min_poll: newMinPoll, max_poll: newMaxPoll, enabled: true });
       setNewAddr(""); setNewNts(false); setNewMinPoll(4); setNewMaxPoll(10);
       setErrors({});
       fetchSources();
@@ -210,15 +191,12 @@ export default function TimeServicePage() {
   };
 
   const deleteSource = async (id: string) => {
-    await fetch(`/api/v1/time/sources/${id}`, { method: "DELETE", headers: authHeaders() });
+    await api.delete(`/api/v1/time/sources/${id}`).catch(() => {});
     fetchSources();
   };
 
   const toggleSourceEnabled = async (s: NtpSource) => {
-    await fetch(`/api/v1/time/sources/${s.id}`, {
-      method: "PUT", headers: authHeaders(),
-      body: JSON.stringify({ address: s.address, nts: s.nts, min_poll: s.min_poll, max_poll: s.max_poll, enabled: !s.enabled }),
-    });
+    await api.put(`/api/v1/time/sources/${s.id}`, { address: s.address, nts: s.nts, min_poll: s.min_poll, max_poll: s.max_poll, enabled: !s.enabled }).catch(() => {});
     fetchSources();
   };
 

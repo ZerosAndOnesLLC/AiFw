@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* ── Types ────────────────────────────────────────────────────── */
 
@@ -19,16 +20,6 @@ interface Feedback {
 }
 
 /* ── Helpers ──────────────────────────────────────────────────── */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function fmtDate(iso: string): string {
   if (!iso) return "-";
@@ -218,9 +209,7 @@ export default function HttpMiddlewaresPage() {
 
   const fetchMiddlewares = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/http/middlewares", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<HttpMiddleware[] | { data?: HttpMiddleware[] }>("/api/v1/reverse-proxy/http/middlewares");
       setMiddlewares(Array.isArray(data) ? data : data.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load middlewares");
@@ -279,14 +268,10 @@ export default function HttpMiddlewaresPage() {
         config_json: JSON.stringify(formConfig),
         enabled: formEnabled,
       };
-      const url = editingId
-        ? `/api/v1/reverse-proxy/http/middlewares/${editingId}`
-        : "/api/v1/reverse-proxy/http/middlewares";
-      const method = editingId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(body) });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.error || errBody.message || `HTTP ${res.status}`);
+      if (editingId) {
+        await api.put(`/api/v1/reverse-proxy/http/middlewares/${editingId}`, body);
+      } else {
+        await api.post("/api/v1/reverse-proxy/http/middlewares", body);
       }
       showFeedback("success", editingId ? "Middleware updated" : "Middleware created");
       closeModal();
@@ -302,14 +287,7 @@ export default function HttpMiddlewaresPage() {
     if (!confirm(`Delete middleware "${mw.name}"?`)) return;
     setDeletingId(mw.id);
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/http/middlewares/${mw.id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.error || errBody.message || `HTTP ${res.status}`);
-      }
+      await api.delete(`/api/v1/reverse-proxy/http/middlewares/${mw.id}`);
       showFeedback("success", `Middleware "${mw.name}" deleted`);
       await fetchMiddlewares();
     } catch (err) {
@@ -327,12 +305,7 @@ export default function HttpMiddlewaresPage() {
         config_json: mw.config_json,
         enabled: !mw.enabled,
       };
-      const res = await fetch(`/api/v1/reverse-proxy/http/middlewares/${mw.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put(`/api/v1/reverse-proxy/http/middlewares/${mw.id}`, body);
       setMiddlewares((prev) =>
         prev.map((m) => (m.id === mw.id ? { ...m, enabled: !mw.enabled } : m))
       );

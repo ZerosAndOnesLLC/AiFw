@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 interface DdnsConfig {
   enabled: boolean;
@@ -12,16 +13,6 @@ interface DdnsConfig {
   tsig_algorithm: string;
   tsig_secret: string;
   ttl: number;
-}
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
 }
 
 const defaultConfig: DdnsConfig = {
@@ -49,9 +40,8 @@ export default function DdnsConfigPage() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/ddns", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setConfig(await res.json());
+      const data = await api.get<DdnsConfig>("/api/v1/dhcp/ddns");
+      setConfig(data);
     } catch {
       /* silent */
     } finally {
@@ -64,12 +54,7 @@ export default function DdnsConfigPage() {
   const saveConfig = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/v1/dhcp/ddns", {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(config),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put("/api/v1/dhcp/ddns", config);
       showFeedback("success", "DDNS settings saved. Apply config to take effect.");
       await fetchConfig();
     } catch (err) {

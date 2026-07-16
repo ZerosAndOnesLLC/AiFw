@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
+import { api } from "@/lib/api";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -18,13 +19,13 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch("/api/v1/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
-      });
-      if (!res.ok) throw new Error("Invalid credentials");
-      const data = await res.json();
+      // noAuthRedirect: a 401 here means bad credentials, not an expired
+      // session — redirecting to /login would just loop.
+      const data = await api.post<{ tokens?: { access_token?: string }; totp_required?: boolean }>(
+        "/api/v1/auth/login",
+        { username, password },
+        { noAuthRedirect: true },
+      );
       const token = data.tokens?.access_token;
       if (token) {
         localStorage.setItem("aifw_token", token);
@@ -44,13 +45,11 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch("/api/v1/auth/totp/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password, totp_code: totpCode }),
-      });
-      if (!res.ok) throw new Error("Invalid code");
-      const data = await res.json();
+      const data = await api.post<{ access_token?: string }>(
+        "/api/v1/auth/totp/login",
+        { username, password, totp_code: totpCode },
+        { noAuthRedirect: true },
+      );
       const token = data.access_token;
       if (token) {
         localStorage.setItem("aifw_token", token);

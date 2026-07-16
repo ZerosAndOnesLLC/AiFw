@@ -2,8 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
-
-const API = "";
+import { api } from "@/lib/api";
 
 // Settings categories. `key` matches the `?cat=` URL param; `sections` lists
 // the section <h2> labels that belong to the category. The render below uses
@@ -18,18 +17,6 @@ const CATEGORIES: { key: string; label: string; sections: string[] }[] = [
   { key: "backup",  label: "Backup & History", sections: ["Config History", "S3 Backup Sync", "Email Notifications (SMTP)"] },
   { key: "ai",      label: "AI / LLM",        sections: ["AI / LLM Providers"] },
 ];
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
-
-async function authFetch(url: string, options?: RequestInit): Promise<Response> {
-  return fetch(url, { ...options, headers: { ...authHeaders(), ...options?.headers } });
-}
 
 interface SectionFeedback {
   type: "success" | "error";
@@ -230,11 +217,7 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/dns`, {
-          headers: authHeaders(),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await api.get<{ servers?: string[] }>("/api/v1/dns");
         setDnsServers(data.servers || []);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Unknown error";
@@ -249,11 +232,7 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/auth/settings`, {
-          headers: authHeaders(),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await api.get<{ access_token_expiry_mins?: number; require_totp?: boolean }>("/api/v1/auth/settings");
         if (data.access_token_expiry_mins !== undefined) setSessionTimeout(data.access_token_expiry_mins);
         if (data.require_totp !== undefined) setRequireMfa(data.require_totp);
       } catch (err: unknown) {
@@ -267,9 +246,7 @@ export default function SettingsPage() {
     // Fetch Valkey settings
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/settings/valkey`, { headers: authHeaders() });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await api.get<{ enabled?: boolean; url?: string; retention_minutes?: number; status?: string }>("/api/v1/settings/valkey");
         if (data.enabled !== undefined) setValkeyEnabled(data.enabled);
         if (data.url) setValkeyUrl(data.url);
         if (data.retention_minutes) setMetricsRetention(data.retention_minutes);
@@ -284,9 +261,7 @@ export default function SettingsPage() {
     // Fetch Dashboard History settings
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/settings/dashboard-history`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await api.get<{ mode?: string; history_seconds?: number; current_entries?: number; estimated_ram_mb?: number; ram_limit_mb?: number }>("/api/v1/settings/dashboard-history");
         if (data.mode === "duration" || data.mode === "ram") setHistoryMode(data.mode);
         if (data.history_seconds) setHistoryMinutes(Math.round(data.history_seconds / 60));
         if (data.current_entries !== undefined) setHistoryEntries(data.current_entries);
@@ -302,9 +277,7 @@ export default function SettingsPage() {
     // Fetch pf state-table tuning
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/settings/pf-tuning`, { headers: authHeaders() });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const d = await res.json();
+        const d = await api.get<{ configured_max_states?: number; live_max_states?: number; current_states?: number; min_states?: number; max_states?: number }>("/api/v1/settings/pf-tuning");
         if (typeof d.configured_max_states === "number") {
           setPfConfigured(d.configured_max_states);
           setPfMaxStates(d.configured_max_states);
@@ -320,9 +293,7 @@ export default function SettingsPage() {
     // Fetch Config History retention
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/config/retention`, { headers: authHeaders() });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await api.get<{ max_versions?: number; current_count?: number }>("/api/v1/config/retention");
         if (typeof data.max_versions === "number") setCfgMaxVersions(data.max_versions);
         if (typeof data.current_count === "number") setCfgCurrentCount(data.current_count);
       } catch {
@@ -335,9 +306,7 @@ export default function SettingsPage() {
     // Fetch S3 backup config
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/backup/s3/config`, { headers: authHeaders() });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const d = await res.json();
+        const d = await api.get<{ enabled?: boolean; bucket?: string; region?: string; endpoint?: string; prefix?: string; path_style?: boolean; access_key_id?: string; has_secret?: boolean }>("/api/v1/backup/s3/config");
         setS3Enabled(!!d.enabled);
         setS3Bucket(d.bucket || "");
         setS3Region(d.region || "us-east-1");
@@ -355,9 +324,7 @@ export default function SettingsPage() {
     // Fetch SMTP config
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/notify/smtp/config`, { headers: authHeaders() });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const d = await res.json();
+        const d = await api.get<{ enabled?: boolean; host?: string; port?: number | string; tls?: string; username?: string; has_password?: boolean; from_address?: string; recipients?: string; enabled_events?: string[] }>("/api/v1/notify/smtp/config");
         setSmtpEnabled(!!d.enabled);
         setSmtpHost(d.host || "");
         setSmtpPort(Number(d.port) || 587);
@@ -376,9 +343,7 @@ export default function SettingsPage() {
     // Fetch IDS Alert Buffer settings
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/settings/ids-alerts`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await api.get<{ max_mb?: number; max_age_secs?: number; stats?: NonNullable<typeof idsStats> }>("/api/v1/settings/ids-alerts");
         if (data.max_mb) setIdsMaxMb(data.max_mb);
         if (data.max_age_secs) setIdsMaxAge(data.max_age_secs);
         if (data.stats) setIdsStats(data.stats);
@@ -388,9 +353,7 @@ export default function SettingsPage() {
     // Fetch AI provider settings
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/settings/ai`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await api.get<{ enabled?: boolean; active_provider?: string; providers?: typeof aiProviders }>("/api/v1/settings/ai");
         if (data.enabled !== undefined) setAiEnabled(data.enabled);
         if (data.active_provider) setAiActiveProvider(data.active_provider);
         if (data.providers) setAiProviders(data.providers);
@@ -401,9 +364,7 @@ export default function SettingsPage() {
     // Fetch TLS policy settings
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/settings/tls`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await api.get<{ min_version?: string; block_expired?: boolean; block_weak_keys?: boolean }>("/api/v1/settings/tls");
         if (data.min_version) setMinTlsVersion(data.min_version);
         if (data.block_expired !== undefined) setBlockExpired(data.block_expired);
         if (data.block_weak_keys !== undefined) setBlockWeakKeys(data.block_weak_keys);
@@ -415,9 +376,7 @@ export default function SettingsPage() {
     // Fetch System General
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/system/general`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const d = await res.json();
+        const d = await api.get<{ hostname?: string; domain?: string; timezone?: string }>("/api/v1/system/general");
         setSysHostname(d.hostname || "");
         setSysDomain(d.domain || "");
         setSysTimezone(d.timezone || "UTC");
@@ -427,9 +386,7 @@ export default function SettingsPage() {
     // Fetch timezone list
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/system/timezones`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const d = await res.json();
+        const d = await api.get<string[]>("/api/v1/system/timezones");
         setTimezoneList(Array.isArray(d) ? d : ["UTC"]);
       } catch { setTimezoneList(["UTC"]); }
     })();
@@ -437,9 +394,7 @@ export default function SettingsPage() {
     // Fetch System Banner
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/system/banner`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const d = await res.json();
+        const d = await api.get<{ login_banner?: string; motd?: string }>("/api/v1/system/banner");
         setLoginBanner(d.login_banner || "");
         setMotdBody(d.motd || "");
       } catch { /* silent */ }
@@ -448,9 +403,7 @@ export default function SettingsPage() {
     // Fetch System SSH
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/system/ssh`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const d = await res.json();
+        const d = await api.get<{ enabled?: boolean; port?: number; password_auth?: boolean; permit_root_login?: boolean }>("/api/v1/system/ssh");
         if (d.enabled !== undefined) setSshEnabled(d.enabled);
         if (d.port !== undefined) setSshPort(d.port);
         if (d.password_auth !== undefined) setSshPasswordAuth(d.password_auth);
@@ -461,9 +414,7 @@ export default function SettingsPage() {
     // Fetch System Console
     (async () => {
       try {
-        const res = await authFetch(`${API}/api/v1/system/console`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const d = await res.json();
+        const d = await api.get<{ kind?: "video" | "serial" | "dual"; baud?: number }>("/api/v1/system/console");
         if (d.kind) setConsoleKind(d.kind);
         if (d.baud) setConsoleBaud(d.baud);
       } catch { /* silent */ }
@@ -476,17 +427,12 @@ export default function SettingsPage() {
     setMetricsSaving(true);
     setMetricsFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/settings/metrics`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          backend: metricsBackend,
-          postgres_url: metricsBackend === "postgres" ? postgresUrl : undefined,
-          collection_interval: Number(collectionInterval),
-          retention_days: Number(retentionDays),
-        }),
+      await api.put("/api/v1/settings/metrics", {
+        backend: metricsBackend,
+        postgres_url: metricsBackend === "postgres" ? postgresUrl : undefined,
+        collection_interval: Number(collectionInterval),
+        retention_days: Number(retentionDays),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setFeedbackWithTimeout(setMetricsFeedback, { type: "success", message: "Metrics settings saved." });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -500,16 +446,11 @@ export default function SettingsPage() {
     setApiSaving(true);
     setApiFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/settings/api`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          port: Number(apiPort),
-          cors_origins: corsOrigins,
-          jwt_secret: jwtSecret,
-        }),
+      await api.put("/api/v1/settings/api", {
+        port: Number(apiPort),
+        cors_origins: corsOrigins,
+        jwt_secret: jwtSecret,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setFeedbackWithTimeout(setApiFeedback, { type: "success", message: "API settings saved." });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -523,16 +464,11 @@ export default function SettingsPage() {
     setTlsSaving(true);
     setTlsFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/settings/tls`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          min_version: minTlsVersion,
-          block_expired: blockExpired,
-          block_weak_keys: blockWeakKeys,
-        }),
+      await api.put("/api/v1/settings/tls", {
+        min_version: minTlsVersion,
+        block_expired: blockExpired,
+        block_weak_keys: blockWeakKeys,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setFeedbackWithTimeout(setTlsFeedback, { type: "success", message: "TLS policy saved." });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -546,12 +482,7 @@ export default function SettingsPage() {
     setDnsSaving(true);
     setDnsFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/dns`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ servers: dnsServers }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put("/api/v1/dns", { servers: dnsServers });
       setFeedbackWithTimeout(setDnsFeedback, { type: "success", message: "DNS servers saved." });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -565,15 +496,10 @@ export default function SettingsPage() {
     setAuthSaving(true);
     setAuthFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/auth/settings`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          access_token_expiry_mins: sessionTimeout,
-          require_totp: requireMfa,
-        }),
+      await api.put("/api/v1/auth/settings", {
+        access_token_expiry_mins: sessionTimeout,
+        require_totp: requireMfa,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setFeedbackWithTimeout(setAuthFeedback, { type: "success", message: "Auth settings saved." });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -587,12 +513,7 @@ export default function SettingsPage() {
     setIdsSaving(true);
     setIdsFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/settings/ids-alerts`, {
-        method: "PUT", headers: authHeaders(),
-        body: JSON.stringify({ max_mb: idsMaxMb, max_age_secs: idsMaxAge }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.put<{ stats?: NonNullable<typeof idsStats> }>("/api/v1/settings/ids-alerts", { max_mb: idsMaxMb, max_age_secs: idsMaxAge });
       if (data.stats) setIdsStats(data.stats);
       setFeedbackWithTimeout(setIdsFeedback, { type: "success", message: "IDS alert settings saved." });
     } catch (err: unknown) {
@@ -609,13 +530,7 @@ export default function SettingsPage() {
         historyMode === "ram"
           ? { mode: "ram", ram_limit_mb: historyRamMb }
           : { mode: "duration", history_seconds: Math.max(5, historyMinutes) * 60 };
-      const res = await authFetch(`${API}/api/v1/settings/dashboard-history`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.put<{ estimated_ram_mb?: number; history_seconds?: number }>("/api/v1/settings/dashboard-history", body);
       if (data.estimated_ram_mb !== undefined) setHistoryEstRamMb(data.estimated_ram_mb);
       if (data.history_seconds) setHistoryMinutes(Math.round(data.history_seconds / 60));
       setFeedbackWithTimeout(setHistoryFeedback, { type: "success", message: "Dashboard history updated. Takes effect immediately." });
@@ -631,16 +546,7 @@ export default function SettingsPage() {
     setCfgRetSaving(true);
     setCfgRetFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/config/retention`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ max_versions: cfgMaxVersions }),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
+      const data = await api.put<{ max_versions?: number; current_count?: number }>("/api/v1/config/retention", { max_versions: cfgMaxVersions });
       if (typeof data.max_versions === "number") setCfgMaxVersions(data.max_versions);
       if (typeof data.current_count === "number") setCfgCurrentCount(data.current_count);
       setFeedbackWithTimeout(setCfgRetFeedback, { type: "success", message: "Config history retention saved." });
@@ -656,16 +562,7 @@ export default function SettingsPage() {
     setPfSaving(true);
     setPfFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/settings/pf-tuning`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ max_states: pfMaxStates }),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || `HTTP ${res.status}`);
-      }
-      const d = await res.json();
+      const d = await api.put<{ configured_max_states: number; live_max_states: number | null }>("/api/v1/settings/pf-tuning", { max_states: pfMaxStates });
       setPfConfigured(d.configured_max_states);
       setPfLive(d.live_max_states);
       setFeedbackWithTimeout(setPfFeedback, { type: "success", message: "pf state-table limit applied (no reload of rules required)." });
@@ -695,16 +592,7 @@ export default function SettingsPage() {
     setS3Saving(true);
     setS3Feedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/backup/s3/config`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(buildS3Payload()),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || `HTTP ${res.status}`);
-      }
-      const d = await res.json();
+      const d = await api.put<{ has_secret?: boolean }>("/api/v1/backup/s3/config", buildS3Payload());
       setS3HasSecret(!!d.has_secret);
       setS3Secret("");
       setFeedbackWithTimeout(setS3Feedback, { type: "success", message: "S3 settings saved." });
@@ -720,13 +608,7 @@ export default function SettingsPage() {
     setS3Testing(true);
     setS3TestResult(null);
     try {
-      const res = await authFetch(`${API}/api/v1/backup/s3/test`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(buildS3Payload()),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const d = await res.json();
+      const d = await api.post<{ ok?: boolean; message?: string; write?: boolean; read?: boolean; delete?: boolean }>("/api/v1/backup/s3/test", buildS3Payload());
       setS3TestResult({
         ok: !!d.ok,
         message: d.message || "",
@@ -758,16 +640,7 @@ export default function SettingsPage() {
     setSmtpSaving(true);
     setSmtpFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/notify/smtp/config`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(buildSmtpPayload()),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || `HTTP ${res.status}`);
-      }
-      const d = await res.json();
+      const d = await api.put<{ has_password?: boolean }>("/api/v1/notify/smtp/config", buildSmtpPayload());
       setSmtpHasPass(!!d.has_password);
       setSmtpPass("");
       setFeedbackWithTimeout(setSmtpFeedback, { type: "success", message: "SMTP settings saved." });
@@ -783,13 +656,7 @@ export default function SettingsPage() {
     setSmtpTesting(true);
     setSmtpFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/notify/smtp/test`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(buildSmtpPayload()),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const d = await res.json();
+      const d = await api.post<{ ok?: boolean; message?: string }>("/api/v1/notify/smtp/test", buildSmtpPayload());
       setFeedbackWithTimeout(setSmtpFeedback, {
         type: d.ok ? "success" : "error",
         message: d.message || (d.ok ? "Test email sent." : "Test failed."),
@@ -812,16 +679,13 @@ export default function SettingsPage() {
       if (aiEditEndpoint) body.endpoint = aiEditEndpoint;
       if (aiEditModel) body.model = aiEditModel;
       body.tls_insecure = aiEditTlsInsecure;
-      const res = await authFetch(`${API}/api/v1/settings/ai`, {
-        method: "PUT", headers: authHeaders(), body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put("/api/v1/settings/ai", body);
       setFeedbackWithTimeout(setAiFeedback, { type: "success", message: `${provider} settings saved.` });
       setAiEditingProvider(null);
       setAiEditKey("");
-      // Refresh
-      const r2 = await authFetch(`${API}/api/v1/settings/ai`, { headers: authHeaders() });
-      if (r2.ok) { const d = await r2.json(); setAiProviders(d.providers || []); setAiActiveProvider(d.active_provider || ""); setAiEnabled(d.enabled); }
+      // Refresh (best-effort — a failed refresh shouldn't flag the save as failed)
+      const d = await api.get<{ providers?: typeof aiProviders; active_provider?: string; enabled: boolean }>("/api/v1/settings/ai").catch(() => null);
+      if (d) { setAiProviders(d.providers || []); setAiActiveProvider(d.active_provider || ""); setAiEnabled(d.enabled); }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       setFeedbackWithTimeout(setAiFeedback, { type: "error", message: `Save failed: ${msg}` });
@@ -833,9 +697,7 @@ export default function SettingsPage() {
     try {
       const body: Record<string, unknown> = { enabled };
       if (active) body.active_provider = active;
-      await authFetch(`${API}/api/v1/settings/ai`, {
-        method: "PUT", headers: authHeaders(), body: JSON.stringify(body),
-      });
+      await api.put("/api/v1/settings/ai", body);
       setAiEnabled(enabled);
       if (active) setAiActiveProvider(active);
       setFeedbackWithTimeout(setAiFeedback, { type: "success", message: enabled ? "AI analysis enabled." : "AI analysis disabled." });
@@ -847,11 +709,8 @@ export default function SettingsPage() {
     setAiModelsLoading(true);
     setAiModels([]);
     try {
-      const res = await authFetch(`${API}/api/v1/settings/ai/models?provider=${provider}`, { headers: authHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        setAiModels(data.models || []);
-      }
+      const data = await api.get<{ models?: string[] }>(`/api/v1/settings/ai/models?provider=${provider}`);
+      setAiModels(data.models || []);
     } catch { /* ignore */ }
     finally { setAiModelsLoading(false); }
   };
@@ -864,15 +723,8 @@ export default function SettingsPage() {
       if (aiEditEndpoint) body.endpoint = aiEditEndpoint;
       if (aiEditKey) body.api_key = aiEditKey;
       body.tls_insecure = aiEditTlsInsecure;
-      const res = await authFetch(`${API}/api/v1/settings/ai/test`, {
-        method: "POST", headers: authHeaders(), body: JSON.stringify(body),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAiTestResult({ success: data.success, status_code: data.status_code });
-      } else {
-        setAiTestResult({ success: false, status_code: "error" });
-      }
+      const data = await api.post<{ success: boolean; status_code: string }>("/api/v1/settings/ai/test", body);
+      setAiTestResult({ success: data.success, status_code: data.status_code });
     } catch {
       setAiTestResult({ success: false, status_code: "error" });
     } finally { setAiTesting(false); }
@@ -881,13 +733,7 @@ export default function SettingsPage() {
   const saveGeneral = async () => {
     setGeneralSaving(true); setGeneralFeedback(null);
     try {
-      const r = await authFetch(`${API}/api/v1/system/general`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ hostname: sysHostname, domain: sysDomain, timezone: sysTimezone }),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      const res = await r.json();
+      const res = await api.put<{ warning?: string }>("/api/v1/system/general", { hostname: sysHostname, domain: sysDomain, timezone: sysTimezone });
       const msg = res.warning ? `Saved (warning: ${res.warning})` : "Saved.";
       setGeneralFeedback({ type: res.warning ? "error" : "success", message: msg });
     } catch (e) { setGeneralFeedback({ type: "error", message: String(e) }); }
@@ -897,12 +743,7 @@ export default function SettingsPage() {
   const saveBanner = async () => {
     setBannerSaving(true); setBannerFeedback(null);
     try {
-      const r = await authFetch(`${API}/api/v1/system/banner`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ login_banner: loginBanner, motd: motdBody }),
-      });
-      if (!r.ok) throw new Error(await r.text());
+      await api.put("/api/v1/system/banner", { login_banner: loginBanner, motd: motdBody });
       setBannerFeedback({ type: "success", message: "Saved." });
     } catch (e) { setBannerFeedback({ type: "error", message: String(e) }); }
     finally { setBannerSaving(false); }
@@ -911,12 +752,7 @@ export default function SettingsPage() {
   const saveSsh = async () => {
     setSshSaving(true); setSshFeedback(null);
     try {
-      const r = await authFetch(`${API}/api/v1/system/ssh`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ enabled: sshEnabled, port: sshPort, password_auth: sshPasswordAuth, permit_root_login: sshPermitRoot }),
-      });
-      if (!r.ok) throw new Error(await r.text());
+      await api.put("/api/v1/system/ssh", { enabled: sshEnabled, port: sshPort, password_auth: sshPasswordAuth, permit_root_login: sshPermitRoot });
       setSshFeedback({ type: "success", message: `Saved. sshd reloading${sshPort !== 22 ? ` — reconnect on port ${sshPort}` : ""}.` });
     } catch (e) { setSshFeedback({ type: "error", message: String(e) }); }
     finally { setSshSaving(false); }
@@ -925,12 +761,7 @@ export default function SettingsPage() {
   const saveConsole = async () => {
     setConsoleSaving(true); setConsoleFeedback(null);
     try {
-      const r = await authFetch(`${API}/api/v1/system/console`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ kind: consoleKind, baud: consoleBaud }),
-      });
-      if (!r.ok) throw new Error(await r.text());
+      await api.put("/api/v1/system/console", { kind: consoleKind, baud: consoleBaud });
       setConsoleFeedback({ type: "success", message: "Saved. Reboot required. Verify console access before rebooting." });
       setConsoleConfirm(false);
     } catch (e) { setConsoleFeedback({ type: "error", message: String(e) }); }
@@ -941,17 +772,11 @@ export default function SettingsPage() {
     setValkeySaving(true);
     setValkeyFeedback(null);
     try {
-      const res = await authFetch(`${API}/api/v1/settings/valkey`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          enabled: valkeyEnabled,
-          url: valkeyUrl,
-          retention_minutes: metricsRetention,
-        }),
+      const data = await api.put<{ status?: string }>("/api/v1/settings/valkey", {
+        enabled: valkeyEnabled,
+        url: valkeyUrl,
+        retention_minutes: metricsRetention,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
       if (data.status) setValkeyStatus(data.status);
       setFeedbackWithTimeout(setValkeyFeedback, { type: "success", message: "Valkey settings saved." });
     } catch (err: unknown) {
@@ -2272,8 +2097,7 @@ function SystemActions() {
     setRebooting(true);
     setFeedback(null);
     try {
-      const res = await authFetch("/api/v1/updates/reboot", { method: "POST" });
-      const data = await res.json();
+      const data = await api.post<{ message?: string }>("/api/v1/updates/reboot");
       setFeedback({ type: "success", message: data.message || "System rebooting..." });
       setConfirmReboot(false);
     } catch {

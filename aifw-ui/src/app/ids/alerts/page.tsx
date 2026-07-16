@@ -1,16 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-const API = "";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
+import { api } from "@/lib/api";
 
 interface IdsAlert {
   id: string;
@@ -105,11 +96,10 @@ export default function IdsAlertsPage() {
       if (srcIpFilter.trim()) params.set("src_ip", srcIpFilter.trim());
       if (ackFilter) params.set("acknowledged", ackFilter);
 
-      const res = await fetch(`${API}/api/v1/ids/alerts?${params.toString()}`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`Failed to fetch alerts: ${res.status}`);
-      const json = await res.json();
+      type AlertsPayload = IdsAlert[] & { alerts?: IdsAlert[]; total?: number };
+      const json = await api.get<AlertsPayload & { data?: AlertsPayload }>(
+        `/api/v1/ids/alerts?${params.toString()}`,
+      );
       const d = json.data || json;
       setAlerts(d.alerts || d || []);
       setTotal(d.total ?? (d.alerts || d || []).length);
@@ -133,14 +123,7 @@ export default function IdsAlertsPage() {
     setAckingId(id);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/ids/alerts/${id}/acknowledge`, {
-        method: "PUT",
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Acknowledge failed: ${res.status}`);
-      }
+      await api.put(`/api/v1/ids/alerts/${id}/acknowledge`);
       setFeedback({ type: "success", message: "Alert acknowledged" });
       clearFeedback();
       await fetchAlerts();

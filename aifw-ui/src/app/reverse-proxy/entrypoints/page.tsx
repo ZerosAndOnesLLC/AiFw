@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -53,16 +54,6 @@ const defaultForm: EntryPointForm = {
 };
 
 /* -- Helpers --------------------------------------------------------- */
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
 
 function fmtDate(iso: string): string {
   if (!iso) return "-";
@@ -214,9 +205,7 @@ export default function EntrypointsPage() {
 
   const fetchEntrypoints = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/reverse-proxy/entrypoints", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<EntryPoint[] | { data?: EntryPoint[] }>("/api/v1/reverse-proxy/entrypoints");
       setEntrypoints(Array.isArray(body) ? body : body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load entrypoints");
@@ -274,19 +263,10 @@ export default function EntrypointsPage() {
         enabled: form.enabled,
       };
 
-      const url = editingId
-        ? `/api/v1/reverse-proxy/entrypoints/${editingId}`
-        : "/api/v1/reverse-proxy/entrypoints";
-      const method = editingId ? "PUT" : "POST";
-
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `HTTP ${res.status}`);
+      if (editingId) {
+        await api.put(`/api/v1/reverse-proxy/entrypoints/${editingId}`, payload);
+      } else {
+        await api.post("/api/v1/reverse-proxy/entrypoints", payload);
       }
 
       showFeedback("success", editingId ? "Entrypoint updated" : "Entrypoint created");
@@ -301,11 +281,7 @@ export default function EntrypointsPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/reverse-proxy/entrypoints/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/reverse-proxy/entrypoints/${id}`);
       showFeedback("success", "Entrypoint deleted");
       setDeleteId(null);
       await fetchEntrypoints();

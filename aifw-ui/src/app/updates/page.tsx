@@ -1,11 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
+import { api } from "@/lib/api";
 
 interface UpdateStatus {
   os_version: string;
@@ -132,9 +128,7 @@ export default function UpdatesPage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/updates/status", { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: UpdateStatus = await res.json();
+      const data = await api.get<UpdateStatus>("/api/v1/updates/status");
       setStatus(data);
       if (data.checking) setChecking(true);
       else setChecking(false);
@@ -147,9 +141,7 @@ export default function UpdatesPage() {
 
   const fetchSchedule = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/updates/schedule", { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: MaintenanceWindow = await res.json();
+      const data = await api.get<MaintenanceWindow>("/api/v1/updates/schedule");
       setSchedule(data);
     } catch {
       // use defaults
@@ -158,9 +150,7 @@ export default function UpdatesPage() {
 
   const fetchAifwStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/updates/aifw/status", { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: AifwUpdateInfo = await res.json();
+      const data = await api.get<AifwUpdateInfo>("/api/v1/updates/aifw/status");
       setAifwInfo(data);
     } catch {
       // silent
@@ -169,9 +159,7 @@ export default function UpdatesPage() {
 
   const fetchHistory = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/updates/history", { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get<{ data?: UpdateHistoryEntry[] }>("/api/v1/updates/history");
       setHistory((data.data || []).slice(0, 50));
     } catch {
       // silent
@@ -197,9 +185,7 @@ export default function UpdatesPage() {
   const handleCheck = async () => {
     setChecking(true);
     try {
-      const res = await fetch("/api/v1/updates/check", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.post<{ message?: string }>("/api/v1/updates/check");
       showFeedback("success", data.message || "Update check complete");
       setChecking(false);
       fetchStatus();
@@ -213,9 +199,7 @@ export default function UpdatesPage() {
   const handleInstall = async () => {
     setInstalling(true);
     try {
-      const res = await fetch("/api/v1/updates/install", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.post<{ message?: string }>("/api/v1/updates/install");
       showFeedback("success", data.message || "Updates installed");
       setInstalling(false);
       fetchStatus();
@@ -230,9 +214,7 @@ export default function UpdatesPage() {
     setRebooting(true);
     setRebootConfirm(false);
     try {
-      const res = await fetch("/api/v1/updates/reboot", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.post<{ message?: string }>("/api/v1/updates/reboot");
       showFeedback("success", data.message || "Reboot scheduled");
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to schedule reboot");
@@ -244,12 +226,7 @@ export default function UpdatesPage() {
   const handleSaveSchedule = async () => {
     setSavingSchedule(true);
     try {
-      const res = await fetch("/api/v1/updates/schedule", {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(schedule),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.put("/api/v1/updates/schedule", schedule);
       showFeedback("success", "Maintenance window saved");
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to save schedule");
@@ -261,9 +238,7 @@ export default function UpdatesPage() {
   const handleAifwCheck = async () => {
     setAifwChecking(true);
     try {
-      const res = await fetch("/api/v1/updates/aifw/check", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: AifwUpdateInfo = await res.json();
+      const data = await api.post<AifwUpdateInfo>("/api/v1/updates/aifw/check");
       setAifwInfo(data);
       showFeedback("success", data.update_available
         ? `AiFw v${data.latest_version} is available`
@@ -279,12 +254,7 @@ export default function UpdatesPage() {
     // Optimistic — reflect the toggle immediately, revert on failure.
     setAifwInfo((prev) => (prev ? { ...prev, include_prereleases: enabled } : prev));
     try {
-      const res = await fetch("/api/v1/updates/aifw/prerelease", {
-        method: "POST",
-        headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.post("/api/v1/updates/aifw/prerelease", { enabled });
       showFeedback("success", `Pre-release channel ${enabled ? "enabled" : "disabled"}`);
       // Re-check against the new channel so the available version updates.
       await handleAifwCheck();
@@ -329,17 +299,15 @@ export default function UpdatesPage() {
     while (Date.now() - pollStart < 120000) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
-        const probe = await fetch("/api/v1/status", {
-          headers: authHeaders(),
+        await api.get("/api/v1/status", {
+          noAuthRedirect: true,
           signal: AbortSignal.timeout(3000),
         });
-        if (probe.ok) {
-          clearInterval(countdownInterval);
-          setRestartCountdown(0);
-          await new Promise((r) => setTimeout(r, 500));
-          window.location.reload();
-          return;
-        }
+        clearInterval(countdownInterval);
+        setRestartCountdown(0);
+        await new Promise((r) => setTimeout(r, 500));
+        window.location.reload();
+        return;
       } catch {
         // API not back yet — keep polling
       }
@@ -351,9 +319,7 @@ export default function UpdatesPage() {
   const handleAifwInstall = async () => {
     setAifwInstalling(true);
     try {
-      const res = await fetch("/api/v1/updates/aifw/install", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error((await res.text().catch(() => "")) || `HTTP ${res.status}`);
-      const data: UpdateInstallResponse = await res.json();
+      const data = await api.post<UpdateInstallResponse>("/api/v1/updates/aifw/install");
       setAifwInstalling(false);
 
       if (data.restart_required) {
@@ -380,9 +346,7 @@ export default function UpdatesPage() {
   const handleAifwRollback = async () => {
     setAifwRollingBack(true);
     try {
-      const res = await fetch("/api/v1/updates/aifw/rollback", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error((await res.text().catch(() => "")) || `HTTP ${res.status}`);
-      const data: UpdateInstallResponse = await res.json();
+      const data = await api.post<UpdateInstallResponse>("/api/v1/updates/aifw/rollback");
       setAifwRollingBack(false);
 
       if (data.restart_required) {
@@ -406,9 +370,7 @@ export default function UpdatesPage() {
   // and switches to the bounce overlay.
   const handleConfirmRestart = async () => {
     try {
-      const res = await fetch("/api/v1/updates/aifw/restart", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await res.json();
+      await api.post("/api/v1/updates/aifw/restart");
       setRestartPrompt(null);
       watchRestart();
     } catch (err) {
@@ -421,9 +383,7 @@ export default function UpdatesPage() {
   // overlay countdown is longer than the service-restart path.
   const handleConfirmReboot = async () => {
     try {
-      const res = await fetch("/api/v1/updates/aifw/reboot", { method: "POST", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await res.json();
+      await api.post("/api/v1/updates/aifw/reboot");
       setRestartPrompt(null);
       setAifwRebooting(true);
     } catch (err) {

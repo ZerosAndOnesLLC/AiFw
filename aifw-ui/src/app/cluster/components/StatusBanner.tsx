@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
 
 type Status = {
   role: string;
@@ -16,11 +17,9 @@ export default function StatusBanner() {
     let cancelled = false;
     const fetchStatus = async () => {
       try {
-        const r = await fetch("/api/v1/cluster/status", {
-          credentials: "include",
-        });
-        if (!r.ok) return;
-        const j: Status = await r.json();
+        // Tolerant poller: failures (incl. 401) just leave the banner hidden,
+        // so don't bounce to /login from here.
+        const j = await api.get<Status>("/api/v1/cluster/status", { noAuthRedirect: true });
         if (!cancelled) setS(j);
       } catch {}
     };

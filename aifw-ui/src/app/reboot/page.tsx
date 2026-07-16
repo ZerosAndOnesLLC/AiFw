@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { api } from "@/lib/api";
 
 type Mode = "reboot" | "shutdown";
 
@@ -16,18 +17,12 @@ export default function RebootPage() {
     setBusy(true);
     setFeedback(null);
     try {
-      const token = localStorage.getItem("aifw_token") || "";
       const path = mode === "reboot" ? "/api/v1/updates/reboot" : "/api/v1/updates/shutdown";
-      const res = await fetch(path, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json().catch(() => ({}));
+      const data = await api.post<{ message?: string }>(path);
       setFeedback({
         type: "success",
         msg:
-          data.message ||
+          data?.message ||
           (mode === "reboot"
             ? "System rebooting in 10 seconds..."
             : "System shutting down in 10 seconds..."),

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { api } from "@/lib/api";
 import Help, { HelpBanner } from "./Help";
 
 interface DdnsRecord {
@@ -34,29 +35,6 @@ interface DdnsConfig {
   ip_echo_url_v6: string;
 }
 
-function authHeaders(): HeadersInit {
-  const t = typeof window !== "undefined" ? localStorage.getItem("aifw_token") || "" : "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${t}` };
-}
-function authHeadersPlain(): HeadersInit {
-  const t = typeof window !== "undefined" ? localStorage.getItem("aifw_token") || "" : "";
-  return { Authorization: `Bearer ${t}` };
-}
-async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: body !== undefined ? authHeaders() : authHeadersPlain(),
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (res.status === 204) return undefined as T;
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(txt || `HTTP ${res.status}`);
-  }
-  const ct = res.headers.get("content-type") || "";
-  return ct.includes("application/json") ? res.json() : (undefined as T);
-}
-
 const DOMAIN_RE = /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 function fmtWhen(s: string | null): string {
   if (!s) return "—";
@@ -73,9 +51,9 @@ export default function DdnsPage() {
 
   const reload = useCallback(async () => {
     const [r, p, c] = await Promise.all([
-      api<DdnsRecord[]>("GET", "/api/v1/ddns/records"),
-      api<DnsProvider[]>("GET", "/api/v1/acme/dns-providers"),
-      api<DdnsConfig>("GET", "/api/v1/ddns/config"),
+      api.get<DdnsRecord[]>("/api/v1/ddns/records"),
+      api.get<DnsProvider[]>("/api/v1/acme/dns-providers"),
+      api.get<DdnsConfig>("/api/v1/ddns/config"),
     ]);
     setRecords(r);
     // Cloudflare + Route53 only — manual / unimplemented can't auto-update.
@@ -92,7 +70,7 @@ export default function DdnsPage() {
   async function forceUpdate(id: number) {
     setBusy(id);
     try {
-      const r = await api<{ ok: boolean; message: string }>("POST", `/api/v1/ddns/records/${id}/update`);
+      const r = await api.post<{ ok: boolean; message: string }>(`/api/v1/ddns/records/${id}/update`);
       showToast(r.ok, r.message);
       await reload();
     } catch (e) { showToast(false, String(e)); }
@@ -101,12 +79,12 @@ export default function DdnsPage() {
 
   async function remove(id: number) {
     if (!confirm("Delete this DDNS record? It will not remove the actual DNS record at the provider.")) return;
-    await api("DELETE", `/api/v1/ddns/records/${id}`);
+    await api.delete(`/api/v1/ddns/records/${id}`);
     await reload();
   }
 
   async function toggleEnabled(rec: DdnsRecord) {
-    await api("PUT", `/api/v1/ddns/records/${rec.id}`, {
+    await api.put(`/api/v1/ddns/records/${rec.id}`, {
       provider_id: rec.provider_id,
       hostname: rec.hostname,
       record_type: rec.record_type,
@@ -241,7 +219,7 @@ function ConfigCard({ config, onSaved }: { config: DdnsConfig; onSaved: () => vo
   async function save() {
     setBusy(true); setErr(null);
     try {
-      await api("PUT", "/api/v1/ddns/config", {
+      await api.put("/api/v1/ddns/config", {
         poll_interval_secs: Number(interval) || 300,
         ip_echo_url_v4: v4.trim(),
         ip_echo_url_v6: v6.trim(),
@@ -309,8 +287,8 @@ function RecordModal({ initial, providers, onClose, onSaved }:
         ttl,
         enabled,
       };
-      if (isNew) await api("POST", "/api/v1/ddns/records", body);
-      else       await api("PUT", `/api/v1/ddns/records/${initial!.id}`, body);
+      if (isNew) await api.post("/api/v1/ddns/records", body);
+      else       await api.put(`/api/v1/ddns/records/${initial!.id}`, body);
       onSaved();
     } catch (e) { setErr(String(e)); }
     finally { setBusy(false); }

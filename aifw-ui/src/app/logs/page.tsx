@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 
 interface AuditEntry {
   id: string;
@@ -31,12 +32,7 @@ export default function LogsPage() {
 
   const fetchLogs = useCallback(async () => {
     try {
-      const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-      const res = await fetch("/api/v1/logs", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`Failed to fetch logs (${res.status})`);
-      const json = await res.json();
+      const json = await api.get<{ data?: AuditEntry[] }>("/api/v1/logs");
       setEntries(json.data || []);
       setError(null);
     } catch (err) {

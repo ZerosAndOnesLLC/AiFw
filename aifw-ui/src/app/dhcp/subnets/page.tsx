@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { validateCIDR, validateIP, isValidIPv4 } from "@/lib/validate";
+import { api } from "@/lib/api";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -151,16 +152,6 @@ function fmtSeconds(s: number): string {
 
 /* -- Helpers --------------------------------------------------------- */
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
-function authHeadersPlain(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { Authorization: `Bearer ${token}` };
-}
-
 function fmtDate(iso: string): string {
   if (!iso) return "-";
   return new Date(iso).toLocaleDateString("en-US", {
@@ -210,9 +201,7 @@ export default function DhcpSubnetsPage() {
 
   const fetchSubnets = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/v4/subnets", { headers: authHeadersPlain() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: DhcpSubnet[] }>("/api/v1/dhcp/v4/subnets");
       setSubnets(body.data || []);
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Failed to load subnets");
@@ -221,9 +210,12 @@ export default function DhcpSubnetsPage() {
 
   const fetchGlobalDefaults = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/dhcp/v4/config", { headers: authHeadersPlain() });
-      if (!res.ok) return;
-      const cfg = await res.json();
+      const cfg = await api.get<{
+        dns_servers?: string[];
+        ntp_servers?: string[];
+        domain_name?: string;
+        default_lease_time?: number;
+      }>("/api/v1/dhcp/v4/config");
       setGlobalDefaults({
         dns_servers: Array.isArray(cfg.dns_servers) ? cfg.dns_servers : [],
         ntp_servers: Array.isArray(cfg.ntp_servers) ? cfg.ntp_servers : [],
@@ -408,17 +400,11 @@ export default function DhcpSubnetsPage() {
       if (form.delegated_length.trim()) payload.delegated_length = Number(form.delegated_length);
       if (form.description.trim()) payload.description = form.description.trim();
 
-      const url = editingId
-        ? `/api/v1/dhcp/v4/subnets/${editingId}`
-        : "/api/v1/dhcp/v4/subnets";
-      const method = editingId ? "PUT" : "POST";
-
-      const res = await fetch(url, {
-        method,
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (editingId) {
+        await api.put(`/api/v1/dhcp/v4/subnets/${editingId}`, payload);
+      } else {
+        await api.post("/api/v1/dhcp/v4/subnets", payload);
+      }
 
       showFeedback("success", editingId ? "Subnet updated" : "Subnet created");
       closeModal();
@@ -432,11 +418,7 @@ export default function DhcpSubnetsPage() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await fetch(`/api/v1/dhcp/v4/subnets/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/dhcp/v4/subnets/${id}`);
       showFeedback("success", "Subnet deleted");
       setDeleteId(null);
       await fetchSubnets();

@@ -1,16 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-const API = "";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
+import { api } from "@/lib/api";
 
 interface IdsRule {
   id: string;
@@ -85,11 +76,10 @@ export default function IdsRulesPage() {
       if (search.trim()) params.set("search", search.trim());
       if (enabledFilter) params.set("enabled", enabledFilter);
 
-      const res = await fetch(`${API}/api/v1/ids/rules?${params.toString()}`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`Failed to fetch rules: ${res.status}`);
-      const json = await res.json();
+      type RulesPayload = IdsRule[] & { rules?: IdsRule[]; total?: number };
+      const json = await api.get<RulesPayload & { data?: RulesPayload }>(
+        `/api/v1/ids/rules?${params.toString()}`,
+      );
       const d = json.data || json;
       setRules(d.rules || d || []);
       setTotal(d.total ?? (d.rules || d || []).length);
@@ -113,18 +103,10 @@ export default function IdsRulesPage() {
     setUpdatingId(rule.id);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/ids/rules/${rule.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          enabled: !rule.enabled,
-          action_override: rule.action_override,
-        }),
+      await api.put(`/api/v1/ids/rules/${rule.id}`, {
+        enabled: !rule.enabled,
+        action_override: rule.action_override,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Toggle failed: ${res.status}`);
-      }
       setFeedback({
         type: "success",
         message: `SID ${rule.sid} ${!rule.enabled ? "enabled" : "disabled"}`,
@@ -145,18 +127,10 @@ export default function IdsRulesPage() {
     setFeedback(null);
     try {
       const override_action = newAction === "alert" && !rule.action_override ? null : newAction;
-      const res = await fetch(`${API}/api/v1/ids/rules/${rule.id}`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          enabled: rule.enabled,
-          action_override: override_action,
-        }),
+      await api.put(`/api/v1/ids/rules/${rule.id}`, {
+        enabled: rule.enabled,
+        action_override: override_action,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Override failed: ${res.status}`);
-      }
       setFeedback({
         type: "success",
         message: `SID ${rule.sid} action set to ${newAction}`,

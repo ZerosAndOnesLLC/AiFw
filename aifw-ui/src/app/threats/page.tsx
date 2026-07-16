@@ -1,13 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-
-const API = "";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
+import { api, ApiError } from "@/lib/api";
 
 interface IdsAlert {
   id: string;
@@ -92,12 +86,17 @@ export default function ThreatsPage() {
   const fetchAlerts = useCallback(async () => {
     try {
       // Fetch latest alerts + AI-reviewed alerts (may overlap, deduplicate by id)
-      const [latestRes, reviewedRes] = await Promise.all([
-        fetch(`${API}/api/v1/ids/alerts?limit=200`, { headers: authHeaders() }),
-        fetch(`${API}/api/v1/ids/alerts?limit=300&classification=reviewed`, { headers: authHeaders() }),
+      // HTTP errors are treated as an empty list (as before); network errors surface below.
+      const emptyOnHttpError = (err: unknown): { data?: IdsAlert[] } => {
+        if (err instanceof ApiError) return {};
+        throw err;
+      };
+      const [latestJson, reviewedJson] = await Promise.all([
+        api.get<{ data?: IdsAlert[] }>("/api/v1/ids/alerts?limit=200").catch(emptyOnHttpError),
+        api.get<{ data?: IdsAlert[] }>("/api/v1/ids/alerts?limit=300&classification=reviewed").catch(emptyOnHttpError),
       ]);
-      const latest = latestRes.ok ? (await latestRes.json()).data || [] : [];
-      const reviewed = reviewedRes.ok ? (await reviewedRes.json()).data || [] : [];
+      const latest = latestJson.data || [];
+      const reviewed = reviewedJson.data || [];
       // Merge and deduplicate
       const byId = new Map<string, IdsAlert>();
       for (const a of [...reviewed, ...latest]) byId.set(a.id, a);
@@ -120,31 +119,25 @@ export default function ThreatsPage() {
   const runAiAnalysis = async () => {
     setAiRunning(true);
     try {
-      const res = await fetch(`${API}/api/v1/ai/analyze`, { method: "POST", headers: authHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.classified > 0) await fetchAlerts();
-      }
+      const data = await api.post<{ classified: number }>("/api/v1/ai/analyze");
+      if (data.classified > 0) await fetchAlerts();
     } catch { /* ignore */ }
     finally { setAiRunning(false); }
   };
 
   const fetchAiLog = async () => {
     try {
-      const res = await fetch(`${API}/api/v1/ai/audit-log?limit=30`, { headers: authHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        setAiLog(data.entries || []);
-      }
+      const data = await api.get<{ entries?: typeof aiLog }>("/api/v1/ai/audit-log?limit=30");
+      setAiLog(data.entries || []);
     } catch { /* ignore */ }
   };
 
   const handleClassify = async (id: string, classification: string) => {
     setClassifying(id);
     try {
-      await fetch(`${API}/api/v1/ids/alerts/${id}/classify`, {
-        method: "PUT", headers: authHeaders(),
-        body: JSON.stringify({ classification, notes: noteText || null }),
+      await api.put(`/api/v1/ids/alerts/${id}/classify`, {
+        classification,
+        notes: noteText || null,
       });
       setNoteText("");
       await fetchAlerts();

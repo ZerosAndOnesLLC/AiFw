@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
 import { isValidAliasName, isValidIP, isValidCIDR, isValidPortRange, isValidURL } from "@/lib/validate";
 
 interface Alias {
@@ -24,11 +25,6 @@ const defaultForm = {
 
 type FormState = typeof defaultForm;
 
-function authHeaders(): HeadersInit {
-  const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : "";
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
-}
-
 const TYPE_LABELS: Record<string, { label: string; hint: string; placeholder: string; color: string }> = {
   host: { label: "Hosts", hint: "One IP address per line", placeholder: "192.168.1.10\n192.168.1.20\n10.0.0.5", color: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
   network: { label: "Networks", hint: "One CIDR per line", placeholder: "192.168.1.0/24\n10.0.0.0/8\n172.16.0.0/12", color: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" },
@@ -48,9 +44,7 @@ export default function AliasesPage() {
   const fetchAliases = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch("/api/v1/aliases", { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
+      const body = await api.get<{ data?: Alias[] }>("/api/v1/aliases");
       setAliases(body.data || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load aliases");
@@ -104,12 +98,10 @@ export default function AliasesPage() {
         description: form.description.trim() || undefined,
         enabled: form.enabled,
       };
-      const url = editingId ? `/api/v1/aliases/${editingId}` : "/api/v1/aliases";
-      const method = editingId ? "PUT" : "POST";
-      const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(body) });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.message || `HTTP ${res.status}`);
+      if (editingId) {
+        await api.put(`/api/v1/aliases/${editingId}`, body);
+      } else {
+        await api.post("/api/v1/aliases", body);
       }
       await fetchAliases();
       resetForm();
@@ -123,8 +115,7 @@ export default function AliasesPage() {
   const handleDelete = async (alias: Alias) => {
     setError(null);
     try {
-      const res = await fetch(`/api/v1/aliases/${alias.id}`, { method: "DELETE", headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await api.delete(`/api/v1/aliases/${alias.id}`);
       setAliases(prev => prev.filter(a => a.id !== alias.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete alias");
@@ -140,7 +131,7 @@ export default function AliasesPage() {
         description: alias.description,
         enabled: !alias.enabled,
       };
-      await fetch(`/api/v1/aliases/${alias.id}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(body) });
+      await api.put(`/api/v1/aliases/${alias.id}`, body);
       setAliases(prev => prev.map(a => a.id === alias.id ? { ...a, enabled: !a.enabled } : a));
     } catch {
       setError("Failed to toggle alias");

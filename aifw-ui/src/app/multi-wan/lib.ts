@@ -1,29 +1,28 @@
 // Shared helpers for Multi-WAN UI pages.
 
-export function authHeaders(): HeadersInit {
-  const token = (typeof window !== "undefined" && localStorage.getItem("aifw_token")) || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
+import { api as client } from "@/lib/api";
 
+/// Thin method-string shim over the central api client (`@/lib/api`) so the
+/// multi-wan pages' existing `api("VERB", path, body)` call sites keep working.
 export async function api<T>(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: authHeaders(),
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `${method} ${path} → ${res.status}`);
+  switch (method.toUpperCase()) {
+    case "GET":
+      return client.get<T>(path);
+    case "POST":
+      return client.post<T>(path, body);
+    case "PUT":
+      return client.put<T>(path, body);
+    case "PATCH":
+      return client.patch<T>(path, body);
+    case "DELETE":
+      return client.delete<T>(path);
+    default:
+      throw new Error(`Unsupported method: ${method}`);
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
 }
 
 export interface RoutingInstance {

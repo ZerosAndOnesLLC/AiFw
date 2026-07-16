@@ -2,16 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Card from "@/components/Card";
-
-const API = "";
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("aifw_token") || "";
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
+import { api } from "@/lib/api";
 
 interface IdsStats {
   packets_inspected: number;
@@ -84,9 +75,7 @@ export default function IdsDashboardPage() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/v1/ids/stats`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
-      const json = await res.json();
+      const json = await api.get<StatsResponse & { data?: StatsResponse }>("/api/v1/ids/stats");
       setData(json.data || json);
     } catch (err: unknown) {
       if (loading) {
@@ -109,15 +98,7 @@ export default function IdsDashboardPage() {
     setModeChanging(true);
     setFeedback(null);
     try {
-      const res = await fetch(`${API}/api/v1/ids/config`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify({ mode: newMode }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || `Failed to change mode: ${res.status}`);
-      }
+      await api.put("/api/v1/ids/config", { mode: newMode });
       setFeedback({ type: "success", message: `Mode changed to ${newMode.toUpperCase()}` });
       clearFeedback();
       await fetchStats();
