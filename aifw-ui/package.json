@@ -1,6 +1,6 @@
 {
   "name": "aifw-ui",
-  "version": "5.98.4",
+  "version": "5.98.5",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -9,6 +9,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.6",
     "lucide-react": "^1.20.0",
     "next": "^16.2.9",
     "react": "^19.2.7",
