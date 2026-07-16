@@ -266,6 +266,203 @@ impl StickyMode {
     }
 }
 
+/// Whether a multiwan policy rule is enforced (serialized as lowercase)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyStatus {
+    /// Rule is compiled into pf
+    #[default]
+    Active,
+    /// Rule is stored but not compiled into pf
+    Disabled,
+}
+
+impl PolicyStatus {
+    /// Canonical lowercase string used in the DB and API ("active", "disabled")
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Case-insensitive parse of the canonical string; `None` for anything else
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "active" => Some(Self::Active),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PolicyStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// IP family a multiwan policy rule matches (serialized as lowercase)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MwIpVersion {
+    /// IPv4 only (pf `inet`)
+    V4,
+    /// IPv6 only (pf `inet6`)
+    V6,
+    /// Both families — no address-family keyword is emitted
+    #[default]
+    Both,
+}
+
+impl MwIpVersion {
+    /// Canonical lowercase string used in the DB and API ("v4", "v6", "both")
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V4 => "v4",
+            Self::V6 => "v6",
+            Self::Both => "both",
+        }
+    }
+
+    /// Case-insensitive parse of the canonical string; `None` for anything else
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "v4" => Some(Self::V4),
+            "v6" => Some(Self::V6),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MwIpVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Transport protocol a multiwan policy rule or route leak matches
+/// (serialized as lowercase)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MwProtocol {
+    /// Any protocol — no `proto` keyword is emitted
+    #[default]
+    Any,
+    /// TCP
+    Tcp,
+    /// UDP
+    Udp,
+    /// ICMP
+    Icmp,
+}
+
+impl MwProtocol {
+    /// Canonical lowercase string used in the DB and API ("any", "tcp", "udp", "icmp")
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+            Self::Icmp => "icmp",
+        }
+    }
+
+    /// Case-insensitive parse of the canonical string; `None` for anything else
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "any" | "" => Some(Self::Any),
+            "tcp" => Some(Self::Tcp),
+            "udp" => Some(Self::Udp),
+            "icmp" => Some(Self::Icmp),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MwProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a policy rule's `target_id` refers to (serialized as snake_case)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteAction {
+    /// Steer matching traffic into a RoutingInstance (FIB)
+    SetInstance,
+    /// Route matching traffic out a specific Gateway (pf `route-to`)
+    SetGateway,
+    /// Load-balance matching traffic across a GatewayGroup
+    SetGroup,
+}
+
+impl RouteAction {
+    /// Canonical snake_case string used in the DB and API
+    /// ("set_instance", "set_gateway", "set_group")
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SetInstance => "set_instance",
+            Self::SetGateway => "set_gateway",
+            Self::SetGroup => "set_group",
+        }
+    }
+
+    /// Case-insensitive parse of the canonical string; `None` for anything else
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "set_instance" => Some(Self::SetInstance),
+            "set_gateway" => Some(Self::SetGateway),
+            "set_group" => Some(Self::SetGroup),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RouteAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Whether a route leak also allows return traffic (serialized as snake_case)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LeakDirection {
+    /// Traffic is leaked in both directions
+    #[default]
+    Bidirectional,
+    /// Only src-instance → dst-instance traffic is leaked
+    OneWay,
+}
+
+impl LeakDirection {
+    /// Canonical snake_case string used in the DB and API ("bidirectional", "one_way")
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bidirectional => "bidirectional",
+            Self::OneWay => "one_way",
+        }
+    }
+
+    /// Case-insensitive parse of the canonical string; `None` for anything else
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "bidirectional" => Some(Self::Bidirectional),
+            "one_way" | "one-way" => Some(Self::OneWay),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for LeakDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A named set of gateways with a shared failover/load-balancing policy
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayGroup {
@@ -313,9 +510,9 @@ pub struct PolicyRule {
     /// Human-readable rule name
     pub name: String,
     /// Whether the rule is enforced
-    pub status: String, // active | disabled
+    pub status: PolicyStatus,
     /// IP family the rule applies to
-    pub ip_version: String, // v4 | v6 | both
+    pub ip_version: MwIpVersion,
     /// Ingress interface to match; `None` = any interface
     pub iface_in: Option<String>,
     /// Source address/CIDR/alias to match ("any" for all)
@@ -327,7 +524,7 @@ pub struct PolicyRule {
     /// Destination port or port range to match; `None` = any
     pub dst_port: Option<String>,
     /// Transport protocol to match
-    pub protocol: String, // any | tcp | udp | icmp
+    pub protocol: MwProtocol,
     /// Incoming DSCP value to match; `None` = any
     pub dscp_in: Option<u8>,
     /// Destination geo-IP country code to match; `None` = any
@@ -335,7 +532,7 @@ pub struct PolicyRule {
     /// Time schedule restricting when the rule is active; `None` = always
     pub schedule_id: Option<String>,
     /// What `target_id` refers to
-    pub action_kind: String, // set_instance | set_gateway | set_group
+    pub action_kind: RouteAction,
     /// ID of the RoutingInstance, Gateway, or GatewayGroup traffic is steered to
     pub target_id: Uuid,
     /// Flow-affinity mode applied to steered traffic
@@ -364,16 +561,107 @@ pub struct RouteLeak {
     pub dst_instance_id: Uuid,
     /// Destination prefix (CIDR) allowed to cross instances
     pub prefix: String,
-    /// Transport protocol allowed ("any", "tcp", "udp", ...)
-    pub protocol: String,
+    /// Transport protocol allowed
+    pub protocol: MwProtocol,
     /// Port or port range restriction; `None` = all ports
     pub ports: Option<String>,
     /// Whether return traffic is also leaked
-    pub direction: String, // bidirectional | one_way
+    pub direction: LeakDirection,
     /// Whether the leak is compiled into pf rules
     pub enabled: bool,
     /// When the leak was created
     pub created_at: DateTime<Utc>,
     /// When the leak was last modified
     pub updated_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guard for QUAL-H11 #431: the enum wire values must stay identical to
+    /// the strings the DB rows, API clients, and UI already use. A serde
+    /// rename or variant rename that changes them would silently break
+    /// existing databases and the web UI.
+    #[test]
+    fn wire_values_are_stable() {
+        let cases = [
+            (
+                serde_json::to_string(&PolicyStatus::Active).unwrap(),
+                "\"active\"",
+            ),
+            (
+                serde_json::to_string(&PolicyStatus::Disabled).unwrap(),
+                "\"disabled\"",
+            ),
+            (serde_json::to_string(&MwIpVersion::V4).unwrap(), "\"v4\""),
+            (serde_json::to_string(&MwIpVersion::V6).unwrap(), "\"v6\""),
+            (
+                serde_json::to_string(&MwIpVersion::Both).unwrap(),
+                "\"both\"",
+            ),
+            (serde_json::to_string(&MwProtocol::Any).unwrap(), "\"any\""),
+            (serde_json::to_string(&MwProtocol::Tcp).unwrap(), "\"tcp\""),
+            (serde_json::to_string(&MwProtocol::Udp).unwrap(), "\"udp\""),
+            (
+                serde_json::to_string(&MwProtocol::Icmp).unwrap(),
+                "\"icmp\"",
+            ),
+            (
+                serde_json::to_string(&RouteAction::SetInstance).unwrap(),
+                "\"set_instance\"",
+            ),
+            (
+                serde_json::to_string(&RouteAction::SetGateway).unwrap(),
+                "\"set_gateway\"",
+            ),
+            (
+                serde_json::to_string(&RouteAction::SetGroup).unwrap(),
+                "\"set_group\"",
+            ),
+            (
+                serde_json::to_string(&LeakDirection::Bidirectional).unwrap(),
+                "\"bidirectional\"",
+            ),
+            (
+                serde_json::to_string(&LeakDirection::OneWay).unwrap(),
+                "\"one_way\"",
+            ),
+        ];
+        for (got, want) in cases {
+            assert_eq!(got, want);
+        }
+    }
+
+    /// The DB string identity (`as_str`) must match the serde wire value, and
+    /// `parse` must round-trip both.
+    #[test]
+    fn as_str_parse_round_trip() {
+        for s in [PolicyStatus::Active, PolicyStatus::Disabled] {
+            assert_eq!(PolicyStatus::parse(s.as_str()), Some(s));
+        }
+        for v in [MwIpVersion::V4, MwIpVersion::V6, MwIpVersion::Both] {
+            assert_eq!(MwIpVersion::parse(v.as_str()), Some(v));
+        }
+        for p in [
+            MwProtocol::Any,
+            MwProtocol::Tcp,
+            MwProtocol::Udp,
+            MwProtocol::Icmp,
+        ] {
+            assert_eq!(MwProtocol::parse(p.as_str()), Some(p));
+        }
+        for a in [
+            RouteAction::SetInstance,
+            RouteAction::SetGateway,
+            RouteAction::SetGroup,
+        ] {
+            assert_eq!(RouteAction::parse(a.as_str()), Some(a));
+        }
+        for d in [LeakDirection::Bidirectional, LeakDirection::OneWay] {
+            assert_eq!(LeakDirection::parse(d.as_str()), Some(d));
+        }
+        assert_eq!(PolicyStatus::parse("bogus"), None);
+        assert_eq!(RouteAction::parse("set_nothing"), None);
+    }
 }

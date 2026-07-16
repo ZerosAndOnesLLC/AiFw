@@ -1,4 +1,4 @@
-use aifw_common::ids::IdsAlert;
+use aifw_common::ids::{AlertClassification, IdsAlert};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -111,10 +111,10 @@ impl AlertBuffer {
             }
             if let Some(cls) = classification {
                 if cls == "reviewed" {
-                    if a.classification == "unreviewed" {
+                    if a.classification == AlertClassification::Unreviewed {
                         return false;
                     }
-                } else if a.classification != cls {
+                } else if AlertClassification::parse(cls) != Some(a.classification) {
                     return false;
                 }
             }
@@ -142,12 +142,12 @@ impl AlertBuffer {
     pub async fn classify(
         &self,
         id: uuid::Uuid,
-        classification: &str,
+        classification: AlertClassification,
         notes: Option<&str>,
     ) -> bool {
         let mut buf = self.alerts.write().await;
         if let Some(alert) = buf.iter_mut().find(|a| a.id == id) {
-            alert.classification = classification.to_string();
+            alert.classification = classification;
             if let Some(n) = notes {
                 alert.analyst_notes = Some(n.to_string());
             }
@@ -162,14 +162,16 @@ impl AlertBuffer {
     pub async fn classify_by_signature(
         &self,
         sig_id: u32,
-        classification: &str,
+        classification: AlertClassification,
         notes: &str,
     ) -> usize {
         let mut buf = self.alerts.write().await;
         let mut count = 0;
         for alert in buf.iter_mut() {
-            if alert.signature_id == Some(sig_id) && alert.classification == "unreviewed" {
-                alert.classification = classification.to_string();
+            if alert.signature_id == Some(sig_id)
+                && alert.classification == AlertClassification::Unreviewed
+            {
+                alert.classification = classification;
                 alert.analyst_notes = Some(notes.to_string());
                 alert.acknowledged = true;
                 count += 1;
@@ -210,7 +212,7 @@ impl AlertBuffer {
         let by_class = {
             let mut m = std::collections::HashMap::<String, usize>::new();
             for a in buf.iter() {
-                *m.entry(a.classification.clone()).or_insert(0) += 1;
+                *m.entry(a.classification.as_str().to_string()).or_insert(0) += 1;
             }
             let mut v: Vec<(String, usize)> = m.into_iter().collect();
             v.sort_by_key(|(_, count)| std::cmp::Reverse(*count));

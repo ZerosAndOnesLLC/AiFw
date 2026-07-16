@@ -1,3 +1,8 @@
+use aifw_common::{
+    Action, BandwidthUnit, Direction, GeoIpAction, GeoIpRuleStatus, IpVersion, IpsecMode,
+    IpsecProtocol, NatStatus, NatType, Protocol, QueueStatus, QueueType, RateLimitStatus,
+    RuleStatus, SniAction, StateTracking, TrafficClass,
+};
 use serde::{Deserialize, Serialize};
 
 /// Highest `schema_version` that [`FirewallConfig::validate`] will accept.
@@ -388,12 +393,12 @@ pub struct RuleConfig {
     pub id: String,
     /// Ordering key; lower values are emitted to pf first
     pub priority: i32,
-    /// `pass`, `block`, `block_drop`, or `block_return`
-    pub action: String,
-    /// Traffic direction — `in`, `out`, or `any`
-    pub direction: String,
-    /// Protocol match (e.g. `tcp`, `udp`, `icmp`, `any`)
-    pub protocol: String,
+    /// What the rule does with matching traffic
+    pub action: Action,
+    /// Traffic direction the rule matches
+    pub direction: Direction,
+    /// Protocol match
+    pub protocol: Protocol,
     /// Interface the rule applies on; None = all interfaces
     pub interface: Option<String>,
     /// Source address/CIDR/alias; None = any
@@ -414,15 +419,14 @@ pub struct RuleConfig {
     pub quick: bool,
     /// Optional human-readable label
     pub label: Option<String>,
-    /// `none`, `keep_state`, `modulate_state`, or `synproxy_state`
-    pub state_tracking: String,
-    /// `active` or `disabled`
-    pub status: String,
-    /// Address family — `inet`, `inet6`, or `both`. Older backups predate
-    /// this field; default to `both` so historical rules keep their
-    /// dual-stack semantics on restore.
-    #[serde(default = "default_ip_version")]
-    pub ip_version: String,
+    /// pf state-tracking mode
+    pub state_tracking: StateTracking,
+    /// Whether the rule is loaded into pf
+    pub status: RuleStatus,
+    /// Address family. Older backups predate this field; default to `both`
+    /// so historical rules keep their dual-stack semantics on restore.
+    #[serde(default)]
+    pub ip_version: IpVersion,
     /// Negate the source match (pf `!`)
     #[serde(default)]
     pub src_invert: bool,
@@ -431,21 +435,17 @@ pub struct RuleConfig {
     pub dst_invert: bool,
 }
 
-fn default_ip_version() -> String {
-    "both".to_string()
-}
-
 /// A NAT rule as stored in a config snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NatRuleConfig {
     /// Unique rule ID (UUID string)
     pub id: String,
-    /// `snat`, `dnat`, `masquerade`, `binat`, `nat64`, or `nat46`
-    pub nat_type: String,
+    /// Kind of translation the rule performs
+    pub nat_type: NatType,
     /// Interface the translation applies on
     pub interface: String,
-    /// Protocol match (e.g. `tcp`, `udp`, `any`)
-    pub protocol: String,
+    /// Protocol match
+    pub protocol: Protocol,
     /// Source address/CIDR match; None = any
     pub src_addr: Option<String>,
     /// Start of source port range; None = any port
@@ -466,8 +466,8 @@ pub struct NatRuleConfig {
     pub redirect_port_end: Option<u16>,
     /// Optional human-readable label
     pub label: Option<String>,
-    /// `active` or `disabled`
-    pub status: String,
+    /// Whether the rule is loaded into pf
+    pub status: NatStatus,
 }
 
 /// A traffic-shaping queue as stored in a config snapshot
@@ -479,20 +479,20 @@ pub struct QueueConfigEntry {
     pub name: String,
     /// Interface the queue is attached to
     pub interface: String,
-    /// Queueing discipline — `codel`, `hfsc`, or `priq`
-    pub queue_type: String,
+    /// Queueing discipline
+    pub queue_type: QueueType,
     /// Bandwidth amount, in units of `bandwidth_unit`
     pub bandwidth_value: u64,
-    /// Bandwidth unit — `bps`, `kbps`, `mbps`, or `gbps`
-    pub bandwidth_unit: String,
-    /// Priority class — `voip`, `interactive`, `default`, or `bulk`
-    pub traffic_class: String,
+    /// Unit for `bandwidth_value`
+    pub bandwidth_unit: BandwidthUnit,
+    /// Priority class of the queue
+    pub traffic_class: TrafficClass,
     /// Percent of parent bandwidth (1-100); overrides the absolute value when set
     pub bandwidth_pct: Option<u8>,
     /// Whether this is the interface's default queue
     pub default: bool,
-    /// `active` or `disabled`
-    pub status: String,
+    /// Whether the queue is loaded into pf
+    pub status: QueueStatus,
 }
 
 /// A per-source-IP connection rate limit as stored in a config snapshot
@@ -504,8 +504,8 @@ pub struct RateLimitEntry {
     pub name: String,
     /// Interface the limit applies on; None = all interfaces
     pub interface: Option<String>,
-    /// Protocol match (e.g. `tcp`)
-    pub protocol: String,
+    /// Protocol match
+    pub protocol: Protocol,
     /// Start of destination port range; None = any port
     pub dst_port_start: Option<u16>,
     /// End of destination port range (inclusive)
@@ -518,8 +518,8 @@ pub struct RateLimitEntry {
     pub overload_table: String,
     /// Kill existing states from a source when it exceeds the limit
     pub flush_states: bool,
-    /// `active` or `disabled`
-    pub status: String,
+    /// Whether the limit is loaded into pf
+    pub status: RateLimitStatus,
 }
 
 /// VPN section: WireGuard tunnels and IPsec SAs
@@ -587,10 +587,10 @@ pub struct IpsecSaConfig {
     pub src_addr: String,
     /// Remote endpoint address
     pub dst_addr: String,
-    /// IPsec protocol — `esp`, `ah`, or `esp_ah`
-    pub protocol: String,
-    /// `tunnel` or `transport`
-    pub mode: String,
+    /// IPsec protocol
+    pub protocol: IpsecProtocol,
+    /// Encapsulation mode
+    pub mode: IpsecMode,
     /// Encryption algorithm (e.g. `aes-gcm-256`)
     pub enc_algo: String,
     /// Authentication algorithm (e.g. `hmac-sha256`)
@@ -604,12 +604,12 @@ pub struct GeoIpEntry {
     pub id: String,
     /// ISO 3166-1 alpha-2 country code (e.g. `CN`)
     pub country: String,
-    /// `allow` or `block`
-    pub action: String,
+    /// Whether matching countries are allowed or blocked
+    pub action: GeoIpAction,
     /// Optional human-readable label
     pub label: Option<String>,
-    /// `active` or `disabled`
-    pub status: String,
+    /// Whether the entry is enforced
+    pub status: GeoIpRuleStatus,
 }
 
 /// TLS inspection policy applied to observed handshakes
@@ -649,8 +649,8 @@ pub struct SniRuleConfig {
     pub id: String,
     /// SNI hostname pattern to match
     pub pattern: String,
-    /// `allow` or `block`
-    pub action: String,
+    /// Whether matching connections are allowed or blocked
+    pub action: SniAction,
     /// Optional human-readable label
     pub label: Option<String>,
 }

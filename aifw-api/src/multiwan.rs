@@ -694,16 +694,16 @@ pub async fn group_active(
 pub struct CreatePolicyRequest {
     pub priority: i64,
     pub name: String,
-    pub status: Option<String>,
-    pub ip_version: Option<String>,
+    pub status: Option<aifw_common::PolicyStatus>,
+    pub ip_version: Option<aifw_common::MwIpVersion>,
     pub iface_in: Option<String>,
     pub src_addr: Option<String>,
     pub dst_addr: Option<String>,
     pub src_port: Option<String>,
     pub dst_port: Option<String>,
-    pub protocol: Option<String>,
+    pub protocol: Option<aifw_common::MwProtocol>,
     pub dscp_in: Option<u8>,
-    pub action_kind: String,
+    pub action_kind: aifw_common::RouteAction,
     pub target_id: String,
     pub sticky: Option<String>,
     pub fallback_target_id: Option<String>,
@@ -737,14 +737,14 @@ fn req_to_policy(
         id: id.unwrap_or_else(Uuid::new_v4),
         priority: req.priority,
         name: req.name,
-        status: req.status.unwrap_or_else(|| "active".into()),
-        ip_version: req.ip_version.unwrap_or_else(|| "both".into()),
+        status: req.status.unwrap_or_default(),
+        ip_version: req.ip_version.unwrap_or_default(),
         iface_in: req.iface_in,
         src_addr: req.src_addr.unwrap_or_else(|| "any".into()),
         dst_addr: req.dst_addr.unwrap_or_else(|| "any".into()),
         src_port: req.src_port,
         dst_port: req.dst_port,
-        protocol: req.protocol.unwrap_or_else(|| "any".into()),
+        protocol: req.protocol.unwrap_or_default(),
         dscp_in: req.dscp_in,
         geoip_country: None,
         schedule_id: None,
@@ -843,9 +843,9 @@ pub struct CreateLeakRequest {
     pub src_instance_id: String,
     pub dst_instance_id: String,
     pub prefix: String,
-    pub protocol: Option<String>,
+    pub protocol: Option<aifw_common::MwProtocol>,
     pub ports: Option<String>,
-    pub direction: Option<String>,
+    pub direction: Option<aifw_common::LeakDirection>,
     pub enabled: Option<bool>,
 }
 
@@ -869,9 +869,9 @@ pub async fn create_leak(
         src_instance_id: src,
         dst_instance_id: dst,
         prefix: req.prefix,
-        protocol: req.protocol.unwrap_or_else(|| "any".into()),
+        protocol: req.protocol.unwrap_or_default(),
         ports: req.ports,
-        direction: req.direction.unwrap_or_else(|| "bidirectional".into()),
+        direction: req.direction.unwrap_or_default(),
         enabled: req.enabled.unwrap_or(true),
         created_at: now,
         updated_at: now,
@@ -1183,7 +1183,7 @@ pub async fn duplicate_policy(
         id: Uuid::new_v4(),
         priority: src.priority + 1,
         name: format!("{}-copy", src.name),
-        status: "disabled".into(), // duplicated rules start disabled for safety
+        status: aifw_common::PolicyStatus::Disabled, // duplicated rules start disabled for safety
         created_at: now,
         updated_at: now,
         ..src
@@ -1213,9 +1213,9 @@ pub async fn toggle_policy(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     p.status = if req.enabled {
-        "active".into()
+        aifw_common::PolicyStatus::Active
     } else {
-        "disabled".into()
+        aifw_common::PolicyStatus::Disabled
     };
     let p = state
         .policy_engine

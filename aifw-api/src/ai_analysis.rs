@@ -170,8 +170,12 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
 
     match response {
         Ok(ai_response) => {
-            // Parse the response (strip thinking tags, extract JSON)
-            let (classification, reason) = parse_ai_response(&ai_response);
+            // Parse the response (strip thinking tags, extract JSON).
+            // The model's classification string is untrusted — parse it into
+            // the closed enum and fall back to Investigating (QUAL-H11 #431).
+            let (classification_raw, reason) = parse_ai_response(&ai_response);
+            let classification = aifw_common::AlertClassification::parse(&classification_raw)
+                .unwrap_or(aifw_common::AlertClassification::Investigating);
             // Store clean reason (not the full thinking chain)
             let clean_reason = if reason.len() > 300 {
                 format!("{}...", &reason[..297])
@@ -185,14 +189,14 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
                 let _ = sqlx::query(
                     "UPDATE ids_alerts SET classification = ?, analyst_notes = ?, acknowledged = 1 WHERE signature_id = ? AND classification = 'unreviewed'"
                 )
-                .bind(&classification)
+                .bind(classification.as_str())
                 .bind(&notes_str)
                 .bind(sig_id as i64)
                 .execute(pool)
                 .await;
             } else if let Ok(uuid) = Uuid::parse_str(&alert_id) {
                 let _ = sqlite_out
-                    .classify(uuid, &classification, Some(&notes_str))
+                    .classify(uuid, classification, Some(&notes_str))
                     .await;
             }
 
@@ -209,7 +213,7 @@ Respond with ONLY a JSON object, no markdown, no explanation outside the JSON:
             .bind(model)
             .bind(&prompt)
             .bind(&ai_response)
-            .bind(&classification)
+            .bind(classification.as_str())
             .bind(duration_ms)
             .execute(pool).await;
 

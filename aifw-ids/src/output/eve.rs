@@ -153,7 +153,7 @@ mod tests {
             payload_excerpt: None,
             metadata: None,
             acknowledged: false,
-            classification: "unreviewed".to_string(),
+            classification: aifw_common::ids::AlertClassification::Unreviewed,
             analyst_notes: None,
         };
 

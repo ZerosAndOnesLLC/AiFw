@@ -61,13 +61,14 @@ pub use ha::{
     HealthCheck, HealthCheckType, NodeHealth, PfsyncConfig,
 };
 pub use ids::{
-    IdsAction, IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleMatch, IdsRuleset, IdsSeverity,
-    IdsStats, IdsSuppression, RuleFormat, RuleSource, SuppressType,
+    AlertClassification, IdsAction, IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleMatch,
+    IdsRuleset, IdsSeverity, IdsStats, IdsSuppression, RuleFormat, RuleSource, SuppressType,
 };
 pub use multiwan::{
     DEFAULT_FIB_NUMBER, DEFAULT_INSTANCE_ID, DEFAULT_INSTANCE_NAME, Gateway, GatewayEvent,
     GatewayGroup, GatewayState, GroupMember, GroupPolicy, InstanceMember, InstanceStatus,
-    PolicyRule, RouteLeak, RoutingInstance, StickyMode,
+    LeakDirection, MwIpVersion, MwProtocol, PolicyRule, PolicyStatus, RouteAction, RouteLeak,
+    RoutingInstance, StickyMode,
 };
 pub use nat::{NatRedirect, NatRule, NatStatus, NatType};
 pub use permission::{ALL_PERMISSIONS, Permission, PermissionSet, builtin_role_permissions};
