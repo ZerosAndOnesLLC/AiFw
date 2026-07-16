@@ -347,16 +347,9 @@ pub async fn run_dashboard_producer(state: AppState) {
         let started = Instant::now();
         match build_update(&state).await {
             Ok((live_msg, history_msg)) => {
-                // Slim history → in-memory ring buffer (so reconnects can
-                // backfill the dashboard) and Valkey (so the ring survives
-                // process restart when configured).
-                if max > 0 {
-                    let mut buf = state.metrics_history.write().await;
-                    while buf.len() >= max {
-                        buf.pop_front();
-                    }
-                    buf.push_back(history_msg.clone());
-                }
+                // Slim history → Valkey (so the ring survives process
+                // restart when configured) and the in-memory ring buffer
+                // (so reconnects can backfill the dashboard).
                 if let Some(ref redis) = state.redis {
                     let mut conn = redis.clone();
                     let _: Result<(), _> = redis::pipe()
@@ -369,6 +362,18 @@ pub async fn run_dashboard_producer(state: AppState) {
                         .arg(max as i64 - 1)
                         .query_async(&mut conn)
                         .await;
+                }
+                // PERF-H10 (#354): history_msg moves into the deque — the
+                // write() critical section is only O(1) pop/push, so WS
+                // connects reading the history don't stall behind a large
+                // String clone (tokio's fair RwLock queues new readers
+                // behind a waiting writer).
+                if max > 0 {
+                    let mut buf = state.metrics_history.write().await;
+                    while buf.len() >= max {
+                        buf.pop_front();
+                    }
+                    buf.push_back(history_msg);
                 }
                 // Live frame to dashboard clients. `send` errors only if
                 // there are no subscribers, which is fine — we wanted to
