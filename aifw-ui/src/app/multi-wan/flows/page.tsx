@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Help, { HelpBanner } from "../Help";
 import { api, FlowSummary } from "../lib";
+import { usePolling } from "@/lib/usePolling";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -37,12 +38,11 @@ export default function FlowsPage() {
     }
   }, []);
 
+  // Fetch on mount even when live refresh is off.
   useEffect(() => {
-    queueMicrotask(refresh);
-    if (!liveRefresh) return;
-    const t = setInterval(refresh, 3000);
-    return () => clearInterval(t);
+    if (!liveRefresh) queueMicrotask(refresh);
   }, [refresh, liveRefresh]);
+  usePolling(refresh, 3000, liveRefresh);
 
   async function migrateLabel(label: string) {
     if (!confirm(`Kill pf states with label "${label}"? Clients will reconnect.`))

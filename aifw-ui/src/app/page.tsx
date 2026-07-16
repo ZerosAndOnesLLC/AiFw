@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useWs } from "@/context/WsContext";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface StatusData {
   pf_running: boolean; pf_states: number; pf_rules: number;
@@ -335,26 +336,23 @@ export default function Dashboard() {
     [ifaces]
   );
 
-  // Fetch DNS/DHCP/Time status on mount + every 30s
-  useEffect(() => {
+  // Fetch DNS/DHCP/Time status on mount + every 30s (paused while hidden)
+  const fetchSvc = useCallback(async () => {
     const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
     if (!token) return;
-    const fetchSvc = async () => {
-      const [dnsRes, dhcpRes, timeRes] = await Promise.allSettled([
-        api.get<{ running: boolean; version: string; total_hosts: number; total_domains: number; total_acls: number; queries_total: number; cache_hits: number; cache_misses: number }>("/api/v1/dns/resolver/status"),
-        api.get<{ running: boolean; version: string; total_subnets: number; active_leases: number; total_reservations: number }>("/api/v1/dhcp/status"),
-        api.get<{ running: boolean; version: string; sources_count: number }>("/api/v1/time/status"),
-      ]);
-      setSvcStatus({
-        dns: dnsRes.status === "fulfilled" ? dnsRes.value ?? null : null,
-        dhcp: dhcpRes.status === "fulfilled" ? dhcpRes.value ?? null : null,
-        time: timeRes.status === "fulfilled" ? timeRes.value ?? null : null,
-      });
-    };
-    fetchSvc();
-    const iv = setInterval(fetchSvc, 30000);
-    return () => clearInterval(iv);
+    const [dnsRes, dhcpRes, timeRes] = await Promise.allSettled([
+      api.get<{ running: boolean; version: string; total_hosts: number; total_domains: number; total_acls: number; queries_total: number; cache_hits: number; cache_misses: number }>("/api/v1/dns/resolver/status"),
+      api.get<{ running: boolean; version: string; total_subnets: number; active_leases: number; total_reservations: number }>("/api/v1/dhcp/status"),
+      api.get<{ running: boolean; version: string; sources_count: number }>("/api/v1/time/status"),
+    ]);
+    setSvcStatus({
+      dns: dnsRes.status === "fulfilled" ? dnsRes.value ?? null : null,
+      dhcp: dhcpRes.status === "fulfilled" ? dhcpRes.value ?? null : null,
+      time: timeRes.status === "fulfilled" ? timeRes.value ?? null : null,
+    });
   }, []);
+
+  usePolling(fetchSvc, 30000);
 
   // Fetch HA status once on mount — only show card when HA is configured
   useEffect(() => {

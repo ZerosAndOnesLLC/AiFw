@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface PoolStats {
   subnet: string;
@@ -17,7 +18,6 @@ export default function DhcpMetricsPage() {
   const [loading, setLoading] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -38,24 +38,14 @@ export default function DhcpMetricsPage() {
 
   const fetchAll = useCallback(async () => {
     await Promise.all([fetchStats(), fetchRawMetrics()]);
+    setLoading(false);
   }, [fetchStats, fetchRawMetrics]);
 
+  // Fetch on mount even when auto-refresh is off.
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      await fetchAll();
-      setLoading(false);
-    })();
-  }, [fetchAll]);
-
-  useEffect(() => {
-    if (!autoRefresh) {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      return;
-    }
-    intervalRef.current = setInterval(fetchAll, 5000);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [autoRefresh, fetchAll]);
+    if (!autoRefresh) queueMicrotask(fetchAll);
+  }, [fetchAll, autoRefresh]);
+  usePolling(fetchAll, 5000, autoRefresh);
 
   const utilizationColor = (pct: number) => {
     if (pct >= 90) return "text-red-400";

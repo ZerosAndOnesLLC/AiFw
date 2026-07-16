@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { api, ApiError } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface IdsAlert {
   id: string;
@@ -110,11 +111,7 @@ export default function ThreatsPage() {
     }
   }, []);
 
-  useEffect(() => {
-    queueMicrotask(fetchAlerts);
-    const interval = setInterval(fetchAlerts, 15_000);
-    return () => clearInterval(interval);
-  }, [fetchAlerts]);
+  usePolling(fetchAlerts, 15_000);
 
   const runAiAnalysis = async () => {
     setAiRunning(true);

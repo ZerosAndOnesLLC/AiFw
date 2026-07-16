@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface InterfaceDetail {
   name: string;
@@ -123,11 +124,7 @@ export default function InterfacesPage() {
     }
   }, []);
 
-  useEffect(() => {
-    queueMicrotask(fetchInterfaces);
-    const interval = setInterval(fetchInterfaces, 10000);
-    return () => clearInterval(interval);
-  }, [fetchInterfaces]);
+  usePolling(fetchInterfaces, 10000);
 
   function openEdit(iface: InterfaceDetail) {
     setEditingName(iface.name);

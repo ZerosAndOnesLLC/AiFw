@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -419,11 +420,7 @@ export default function BackupPage() {
   };
 
   // Poll commit confirm status
-  useEffect(() => {
-    queueMicrotask(fetchCommitStatus);
-    const t = setInterval(fetchCommitStatus, 5000);
-    return () => clearInterval(t);
-  }, [fetchCommitStatus]);
+  usePolling(fetchCommitStatus, 5000);
 
   /* -- Render -------------------------------------------------------- */
 

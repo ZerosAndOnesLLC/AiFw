@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface TimeConfig {
   enabled: boolean;
@@ -117,8 +118,8 @@ export default function TimeServicePage() {
     } catch { /* */ }
   }, []);
 
-  useEffect(() => { queueMicrotask(() => { fetchStatus(); fetchConfig(); fetchSources(); fetchInterfaces(); }); }, [fetchStatus, fetchConfig, fetchSources, fetchInterfaces]);
-  useEffect(() => { const t = setInterval(fetchStatus, 5000); return () => clearInterval(t); }, [fetchStatus]);
+  useEffect(() => { queueMicrotask(() => { fetchConfig(); fetchSources(); fetchInterfaces(); }); }, [fetchConfig, fetchSources, fetchInterfaces]);
+  usePolling(fetchStatus, 5000);
 
   const validate = (): boolean => {
     const e: Record<string, string> = {};

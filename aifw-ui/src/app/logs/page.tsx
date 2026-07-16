@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface AuditEntry {
   id: string;
@@ -42,11 +43,7 @@ export default function LogsPage() {
     }
   }, []);
 
-  useEffect(() => {
-    queueMicrotask(fetchLogs);
-    const interval = setInterval(fetchLogs, 10_000);
-    return () => clearInterval(interval);
-  }, [fetchLogs]);
+  usePolling(fetchLogs, 10_000);
 
   const actions = [...new Set(entries.map((e) => e.action))];
 
