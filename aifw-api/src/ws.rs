@@ -999,105 +999,116 @@ pub async fn collect_memory_breakdown(state: &AppState) -> MemoryBreakdown {
 /// Collect blocked traffic from pflog. Cached with tokio RwLock, refreshes every 5 seconds.
 const PFLOG_MAX_ENTRIES: usize = 10_000;
 
-fn parse_pflog_line(line: &str) -> Option<BlockedPayload> {
-    let action = if line.contains(": block ") {
-        "block"
-    } else if line.contains(": pass ") {
-        "pass"
-    } else {
-        return None;
+/// Case-insensitive substring search without allocating a lowercased copy
+/// of the haystack (PERF-M8 #376). `needle` must be ASCII.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    h.len() >= n.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+}
+
+/// True if `word` appears in `line` (ASCII case-insensitive) bounded by
+/// non-alphanumeric characters or the line edges. Catches every tcpdump
+/// spelling ("UDP, length", "proto UDP (17)", "esp(spi=...)") — the old
+/// `" udp "` match missed the common "UDP," form.
+fn has_proto_word(line: &str, word: &str) -> bool {
+    let h = line.as_bytes();
+    let n = word.as_bytes();
+    if h.len() < n.len() {
+        return false;
+    }
+    for start in 0..=(h.len() - n.len()) {
+        if !h[start..start + n.len()].eq_ignore_ascii_case(n) {
+            continue;
+        }
+        let before_ok = start == 0 || !h[start - 1].is_ascii_alphanumeric();
+        let after = start + n.len();
+        let after_ok = after == h.len() || !h[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// Split a tcpdump host token ("203.0.113.5.443" or "203.0.113.5") into
+/// address and port. Borrows from the token — no allocation. Returns
+/// `(None, 0)` when the token doesn't look like an IPv4 address.
+fn split_host_port(token: &str) -> (Option<&str>, u16) {
+    let Some(dot_pos) = token.rfind('.') else {
+        return (None, 0);
     };
+    let maybe_ip = &token[..dot_pos];
+    if let Ok(port) = token[dot_pos + 1..].parse::<u16>()
+        && maybe_ip.bytes().filter(|b| *b == b'.').count() >= 3
+    {
+        return (Some(maybe_ip), port);
+    }
+    if token.bytes().filter(|b| *b == b'.').count() == 3 {
+        (Some(token), 0)
+    } else {
+        (None, 0)
+    }
+}
+
+/// Parse one `tcpdump -tttt` pflog line into a BlockedPayload. Hot path at
+/// high block rates (PERF-M8 #376): all matching works on `&str` slices of
+/// the input; the only allocations are the Strings moved into the returned
+/// payload, and lines that don't parse allocate nothing.
+fn parse_pflog_line(line: &str) -> Option<BlockedPayload> {
+    let (action, marker_pos) = line
+        .find(": block ")
+        .map(|p| ("block", p))
+        .or_else(|| line.find(": pass ").map(|p| ("pass", p)))?;
+
+    // src/dst first — a line without a source address is discarded, so
+    // nothing may be allocated before this check.
+    let gt_pos = line.find(" > ")?;
+    let src_token = line[..gt_pos].split_whitespace().next_back().unwrap_or("");
+    let (src_addr, src_port) = split_host_port(src_token);
+    let src_addr = src_addr?;
+    let dst_token = line[gt_pos + 3..].split(':').next().unwrap_or("").trim();
+    let (dst_addr, dst_port) = split_host_port(dst_token);
+
+    // "... rule N/0(match): block in on igb0: ..." — words after the marker
+    let mut words = line[marker_pos + 2..].split_whitespace();
+    let direction = words.nth(1).unwrap_or("");
+    let interface = words.nth(1).map(|s| s.trim_end_matches(':')).unwrap_or("");
 
     // -tttt format: "2026-04-01 13:09:28.475326 rule ..."
-    let mut words = line.split_whitespace();
-    let date_part = words.next().unwrap_or("");
-    let time_part = words.next().unwrap_or("");
-    let timestamp = format!("{date_part}T{time_part}");
+    let mut head = line.split_whitespace();
+    let date_part = head.next().unwrap_or("");
+    let time_part = head.next().unwrap_or("");
 
-    let mut entry = BlockedPayload {
-        timestamp,
-        action: action.to_string(),
-        direction: String::new(),
-        interface: String::new(),
-        protocol: String::new(),
-        src_addr: String::new(),
-        src_port: 0,
-        dst_addr: String::new(),
-        dst_port: 0,
-    };
-
-    let marker = if action == "block" {
-        ": block "
+    let protocol = if line.contains("Flags [") || has_proto_word(line, "tcp") {
+        "tcp"
+    } else if has_proto_word(line, "udp") {
+        "udp"
+    } else if contains_ignore_ascii_case(line, "icmp") {
+        "icmp"
+    } else if has_proto_word(line, "esp") {
+        "esp"
+    } else if has_proto_word(line, "ah") {
+        "ah"
+    } else if has_proto_word(line, "gre") {
+        "gre"
+    } else if contains_ignore_ascii_case(line, "igmp") {
+        "igmp"
     } else {
-        ": pass "
+        ""
     };
-    if let Some(pos) = line.find(marker) {
-        let rest = &line[pos + 2..];
-        let parts: Vec<&str> = rest.split_whitespace().collect();
-        entry.direction = parts.get(1).unwrap_or(&"").to_string();
-        entry.interface = parts
-            .get(3)
-            .map(|s| s.trim_end_matches(':'))
-            .unwrap_or("")
-            .to_string();
-    }
 
-    if let Some(gt_pos) = line.find(" > ") {
-        let before = &line[..gt_pos];
-        let src_token = before.split_whitespace().next_back().unwrap_or("");
-        if let Some(dot_pos) = src_token.rfind('.') {
-            let maybe_port = &src_token[dot_pos + 1..];
-            let maybe_ip = &src_token[..dot_pos];
-            if let Ok(port) = maybe_port.parse::<u16>() {
-                if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
-                    entry.src_addr = maybe_ip.to_string();
-                    entry.src_port = port;
-                } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
-                    entry.src_addr = src_token.to_string();
-                }
-            } else if src_token.chars().filter(|c| *c == '.').count() == 3 {
-                entry.src_addr = src_token.to_string();
-            }
-        }
-        let after = &line[gt_pos + 3..];
-        let dst_token = after.split(':').next().unwrap_or("").trim();
-        if let Some(dot_pos) = dst_token.rfind('.') {
-            let maybe_port = &dst_token[dot_pos + 1..];
-            let maybe_ip = &dst_token[..dot_pos];
-            if let Ok(port) = maybe_port.parse::<u16>() {
-                if maybe_ip.chars().filter(|c| *c == '.').count() >= 3 {
-                    entry.dst_addr = maybe_ip.to_string();
-                    entry.dst_port = port;
-                } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
-                    entry.dst_addr = dst_token.to_string();
-                }
-            } else if dst_token.chars().filter(|c| *c == '.').count() == 3 {
-                entry.dst_addr = dst_token.to_string();
-            }
-        }
-    }
-
-    let lower = line.to_lowercase();
-    if line.contains("Flags [") || lower.contains(" tcp ") {
-        entry.protocol = "tcp".to_string();
-    } else if lower.contains(" udp ") {
-        entry.protocol = "udp".to_string();
-    } else if lower.contains("icmp") {
-        entry.protocol = "icmp".to_string();
-    } else if lower.contains(" esp ") || lower.contains("esp(") {
-        entry.protocol = "esp".to_string();
-    } else if lower.contains(" ah ") || lower.contains("ah(") {
-        entry.protocol = "ah".to_string();
-    } else if lower.contains(" gre ") || lower.contains("gre(") {
-        entry.protocol = "gre".to_string();
-    } else if lower.contains("igmp") {
-        entry.protocol = "igmp".to_string();
-    }
-
-    if entry.src_addr.is_empty() {
-        return None;
-    }
-    Some(entry)
+    Some(BlockedPayload {
+        timestamp: format!("{date_part}T{time_part}"),
+        action: action.to_string(),
+        direction: direction.to_string(),
+        interface: interface.to_string(),
+        protocol: protocol.to_string(),
+        src_addr: src_addr.to_string(),
+        src_port,
+        dst_addr: dst_addr.map(str::to_string).unwrap_or_default(),
+        dst_port,
+    })
 }
 
 // VecDeque keeps push (push_back) and trim (pop_front) both O(1) even under
@@ -1275,4 +1286,105 @@ async fn collect_services(pool: &sqlx::SqlitePool) -> Vec<ServiceStatusPayload> 
     }
 
     cache.read().await.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Guard for the PERF-M8 (#376) rewrite: parse results must match what the
+    // allocating implementation produced for real `tcpdump -tttt` pflog lines.
+
+    #[test]
+    fn parses_tcp_block_line() {
+        let line = "2026-04-01 13:09:28.475326 rule 5/0(match): block in on igb0: \
+                    203.0.113.5.51234 > 10.0.0.2.443: Flags [S], seq 12345, win 65535, length 0";
+        let e = parse_pflog_line(line).expect("line should parse");
+        assert_eq!(e.timestamp, "2026-04-01T13:09:28.475326");
+        assert_eq!(e.action, "block");
+        assert_eq!(e.direction, "in");
+        assert_eq!(e.interface, "igb0");
+        assert_eq!(e.protocol, "tcp");
+        assert_eq!(e.src_addr, "203.0.113.5");
+        assert_eq!(e.src_port, 51234);
+        assert_eq!(e.dst_addr, "10.0.0.2");
+        assert_eq!(e.dst_port, 443);
+    }
+
+    #[test]
+    fn parses_udp_pass_line() {
+        let line = "2026-04-01 13:09:29.000001 rule 2/0(match): pass out on em1: \
+                    198.51.100.9.5353 > 224.0.0.251.5353: UDP, length 45";
+        let e = parse_pflog_line(line).expect("line should parse");
+        assert_eq!(e.action, "pass");
+        assert_eq!(e.direction, "out");
+        assert_eq!(e.interface, "em1");
+        assert_eq!(e.protocol, "udp");
+        assert_eq!(e.src_addr, "198.51.100.9");
+        assert_eq!(e.src_port, 5353);
+        assert_eq!(e.dst_addr, "224.0.0.251");
+        assert_eq!(e.dst_port, 5353);
+    }
+
+    #[test]
+    fn parses_icmp_line_without_ports() {
+        let line = "2026-04-01 13:09:30.123456 rule 7/0(match): block in on igb0: \
+                    192.0.2.77 > 10.0.0.2: ICMP echo request, id 1, seq 1, length 64";
+        let e = parse_pflog_line(line).expect("line should parse");
+        assert_eq!(e.protocol, "icmp");
+        assert_eq!(e.src_addr, "192.0.2.77");
+        assert_eq!(e.src_port, 0);
+        assert_eq!(e.dst_addr, "10.0.0.2");
+        assert_eq!(e.dst_port, 0);
+    }
+
+    #[test]
+    fn rejects_non_block_pass_lines() {
+        assert!(
+            parse_pflog_line("2026-04-01 13:09:31.0 rule 1/0(match): nat out on igb0: x").is_none()
+        );
+        assert!(parse_pflog_line("garbage line with no markers").is_none());
+        assert!(parse_pflog_line("").is_none());
+    }
+
+    #[test]
+    fn rejects_lines_without_source_address() {
+        // marker present but no " > " host pair
+        assert!(
+            parse_pflog_line("2026-04-01 13:09:32.0 rule 3/0(match): block in on igb0:").is_none()
+        );
+    }
+
+    #[test]
+    fn split_host_port_variants() {
+        assert_eq!(split_host_port("10.0.0.2.443"), (Some("10.0.0.2"), 443));
+        assert_eq!(split_host_port("10.0.0.2"), (Some("10.0.0.2"), 0));
+        assert_eq!(split_host_port("hostname"), (None, 0));
+        assert_eq!(split_host_port(""), (None, 0));
+        // port out of u16 range and too many dots for a bare IPv4 → rejected
+        assert_eq!(split_host_port("10.0.0.2.99999"), (None, 0));
+    }
+
+    #[test]
+    fn case_insensitive_contains_without_alloc() {
+        assert!(contains_ignore_ascii_case("A B TCP C", " tcp "));
+        assert!(contains_ignore_ascii_case("x Icmp y", "icmp"));
+        assert!(!contains_ignore_ascii_case("short", " longer needle "));
+        assert!(!contains_ignore_ascii_case("abc", "xyz"));
+    }
+
+    #[test]
+    fn proto_word_matching() {
+        // the "UDP," form the old " udp " match missed
+        assert!(has_proto_word(
+            "1.2.3.4.53 > 5.6.7.8.53: UDP, length 45",
+            "udp"
+        ));
+        assert!(has_proto_word("proto UDP (17)", "udp"));
+        assert!(has_proto_word("esp(spi=0x1234)", "esp"));
+        // word boundaries: no match inside larger words
+        assert!(!has_proto_word("resp(code=1)", "esp"));
+        assert!(!has_proto_word("blah(x)", "ah"));
+        assert!(!has_proto_word("update stream", "udp"));
+    }
 }
