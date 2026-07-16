@@ -2046,4 +2046,103 @@ mod tests {
             "without short-circuit all 3 nodes would appear"
         );
     }
+
+    #[tokio::test]
+    async fn test_ca_generate_honors_key_type() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Default (no key_type) stays ECDSA P-256.
+        let resp = server
+            .post("/api/v1/ca")
+            .authorization_bearer(&token)
+            .json(&json!({}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["algorithm"], "ECDSA P-256");
+
+        // rsa2048 is honored (regenerating replaces the CA).
+        let resp = server
+            .post("/api/v1/ca")
+            .authorization_bearer(&token)
+            .json(&json!({ "key_type": "rsa2048" }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["algorithm"], "RSA-2048");
+
+        // ...and the stored algorithm reflects it.
+        let resp = server.get("/api/v1/ca").authorization_bearer(&token).await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["initialized"], true);
+        assert_eq!(body["algorithm"], "RSA-2048");
+
+        // Unknown key_type is rejected, not silently defaulted (#489).
+        let resp = server
+            .post("/api/v1/ca")
+            .authorization_bearer(&token)
+            .json(&json!({ "key_type": "dsa" }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_issue_cert_honors_key_type() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .post("/api/v1/ca")
+            .authorization_bearer(&token)
+            .json(&json!({}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+
+        // EC leaf (default) for a size baseline.
+        let resp = server
+            .post("/api/v1/ca/certs")
+            .authorization_bearer(&token)
+            .json(&json!({ "cert_type": "server", "common_name": "ec.example.com" }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        let ec_key_len = body["private_key_pem"].as_str().unwrap().len();
+
+        // RSA-2048 leaf under the EC CA. PKCS#8 PEM headers are identical
+        // across algorithms, so tell them apart by encoded key size — an
+        // RSA-2048 private key is several times larger than a P-256 key.
+        let resp = server
+            .post("/api/v1/ca/certs")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "cert_type": "server",
+                "common_name": "rsa.example.com",
+                "key_type": "rsa2048"
+            }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        let rsa_key_pem = body["private_key_pem"].as_str().unwrap();
+        assert!(rsa_key_pem.contains("BEGIN PRIVATE KEY"));
+        assert!(
+            rsa_key_pem.len() > ec_key_len * 3,
+            "rsa2048 key ({} bytes) should dwarf the EC key ({} bytes)",
+            rsa_key_pem.len(),
+            ec_key_len
+        );
+
+        // Unknown key_type is rejected before any cert is issued.
+        let resp = server
+            .post("/api/v1/ca/certs")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "cert_type": "server",
+                "common_name": "bad.example.com",
+                "key_type": "ed25519"
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+    }
 }

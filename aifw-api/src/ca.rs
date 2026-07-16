@@ -48,8 +48,6 @@ pub struct GenerateCaRequest {
     pub common_name: Option<String>,
     pub organization: Option<String>,
     pub validity_days: Option<u32>,
-    // Not yet wired through to key generation — see #489.
-    #[allow(dead_code)]
     pub key_type: Option<String>, // "ec" | "rsa2048" | "rsa4096"
 }
 
@@ -59,6 +57,7 @@ pub struct IssueCertRequest {
     pub common_name: String,
     pub sans: Option<Vec<String>>, // DNS names and/or IPs
     pub validity_days: Option<u32>,
+    pub key_type: Option<String>, // "ec" | "rsa2048" | "rsa4096"
 }
 
 #[derive(Debug, Serialize)]
@@ -268,6 +267,71 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, ()> {
     Ok(out)
 }
 
+/// Key type requested for CA / issued-cert key generation (#489).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaKeyType {
+    Ec,
+    Rsa2048,
+    Rsa4096,
+}
+
+impl CaKeyType {
+    /// Parse the request field. `None` keeps the historical default (EC).
+    fn parse(s: Option<&str>) -> Option<Self> {
+        match s.map(|v| v.to_ascii_lowercase()).as_deref() {
+            None | Some("ec") => Some(Self::Ec),
+            Some("rsa2048") => Some(Self::Rsa2048),
+            Some("rsa4096") => Some(Self::Rsa4096),
+            Some(_) => None,
+        }
+    }
+
+    /// Human-readable algorithm label stored in ca_root / shown in CaInfo.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ec => "ECDSA P-256",
+            Self::Rsa2048 => "RSA-2048",
+            Self::Rsa4096 => "RSA-4096",
+        }
+    }
+
+    fn generate(self) -> Result<KeyPair, rcgen::Error> {
+        match self {
+            Self::Ec => KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256),
+            Self::Rsa2048 => {
+                KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
+            }
+            Self::Rsa4096 => {
+                KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_4096)
+            }
+        }
+    }
+}
+
+/// Parse the requested key type and generate a matching key pair.
+/// Unknown values are a client error; RSA generation is CPU-bound (seconds
+/// for 4096-bit) so it runs on the blocking pool instead of an async worker.
+async fn generate_key_for_type(key_type: Option<&str>) -> Result<(KeyPair, CaKeyType), StatusCode> {
+    let Some(kt) = CaKeyType::parse(key_type) else {
+        tracing::warn!(
+            key_type = key_type.unwrap_or_default(),
+            "ca: unsupported key_type requested (expected ec | rsa2048 | rsa4096)"
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    let key_pair = tokio::task::spawn_blocking(move || kt.generate())
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "ca: key generation task failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .map_err(|e| {
+            tracing::error!(error = %e, key_type = kt.label(), "ca: key generation failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok((key_pair, kt))
+}
+
 fn next_serial() -> String {
     let id = Uuid::new_v4();
     let bytes = id.as_bytes();
@@ -319,10 +383,8 @@ pub async fn generate_ca(
     let days = req.validity_days.unwrap_or(3650);
     let serial = next_serial();
 
-    let key_pair = KeyPair::generate().map_err(|e| {
-        tracing::error!(error = %e, "ca: CA key generation failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let (key_pair, key_type) = generate_key_for_type(req.key_type.as_deref()).await?;
+    let algorithm = key_type.label();
 
     let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
         tracing::error!(error = %e, "ca: failed to build CA cert params");
@@ -364,7 +426,7 @@ pub async fn generate_ca(
         "INSERT INTO ca_root (id, cert_pem, key_pem, subject, serial, not_before, not_after, fingerprint, algorithm, created_at) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
     )
     .bind(&cert_pem).bind(&key_pem).bind(&subject).bind(&serial)
-    .bind(&not_before).bind(&not_after).bind(&fingerprint).bind("ECDSA P-256").bind(&now)
+    .bind(&not_before).bind(&not_after).bind(&fingerprint).bind(algorithm).bind(&now)
     .execute(&state.pool).await.map_err(|e| { tracing::error!(error = %e, "ca: failed to persist CA to database"); StatusCode::INTERNAL_SERVER_ERROR })?;
 
     Ok((
@@ -376,7 +438,7 @@ pub async fn generate_ca(
             not_before,
             not_after,
             fingerprint,
-            algorithm: "ECDSA P-256".to_string(),
+            algorithm: algorithm.to_string(),
         }),
     ))
 }
@@ -444,10 +506,7 @@ pub async fn issue_cert(
         }
     }
 
-    let cert_key = KeyPair::generate().map_err(|e| {
-        tracing::error!(error = %e, "ca: certificate key generation failed");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let (cert_key, _key_type) = generate_key_for_type(req.key_type.as_deref()).await?;
     let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
         tracing::error!(error = %e, "ca: failed to build certificate params");
         StatusCode::INTERNAL_SERVER_ERROR
