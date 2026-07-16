@@ -21,8 +21,27 @@ async fn reload_aifw_anchor(state: &AppState) {
     if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
         state.rule_engine.set_extra_rules(vpn_rules).await;
     }
-    let _ = state.rule_engine.apply_rules().await;
-    let _ = state.nat_engine.apply_rules().await;
+    if let Err(e) = state.rule_engine.apply_rules().await {
+        tracing::warn!(error = %e, "dhcp: firewall rule reload failed during anchor reload");
+    }
+    if let Err(e) = state.nat_engine.apply_rules().await {
+        tracing::warn!(error = %e, "dhcp: NAT rule reload failed during anchor reload");
+    }
+}
+
+/// Log a warning if a sudo helper call failed to spawn or exited non-zero.
+/// DHCP service control is best-effort — failures must be visible but never fatal.
+fn warn_on_cmd_fail(what: &str, res: &std::io::Result<std::process::Output>) {
+    match res {
+        Err(e) => tracing::warn!(error = %e, "dhcp: {} failed to run", what),
+        Ok(o) if !o.status.success() => tracing::warn!(
+            status = %o.status,
+            stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+            "dhcp: {} failed",
+            what
+        ),
+        Ok(_) => {}
+    }
 }
 const RDHCP_LEASE_DB: &str = "/var/db/rdhcpd/leases";
 const RDHCP_LOG_PATH: &str = "/var/log/rdhcpd/rdhcpd.log";
@@ -384,13 +403,15 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-        if check == 0 {
-            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+        if check == 0
+            && let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "ALTER TABLE dhcp_subnets ADD COLUMN {}",
                 col
             )))
             .execute(pool)
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, column = col_name, "dhcp: dhcp_subnets column migration failed");
         }
     }
 
@@ -418,10 +439,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .fetch_one(pool)
     .await
     .unwrap_or(0);
-    if check == 0 {
-        let _ = sqlx::query("ALTER TABLE dhcp_reservations ADD COLUMN client_id TEXT")
+    if check == 0
+        && let Err(e) = sqlx::query("ALTER TABLE dhcp_reservations ADD COLUMN client_id TEXT")
             .execute(pool)
-            .await;
+            .await
+    {
+        tracing::warn!(error = %e, "dhcp: dhcp_reservations client_id column migration failed");
     }
 
     sqlx::query(
@@ -521,11 +544,14 @@ async fn load_global_config(pool: &SqlitePool) -> DhcpGlobalConfig {
 }
 
 async fn save_config_key(pool: &SqlitePool, key: &str, value: &str) {
-    let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
+    if let Err(e) = sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
         .bind(key)
         .bind(value)
         .execute(pool)
-        .await;
+        .await
+    {
+        tracing::warn!(error = %e, key, "dhcp: config key write failed");
+    }
 }
 
 async fn load_ddns_config(pool: &SqlitePool) -> DdnsConfig {
@@ -552,11 +578,15 @@ async fn load_ddns_config(pool: &SqlitePool) -> DdnsConfig {
 }
 
 async fn save_ddns_key(pool: &SqlitePool, key: &str, value: &str) {
-    let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
-        .bind(key)
-        .bind(value)
-        .execute(pool)
-        .await;
+    if let Err(e) =
+        sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
+            .bind(key)
+            .bind(value)
+            .execute(pool)
+            .await
+    {
+        tracing::warn!(error = %e, key, "dhcp: DDNS config key write failed");
+    }
 }
 
 async fn load_ha_config(pool: &SqlitePool) -> HaConfig {
@@ -597,11 +627,15 @@ async fn load_ha_config(pool: &SqlitePool) -> HaConfig {
 }
 
 async fn save_ha_key(pool: &SqlitePool, key: &str, value: &str) {
-    let _ = sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
-        .bind(key)
-        .bind(value)
-        .execute(pool)
-        .await;
+    if let Err(e) =
+        sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
+            .bind(key)
+            .bind(value)
+            .execute(pool)
+            .await
+    {
+        tracing::warn!(error = %e, key, "dhcp: HA config key write failed");
+    }
 }
 
 async fn list_subnets_db(pool: &SqlitePool) -> Vec<DhcpSubnet> {
@@ -1189,7 +1223,10 @@ pub async fn dhcp_status(State(state): State<AppState>) -> Result<Json<DhcpStatu
 async fn run_rdhcp_service(action: &str) -> Json<MessageResponse> {
     // Ensure rdhcpd is enabled in rc.conf before start/restart
     if action == "start" || action == "restart" {
-        let _ = aifw_core::sudo::sysrc(&["rdhcpd_enable=YES"]).await;
+        warn_on_cmd_fail(
+            "sysrc rdhcpd_enable=YES",
+            &aifw_core::sudo::sysrc(&["rdhcpd_enable=YES"]).await,
+        );
     }
     let output = aifw_core::sudo::service("rdhcpd", action).await;
     match output {
@@ -1238,10 +1275,14 @@ async fn ensure_config(pool: &SqlitePool) {
     let config_exists = tokio::fs::metadata(RDHCP_CONFIG_PATH).await.is_ok();
     if !config_exists {
         let toml_config = generate_rdhcp_config(pool).await;
-        let _ = tokio::fs::create_dir_all("/usr/local/etc/rdhcpd").await;
-        let _ = tokio::fs::create_dir_all(RDHCP_LEASE_DB).await;
-        let _ = tokio::fs::create_dir_all("/var/log/rdhcpd").await;
-        let _ = tokio::fs::write(RDHCP_CONFIG_PATH, &toml_config).await;
+        for dir in ["/usr/local/etc/rdhcpd", RDHCP_LEASE_DB, "/var/log/rdhcpd"] {
+            if let Err(e) = tokio::fs::create_dir_all(dir).await {
+                tracing::warn!(error = %e, dir, "dhcp: create_dir_all failed");
+            }
+        }
+        if let Err(e) = tokio::fs::write(RDHCP_CONFIG_PATH, &toml_config).await {
+            tracing::warn!(error = %e, path = RDHCP_CONFIG_PATH, "dhcp: initial config write failed");
+        }
     }
 }
 
@@ -1955,9 +1996,11 @@ pub async fn apply_config(
     let toml_config = generate_rdhcp_config(&state.pool).await;
 
     // Create directories
-    let _ = tokio::fs::create_dir_all("/usr/local/etc/rdhcpd").await;
-    let _ = tokio::fs::create_dir_all(RDHCP_LEASE_DB).await;
-    let _ = tokio::fs::create_dir_all("/var/log/rdhcpd").await;
+    for dir in ["/usr/local/etc/rdhcpd", RDHCP_LEASE_DB, "/var/log/rdhcpd"] {
+        if let Err(e) = tokio::fs::create_dir_all(dir).await {
+            tracing::warn!(error = %e, dir, "dhcp: create_dir_all failed");
+        }
+    }
 
     // Write TOML config
     tokio::fs::write(RDHCP_CONFIG_PATH, &toml_config)
@@ -1965,13 +2008,19 @@ pub async fn apply_config(
         .map_err(|_| internal())?;
 
     // Fix ownership
-    let _ = aifw_core::sudo::chown_r("aifw:aifw", "/usr/local/etc/rdhcpd").await;
-    let _ = aifw_core::sudo::chown_r("aifw:aifw", RDHCP_LEASE_DB).await;
-    let _ = aifw_core::sudo::chown_r("aifw:aifw", "/var/log/rdhcpd").await;
+    for path in ["/usr/local/etc/rdhcpd", RDHCP_LEASE_DB, "/var/log/rdhcpd"] {
+        warn_on_cmd_fail("chown", &aifw_core::sudo::chown_r("aifw:aifw", path).await);
+    }
 
     if config.enabled {
-        let _ = aifw_core::sudo::sysrc(&["rdhcpd_enable=YES"]).await;
-        let _ = aifw_core::sudo::service("rdhcpd", "restart").await;
+        warn_on_cmd_fail(
+            "sysrc rdhcpd_enable=YES",
+            &aifw_core::sudo::sysrc(&["rdhcpd_enable=YES"]).await,
+        );
+        warn_on_cmd_fail(
+            "service rdhcpd restart",
+            &aifw_core::sudo::service("rdhcpd", "restart").await,
+        );
 
         // Reload all aifw anchor rules (includes user rules + service rules)
         // This preserves existing firewall rules while adding DHCP pass rules
@@ -1981,8 +2030,14 @@ pub async fn apply_config(
             message: "DHCP config applied and rDHCP restarted".to_string(),
         }))
     } else {
-        let _ = aifw_core::sudo::service("rdhcpd", "stop").await;
-        let _ = aifw_core::sudo::sysrc(&["rdhcpd_enable=NO"]).await;
+        warn_on_cmd_fail(
+            "service rdhcpd stop",
+            &aifw_core::sudo::service("rdhcpd", "stop").await,
+        );
+        warn_on_cmd_fail(
+            "sysrc rdhcpd_enable=NO",
+            &aifw_core::sudo::sysrc(&["rdhcpd_enable=NO"]).await,
+        );
         // Reload anchor to remove DHCP rules
         reload_aifw_anchor(&state).await;
         Ok(Json(MessageResponse {
@@ -2001,13 +2056,21 @@ pub(crate) async fn auto_apply(state: &AppState) {
     }
 
     let toml_config = generate_rdhcp_config(&state.pool).await;
-    let _ = tokio::fs::create_dir_all("/usr/local/etc/rdhcpd").await;
+    if let Err(e) = tokio::fs::create_dir_all("/usr/local/etc/rdhcpd").await {
+        tracing::warn!(error = %e, "dhcp: create_dir_all /usr/local/etc/rdhcpd failed");
+    }
     if tokio::fs::write(RDHCP_CONFIG_PATH, &toml_config)
         .await
         .is_ok()
     {
-        let _ = aifw_core::sudo::chown_r("aifw:aifw", "/usr/local/etc/rdhcpd").await;
-        let _ = aifw_core::sudo::service("rdhcpd", "restart").await;
+        warn_on_cmd_fail(
+            "chown",
+            &aifw_core::sudo::chown_r("aifw:aifw", "/usr/local/etc/rdhcpd").await,
+        );
+        warn_on_cmd_fail(
+            "service rdhcpd restart",
+            &aifw_core::sudo::service("rdhcpd", "restart").await,
+        );
         tracing::info!("DHCP config auto-applied");
     }
 
@@ -2064,10 +2127,13 @@ async fn ensure_dhcp_pf_rules(config: &DhcpGlobalConfig) {
         .await
         .is_ok()
     {
-        let _ = Command::new("/usr/local/bin/sudo")
-            .args(["/sbin/pfctl", "-f", pf_path])
-            .output()
-            .await;
+        warn_on_cmd_fail(
+            "pfctl -f pf.conf",
+            &Command::new("/usr/local/bin/sudo")
+                .args(["/sbin/pfctl", "-f", pf_path])
+                .output()
+                .await,
+        );
         tracing::info!("DHCP pf rules added");
     } else {
         tracing::warn!("aifw-sudo-write failed to update pf.conf for DHCP rules");

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/ZerosAndOnesLLC/AiFw/releases/latest";
 // Lists releases newest-first INCLUDING pre-releases (and drafts), unlike
@@ -168,6 +168,25 @@ fn all_binaries() -> Vec<String> {
         bins.extend(repo.binaries.iter().cloned());
     }
     bins
+}
+
+/// Describe a failed best-effort privileged step, or `None` on success.
+///
+/// The `crate::sudo::*` wrappers (and raw `Command::output()`) return
+/// `Ok(Output)` even when the command exits non-zero, so a bare
+/// `let _ =` used to hide both spawn errors and failed commands
+/// (QUAL-H1 #421). Callers log the returned description and continue —
+/// these steps stay non-fatal by design.
+fn step_failure(result: &std::io::Result<std::process::Output>) -> Option<String> {
+    match result {
+        Ok(o) if o.status.success() => None,
+        Ok(o) => Some(format!(
+            "exit {}: {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+        Err(e) => Some(format!("spawn failed: {e}")),
+    }
 }
 
 /// Failures from the self-update flow (release check, download, verify,
@@ -417,8 +436,17 @@ pub async fn install_from_path(
     const EXTRACT_DIR: &str = "/tmp/aifw-update-extract";
     // Scrub current + legacy staging. Root-owned, so the sudo helper is
     // required; best-effort because a clean run has nothing to remove.
-    let _ = crate::sudo::rm(&["-rf", EXTRACT_DIR]).await;
-    let _ = crate::sudo::rm(&["-rf", "/tmp/aifw-update/extracted"]).await;
+    if let Some(err) = step_failure(&crate::sudo::rm(&["-rf", EXTRACT_DIR]).await) {
+        debug!(path = EXTRACT_DIR, error = %err, "update: staging dir scrub failed");
+    }
+    if let Some(err) = step_failure(&crate::sudo::rm(&["-rf", "/tmp/aifw-update/extracted"]).await)
+    {
+        debug!(
+            path = "/tmp/aifw-update/extracted",
+            error = %err,
+            "update: legacy staging dir scrub failed"
+        );
+    }
     let extract_dir = std::path::PathBuf::from(EXTRACT_DIR);
     tokio::fs::create_dir_all(&extract_dir)
         .await
@@ -551,7 +579,13 @@ pub async fn install_from_path(
     let ui_src = update_dir.join("ui");
     if ui_src.exists() {
         info!("Installing UI...");
-        let _ = crate::sudo::rm(&["-rf", UI_DIR]).await;
+        if let Some(err) = step_failure(&crate::sudo::rm(&["-rf", UI_DIR]).await) {
+            warn!(
+                path = UI_DIR,
+                error = %err,
+                "update: failed to remove old UI dir — stale UI files may remain"
+            );
+        }
         let ui_src_str = ui_src
             .to_str()
             .ok_or_else(|| UpdaterError::Install("ui_src path is not UTF-8".into()))?;
@@ -583,7 +617,9 @@ pub async fn install_from_path(
         let pkg_installed = check.map(|o| o.status.success()).unwrap_or(false);
         if !pkg_installed {
             info!(package = pkg, "Installing missing dependency");
-            let _ = crate::sudo::pkg("install", &["-y", pkg]).await;
+            if let Some(err) = step_failure(&crate::sudo::pkg("install", &["-y", pkg]).await) {
+                warn!(package = pkg, error = %err, "update: dependency install failed");
+            }
         }
     }
 
@@ -615,7 +651,11 @@ pub async fn install_from_path(
                 let src_str = src
                     .to_str()
                     .expect("src path is utf-8 (file_name validated above)");
-                let _ = crate::sudo::install(Some("755"), None, None, src_str, &dst).await;
+                if let Some(err) = step_failure(
+                    &crate::sudo::install(Some("755"), None, None, src_str, &dst).await,
+                ) {
+                    warn!(script = %name, dest = %dst, error = %err, "update: rc.d script install failed");
+                }
             }
         }
     }
@@ -627,7 +667,9 @@ pub async fn install_from_path(
     let libexec_src = update_dir.join("libexec");
     if libexec_src.exists() {
         info!("Installing libexec scripts...");
-        let _ = crate::sudo::mkdir(&["-p", "/usr/local/libexec"]).await;
+        if let Some(err) = step_failure(&crate::sudo::mkdir(&["-p", "/usr/local/libexec"]).await) {
+            warn!(error = %err, "update: mkdir /usr/local/libexec failed");
+        }
         if let Ok(mut entries) = tokio::fs::read_dir(&libexec_src).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 if !entry
@@ -647,7 +689,11 @@ pub async fn install_from_path(
                 let src_str = src
                     .to_str()
                     .expect("src path is utf-8 (file_name validated above)");
-                let _ = crate::sudo::install(Some("755"), None, None, src_str, &dst).await;
+                if let Some(err) = step_failure(
+                    &crate::sudo::install(Some("755"), None, None, src_str, &dst).await,
+                ) {
+                    warn!(script = %name, dest = %dst, error = %err, "update: libexec script install failed");
+                }
             }
         }
     }
@@ -676,14 +722,20 @@ pub async fn install_from_path(
                 let src_str = src
                     .to_str()
                     .expect("src path is utf-8 (file_name validated above)");
-                let _ = crate::sudo::install(Some("755"), None, None, src_str, &dst).await;
+                if let Some(err) = step_failure(
+                    &crate::sudo::install(Some("755"), None, None, src_str, &dst).await,
+                ) {
+                    warn!(script = %name, dest = %dst, error = %err, "update: utility script install failed");
+                }
             }
         }
     }
 
     // Ensure required directories exist (new services may need them)
     for dir in &manifest.directories {
-        let _ = crate::sudo::mkdir(&["-p", dir]).await;
+        if let Some(err) = step_failure(&crate::sudo::mkdir(&["-p", dir]).await) {
+            warn!(path = %dir, error = %err, "update: required directory create failed");
+        }
     }
 
     // Read the installed version from the tarball's version file
@@ -719,24 +771,32 @@ pub async fn install_from_path(
     // edits MOTD via the UI.
     #[cfg(target_os = "freebsd")]
     {
-        let _ = Command::new("/usr/local/libexec/aifw-motd-cleanup.sh")
+        let result = Command::new("/usr/local/libexec/aifw-motd-cleanup.sh")
             .output()
             .await;
+        if let Some(err) = step_failure(&result) {
+            debug!(error = %err, "update: motd cleanup script failed");
+        }
     }
 
     // One-shot migration: enforce password-protected console login on
     // existing installs that were shipped with autologin. Idempotent.
     #[cfg(target_os = "freebsd")]
     {
-        let _ = Command::new("/usr/local/libexec/aifw-login-migrate.sh")
+        let result = Command::new("/usr/local/libexec/aifw-login-migrate.sh")
             .output()
             .await;
+        if let Some(err) = step_failure(&result) {
+            warn!(error = %err, "update: console login migration script failed — autologin may remain enabled");
+        }
     }
 
     // Cleanup extract dir. Contents are root-owned (sudo-tar), so std fs
     // remove_dir_all would fail silently and leak staging across updates —
     // exactly what let stale dirs pile up before. Use the sudo helper.
-    let _ = crate::sudo::rm(&["-rf", EXTRACT_DIR]).await;
+    if let Some(err) = step_failure(&crate::sudo::rm(&["-rf", EXTRACT_DIR]).await) {
+        debug!(path = EXTRACT_DIR, error = %err, "update: staging dir cleanup failed");
+    }
 
     let version_display = if installed_version.is_empty() {
         "unknown".to_string()
@@ -759,8 +819,12 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     let tarball_path = std::path::PathBuf::from(format!("{}/update.tar.xz", tmp_dir));
     let checksum_path = format!("{}/update.tar.xz.sha256", tmp_dir);
 
-    // Clean and create temp dir
-    let _ = tokio::fs::remove_dir_all(tmp_dir).await;
+    // Clean and create temp dir. NotFound is the normal clean-run case.
+    if let Err(e) = tokio::fs::remove_dir_all(tmp_dir).await
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        debug!(path = tmp_dir, error = %e, "update: temp dir scrub failed");
+    }
     tokio::fs::create_dir_all(tmp_dir)
         .await
         .map_err(|e| UpdaterError::Install(format!("Failed to create temp dir: {}", e)))?;
@@ -783,7 +847,11 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     let version = install_from_path(&tarball_path, Some(&expected_hash)).await?;
 
     // Cleanup temp dir
-    let _ = tokio::fs::remove_dir_all(tmp_dir).await;
+    if let Err(e) = tokio::fs::remove_dir_all(tmp_dir).await
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        debug!(path = tmp_dir, error = %e, "update: temp dir cleanup failed");
+    }
 
     let new_ver = if version.is_empty() {
         info.latest_version.clone()
@@ -870,7 +938,9 @@ async fn write_embedded_script(name: &str, content: &str) {
         warn!(name, "failed to stage embedded script");
         return;
     }
-    let _ = crate::sudo::mkdir(&["-p", "/usr/local/libexec"]).await;
+    if let Some(err) = step_failure(&crate::sudo::mkdir(&["-p", "/usr/local/libexec"]).await) {
+        warn!(name, error = %err, "bootstrap: mkdir /usr/local/libexec failed");
+    }
     // Prefer the narrow `aifw-sudo-install` helper when it's already on
     // disk. Otherwise fall back to direct `sudo /usr/bin/install`, which
     // the broad pre-#204 sudoers grant permits. This is the bootstrap path
@@ -886,7 +956,9 @@ async fn write_embedded_script(name: &str, content: &str) {
             .output()
             .await
     };
-    let _ = tokio::fs::remove_file(&tmp).await;
+    if let Err(e) = tokio::fs::remove_file(&tmp).await {
+        debug!(name, path = %tmp, error = %e, "failed to remove staged bootstrap script");
+    }
     match result {
         Ok(o) if o.status.success() => info!(name, "libexec script bootstrapped"),
         Ok(o) => warn!(name, stderr = %String::from_utf8_lossy(&o.stderr), "install failed"),
@@ -924,7 +996,9 @@ async fn is_executable(path: &str) -> bool {
 pub async fn ensure_rcvars() {
     for var in OWNED_RCVARS {
         let arg = format!("{}=YES", var);
-        let _ = crate::sudo::sysrc(&[&arg]).await;
+        if let Some(err) = step_failure(&crate::sudo::sysrc(&[&arg]).await) {
+            warn!(rcvar = var, error = %err, "failed to set rcvar — service restart may be a silent no-op");
+        }
     }
 }
 
@@ -1025,7 +1099,14 @@ pub async fn schedule_reboot() -> Result<(), UpdaterError> {
         .spawn();
     match result {
         Ok(mut child) => {
-            let _ = child.wait().await;
+            match child.wait().await {
+                Ok(status) if !status.success() => warn!(
+                    %status,
+                    "shutdown exited non-zero — reboot may not be scheduled"
+                ),
+                Err(e) => warn!(error = %e, "failed to reap shutdown command"),
+                Ok(_) => {}
+            }
             info!("reboot scheduled (+1 min)");
             Ok(())
         }
@@ -1070,7 +1151,11 @@ pub async fn rollback() -> Result<String, UpdaterError> {
         let src = format!("{}/bin/{}", BACKUP_DIR, bin);
         if std::path::Path::new(&src).exists() {
             let dst = format!("{}/{}", BIN_DIR, bin);
-            let _ = crate::sudo::install(Some("755"), None, None, &src, &dst).await;
+            if let Some(err) =
+                step_failure(&crate::sudo::install(Some("755"), None, None, &src, &dst).await)
+            {
+                warn!(binary = %bin, error = %err, "rollback: binary restore failed");
+            }
         }
     }
 
@@ -1080,19 +1165,29 @@ pub async fn rollback() -> Result<String, UpdaterError> {
         let src = format!("{}/rc.d/{}", BACKUP_DIR, script);
         if std::path::Path::new(&src).exists() {
             let dst = format!("/usr/local/etc/rc.d/{}", script);
-            let _ = crate::sudo::install(Some("755"), None, None, &src, &dst).await;
+            if let Some(err) =
+                step_failure(&crate::sudo::install(Some("755"), None, None, &src, &dst).await)
+            {
+                warn!(script = %script, error = %err, "rollback: rc.d script restore failed");
+            }
         }
     }
 
     // Restore UI
     let backup_ui = format!("{}/ui", BACKUP_DIR);
     if std::path::Path::new(&backup_ui).exists() {
-        let _ = crate::sudo::rm(&["-rf", UI_DIR]).await;
-        let _ = crate::sudo::cp(&["-a", &backup_ui, UI_DIR]).await;
+        if let Some(err) = step_failure(&crate::sudo::rm(&["-rf", UI_DIR]).await) {
+            warn!(path = UI_DIR, error = %err, "rollback: failed to remove current UI dir");
+        }
+        if let Some(err) = step_failure(&crate::sudo::cp(&["-a", &backup_ui, UI_DIR]).await) {
+            warn!(path = UI_DIR, error = %err, "rollback: UI restore failed");
+        }
     }
 
     // Restore version file
-    let _ = crate::sudo::cp(&[&backup_ver, VERSION_FILE]).await;
+    if let Some(err) = step_failure(&crate::sudo::cp(&[&backup_ver, VERSION_FILE]).await) {
+        warn!(path = VERSION_FILE, error = %err, "rollback: version file restore failed");
+    }
 
     info!("Rolled back to v{}", version);
     Ok(format!("Rolled back to v{}", version))
@@ -1101,16 +1196,26 @@ pub async fn rollback() -> Result<String, UpdaterError> {
 // --- Private helpers ---
 
 async fn backup_current() -> Result<(), UpdaterError> {
-    let _ = crate::sudo::rm(&["-rf", BACKUP_DIR]).await;
+    if let Some(err) = step_failure(&crate::sudo::rm(&["-rf", BACKUP_DIR]).await) {
+        warn!(path = BACKUP_DIR, error = %err, "backup: failed to clear old backup dir");
+    }
     // The mkdir helper takes exactly one target, so create each dir
     // separately (rather than one mkdir with two operands).
-    let _ = crate::sudo::mkdir(&["-p", &format!("{}/bin", BACKUP_DIR)]).await;
-    let _ = crate::sudo::mkdir(&["-p", &format!("{}/rc.d", BACKUP_DIR)]).await;
+    for sub in ["bin", "rc.d"] {
+        let dir = format!("{}/{}", BACKUP_DIR, sub);
+        if let Some(err) = step_failure(&crate::sudo::mkdir(&["-p", &dir]).await) {
+            warn!(path = %dir, error = %err, "backup: failed to create backup dir");
+        }
+    }
 
     for bin in &all_binaries() {
         let src = format!("{}/{}", BIN_DIR, bin);
-        if std::path::Path::new(&src).exists() {
-            let _ = crate::sudo::cp(&["-p", &src, &format!("{}/bin/{}", BACKUP_DIR, bin)]).await;
+        if std::path::Path::new(&src).exists()
+            && let Some(err) = step_failure(
+                &crate::sudo::cp(&["-p", &src, &format!("{}/bin/{}", BACKUP_DIR, bin)]).await,
+            )
+        {
+            warn!(binary = %bin, error = %err, "backup: binary copy failed — rollback may be incomplete");
         }
     }
 
@@ -1118,18 +1223,28 @@ async fn backup_current() -> Result<(), UpdaterError> {
     let manifest = load_manifest();
     for script in &manifest.rc_scripts {
         let src = format!("/usr/local/etc/rc.d/{}", script);
-        if std::path::Path::new(&src).exists() {
-            let _ =
-                crate::sudo::cp(&["-p", &src, &format!("{}/rc.d/{}", BACKUP_DIR, script)]).await;
+        if std::path::Path::new(&src).exists()
+            && let Some(err) = step_failure(
+                &crate::sudo::cp(&["-p", &src, &format!("{}/rc.d/{}", BACKUP_DIR, script)]).await,
+            )
+        {
+            warn!(script = %script, error = %err, "backup: rc.d script copy failed");
         }
     }
 
-    if std::path::Path::new(UI_DIR).exists() {
-        let _ = crate::sudo::cp(&["-a", UI_DIR, &format!("{}/ui", BACKUP_DIR)]).await;
+    if std::path::Path::new(UI_DIR).exists()
+        && let Some(err) =
+            step_failure(&crate::sudo::cp(&["-a", UI_DIR, &format!("{}/ui", BACKUP_DIR)]).await)
+    {
+        warn!(path = UI_DIR, error = %err, "backup: UI copy failed — rollback may be incomplete");
     }
 
-    if std::path::Path::new(VERSION_FILE).exists() {
-        let _ = crate::sudo::cp(&[VERSION_FILE, &format!("{}/version", BACKUP_DIR)]).await;
+    if std::path::Path::new(VERSION_FILE).exists()
+        && let Some(err) = step_failure(
+            &crate::sudo::cp(&[VERSION_FILE, &format!("{}/version", BACKUP_DIR)]).await,
+        )
+    {
+        warn!(path = VERSION_FILE, error = %err, "backup: version file copy failed — rollback will report no backup");
     }
 
     Ok(())

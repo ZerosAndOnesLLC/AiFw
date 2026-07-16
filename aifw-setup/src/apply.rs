@@ -33,9 +33,7 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // 3b. Fix DB ownership (DB was created as root, aifw user needs write access)
     #[cfg(target_os = "freebsd")]
     {
-        let _ = std::process::Command::new("chown")
-            .args(["-R", "aifw:aifw", "/var/db/aifw"])
-            .output();
+        run_best_effort("chown", &["-R", "aifw:aifw", "/var/db/aifw"]);
     }
 
     // 4. Generate pf rules
@@ -90,21 +88,31 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     #[cfg(target_os = "freebsd")]
     {
         let sudoers_path = "/usr/local/etc/sudoers.d/aifw";
-        let _ = std::fs::create_dir_all("/usr/local/etc/sudoers.d");
-        let _ = std::fs::write(sudoers_path, sudoers_content());
+        warn_on_err(
+            "mkdir /usr/local/etc/sudoers.d",
+            std::fs::create_dir_all("/usr/local/etc/sudoers.d"),
+        );
+        warn_on_err(
+            "write sudoers grants",
+            std::fs::write(sudoers_path, sudoers_content()),
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(sudoers_path, std::fs::Permissions::from_mode(0o440));
+            warn_on_err(
+                "chmod sudoers to 0440",
+                std::fs::set_permissions(sudoers_path, std::fs::Permissions::from_mode(0o440)),
+            );
         }
     }
 
     // 5c. Setup unbound directory
     console::info("Configuring Unbound DNS resolver...");
-    let _ = std::fs::create_dir_all("/var/unbound");
-    let _ = std::process::Command::new("chown")
-        .args(["-R", "unbound:unbound", "/var/unbound"])
-        .status();
+    warn_on_err(
+        "mkdir /var/unbound",
+        std::fs::create_dir_all("/var/unbound"),
+    );
+    run_best_effort("chown", &["-R", "unbound:unbound", "/var/unbound"]);
     console::success("Unbound configured");
 
     // 5c2. Setup rDHCP directories
@@ -114,17 +122,11 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         "/var/log/rdhcpd",
         "/usr/local/etc/rdhcpd",
     ] {
-        let _ = std::fs::create_dir_all(dir);
+        warn_on_err(&format!("mkdir {dir}"), std::fs::create_dir_all(dir));
     }
-    let _ = std::process::Command::new("chown")
-        .args(["-R", "aifw:aifw", "/var/db/rdhcpd"])
-        .status();
-    let _ = std::process::Command::new("chown")
-        .args(["-R", "aifw:aifw", "/var/log/rdhcpd"])
-        .status();
-    let _ = std::process::Command::new("chown")
-        .args(["-R", "aifw:aifw", "/usr/local/etc/rdhcpd"])
-        .status();
+    run_best_effort("chown", &["-R", "aifw:aifw", "/var/db/rdhcpd"]);
+    run_best_effort("chown", &["-R", "aifw:aifw", "/var/log/rdhcpd"]);
+    run_best_effort("chown", &["-R", "aifw:aifw", "/usr/local/etc/rdhcpd"]);
     console::success("rDHCP configured");
 
     // 5c3. Setup rDNS directories and user
@@ -135,43 +137,38 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         "/var/run/rdns",
         "/var/log/rdns",
     ] {
-        let _ = std::fs::create_dir_all(dir);
+        warn_on_err(&format!("mkdir {dir}"), std::fs::create_dir_all(dir));
     }
     // Create rdns user if not exists
-    let _ = std::process::Command::new("pw")
+    let rdns_exists = std::process::Command::new("pw")
         .args(["user", "show", "rdns"])
         .status()
-        .and_then(|s| {
-            if !s.success() {
-                std::process::Command::new("pw")
-                    .args([
-                        "useradd",
-                        "rdns",
-                        "-d",
-                        "/nonexistent",
-                        "-s",
-                        "/usr/sbin/nologin",
-                        "-c",
-                        "rDNS DNS Server",
-                    ])
-                    .status()
-            } else {
-                Ok(s)
-            }
-        });
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !rdns_exists {
+        run_best_effort(
+            "pw",
+            &[
+                "useradd",
+                "rdns",
+                "-d",
+                "/nonexistent",
+                "-s",
+                "/usr/sbin/nologin",
+                "-c",
+                "rDNS DNS Server",
+            ],
+        );
+    }
     console::success("rDNS configured");
 
     // 5c4. Setup rTIME directories
     console::info("Configuring rTIME time service...");
     for dir in ["/usr/local/etc/rtime", "/var/run/rtime", "/var/log/rtime"] {
-        let _ = std::fs::create_dir_all(dir);
+        warn_on_err(&format!("mkdir {dir}"), std::fs::create_dir_all(dir));
     }
-    let _ = std::process::Command::new("chown")
-        .args(["-R", "aifw:aifw", "/usr/local/etc/rtime"])
-        .status();
-    let _ = std::process::Command::new("chown")
-        .args(["-R", "aifw:aifw", "/var/log/rtime"])
-        .status();
+    run_best_effort("chown", &["-R", "aifw:aifw", "/usr/local/etc/rtime"]);
+    run_best_effort("chown", &["-R", "aifw:aifw", "/var/log/rtime"]);
     console::success("rTIME configured");
 
     // 5d. Configure devfs rules for /dev/pf and /dev/bpf* access
@@ -242,42 +239,39 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         // WAN interface
         match config.wan_mode {
             crate::config::WanMode::Dhcp => {
-                let _ = Command::new("sysrc")
-                    .args([&format!("ifconfig_{}=DHCP", config.wan_interface)])
-                    .output();
+                run_best_effort(
+                    "sysrc",
+                    &[&format!("ifconfig_{}=DHCP", config.wan_interface)],
+                );
             }
             crate::config::WanMode::Static => {
                 if let Some(ref ip) = config.wan_ip {
-                    let _ = Command::new("sysrc")
-                        .args([&format!("ifconfig_{}=inet {}", config.wan_interface, ip)])
-                        .output();
+                    run_best_effort(
+                        "sysrc",
+                        &[&format!("ifconfig_{}=inet {}", config.wan_interface, ip)],
+                    );
                 }
                 if let Some(ref gw) = config.wan_gateway {
-                    let _ = Command::new("sysrc")
-                        .args([&format!("defaultrouter={}", gw)])
-                        .output();
+                    run_best_effort("sysrc", &[&format!("defaultrouter={}", gw)]);
                 }
             }
             crate::config::WanMode::Pppoe => {
-                let _ = Command::new("sysrc")
-                    .args([&format!("ifconfig_{}=DHCP", config.wan_interface)])
-                    .output();
+                run_best_effort(
+                    "sysrc",
+                    &[&format!("ifconfig_{}=DHCP", config.wan_interface)],
+                );
             }
         }
 
         // LAN interface
         if let (Some(iface), Some(ip)) = (&config.lan_interface, &config.lan_ip) {
-            let _ = Command::new("sysrc")
-                .args([&format!("ifconfig_{}=inet {}", iface, ip)])
-                .output();
+            run_best_effort("sysrc", &[&format!("ifconfig_{}=inet {}", iface, ip)]);
             // Apply immediately
-            let _ = Command::new("ifconfig")
-                .args([iface.as_str(), "inet", ip])
-                .output();
+            run_best_effort("ifconfig", &[iface.as_str(), "inet", ip]);
         }
 
         // Gateway forwarding
-        let _ = Command::new("sysrc").args(["gateway_enable=YES"]).output();
+        run_best_effort("sysrc", &["gateway_enable=YES"]);
 
         console::success("Network interfaces configured");
     }
@@ -295,9 +289,10 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         // keep re-applying over the daemon's DB-driven updates (v5.57.3 fix).
 
         // Load pf rules
-        let _ = Command::new("pfctl")
-            .args(["-f", &format!("{}/pf.conf.aifw", config.config_dir)])
-            .output();
+        run_best_effort(
+            "pfctl",
+            &["-f", &format!("{}/pf.conf.aifw", config.config_dir)],
+        );
         console::success("pf rules loaded");
 
         // sysrc-enable AiFw services so existing-install upgrades and
@@ -305,26 +300,25 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         // added in v5.76.0). aifw_firstboot also does this, but only on
         // first boot — running aifw-setup on an existing appliance never
         // hits firstboot, so we belt-and-braces it here too.
-        let _ = Command::new("sysrc")
-            .args(["aifw_daemon_enable=YES"])
-            .output();
-        let _ = Command::new("sysrc").args(["aifw_ids_enable=YES"]).output();
-        let _ = Command::new("sysrc").args(["aifw_api_enable=YES"]).output();
-        let _ = Command::new("sysrc")
-            .args(["aifw_watchdog_enable=YES"])
-            .output();
+        run_best_effort("sysrc", &["aifw_daemon_enable=YES"]);
+        run_best_effort("sysrc", &["aifw_ids_enable=YES"]);
+        run_best_effort("sysrc", &["aifw_api_enable=YES"]);
+        run_best_effort("sysrc", &["aifw_watchdog_enable=YES"]);
 
         // HA cluster rc.conf keys
         let cluster_enabled = config.cluster.is_some();
-        let _ = run_sysrc(
-            "aifw_cluster_enabled",
-            if cluster_enabled { "YES" } else { "NO" },
+        warn_on_err(
+            "",
+            run_sysrc(
+                "aifw_cluster_enabled",
+                if cluster_enabled { "YES" } else { "NO" },
+            ),
         );
         if let Some(c) = &config.cluster {
-            let _ = run_sysrc("aifw_cluster_role", &c.role.to_string());
-            let _ = run_sysrc("pfsync_enable", "YES");
+            warn_on_err("", run_sysrc("aifw_cluster_role", &c.role.to_string()));
+            warn_on_err("", run_sysrc("pfsync_enable", "YES"));
             let pfsync_args = format!("syncdev {} defer up", c.pfsync_iface);
-            let _ = run_sysrc("ifconfig_pfsync0", &pfsync_args);
+            warn_on_err("", run_sysrc("ifconfig_pfsync0", &pfsync_args));
             // Setup writes Conservative timing to rc.conf as the boot-time default.
             // At runtime, aifw-daemon's recover_kernel_state_for_role re-applies
             // the actual stored profile via ifconfig, so any operator change via
@@ -344,35 +338,31 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
                     vip.virtual_ip,
                     vip.prefix,
                 );
-                let _ = run_sysrc_append(&key, &alias);
+                warn_on_err("", run_sysrc_append(&key, &alias));
             }
-            let _ = run_sysrc("aifw_carp_demote_enable", "YES");
-            let _ = run_sysrc("aifw_demote_on_shutdown_enable", "YES");
+            warn_on_err("", run_sysrc("aifw_carp_demote_enable", "YES"));
+            warn_on_err("", run_sysrc("aifw_demote_on_shutdown_enable", "YES"));
         } else {
-            let _ = run_sysrc("aifw_cluster_role", "standalone");
+            warn_on_err("", run_sysrc("aifw_cluster_role", "standalone"));
         }
 
         // Start core services
-        let _ = Command::new("service")
-            .args(["aifw_daemon", "start"])
-            .output();
+        run_best_effort("service", &["aifw_daemon", "start"]);
         // aifw_ids must come up before aifw_api (aifw_api REQUIREs aifw_ids)
-        let _ = Command::new("service").args(["aifw_ids", "start"]).output();
-        let _ = Command::new("service").args(["aifw_api", "start"]).output();
+        run_best_effort("service", &["aifw_ids", "start"]);
+        run_best_effort("service", &["aifw_api", "start"]);
         // Watchdog last so it doesn't observe the others mid-startup and
         // try to "heal" them.
-        let _ = Command::new("service")
-            .args(["aifw_watchdog", "start"])
-            .output();
+        run_best_effort("service", &["aifw_watchdog", "start"]);
         console::success("AiFw daemon, IDS, API, and watchdog started");
 
         // Start rDNS
-        let _ = Command::new("service").args(["rdns", "start"]).output();
+        run_best_effort("service", &["rdns", "start"]);
         console::success("rDNS started");
 
         // Start rDHCP if enabled
         if config.dhcp_enabled {
-            let _ = Command::new("service").args(["rdhcpd", "start"]).output();
+            run_best_effort("service", &["rdhcpd", "start"]);
             console::success("rDHCP started");
         }
     }
@@ -422,9 +412,7 @@ fn create_service_user() -> Result<(), String> {
             }
         }
         // Create group
-        let _ = Command::new("pw")
-            .args(["groupadd", "aifw", "-g", "470"])
-            .output();
+        run_best_effort("pw", &["groupadd", "aifw", "-g", "470"]);
         // Create user: no login shell, no home, system account
         let out = Command::new("pw")
             .args([
@@ -476,12 +464,10 @@ fn configure_devfs() -> Result<(), String> {
         }
 
         // Enable the ruleset in rc.conf
-        let _ = Command::new("sysrc")
-            .args(["devfs_system_ruleset=aifw_devfs"])
-            .output();
+        run_best_effort("sysrc", &["devfs_system_ruleset=aifw_devfs"]);
 
         // Apply immediately
-        let _ = Command::new("service").args(["devfs", "restart"]).output();
+        run_best_effort("service", &["devfs", "restart"]);
     }
     Ok(())
 }
@@ -528,13 +514,12 @@ fn generate_tls_cert() -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o640));
-        let _ = std::process::Command::new("chown")
-            .args(["root:aifw", key_path])
-            .output();
-        let _ = std::process::Command::new("chown")
-            .args(["root:aifw", cert_path])
-            .output();
+        warn_on_err(
+            "chmod jwt key to 0640",
+            std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o640)),
+        );
+        run_best_effort("chown", &["root:aifw", key_path]);
+        run_best_effort("chown", &["root:aifw", cert_path]);
     }
 
     Ok(())
@@ -556,10 +541,16 @@ fn configure_ssh(config: &SetupConfig) -> Result<(), String> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(ssh_dir, std::fs::Permissions::from_mode(0o700));
-            let _ = std::fs::set_permissions(
-                format!("{ssh_dir}/authorized_keys"),
-                std::fs::Permissions::from_mode(0o600),
+            warn_on_err(
+                "chmod ssh dir to 0700",
+                std::fs::set_permissions(ssh_dir, std::fs::Permissions::from_mode(0o700)),
+            );
+            warn_on_err(
+                "chmod authorized_keys to 0600",
+                std::fs::set_permissions(
+                    format!("{ssh_dir}/authorized_keys"),
+                    std::fs::Permissions::from_mode(0o600),
+                ),
             );
         }
     }
@@ -600,19 +591,17 @@ fn configure_ssh(config: &SetupConfig) -> Result<(), String> {
             .map_err(|e| format!("failed to write sshd_config: {e}"))?;
 
         // Enable sshd at boot
-        let _ = std::process::Command::new("sysrc")
-            .args(["sshd_enable=YES"])
-            .output();
+        run_best_effort("sysrc", &["sshd_enable=YES"]);
 
         // Restart sshd to apply config
-        let _ = std::process::Command::new("service")
-            .args(["sshd", "restart"])
-            .output();
+        run_best_effort("service", &["sshd", "restart"]);
     }
 
     #[cfg(not(target_os = "freebsd"))]
     {
-        let _ = sshd_config; // suppress unused warning on non-FreeBSD
+        // Not fallible: consumes the built string to suppress the unused
+        // warning on non-FreeBSD dev builds.
+        let _ = sshd_config;
     }
 
     Ok(())
@@ -628,24 +617,14 @@ fn create_dirs(config: &SetupConfig) -> Result<(), String> {
     {
         use std::process::Command;
         // Config dir: root owns, aifw group can read
-        let _ = Command::new("chown")
-            .args(["root:aifw", &config.config_dir])
-            .output();
-        let _ = Command::new("chmod")
-            .args(["750", &config.config_dir])
-            .output();
+        run_best_effort("chown", &["root:aifw", &config.config_dir]);
+        run_best_effort("chmod", &["750", &config.config_dir]);
         // DB dir: aifw owns (API needs write access)
-        let _ = Command::new("chown")
-            .args(["-R", "aifw:aifw", "/var/db/aifw"])
-            .output();
-        let _ = Command::new("chmod").args(["750", "/var/db/aifw"]).output();
+        run_best_effort("chown", &["-R", "aifw:aifw", "/var/db/aifw"]);
+        run_best_effort("chmod", &["750", "/var/db/aifw"]);
         // Log dir: aifw owns
-        let _ = Command::new("chown")
-            .args(["-R", "aifw:aifw", "/var/log/aifw"])
-            .output();
-        let _ = Command::new("chmod")
-            .args(["750", "/var/log/aifw"])
-            .output();
+        run_best_effort("chown", &["-R", "aifw:aifw", "/var/log/aifw"]);
+        run_best_effort("chmod", &["750", "/var/log/aifw"]);
     }
 
     Ok(())
@@ -653,6 +632,38 @@ fn create_dirs(config: &SetupConfig) -> Result<(), String> {
 
 fn write_file(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("failed to write {path}: {e}"))
+}
+
+/// Run a best-effort setup command, printing a visible warning on spawn
+/// failure or non-zero exit instead of silently swallowing it (QUAL-H1 #421).
+/// First-boot steps intentionally continue past individual failures — the
+/// operator sees the warning in the wizard output and can fix up afterwards.
+#[cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+fn run_best_effort(cmd: &str, args: &[&str]) {
+    match std::process::Command::new(cmd).args(args).output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => console::warn(&format!(
+            "{cmd} {} exited with {}: {}",
+            args.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(e) => console::warn(&format!("failed to run {cmd} {}: {e}", args.join(" "))),
+    }
+}
+
+/// Print a fallible best-effort step's failure instead of dropping it
+/// (QUAL-H1 #421). Pass an empty `desc` when the error already carries
+/// full context.
+#[cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+fn warn_on_err<T, E: std::fmt::Display>(desc: &str, res: Result<T, E>) {
+    if let Err(e) = res {
+        if desc.is_empty() {
+            console::warn(&format!("{e}"));
+        } else {
+            console::warn(&format!("{desc}: {e}"));
+        }
+    }
 }
 
 /// Write a single sysrc key=value pair (FreeBSD only).
@@ -810,11 +821,17 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
         .map_err(|e| format!("interface_roles table: {e}"))?;
 
     let now = chrono::Utc::now().to_rfc3339();
-    let _ = sqlx::query("INSERT OR REPLACE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'WAN', ?2)")
-        .bind(&config.wan_interface).bind(&now).execute(&pool).await;
+    warn_on_err(
+        "seed WAN interface role",
+        sqlx::query("INSERT OR REPLACE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'WAN', ?2)")
+            .bind(&config.wan_interface).bind(&now).execute(&pool).await,
+    );
     if let Some(ref lan) = config.lan_interface {
-        let _ = sqlx::query("INSERT OR REPLACE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'LAN', ?2)")
-            .bind(lan).bind(&now).execute(&pool).await;
+        warn_on_err(
+            "seed LAN interface role",
+            sqlx::query("INSERT OR REPLACE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'LAN', ?2)")
+                .bind(lan).bind(&now).execute(&pool).await,
+        );
     }
 
     // Seed DNS resolver config — rDNS enabled by default with forwarding to user's DNS servers
@@ -842,18 +859,24 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
             ("rebind_protection", "true"),
         ];
         for (k, v) in &dns_defaults {
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO dns_resolver_config (key, value) VALUES (?1, ?2)",
-            )
-            .bind(k)
-            .bind(v)
-            .execute(&pool)
-            .await;
+            warn_on_err(
+                &format!("seed dns config {k}"),
+                sqlx::query(
+                    "INSERT OR IGNORE INTO dns_resolver_config (key, value) VALUES (?1, ?2)",
+                )
+                .bind(k)
+                .bind(v)
+                .execute(&pool)
+                .await,
+            );
         }
         // Forward to user's configured DNS servers
         if !config.dns_servers.is_empty() {
-            let _ = sqlx::query("INSERT OR IGNORE INTO dns_resolver_config (key, value) VALUES ('forwarding_servers', ?1)")
-                .bind(config.dns_servers.join(",")).execute(&pool).await;
+            warn_on_err(
+                "seed dns forwarding servers",
+                sqlx::query("INSERT OR IGNORE INTO dns_resolver_config (key, value) VALUES ('forwarding_servers', ?1)")
+                    .bind(config.dns_servers.join(",")).execute(&pool).await,
+            );
         }
     }
 
@@ -909,19 +932,21 @@ rate_limit = 1000
         fwd = fwd_servers
     );
 
-    let _ = std::fs::create_dir_all("/usr/local/etc/rdns");
-    let _ = std::fs::write("/usr/local/etc/rdns/rdns.toml", &rdns_conf);
+    warn_on_err(
+        "mkdir /usr/local/etc/rdns",
+        std::fs::create_dir_all("/usr/local/etc/rdns"),
+    );
+    warn_on_err(
+        "write rdns.toml",
+        std::fs::write("/usr/local/etc/rdns/rdns.toml", &rdns_conf),
+    );
 
     // Enable rDNS at boot
     #[cfg(target_os = "freebsd")]
     {
-        let _ = std::process::Command::new("sysrc")
-            .args(["rdns_enable=YES"])
-            .status();
+        run_best_effort("sysrc", &["rdns_enable=YES"]);
         // Disable unbound to avoid port conflict
-        let _ = std::process::Command::new("sysrc")
-            .args(["local_unbound_enable=NO"])
-            .status();
+        run_best_effort("sysrc", &["local_unbound_enable=NO"]);
     }
 
     // Seed DNS ACL entries — allow LAN subnet and localhost
@@ -937,8 +962,11 @@ rate_limit = 1000
     if acl_count.0 == 0 {
         let now = chrono::Utc::now().to_rfc3339();
         // Allow localhost
-        let _ = sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1, '127.0.0.0/8', 'allow', 'Localhost', ?2)")
-            .bind(uuid::Uuid::new_v4().to_string()).bind(&now).execute(&pool).await;
+        warn_on_err(
+            "seed localhost dns acl",
+            sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1, '127.0.0.0/8', 'allow', 'Localhost', ?2)")
+                .bind(uuid::Uuid::new_v4().to_string()).bind(&now).execute(&pool).await,
+        );
         // Allow LAN subnet if configured
         if let Some(ref lip) = config.lan_ip {
             let octets: Vec<&str> = lip
@@ -949,8 +977,11 @@ rate_limit = 1000
                 .collect();
             if octets.len() == 4 {
                 let subnet = format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2]);
-                let _ = sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1, ?2, 'allow', 'LAN subnet', ?3)")
-                    .bind(uuid::Uuid::new_v4().to_string()).bind(&subnet).bind(&now).execute(&pool).await;
+                warn_on_err(
+                    "seed lan dns acl",
+                    sqlx::query("INSERT INTO dns_access_lists (id, network, action, description, created_at) VALUES (?1, ?2, 'allow', 'LAN subnet', ?3)")
+                        .bind(uuid::Uuid::new_v4().to_string()).bind(&subnet).bind(&now).execute(&pool).await,
+                );
             }
         }
     }
@@ -991,9 +1022,12 @@ rate_limit = 1000
         // Delete any pre-existing loopback key so re-running setup always yields
         // a fresh credential. The daemon must be restarted after re-running setup
         // to pick up the new key from rc.conf.
-        let _ = sqlx::query("DELETE FROM api_keys WHERE name = 'aifw-daemon-loopback'")
-            .execute(&pool)
-            .await;
+        warn_on_err(
+            "clear stale loopback api key",
+            sqlx::query("DELETE FROM api_keys WHERE name = 'aifw-daemon-loopback'")
+                .execute(&pool)
+                .await,
+        );
 
         sqlx::query(
             "INSERT INTO api_keys (id, name, key_hash, prefix, user_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1014,7 +1048,10 @@ rate_limit = 1000
         // AIFW_LOOPBACK_API_KEY into the daemon's environment.
         let key_path = std::path::Path::new("/usr/local/etc/aifw/daemon.key");
         if let Some(parent) = key_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            warn_on_err(
+                &format!("mkdir {}", parent.display()),
+                std::fs::create_dir_all(parent),
+            );
         }
         if let Err(e) = std::fs::write(key_path, &loopback_key) {
             tracing::warn!(error = %e, "could not write daemon.key (non-FreeBSD dev env — skipped)");
@@ -1026,22 +1063,22 @@ rate_limit = 1000
                 if let Ok(meta) = std::fs::metadata(key_path) {
                     let mut perms = meta.permissions();
                     perms.set_mode(0o640);
-                    let _ = std::fs::set_permissions(key_path, perms);
+                    warn_on_err(
+                        "chmod daemon api key to 0600",
+                        std::fs::set_permissions(key_path, perms),
+                    );
                 }
             }
             // chown root:aifw — only meaningful on FreeBSD where the aifw user exists.
             #[cfg(target_os = "freebsd")]
             {
-                let _ = std::process::Command::new("chown")
-                    .arg("root:aifw")
-                    .arg(key_path)
-                    .status();
+                run_best_effort("chown", &["root:aifw", "/usr/local/etc/aifw/daemon.key"]);
             }
         }
         // Clear any previously set aifw_daemon_env from rc.conf — the key is
         // now read from daemon.key by the precmd; rc.conf no longer carries it.
         #[cfg(target_os = "freebsd")]
-        let _ = run_sysrc("aifw_daemon_env", "");
+        warn_on_err("", run_sysrc("aifw_daemon_env", ""));
 
         let pf: std::sync::Arc<dyn aifw_pf::PfBackend> =
             std::sync::Arc::from(aifw_pf::create_backend());
@@ -1200,26 +1237,33 @@ async fn seed_dhcp_config(
         ("domain_name", "local"),
     ];
     for (k, v) in &dhcp_defaults {
-        let _ = sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES (?1, ?2)")
-            .bind(k)
-            .bind(v)
-            .execute(pool)
-            .await;
+        warn_on_err(
+            &format!("seed dhcp config {k}"),
+            sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES (?1, ?2)")
+                .bind(k)
+                .bind(v)
+                .execute(pool)
+                .await,
+        );
     }
     // Bind to LAN interface
     if let Some(ref li) = config.lan_interface {
-        let _ =
+        warn_on_err(
+            "seed dhcp interfaces",
             sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES ('interfaces', ?1)")
                 .bind(li)
                 .execute(pool)
-                .await;
+                .await,
+        );
     }
     // DNS for scope = LAN IP (rDNS is on the firewall)
-    let _ =
+    warn_on_err(
+        "seed dhcp dns_servers",
         sqlx::query("INSERT OR IGNORE INTO dhcp_config (key, value) VALUES ('dns_servers', ?1)")
             .bind(lan_ip)
             .execute(pool)
-            .await;
+            .await,
+    );
 
     // Create subnets table and default pool
     sqlx::query(r#"CREATE TABLE IF NOT EXISTS dhcp_subnets (
@@ -1233,7 +1277,7 @@ async fn seed_dhcp_config(
 
     let now = chrono::Utc::now().to_rfc3339();
     let id = uuid::Uuid::new_v4().to_string();
-    let _ = sqlx::query(
+    sqlx::query(
         "INSERT INTO dhcp_subnets (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, \
          lease_time, subnet_type, enabled, description, created_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'local', 3600, 'address', 1, 'Default LAN pool', ?7)"
@@ -1280,17 +1324,27 @@ enabled = false
         dns = lan_ip
     );
 
-    let _ = std::fs::create_dir_all("/usr/local/etc/rdhcpd");
-    let _ = std::fs::create_dir_all("/var/db/rdhcpd/leases");
-    let _ = std::fs::create_dir_all("/var/log/rdhcpd");
-    let _ = std::fs::write("/usr/local/etc/rdhcpd/config.toml", &rdhcp_conf);
+    warn_on_err(
+        "mkdir /usr/local/etc/rdhcpd",
+        std::fs::create_dir_all("/usr/local/etc/rdhcpd"),
+    );
+    warn_on_err(
+        "mkdir /var/db/rdhcpd/leases",
+        std::fs::create_dir_all("/var/db/rdhcpd/leases"),
+    );
+    warn_on_err(
+        "mkdir /var/log/rdhcpd",
+        std::fs::create_dir_all("/var/log/rdhcpd"),
+    );
+    warn_on_err(
+        "write rdhcpd config.toml",
+        std::fs::write("/usr/local/etc/rdhcpd/config.toml", &rdhcp_conf),
+    );
 
     // Enable rDHCP at boot
     #[cfg(target_os = "freebsd")]
     {
-        let _ = std::process::Command::new("sysrc")
-            .args(["rdhcpd_enable=YES"])
-            .status();
+        run_best_effort("sysrc", &["rdhcpd_enable=YES"]);
     }
 
     Ok(())
@@ -1619,7 +1673,7 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
                 "any".to_string()
             };
 
-            let _ = sqlx::query(
+            sqlx::query(
                 "INSERT INTO nat_rules (id, nat_type, interface, protocol, src_addr, \
                  src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
                  redirect_addr, redirect_port_start, redirect_port_end, \
@@ -2320,11 +2374,26 @@ run_rc_command "$1"
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o755);
-        let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_daemon"), perms.clone());
-        let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_api"), perms.clone());
-        let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_ids"), perms.clone());
-        let _ = std::fs::set_permissions(format!("{rcd_dir}/aifw_watchdog"), perms.clone());
-        let _ = std::fs::set_permissions(format!("{rcd_dir}/rdhcpd"), perms);
+        warn_on_err(
+            "chmod rc.d/aifw_daemon to 0755",
+            std::fs::set_permissions(format!("{rcd_dir}/aifw_daemon"), perms.clone()),
+        );
+        warn_on_err(
+            "chmod rc.d/aifw_api to 0755",
+            std::fs::set_permissions(format!("{rcd_dir}/aifw_api"), perms.clone()),
+        );
+        warn_on_err(
+            "chmod rc.d/aifw_ids to 0755",
+            std::fs::set_permissions(format!("{rcd_dir}/aifw_ids"), perms.clone()),
+        );
+        warn_on_err(
+            "chmod rc.d/aifw_watchdog to 0755",
+            std::fs::set_permissions(format!("{rcd_dir}/aifw_watchdog"), perms.clone()),
+        );
+        warn_on_err(
+            "chmod rc.d/rdhcpd to 0755",
+            std::fs::set_permissions(format!("{rcd_dir}/rdhcpd"), perms),
+        );
     }
 
     Ok(())

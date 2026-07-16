@@ -365,3 +365,56 @@ mod tests {
         );
     }
 }
+
+/// Discipline gate for QUAL-H1 (#421), mirroring the `sudoers_tests`
+/// pattern: the files swept of silent `let _ = ...` must stay swept.
+/// Every `let _ =` that remains (or is newly added) in these files must
+/// carry a `//` justification comment on the line directly above it —
+/// otherwise the failure it swallows is invisible, which is exactly the
+/// bug class the sweep removed.
+#[cfg(test)]
+mod let_underscore_tests {
+    /// Files cleaned in the #421 sweep, relative to the workspace root.
+    const SWEPT_FILES: &[&str] = &[
+        "aifw-setup/src/apply.rs",
+        "aifw-api/src/iface.rs",
+        "aifw-api/src/backup.rs",
+        "aifw-api/src/dhcp.rs",
+        "aifw-core/src/updater.rs",
+    ];
+
+    #[test]
+    fn let_underscore_requires_justification_comment() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut violations = Vec::new();
+        for rel in SWEPT_FILES {
+            let path = root.join(rel);
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {rel}: {e}"));
+            let lines: Vec<&str> = content.lines().collect();
+            for (idx, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                // Only flag value-discarding `let _ =`, not `let _x =` or
+                // tuple patterns.
+                if !trimmed.starts_with("let _ =") {
+                    continue;
+                }
+                let prev_is_comment = idx
+                    .checked_sub(1)
+                    .map(|i| lines[i].trim_start().starts_with("//"))
+                    .unwrap_or(false);
+                if !prev_is_comment {
+                    violations.push(format!("{rel}:{}: {trimmed}", idx + 1));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "unjustified `let _ =` in swept files (QUAL-H1 #421).\n\
+             Either log the failure (tracing::warn! / console::warn) or add a\n\
+             `//` comment on the line above explaining why it is safe to\n\
+             ignore:\n{}",
+            violations.join("\n")
+        );
+    }
+}

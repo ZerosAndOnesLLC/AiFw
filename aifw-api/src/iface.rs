@@ -133,15 +133,21 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
                     && let Some(iface) = rest.strip_suffix('"')
                 {
                     let now = chrono::Utc::now().to_rfc3339();
-                    let _ = sqlx::query("INSERT OR IGNORE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'WAN', ?2)")
-                            .bind(iface).bind(&now).execute(pool).await;
+                    if let Err(e) = sqlx::query("INSERT OR IGNORE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'WAN', ?2)")
+                            .bind(iface).bind(&now).execute(pool).await
+                    {
+                        tracing::warn!(error = %e, iface, "WAN role seed insert failed");
+                    }
                 }
                 if let Some(rest) = line.strip_prefix("lan_if = \"")
                     && let Some(iface) = rest.strip_suffix('"')
                 {
                     let now = chrono::Utc::now().to_rfc3339();
-                    let _ = sqlx::query("INSERT OR IGNORE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'LAN', ?2)")
-                            .bind(iface).bind(&now).execute(pool).await;
+                    if let Err(e) = sqlx::query("INSERT OR IGNORE INTO interface_roles (interface_name, role, updated_at) VALUES (?1, 'LAN', ?2)")
+                            .bind(iface).bind(&now).execute(pool).await
+                    {
+                        tracing::warn!(error = %e, iface, "LAN role seed insert failed");
+                    }
                 }
             }
         }
@@ -309,10 +315,6 @@ pub(crate) async fn parse_ifconfig() -> Vec<InterfaceDetail> {
     }
 
     // Get traffic stats via netstat
-    let stats_out = Command::new("netstat")
-        .args(["-I", "", "-b", "-n", "--libxo", "json"])
-        .output()
-        .await;
     for iface in &mut interfaces {
         if let Ok(output) = Command::new("netstat")
             .args(["-I", &iface.name, "-b", "-n"])
@@ -348,8 +350,37 @@ pub(crate) async fn parse_ifconfig() -> Vec<InterfaceDetail> {
     interfaces.retain(|i| {
         !i.name.starts_with("pflog") && !i.name.starts_with("pfsync") && !i.name.starts_with("enc")
     });
-    let _ = stats_out;
     interfaces
+}
+
+/// Log a failed best-effort system command (sudo helper or direct spawn)
+/// at warn level — non-zero exit or spawn error. Interface configuration
+/// is intentionally non-fatal (apply as much as possible), but failures
+/// must be visible for diagnosis.
+fn warn_on_fail(res: std::io::Result<std::process::Output>, what: &str, iface: &str) {
+    match res {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::warn!(iface = %iface, status = %out.status, stderr = %stderr.trim(), "{} failed", what);
+        }
+        Err(e) => tracing::warn!(iface = %iface, error = %e, "{} failed to run", what),
+    }
+}
+
+/// Like [`warn_on_fail`] but at debug level — for commands whose failure
+/// is expected in normal operation (pkill with no matching dhclient,
+/// deleting an address/route/rcvar that isn't set, creating a VLAN device
+/// that already exists) yet still worth a trace.
+fn debug_on_fail(res: std::io::Result<std::process::Output>, what: &str, iface: &str) {
+    match res {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::debug!(iface = %iface, status = %out.status, stderr = %stderr.trim(), "{} failed", what);
+        }
+        Err(e) => tracing::debug!(iface = %iface, error = %e, "{} failed to run", what),
+    }
 }
 
 /// Load interface roles from DB — returns HashMap<name, role>.
@@ -482,13 +513,21 @@ pub async fn configure_interface(
 
     // Handle enable/disable
     if let Some(enabled) = req.enabled {
-        let _ = aifw_core::sudo::ifconfig(&name, if enabled { "up" } else { "down" }, &[]).await;
+        warn_on_fail(
+            aifw_core::sudo::ifconfig(&name, if enabled { "up" } else { "down" }, &[]).await,
+            "ifconfig up/down toggle",
+            &name,
+        );
     }
 
     // Handle MTU
     if let Some(mtu) = req.mtu {
         let mtu_s = mtu.to_string();
-        let _ = aifw_core::sudo::ifconfig(&name, "mtu", &[&mtu_s]).await;
+        warn_on_fail(
+            aifw_core::sudo::ifconfig(&name, "mtu", &[&mtu_s]).await,
+            "ifconfig mtu set",
+            &name,
+        );
     }
 
     // Handle IPv4 mode change
@@ -496,18 +535,38 @@ pub async fn configure_interface(
         match mode.as_str() {
             "dhcp" => {
                 // Kill any existing dhclient, remove static address, then start dhclient
-                let _ = aifw_core::sudo::pkill_dhclient(&name).await;
-                let _ = aifw_core::sudo::ifconfig(&name, "delete", &[]).await;
-                let _ = aifw_core::sudo::dhclient(&[&name]).await;
+                debug_on_fail(
+                    aifw_core::sudo::pkill_dhclient(&name).await,
+                    "dhclient kill",
+                    &name,
+                );
+                debug_on_fail(
+                    aifw_core::sudo::ifconfig(&name, "delete", &[]).await,
+                    "ifconfig address delete",
+                    &name,
+                );
+                warn_on_fail(
+                    aifw_core::sudo::dhclient(&[&name]).await,
+                    "dhclient start",
+                    &name,
+                );
                 // Persist
                 let kv = format!("ifconfig_{}=DHCP", name);
-                let _ = aifw_core::sudo::sysrc(&[&kv]).await;
+                warn_on_fail(
+                    aifw_core::sudo::sysrc(&[&kv]).await,
+                    "sysrc ifconfig persist",
+                    &name,
+                );
                 // Remove static defaultrouter if we're switching to DHCP (DHCP will set it)
                 msgs.push("Set to DHCP".to_string());
             }
             "static" => {
                 // Kill dhclient first so it doesn't overwrite our static IP
-                let _ = aifw_core::sudo::pkill_dhclient(&name).await;
+                debug_on_fail(
+                    aifw_core::sudo::pkill_dhclient(&name).await,
+                    "dhclient kill",
+                    &name,
+                );
                 // Brief pause for dhclient to fully exit
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -516,15 +575,31 @@ pub async fn configure_interface(
                     // FreeBSD ifconfig won't replace — it adds aliases. Must delete first.
                     let current = get_iface_ipv4s(&name).await;
                     for old_ip in &current {
-                        let _ = aifw_core::sudo::ifconfig(&name, "inet", &[old_ip, "-alias"]).await;
+                        warn_on_fail(
+                            aifw_core::sudo::ifconfig(&name, "inet", &[old_ip, "-alias"]).await,
+                            "ifconfig old alias remove",
+                            &name,
+                        );
                     }
                     // Set the new static IP
-                    let _ = aifw_core::sudo::ifconfig(&name, "inet", &[addr]).await;
-                    let _ = aifw_core::sudo::ifconfig(&name, "up", &[]).await;
+                    warn_on_fail(
+                        aifw_core::sudo::ifconfig(&name, "inet", &[addr]).await,
+                        "ifconfig static ip set",
+                        &name,
+                    );
+                    warn_on_fail(
+                        aifw_core::sudo::ifconfig(&name, "up", &[]).await,
+                        "ifconfig up",
+                        &name,
+                    );
 
                     // Persist in rc.conf
                     let kv = format!("ifconfig_{}=inet {}", name, addr);
-                    let _ = aifw_core::sudo::sysrc(&[&kv]).await;
+                    warn_on_fail(
+                        aifw_core::sudo::sysrc(&[&kv]).await,
+                        "sysrc ifconfig persist",
+                        &name,
+                    );
                     msgs.push(format!("Set static IP {}", addr));
                 }
 
@@ -537,10 +612,23 @@ pub async fn configure_interface(
                         let owns_default =
                             cur_gw_iface.as_deref() == Some(&name) || cur_gw_iface.is_none();
                         if owns_default {
-                            let _ = aifw_core::sudo::route(&["delete", "default"]).await;
-                            let _ = aifw_core::sudo::route(&["add", "default", gw]).await;
+                            // Delete may fail when no default route exists yet — expected.
+                            debug_on_fail(
+                                aifw_core::sudo::route(&["delete", "default"]).await,
+                                "route delete default",
+                                &name,
+                            );
+                            warn_on_fail(
+                                aifw_core::sudo::route(&["add", "default", gw]).await,
+                                "route add default",
+                                &name,
+                            );
                             let kv = format!("defaultrouter={}", gw);
-                            let _ = aifw_core::sudo::sysrc(&[&kv]).await;
+                            warn_on_fail(
+                                aifw_core::sudo::sysrc(&[&kv]).await,
+                                "sysrc defaultrouter persist",
+                                &name,
+                            );
                             msgs.push(format!("Gateway set to {}", gw));
                         } else {
                             msgs.push(format!(
@@ -555,18 +643,40 @@ pub async fn configure_interface(
                     else {
                         let (_, cur_gw_iface) = get_default_gateway().await;
                         if cur_gw_iface.as_deref() == Some(&name) {
-                            let _ = aifw_core::sudo::route(&["delete", "default"]).await;
-                            let _ = aifw_core::sudo::sysrc(&["-x", "defaultrouter"]).await;
+                            warn_on_fail(
+                                aifw_core::sudo::route(&["delete", "default"]).await,
+                                "route delete default",
+                                &name,
+                            );
+                            // Unset may fail when defaultrouter isn't in rc.conf (DHCP-set route) — expected.
+                            debug_on_fail(
+                                aifw_core::sudo::sysrc(&["-x", "defaultrouter"]).await,
+                                "sysrc defaultrouter unset",
+                                &name,
+                            );
                             msgs.push("Default gateway removed".to_string());
                         }
                     }
                 }
             }
             "none" => {
-                let _ = aifw_core::sudo::pkill_dhclient(&name).await;
-                let _ = aifw_core::sudo::ifconfig(&name, "delete", &[]).await;
+                debug_on_fail(
+                    aifw_core::sudo::pkill_dhclient(&name).await,
+                    "dhclient kill",
+                    &name,
+                );
+                debug_on_fail(
+                    aifw_core::sudo::ifconfig(&name, "delete", &[]).await,
+                    "ifconfig address delete",
+                    &name,
+                );
                 let key = format!("ifconfig_{}", name);
-                let _ = aifw_core::sudo::sysrc(&["-x", &key]).await;
+                // Unset may fail when the rcvar was never set — expected.
+                debug_on_fail(
+                    aifw_core::sudo::sysrc(&["-x", &key]).await,
+                    "sysrc ifconfig unset",
+                    &name,
+                );
                 msgs.push("Removed IP configuration".to_string());
             }
             _ => {}
@@ -578,10 +688,23 @@ pub async fn configure_interface(
         if !gw.is_empty() {
             let owns_default = cur_gw_iface.as_deref() == Some(&name) || cur_gw_iface.is_none();
             if owns_default {
-                let _ = aifw_core::sudo::route(&["delete", "default"]).await;
-                let _ = aifw_core::sudo::route(&["add", "default", gw]).await;
+                // Delete may fail when no default route exists yet — expected.
+                debug_on_fail(
+                    aifw_core::sudo::route(&["delete", "default"]).await,
+                    "route delete default",
+                    &name,
+                );
+                warn_on_fail(
+                    aifw_core::sudo::route(&["add", "default", gw]).await,
+                    "route add default",
+                    &name,
+                );
                 let kv = format!("defaultrouter={}", gw);
-                let _ = aifw_core::sudo::sysrc(&[&kv]).await;
+                warn_on_fail(
+                    aifw_core::sudo::sysrc(&[&kv]).await,
+                    "sysrc defaultrouter persist",
+                    &name,
+                );
                 msgs.push(format!("Gateway set to {}", gw));
             } else {
                 msgs.push(format!(
@@ -591,8 +714,17 @@ pub async fn configure_interface(
                 ));
             }
         } else if cur_gw_iface.as_deref() == Some(&name) {
-            let _ = aifw_core::sudo::route(&["delete", "default"]).await;
-            let _ = aifw_core::sudo::sysrc(&["-x", "defaultrouter"]).await;
+            warn_on_fail(
+                aifw_core::sudo::route(&["delete", "default"]).await,
+                "route delete default",
+                &name,
+            );
+            // Unset may fail when defaultrouter isn't in rc.conf (DHCP-set route) — expected.
+            debug_on_fail(
+                aifw_core::sudo::sysrc(&["-x", "defaultrouter"]).await,
+                "sysrc defaultrouter unset",
+                &name,
+            );
             msgs.push("Default gateway removed".to_string());
         }
     }
@@ -600,11 +732,19 @@ pub async fn configure_interface(
     if let Some(ref ipv6) = req.ipv6_address
         && !ipv6.is_empty()
     {
-        let _ = aifw_core::sudo::ifconfig(&name, "inet6", &[ipv6]).await;
+        warn_on_fail(
+            aifw_core::sudo::ifconfig(&name, "inet6", &[ipv6]).await,
+            "ifconfig inet6 set",
+            &name,
+        );
     }
 
     if let Some(ref desc) = req.description {
-        let _ = aifw_core::sudo::ifconfig(&name, "description", &[desc]).await;
+        warn_on_fail(
+            aifw_core::sudo::ifconfig(&name, "description", &[desc]).await,
+            "ifconfig description set",
+            &name,
+        );
     }
 
     let summary = if msgs.is_empty() {
@@ -705,38 +845,74 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
         let vlan_name = format!("vlan{}", vid);
 
         if *enabled {
-            // Create if not exists
-            let _ = aifw_core::sudo::ifconfig(&vlan_name, "create", &[]).await;
+            // Create if not exists — fails with "File exists" on re-apply, expected.
+            debug_on_fail(
+                aifw_core::sudo::ifconfig(&vlan_name, "create", &[]).await,
+                "vlan create",
+                &vlan_name,
+            );
             let vid_s = vid.to_string();
-            let _ =
-                aifw_core::sudo::ifconfig(&vlan_name, "vlan", &[&vid_s, "vlandev", parent]).await;
+            warn_on_fail(
+                aifw_core::sudo::ifconfig(&vlan_name, "vlan", &[&vid_s, "vlandev", parent]).await,
+                "vlan vlandev config",
+                &vlan_name,
+            );
             let mtu_s = mtu.to_string();
-            let _ = aifw_core::sudo::ifconfig(&vlan_name, "mtu", &[&mtu_s]).await;
+            warn_on_fail(
+                aifw_core::sudo::ifconfig(&vlan_name, "mtu", &[&mtu_s]).await,
+                "vlan mtu set",
+                &vlan_name,
+            );
 
             if mode == "static" {
                 if let Some(addr) = ip_addr {
-                    let _ = aifw_core::sudo::ifconfig(&vlan_name, "inet", &[addr]).await;
+                    warn_on_fail(
+                        aifw_core::sudo::ifconfig(&vlan_name, "inet", &[addr]).await,
+                        "vlan inet set",
+                        &vlan_name,
+                    );
                 }
             } else if mode == "dhcp" {
-                let _ = Command::new("/usr/local/bin/sudo")
-                    .args(["/sbin/dhclient", &vlan_name])
-                    .output()
-                    .await;
+                warn_on_fail(
+                    Command::new("/usr/local/bin/sudo")
+                        .args(["/sbin/dhclient", &vlan_name])
+                        .output()
+                        .await,
+                    "vlan dhclient start",
+                    &vlan_name,
+                );
             }
-            let _ = aifw_core::sudo::ifconfig(&vlan_name, "up", &[]).await;
+            warn_on_fail(
+                aifw_core::sudo::ifconfig(&vlan_name, "up", &[]).await,
+                "vlan ifconfig up",
+                &vlan_name,
+            );
 
             // Persist in rc.conf
             let vlans_kv = format!("vlans_{}={}", parent, vid);
-            let _ = aifw_core::sudo::sysrc(&[&vlans_kv]).await;
+            warn_on_fail(
+                aifw_core::sudo::sysrc(&[&vlans_kv]).await,
+                "sysrc vlans persist",
+                &vlan_name,
+            );
             let rc_val = match mode.as_str() {
                 "dhcp" => "DHCP".to_string(),
                 "static" => format!("inet {}", ip_addr.as_deref().unwrap_or("")),
                 _ => "up".to_string(),
             };
             let ifconfig_kv = format!("ifconfig_{}={}", vlan_name, rc_val);
-            let _ = aifw_core::sudo::sysrc(&[&ifconfig_kv]).await;
+            warn_on_fail(
+                aifw_core::sudo::sysrc(&[&ifconfig_kv]).await,
+                "sysrc ifconfig persist",
+                &vlan_name,
+            );
         } else {
-            let _ = aifw_core::sudo::ifconfig(&vlan_name, "down", &[]).await;
+            // Down may fail when a disabled VLAN was never created — expected.
+            debug_on_fail(
+                aifw_core::sudo::ifconfig(&vlan_name, "down", &[]).await,
+                "vlan ifconfig down",
+                &vlan_name,
+            );
         }
     }
 
@@ -753,9 +929,18 @@ pub async fn apply_vlans(pool: &SqlitePool) -> Result<(), String> {
         .collect();
     for iface in iface_list.split_whitespace() {
         if iface.starts_with("vlan") && !db_vlan_names.contains(&iface.to_string()) {
-            let _ = aifw_core::sudo::ifconfig(iface, "destroy", &[]).await;
+            warn_on_fail(
+                aifw_core::sudo::ifconfig(iface, "destroy", &[]).await,
+                "stale vlan destroy",
+                iface,
+            );
             let key = format!("ifconfig_{}", iface);
-            let _ = aifw_core::sudo::sysrc(&["-x", &key]).await;
+            // Unset may fail when the rcvar was never set — expected.
+            debug_on_fail(
+                aifw_core::sudo::sysrc(&["-x", &key]).await,
+                "sysrc ifconfig unset",
+                iface,
+            );
         }
     }
 
