@@ -864,9 +864,13 @@ async fn create_state_from_db(
         }
     }
 
+    // Seed the shadow counter with the boot-time running count (#488) —
+    // previously it started at 0, so plugins enabled in the DB never
+    // received hooks until toggled through the API once.
+    let plugin_running = plugin_mgr.running_count();
     tracing::info!(
         plugins = plugin_mgr.count(),
-        running = plugin_mgr.running_count(),
+        running = plugin_running,
         "plugin system initialized"
     );
 
@@ -931,7 +935,7 @@ async fn create_state_from_db(
         auth_user_cache: Arc::new(dashmap::DashMap::new()),
         auth_jti_cache: Arc::new(dashmap::DashMap::new()),
         auth_token_cache: Arc::new(dashmap::DashMap::new()),
-        plugin_running_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        plugin_running_count: Arc::new(std::sync::atomic::AtomicUsize::new(plugin_running)),
         auto_snapshot_pending: Arc::new(tokio::sync::Mutex::new(
             backup::AutoSnapshotPending::default(),
         )),
@@ -1467,6 +1471,10 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+
+    // Tail the audit log into plugin LogEvent hooks (#488) — the bridge
+    // between aifw-core audit writes and plugins subscribed to LogEvent.
+    plugins::start_audit_hook_dispatcher(state.clone());
 
     // Start AI analysis background task — reviews unclassified critical/high alerts every 5 minutes.
     // Now reads alerts directly from the SQLite ids_alerts table, since the
