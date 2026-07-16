@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { useWs } from "@/context/WsContext";
 import { fetchApi } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 function formatBytes(b: number): string {
   if (b >= 1e9) return `${(b/1e9).toFixed(1)} GB`; if (b >= 1e6) return `${(b/1e6).toFixed(1)} MB`;
@@ -223,33 +224,29 @@ export default function NatFlowsPage() {
   // even though that subnet shares no prefix with wg0's own /24.
   const [wgRoutes, setWgRoutes] = useState<Route[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadRoutes() {
-      try {
-        const tRes = await fetchApi<{ data: WgTunnelLite[] }>("/api/v1/vpn/wg");
-        const routes: Route[] = [];
-        for (const t of tRes.data || []) {
-          if (!t.interface) continue;
-          const add = (cidr: string) => {
-            const c = parseCidr(cidr);
-            if (c) routes.push({ iface: t.interface, base: c.base, prefix: c.prefix });
-          };
-          if (t.address) add(t.address);
-          if (t.split_routes) for (const r of t.split_routes.split(/[,\s]+/)) if (r) add(r);
-          try {
-            const pRes = await fetchApi<{ data: WgPeerLite[] }>(`/api/v1/vpn/wg/${t.id}/peers`);
-            for (const p of pRes.data || [])
-              for (const a of (p.allowed_ips || "").split(/[,\s]+/)) if (a) add(a);
-          } catch { /* peers are optional — address/split_routes already cover the interface */ }
-        }
-        if (!cancelled) setWgRoutes(routes);
-      } catch { /* VPN endpoint unavailable — fall back to local-subnet matching only */ }
-    }
-    loadRoutes();
-    const iv = setInterval(loadRoutes, 30000);
-    return () => { cancelled = true; clearInterval(iv); };
+  const loadRoutes = useCallback(async () => {
+    try {
+      const tRes = await fetchApi<{ data: WgTunnelLite[] }>("/api/v1/vpn/wg");
+      const routes: Route[] = [];
+      for (const t of tRes.data || []) {
+        if (!t.interface) continue;
+        const add = (cidr: string) => {
+          const c = parseCidr(cidr);
+          if (c) routes.push({ iface: t.interface, base: c.base, prefix: c.prefix });
+        };
+        if (t.address) add(t.address);
+        if (t.split_routes) for (const r of t.split_routes.split(/[,\s]+/)) if (r) add(r);
+        try {
+          const pRes = await fetchApi<{ data: WgPeerLite[] }>(`/api/v1/vpn/wg/${t.id}/peers`);
+          for (const p of pRes.data || [])
+            for (const a of (p.allowed_ips || "").split(/[,\s]+/)) if (a) add(a);
+        } catch { /* peers are optional — address/split_routes already cover the interface */ }
+      }
+      setWgRoutes(routes);
+    } catch { /* VPN endpoint unavailable — fall back to local-subnet matching only */ }
   }, []);
+
+  usePolling(loadRoutes, 30000);
 
   const ifaces = ws.interfaces as Iface[];
   const connections = ws.connections as Conn[];

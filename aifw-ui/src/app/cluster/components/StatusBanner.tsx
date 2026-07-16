@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 type Status = {
   role: string;
@@ -13,23 +14,16 @@ type Status = {
 export default function StatusBanner() {
   const [s, setS] = useState<Status | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    const fetchStatus = async () => {
-      try {
-        // Tolerant poller: failures (incl. 401) just leave the banner hidden,
-        // so don't bounce to /login from here.
-        const j = await api.get<Status>("/api/v1/cluster/status", { noAuthRedirect: true });
-        if (!cancelled) setS(j);
-      } catch {}
-    };
-    fetchStatus();
-    const id = setInterval(fetchStatus, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+  const fetchStatus = useCallback(async () => {
+    try {
+      // Tolerant poller: failures (incl. 401) just leave the banner hidden,
+      // so don't bounce to /login from here.
+      const j = await api.get<Status>("/api/v1/cluster/status", { noAuthRedirect: true });
+      setS(j);
+    } catch {}
   }, []);
+
+  usePolling(fetchStatus, 5000);
 
   if (!s) return null;
   const isMaster = s.role === "primary";

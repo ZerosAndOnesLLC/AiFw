@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 export default function DhcpLogsPage() {
   const [logs, setLogs] = useState<string[]>([]);
@@ -25,12 +26,11 @@ export default function DhcpLogsPage() {
     }
   }, [lines, search]);
 
+  // Fetch on mount / filter change even when auto-refresh is off.
   useEffect(() => {
-    queueMicrotask(fetchLogs);
-    if (!autoRefresh) return;
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
+    if (!autoRefresh) queueMicrotask(fetchLogs);
   }, [fetchLogs, autoRefresh]);
+  usePolling(fetchLogs, 5000, autoRefresh);
 
   const getLogLevel = (line: string): string => {
     if (line.includes("ERROR") || line.includes("FATAL")) return "error";

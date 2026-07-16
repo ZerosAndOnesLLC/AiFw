@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 type Range = { label: string; secs: number };
 const RANGES: Range[] = [
@@ -157,11 +158,7 @@ export default function MetricsPage() {
   }, [selected, rangeSecs]);
 
   useEffect(() => { queueMicrotask(fetchList); }, [fetchList]);
-  useEffect(() => {
-    queueMicrotask(fetchSeries);
-    const id = setInterval(fetchSeries, refreshMs);
-    return () => clearInterval(id);
-  }, [fetchSeries, refreshMs]);
+  usePolling(fetchSeries, refreshMs);
 
   const latest = data && data.points.length > 0 ? data.points[data.points.length - 1] : null;
 

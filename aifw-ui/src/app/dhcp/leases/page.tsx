@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 /* -- Types ---------------------------------------------------------- */
 
@@ -55,7 +56,6 @@ export default function DhcpLeasesPage() {
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [search, setSearch] = useState("");
   const [releaseIp, setReleaseIp] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const showFeedback = (type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });
@@ -70,22 +70,13 @@ export default function DhcpLeasesPage() {
       setLeases(body.data || []);
     } catch {
       /* silent on auto-refresh failures */
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      await fetchLeases();
-      setLoading(false);
-    })();
-
-    // Auto-refresh every 5 seconds
-    intervalRef.current = setInterval(fetchLeases, 5000);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [fetchLeases]);
+  // Auto-refresh every 5 seconds (paused while the tab is hidden)
+  usePolling(fetchLeases, 5000);
 
   /* -- Actions ------------------------------------------------------ */
 

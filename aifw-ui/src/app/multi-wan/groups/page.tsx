@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import Help, { HelpBanner } from "../Help";
+import { usePolling } from "@/lib/usePolling";
 import {
   api,
   Gateway,
@@ -87,11 +88,7 @@ export default function GroupsPage() {
     }
   }, []);
 
-  useEffect(() => {
-    queueMicrotask(refresh);
-    const t = setInterval(refresh, 10_000);
-    return () => clearInterval(t);
-  }, [refresh]);
+  usePolling(refresh, 10_000);
 
   function validateForm() {
     const errs: Record<string, string> = {};

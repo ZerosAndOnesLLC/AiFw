@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import Card from "@/components/Card";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface IdsStats {
   packets_inspected: number;
@@ -88,11 +89,7 @@ export default function IdsDashboardPage() {
     }
   }, [loading, clearFeedback]);
 
-  useEffect(() => {
-    queueMicrotask(fetchStats);
-    const interval = setInterval(fetchStats, 5000);
-    return () => clearInterval(interval);
-  }, [fetchStats]);
+  usePolling(fetchStats, 5000);
 
   async function handleModeChange(newMode: string) {
     setModeChanging(true);

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import Help, { HelpBanner } from "../Help";
+import { usePolling } from "@/lib/usePolling";
 import {
   api,
   Gateway,
@@ -167,11 +168,7 @@ export default function PoliciesPage() {
     }
   }, []);
 
-  useEffect(() => {
-    queueMicrotask(refresh);
-    const t = setInterval(refresh, 15_000);
-    return () => clearInterval(t);
-  }, [refresh]);
+  usePolling(refresh, 15_000);
 
   /* ────────── validation ────────── */
 

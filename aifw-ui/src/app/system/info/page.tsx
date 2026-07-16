@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface SysInfo {
   hostname: string; domain: string;
@@ -34,21 +35,17 @@ export default function SystemInfoPage() {
   const [info, setInfo] = useState<SysInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function tick() {
-      if (document.visibilityState !== "visible") return;
-      try {
-        const d = await api.get<SysInfo>("/api/v1/system/info");
-        if (!cancelled) { setInfo(d); setErr(null); }
-      } catch (e) {
-        if (!cancelled) setErr(String(e));
-      }
+  const tick = useCallback(async () => {
+    try {
+      const d = await api.get<SysInfo>("/api/v1/system/info");
+      setInfo(d);
+      setErr(null);
+    } catch (e) {
+      setErr(String(e));
     }
-    tick();
-    const id = setInterval(tick, 5000);
-    return () => { cancelled = true; clearInterval(id); };
   }, []);
+
+  usePolling(tick, 5000);
 
   if (err) return <div className="p-6 text-red-400">Failed: {err}</div>;
   if (!info) return <div className="p-6 text-[var(--text-muted)]">Loading…</div>;

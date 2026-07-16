@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 type LogType = "server" | "access";
 
@@ -28,15 +29,15 @@ export default function ReverseProxyLogsPage() {
     }
   }, [lines, search, logType]);
 
+  // Show the spinner on mount / log-type change, and fetch even when
+  // auto-refresh is off (the polling hook handles the auto-refresh case).
   useEffect(() => {
     queueMicrotask(() => {
       setLoading(true);
-      fetchLogs();
+      if (!autoRefresh) fetchLogs();
     });
-    if (!autoRefresh) return;
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
   }, [fetchLogs, autoRefresh]);
+  usePolling(fetchLogs, 5000, autoRefresh);
 
   const getLogLevel = (line: string): string => {
     if (line.includes("ERROR") || line.includes("FATAL")) return "error";

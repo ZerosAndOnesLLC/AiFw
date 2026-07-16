@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 
 interface UpdateStatus {
   os_version: string;
@@ -176,11 +177,7 @@ export default function UpdatesPage() {
   }, [fetchStatus, fetchSchedule, fetchHistory, fetchAifwStatus]);
 
   // Poll status while checking or installing
-  useEffect(() => {
-    if (!checking && !installing) return;
-    const interval = setInterval(fetchStatus, 3000);
-    return () => clearInterval(interval);
-  }, [checking, installing, fetchStatus]);
+  usePolling(fetchStatus, 3000, checking || installing);
 
   const handleCheck = async () => {
     setChecking(true);
