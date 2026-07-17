@@ -250,11 +250,12 @@ impl SqliteOutput {
 
     /// Purge alerts older than N days.
     pub async fn purge_old(&self, days: u32) -> Result<u64> {
-        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "DELETE FROM ids_alerts WHERE timestamp < datetime('now', '-{days} days')"
-        )))
-        .execute(&self.pool)
-        .await?;
+        // PERF-M2: bind the modifier so every retention tick reuses one
+        // cached prepared statement instead of compiling a fresh one.
+        let result = sqlx::query("DELETE FROM ids_alerts WHERE timestamp < datetime('now', ?)")
+            .bind(format!("-{days} days"))
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected())
     }
 

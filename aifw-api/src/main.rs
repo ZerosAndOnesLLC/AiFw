@@ -44,6 +44,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, watch};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::SizeAbove;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -135,9 +136,12 @@ async fn over_cap(
     max_attempts: u32,
     window_secs: i64,
 ) -> bool {
+    // PERF-M3: read-only — the window check below already ignores expired
+    // entries, so no prune is needed here. Pruning happens in `bump`, which
+    // is the only place entries are created, so the map stays bounded and
+    // a login storm no longer serializes every check through one write lock.
     let now = chrono::Utc::now();
-    let mut m = map.write().await; // upgraded to write — needed for prune
-    m.retain(|_, (_, since)| (now - *since).num_seconds() <= window_secs);
+    let m = map.read().await;
     matches!(
         m.get(key),
         Some((count, since))
@@ -174,7 +178,11 @@ pub struct AppState {
     /// Never changes without a config write, so a one-shot read is correct.
     pub cluster_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub cluster_events: aifw_common::ClusterEventBus,
-    pub metrics_history: Arc<RwLock<VecDeque<String>>>,
+    /// Ring buffer of deflate-compressed `WsHistoryEntry` JSON frames
+    /// (PERF-M5). ~2-3 KB of repetitive JSON per tick compresses 4-8x, so a
+    /// 1800-entry ring costs ~1 MB instead of ~5 MB. Compress/decompress
+    /// helpers live in `ws.rs`.
+    pub metrics_history: Arc<RwLock<VecDeque<Vec<u8>>>>,
     pub metrics_history_max: Arc<std::sync::atomic::AtomicUsize>,
     pub redis: Option<redis::aio::ConnectionManager>,
     pub pending: Arc<RwLock<PendingChanges>>,
@@ -209,6 +217,24 @@ pub struct AppState {
     /// mutations arriving within the debounce window coalesce into a
     /// single config rebuild + save_if_changed.
     pub auto_snapshot_pending: Arc<tokio::sync::Mutex<backup::AutoSnapshotPending>>,
+    /// Monotonic count of successful mutating API requests, bumped by
+    /// `auto_snapshot_middleware`. Invalidates `cluster_snapshot_cache`
+    /// (PERF-M15).
+    pub config_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Cache of the last built cluster snapshot, keyed by
+    /// `config_generation` with a max-age safety net (PERF-M15).
+    pub cluster_snapshot_cache: Arc<tokio::sync::Mutex<Option<ClusterSnapshotCache>>>,
+    /// Coalesces multiwan pf-anchor rebuilds so a burst of policy/group
+    /// saves triggers one reload, not one per save (PERF-M12).
+    pub multiwan_apply: Arc<multiwan::ApplyCoalescer>,
+}
+
+/// Cached result of `cluster_snapshot_data` (PERF-M15).
+pub struct ClusterSnapshotCache {
+    generation: u64,
+    built_at: std::time::Instant,
+    json: String,
+    hash: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -228,8 +254,30 @@ impl AppState {
 
     /// Produces (snapshot_data_json, sha256_hex_hash) for cluster replication.
     /// Includes everything backup exports plus IDS rule overrides + suppressions.
-    /// Hash is sha256 of the JSON bytes.
+    /// Hash is sha256 of the JSON bytes — sha256 (not a faster non-crypto
+    /// hash) deliberately: peers compare hashes across versions, so the
+    /// algorithm can't change without breaking mixed-version clusters.
+    ///
+    /// PERF-M15: the replicator polls this every 10 s; serializing the full
+    /// backup each tick is steady CPU+heap churn even when nothing changed.
+    /// The result is cached until `config_generation` moves (any successful
+    /// mutating API request) or the entry exceeds a 60 s max age — the max
+    /// age bounds staleness for DB writes that bypass the API (daemon/CLI).
     pub async fn cluster_snapshot_data(&self) -> Result<(String, String), aifw_common::AifwError> {
+        const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+        let generation = self
+            .config_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // Held across the rebuild so concurrent callers don't build the
+        // same snapshot twice.
+        let mut cache = self.cluster_snapshot_cache.lock().await;
+        if let Some(c) = cache.as_ref()
+            && c.generation == generation
+            && c.built_at.elapsed() < MAX_AGE
+        {
+            return Ok((c.json.clone(), c.hash.clone()));
+        }
+
         let payload = crate::backup::cluster_export_payload(self)
             .await
             .map_err(|e| aifw_common::AifwError::Other(format!("export: {e:?}")))?;
@@ -238,6 +286,12 @@ impl AppState {
 
         let hash = aifw_core::sha256_hex(&json);
 
+        *cache = Some(ClusterSnapshotCache {
+            generation,
+            built_at: std::time::Instant::now(),
+            json: json.clone(),
+            hash: hash.clone(),
+        });
         Ok((json, hash))
     }
 }
@@ -516,8 +570,15 @@ pub fn build_router(
                 // Compress JSON responses (dashboards, /logs, /connections,
                 // /ids/alerts) so a slow uplink doesn't starve the UI. br
                 // beats gzip by ~25% on JSON but adds CPU; keep both so
-                // clients negotiate.
-                .layer(CompressionLayer::new().gzip(true).br(true))
+                // clients negotiate. Skip payloads under 1 KiB — they fit in
+                // one packet anyway, so compressing them is pure CPU cost on
+                // a slow appliance (PERF-M22).
+                .layer(
+                    CompressionLayer::new()
+                        .gzip(true)
+                        .br(true)
+                        .compress_when(SizeAbove::new(1024)),
+                )
                 .layer(cors),
         )
         .with_state(state);
@@ -643,73 +704,6 @@ async fn create_state_from_db(
     let pool = db.pool().clone();
     let pf: Arc<dyn PfBackend> = Arc::from(aifw_pf::create_backend());
 
-    // In-memory metrics RRD store + 1s collector tied to pf.
-    // Lives for the lifetime of the process; tier retention is 30 min / 6 h / 7 d / 30 d.
-    let metrics_store = Arc::new(aifw_metrics::MetricsStore::new());
-    let _metrics_task =
-        aifw_metrics::MetricsCollector::new(pf.clone(), metrics_store.clone()).start();
-
-    auth::migrate(&pool).await?;
-
-    let rule_engine = Arc::new(RuleEngine::new(pool.clone(), pf.clone()));
-    let nat_engine =
-        Arc::new(NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string()));
-    nat_engine.migrate().await?;
-    let vpn_engine = Arc::new(VpnEngine::new(pool.clone(), pf.clone()));
-    vpn_engine.migrate().await?;
-    let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
-    geoip_engine.migrate().await?;
-    let multiwan_engine = Arc::new(InstanceEngine::new(pool.clone(), pf.clone()));
-    multiwan_engine
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let gateway_engine = Arc::new(GatewayEngine::new(pool.clone()));
-    gateway_engine
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let group_engine = Arc::new(GroupEngine::new(pool.clone()));
-    group_engine
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let policy_engine = Arc::new(PolicyEngine::new(pool.clone(), pf.clone()));
-    policy_engine
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let leak_engine = Arc::new(LeakEngine::new(pool.clone(), pf.clone()));
-    leak_engine
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let preflight_engine = Arc::new(PreflightEngine::new(pf.clone()));
-    let sla_engine = Arc::new(SlaEngine::new(pool.clone()));
-    sla_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
-    ca::migrate(&pool).await?;
-    dhcp::migrate(&pool).await?;
-    updates::migrate(&pool).await?;
-    iface::migrate(&pool).await?;
-    dns_resolver::migrate(&pool).await?;
-    dns_blocklists::migrate(&pool).await?;
-    aifw_core::s3_backup::migrate(&pool).await?;
-    aifw_core::smtp_notify::migrate(&pool).await?;
-    aifw_core::acme::migrate(&pool).await?;
-    aifw_core::ddns::migrate(&pool).await?;
-    reverse_proxy::migrate(&pool).await?;
-    system::migrate(&pool).await?;
-    time_service::migrate(&pool).await?;
-    plugins::migrate(&pool).await?;
-    aifw_core::config_manager::ConfigManager::new(pool.clone())
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let alias_engine = Arc::new(AliasEngine::new(pool.clone(), pf.clone()));
-    alias_engine
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
     let conntrack = Arc::new(
         ConnectionTracker::new(pf.clone()).with_poll_interval(std::time::Duration::from_secs(2)),
     );
@@ -717,18 +711,135 @@ async fn create_state_from_db(
     // request and every WS tick is an atomic ArcSwap load instead of a
     // fresh `pfctl -ss -vv` shell-out + 50k-state clone.
     let _conntrack_poller = conntrack.start_polling();
+
+    // In-memory metrics RRD store + 1s collector tied to pf.
+    // Lives for the lifetime of the process; tier retention is 30 min / 6 h / 7 d / 30 d.
+    // The collector counts connections from the tracker's cached snapshot,
+    // so only one component fetches the full pf state table (PERF-M6).
+    let metrics_store = Arc::new(aifw_metrics::MetricsStore::new());
+    let _metrics_task = aifw_metrics::MetricsCollector::new(pf.clone(), metrics_store.clone())
+        .with_states_source({
+            let tracker = conntrack.clone();
+            move || tracker.snapshot()
+        })
+        .start();
+
+    auth::migrate(&pool).await?;
+
+    let rule_engine = Arc::new(RuleEngine::new(pool.clone(), pf.clone()));
+    let nat_engine =
+        Arc::new(NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string()));
+    let vpn_engine = Arc::new(VpnEngine::new(pool.clone(), pf.clone()));
+    let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
+    let multiwan_engine = Arc::new(InstanceEngine::new(pool.clone(), pf.clone()));
+    let gateway_engine = Arc::new(GatewayEngine::new(pool.clone()));
+    let group_engine = Arc::new(GroupEngine::new(pool.clone()));
+    let policy_engine = Arc::new(PolicyEngine::new(pool.clone(), pf.clone()));
+    let leak_engine = Arc::new(LeakEngine::new(pool.clone(), pf.clone()));
+    let preflight_engine = Arc::new(PreflightEngine::new(pf.clone()));
+    let sla_engine = Arc::new(SlaEngine::new(pool.clone()));
+    let alias_engine = Arc::new(AliasEngine::new(pool.clone(), pf.clone()));
     let cluster_engine = Arc::new(aifw_core::ClusterEngine::new(pool.clone(), pf.clone()));
-    cluster_engine
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
     let shaping_engine = Arc::new(ShapingEngine::new(pool.clone(), pf.clone()));
-    shaping_engine
-        .migrate()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
     let tls_engine = Arc::new(TlsEngine::new(pool.clone(), pf.clone()));
-    tls_engine.migrate().await.map_err(|e| anyhow::anyhow!(e))?;
+
+    // PERF-M17: each migrate() only creates its own tables, so they are
+    // independent — run them concurrently instead of as a 20+ step chain.
+    // SQLite serializes the actual writes (busy_timeout covers contention),
+    // but statement parsing and pool round-trips overlap, cutting cold-boot
+    // latency.
+    tokio::try_join!(
+        async { nat_engine.migrate().await.map_err(anyhow::Error::from) },
+        async { vpn_engine.migrate().await.map_err(anyhow::Error::from) },
+        async { geoip_engine.migrate().await.map_err(anyhow::Error::from) },
+        async {
+            multiwan_engine
+                .migrate()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        },
+        async {
+            gateway_engine
+                .migrate()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        },
+        async { group_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+        async {
+            policy_engine
+                .migrate()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        },
+        async { leak_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+        async { sla_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+        async { ca::migrate(&pool).await.map_err(anyhow::Error::from) },
+        async { dhcp::migrate(&pool).await.map_err(anyhow::Error::from) },
+        async { updates::migrate(&pool).await.map_err(anyhow::Error::from) },
+        async { iface::migrate(&pool).await.map_err(anyhow::Error::from) },
+        async {
+            dns_resolver::migrate(&pool)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        async {
+            dns_blocklists::migrate(&pool)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        async {
+            aifw_core::s3_backup::migrate(&pool)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        async {
+            aifw_core::smtp_notify::migrate(&pool)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        async {
+            aifw_core::acme::migrate(&pool)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        async {
+            aifw_core::ddns::migrate(&pool)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        async {
+            reverse_proxy::migrate(&pool)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        async { system::migrate(&pool).await.map_err(anyhow::Error::from) },
+        async {
+            time_service::migrate(&pool)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        async { plugins::migrate(&pool).await.map_err(anyhow::Error::from) },
+        async {
+            aifw_core::config_manager::ConfigManager::new(pool.clone())
+                .migrate()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        },
+        async { alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+        async {
+            cluster_engine
+                .migrate()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        },
+        async {
+            shaping_engine
+                .migrate()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        },
+        async { tls_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+    )?;
 
     // Read aifw_cluster_enabled once at startup. The flag only changes on
     // config writes, so a cached value is always correct for the process lifetime.
@@ -939,6 +1050,9 @@ async fn create_state_from_db(
         auto_snapshot_pending: Arc::new(tokio::sync::Mutex::new(
             backup::AutoSnapshotPending::default(),
         )),
+        config_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        cluster_snapshot_cache: Arc::new(tokio::sync::Mutex::new(None)),
+        multiwan_apply: Arc::new(multiwan::ApplyCoalescer::new()),
     })
 }
 
@@ -1327,8 +1441,15 @@ async fn main() -> anyhow::Result<()> {
                             .await
                             .unwrap_or_default();
                         if !history.is_empty() {
+                            // Valkey stores plaintext JSON; the in-memory
+                            // ring is deflate-compressed (PERF-M5).
+                            let compressed: Vec<Vec<u8>> = history
+                                .into_iter()
+                                .rev()
+                                .map(|e| ws::compress_history_entry(&e))
+                                .collect();
                             let mut buf = state.metrics_history.write().await;
-                            for entry in history.into_iter().rev() {
+                            for entry in compressed {
                                 buf.push_back(entry);
                             }
                             info!("Loaded {} historical metrics from Valkey", buf.len());
@@ -1536,6 +1657,15 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Multiwan pf-anchor apply coalescer (PERF-M12): drains the dirty flags
+    // set by policy/group/gateway/leak handlers at most once per second.
+    {
+        let apply_state = state.clone();
+        tokio::spawn(async move {
+            multiwan::run_apply_coalescer(apply_state).await;
+        });
+    }
+
     // Memory-stats heartbeat — logs per-subsystem sizes every 60s so we can
     // isolate which cache/buffer is responsible when RSS grows. Cheap: just reads
     // existing counters; no allocation. Output goes to /var/log/aifw/api.log.
@@ -1648,7 +1778,9 @@ async fn main() -> anyhow::Result<()> {
         }
         let listener = tokio::net::TcpListener::bind(&args.listen).await?;
         info!("AiFw API listening on http://{}", args.listen);
-        axum::serve(listener, app).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
     } else {
         ensure_tls_cert(&args.tls_cert, &args.tls_key)?;
         let tls_config =
@@ -1656,12 +1788,50 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
         let addr: std::net::SocketAddr = args.listen.parse()?;
         info!("AiFw API listening on https://{}", addr);
+        let handle = axum_server::Handle::new();
+        tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                shutdown_signal().await;
+                // Stop accepting; give in-flight requests a bounded drain
+                // window before the process exits.
+                handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+            }
+        });
         axum_server::bind_rustls(addr, tls_config)
+            .handle(handle)
             .serve(app.into_make_service())
             .await?;
     }
 
     Ok(())
+}
+
+/// Resolves when the process receives SIGTERM or SIGINT (PERF-M13). Lets
+/// both serve paths drain in-flight requests — active uploads, WS pushes,
+/// mid-flight DB writes — instead of dying mid-response on `service stop`.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            warn!("failed to install SIGINT handler: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                warn!("failed to install SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    tokio::select! {
+        _ = ctrl_c => info!("SIGINT received; shutting down gracefully"),
+        _ = terminate => info!("SIGTERM received; shutting down gracefully"),
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
-use std::sync::RwLock;
+use std::sync::Arc;
 
 use aifw_common::ids::{IdsConfig, IdsMode};
+use arc_swap::ArcSwap;
 use sqlx::SqlitePool;
 
 use crate::Result;
@@ -24,7 +25,7 @@ fn parse_u32_field(field: &str, value: &str) -> Option<u32> {
 /// Runtime configuration for the IDS engine.
 /// Wraps `IdsConfig` with thread-safe interior mutability for hot-reload.
 pub struct RuntimeConfig {
-    inner: RwLock<IdsConfig>,
+    inner: ArcSwap<IdsConfig>,
 }
 
 impl RuntimeConfig {
@@ -32,18 +33,19 @@ impl RuntimeConfig {
     pub async fn load(pool: &SqlitePool) -> Result<Self> {
         let cfg = Self::read_from_db(pool).await?;
         Ok(Self {
-            inner: RwLock::new(cfg),
+            inner: ArcSwap::from_pointee(cfg),
         })
     }
 
-    /// Get a snapshot of the current configuration.
-    pub fn config(&self) -> IdsConfig {
-        self.inner.read().expect("lock poisoned").clone()
+    /// Get a snapshot of the current configuration. O(1) atomic load —
+    /// no lock, no deep clone of the `Vec<String>` fields (PERF-M1).
+    pub fn config(&self) -> Arc<IdsConfig> {
+        self.inner.load_full()
     }
 
     /// Update configuration in memory.
     pub fn update(&self, cfg: IdsConfig) {
-        *self.inner.write().expect("lock poisoned") = cfg;
+        self.inner.store(Arc::new(cfg));
     }
 
     /// Load configuration from the database.
@@ -98,7 +100,7 @@ impl RuntimeConfig {
 
     /// Network variable expansion: resolve `$HOME_NET`, `$EXTERNAL_NET`, etc.
     pub fn expand_var(&self, var: &str) -> Vec<String> {
-        let cfg = self.inner.read().expect("lock poisoned");
+        let cfg = self.inner.load();
         match var {
             "$HOME_NET" | "HOME_NET" => cfg.home_net.clone(),
             "$EXTERNAL_NET" | "EXTERNAL_NET" => {
@@ -310,7 +312,7 @@ mod tests {
         let pool = test_pool().await;
         let config = RuntimeConfig::load(&pool).await.unwrap();
 
-        let mut cfg = config.config();
+        let mut cfg = (*config.config()).clone();
         cfg.mode = IdsMode::Ids;
         cfg.alert_retention_days = 7;
         config.save_to_db(&pool, &cfg).await.unwrap();
