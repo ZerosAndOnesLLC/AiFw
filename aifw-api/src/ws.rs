@@ -438,9 +438,12 @@ pub async fn run_dashboard_producer(state: AppState) {
         };
         // Drift correction: schedule the next tick based on the start of
         // *this* one, not the end. Keeps the cadence stable when a build
-        // takes longer than expected; falls back to "interval from now" if
-        // the build blew past the budget.
-        next_at = (started + interval).max(Instant::now());
+        // takes longer than expected. PERF-L16: when a build blows past
+        // the budget, enforce a minimum gap before the next tick instead
+        // of re-running immediately — back-to-back over-budget builds
+        // would otherwise starve the runtime.
+        const MIN_GAP: Duration = Duration::from_millis(100);
+        next_at = (started + interval).max(Instant::now() + MIN_GAP);
     }
 }
 

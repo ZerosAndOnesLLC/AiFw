@@ -53,6 +53,9 @@ pub enum IdsError {
     /// Underlying file or socket I/O failed
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// Alert could not be serialized for an output sink
+    #[error("serialization error: {0}")]
+    Serialize(#[from] serde_json::Error),
 }
 
 /// Crate-wide result alias using [`IdsError`]

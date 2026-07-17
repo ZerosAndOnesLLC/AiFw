@@ -100,6 +100,11 @@ export function WsProvider({ children }: { children: ReactNode }) {
 
     ws.onclose = () => {
       setConnected(false);
+      // PERF-L9 (#401): reset so consumers see a genuine false→true
+      // transition when the reconnect replaces histBuf with the server's
+      // fresh history — they re-seed charts from the new buffer instead
+      // of ignoring the replacement (or double-handling the flip).
+      setHistoryLoaded(false);
       wsRef.current = null;
       reconRef.current = setTimeout(() => connectRef.current(), 3000);
     };
