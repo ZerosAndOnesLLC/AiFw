@@ -274,7 +274,12 @@ pub async fn get_info() -> Result<Json<SystemInfo>, StatusCode> {
 }
 
 pub async fn list_timezones() -> Result<Json<Vec<String>>, StatusCode> {
-    Ok(Json(enumerate_timezones()))
+    // PERF-L14: the zoneinfo walk is hundreds of synchronous fs calls —
+    // run it on the blocking pool instead of a runtime worker.
+    let zones = tokio::task::spawn_blocking(enumerate_timezones)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(zones))
 }
 
 #[cfg(target_os = "freebsd")]
