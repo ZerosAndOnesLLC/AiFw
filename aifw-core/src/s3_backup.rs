@@ -5,22 +5,32 @@
 //! (restore) archived versions from any date — no time-based pruning
 //! applies on the S3 side; bucket lifecycle is the operator's job.
 //!
-//! Credentials: empty access_key/secret means "use the AWS default
-//! credential provider chain" — environment, `~/.aws/credentials`, or
-//! the EC2/ECS instance role. Otherwise the explicit key+secret pair
-//! is used. Stored-in-DB secrets are returned masked via the API.
+//! Credentials: empty access_key/secret means "use the AWS environment
+//! variables" (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, plus
+//! `AWS_SESSION_TOKEN` when set). Otherwise the explicit key+secret
+//! pair is used. Stored-in-DB secrets are returned masked via the API.
+//!
+//! PERF-I2 (#410): implemented with `rusty-s3` (a small sans-IO SigV4
+//! signer) + the `reqwest` client we already ship, instead of the
+//! aws-sdk-s3 stack — the SDK chain alone gated the whole workspace
+//! build for ~15 s. The SDK's wider credential chain (profile files,
+//! IMDS instance roles, SSO) was dropped with it; a firewall appliance
+//! only ever used explicit keys or env vars.
 
-use aws_config::BehaviorVersion;
-use aws_credential_types::Credentials;
-use aws_credential_types::provider::SharedCredentialsProvider;
-use aws_sdk_s3::Client;
-use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::Object;
+use rusty_s3::actions::ListObjectsV2;
+use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::time::Duration;
 
 const TEST_KEY_SUFFIX: &str = ".aifw-connectivity-test";
-const APP_TAG: &str = "aifw-backup";
+
+/// Validity window for presigned request URLs — generous enough for slow
+/// uplinks and retries, far below any replay-concern horizon.
+const SIGN_TTL: Duration = Duration::from_secs(300);
+
+/// Per-request timeout for all S3 HTTP calls.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ============================================================================
 // Config
@@ -48,8 +58,8 @@ pub struct S3Config {
     /// virtual-hosted. Required for most S3-compatible providers.
     #[serde(default)]
     pub path_style: bool,
-    /// Leave empty to use the default AWS credential chain (env, profile,
-    /// instance role). Fill in both to use explicit creds.
+    /// Leave empty to use the `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+    /// environment variables. Fill in both to use explicit creds.
     #[serde(default)]
     pub access_key_id: Option<String>,
     /// Secret is write-only from the API. GET returns `""` if set, `null`
@@ -158,16 +168,37 @@ pub async fn save(pool: &SqlitePool, cfg: &S3Config) -> Result<(), String> {
 // Client
 // ============================================================================
 
-async fn client(cfg: &S3Config) -> Result<Client, String> {
+/// Everything needed to issue signed S3 requests: the bucket/endpoint
+/// descriptor, credentials, and a reqwest client.
+struct S3Client {
+    bucket: Bucket,
+    creds: Credentials,
+    http: reqwest::Client,
+}
+
+fn client(cfg: &S3Config) -> Result<S3Client, String> {
     if cfg.bucket.trim().is_empty() {
         return Err("bucket is required".into());
     }
-    let mut loader = aws_config::defaults(BehaviorVersion::latest())
-        .region(aws_sdk_s3::config::Region::new(cfg.region.clone()));
 
-    // Explicit creds override the default chain. Otherwise AWS SDK walks
-    // env -> profile -> instance role / container role -> SSO etc.
-    if let (Some(ak), Some(sk)) = (
+    let endpoint: url::Url = match cfg.endpoint.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(ep) => ep
+            .parse()
+            .map_err(|e| format!("invalid endpoint '{ep}': {e}"))?,
+        None => format!("https://s3.{}.amazonaws.com", cfg.region)
+            .parse()
+            .map_err(|e| format!("invalid region '{}': {e}", cfg.region))?,
+    };
+    let style = if cfg.path_style {
+        UrlStyle::Path
+    } else {
+        UrlStyle::VirtualHost
+    };
+    let bucket = Bucket::new(endpoint, style, cfg.bucket.clone(), cfg.region.clone())
+        .map_err(|e| format!("bucket config: {e}"))?;
+
+    // Explicit creds win; otherwise fall back to the AWS env variables.
+    let creds = match (
         cfg.access_key_id
             .as_deref()
             .filter(|s| !s.trim().is_empty()),
@@ -175,20 +206,39 @@ async fn client(cfg: &S3Config) -> Result<Client, String> {
             .as_deref()
             .filter(|s| !s.trim().is_empty()),
     ) {
-        let creds = Credentials::new(ak, sk, None, None, APP_TAG);
-        loader = loader.credentials_provider(SharedCredentialsProvider::new(creds));
-    }
+        (Some(ak), Some(sk)) => Credentials::new(ak, sk),
+        _ => Credentials::from_env().ok_or_else(|| {
+            "credentials required: set access key + secret, or the \
+             AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY environment variables"
+                .to_string()
+        })?,
+    };
 
-    if let Some(ep) = cfg.endpoint.as_deref().filter(|s| !s.trim().is_empty()) {
-        loader = loader.endpoint_url(ep);
-    }
+    let http = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
 
-    let sdk_cfg = loader.load().await;
-    let mut builder = aws_sdk_s3::config::Builder::from(&sdk_cfg);
-    if cfg.path_style {
-        builder = builder.force_path_style(true);
+    Ok(S3Client {
+        bucket,
+        creds,
+        http,
+    })
+}
+
+/// Render a non-2xx S3 response into a bounded, human-readable error.
+/// S3 error bodies are small XML documents that name the failing
+/// permission (`AccessDenied`, `NoSuchBucket`, …), so a snippet is the
+/// most useful thing to surface in the UI.
+async fn error_text(resp: reqwest::Response) -> String {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let snippet: String = body.chars().take(300).collect();
+    if snippet.is_empty() {
+        format!("HTTP {status}")
+    } else {
+        format!("HTTP {status}: {snippet}")
     }
-    Ok(Client::from_conf(builder.build()))
 }
 
 // ============================================================================
@@ -269,7 +319,7 @@ pub async fn test_connection(cfg: &S3Config) -> TestResult {
         read: false,
         delete: false,
     };
-    let c = match client(cfg).await {
+    let c = match client(cfg) {
         Ok(c) => c,
         Err(e) => {
             r.message = format!("config error: {e}");
@@ -288,40 +338,54 @@ pub async fn test_connection(cfg: &S3Config) -> TestResult {
         chrono::Utc::now().to_rfc3339(),
     );
 
+    let put_url = c.bucket.put_object(Some(&c.creds), &key).sign(SIGN_TTL);
     match c
-        .put_object()
-        .bucket(&cfg.bucket)
-        .key(&key)
-        .body(ByteStream::from(payload.as_bytes().to_vec()))
-        .content_type("text/plain")
+        .http
+        .put(put_url)
+        .header(reqwest::header::CONTENT_TYPE, "text/plain")
+        .body(payload)
         .send()
         .await
     {
-        Ok(_) => r.write = true,
+        Ok(resp) if resp.status().is_success() => r.write = true,
+        Ok(resp) => {
+            r.message = format!("write failed: {}", error_text(resp).await);
+            return r;
+        }
         Err(e) => {
-            r.message = format!("write failed: {}", summarize_sdk_error(&e));
+            r.message = format!("write failed: {e}");
             return r;
         }
     }
 
-    match c.get_object().bucket(&cfg.bucket).key(&key).send().await {
-        Ok(obj) => match obj.body.collect().await {
+    let get_url = c.bucket.get_object(Some(&c.creds), &key).sign(SIGN_TTL);
+    match c.http.get(get_url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.bytes().await {
             Ok(_) => r.read = true,
             Err(e) => {
                 r.message = format!("read drain failed: {e}");
                 return r;
             }
         },
+        Ok(resp) => {
+            r.message = format!("read failed: {}", error_text(resp).await);
+            return r;
+        }
         Err(e) => {
-            r.message = format!("read failed: {}", summarize_sdk_error(&e));
+            r.message = format!("read failed: {e}");
             return r;
         }
     }
 
-    match c.delete_object().bucket(&cfg.bucket).key(&key).send().await {
-        Ok(_) => r.delete = true,
+    let del_url = c.bucket.delete_object(Some(&c.creds), &key).sign(SIGN_TTL);
+    match c.http.delete(del_url).send().await {
+        Ok(resp) if resp.status().is_success() => r.delete = true,
+        Ok(resp) => {
+            r.message = format!("delete failed: {}", error_text(resp).await);
+            return r;
+        }
         Err(e) => {
-            r.message = format!("delete failed: {}", summarize_sdk_error(&e));
+            r.message = format!("delete failed: {e}");
             return r;
         }
     }
@@ -332,10 +396,6 @@ pub async fn test_connection(cfg: &S3Config) -> TestResult {
         cfg.bucket, key
     );
     r
-}
-
-fn summarize_sdk_error<E: std::fmt::Display, R>(err: &aws_sdk_s3::error::SdkError<E, R>) -> String {
-    format!("{err}")
 }
 
 /// One archived config version listed from the bucket
@@ -352,41 +412,48 @@ pub struct RemoteObject {
 /// List all config backups under the configured prefix (scoped to this host).
 /// Returns up to `max` objects, newest-first.
 pub async fn list(cfg: &S3Config, max: usize) -> Result<Vec<RemoteObject>, String> {
-    let c = client(cfg).await?;
+    let c = client(cfg)?;
     let prefix = format!("{}{}/", normalize_prefix(&cfg.prefix), hostname());
     let mut out = Vec::new();
     let mut token: Option<String> = None;
     loop {
-        let mut req = c.list_objects_v2().bucket(&cfg.bucket).prefix(&prefix);
-        if let Some(t) = token.as_ref() {
-            req = req.continuation_token(t);
+        let mut action = c.bucket.list_objects_v2(Some(&c.creds));
+        action.with_prefix(prefix.as_str());
+        if let Some(t) = token.as_deref() {
+            action.with_continuation_token(t);
         }
-        let resp = req.send().await.map_err(|e| summarize_sdk_error(&e))?;
-        for Object {
-            key: k,
-            size,
-            last_modified,
-            ..
-        } in resp.contents.unwrap_or_default()
-        {
-            if let Some(k) = k {
-                if k.ends_with(TEST_KEY_SUFFIX) {
-                    continue;
-                }
-                out.push(RemoteObject {
-                    key: k,
-                    size: size.unwrap_or(0),
-                    last_modified: last_modified.map(|d| d.to_string()),
-                });
+        let url = action.sign(SIGN_TTL);
+        let resp = c
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("list failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("list failed: {}", error_text(resp).await));
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("list read failed: {e}"))?;
+        let parsed =
+            ListObjectsV2::parse_response(&text).map_err(|e| format!("list parse failed: {e}"))?;
+        for obj in parsed.contents {
+            if obj.key.ends_with(TEST_KEY_SUFFIX) {
+                continue;
             }
+            out.push(RemoteObject {
+                key: obj.key,
+                size: obj.size as i64,
+                last_modified: Some(obj.last_modified),
+            });
         }
         if out.len() >= max {
             break;
         }
-        if resp.is_truncated.unwrap_or(false) {
-            token = resp.next_continuation_token;
-        } else {
-            break;
+        match parsed.next_continuation_token {
+            Some(t) => token = Some(t),
+            None => break,
         }
     }
     // Sort newest-first (keys embed timestamps).
@@ -398,16 +465,18 @@ pub async fn list(cfg: &S3Config, max: usize) -> Result<Vec<RemoteObject>, Strin
 /// Fetch one archived config JSON by its S3 key. Caller is responsible for
 /// de-serializing into `FirewallConfig`.
 pub async fn fetch(cfg: &S3Config, key: &str) -> Result<String, String> {
-    let c = client(cfg).await?;
-    let obj = c
-        .get_object()
-        .bucket(&cfg.bucket)
-        .key(key)
+    let c = client(cfg)?;
+    let url = c.bucket.get_object(Some(&c.creds), key).sign(SIGN_TTL);
+    let resp = c
+        .http
+        .get(url)
         .send()
         .await
-        .map_err(|e| summarize_sdk_error(&e))?;
-    let body = obj.body.collect().await.map_err(|e| e.to_string())?;
-    String::from_utf8(body.into_bytes().to_vec()).map_err(|e| e.to_string())
+        .map_err(|e| format!("fetch failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("fetch failed: {}", error_text(resp).await));
+    }
+    resp.text().await.map_err(|e| e.to_string())
 }
 
 /// Upload one config version. Idempotent (PUT always succeeds).
@@ -417,16 +486,20 @@ pub async fn upload_version(
     created_at: &str,
     config_json: &str,
 ) -> Result<String, String> {
-    let c = client(cfg).await?;
+    let c = client(cfg)?;
     let key = object_key(&cfg.prefix, version, created_at);
-    c.put_object()
-        .bucket(&cfg.bucket)
-        .key(&key)
-        .body(ByteStream::from(config_json.as_bytes().to_vec()))
-        .content_type("application/json")
+    let url = c.bucket.put_object(Some(&c.creds), &key).sign(SIGN_TTL);
+    let resp = c
+        .http
+        .put(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(config_json.to_string())
         .send()
         .await
-        .map_err(|e| summarize_sdk_error(&e))?;
+        .map_err(|e| format!("upload failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("upload failed: {}", error_text(resp).await));
+    }
     Ok(key)
 }
 

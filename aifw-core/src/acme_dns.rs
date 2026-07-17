@@ -332,15 +332,29 @@ fn urlencoding(s: &str) -> String {
 }
 
 // =============================================================================
-// Route 53 — uses the aws-sdk we already have for S3 backups
+// Route 53 — SigV4-signed reqwest calls against the plain XML REST API.
+//
+// PERF-I2 (#410): previously used aws-sdk-route53, whose smithy runtime
+// chain gated the whole workspace build. We only ever issue two API calls
+// (ListHostedZonesByName + ChangeResourceRecordSets), so they're signed
+// with the standalone `aws-sigv4` crate and sent through the reqwest
+// client we already ship. Route 53 is a global service: the endpoint is
+// route53.amazonaws.com and requests are signed for us-east-1 regardless
+// of any configured region (the SDK did the same internally).
 // =============================================================================
+
+/// Route 53 API base. The date segment is the API version, not a region.
+const R53_BASE: &str = "https://route53.amazonaws.com/2013-04-01";
+/// XML namespace required on ChangeResourceRecordSets request bodies.
+const R53_XMLNS: &str = "https://route53.amazonaws.com/doc/2013-04-01/";
+/// Global-service signing region (fixed by AWS for Route 53).
+const R53_REGION: &str = "us-east-1";
 
 /// AWS Route 53 DNS-01 solver / DDNS record writer authenticated with an
 /// explicit access-key pair (`api_token` = access key id)
 pub struct Route53 {
     access_key: String,
     secret_key: String,
-    region: String,
     zone_name: String,
     /// Hosted zone ID — either supplied in `extra.zone_id` or resolved on
     /// first use via ListHostedZonesByName.
@@ -356,12 +370,6 @@ impl Route53 {
             .aws_secret_key
             .clone()
             .ok_or_else(|| "Route53 provider missing secret access key".to_string())?;
-        let region = p
-            .extra
-            .get("region")
-            .and_then(|v| v.as_str())
-            .unwrap_or("us-east-1")
-            .to_string();
         let zone_id = tokio::sync::OnceCell::new();
         if let Some(z) = p.extra.get("zone_id").and_then(|v| v.as_str()) {
             let _ = zone_id.set(z.to_string());
@@ -369,150 +377,204 @@ impl Route53 {
         Ok(Self {
             access_key,
             secret_key,
-            region,
             zone_name: p.zone.clone(),
             zone_id,
         })
     }
 
-    async fn client(&self) -> aws_sdk_route53::Client {
-        use aws_credential_types::{Credentials, provider::SharedCredentialsProvider};
-        let creds = Credentials::new(&self.access_key, &self.secret_key, None, None, "aifw-acme");
-        let cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_sdk_route53::config::Region::new(self.region.clone()))
-            .credentials_provider(SharedCredentialsProvider::new(creds))
-            .load()
-            .await;
-        aws_sdk_route53::Client::new(&cfg)
+    /// Sign and send one Route 53 request. `body` is the XML request body
+    /// for POSTs, empty for GETs. Returns the response body on 2xx.
+    async fn signed_request(&self, method: &str, url: &str, body: &str) -> Result<String, String> {
+        use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
+        use aws_sigv4::sign::v4;
+
+        let identity = aws_credential_types::Credentials::new(
+            &self.access_key,
+            &self.secret_key,
+            None,
+            None,
+            "aifw-acme",
+        )
+        .into();
+        let params = v4::SigningParams::builder()
+            .identity(&identity)
+            .region(R53_REGION)
+            .name("route53")
+            .time(std::time::SystemTime::now())
+            .settings(SigningSettings::default())
+            .build()
+            .map_err(|e| format!("route53 signing params: {e}"))?
+            .into();
+
+        // Headers passed here are folded into the signature, so the real
+        // request below must send exactly the same set.
+        let signed_headers: Vec<(&str, &str)> = if body.is_empty() {
+            Vec::new()
+        } else {
+            vec![("content-type", "application/xml")]
+        };
+        let signable = SignableRequest::new(
+            method,
+            url,
+            signed_headers.iter().copied(),
+            SignableBody::Bytes(body.as_bytes()),
+        )
+        .map_err(|e| format!("route53 signable request: {e}"))?;
+        let (instructions, _signature) = sign(signable, &params)
+            .map_err(|e| format!("route53 sign: {e}"))?
+            .into_parts();
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("http client: {e}"))?;
+        let mut req = match method {
+            "POST" => client.post(url),
+            _ => client.get(url),
+        };
+        for (name, value) in &signed_headers {
+            req = req.header(*name, *value);
+        }
+        for (name, value) in instructions.headers() {
+            req = req.header(name, value);
+        }
+        if !body.is_empty() {
+            req = req.body(body.to_string());
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("route53 request: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            // Route 53 error bodies are small XML docs naming the failure
+            // (InvalidChangeBatch, AccessDenied, ...) — surface a snippet.
+            let snippet: String = text.chars().take(300).collect();
+            return Err(format!("route53 HTTP {status}: {snippet}"));
+        }
+        Ok(text)
     }
 
     async fn resolve_zone_id(&self) -> Result<String, String> {
         if let Some(z) = self.zone_id.get() {
             return Ok(z.clone());
         }
-        let c = self.client().await;
         let target = format!("{}.", self.zone_name.trim_end_matches('.'));
-        let resp = c
-            .list_hosted_zones_by_name()
-            .dns_name(&target)
-            .max_items(1)
-            .send()
-            .await
-            .map_err(|e| format!("route53 list zones: {e}"))?;
-        let zone = resp
+        let url = format!(
+            "{R53_BASE}/hostedzonesbyname?dnsname={}&maxitems=1",
+            urlencoding(&target)
+        );
+        let text = self.signed_request("GET", &url, "").await?;
+        let parsed: ListHostedZonesByNameResponse =
+            quick_xml::de::from_str(&text).map_err(|e| format!("route53 list zones parse: {e}"))?;
+        let zone = parsed
             .hosted_zones
+            .hosted_zone
             .into_iter()
             .next()
             .ok_or_else(|| format!("Route53: no hosted zone matching '{}'", self.zone_name))?;
-        if zone.name() != target {
+        if zone.name != target {
             return Err(format!(
                 "Route53 returned zone '{}' but configured was '{}'",
-                zone.name(),
-                target
+                zone.name, target
             ));
         }
         // Strip the "/hostedzone/" prefix Route53 returns on the zone id.
-        let raw = zone.id().trim_start_matches("/hostedzone/").to_string();
+        let raw = zone.id.trim_start_matches("/hostedzone/").to_string();
         let _ = self.zone_id.set(raw.clone());
         Ok(raw)
     }
 
-    async fn change_txt(
+    /// Submit a single-change ChangeResourceRecordSets batch.
+    async fn change_rrset(
         &self,
+        action: &str,
         fqdn: &str,
+        rtype: &str,
         value: &str,
-        action: aws_sdk_route53::types::ChangeAction,
+        ttl: u32,
     ) -> Result<(), String> {
-        use aws_sdk_route53::types::{
-            Change, ChangeBatch, ResourceRecord, ResourceRecordSet, RrType,
-        };
         let zone_id = self.resolve_zone_id().await?;
-        let c = self.client().await;
-        let rr_value = format!("\"{}\"", value); // Route53 requires quoted TXT values
-        let rrset = ResourceRecordSet::builder()
-            .name(format!("{}.", fqdn.trim_end_matches('.')))
-            .r#type(RrType::Txt)
-            .ttl(60)
-            .resource_records(
-                ResourceRecord::builder()
-                    .value(&rr_value)
-                    .build()
-                    .map_err(|e| format!("rr build: {e}"))?,
-            )
-            .build()
-            .map_err(|e| format!("rrset build: {e}"))?;
-        let change = Change::builder()
-            .action(action)
-            .resource_record_set(rrset)
-            .build()
-            .map_err(|e| format!("change build: {e}"))?;
-        let batch = ChangeBatch::builder()
-            .changes(change)
-            .build()
-            .map_err(|e| format!("batch build: {e}"))?;
-        c.change_resource_record_sets()
-            .hosted_zone_id(zone_id)
-            .change_batch(batch)
-            .send()
-            .await
-            .map_err(|e| format!("route53 ChangeRRSets: {e}"))?;
+        let url = format!("{R53_BASE}/hostedzone/{zone_id}/rrset");
+        let body = change_batch_xml(action, fqdn, rtype, value, ttl);
+        self.signed_request("POST", &url, &body).await?;
         Ok(())
     }
+}
+
+/// Build the ChangeResourceRecordSets XML request body for one change.
+fn change_batch_xml(action: &str, fqdn: &str, rtype: &str, value: &str, ttl: u32) -> String {
+    format!(
+        concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            r#"<ChangeResourceRecordSetsRequest xmlns="{ns}">"#,
+            "<ChangeBatch><Changes><Change>",
+            "<Action>{action}</Action>",
+            "<ResourceRecordSet>",
+            "<Name>{name}</Name>",
+            "<Type>{rtype}</Type>",
+            "<TTL>{ttl}</TTL>",
+            "<ResourceRecords><ResourceRecord><Value>{value}</Value></ResourceRecord></ResourceRecords>",
+            "</ResourceRecordSet>",
+            "</Change></Changes></ChangeBatch>",
+            "</ChangeResourceRecordSetsRequest>",
+        ),
+        ns = R53_XMLNS,
+        action = action,
+        name = xml_escape(&format!("{}.", fqdn.trim_end_matches('.'))),
+        rtype = rtype,
+        ttl = ttl,
+        value = xml_escape(value),
+    )
+}
+
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[derive(serde::Deserialize)]
+struct ListHostedZonesByNameResponse {
+    #[serde(rename = "HostedZones")]
+    hosted_zones: HostedZonesList,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct HostedZonesList {
+    #[serde(rename = "HostedZone", default)]
+    hosted_zone: Vec<HostedZoneEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct HostedZoneEntry {
+    #[serde(rename = "Id")]
+    id: String,
+    #[serde(rename = "Name")]
+    name: String,
 }
 
 #[async_trait]
 impl DnsSolver for Route53 {
     async fn add_txt(&self, fqdn: &str, value: &str) -> Result<(), String> {
-        self.change_txt(fqdn, value, aws_sdk_route53::types::ChangeAction::Upsert)
+        // Route53 requires quoted TXT values.
+        self.change_rrset("UPSERT", fqdn, "TXT", &format!("\"{value}\""), 60)
             .await
     }
     async fn remove_txt(&self, fqdn: &str, value: &str) -> Result<(), String> {
-        self.change_txt(fqdn, value, aws_sdk_route53::types::ChangeAction::Delete)
+        self.change_rrset("DELETE", fqdn, "TXT", &format!("\"{value}\""), 60)
             .await
-    }
-}
-
-impl Route53 {
-    async fn upsert_addr(
-        &self,
-        fqdn: &str,
-        rtype: aws_sdk_route53::types::RrType,
-        ip: IpAddr,
-        ttl: u32,
-    ) -> Result<(), String> {
-        use aws_sdk_route53::types::{
-            Change, ChangeAction, ChangeBatch, ResourceRecord, ResourceRecordSet,
-        };
-        let zone_id = self.resolve_zone_id().await?;
-        let c = self.client().await;
-        let rrset = ResourceRecordSet::builder()
-            .name(format!("{}.", fqdn.trim_end_matches('.')))
-            .r#type(rtype)
-            .ttl(ttl as i64)
-            .resource_records(
-                ResourceRecord::builder()
-                    .value(ip.to_string())
-                    .build()
-                    .map_err(|e| format!("rr build: {e}"))?,
-            )
-            .build()
-            .map_err(|e| format!("rrset build: {e}"))?;
-        let change = Change::builder()
-            .action(ChangeAction::Upsert)
-            .resource_record_set(rrset)
-            .build()
-            .map_err(|e| format!("change build: {e}"))?;
-        let batch = ChangeBatch::builder()
-            .changes(change)
-            .build()
-            .map_err(|e| format!("batch build: {e}"))?;
-        c.change_resource_record_sets()
-            .hosted_zone_id(zone_id)
-            .change_batch(batch)
-            .send()
-            .await
-            .map_err(|e| format!("route53 ChangeRRSets: {e}"))?;
-        Ok(())
     }
 }
 
@@ -522,14 +584,14 @@ impl DnsRecordWriter for Route53 {
         if !ip.is_ipv4() {
             return Err(format!("upsert_a got non-v4 address {ip}"));
         }
-        self.upsert_addr(fqdn, aws_sdk_route53::types::RrType::A, ip, ttl)
+        self.change_rrset("UPSERT", fqdn, "A", &ip.to_string(), ttl)
             .await
     }
     async fn upsert_aaaa(&self, fqdn: &str, ip: IpAddr, ttl: u32) -> Result<(), String> {
         if !ip.is_ipv6() {
             return Err(format!("upsert_aaaa got non-v6 address {ip}"));
         }
-        self.upsert_addr(fqdn, aws_sdk_route53::types::RrType::Aaaa, ip, ttl)
+        self.change_rrset("UPSERT", fqdn, "AAAA", &ip.to_string(), ttl)
             .await
     }
 }
@@ -559,5 +621,80 @@ impl DnsSolver for Manual {
     async fn remove_txt(&self, _fqdn: &str, _value: &str) -> Result<(), String> {
         // Nothing to do — the operator can clean up by hand.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn change_batch_xml_shape() {
+        let xml = change_batch_xml(
+            "UPSERT",
+            "_acme-challenge.fw.example.com",
+            "TXT",
+            "\"tok-abc\"",
+            60,
+        );
+        assert!(xml.starts_with(r#"<?xml version="1.0" encoding="UTF-8"?>"#));
+        assert!(xml.contains(r#"xmlns="https://route53.amazonaws.com/doc/2013-04-01/""#));
+        assert!(xml.contains("<Action>UPSERT</Action>"));
+        // fqdn gets a trailing dot; TXT value keeps its quotes.
+        assert!(xml.contains("<Name>_acme-challenge.fw.example.com.</Name>"));
+        assert!(xml.contains("<Type>TXT</Type>"));
+        assert!(xml.contains("<TTL>60</TTL>"));
+        assert!(xml.contains("<Value>&quot;tok-abc&quot;</Value>"));
+    }
+
+    #[test]
+    fn change_batch_xml_does_not_double_dot() {
+        let xml = change_batch_xml("DELETE", "host.example.com.", "A", "203.0.113.7", 300);
+        assert!(xml.contains("<Name>host.example.com.</Name>"));
+        assert!(!xml.contains("com..</Name>"));
+    }
+
+    #[test]
+    fn xml_escape_covers_specials() {
+        assert_eq!(
+            xml_escape(r#"a&b<c>d"e'f"#),
+            "a&amp;b&lt;c&gt;d&quot;e&apos;f"
+        );
+        assert_eq!(xml_escape("plain-value"), "plain-value");
+    }
+
+    #[test]
+    fn parses_list_hosted_zones_by_name() {
+        let xml = r#"<?xml version="1.0"?>
+<ListHostedZonesByNameResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
+  <HostedZones>
+    <HostedZone>
+      <Id>/hostedzone/Z0123456ABCDEF</Id>
+      <Name>example.com.</Name>
+      <CallerReference>ref-1</CallerReference>
+      <Config><PrivateZone>false</PrivateZone></Config>
+      <ResourceRecordSetCount>12</ResourceRecordSetCount>
+    </HostedZone>
+  </HostedZones>
+  <DNSName>example.com.</DNSName>
+  <IsTruncated>false</IsTruncated>
+  <MaxItems>1</MaxItems>
+</ListHostedZonesByNameResponse>"#;
+        let parsed: ListHostedZonesByNameResponse = quick_xml::de::from_str(xml).unwrap();
+        let zone = &parsed.hosted_zones.hosted_zone[0];
+        assert_eq!(zone.id, "/hostedzone/Z0123456ABCDEF");
+        assert_eq!(zone.name, "example.com.");
+    }
+
+    #[test]
+    fn parses_empty_zone_list() {
+        let xml = r#"<?xml version="1.0"?>
+<ListHostedZonesByNameResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
+  <HostedZones/>
+  <IsTruncated>false</IsTruncated>
+  <MaxItems>1</MaxItems>
+</ListHostedZonesByNameResponse>"#;
+        let parsed: ListHostedZonesByNameResponse = quick_xml::de::from_str(xml).unwrap();
+        assert!(parsed.hosted_zones.hosted_zone.is_empty());
     }
 }
