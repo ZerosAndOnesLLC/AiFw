@@ -179,10 +179,14 @@ impl AuditLog {
 
     /// Fetch all audit entries for one firewall rule, newest first
     pub async fn list_for_rule(&self, rule_id: Uuid) -> Result<Vec<AuditEntry>> {
+        // PERF-M9: a long-lived rule accumulates unbounded history; cap the
+        // result so one call can't materialize MBs of rows.
+        const MAX_ROWS: i64 = 500;
         let rows = sqlx::query_as::<_, AuditRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT {AUDIT_LOG_COLUMNS} FROM audit_log WHERE rule_id = ?1 ORDER BY timestamp DESC"
+            "SELECT {AUDIT_LOG_COLUMNS} FROM audit_log WHERE rule_id = ?1 ORDER BY timestamp DESC LIMIT ?2"
         )))
         .bind(rule_id.to_string())
+        .bind(MAX_ROWS)
         .fetch_all(&self.pool)
         .await?;
 

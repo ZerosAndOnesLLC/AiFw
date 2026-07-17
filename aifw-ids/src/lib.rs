@@ -444,7 +444,7 @@ impl IdsEngine {
             // Default: detect all non-loopback/non-pflog interfaces and capture on them.
             // pflog0 only sees blocked/logged pf traffic — we need the real interfaces
             // to inspect all passing traffic.
-            let mut ifaces = detect_network_interfaces();
+            let mut ifaces = detect_network_interfaces().await;
             if ifaces.is_empty() {
                 // Fallback to pflog0 if we can't detect interfaces
                 ifaces.push("pflog0".to_string());
@@ -708,10 +708,17 @@ pub struct RuleRow {
 }
 
 /// Detect network interfaces for packet capture.
-fn detect_network_interfaces() -> Vec<String> {
+///
+/// PERF-M18: async so the `ifconfig` spawn doesn't block a tokio worker
+/// thread during `start()`.
+async fn detect_network_interfaces() -> Vec<String> {
     #[cfg(target_os = "freebsd")]
     {
-        if let Ok(output) = std::process::Command::new("ifconfig").arg("-l").output() {
+        if let Ok(output) = tokio::process::Command::new("ifconfig")
+            .arg("-l")
+            .output()
+            .await
+        {
             let list = String::from_utf8_lossy(&output.stdout);
             return list
                 .split_whitespace()

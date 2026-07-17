@@ -123,7 +123,7 @@ mod tests {
         let config = Arc::new(RuntimeConfig::load(&pool).await.unwrap());
 
         // Set IDS mode
-        let mut cfg = config.config();
+        let mut cfg = (*config.config()).clone();
         cfg.mode = IdsMode::Ids;
         config.update(cfg);
 
@@ -149,7 +149,7 @@ mod tests {
 
         let config = Arc::new(RuntimeConfig::load(&pool).await.unwrap());
 
-        let mut cfg = config.config();
+        let mut cfg = (*config.config()).clone();
         cfg.mode = IdsMode::Ips;
         config.update(cfg);
 

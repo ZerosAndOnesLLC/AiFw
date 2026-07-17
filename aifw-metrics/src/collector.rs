@@ -76,11 +76,17 @@ pub mod names {
     pub const API_ERRORS: &str = "api.errors";
 }
 
+/// Shared source of the current pf state-table snapshot. Lets the collector
+/// reuse a snapshot another component (the connection tracker) already
+/// fetched instead of shelling out to `pfctl -ss` itself (PERF-M6).
+pub type StatesSource = Box<dyn Fn() -> Arc<Vec<aifw_pf::PfState>> + Send + Sync>;
+
 /// Collects metrics from the pf backend and records them into the store.
 pub struct MetricsCollector {
     pf: Arc<dyn PfBackend>,
     store: Arc<MetricsStore>,
     interval: Duration,
+    states_source: Option<StatesSource>,
     prev_packets_in: u64,
     prev_packets_out: u64,
     prev_bytes_in: u64,
@@ -95,6 +101,7 @@ impl MetricsCollector {
             pf,
             store,
             interval: Duration::from_secs(1),
+            states_source: None,
             prev_packets_in: 0,
             prev_packets_out: 0,
             prev_bytes_in: 0,
@@ -106,6 +113,18 @@ impl MetricsCollector {
     /// for the computed traffic rates.
     pub fn with_interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
+        self
+    }
+
+    /// Builder: count connections from a cached snapshot (e.g. the conntrack
+    /// tracker's ArcSwap) instead of running `pf.get_states()` every tick.
+    /// The snapshot may lag by the provider's own poll interval, which is
+    /// fine for gauge metrics (PERF-M6).
+    pub fn with_states_source(
+        mut self,
+        source: impl Fn() -> Arc<Vec<aifw_pf::PfState>> + Send + Sync + 'static,
+    ) -> Self {
+        self.states_source = Some(Box::new(source));
         self
     }
 
@@ -214,8 +233,14 @@ impl MetricsCollector {
             }
         }
 
-        // Connection breakdown
-        match self.pf.get_states().await {
+        // Connection breakdown. Prefer the shared cached snapshot (one
+        // `pfctl -ss` per poll for the whole process) over a second fetch
+        // of the full state table on the same tick (PERF-M6).
+        let states = match &self.states_source {
+            Some(source) => Ok(source()),
+            None => self.pf.get_states().await.map(Arc::new),
+        };
+        match states {
             Ok(states) => {
                 let total = states.len();
                 let tcp = states.iter().filter(|s| s.protocol == "tcp").count();

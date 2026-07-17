@@ -17,7 +17,7 @@ aifw-plugins = { workspace = true }
 aifw-ids = { workspace = true }
 aifw-ids-ipc = { workspace = true }
 aifw-metrics = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs", "process", "time", "sync", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs", "process", "time", "sync", "io-util", "signal"] }
 axum = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
@@ -42,6 +42,9 @@ futures-util = "0.3"
 redis = { version = "1.2", features = ["tokio-comp", "connection-manager"] }
 clap = { workspace = true, features = ["env"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
+# Already in the tree via tower-http's compression backends; used to
+# deflate metrics-history ring entries (PERF-M5 #373).
+flate2 = "1"
 rcgen = { workspace = true }
 serde_yaml_ng = "0.10"
 time = { workspace = true }

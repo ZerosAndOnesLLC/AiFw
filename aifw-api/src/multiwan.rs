@@ -31,6 +31,80 @@ fn bad_request() -> StatusCode {
     StatusCode::BAD_REQUEST
 }
 
+/// Coalesces multiwan pf-anchor rebuilds (PERF-M12 #381).
+///
+/// Every policy/group/gateway save used to trigger a full re-fetch of
+/// policies + groups + gateways and a complete `aifw-pbr` anchor reload —
+/// an O(N) pfctl + temp-file dance per save. Handlers now just mark the
+/// affected plane dirty; `run_apply_coalescer` drains the flags at most
+/// once per `COALESCE_WINDOW`, so an admin clicking through edits costs one
+/// rebuild per window instead of one per save. The rebuild was already
+/// fire-and-forget in the handlers (`let _ = apply_all(...)`), so moving it
+/// to a background task preserves the response semantics.
+pub struct ApplyCoalescer {
+    policies_dirty: std::sync::atomic::AtomicBool,
+    leaks_dirty: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl ApplyCoalescer {
+    pub fn new() -> Self {
+        Self {
+            policies_dirty: std::sync::atomic::AtomicBool::new(false),
+            leaks_dirty: std::sync::atomic::AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Request a rebuild of the PBR + reply anchors.
+    pub fn mark_policies_dirty(&self) {
+        self.policies_dirty
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.notify.notify_one();
+    }
+
+    /// Request a rebuild of the route-leak anchor.
+    pub fn mark_leaks_dirty(&self) {
+        self.leaks_dirty
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.notify.notify_one();
+    }
+}
+
+impl Default for ApplyCoalescer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Background task draining `ApplyCoalescer` dirty flags. Spawned once at
+/// boot next to the dashboard producer.
+pub async fn run_apply_coalescer(state: AppState) {
+    use std::sync::atomic::Ordering;
+    const COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+    loop {
+        state.multiwan_apply.notify.notified().await;
+        // Let a burst of saves land before rebuilding once for all of them.
+        tokio::time::sleep(COALESCE_WINDOW).await;
+        if state
+            .multiwan_apply
+            .policies_dirty
+            .swap(false, Ordering::AcqRel)
+            && let Err(e) = apply_all(&state).await
+        {
+            tracing::warn!(error = %e, "coalesced multiwan policy apply failed");
+        }
+        if state
+            .multiwan_apply
+            .leaks_dirty
+            .swap(false, Ordering::AcqRel)
+            && let Err(e) = apply_leaks(&state).await
+        {
+            tracing::warn!(error = %e, "coalesced route-leak apply failed");
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateInstanceRequest {
     pub name: String,
@@ -768,7 +842,7 @@ pub async fn create_policy(
         .add(p)
         .await
         .map_err(|_| bad_request())?;
-    let _ = apply_all(&state).await;
+    state.multiwan_apply.mark_policies_dirty();
     Ok((StatusCode::CREATED, Json(ApiResponse { data: p })))
 }
 
@@ -789,7 +863,7 @@ pub async fn update_policy(
         .update(p)
         .await
         .map_err(|_| bad_request())?;
-    let _ = apply_all(&state).await;
+    state.multiwan_apply.mark_policies_dirty();
     Ok(Json(ApiResponse { data: p }))
 }
 
@@ -803,7 +877,7 @@ pub async fn delete_policy(
         .delete(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    let _ = apply_all(&state).await;
+    state.multiwan_apply.mark_policies_dirty();
     Ok(Json(MessageResponse {
         message: format!("policy {id} deleted"),
     }))
@@ -877,7 +951,7 @@ pub async fn create_leak(
         updated_at: now,
     };
     let l = state.leak_engine.add(l).await.map_err(|_| bad_request())?;
-    let _ = apply_leaks(&state).await;
+    state.multiwan_apply.mark_leaks_dirty();
     Ok((StatusCode::CREATED, Json(ApiResponse { data: l })))
 }
 
@@ -891,7 +965,7 @@ pub async fn delete_leak(
         aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
         _ => internal(),
     })?;
-    let _ = apply_leaks(&state).await;
+    state.multiwan_apply.mark_leaks_dirty();
     Ok(Json(MessageResponse {
         message: format!("leak {id} deleted"),
     }))
@@ -906,7 +980,7 @@ pub async fn seed_mgmt_escapes(
         .seed_mgmt_escapes(&instances)
         .await
         .map_err(|_| internal())?;
-    let _ = apply_leaks(&state).await;
+    state.multiwan_apply.mark_leaks_dirty();
     Ok(Json(MessageResponse {
         message: "mgmt-escape leaks seeded".into(),
     }))
@@ -1121,8 +1195,8 @@ pub async fn import_config(
             let _ = state.leak_engine.add(l.clone()).await;
         }
     }
-    let _ = apply_all(&state).await;
-    let _ = apply_leaks(&state).await;
+    state.multiwan_apply.mark_policies_dirty();
+    state.multiwan_apply.mark_leaks_dirty();
     Ok(Json(MessageResponse {
         message: format!(
             "imported {} instances, {} gateways, {} groups, {} policies, {} leaks",
@@ -1162,7 +1236,7 @@ pub async fn reorder_policies(
             .await
             .map_err(|_| internal())?;
     }
-    let _ = apply_all(&state).await;
+    state.multiwan_apply.mark_policies_dirty();
     Ok(Json(MessageResponse {
         message: format!("{} policies reordered", req.policy_ids.len()),
     }))
@@ -1222,6 +1296,6 @@ pub async fn toggle_policy(
         .update(p)
         .await
         .map_err(|_| internal())?;
-    let _ = apply_all(&state).await;
+    state.multiwan_apply.mark_policies_dirty();
     Ok(Json(ApiResponse { data: p }))
 }

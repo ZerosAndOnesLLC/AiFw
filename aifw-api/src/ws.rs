@@ -220,6 +220,36 @@ struct IdsHistoryPayload {
     running: bool,
 }
 
+/// Deflate-compress one history JSON frame for the in-memory ring
+/// (PERF-M5). The frames are highly repetitive JSON (~2-3 KB) and compress
+/// 4-8x, cutting the 1800-entry ring from ~5 MB to ~1 MB of process heap.
+pub fn compress_history_entry(json: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+    // Writing into a Vec is infallible; finish() only propagates write errors.
+    match enc.write_all(json.as_bytes()).and_then(|_| enc.finish()) {
+        Ok(buf) => buf,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to compress metrics history entry");
+            Vec::new()
+        }
+    }
+}
+
+/// Inverse of `compress_history_entry`. Returns `None` (with a warning) on
+/// corrupt data so one bad entry can't take down the history batch.
+fn decompress_history_entry(data: &[u8]) -> Option<String> {
+    use std::io::Read;
+    let mut out = String::new();
+    match flate2::read::DeflateDecoder::new(data).read_to_string(&mut out) {
+        Ok(_) => Some(out),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to decompress metrics history entry");
+            None
+        }
+    }
+}
+
 pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
@@ -233,20 +263,31 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // every reconnecting client.
     const INITIAL_HISTORY_SAMPLES: usize = 600; // ~10 minutes at 1 Hz
     {
-        let history = state.metrics_history.read().await;
-        let batch = if history.is_empty() {
+        // Clone the (small) compressed entries under the read lock, then
+        // decompress after releasing it so the producer's write never waits
+        // behind the inflate work (PERF-M5).
+        let compressed: Vec<Vec<u8>> = {
+            let history = state.metrics_history.read().await;
+            let skip = history.len().saturating_sub(INITIAL_HISTORY_SAMPLES);
+            history.iter().skip(skip).cloned().collect()
+        };
+        let batch = if compressed.is_empty() {
             "{\"type\":\"history\",\"data\":[]}".to_string()
         } else {
-            let skip = history.len().saturating_sub(INITIAL_HISTORY_SAMPLES);
-            format!(
-                "{{\"type\":\"history\",\"data\":[{}]}}",
-                history
-                    .iter()
-                    .skip(skip)
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
+            let mut out = String::with_capacity(compressed.len() * 2048 + 32);
+            out.push_str("{\"type\":\"history\",\"data\":[");
+            let mut first = true;
+            for entry in &compressed {
+                if let Some(json) = decompress_history_entry(entry) {
+                    if !first {
+                        out.push(',');
+                    }
+                    out.push_str(&json);
+                    first = false;
+                }
+            }
+            out.push_str("]}");
+            out
         };
         let _ = sender.send(Message::Text(batch.into())).await;
     }
@@ -363,17 +404,19 @@ pub async fn run_dashboard_producer(state: AppState) {
                         .query_async(&mut conn)
                         .await;
                 }
-                // PERF-H10 (#354): history_msg moves into the deque — the
+                // PERF-H10 (#354): the entry moves into the deque — the
                 // write() critical section is only O(1) pop/push, so WS
                 // connects reading the history don't stall behind a large
                 // String clone (tokio's fair RwLock queues new readers
-                // behind a waiting writer).
+                // behind a waiting writer). Compression happens before the
+                // lock is taken (PERF-M5).
                 if max > 0 {
+                    let compressed = compress_history_entry(&history_msg);
                     let mut buf = state.metrics_history.write().await;
                     while buf.len() >= max {
                         buf.pop_front();
                     }
-                    buf.push_back(history_msg);
+                    buf.push_back(compressed);
                 }
                 // Live frame to dashboard clients. `send` errors only if
                 // there are no subscribers, which is fine — we wanted to
@@ -755,14 +798,19 @@ async fn collect_system_metrics() -> SystemPayload {
 
     // CPU usage via kern.cp_time delta — native sysctlbyname; no fork.
     let cpu_usage = {
-        use std::sync::Mutex;
-        static PREV_CP: Mutex<Option<[u64; 5]>> = Mutex::new(None);
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        // PERF-M19: lock-free. Only the single dashboard-producer task
+        // calls this, so relaxed per-cell atomics are plenty — no Mutex,
+        // no poisoning to `.expect()` around.
+        static PREV_CP: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+        static PREV_INIT: AtomicBool = AtomicBool::new(false);
 
         let cur: Option<[u64; 5]> = sysctl::read_u64_array("kern.cp_time");
         if let Some(cur) = cur {
-            let mut prev_lock = PREV_CP.lock().expect("lock poisoned");
-            let pct = if let Some(prev) = *prev_lock {
-                let d: Vec<u64> = (0..5).map(|i| cur[i].saturating_sub(prev[i])).collect();
+            let pct = if PREV_INIT.load(Ordering::Relaxed) {
+                let d: Vec<u64> = (0..5)
+                    .map(|i| cur[i].saturating_sub(PREV_CP[i].load(Ordering::Relaxed)))
+                    .collect();
                 let total: u64 = d.iter().sum();
                 if total > 0 {
                     ((total - d[4]) as f64 / total as f64) * 100.0
@@ -772,7 +820,10 @@ async fn collect_system_metrics() -> SystemPayload {
             } else {
                 0.0
             };
-            *prev_lock = Some(cur);
+            for (cell, v) in PREV_CP.iter().zip(cur) {
+                cell.store(v, Ordering::Relaxed);
+            }
+            PREV_INIT.store(true, Ordering::Relaxed);
             pct
         } else {
             0.0

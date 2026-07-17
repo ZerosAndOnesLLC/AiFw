@@ -2442,10 +2442,16 @@ pub async fn auto_snapshot_middleware(
 
     let response = next.run(request).await;
 
-    if !mutating || should_skip_auto_snapshot(&path) {
+    if !mutating || !response.status().is_success() {
         return response;
     }
-    if !response.status().is_success() {
+    // PERF-M15: any successful mutation may change the exported config —
+    // invalidate the cached cluster snapshot. Done before the skip list so
+    // paths that skip auto-snapshot still invalidate correctly.
+    state
+        .config_generation
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if should_skip_auto_snapshot(&path) {
         return response;
     }
 
