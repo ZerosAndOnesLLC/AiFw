@@ -162,3 +162,22 @@ def test_as_root_quotes_the_entire_command() -> None:
     assert as_root("id -u && echo 'safe value'") == (
         "su -m root -c 'id -u && echo '\"'\"'safe value'\"'\"''"
     )
+
+
+def test_import_finishes_before_boot_order_is_set() -> None:
+    pve = Proxmox(config())
+    requests: list[dict[str, object]] = []
+
+    def fake_request(method: str, path: str, **kwargs: object) -> str:
+        requests.append({"method": method, "path": path, **kwargs})
+        return f"task-{len(requests)}"
+
+    pve.request = fake_request  # type: ignore[method-assign]
+    pve.wait_task = lambda _task: None  # type: ignore[method-assign]
+    pve.attach_imported_disk(101, "local:import/aifw.raw", "local:iso/seed.iso")
+
+    assert requests[0]["data"] == {
+        "virtio0": "local-lvm:0,import-from=local:import/aifw.raw,discard=on",
+        "ide2": "local:iso/seed.iso,media=cdrom",
+    }
+    assert requests[1]["data"] == {"boot": "order=virtio0"}

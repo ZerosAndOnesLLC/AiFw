@@ -191,16 +191,23 @@ class Proxmox:
         # Proxmox 9 imports a storage `import` volume while applying the VM
         # disk configuration. The source upload is removed during teardown.
         disk = f"{self.cfg.vm_storage}:0,import-from={volume},discard=on"
-        config = {
-            "virtio0": disk,
-            "boot": "order=virtio0",
-        }
+        config = {"virtio0": disk}
         if seed_volume is not None:
             config["ide2"] = f"{seed_volume},media=cdrom"
         upid = self.request(
             "PUT",
             f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/config",
             data=config,
+        )
+        if upid:
+            self.wait_task(upid)
+        # The imported disk does not exist until the asynchronous task above
+        # finishes. Setting boot order in the same request makes PVE silently
+        # discard virtio0 from `boot` and fall back to PXE/CD-ROM.
+        upid = self.request(
+            "PUT",
+            f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/config",
+            data={"boot": "order=virtio0"},
         )
         if upid:
             self.wait_task(upid)

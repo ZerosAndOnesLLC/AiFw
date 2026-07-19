@@ -65,6 +65,14 @@ official image has no `sudo`, and `sysrc` does not read settings rendered into
 `/etc/rc.conf.d`; readiness therefore checks live `ifconfig`/`netstat` state
 and uses passwordless `su`.
 
+A builder-only attempt then exposed an independent PVE API race: setting
+`virtio0` and `boot=order=virtio0` in the same disk-import request caused PVE
+to omit the disk from the persisted boot order because the asynchronous import
+had not created it yet. The VM attempted PXE/CD-ROM boot and remained idle.
+The harness now waits for import completion and submits boot order as a second
+task; repairing that setting on the disposable VM made the corrected network
+seed come online immediately. Unit coverage locks in the two-request order.
+
 The Woodpecker E2E workflow remains experimental because builder-only artifact
 production and appliance-only deployment are still unverified, not because
 the builder VM is unable to boot or network.

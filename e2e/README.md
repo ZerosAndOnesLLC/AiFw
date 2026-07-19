@@ -66,6 +66,9 @@ Passing direct checks:
   its default `freebsd` user, and has the expected live default route.
 - Non-interactive build privilege works through the stock wheel account's
   passwordless `su`; the official image does not include `sudo`.
+- PVE disk import and `boot=order=virtio0` are applied as two sequential API
+  tasks. Sending both in the import request silently omitted the not-yet-created
+  disk from the boot order and left the guest attempting PXE/CD-ROM boot.
 - Harness unit tests and cleanup verification with zero residual E2E VMs.
 
 Root cause and correction:
@@ -77,6 +80,8 @@ Root cause and correction:
 - The harness now attaches its own v2/vtnet0 `cidata` ISO, uses the early
   top-level `ssh_authorized_keys` field with the stock `freebsd` user, and
   checks live `ifconfig` and route state instead of Linux cloud-init markers.
+- The harness waits for asynchronous disk import before setting the boot order;
+  a regression test fixes this request ordering contract.
 
 Remaining integration boundary:
 
