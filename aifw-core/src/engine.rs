@@ -130,11 +130,15 @@ impl RuleEngine {
     /// so they aren't shadowed by a `block quick` default.
     pub async fn apply_rules(&self) -> Result<()> {
         let rules = self.db.list_active_rules().await?;
-        let mut pf_rules: Vec<String> = rules
-            .iter()
-            .filter(|r| r.status == RuleStatus::Active)
-            .map(|r| r.to_pf_rule(&self.anchor))
-            .collect();
+        let mut pf_rules = Vec::new();
+        for rule in rules.iter().filter(|r| r.status == RuleStatus::Active) {
+            if let Some(schedule_id) = &rule.schedule_id
+                && !schedule_active(self.db.pool(), schedule_id, chrono::Local::now()).await?
+            {
+                continue;
+            }
+            pf_rules.push(rule.to_pf_rule(&self.anchor));
+        }
 
         // Inject extra rules (VPN pass rules, etc.) before the first block rule
         let extras = self.extra_rules.read().await;
@@ -208,4 +212,40 @@ impl RuleEngine {
     pub fn anchor(&self) -> &str {
         &self.anchor
     }
+}
+
+async fn schedule_active(
+    pool: &sqlx::SqlitePool,
+    id: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Result<bool> {
+    use chrono::{Datelike, Timelike};
+    let row: Option<(String, String, bool)> =
+        sqlx::query_as("SELECT time_ranges, days_of_week, enabled FROM schedules WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    let Some((ranges, days, true)) = row else {
+        return Ok(false);
+    };
+    let day = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        [now.weekday().num_days_from_monday() as usize];
+    if !days.split(',').any(|d| d.trim() == day) {
+        return Ok(false);
+    }
+    let minute = now.hour() * 60 + now.minute();
+    Ok(ranges.split(',').any(|range| {
+        let Some((start, end)) = range.trim().split_once('-') else {
+            return false;
+        };
+        let parse = |s: &str| {
+            s.split_once(':')
+                .and_then(|(h, m)| Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?))
+        };
+        match (parse(start), parse(end)) {
+            (Some(a), Some(b)) if a <= b => minute >= a && minute < b,
+            (Some(a), Some(b)) => minute >= a || minute < b,
+            _ => false,
+        }
+    }))
 }

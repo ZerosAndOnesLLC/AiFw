@@ -114,6 +114,8 @@ A schedule is a named time window with two fields:
 
 Attach a `schedule_id` to a rule and the rule is only loaded into pf during the active window. Outside the window the rule is silently dropped from the compiled ruleset.
 
+Schedules are evaluated in the appliance's local timezone whenever the ruleset is applied. Disabled, missing, or malformed schedule references fail closed (the associated rule is omitted). Automatic reload exactly at schedule boundaries is not yet implemented, so configure an external reload trigger if boundary precision is required.
+
 ## Traffic shaping
 
 Queue policy lives alongside rules. Three queue disciplines are supported via the `aifw queue` subcommand:
