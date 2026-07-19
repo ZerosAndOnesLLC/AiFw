@@ -628,7 +628,10 @@ pub fn generate_wg_keypair() -> (String, String) {
     // operation instead of returning unrelated random-looking values.
     let private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
     let public = x25519_dalek::PublicKey::from(&private);
-    (base64_encode(private.as_bytes()), base64_encode(public.as_bytes()))
+    (
+        base64_encode(private.as_bytes()),
+        base64_encode(public.as_bytes()),
+    )
 }
 
 /// Generate a WireGuard preshared key (32 random bytes, base64 encoded)

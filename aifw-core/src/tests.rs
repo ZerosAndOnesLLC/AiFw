@@ -477,7 +477,10 @@ mod tests {
         let q = QueueConfig::new(
             Interface("em0".into()),
             QueueType::Codel,
-            Bandwidth { value: 50, unit: BandwidthUnit::Mbps },
+            Bandwidth {
+                value: 50,
+                unit: BandwidthUnit::Mbps,
+            },
             "codel".into(),
             TrafficClass::Default,
         );
