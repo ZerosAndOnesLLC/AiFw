@@ -361,12 +361,12 @@ fn render_dummynet_commands(q: &QueueConfig) -> Result<Vec<String>> {
 
 async fn apply_dummynet(commands: &[String]) -> Result<()> {
     if commands.is_empty() {
-        Ok(())
+        return Ok(());
     }
     #[cfg(not(target_os = "freebsd"))]
     {
         let _ = commands;
-        return Ok(());
+        Ok(())
     }
     #[cfg(target_os = "freebsd")]
     crate::sudo::dummynet_apply(commands)
