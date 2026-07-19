@@ -184,7 +184,7 @@ pub async fn restore_version(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    apply_firewall_config(&state, &config, &req.interface_map).await?;
+    apply_firewall_config_or_rollback(&state, &config, &req.interface_map).await?;
 
     mgr.mark_applied(req.version)
         .await
@@ -486,7 +486,7 @@ pub(crate) async fn commit_confirm_arm_with_snapshot(
                 if let Some(inner) = store.write().await.take()
                     && let Ok(config) = serde_json::from_str::<FirewallConfig>(&inner.rollback_config) {
                         if let Err(e) = apply_firewall_config(&rollback_state, &config, &InterfaceMap::new()).await {
-                            tracing::warn!(error = %e, "commit confirm rollback: apply_firewall_config failed");
+                            tracing::error!(error = ?e, "commit confirm ROLLBACK FAILED — system may be partially configured");
                         } else {
                             tracing::info!("Config rolled back successfully");
                         }
@@ -1486,6 +1486,73 @@ fn map_iface(name: &str, map: &InterfaceMap) -> Option<String> {
 /// `iface_map` lets the caller rename interfaces (backup-name → target-name)
 /// or skip entries whose interface has no mapping on the target (value = None).
 /// Pass an empty map for literal restore (version history on the same box).
+/// Map a failed required restore step to the 500 the handlers return,
+/// logging the step so the operator can see exactly what aborted (#535).
+fn apply_fail(step: &str, e: impl std::fmt::Display) -> StatusCode {
+    tracing::error!(error = %e, "config apply: {step} failed — aborting restore");
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+
+/// Restore-with-rollback wrapper around [`apply_firewall_config`] (#535).
+///
+/// Captures the current running config first, applies the target strictly,
+/// and on any required-step failure re-applies the snapshot so the system
+/// never stays half-restored. Three outcomes, never silent partial success:
+/// 1. target applied — `Ok`;
+/// 2. apply failed, prior state restored — `Err(500)`, audited;
+/// 3. apply failed AND rollback failed — `Err(500)`, audited + logged as
+///    high severity so the operator knows the system needs attention.
+///
+/// SQL transactions alone can't provide this contract because engine applies
+/// mutate pf/kernel state sqlx can't rewind (see #158 for the DB-side
+/// transaction work); snapshot/reapply is the rollback mechanism.
+pub(crate) async fn apply_firewall_config_or_rollback(
+    state: &AppState,
+    config: &FirewallConfig,
+    iface_map: &InterfaceMap,
+) -> Result<(), StatusCode> {
+    let snapshot = build_current_config(state).await?;
+    let Err(apply_err) = apply_firewall_config(state, config, iface_map).await else {
+        return Ok(());
+    };
+    tracing::error!("config apply failed; rolling back to pre-apply snapshot");
+    let audit = state.rule_engine.audit();
+    match apply_firewall_config(state, &snapshot, &InterfaceMap::new()).await {
+        Ok(()) => {
+            if let Err(e) = audit
+                .log(
+                    aifw_core::AuditAction::ConfigChanged,
+                    None,
+                    "config restore failed; rolled back to pre-restore state",
+                    "restore",
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "config apply: rollback audit write failed");
+            }
+        }
+        Err(rollback_err) => {
+            tracing::error!(
+                ?rollback_err,
+                "config apply ROLLBACK FAILED — system may be partially configured; \
+                 restore from a known-good backup"
+            );
+            if let Err(e) = audit
+                .log(
+                    aifw_core::AuditAction::ConfigChanged,
+                    None,
+                    "config restore failed AND rollback failed — system may be partially configured",
+                    "restore",
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "config apply: rollback audit write failed");
+            }
+        }
+    }
+    Err(apply_err)
+}
+
 pub(crate) async fn apply_firewall_config(
     state: &AppState,
     config: &FirewallConfig,
@@ -1496,10 +1563,11 @@ pub(crate) async fn apply_firewall_config(
     };
 
     // Restore preludes — clear existing rows before re-populating from the
-    // imported config. A silent failure here (locked DB, FK violation, schema
-    // drift) used to leave stale rows that produced a half-imported firewall
-    // with no diagnostic. We now log each error and continue, so the operator
-    // can see what didn't clear in `journalctl`/`tail -f`.
+    // imported config. A failed DELETE (locked DB, FK violation, schema
+    // drift) used to warn and continue, leaving stale rows in a half-imported
+    // firewall; since #535 it aborts the restore instead. Parse/mapping skips
+    // (`continue`) below are intentional drops the import preview already
+    // surfaced; operational failures are errors.
     for table in [
         "wg_peers",
         "wg_tunnels",
@@ -1510,12 +1578,10 @@ pub(crate) async fn apply_firewall_config(
         "aliases",
         "static_routes",
     ] {
-        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
-        {
-            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
-        }
+            .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
     }
 
     for rc in &config.rules {
@@ -1530,9 +1596,13 @@ pub(crate) async fn apply_firewall_config(
         rc.interface = iface_after;
         if let Some(rule) = rule_from_config(&rc) {
             let rule_id = rule.id;
-            if let Err(e) = state.rule_engine.add_rule(rule).await {
-                tracing::warn!(rule_id = %rule_id, error = %e, "import: rule restore failed");
-            }
+            state
+                .rule_engine
+                .add_rule(rule)
+                .await
+                .map_err(|e| apply_fail(&format!("rule {rule_id} restore"), e))?;
+        } else {
+            tracing::warn!(rule_id = %rc.id, "import: skipping unparseable rule entry");
         }
     }
 
@@ -1544,9 +1614,13 @@ pub(crate) async fn apply_firewall_config(
         nc.interface = mapped_iface;
         if let Some(nat) = nat_from_config(&nc) {
             let nat_id = nat.id;
-            if let Err(e) = state.nat_engine.add_rule(nat).await {
-                tracing::warn!(nat_id = %nat_id, error = %e, "import: nat rule restore failed");
-            }
+            state
+                .nat_engine
+                .add_rule(nat)
+                .await
+                .map_err(|e| apply_fail(&format!("nat rule {nat_id} restore"), e))?;
+        } else {
+            tracing::warn!(nat_id = %nc.id, "import: skipping unparseable nat entry");
         }
     }
 
@@ -1570,9 +1644,11 @@ pub(crate) async fn apply_firewall_config(
             updated_at: chrono::Utc::now(),
         };
         let alias_name = alias.name.clone();
-        if let Err(e) = state.alias_engine.add(alias).await {
-            tracing::warn!(alias = %alias_name, error = %e, "import: alias restore failed");
-        }
+        state
+            .alias_engine
+            .add(alias)
+            .await
+            .map_err(|e| apply_fail(&format!("alias {alias_name} restore"), e))?;
     }
 
     // Static routes — restored via direct INSERT + apply_route_to_system,
@@ -1600,9 +1676,11 @@ pub(crate) async fn apply_firewall_config(
         .bind(rc.fib as i64)
         .execute(&state.pool)
         .await;
-        if let Err(e) = insert_res {
-            tracing::warn!(dest = %rc.destination, error = %e, "import: static route restore failed");
-        }
+        insert_res
+            .map_err(|e| apply_fail(&format!("static route {} restore", rc.destination), e))?;
+        // Kernel route application stays best-effort: it shells out to
+        // `route`, which is absent/unprivileged on dev hosts, and the row is
+        // reapplied at boot.
         if rc.enabled {
             crate::routes::apply_route_to_system(
                 &rc.destination,
@@ -1624,9 +1702,11 @@ pub(crate) async fn apply_firewall_config(
         rule.label = gc.label.clone();
         rule.status = gc.status;
         let country = rule.country.0.clone();
-        if let Err(e) = state.geoip_engine.add_rule(rule).await {
-            tracing::warn!(country = %country, error = %e, "import: geo-ip rule restore failed");
-        }
+        state
+            .geoip_engine
+            .add_rule(rule)
+            .await
+            .map_err(|e| apply_fail(&format!("geo-ip rule {country} restore"), e))?;
     }
 
     for wg in &config.vpn.wireguard {
@@ -1654,9 +1734,12 @@ pub(crate) async fn apply_firewall_config(
             created_at: now,
             updated_at: now,
         };
-        if state.vpn_engine.add_wg_tunnel(tunnel).await.is_err() {
-            continue;
-        }
+        let tunnel_name = tunnel.name.clone();
+        state
+            .vpn_engine
+            .add_wg_tunnel(tunnel)
+            .await
+            .map_err(|e| apply_fail(&format!("wg tunnel {tunnel_name} restore"), e))?;
         for p in &wg.peers {
             let peer_id = uuid::Uuid::parse_str(&p.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
             let allowed_ips: Vec<Address> = p
@@ -1678,9 +1761,11 @@ pub(crate) async fn apply_firewall_config(
                 updated_at: now,
             };
             let peer_name = peer.name.clone();
-            if let Err(e) = state.vpn_engine.add_wg_peer(peer).await {
-                tracing::warn!(peer = %peer_name, error = %e, "import: wg peer restore failed");
-            }
+            state
+                .vpn_engine
+                .add_wg_peer(peer)
+                .await
+                .map_err(|e| apply_fail(&format!("wg peer {peer_name} restore"), e))?;
         }
     }
 
@@ -1697,9 +1782,11 @@ pub(crate) async fn apply_firewall_config(
         sa.enc_algo = sac.enc_algo.clone();
         sa.auth_algo = sac.auth_algo.clone();
         let sa_name = sa.name.clone();
-        if let Err(e) = state.vpn_engine.add_ipsec_sa(sa).await {
-            tracing::warn!(sa = %sa_name, error = %e, "import: ipsec SA restore failed");
-        }
+        state
+            .vpn_engine
+            .add_ipsec_sa(sa)
+            .await
+            .map_err(|e| apply_fail(&format!("ipsec SA {sa_name} restore"), e))?;
     }
 
     if !config.system.dns_servers.is_empty() {
@@ -1710,51 +1797,50 @@ pub(crate) async fn apply_firewall_config(
             .map(|s| format!("nameserver {s}"))
             .collect::<Vec<_>>()
             .join("\n");
+        // Best-effort: /etc/resolv.conf is a root-owned system file the aifw
+        // user may not be able to write; the DB remains the source of truth.
         if let Err(e) = tokio::fs::write("/etc/resolv.conf", &content).await {
             tracing::warn!(error = %e, "import: /etc/resolv.conf write failed");
         }
     }
 
     let auth = &config.auth;
-    if let Err(e) = sqlx::query(
-        "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('access_token_expiry_mins', ?1)",
-    )
-    .bind(auth.access_token_expiry_mins.to_string())
-    .execute(&state.pool)
-    .await
-    {
-        tracing::warn!(key = "access_token_expiry_mins", error = %e, "import: auth config restore failed");
-    }
-    if let Err(e) = sqlx::query(
-        "INSERT OR REPLACE INTO auth_config (key, value) VALUES ('refresh_token_expiry_days', ?1)",
-    )
-    .bind(auth.refresh_token_expiry_days.to_string())
-    .execute(&state.pool)
-    .await
-    {
-        tracing::warn!(key = "refresh_token_expiry_days", error = %e, "import: auth config restore failed");
-    }
-    if let Err(e) =
-        sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES ('require_totp', ?1)")
-            .bind(if auth.require_totp { "true" } else { "false" })
+    for (key, value) in [
+        (
+            "access_token_expiry_mins",
+            auth.access_token_expiry_mins.to_string(),
+        ),
+        (
+            "refresh_token_expiry_days",
+            auth.refresh_token_expiry_days.to_string(),
+        ),
+        (
+            "require_totp",
+            if auth.require_totp { "true" } else { "false" }.to_string(),
+        ),
+    ] {
+        sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)")
+            .bind(key)
+            .bind(value)
             .execute(&state.pool)
             .await
-    {
-        tracing::warn!(key = "require_totp", error = %e, "import: auth config restore failed");
+            .map_err(|e| apply_fail(&format!("auth config {key} restore"), e))?;
     }
 
     // Traffic shaping: queues + per-IP rate limits
     let shaping = aifw_core::shaping::ShapingEngine::new(state.pool.clone(), state.pf.clone());
-    if let Err(e) = shaping.migrate().await {
-        tracing::warn!(error = %e, "import: shaping migrate failed");
-    }
-    for table in ["queues", "rate_limits"] {
-        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
+    shaping
+        .migrate()
+        .await
+        .map_err(|e| apply_fail("shaping migrate", e))?;
+    // NB: the pre-#535 code deleted from "queues"/"rate_limits" — tables that
+    // don't exist — and swallowed the error, so shaping rows were never
+    // actually cleared before re-insert. These are the real table names.
+    for table in ["queue_configs", "rate_limit_rules"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
-        {
-            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
-        }
+            .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
     }
     for qc in &config.queues {
         let Some(mapped) = map_iface(&qc.interface, iface_map) else {
@@ -1762,10 +1848,11 @@ pub(crate) async fn apply_firewall_config(
         };
         let mut qc = qc.clone();
         qc.interface = mapped;
-        if let Some(q) = queue_from_config(&qc)
-            && let Err(e) = shaping.add_queue(q).await
-        {
-            tracing::warn!(queue = %qc.name, error = %e, "import: shaping queue restore failed");
+        if let Some(q) = queue_from_config(&qc) {
+            shaping
+                .add_queue(q)
+                .await
+                .map_err(|e| apply_fail(&format!("shaping queue {} restore", qc.name), e))?;
         }
     }
     for rc in &config.rate_limits {
@@ -1778,57 +1865,60 @@ pub(crate) async fn apply_firewall_config(
         };
         let mut rc = rc.clone();
         rc.interface = iface_after;
-        if let Some(r) = rate_limit_from_config(&rc)
-            && let Err(e) = shaping.add_rate_limit(r).await
-        {
-            tracing::warn!(error = %e, "import: rate limit restore failed");
+        if let Some(r) = rate_limit_from_config(&rc) {
+            shaping
+                .add_rate_limit(r)
+                .await
+                .map_err(|e| apply_fail("rate limit restore", e))?;
         }
     }
-    if let Err(e) = shaping.apply_queues().await {
-        tracing::warn!(error = %e, "import: shaping queues apply failed");
-    }
-    if let Err(e) = shaping.apply_rate_limits().await {
-        tracing::warn!(error = %e, "import: rate limits apply failed");
-    }
+    shaping
+        .apply_queues()
+        .await
+        .map_err(|e| apply_fail("shaping queues apply", e))?;
+    shaping
+        .apply_rate_limits()
+        .await
+        .map_err(|e| apply_fail("rate limits apply", e))?;
 
     // TLS: SNI rules + JA3 blocklist
     let tls_engine = aifw_core::tls::TlsEngine::new(state.pool.clone(), state.pf.clone());
-    if let Err(e) = tls_engine.migrate().await {
-        tracing::warn!(error = %e, "import: tls migrate failed");
-    }
+    tls_engine
+        .migrate()
+        .await
+        .map_err(|e| apply_fail("tls migrate", e))?;
     for table in ["sni_rules", "ja3_blocklist"] {
-        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
-        {
-            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
-        }
+            .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
     }
     for sc in &config.tls.sni_rules {
-        if let Some(sni) = sni_rule_from_config(sc)
-            && let Err(e) = tls_engine.add_sni_rule(sni).await
-        {
-            tracing::warn!(pattern = %sc.pattern, error = %e, "import: sni rule restore failed");
+        if let Some(sni) = sni_rule_from_config(sc) {
+            tls_engine
+                .add_sni_rule(sni)
+                .await
+                .map_err(|e| apply_fail(&format!("sni rule {} restore", sc.pattern), e))?;
         }
     }
     for hash in &config.tls.blocked_ja3 {
-        if let Err(e) = tls_engine.add_ja3_block(hash, "restored from backup").await {
-            tracing::warn!(hash = %hash, error = %e, "import: ja3 block restore failed");
-        }
+        tls_engine
+            .add_ja3_block(hash, "restored from backup")
+            .await
+            .map_err(|e| apply_fail(&format!("ja3 block {hash} restore"), e))?;
     }
 
     // HA: CARP VIPs + pfsync + cluster nodes
     let ha_engine = aifw_core::ha::ClusterEngine::new(state.pool.clone(), state.pf.clone());
-    if let Err(e) = ha_engine.migrate().await {
-        tracing::warn!(error = %e, "import: ha migrate failed");
-    }
+    ha_engine
+        .migrate()
+        .await
+        .map_err(|e| apply_fail("ha migrate", e))?;
     for table in ["carp_vips", "pfsync_config", "cluster_nodes"] {
-        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
-        {
-            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
-        }
+            .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
     }
     for vc in &config.ha.carp_vips {
         let Some(mapped) = map_iface(&vc.interface, iface_map) else {
@@ -1836,10 +1926,11 @@ pub(crate) async fn apply_firewall_config(
         };
         let mut vc = vc.clone();
         vc.interface = mapped;
-        if let Some(vip) = carp_vip_from_config(&vc)
-            && let Err(e) = ha_engine.add_carp_vip(vip).await
-        {
-            tracing::warn!(vip = %vc.virtual_ip, error = %e, "import: carp vip restore failed");
+        if let Some(vip) = carp_vip_from_config(&vc) {
+            ha_engine
+                .add_carp_vip(vip)
+                .await
+                .map_err(|e| apply_fail(&format!("carp vip {} restore", vc.virtual_ip), e))?;
         }
     }
     if let Some(pc) = &config.ha.pfsync
@@ -1847,21 +1938,26 @@ pub(crate) async fn apply_firewall_config(
     {
         let mut pc = pc.clone();
         pc.sync_interface = mapped_sync;
-        if let Some(pfsync) = pfsync_from_config(&pc)
-            && let Err(e) = ha_engine.set_pfsync(pfsync).await
-        {
-            tracing::warn!(error = %e, "import: pfsync restore failed");
+        if let Some(pfsync) = pfsync_from_config(&pc) {
+            ha_engine
+                .set_pfsync(pfsync)
+                .await
+                .map_err(|e| apply_fail("pfsync restore", e))?;
         }
     }
     for nc in &config.ha.nodes {
-        if let Some(node) = cluster_node_from_config(nc)
-            && let Err(e) = ha_engine.add_node(node).await
-        {
-            tracing::warn!(error = %e, "import: cluster node restore failed");
+        if let Some(node) = cluster_node_from_config(nc) {
+            ha_engine
+                .add_node(node)
+                .await
+                .map_err(|e| apply_fail("cluster node restore", e))?;
         }
     }
 
-    // pf state-table tuning
+    // pf state-table tuning. Best-effort: this shells out to system tooling
+    // absent on dev hosts, the same setting is reapplied at every boot
+    // (`pf_tuning::apply_on_boot`, also warn-only), and a missed tuning value
+    // degrades capacity rather than firewall policy.
     for t in &config.tuning {
         if t.enabled
             && t.key == "pf.max_states"
@@ -1873,27 +1969,42 @@ pub(crate) async fn apply_firewall_config(
     }
 
     // DHCP: subnets, reservations, global/DDNS/HA config
-    apply_dhcp_section(state, &config.dhcp).await;
+    apply_dhcp_section(state, &config.dhcp).await?;
 
-    if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
-        state.rule_engine.set_extra_rules(vpn_rules).await;
-    }
-    if let Err(e) = state.rule_engine.apply_rules().await {
-        tracing::warn!(error = %e, "import: firewall rules apply failed");
-    }
-    if let Err(e) = state.nat_engine.apply_rules().await {
-        tracing::warn!(error = %e, "import: nat rules apply failed");
-    }
-    if let Err(e) = state.geoip_engine.apply_rules().await {
-        tracing::warn!(error = %e, "import: geoip rules apply failed");
-    }
+    // Final data-plane applies — a failure here means the kernel does NOT
+    // match the restored DB, so it must not report success (#535).
+    let vpn_rules = state
+        .vpn_engine
+        .collect_vpn_rules()
+        .await
+        .map_err(|e| apply_fail("collecting vpn rules", e))?;
+    state.rule_engine.set_extra_rules(vpn_rules).await;
+    state
+        .rule_engine
+        .apply_rules()
+        .await
+        .map_err(|e| apply_fail("firewall rules apply", e))?;
+    state
+        .nat_engine
+        .apply_rules()
+        .await
+        .map_err(|e| apply_fail("nat rules apply", e))?;
+    state
+        .geoip_engine
+        .apply_rules()
+        .await
+        .map_err(|e| apply_fail("geoip rules apply", e))?;
 
     Ok(())
 }
 
-async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSection) {
+async fn apply_dhcp_section(
+    state: &AppState,
+    dhcp: &aifw_core::config::DhcpSection,
+) -> Result<(), StatusCode> {
     // Wipe + re-insert for a clean restore. `auto_apply` at the end regenerates
-    // the rDHCP TOML config and restarts the service.
+    // the rDHCP TOML config and restarts the service. DB mutations are
+    // required steps (#535); only the service regeneration is best-effort.
     for table in [
         "dhcp_subnets",
         "dhcp_reservations",
@@ -1901,12 +2012,10 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         "dhcp_ddns_config",
         "dhcp_ha_config",
     ] {
-        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&state.pool)
             .await
-        {
-            tracing::warn!(table, error = %e, "dhcp restore: DELETE failed before restore");
-        }
+            .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
     }
 
     // --- global ----------------------------------------------
@@ -1956,15 +2065,12 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         ),
         ("relay_rate_limit_pps", g.relay_rate_limit_pps.to_string()),
     ] {
-        if let Err(e) =
-            sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
-                .bind(k)
-                .bind(v)
-                .execute(&state.pool)
-                .await
-        {
-            tracing::warn!(key = k, error = %e, "dhcp restore: config insert failed");
-        }
+        sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
+            .bind(k)
+            .bind(v)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| apply_fail(&format!("dhcp config {k} restore"), e))?;
     }
 
     // --- subnets ---------------------------------------------
@@ -2011,7 +2117,7 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         }
         let options_json =
             serde_json::to_string(&safe_options).unwrap_or_else(|_| "[]".to_string());
-        if let Err(e) = sqlx::query(
+        sqlx::query(
             "INSERT INTO dhcp_subnets \
              (id, network, pool_start, pool_end, gateway, dns_servers, domain_name, \
               lease_time, max_lease_time, renewal_time, rebinding_time, preferred_time, \
@@ -2041,23 +2147,19 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         .bind(&s.created_at)
         .execute(&state.pool)
         .await
-        {
-            tracing::warn!(network = %s.network, error = %e, "dhcp restore: subnet insert failed");
-        }
+        .map_err(|e| apply_fail(&format!("dhcp subnet {} restore", s.network), e))?;
     }
 
     // --- reservations ----------------------------------------
     for r in &dhcp.reservations {
-        if let Err(e) = sqlx::query(
+        sqlx::query(
             "INSERT INTO dhcp_reservations (id, subnet_id, mac_address, ip_address, hostname, client_id, description, created_at) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"
         )
         .bind(&r.id).bind(&r.subnet_id).bind(&r.mac_address).bind(&r.ip_address)
         .bind(&r.hostname).bind(&r.client_id).bind(&r.description).bind(&r.created_at)
         .execute(&state.pool).await
-        {
-            tracing::warn!(ip = %r.ip_address, error = %e, "dhcp restore: reservation insert failed");
-        }
+        .map_err(|e| apply_fail(&format!("dhcp reservation {} restore", r.ip_address), e))?;
     }
 
     // --- DDNS ------------------------------------------------
@@ -2080,15 +2182,12 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         ("tsig_secret", d.tsig_secret.clone()),
         ("ttl", d.ttl.to_string()),
     ] {
-        if let Err(e) =
-            sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
-                .bind(k)
-                .bind(v)
-                .execute(&state.pool)
-                .await
-        {
-            tracing::warn!(key = k, error = %e, "dhcp restore: ddns config insert failed");
-        }
+        sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
+            .bind(k)
+            .bind(v)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| apply_fail(&format!("dhcp ddns config {k} restore"), e))?;
     }
 
     // --- DHCP HA ---------------------------------------------
@@ -2120,19 +2219,19 @@ async fn apply_dhcp_section(state: &AppState, dhcp: &aifw_core::config::DhcpSect
         ("tls_key", h.tls_key.clone().unwrap_or_default()),
         ("tls_ca", h.tls_ca.clone().unwrap_or_default()),
     ] {
-        if let Err(e) =
-            sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
-                .bind(k)
-                .bind(v)
-                .execute(&state.pool)
-                .await
-        {
-            tracing::warn!(key = k, error = %e, "dhcp restore: ha config insert failed");
-        }
+        sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
+            .bind(k)
+            .bind(v)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| apply_fail(&format!("dhcp ha config {k} restore"), e))?;
     }
 
-    // Regenerate rDHCP TOML + restart service so the restored config takes effect.
+    // Regenerate rDHCP TOML + restart service so the restored config takes
+    // effect. Best-effort: the companion service may be absent (dev hosts);
+    // the DB rows above are authoritative and reapplied at boot.
     crate::dhcp::auto_apply(state).await;
+    Ok(())
 }
 
 fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::Rule> {

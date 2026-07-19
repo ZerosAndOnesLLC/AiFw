@@ -166,6 +166,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_engine_schedule_gating() {
+        // apply_rules must exclude rules whose schedule window is closed and
+        // keep rules whose schedule is open, disabled, or dangling (#537).
+        let db = Database::new_in_memory().await.unwrap();
+        let mock = Arc::new(aifw_pf::PfMock::new());
+        let pf: Arc<dyn PfBackend> = mock.clone();
+        let engine = RuleEngine::new(db.pool().clone(), pf);
+
+        let insert_schedule = |id: &str, name: &str, ranges: &str, days: &str, enabled: bool| {
+            let q = sqlx::query(
+                "INSERT INTO schedules (id, name, time_ranges, days_of_week, enabled, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .bind(id.to_string())
+            .bind(name.to_string())
+            .bind(ranges.to_string())
+            .bind(days.to_string())
+            .bind(enabled)
+            .bind("2026-01-01T00:00:00Z");
+            let pool = db.pool().clone();
+            async move { q.execute(&pool).await.unwrap() }
+        };
+        // No listed days → never inside the window, regardless of clock
+        insert_schedule("never", "never", "00:00-00:00", "", true).await;
+        // All days, full-day range → always inside the window
+        insert_schedule(
+            "always",
+            "always",
+            "00:00-00:00",
+            "mon,tue,wed,thu,fri,sat,sun",
+            true,
+        )
+        .await;
+        // Disabled → doesn't constrain
+        insert_schedule("off", "off", "00:00-00:00", "", false).await;
+
+        let mut gated = make_test_rule();
+        gated.schedule_id = Some("never".to_string());
+        gated.label = Some("gated".to_string());
+        let mut open = make_test_rule();
+        open.schedule_id = Some("always".to_string());
+        open.label = Some("open".to_string());
+        let mut disabled_sched = make_test_rule();
+        disabled_sched.schedule_id = Some("off".to_string());
+        disabled_sched.label = Some("disabled-sched".to_string());
+        let mut dangling = make_test_rule();
+        dangling.schedule_id = Some("deleted-schedule".to_string());
+        dangling.label = Some("dangling".to_string());
+        for r in [gated, open, disabled_sched, dangling] {
+            engine.add_rule(r).await.unwrap();
+        }
+
+        engine.apply_rules().await.unwrap();
+
+        let pf_rules = mock.get_rules("aifw").await.unwrap();
+        let joined = pf_rules.join("\n");
+        assert!(
+            !joined.contains("\"gated\""),
+            "closed-window rule must not load: {joined}"
+        );
+        assert!(joined.contains("\"open\""));
+        assert!(joined.contains("\"disabled-sched\""));
+        assert!(joined.contains("\"dangling\""));
+        assert_eq!(pf_rules.len(), 3);
+    }
+
+    #[tokio::test]
     async fn test_engine_flush_rules() {
         let db = Database::new_in_memory().await.unwrap();
         let mock = Arc::new(aifw_pf::PfMock::new());
@@ -645,7 +712,8 @@ mod tests {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                 24,
             ),
-        );
+        )
+        .unwrap();
         let id = tunnel.id;
         engine.add_wg_tunnel(tunnel).await.unwrap();
 
@@ -670,7 +738,8 @@ mod tests {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 16, 0, 1)),
                 24,
             ),
-        );
+        )
+        .unwrap();
         tunnel.dns = Some("1.1.1.1".to_string());
         tunnel.mtu = Some(1420);
         let id = tunnel.id;
@@ -697,7 +766,8 @@ mod tests {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                 24,
             ),
-        );
+        )
+        .unwrap();
         let tid = tunnel.id;
         engine.add_wg_tunnel(tunnel).await.unwrap();
 
@@ -732,13 +802,15 @@ mod tests {
             Interface("wg0".to_string()),
             51820,
             Address::Any,
-        );
+        )
+        .unwrap();
         let t2 = WgTunnel::new(
             "wg1".to_string(),
             Interface("wg1".to_string()),
             51821,
             Address::Any,
-        );
+        )
+        .unwrap();
         let (id1, id2) = (t1.id, t2.id);
         engine.add_wg_tunnel(t1).await.unwrap();
         engine.add_wg_tunnel(t2).await.unwrap();
@@ -772,7 +844,8 @@ mod tests {
             Interface("wg0".to_string()),
             51820,
             Address::Any,
-        );
+        )
+        .unwrap();
         assert!(engine.add_wg_tunnel(t).await.is_err());
 
         // Zero port
@@ -781,7 +854,8 @@ mod tests {
             Interface("wg0".to_string()),
             51820,
             Address::Any,
-        );
+        )
+        .unwrap();
         t.listen_port = 0;
         assert!(engine.add_wg_tunnel(t).await.is_err());
 
@@ -791,7 +865,8 @@ mod tests {
             Interface("wg0".to_string()),
             51820,
             Address::Any,
-        );
+        )
+        .unwrap();
         engine.add_wg_tunnel(first).await.unwrap();
 
         let dup = WgTunnel::new(
@@ -799,7 +874,8 @@ mod tests {
             Interface("wg1".to_string()),
             51820,
             Address::Any,
-        );
+        )
+        .unwrap();
         assert!(
             engine.add_wg_tunnel(dup).await.is_err(),
             "second tunnel on the same port must be rejected"
@@ -811,7 +887,8 @@ mod tests {
             Interface("wg2".to_string()),
             51821,
             Address::Any,
-        );
+        )
+        .unwrap();
         assert!(engine.add_wg_tunnel(ok).await.is_ok());
     }
 
@@ -867,7 +944,8 @@ mod tests {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                 24,
             ),
-        );
+        )
+        .unwrap();
         tunnel.status = VpnStatus::Up;
         engine.add_wg_tunnel(tunnel).await.unwrap();
 
@@ -911,15 +989,18 @@ mod tests {
 
         // Status defaults to Down — must not open the listen port or NAT
         engine
-            .add_wg_tunnel(WgTunnel::new(
-                "wg0".to_string(),
-                Interface("wg0".to_string()),
-                51820,
-                Address::Network(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
-                    24,
-                ),
-            ))
+            .add_wg_tunnel(
+                WgTunnel::new(
+                    "wg0".to_string(),
+                    Interface("wg0".to_string()),
+                    51820,
+                    Address::Network(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                        24,
+                    ),
+                )
+                .unwrap(),
+            )
             .await
             .unwrap();
 

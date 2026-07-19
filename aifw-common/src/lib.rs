@@ -37,6 +37,7 @@ pub mod permission;
 pub mod ratelimit;
 /// Core firewall rule model and pf rule rendering
 pub mod rule;
+pub mod schedule;
 pub mod schemas;
 #[cfg(unix)]
 pub mod single_instance;

@@ -147,6 +147,25 @@ impl Database {
             .execute(&self.pool)
             .await?;
 
+        // Schedules referenced by rules.schedule_id. Same DDL as the
+        // aifw-api auth migration — duplicated here so the daemon and core
+        // tests can evaluate schedules on a DB the API never migrated (#537).
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS schedules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                time_ranges TEXT NOT NULL,
+                days_of_week TEXT NOT NULL DEFAULT 'mon,tue,wed,thu,fri,sat,sun',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Audit log table
         let audit_log = crate::audit::AuditLog::new(self.pool.clone());
         audit_log.migrate().await?;
@@ -267,6 +286,32 @@ impl Database {
         .await?;
 
         rows.into_iter().map(|r| r.into_rule()).collect()
+    }
+
+    /// Load all schedules parsed into evaluation specs, keyed by id (#537).
+    /// Unparseable rows are skipped with a warning — rules referencing them
+    /// then fail open exactly like a dangling reference.
+    pub async fn list_schedule_specs(
+        &self,
+    ) -> Result<std::collections::HashMap<String, aifw_common::schedule::ScheduleSpec>> {
+        let rows = sqlx::query_as::<_, (String, String, String, bool)>(
+            "SELECT id, time_ranges, days_of_week, enabled FROM schedules",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for (id, ranges, days, enabled) in rows {
+            match aifw_common::schedule::ScheduleSpec::parse(&ranges, &days, enabled) {
+                Some(spec) => {
+                    map.insert(id, spec);
+                }
+                None => tracing::warn!(
+                    schedule_id = %id,
+                    "unparseable schedule row; referencing rules stay active"
+                ),
+            }
+        }
+        Ok(map)
     }
 
     /// Update a filter rule in place (refreshing `updated_at`). Fails with

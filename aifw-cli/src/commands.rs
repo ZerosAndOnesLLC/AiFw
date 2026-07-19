@@ -687,7 +687,7 @@ pub async fn vpn_wg_add(
         Interface(interface.to_string()),
         port,
         Address::parse(address)?,
-    );
+    )?;
     let tunnel = engine.add_wg_tunnel(tunnel).await?;
     println!("Added WireGuard tunnel {}", tunnel.id);
     println!("  Interface:  {}", tunnel.interface);

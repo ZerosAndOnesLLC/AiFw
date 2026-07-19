@@ -45,8 +45,11 @@ pub async fn create_wg_tunnel(
         .collect();
     let next_idx = (0u32..).find(|i| !used_indices.contains(i)).unwrap_or(0);
     let iface_name = format!("wg{next_idx}");
-    let mut tunnel = WgTunnel::new(req.name, Interface(iface_name), req.listen_port, address);
+    let mut tunnel = WgTunnel::new(req.name, Interface(iface_name), req.listen_port, address)
+        .map_err(|_| internal())?;
     if let Some(ref pk) = req.private_key {
+        // Re-derive the public key so the stored pair is always related (#541)
+        tunnel.public_key = aifw_common::vpn::derive_wg_pubkey(pk).map_err(|_| bad_request())?;
         tunnel.private_key = pk.clone();
     }
     tunnel.dns = req.dns;
@@ -240,7 +243,7 @@ pub async fn create_wg_peer(
 
     let auto_gen = req.auto_generate_key.unwrap_or(false);
     let mut peer = if auto_gen {
-        WgPeer::new_with_generated_key(tid, req.name.unwrap_or_default())
+        WgPeer::new_with_generated_key(tid, req.name.unwrap_or_default()).map_err(|_| internal())?
     } else {
         let pk = req.public_key.unwrap_or_default();
         if pk.is_empty() {
