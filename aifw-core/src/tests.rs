@@ -452,7 +452,7 @@ mod tests {
 
         let q = QueueConfig::new(
             Interface("em0".to_string()),
-            QueueType::Codel,
+            QueueType::Priq,
             Bandwidth {
                 value: 100,
                 unit: BandwidthUnit::Mbps,
@@ -468,6 +468,21 @@ mod tests {
         assert_eq!(queues[0].name, "test_queue");
 
         engine.delete_queue(id).await.unwrap();
+        assert!(engine.list_queues().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_codel_queue_is_rejected_without_dummynet_backend() {
+        let engine = create_shaping_engine().await;
+        let q = QueueConfig::new(
+            Interface("em0".into()),
+            QueueType::Codel,
+            Bandwidth { value: 50, unit: BandwidthUnit::Mbps },
+            "codel".into(),
+            TrafficClass::Default,
+        );
+        let err = engine.add_queue(q).await.unwrap_err();
+        assert!(err.to_string().contains("dummynet FQ-CoDel"));
         assert!(engine.list_queues().await.unwrap().is_empty());
     }
 
@@ -510,7 +525,7 @@ mod tests {
         engine
             .add_queue(QueueConfig::new(
                 Interface("em0".to_string()),
-                QueueType::Codel,
+                QueueType::Priq,
                 Bandwidth {
                     value: 100,
                     unit: BandwidthUnit::Mbps,

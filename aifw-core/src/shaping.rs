@@ -90,6 +90,11 @@ impl ShapingEngine {
     /// Insert a queue config row. pf isn't touched until
     /// [`Self::apply_queues`]
     pub async fn add_queue(&self, config: QueueConfig) -> Result<QueueConfig> {
+        if config.queue_type == QueueType::Codel {
+            return Err(AifwError::Validation(
+                "CoDel is unavailable until the dummynet FQ-CoDel backend is implemented".into(),
+            ));
+        }
         self.insert_queue(&config).await?;
         tracing::info!(id = %config.id, name = %config.name, "queue added");
         Ok(config)

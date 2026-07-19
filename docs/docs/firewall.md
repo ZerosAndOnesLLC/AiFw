@@ -118,7 +118,7 @@ Attach a `schedule_id` to a rule and the rule is only loaded into pf during the 
 
 Queue policy lives alongside rules. Three queue disciplines are supported via the `aifw queue` subcommand:
 
-- **CoDel** &mdash; default, low-latency AQM. Best for general LAN/WAN egress.
+- **CoDel** &mdash; currently unavailable. AiFw does not yet configure FreeBSD dummynet FQ-CoDel; new CoDel queues are rejected instead of emitting invalid pf queue syntax.
 - **HFSC** &mdash; hierarchical share-based scheduler with bandwidth percentages. Use when you need strict per-class allocations (VoIP, interactive, default, bulk).
 - **PRIQ** &mdash; strict priority queueing. Highest-priority class always preempts lower ones.
 
