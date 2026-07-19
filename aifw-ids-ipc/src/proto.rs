@@ -65,7 +65,7 @@ pub enum IpcResponse {
 /// Runtime engine statistics snapshot returned by `GetStats`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IdsStats {
-    /// Operating mode as a lowercase string ("ids", "ips", "disabled")
+    /// Operating mode as a lowercase string ("ids", "reactive", "disabled"; legacy "ips" accepted)
     pub mode: String,
     /// Whether the capture/detection engine is currently running
     pub running: bool,

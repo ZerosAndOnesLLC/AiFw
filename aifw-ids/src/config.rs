@@ -128,7 +128,7 @@ impl RuntimeConfig {
                 "mode" => {
                     cfg.mode = match value.as_str() {
                         "ids" => IdsMode::Ids,
-                        "ips" => IdsMode::Ips,
+                        "ips" | "reactive" => IdsMode::Ips,
                         _ => IdsMode::Disabled,
                     };
                 }

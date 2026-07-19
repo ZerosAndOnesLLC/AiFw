@@ -1215,7 +1215,7 @@ fn is_option_override_safe(o: &aifw_core::config::DhcpOptionOverrideConfig) -> b
     }
     match o.value_type.as_str() {
         "ip" => v.parse::<std::net::Ipv4Addr>().is_ok(),
-        "ips" => {
+        "ips" | "reactive" => {
             let parts: Vec<&str> = v
                 .split(',')
                 .map(str::trim)

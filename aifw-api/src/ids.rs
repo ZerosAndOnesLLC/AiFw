@@ -105,7 +105,7 @@ pub async fn update_config(
     if let Some(mode) = &req.mode {
         config.mode = match mode.as_str() {
             "ids" => IdsMode::Ids,
-            "ips" => IdsMode::Ips,
+            "ips" | "reactive" => IdsMode::Ips,
             "disabled" => IdsMode::Disabled,
             _ => return Err((bad_request(), "invalid mode".into())),
         };

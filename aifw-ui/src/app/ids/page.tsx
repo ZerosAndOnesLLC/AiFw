@@ -62,7 +62,7 @@ const severityColors: Record<string, { bg: string; bar: string; text: string }> 
   info: { bg: "bg-blue-500/20", bar: "bg-blue-500", text: "text-blue-400" },
 };
 
-const modeOptions = ["disabled", "ids", "ips"] as const;
+const modeOptions = ["disabled", "ids", "reactive"] as const;
 
 export default function IdsDashboardPage() {
   const [data, setData] = useState<StatsResponse | null>(null);

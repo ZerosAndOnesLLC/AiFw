@@ -11,7 +11,8 @@ use uuid::Uuid;
 pub enum IdsMode {
     /// Alert only — log detections, never block
     Ids,
-    /// Inline — drop/reject packets matching drop rules
+    /// Reactive blocking — passive detection followed by source-address pf-table blocking
+    #[serde(alias = "reactive")]
     Ips,
     /// Engine disabled
     #[default]
@@ -22,7 +23,7 @@ impl std::fmt::Display for IdsMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ids => write!(f, "ids"),
-            Self::Ips => write!(f, "ips"),
+            Self::Ips => write!(f, "reactive"),
             Self::Disabled => write!(f, "disabled"),
         }
     }

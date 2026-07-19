@@ -27,7 +27,7 @@ breadcrumb:
 
 # IDS / IPS
 
-AiFw ships an in-kernel intrusion detection / prevention engine that consumes three rule formats &mdash; Suricata-compatible, Sigma, and YARA &mdash; and runs in one of three modes: **Disabled**, **IDS** (alert-only), or **IPS** (inline drop). Behavioural AI detectors live alongside the rule engine and are opt-in. No Snort, no separate package install, no second daemon to babysit.
+AiFw passively captures traffic and evaluates supported subsets of Suricata, Sigma, and YARA rule formats. It runs in one of three modes: **Disabled**, **IDS** (alert-only), or **Reactive blocking**. Reactive blocking adds the detected source address to a pf table after a match; it does not stop the triggering packet and may affect unrelated flows from that source. Behavioural AI detectors are opt-in.
 
 ## Quickstart
 
@@ -37,7 +37,7 @@ Open the Web UI and go to **IDS &rarr; Settings**. Pick a mode and an interface.
 |---|---|
 | `Disabled` | Engine off, no inspection |
 | `IDS` | Inspect and log alerts; never block |
-| `IPS` | Inspect, alert, and drop matching packets inline |
+| `Reactive` | Inspect and alert, then add the source address to a pf block table; the triggering packet is not stopped |
 
 From the API:
 
