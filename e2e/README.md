@@ -26,9 +26,11 @@ Required non-secret settings:
 - `PVE_URL`, `PVE_NODE`, `PVE_IMAGE_STORAGE`, `PVE_VM_STORAGE`, `PVE_BRIDGE`
 - `AIFW_E2E_ADDRESS`, `AIFW_E2E_GATEWAY`, `AIFW_E2E_DNS`
 
-The manual Woodpecker run also requires an `artifact_url` pipeline parameter.
-It must point to an IMG built from a revision containing the unattended seed
-support; an older release image will fall back to its interactive wizard.
+The manual Woodpecker workflow first creates an ephemeral FreeBSD 15 builder
+VM in Proxmox, copies the exact checked-out Git commit to it, builds a fresh
+seed-capable IMG, copies that IMG back into the job workspace, and destroys the
+builder. It then deploys that IMG as a second ephemeral VM for the appliance
+checks. The two VMs run sequentially and reuse the reserved test address.
 
 The current Proxmox host has only an untagged management bridge. The supported
 initial lane is therefore a one-NIC appliance lifecycle smoke test. The
@@ -36,6 +38,16 @@ orchestrator deliberately does not claim routed WAN/LAN coverage. Add isolated
 test bridges or VLAN-aware networking before implementing data-plane suites.
 
 ## Run
+
+Build an image through an ephemeral Proxmox builder:
+
+```sh
+python -m e2e.aifw_e2e build \
+  --builder-image FreeBSD-15.0-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz \
+  --output e2e/.run/aifw.img.xz
+```
+
+Test an existing image:
 
 ```sh
 python -m e2e.aifw_e2e run --artifact output/aifw-<version>-amd64.img.xz

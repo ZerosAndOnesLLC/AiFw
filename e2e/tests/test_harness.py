@@ -3,7 +3,14 @@ from pathlib import Path
 import pytest
 from argon2 import PasswordHasher
 
-from e2e.aifw_e2e import HarnessError, LabConfig, make_seed, prepare_image
+from e2e.aifw_e2e import (
+    HarnessError,
+    LabConfig,
+    make_builder_seed,
+    make_seed,
+    prepare_builder_image,
+    prepare_image,
+)
 
 
 def config(password: str = "temporary-test-password") -> LabConfig:
@@ -28,6 +35,13 @@ def test_prepare_image_rejects_non_image(tmp_path: Path) -> None:
     artifact.write_text("not an image")
     with pytest.raises(HarnessError, match="must be an .img"):
         prepare_image(artifact, tmp_path, "abc123")
+
+
+def test_prepare_builder_image_rejects_non_qcow2(tmp_path: Path) -> None:
+    artifact = tmp_path / "builder.raw.xz"
+    artifact.write_bytes(b"not a builder")
+    with pytest.raises(HarnessError, match="must be a .qcow2"):
+        prepare_builder_image(artifact, tmp_path, "abc123")
 
 
 def test_seed_uses_argon2_and_excludes_plaintext(
@@ -75,3 +89,26 @@ def test_seed_has_only_one_management_interface(
     assert setup["wan_interface"] == "vtnet0"
     assert setup["lan_interface"] is None
     assert setup["default_policy"] == "permissive"
+
+
+def test_builder_seed_uses_reserved_address_and_public_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("e2e.aifw_e2e.shutil.which", lambda _name: "/usr/bin/xorrisofs")
+
+    def fake_run(args: list[str], **_kwargs: object) -> object:
+        Path(args[args.index("-o") + 1]).write_bytes(b"fake builder seed")
+        return object()
+
+    monkeypatch.setattr("e2e.aifw_e2e.run_checked", fake_run)
+    seed = make_builder_seed(
+        config(), tmp_path, "def456", "ssh-ed25519 AAAAbuilder"
+    )
+
+    user_data = (tmp_path / "builder-seed" / "user-data").read_text()
+    network = (tmp_path / "builder-seed" / "network-config").read_text()
+    assert "ssh-ed25519 AAAAbuilder" in user_data
+    assert "temporary-test-password" not in user_data
+    assert "192.0.2.10/24" in network
+    assert "192.0.2.1" in network
+    assert seed.read_bytes() == b"fake builder seed"

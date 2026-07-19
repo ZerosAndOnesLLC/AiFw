@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -141,6 +142,31 @@ class Proxmox:
         if upid:
             self.wait_task(upid)
 
+    def create_builder_vm(self, vmid: int, name: str, description: str) -> None:
+        upid = self.request(
+            "POST",
+            f"/nodes/{self.cfg.pve_node}/qemu",
+            data={
+                "vmid": vmid,
+                "name": name,
+                "description": description,
+                "tags": "aifw-e2e",
+                "ostype": "other",
+                "bios": "seabios",
+                "cpu": "host",
+                "cores": 8,
+                "memory": 12288,
+                "scsihw": "virtio-scsi-single",
+                "serial0": "socket",
+                "vga": "serial0",
+                "net0": f"virtio,bridge={self.cfg.bridge},firewall=1",
+                "onboot": 0,
+                "protection": 0,
+            },
+        )
+        if upid:
+            self.wait_task(upid)
+
     def upload(self, path: Path, content: str) -> str:
         checksum = sha256_file(path)
         with path.open("rb") as handle:
@@ -174,6 +200,15 @@ class Proxmox:
             "PUT",
             f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/config",
             data=config,
+        )
+        if upid:
+            self.wait_task(upid)
+
+    def resize_disk(self, vmid: int, disk: str, size: str) -> None:
+        upid = self.request(
+            "PUT",
+            f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/resize",
+            data={"disk": disk, "size": size},
         )
         if upid:
             self.wait_task(upid)
@@ -249,6 +284,20 @@ def prepare_image(artifact: Path, output_dir: Path, run_id: str) -> Path:
     return image
 
 
+def prepare_builder_image(artifact: Path, output_dir: Path, run_id: str) -> Path:
+    if not artifact.is_file():
+        raise HarnessError(f"builder image does not exist: {artifact}")
+    image = output_dir / f"{RESOURCE_PREFIX}{run_id}-builder.qcow2"
+    if "".join(artifact.suffixes).endswith(".qcow2.xz"):
+        with image.open("wb") as out:
+            subprocess.run(["xz", "-dc", str(artifact)], check=True, stdout=out)
+    elif artifact.suffix == ".qcow2":
+        shutil.copyfile(artifact, image)
+    else:
+        raise HarnessError("builder image must be a .qcow2 or .qcow2.xz file")
+    return image
+
+
 def make_seed(
     cfg: LabConfig, output_dir: Path, run_id: str, public_key: str
 ) -> Path:
@@ -312,7 +361,65 @@ def make_ssh_key(output_dir: Path) -> tuple[Path, str]:
     return private_key, private_key.with_suffix(".pub").read_text()
 
 
-def ssh_command(private_key: Path, host: str, command: str) -> list[str]:
+def make_builder_seed(
+    cfg: LabConfig, output_dir: Path, run_id: str, public_key: str
+) -> Path:
+    seed_dir = output_dir / "builder-seed"
+    seed_dir.mkdir(mode=0o700)
+    user_data = f"""#cloud-config
+hostname: aifw-builder-{run_id}
+disable_root: true
+ssh_pwauth: false
+users:
+  - default
+  - name: builder
+    gecos: AiFw CI Builder
+    groups: wheel
+    shell: /bin/sh
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - {public_key.strip()}
+growpart:
+  mode: auto
+  devices: ['/']
+resize_rootfs: true
+"""
+    network_data = {
+        "version": 2,
+        "ethernets": {
+            "vtnet0": {
+                "match": {"name": "vtnet0"},
+                "addresses": [cfg.address_cidr],
+                "routes": [{"to": "default", "via": cfg.gateway}],
+                "nameservers": {"addresses": [cfg.dns]},
+            }
+        },
+    }
+    (seed_dir / "user-data").write_text(user_data)
+    (seed_dir / "meta-data").write_text(
+        json.dumps(
+            {
+                "instance-id": f"aifw-builder-{run_id}",
+                "local-hostname": f"aifw-builder-{run_id}",
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    (seed_dir / "network-config").write_text(
+        json.dumps(network_data, indent=2) + "\n"
+    )
+    seed = output_dir / f"{RESOURCE_PREFIX}{run_id}-builder-seed.iso"
+    tool = shutil.which("xorrisofs") or shutil.which("genisoimage")
+    if not tool:
+        raise HarnessError("xorrisofs or genisoimage is required to create seed media")
+    run_checked([tool, "-quiet", "-V", "cidata", "-o", str(seed), str(seed_dir)])
+    return seed
+
+
+def ssh_command(
+    private_key: Path, host: str, command: str, user: str = "root"
+) -> list[str]:
     return [
         "ssh",
         "-i",
@@ -325,9 +432,29 @@ def ssh_command(private_key: Path, host: str, command: str) -> list[str]:
         "StrictHostKeyChecking=no",
         "-o",
         "UserKnownHostsFile=/dev/null",
-        f"root@{host}",
+        f"{user}@{host}",
         command,
     ]
+
+
+def wait_command(
+    private_key: Path,
+    host: str,
+    command: str,
+    user: str,
+    timeout: int,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ssh_command(private_key, host, command, user=user),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return
+        time.sleep(5)
+    raise HarnessError(f"SSH readiness timed out for {user}@{host}")
 
 
 def wait_ssh(private_key: Path, host: str, timeout: int = 600) -> None:
@@ -342,6 +469,32 @@ def wait_ssh(private_key: Path, host: str, timeout: int = 600) -> None:
             return
         time.sleep(5)
     raise HarnessError(f"SSH/setup readiness timed out for {host}")
+
+
+def copy_git_archive(private_key: Path, host: str, destination: str) -> None:
+    run_checked(
+        ssh_command(
+            private_key,
+            host,
+            f"mkdir -p {shlex.quote(destination)}",
+            user="builder",
+        )
+    )
+    archive = subprocess.Popen(["git", "archive", "--format=tar", "HEAD"], stdout=subprocess.PIPE)
+    assert archive.stdout is not None
+    unpack = subprocess.run(
+        ssh_command(
+            private_key,
+            host,
+            f"tar -xf - -C {shlex.quote(destination)}",
+            user="builder",
+        ),
+        stdin=archive.stdout,
+    )
+    archive.stdout.close()
+    archive_status = archive.wait()
+    if archive_status != 0 or unpack.returncode != 0:
+        raise HarnessError("failed to copy the checked-out commit to the builder VM")
 
 
 def login_and_check(cfg: LabConfig) -> dict[str, Any]:
@@ -465,6 +618,107 @@ class Lifecycle:
                 self.pve.delete_volume(volume)
 
 
+def build_image(args: argparse.Namespace) -> int:
+    cfg = LabConfig.from_env()
+    run_id = args.run_id or uuid.uuid4().hex[:10]
+    if not all(c in "0123456789abcdef-" for c in run_id.lower()):
+        raise HarnessError("run ID may contain only hexadecimal characters and hyphens")
+    work_root = Path(args.work_dir)
+    work_root.mkdir(parents=True, mode=0o700)
+    work_dir = work_root / f"{RESOURCE_PREFIX}{run_id}-builder"
+    work_dir.mkdir(mode=0o700)
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pve = Proxmox(cfg)
+    lifecycle = Lifecycle(pve, keep_on_failure=False)
+
+    def handle_signal(signum: int, _frame: Any) -> None:
+        lifecycle.failed = True
+        raise KeyboardInterrupt(f"received signal {signum}")
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    try:
+        private_key, public_key = make_ssh_key(work_dir)
+        seed = make_builder_seed(cfg, work_dir, run_id, public_key)
+        image = prepare_builder_image(Path(args.builder_image), work_dir, run_id)
+        image_volume = pve.upload(image, "import")
+        seed_volume = pve.upload(seed, "iso")
+        lifecycle.volumes.extend([image_volume, seed_volume])
+        vmid = pve.next_vmid()
+        lifecycle.vmid = vmid
+        name = f"{RESOURCE_PREFIX}builder-{run_id}"
+        pve.create_builder_vm(
+            vmid,
+            name,
+            f"AiFw image builder {run_id}; expires {int(time.time()) + 4 * 3600}",
+        )
+        pve.attach_imported_disk(vmid, image_volume, seed_volume)
+        pve.resize_disk(vmid, "virtio0", args.builder_disk_size)
+        pve.start(vmid)
+
+        wait_command(
+            private_key,
+            cfg.address,
+            "test -f /var/lib/cloud/instance/boot-finished",
+            user="builder",
+            timeout=args.boot_timeout,
+        )
+        copy_git_archive(private_key, cfg.address, "/home/builder/AiFw")
+        version = run_checked(
+            [
+                "sh",
+                "-c",
+                "sed -n 's/^version = \"\\([^\"]*\\)\"/\\1/p' Cargo.toml | head -n 1",
+            ],
+            cwd=Path.cwd(),
+            capture_output=True,
+        ).stdout.strip()
+        if not version:
+            raise HarnessError("could not determine workspace version from Cargo.toml")
+        remote_artifact = f"/usr/obj/aifw-iso/output/aifw-{version}-amd64.img.xz"
+        build_command = (
+            "cd /home/builder/AiFw && "
+            f"sudo -H sh freebsd/build-local.sh {shlex.quote(version)} && "
+            f"sudo test -s {shlex.quote(remote_artifact)}"
+        )
+        run_checked(
+            ssh_command(
+                private_key,
+                cfg.address,
+                build_command,
+                user="builder",
+            )
+        )
+        with output.open("wb") as handle:
+            result = subprocess.run(
+                ssh_command(
+                    private_key,
+                    cfg.address,
+                    f"sudo cat {shlex.quote(remote_artifact)}",
+                    user="builder",
+                ),
+                stdout=handle,
+            )
+        if result.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+            raise HarnessError("failed to copy the built IMG from the builder VM")
+        output.with_suffix(output.suffix + ".sha256").write_text(
+            f"{sha256_file(output)}  {output.name}\n"
+        )
+        print(f"built {output} ({output.stat().st_size} bytes)", flush=True)
+        return 0
+    except BaseException:
+        lifecycle.failed = True
+        raise
+    finally:
+        try:
+            lifecycle.cleanup()
+        finally:
+            if work_dir.parent == work_root and work_dir.name.startswith(RESOURCE_PREFIX):
+                shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def run(args: argparse.Namespace) -> int:
     cfg = LabConfig.from_env()
     run_id = args.run_id or uuid.uuid4().hex[:10]
@@ -548,6 +802,15 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--run-id")
     run_parser.add_argument("--boot-timeout", type=int, default=900)
     run_parser.add_argument("--keep-on-failure", action="store_true")
+    build_parser = sub.add_parser(
+        "build", help="build an AiFw IMG in an ephemeral Proxmox FreeBSD VM"
+    )
+    build_parser.add_argument("--builder-image", required=True)
+    build_parser.add_argument("--output", required=True)
+    build_parser.add_argument("--work-dir", default="e2e/.run")
+    build_parser.add_argument("--run-id")
+    build_parser.add_argument("--boot-timeout", type=int, default=900)
+    build_parser.add_argument("--builder-disk-size", default="+40G")
     return result
 
 
@@ -556,6 +819,8 @@ def main() -> int:
     try:
         if args.command == "run":
             return run(args)
+        if args.command == "build":
+            return build_image(args)
     except HarnessError as error:
         print(f"E2E ERROR: {error}", file=sys.stderr)
         return 1
