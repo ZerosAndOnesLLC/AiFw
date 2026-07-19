@@ -222,7 +222,9 @@ class Proxmox:
                 "ide2": f"{self.cfg.vm_storage}:cloudinit",
                 "citype": "nocloud",
                 "ciuser": "freebsd",
-                "sshkeys": public_key.strip(),
+                # Proxmox expects this field to contain a URL-encoded
+                # authorized_keys payload inside the form-encoded request.
+                "sshkeys": urllib.parse.quote(public_key.strip(), safe=""),
                 "ipconfig0": (
                     f"ip={self.cfg.address_cidr},gw={self.cfg.gateway}"
                 ),

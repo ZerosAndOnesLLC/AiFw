@@ -143,3 +143,19 @@ def test_build_accepts_precreated_work_root(
 
     with pytest.raises(HarnessError, match="stop after setup"):
         build_image(args)
+
+
+def test_builder_cloudinit_url_encodes_ssh_key() -> None:
+    pve = Proxmox(config())
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> None:
+        captured.update(method=method, path=path, **kwargs)
+
+    pve.request = fake_request  # type: ignore[method-assign]
+    pve.configure_builder_cloudinit(101, "ssh-ed25519 AAAAtest aifw-e2e\n")
+
+    data = captured["data"]
+    assert isinstance(data, dict)
+    assert data["sshkeys"] == "ssh-ed25519%20AAAAtest%20aifw-e2e"
+    assert data["ipconfig0"] == "ip=192.0.2.10/24,gw=192.0.2.1"
