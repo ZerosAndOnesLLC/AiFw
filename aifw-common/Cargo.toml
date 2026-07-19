@@ -13,6 +13,8 @@ thiserror = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["sync", "net", "rt", "macros"] }
 url = { workspace = true }
+x25519-dalek = { workspace = true }
+rand_core = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

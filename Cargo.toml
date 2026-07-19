@@ -68,6 +68,8 @@ tokio-rustls = "0.26"
 rustls-pemfile = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 url = "2"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 # Workspace-wide clippy lint posture. Stylistic-only lints are allowed —
 # documented engine constructors legitimately have many parameters, the

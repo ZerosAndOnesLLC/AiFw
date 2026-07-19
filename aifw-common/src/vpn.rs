@@ -624,18 +624,11 @@ pub fn generate_wg_keypair() -> (String, String) {
         }
     }
 
-    // Fallback: generate 32 random bytes for each key
-    let mut private_bytes = [0u8; 32];
-    let mut public_bytes = [0u8; 32];
-    let id1 = Uuid::new_v4();
-    let id2 = Uuid::new_v4();
-    private_bytes[..16].copy_from_slice(id1.as_bytes());
-    private_bytes[16..].copy_from_slice(id2.as_bytes());
-    let id3 = Uuid::new_v4();
-    let id4 = Uuid::new_v4();
-    public_bytes[..16].copy_from_slice(id3.as_bytes());
-    public_bytes[16..].copy_from_slice(id4.as_bytes());
-    (base64_encode(&private_bytes), base64_encode(&public_bytes))
+    // In-process fallback: derive the public key with WireGuard's X25519
+    // operation instead of returning unrelated random-looking values.
+    let private = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+    let public = x25519_dalek::PublicKey::from(&private);
+    (base64_encode(private.as_bytes()), base64_encode(public.as_bytes()))
 }
 
 /// Generate a WireGuard preshared key (32 random bytes, base64 encoded)
@@ -650,10 +643,7 @@ pub fn generate_wg_psk() -> String {
         }
     }
     let mut bytes = [0u8; 32];
-    let id1 = Uuid::new_v4();
-    let id2 = Uuid::new_v4();
-    bytes[..16].copy_from_slice(id1.as_bytes());
-    bytes[16..].copy_from_slice(id2.as_bytes());
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
     base64_encode(&bytes)
 }
 
