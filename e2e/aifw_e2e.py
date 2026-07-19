@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import ipaddress
@@ -12,6 +13,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -26,6 +28,11 @@ import urllib3
 from argon2 import PasswordHasher
 
 RESOURCE_PREFIX = "aifw-e2e-"
+FULL_WAN_CIDR = "198.18.0.1/24"
+FULL_WAN_HELPER = "198.18.0.2"
+FULL_LAN_CIDR = "198.19.0.1/24"
+FULL_LAN_HELPER = "198.19.0.2"
+HELPER_TEMPLATE = "local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst"
 
 
 class HarnessError(RuntimeError):
@@ -46,6 +53,8 @@ class LabConfig:
     image_storage: str
     vm_storage: str
     bridge: str
+    wan_bridge: str
+    lan_bridge: str
     verify_tls: bool
     address_cidr: str
     gateway: str
@@ -62,6 +71,8 @@ class LabConfig:
             image_storage=os.environ.get("PVE_IMAGE_STORAGE", "local"),
             vm_storage=os.environ.get("PVE_VM_STORAGE", "local-lvm"),
             bridge=os.environ.get("PVE_BRIDGE", "vmbr0"),
+            wan_bridge=os.environ.get("PVE_E2E_WAN_BRIDGE", "vmbr998"),
+            lan_bridge=os.environ.get("PVE_E2E_LAN_BRIDGE", "vmbr999"),
             verify_tls=os.environ.get("PVE_VERIFY_TLS", "true").lower()
             in ("1", "true", "yes"),
             address_cidr=required_env("AIFW_E2E_ADDRESS"),
@@ -108,7 +119,8 @@ class Proxmox:
                 "GET", f"/nodes/{self.cfg.pve_node}/tasks/{encoded}/status"
             )
             if status.get("status") == "stopped":
-                if status.get("exitstatus") != "OK":
+                exit_status = str(status.get("exitstatus", ""))
+                if exit_status != "OK" and not exit_status.startswith("WARNINGS"):
                     raise HarnessError(
                         f"Proxmox task failed: {status.get('exitstatus')} ({upid})"
                     )
@@ -118,6 +130,19 @@ class Proxmox:
 
     def next_vmid(self) -> int:
         return int(self.request("GET", "/cluster/nextid"))
+
+    def require_bridges(self, bridges: list[str]) -> None:
+        networks = self.request("GET", f"/nodes/{self.cfg.pve_node}/network")
+        available = {
+            network.get("iface")
+            for network in networks
+            if network.get("type") == "bridge" and network.get("active") == 1
+        }
+        missing = sorted(set(bridges) - available)
+        if missing:
+            raise HarnessError(
+                "required active Proxmox bridges are missing: " + ", ".join(missing)
+            )
 
     def create_vm(self, vmid: int, name: str, description: str) -> None:
         upid = self.request(
@@ -142,6 +167,95 @@ class Proxmox:
         )
         if upid:
             self.wait_task(upid)
+
+    def create_full_appliance_vm(self, vmid: int, name: str, description: str) -> None:
+        upid = self.request(
+            "POST",
+            f"/nodes/{self.cfg.pve_node}/qemu",
+            data={
+                "vmid": vmid,
+                "name": name,
+                "description": description,
+                "tags": "aifw-e2e",
+                "ostype": "other",
+                "bios": "seabios",
+                "cores": 4,
+                "memory": 4096,
+                "scsihw": "virtio-scsi-single",
+                "serial0": "socket",
+                "vga": "serial0",
+                "net0": f"virtio,bridge={self.cfg.wan_bridge},firewall=0",
+                "net1": f"virtio,bridge={self.cfg.lan_bridge},firewall=0",
+                "onboot": 0,
+                "protection": 0,
+            },
+        )
+        if upid:
+            self.wait_task(upid)
+
+    def create_helper_container(
+        self,
+        vmid: int,
+        name: str,
+        description: str,
+        public_key: str,
+        networks: list[str],
+    ) -> None:
+        config: dict[str, Any] = {
+            "vmid": vmid,
+            "hostname": name,
+            "description": description,
+            "tags": "aifw-e2e",
+            "ostemplate": HELPER_TEMPLATE,
+            "rootfs": f"{self.cfg.vm_storage}:2",
+            "cores": 1,
+            "memory": 512,
+            "swap": 0,
+            "unprivileged": 1,
+            "start": 0,
+            "onboot": 0,
+            "protection": 0,
+            "ssh-public-keys": public_key.strip(),
+        }
+        for index, network in enumerate(networks):
+            config[f"net{index}"] = network
+        upid = self.request(
+            "POST", f"/nodes/{self.cfg.pve_node}/lxc", data=config
+        )
+        if upid:
+            self.wait_task(upid)
+
+    def start_container(self, vmid: int) -> None:
+        upid = self.request(
+            "POST", f"/nodes/{self.cfg.pve_node}/lxc/{vmid}/status/start"
+        )
+        self.wait_task(upid)
+
+    def container_exists(self, vmid: int) -> bool:
+        resources = self.request("GET", "/cluster/resources", params={"type": "vm"})
+        return any(
+            int(resource.get("vmid", -1)) == vmid
+            and resource.get("type") == "lxc"
+            for resource in resources
+        )
+
+    def container_config(self, vmid: int) -> dict[str, Any]:
+        return self.request(
+            "GET", f"/nodes/{self.cfg.pve_node}/lxc/{vmid}/config"
+        )
+
+    def destroy_container(self, vmid: int) -> None:
+        with contextlib.suppress(Exception):
+            upid = self.request(
+                "POST", f"/nodes/{self.cfg.pve_node}/lxc/{vmid}/status/stop"
+            )
+            self.wait_task(upid, timeout=120)
+        upid = self.request(
+            "DELETE",
+            f"/nodes/{self.cfg.pve_node}/lxc/{vmid}",
+            params={"purge": 1, "destroy-unreferenced-disks": 1},
+        )
+        self.wait_task(upid, timeout=300)
 
     def create_builder_vm(self, vmid: int, name: str, description: str) -> None:
         upid = self.request(
@@ -333,17 +447,22 @@ def prepare_builder_image(artifact: Path, output_dir: Path, run_id: str) -> Path
 
 
 def make_seed(
-    cfg: LabConfig, output_dir: Path, run_id: str, public_key: str
+    cfg: LabConfig,
+    output_dir: Path,
+    run_id: str,
+    public_key: str,
+    full: bool = False,
 ) -> Path:
     password_hash = PasswordHasher().hash(cfg.admin_password)
+    wan_ip = FULL_WAN_CIDR if full else cfg.address_cidr
     setup = {
         "hostname": f"aifw-e2e-{run_id}",
         "wan_interface": "vtnet0",
         "wan_mode": "static",
-        "wan_ip": cfg.address_cidr,
-        "wan_gateway": cfg.gateway,
-        "lan_interface": None,
-        "lan_ip": None,
+        "wan_ip": wan_ip,
+        "wan_gateway": None if full else cfg.gateway,
+        "lan_interface": "vtnet1" if full else None,
+        "lan_ip": FULL_LAN_CIDR if full else None,
         "admin_username": "e2e-admin",
         "admin_password_hash": password_hash,
         "totp_secret": "",
@@ -352,10 +471,10 @@ def make_seed(
         "api_listen": "0.0.0.0",
         "api_port": 8080,
         "ui_enabled": True,
-        "dns_servers": [cfg.dns],
+        "dns_servers": [] if full else [cfg.dns],
         "dhcp_enabled": False,
-        "default_policy": "permissive",
-        "nat_enabled": False,
+        "default_policy": "standard" if full else "permissive",
+        "nat_enabled": full,
         "ssh_auth_method": "key_only",
         "ssh_github_user": None,
         "ssh_authorized_keys": [public_key.strip()],
@@ -374,6 +493,61 @@ def make_seed(
         [tool, "-quiet", "-V", "AIFW_SEED", "-o", str(seed), str(seed_dir)]
     )
     return seed
+
+
+HELPER_SERVER = """#!/usr/bin/env python3
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = (self.client_address[0] + "\\n").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *_args):
+        return
+
+ThreadingHTTPServer(("0.0.0.0", int(sys.argv[1])), Handler).serve_forever()
+"""
+
+
+def start_helper_servers(
+    private_key: Path,
+    host: str,
+    ports: list[int],
+    jump: str | None = None,
+) -> None:
+    encoded = base64.b64encode(HELPER_SERVER.encode()).decode()
+    port_list = " ".join(str(port) for port in ports)
+    command = (
+        f"printf %s {shlex.quote(encoded)} | base64 -d > /tmp/aifw-e2e-server.py && "
+        "chmod 700 /tmp/aifw-e2e-server.py && "
+        f"for port in {port_list}; do "
+        "nohup python3 /tmp/aifw-e2e-server.py \"$port\" "
+        ">/tmp/aifw-e2e-server-\"$port\".log 2>&1 </dev/null & done"
+    )
+    run_checked(
+        ssh_command(private_key, host, command, user="root", jump=jump),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def configure_lan_helper_route(private_key: Path, host: str) -> None:
+    run_checked(
+        ssh_command(
+            private_key,
+            host,
+            "ip route replace 198.18.0.0/24 via 198.19.0.1 dev eth1",
+            user="root",
+        ),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def make_ssh_key(output_dir: Path) -> tuple[Path, str]:
@@ -450,9 +624,13 @@ resize_rootfs: true
 
 
 def ssh_command(
-    private_key: Path, host: str, command: str, user: str = "root"
+    private_key: Path,
+    host: str,
+    command: str,
+    user: str = "root",
+    jump: str | None = None,
 ) -> list[str]:
-    return [
+    args = [
         "ssh",
         "-i",
         str(private_key),
@@ -464,9 +642,82 @@ def ssh_command(
         "StrictHostKeyChecking=no",
         "-o",
         "UserKnownHostsFile=/dev/null",
-        f"{user}@{host}",
-        command,
     ]
+    if jump:
+        proxy = " ".join(
+            shlex.quote(value)
+            for value in [
+                "ssh",
+                "-i",
+                str(private_key),
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-W",
+                "%h:%p",
+                jump,
+            ]
+        )
+        args.extend(["-o", f"ProxyCommand={proxy}"])
+    args.extend([f"{user}@{host}", command])
+    return args
+
+
+@contextlib.contextmanager
+def ssh_tunnel(
+    private_key: Path,
+    bastion: str,
+    remote_host: str,
+    remote_port: int,
+):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        local_port = int(probe.getsockname()[1])
+    process = subprocess.Popen(
+        [
+            "ssh",
+            "-i",
+            str(private_key),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-N",
+            "-L",
+            f"127.0.0.1:{local_port}:{remote_host}:{remote_port}",
+            bastion if "@" in bastion else f"root@{bastion}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise HarnessError("SSH tunnel exited before becoming ready")
+            with socket.socket() as check:
+                check.settimeout(1)
+                if check.connect_ex(("127.0.0.1", local_port)) == 0:
+                    break
+            time.sleep(0.5)
+        else:
+            raise HarnessError("SSH tunnel readiness timed out")
+        yield local_port
+    finally:
+        process.terminate()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+        if process.poll() is None:
+            process.kill()
 
 
 def wait_command(
@@ -475,11 +726,12 @@ def wait_command(
     command: str,
     user: str,
     timeout: int,
+    jump: str | None = None,
 ) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = subprocess.run(
-            ssh_command(private_key, host, command, user=user),
+            ssh_command(private_key, host, command, user=user, jump=jump),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -489,11 +741,21 @@ def wait_command(
     raise HarnessError(f"SSH readiness timed out for {user}@{host}")
 
 
-def wait_ssh(private_key: Path, host: str, timeout: int = 600) -> None:
+def wait_ssh(
+    private_key: Path,
+    host: str,
+    timeout: int = 600,
+    jump: str | None = None,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = subprocess.run(
-            ssh_command(private_key, host, "test -f /usr/local/etc/aifw/aifw.conf"),
+            ssh_command(
+                private_key,
+                host,
+                "test -f /usr/local/etc/aifw/aifw.conf",
+                jump=jump,
+            ),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -536,8 +798,8 @@ def as_root(command: str) -> str:
     return f"su root -c {shlex.quote(command)}"
 
 
-def login_and_check(cfg: LabConfig) -> dict[str, Any]:
-    base = f"https://{cfg.address}:8080"
+def login_and_check(cfg: LabConfig, base: str | None = None) -> dict[str, Any]:
+    base = base or f"https://{cfg.address}:8080"
     session = requests.Session()
     session.verify = False
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -564,7 +826,254 @@ def login_and_check(cfg: LabConfig) -> dict[str, Any]:
     return data
 
 
-def appliance_checks(cfg: LabConfig, private_key: Path) -> dict[str, Any]:
+def api_session(cfg: LabConfig, base: str) -> requests.Session:
+    session = requests.Session()
+    session.verify = False
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    response = session.post(
+        f"{base}/api/v1/auth/login",
+        json={"username": "e2e-admin", "password": cfg.admin_password},
+        timeout=20,
+    )
+    response.raise_for_status()
+    session.headers["Authorization"] = (
+        f"Bearer {response.json()['tokens']['access_token']}"
+    )
+    return session
+
+
+def test_http_flow(
+    private_key: Path,
+    source_host: str,
+    destination: str,
+    expected: str | None,
+    jump: str | None = None,
+    user: str = "root",
+) -> str:
+    command = f"wget -q -T 8 -O - {shlex.quote(destination)}"
+    result = subprocess.run(
+        ssh_command(private_key, source_host, command, user=user, jump=jump),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    observed = result.stdout.strip()
+    if expected is None:
+        if result.returncode == 0:
+            raise HarnessError(f"flow unexpectedly succeeded: {destination}")
+        return "blocked"
+    if result.returncode != 0:
+        raise HarnessError(f"flow failed unexpectedly: {destination}")
+    if observed != expected:
+        raise HarnessError(
+            f"flow {destination} observed source {observed!r}, expected {expected!r}"
+        )
+    return observed
+
+
+def clear_pf_states(private_key: Path, appliance_host: str, jump: str) -> None:
+    run_checked(
+        ssh_command(private_key, appliance_host, "pfctl -F states", jump=jump),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def create_rule(
+    session: requests.Session,
+    base: str,
+    *,
+    action: str,
+    interface: str,
+    source: str,
+    destination: str,
+    port: int,
+    label: str,
+    priority: int,
+) -> str:
+    response = session.post(
+        f"{base}/api/v1/rules",
+        json={
+            "action": action,
+            "direction": "in",
+            "protocol": "tcp",
+            "src_addr": source,
+            "dst_addr": destination,
+            "dst_port_start": port,
+            "dst_port_end": port,
+            "interface": interface,
+            "ip_version": "inet",
+            "priority": priority,
+            "log": action == "block",
+            "quick": True,
+            "label": label,
+            "state_tracking": "keep_state" if action == "pass" else "none",
+            "status": "active",
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    rule_id = response.json()["data"]["id"]
+    reload_response = session.post(f"{base}/api/v1/reload", timeout=60)
+    reload_response.raise_for_status()
+    if "Partial reload" in reload_response.json().get("message", ""):
+        raise HarnessError(reload_response.json()["message"])
+    return str(rule_id)
+
+
+def delete_rule(session: requests.Session, base: str, rule_id: str) -> None:
+    response = session.delete(f"{base}/api/v1/rules/{rule_id}", timeout=20)
+    response.raise_for_status()
+    reload_response = session.post(f"{base}/api/v1/reload", timeout=60)
+    reload_response.raise_for_status()
+    if "Partial reload" in reload_response.json().get("message", ""):
+        raise HarnessError(reload_response.json()["message"])
+
+
+def browser_checks(cfg: LabConfig, base: str, output_dir: Path) -> None:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as error:
+        raise HarnessError("Playwright is required for full E2E browser checks") from error
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(ignore_https_errors=True)
+        page = context.new_page()
+        page.goto(f"{base}/login", wait_until="networkidle")
+        page.get_by_label("Username").fill("e2e-admin")
+        page.get_by_label("Password").fill(cfg.admin_password)
+        page.get_by_role("button", name="Sign In").click()
+        page.wait_for_url(f"{base}/", timeout=30_000)
+        page.locator("h1").first.wait_for(state="visible")
+        page.goto(f"{base}/rules", wait_until="networkidle")
+        page.get_by_role("heading", name="Firewall Rules").wait_for(state="visible")
+        page.screenshot(path=str(output_dir / "rules-page.png"), full_page=True)
+        browser.close()
+
+
+def full_data_plane_checks(
+    cfg: LabConfig,
+    private_key: Path,
+    output_dir: Path,
+) -> tuple[dict[str, Any], str]:
+    jump = f"root@{cfg.address}"
+    appliance_host = FULL_LAN_CIDR.split("/", 1)[0]
+    evidence: dict[str, Any] = {}
+
+    evidence["lan_to_wan_nat_source"] = test_http_flow(
+        private_key,
+        cfg.address,
+        f"http://{FULL_WAN_HELPER}:9001/",
+        FULL_WAN_CIDR.split("/", 1)[0],
+    )
+    evidence["wan_to_lan_initial"] = test_http_flow(
+        private_key,
+        FULL_WAN_HELPER,
+        f"http://{FULL_LAN_HELPER}:9101/",
+        None,
+        jump=jump,
+    )
+
+    with ssh_tunnel(private_key, cfg.address, appliance_host, 8080) as port:
+        base = f"https://127.0.0.1:{port}"
+        session = api_session(cfg, base)
+        allow_id = create_rule(
+            session,
+            base,
+            action="pass",
+            interface="vtnet0",
+            source=FULL_WAN_HELPER,
+            destination=FULL_LAN_HELPER,
+            port=9102,
+            label="E2E allow WAN to LAN",
+            priority=-100,
+        )
+        clear_pf_states(private_key, appliance_host, jump)
+        evidence["wan_to_lan_after_allow"] = test_http_flow(
+            private_key,
+            FULL_WAN_HELPER,
+            f"http://{FULL_LAN_HELPER}:9102/",
+            FULL_WAN_HELPER,
+            jump=jump,
+        )
+
+        block_id = create_rule(
+            session,
+            base,
+            action="block",
+            interface="vtnet1",
+            source=FULL_LAN_HELPER,
+            destination=FULL_WAN_HELPER,
+            port=9003,
+            label="E2E block LAN to WAN",
+            priority=-200,
+        )
+        try:
+            clear_pf_states(private_key, appliance_host, jump)
+            evidence["lan_to_wan_after_block"] = test_http_flow(
+                private_key,
+                cfg.address,
+                f"http://{FULL_WAN_HELPER}:9003/",
+                None,
+            )
+        finally:
+            delete_rule(session, base, block_id)
+        clear_pf_states(private_key, appliance_host, jump)
+        evidence["lan_to_wan_after_delete"] = test_http_flow(
+            private_key,
+            cfg.address,
+            f"http://{FULL_WAN_HELPER}:9004/",
+            FULL_WAN_CIDR.split("/", 1)[0],
+        )
+        browser_checks(cfg, base, output_dir)
+        evidence["browser"] = "passed"
+    return evidence, allow_id
+
+
+def post_reboot_data_plane_checks(
+    cfg: LabConfig,
+    private_key: Path,
+    allow_rule_id: str,
+) -> dict[str, Any]:
+    jump = f"root@{cfg.address}"
+    appliance_host = FULL_LAN_CIDR.split("/", 1)[0]
+    evidence = {
+        "lan_to_wan_nat_source": test_http_flow(
+            private_key,
+            cfg.address,
+            f"http://{FULL_WAN_HELPER}:9002/",
+            FULL_WAN_CIDR.split("/", 1)[0],
+        ),
+        "persisted_wan_to_lan_allow": test_http_flow(
+            private_key,
+            FULL_WAN_HELPER,
+            f"http://{FULL_LAN_HELPER}:9102/",
+            FULL_WAN_HELPER,
+            jump=jump,
+        ),
+    }
+    with ssh_tunnel(private_key, cfg.address, appliance_host, 8080) as port:
+        base = f"https://127.0.0.1:{port}"
+        delete_rule(api_session(cfg, base), base, allow_rule_id)
+    clear_pf_states(private_key, appliance_host, jump)
+    evidence["wan_to_lan_after_allow_delete"] = test_http_flow(
+        private_key,
+        FULL_WAN_HELPER,
+        f"http://{FULL_LAN_HELPER}:9102/",
+        None,
+        jump=jump,
+    )
+    return evidence
+
+
+def appliance_checks(
+    cfg: LabConfig,
+    private_key: Path,
+    host: str | None = None,
+    jump: str | None = None,
+) -> dict[str, Any]:
+    host = host or cfg.address
     commands = [
         "service aifw_daemon onestatus",
         "service aifw_ids onestatus",
@@ -575,22 +1084,29 @@ def appliance_checks(cfg: LabConfig, private_key: Path) -> dict[str, Any]:
     ]
     for command in commands:
         run_checked(
-            ssh_command(private_key, cfg.address, command),
+            ssh_command(private_key, host, command, jump=jump),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+    if jump:
+        with ssh_tunnel(private_key, jump, host, 8080) as port:
+            return login_and_check(cfg, f"https://127.0.0.1:{port}")
     return login_and_check(cfg)
 
 
 def wait_appliance_ready(
-    cfg: LabConfig, private_key: Path, timeout: int = 600
+    cfg: LabConfig,
+    private_key: Path,
+    timeout: int = 600,
+    host: str | None = None,
+    jump: str | None = None,
 ) -> dict[str, Any]:
     """Wait for the complete service/API/pf contract, not merely SSH."""
     deadline = time.monotonic() + timeout
     last_error: BaseException | None = None
     while time.monotonic() < deadline:
         try:
-            return appliance_checks(cfg, private_key)
+            return appliance_checks(cfg, private_key, host=host, jump=jump)
         except (HarnessError, requests.RequestException, subprocess.SubprocessError) as error:
             last_error = error
             time.sleep(5)
@@ -604,6 +1120,8 @@ def collect_diagnostics(
     private_key: Path,
     vmid: int,
     output_dir: Path,
+    host: str | None = None,
+    jump: str | None = None,
 ) -> None:
     with contextlib.suppress(Exception):
         safe_config = pve.vm_config(vmid)
@@ -628,7 +1146,7 @@ echo '=== dmesg ==='; dmesg
 """
     with output_dir.joinpath("appliance-diagnostics.txt").open("w") as handle:
         subprocess.run(
-            ssh_command(private_key, cfg.address, command),
+            ssh_command(private_key, host or cfg.address, command, jump=jump),
             stdout=handle,
             stderr=subprocess.STDOUT,
             text=True,
@@ -636,15 +1154,49 @@ echo '=== dmesg ==='; dmesg
         )
 
 
-def reboot_and_check(cfg: LabConfig, private_key: Path) -> dict[str, Any]:
+def collect_helper_diagnostics(
+    private_key: Path,
+    host: str,
+    output: Path,
+    jump: str | None = None,
+    user: str = "root",
+) -> None:
+    command = """set +e
+echo '=== uname ==='; uname -a
+echo '=== interfaces ==='; ip address
+echo '=== routes ==='; ip route
+echo '=== processes ==='; ps auxww
+echo '=== sockets ==='; netstat -lntp
+echo '=== cloud-init ==='; cloud-init status --long
+echo '=== cloud-init output ==='; tail -n 300 /var/log/cloud-init-output.log
+"""
+    with output.open("w") as handle:
+        subprocess.run(
+            ssh_command(private_key, host, command, user=user, jump=jump),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=60,
+        )
+
+
+def reboot_and_check(
+    cfg: LabConfig,
+    private_key: Path,
+    host: str | None = None,
+    jump: str | None = None,
+) -> dict[str, Any]:
+    host = host or cfg.address
     subprocess.run(
-        ssh_command(private_key, cfg.address, "shutdown -r now"),
+        ssh_command(private_key, host, "shutdown -r now", jump=jump),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     time.sleep(10)
-    wait_ssh(private_key, cfg.address, timeout=600)
-    return wait_appliance_ready(cfg, private_key, timeout=600)
+    wait_ssh(private_key, host, timeout=600, jump=jump)
+    return wait_appliance_ready(
+        cfg, private_key, timeout=600, host=host, jump=jump
+    )
 
 
 class Lifecycle:
@@ -652,6 +1204,8 @@ class Lifecycle:
         self.pve = pve
         self.keep_on_failure = keep_on_failure
         self.vmid: int | None = None
+        self.additional_vmids: list[int] = []
+        self.container_vmids: list[int] = []
         self.volumes: list[str] = []
         self.failed = False
 
@@ -659,20 +1213,37 @@ class Lifecycle:
         if self.keep_on_failure and self.failed:
             print(f"preserving failed VM {self.vmid} by explicit request", flush=True)
             return
-        if self.vmid is not None and self.pve.vm_exists(self.vmid):
-            config = self.pve.vm_config(self.vmid)
+        vmids = self.additional_vmids + ([self.vmid] if self.vmid is not None else [])
+        for vmid in self.container_vmids:
+            if not self.pve.container_exists(vmid):
+                continue
+            config = self.pve.container_config(vmid)
+            name = config.get("hostname", "")
+            if not name.startswith(RESOURCE_PREFIX):
+                raise HarnessError(
+                    f"refusing to destroy container {vmid} with unexpected name {name!r}"
+                )
+            self.pve.destroy_container(vmid)
+        for vmid in vmids:
+            if not self.pve.vm_exists(vmid):
+                continue
+            config = self.pve.vm_config(vmid)
             name = config.get("name", "")
             if not name.startswith(RESOURCE_PREFIX):
                 raise HarnessError(
-                    f"refusing to destroy VM {self.vmid} with unexpected name {name!r}"
+                    f"refusing to destroy VM {vmid} with unexpected name {name!r}"
                 )
-            self.pve.destroy(self.vmid)
+            self.pve.destroy(vmid)
         for volume in self.volumes:
             if RESOURCE_PREFIX not in volume:
                 raise HarnessError(f"refusing to delete unexpected volume {volume!r}")
             if self.pve.volume_exists(volume):
                 self.pve.delete_volume(volume)
-        self.pve.wait_resources_absent(self.vmid, self.volumes)
+        for vmid in vmids:
+            self.pve.wait_resources_absent(vmid, self.volumes if vmid == self.vmid else [])
+        for vmid in self.container_vmids:
+            if self.pve.container_exists(vmid):
+                raise HarnessError(f"run-owned Proxmox container remains: {vmid}")
         print("teardown verified: zero run-owned Proxmox resources", flush=True)
 
 
@@ -887,6 +1458,262 @@ def run(args: argparse.Namespace) -> int:
                 shutil.rmtree(work_dir)
 
 
+def run_full(args: argparse.Namespace) -> int:
+    cfg = LabConfig.from_env()
+    run_id = args.run_id or uuid.uuid4().hex[:10]
+    if not all(c in "0123456789abcdef-" for c in run_id.lower()):
+        raise HarnessError("run ID may contain only hexadecimal characters and hyphens")
+    output_dir = Path(args.artifacts) / run_id
+    output_dir.mkdir(parents=True, mode=0o700)
+    work_root = Path(args.work_dir)
+    work_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    work_dir = work_root / f"{RESOURCE_PREFIX}{run_id}-full"
+    work_dir.mkdir(mode=0o700)
+    pve = Proxmox(cfg)
+    lifecycle = Lifecycle(pve, args.keep_on_failure)
+    private_key: Path | None = None
+    appliance_vmid: int | None = None
+    helper_vmids: dict[str, int] = {}
+
+    def handle_signal(signum: int, _frame: Any) -> None:
+        lifecycle.failed = True
+        raise KeyboardInterrupt(f"received signal {signum}")
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    manifest: dict[str, Any] = {
+        "run_id": run_id,
+        "artifact": Path(args.artifact).name,
+        "artifact_sha256": sha256_file(Path(args.artifact)),
+        "helper_template": HELPER_TEMPLATE,
+        "started_at": int(time.time()),
+        "network_scope": "isolated-wan-lan-full",
+        "topology": {
+            "management": f"{cfg.bridge}:{cfg.address_cidr}",
+            "wan": f"{cfg.wan_bridge}:198.18.0.0/24",
+            "lan": f"{cfg.lan_bridge}:198.19.0.0/24",
+        },
+    }
+    try:
+        pve.require_bridges([cfg.bridge, cfg.wan_bridge, cfg.lan_bridge])
+        private_key, public_key = make_ssh_key(work_dir)
+        appliance_seed = make_seed(cfg, work_dir, run_id, public_key, full=True)
+        appliance_image = prepare_image(Path(args.artifact), work_dir, run_id)
+        appliance_image_volume = pve.upload(appliance_image, "import")
+        appliance_seed_volume = pve.upload(appliance_seed, "iso")
+        lifecycle.volumes.extend(
+            [
+                appliance_image_volume,
+                appliance_seed_volume,
+            ]
+        )
+
+        lan_vmid = pve.next_vmid()
+        pve.create_helper_container(
+            lan_vmid,
+            f"{RESOURCE_PREFIX}lan-{run_id}",
+            f"AiFw E2E LAN helper {run_id}; expires {int(time.time()) + 4 * 3600}",
+            public_key,
+            [
+                f"name=eth0,bridge={cfg.bridge},firewall=0,ip={cfg.address_cidr},gw={cfg.gateway},type=veth",
+                f"name=eth1,bridge={cfg.lan_bridge},firewall=0,ip={FULL_LAN_HELPER}/24,type=veth",
+            ],
+        )
+        lifecycle.container_vmids.append(lan_vmid)
+        helper_vmids["lan"] = lan_vmid
+
+        wan_vmid = pve.next_vmid()
+        pve.create_helper_container(
+            wan_vmid,
+            f"{RESOURCE_PREFIX}wan-{run_id}",
+            f"AiFw E2E WAN helper {run_id}; expires {int(time.time()) + 4 * 3600}",
+            public_key,
+            [f"name=eth0,bridge={cfg.wan_bridge},firewall=0,ip={FULL_WAN_HELPER}/24,gw={FULL_WAN_CIDR.split('/', 1)[0]},type=veth"],
+        )
+        lifecycle.container_vmids.append(wan_vmid)
+        helper_vmids["wan"] = wan_vmid
+
+        appliance_vmid = pve.next_vmid()
+        lifecycle.vmid = appliance_vmid
+        pve.create_full_appliance_vm(
+            appliance_vmid,
+            f"{RESOURCE_PREFIX}{run_id}",
+            f"AiFw full E2E run {run_id}; expires {int(time.time()) + 4 * 3600}",
+        )
+        pve.attach_imported_disk(
+            appliance_vmid, appliance_image_volume, appliance_seed_volume
+        )
+        manifest["vmids"] = {
+            "appliance": appliance_vmid,
+            "lan_helper": lan_vmid,
+            "wan_helper": wan_vmid,
+        }
+
+        pve.start_container(lan_vmid)
+        wait_command(
+            private_key,
+            cfg.address,
+            "test -x /usr/bin/python3",
+            user="root",
+            timeout=args.boot_timeout,
+        )
+        configure_lan_helper_route(private_key, cfg.address)
+        start_helper_servers(private_key, cfg.address, [9101, 9102, 9103, 9104])
+        pve.start_container(wan_vmid)
+        pve.start(appliance_vmid)
+        jump = f"root@{cfg.address}"
+        appliance_host = FULL_LAN_CIDR.split("/", 1)[0]
+        wait_ssh(
+            private_key,
+            appliance_host,
+            timeout=args.boot_timeout,
+            jump=jump,
+        )
+        wait_command(
+            private_key,
+            FULL_WAN_HELPER,
+            "test -x /usr/bin/python3",
+            user="root",
+            timeout=args.boot_timeout,
+            jump=jump,
+        )
+        start_helper_servers(
+            private_key,
+            FULL_WAN_HELPER,
+            [9001, 9002, 9003, 9004],
+            jump=jump,
+        )
+        manifest["initial_status"] = wait_appliance_ready(
+            cfg,
+            private_key,
+            timeout=args.boot_timeout,
+            host=appliance_host,
+            jump=jump,
+        )
+        data_plane, allow_rule_id = full_data_plane_checks(
+            cfg, private_key, output_dir
+        )
+        manifest["initial_data_plane"] = data_plane
+        manifest["post_reboot_status"] = reboot_and_check(
+            cfg, private_key, host=appliance_host, jump=jump
+        )
+        manifest["post_reboot_data_plane"] = post_reboot_data_plane_checks(
+            cfg, private_key, allow_rule_id
+        )
+        manifest["result"] = "passed"
+        return 0
+    except BaseException:
+        lifecycle.failed = True
+        manifest["result"] = "failed"
+        raise
+    finally:
+        if appliance_vmid is not None and private_key is not None:
+            with contextlib.suppress(Exception):
+                collect_diagnostics(
+                    pve,
+                    cfg,
+                    private_key,
+                    appliance_vmid,
+                    output_dir,
+                    host=FULL_LAN_CIDR.split("/", 1)[0],
+                    jump=f"root@{cfg.address}",
+                )
+            with contextlib.suppress(Exception):
+                collect_helper_diagnostics(
+                    private_key,
+                    cfg.address,
+                    output_dir / "lan-helper-diagnostics.txt",
+                    user="root",
+                )
+            with contextlib.suppress(Exception):
+                collect_helper_diagnostics(
+                    private_key,
+                    FULL_WAN_HELPER,
+                    output_dir / "wan-helper-diagnostics.txt",
+                    jump=f"root@{cfg.address}",
+                    user="root",
+                )
+        try:
+            lifecycle.cleanup()
+            manifest["teardown_verified"] = True
+        except BaseException:
+            manifest["result"] = "failed"
+            raise
+        finally:
+            manifest.setdefault("teardown_verified", False)
+            manifest["finished_at"] = int(time.time())
+            output_dir.joinpath("manifest.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+            )
+            if work_dir.parent == work_root and work_dir.name.startswith(
+                RESOURCE_PREFIX
+            ):
+                shutil.rmtree(work_dir)
+
+
+def check_helper(args: argparse.Namespace) -> int:
+    """Focused, disposable validation of the Linux helper substrate."""
+    cfg = LabConfig.from_env()
+    run_id = args.run_id or uuid.uuid4().hex[:10]
+    if not all(c in "0123456789abcdef-" for c in run_id.lower()):
+        raise HarnessError("run ID may contain only hexadecimal characters and hyphens")
+    work_root = Path(args.work_dir)
+    work_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    work_dir = work_root / f"{RESOURCE_PREFIX}{run_id}-helper-check"
+    work_dir.mkdir(mode=0o700)
+    pve = Proxmox(cfg)
+    lifecycle = Lifecycle(pve, keep_on_failure=False)
+    try:
+        pve.require_bridges([cfg.bridge, cfg.lan_bridge])
+        private_key, public_key = make_ssh_key(work_dir)
+        vmid = pve.next_vmid()
+        pve.create_helper_container(
+            vmid,
+            f"{RESOURCE_PREFIX}helper-{run_id}",
+            f"AiFw focused helper check {run_id}; expires {int(time.time()) + 3600}",
+            public_key,
+            [
+                f"name=eth0,bridge={cfg.bridge},firewall=0,ip={cfg.address_cidr},gw={cfg.gateway},type=veth",
+                f"name=eth1,bridge={cfg.lan_bridge},firewall=0,ip={FULL_LAN_HELPER}/24,type=veth",
+            ],
+        )
+        lifecycle.container_vmids.append(vmid)
+        pve.start_container(vmid)
+        wait_command(
+            private_key,
+            cfg.address,
+            (
+                f"ip -4 addr show eth0 | grep -F {shlex.quote(cfg.address_cidr)} && "
+                "ip -4 addr show eth1 | grep -F 198.19.0.2/24 && "
+                f"ip route | grep -F 'default via {cfg.gateway} dev eth0'"
+            ),
+            user="root",
+            timeout=args.boot_timeout,
+        )
+        configure_lan_helper_route(private_key, cfg.address)
+        start_helper_servers(private_key, cfg.address, [9101])
+        test_http_flow(
+            private_key,
+            cfg.address,
+            "http://127.0.0.1:9101/",
+            "127.0.0.1",
+        )
+        print("focused helper boot/network/SSH/server check passed", flush=True)
+        return 0
+    except BaseException:
+        lifecycle.failed = True
+        raise
+    finally:
+        try:
+            lifecycle.cleanup()
+        finally:
+            if work_dir.parent == work_root and work_dir.name.startswith(
+                RESOURCE_PREFIX
+            ):
+                shutil.rmtree(work_dir)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="command", required=True)
@@ -897,6 +1724,21 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--run-id")
     run_parser.add_argument("--boot-timeout", type=int, default=900)
     run_parser.add_argument("--keep-on-failure", action="store_true")
+    full_parser = sub.add_parser(
+        "full", help="run the isolated WAN/LAN Proxmox lifecycle"
+    )
+    full_parser.add_argument("--artifact", required=True)
+    full_parser.add_argument("--artifacts", default="e2e/artifacts")
+    full_parser.add_argument("--work-dir", default="e2e/.run")
+    full_parser.add_argument("--run-id")
+    full_parser.add_argument("--boot-timeout", type=int, default=900)
+    full_parser.add_argument("--keep-on-failure", action="store_true")
+    helper_parser = sub.add_parser(
+        "check-helper", help="run a focused disposable Linux helper check"
+    )
+    helper_parser.add_argument("--work-dir", default="e2e/.run")
+    helper_parser.add_argument("--run-id")
+    helper_parser.add_argument("--boot-timeout", type=int, default=300)
     build_parser = sub.add_parser(
         "build", help="build an AiFw IMG in an ephemeral Proxmox FreeBSD VM"
     )
@@ -914,6 +1756,10 @@ def main() -> int:
     try:
         if args.command == "run":
             return run(args)
+        if args.command == "full":
+            return run_full(args)
+        if args.command == "check-helper":
+            return check_helper(args)
         if args.command == "build":
             return build_image(args)
     except HarnessError as error:

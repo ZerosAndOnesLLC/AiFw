@@ -229,15 +229,15 @@ The hook mirrors CI's fast gates; skip a single run with `git commit --no-verify
 
 ### Appliance E2E status
 
-The validated Woodpecker/Proxmox harness under `e2e/` implements exact-commit
-FreeBSD image builds, tagged VM provisioning, unattended setup, readiness and
-reboot checks, diagnostics, and guarded teardown. Woodpecker pipeline 14 passed
-the combined path on 2026-07-19: it built 5.99.14 from commit `9c146232`,
-tested that exact IMG at `192.168.0.26`, verified initial and post-reboot health
-including live `pf`, and left zero run-owned Proxmox resources. The lane remains
-manual and covers one-NIC lifecycle/control-plane smoke, not routed WAN/LAN
-data-plane behavior. See `testingUplift.md` and `e2e/README.md` for the full
-current and target states.
+The Woodpecker/Proxmox harness under `e2e/` implements exact-commit FreeBSD
+image builds, guarded deployment, and a full isolated topology: Debian helper
+containers on portless WAN/LAN bridges, a two-NIC AiFw VM, live NAT and
+pass/block traffic, API rule lifecycle, Playwright login/rules checks, reboot
+revalidation, diagnostics, and ownership-proven teardown. Pipeline 14 remains
+the last passing exact-commit one-NIC baseline; the new full manual workflow is
+implemented and awaiting its fresh-image acceptance run. See
+`testingUplift.md` and `e2e/README.md` for current evidence and remaining target
+lanes.
 
 ## Target Environment
 

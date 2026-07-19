@@ -1,9 +1,11 @@
 # AiFw Proxmox E2E harness
 
-Status: validated one-NIC lifecycle smoke as of 2026-07-19. Woodpecker pipeline
-14 built AiFw 5.99.14 from commit `9c146232`, deployed that exact IMG, passed
-initial and post-reboot health, and completed teardown. It is a manual release
-smoke, not yet a required gate or routed firewall data-plane suite.
+Status: the one-NIC lifecycle is validated and the full isolated WAN/LAN lane
+is implemented as of 2026-07-19. The full lane uses a real two-NIC AiFw VM,
+two Debian LXC traffic helpers, live NAT/pass/block checks, authenticated API
+rule changes, Playwright login/rules checks, reboot persistence, diagnostics,
+and ownership-verified teardown. A fresh exact-commit Woodpecker acceptance run
+is the remaining validation step.
 
 The harness provisions the exact writable AiFw IMG in Proxmox, attaches a
 per-run unattended seed ISO, verifies the running appliance, reboots it, saves
@@ -12,7 +14,7 @@ block.
 
 ## Safety model
 
-- Every VM and uploaded volume is named with a unique run ID.
+- Every VM, helper container, and uploaded volume is named with a unique run ID.
 - Only resources whose names begin with `aifw-e2e-` are deleted.
 - Cleanup runs on success, failure, timeout, SIGINT, and SIGTERM.
 - `--keep-on-failure` is a manual debugging escape hatch and is not used by CI.
@@ -29,13 +31,14 @@ Required secrets:
 Required non-secret settings:
 
 - `PVE_URL`, `PVE_NODE`, `PVE_IMAGE_STORAGE`, `PVE_VM_STORAGE`, `PVE_BRIDGE`
+- `PVE_E2E_WAN_BRIDGE`, `PVE_E2E_LAN_BRIDGE`
 - `AIFW_E2E_ADDRESS`, `AIFW_E2E_GATEWAY`, `AIFW_E2E_DNS`
 
 The manual Woodpecker workflow first creates an ephemeral FreeBSD 15 builder
 VM in Proxmox, copies the exact checked-out Git commit to it, builds a fresh
 seed-capable IMG, copies that IMG back into the job workspace, and destroys the
-builder. It then deploys that IMG as a second ephemeral VM for the appliance
-checks. The two VMs run sequentially and reuse the reserved test address.
+builder. It then deploys that IMG as a two-NIC VM plus two helper containers.
+The builder and LAN helper run sequentially and reuse the reserved address.
 
 The configured homelab lane uses:
 
@@ -43,16 +46,17 @@ The configured homelab lane uses:
 - Upload storage `local`
 - VM storage `local-lvm`
 - Bridge `vmbr0`
+- Isolated, portless bridges `vmbr998` (WAN) and `vmbr999` (LAN)
 - Reserved address `192.168.0.26/23`
 - Gateway and DNS `192.168.0.1`
 
 These operational values live in the pipeline and manual-only Woodpecker
 secrets. Credentials do not belong in this file or any repository file.
 
-The current Proxmox host has only an untagged management bridge. The supported
-initial lane is therefore a one-NIC appliance lifecycle smoke test. The
-orchestrator deliberately does not claim routed WAN/LAN coverage. Add isolated
-test bridges or VLAN-aware networking before implementing data-plane suites.
+The static isolated bridges are durable lab substrate; per-run VMs, containers,
+media, credentials, routes, and rules are disposable. The LAN helper has its
+management NIC on `vmbr0` and an isolated NIC on `vmbr999`. AiFw has only WAN
+and LAN NICs, so all appliance access is through the LAN helper.
 
 ## Current validation state
 
@@ -84,6 +88,11 @@ Passing direct checks:
   matching uploaded or imported volumes.
 - Cleanup now polls Proxmox and records `teardown_verified=true` in the run
   manifest only after the VM and every run-owned volume are absent.
+- A focused Debian helper-container check passed both NIC/address assertions,
+  SSH, source-observing HTTP service, and zero-residual teardown.
+- Direct full-topology attempts proved helper provisioning and teardown. The
+  retained 5.99.12 image did not configure its isolated LAN because it predates
+  the current first-boot fixes; it is not the acceptance artifact.
 
 Root cause and correction:
 
@@ -101,9 +110,8 @@ Remaining boundaries:
 
 - The official image performs slow first-boot maintenance before sshd starts;
   the reliable lane tolerates that bounded delay.
-- The passing lane has one NIC on the untagged management bridge. It proves
-  artifact boot, setup, control plane, real `pf` availability, persistence, and
-  cleanup—not forwarding, NAT, policy enforcement, DHCP, or WAN/LAN isolation.
+- Full-lane exact-commit acceptance in Woodpecker is pending. Until it passes,
+  pipeline 14 remains the last authoritative appliance acceptance result.
 - Run evidence is currently emitted to the Woodpecker log and job-local
   manifest. Durable external artifact retention and a stale-resource janitor
   remain target-state work.
@@ -121,8 +129,8 @@ Appliance root causes corrected in source:
   of stopping at SSH readiness.
 - Serial/VGA multicons output is enabled for future Proxmox boot diagnostics.
 
-Do not interpret this passing one-NIC smoke as the full WAN/LAN framework or a
-required publication gate.
+Do not promote this manual lane to a publication gate until repeat exact-commit
+full runs pass and durable evidence retention is added.
 
 ## Development and validation order
 
@@ -166,10 +174,11 @@ python -m e2e.aifw_e2e build \
   --output e2e/.run/aifw.img.xz
 ```
 
-Test an existing image:
+Run the quick one-NIC smoke or the full isolated suite:
 
 ```sh
 python -m e2e.aifw_e2e run --artifact output/aifw-<version>-amd64.img.xz
+python -m e2e.aifw_e2e full --artifact output/aifw-<version>-amd64.img.xz
 ```
 
 Artifacts are written to `e2e/artifacts/<run-id>/`.
@@ -178,11 +187,10 @@ and are deleted by the lifecycle `finally` block.
 
 ## Target state
 
-The one-NIC lifecycle smoke is only the first lane. The full target adds:
+The implemented first full lane still leaves these target extensions:
 
-- Isolated WAN and LAN networks plus helper client/origin VMs.
-- Real TCP, UDP, ICMP, DNS, DHCP, NAT, state, and pass/block assertions.
-- Playwright tests against the deployed UI.
+- UDP, ICMP, DNS, DHCP, and deeper state assertions.
+- Broader Playwright coverage beyond login/dashboard/rules.
 - ISO installation for UFS/ZFS and BIOS/UEFI.
 - Update, rollback, watchdog, failure-recovery, and HA suites.
 - Serial-console artifacts, JUnit, browser traces, packet captures on failure,

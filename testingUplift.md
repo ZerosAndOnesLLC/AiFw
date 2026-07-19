@@ -11,9 +11,10 @@ The target definition of done is:
 ## Status snapshot — 2026-07-19
 
 This document separates the implemented current state from the intended full
-framework. The repository now contains a directly validated one-NIC appliance
-lifecycle harness. Woodpecker pipeline 14 passed the combined native build,
-initial health, reboot health, and teardown path on 2026-07-19.
+framework. The repository contains a validated one-NIC appliance lifecycle and
+an implemented full isolated WAN/LAN lane. Woodpecker pipeline 14 remains the
+passing exact-commit baseline; the new full workflow awaits a fresh current-
+commit acceptance run.
 
 ### Implemented and verified
 
@@ -24,12 +25,22 @@ initial health, reboot health, and teardown path on 2026-07-19.
 - `.woodpecker/e2e.yml` is manual-only and restricted to the dedicated agent
   label `proxmox=true`.
 - The Proxmox lab is PVE 9.2 on node `trigproxmox`, using `local` for uploads,
-  `local-lvm` for VM disks, and `vmbr0` for the initial management lane.
+  `local-lvm` for disks, `vmbr0` for management, and durable portless bridges
+  `vmbr998`/`vmbr999` for isolated WAN/LAN traffic.
 - `192.168.0.26/23` is the reserved sequential builder/appliance address;
   gateway and DNS are `192.168.0.1`.
 - `e2e/aifw_e2e.py` implements Proxmox task polling, upload/import, tagged VM
   creation, disk attachment, startup, diagnostics, reboot checks, and guarded
   `try/finally` teardown.
+- The full lane provisions Debian 13 LXC traffic helpers plus a two-NIC AiFw
+  VM. The LAN helper is the SSH/API jump host, so AiFw has no management-side
+  bypass NIC.
+- The implemented contract verifies observed NAT source translation, default
+  WAN-to-LAN block, API-created WAN-to-LAN pass, API-created LAN-to-WAN block,
+  delete/reload recovery, browser login/rules rendering, reboot persistence,
+  and final rule removal.
+- A focused helper-container run directly passed boot, both static NICs,
+  routing, SSH, source-observing HTTP service, and zero-residual teardown.
 - The writable appliance IMG can be imported only after renaming its
   decompressed form to `.raw`; this PVE 9 API contract was verified directly.
 - Disposable direct tests have verified VM create/read/destroy, import to
@@ -133,23 +144,23 @@ as guest-agnostic layers.
 - `scripts/ha-verify.sh` for assertions against two already-running HA nodes.
 - `aifw-setup --config <json>` for unattended appliance configuration.
 
-### Remaining gaps to the full target
+### Remaining gaps to the broader target
 
 - The passing exact-IMG lifecycle is manual, not yet a required publication
   gate, and has only one successful combined Woodpecker acceptance run.
 - ISO installation is not exercised; the tested artifact is the writable IMG.
-- The lab has only an untagged management bridge; no isolated WAN/LAN helper
-  topology exists for routed traffic tests.
-- No tracked Playwright/browser suite exists.
-- Real FreeBSD `pf` availability and TLS/API behavior are exercised, but no
-  ruleset enforcement, IDS, DNS, DHCP, NAT, or forwarded-packet behavior is.
+- The new full topology needs a passing fresh exact-commit Woodpecker run before
+  it becomes an authoritative acceptance result.
+- Browser coverage currently targets login, dashboard arrival, and rules page;
+  NAT, DNS, IDS, users, and settings flows remain future expansion.
+- UDP, ICMP, DNS, DHCP, IDS, and packet-capture assertions remain future work.
 - No ISO installation, update/rollback, failure injection, HA provisioning, or
   stale-resource janitor exists at VM level.
 - UI lint remains non-blocking while existing lint debt is addressed.
 
-The current suite proves the newly built appliance boots, configures, serves
-its control plane, keeps `pf` alive across reboot, and tears down safely. It
-does not yet prove routed firewall behavior.
+The full suite is designed to prove routed behavior as well as control-plane
+health. Pipeline 14 is still the last passing acceptance evidence until the
+new exact-commit run completes.
 
 ## Validation workflow
 
@@ -280,14 +291,16 @@ WAN origin/test server -- WAN network -- AiFw VM -- LAN network -- client VM
                                             DNS/DHCP/traffic
 ```
 
-Recommended guests:
+Implemented guests:
 
 - **AiFw appliance:** 2-4 vCPU, 4 GB RAM, two VirtIO NICs.
-- **LAN client:** small Linux cloud-init VM for DHCP, DNS, browser, API, and traffic tests.
-- **WAN origin:** small Linux VM serving HTTP, HTTPS, DNS, TCP, UDP, and `iperf3` endpoints.
+- **LAN client:** disposable Debian LXC with management and isolated LAN NICs.
+- **WAN origin:** disposable Debian LXC on the isolated WAN bridge.
 - **HA expansion:** a second AiFw VM plus a dedicated pfsync network and CARP VIP.
 
-Use fixed lab bridges or VLAN-aware bridges with a unique VLAN/subnet allocation per run. Avoid dynamically creating permanent Proxmox bridges.
+The current lab uses fixed, portless `vmbr998` and `vmbr999` bridges with
+benchmark subnets `198.18.0.0/24` and `198.19.0.0/24`. They are durable lab
+substrate; run-owned guests and routes are always disposable.
 
 Every resource should be tagged or described with:
 
@@ -711,7 +724,8 @@ Performance regression thresholds should initially warn rather than block until 
 - **Directly verified:** SSH, service, TLS/API, UI, live `pf`, and reboot
   readiness checks on the corrected retained IMG.
 - **Implemented:** basic diagnostics and verified per-run teardown.
-- **Not implemented:** scheduled stale-resource janitor.
+- **Implemented:** ownership checks for appliance VM, helper containers, and
+  uploads. **Not implemented:** scheduled stale-resource janitor.
 
 ### Phase 3: core appliance tests
 
@@ -719,13 +733,13 @@ Performance regression thresholds should initially warn rather than block until 
 - Service health.
 - Authenticated API smoke tests.
 - Live `pf` state checks.
-- LAN-to-WAN and WAN-to-LAN traffic tests.
-- NAT, DNS, DHCP, TCP, UDP, and ICMP tests.
+- **Implemented:** TCP LAN-to-WAN and WAN-to-LAN traffic transitions and NAT.
+- Add DNS, DHCP, UDP, and ICMP tests.
 
 ### Phase 4: browser and broader functional coverage
 
-- Add Playwright configuration and fixtures.
-- Cover login, dashboard, rules, NAT, DNS, IDS, users, and settings.
+- **Implemented:** Playwright login/dashboard/rules-page smoke.
+- Cover NAT, DNS, IDS, users, settings, traces, and negative auth cases.
 - Add WebSocket and SSE assertions.
 - Add backup and restore tests.
 
@@ -763,5 +777,5 @@ Once this milestone is stable, ISO installation, HA, update rollback, IPv6, and 
    add a scheduled stale-resource janitor.
 3. Introduce a versioned template only if subsequent measurements show that
    the performance benefit justifies its maintenance and canary requirements.
-4. Add an isolated VLAN-aware or dedicated WAN/LAN lab topology before claiming
-   firewall data-plane E2E coverage.
+4. Expand the implemented isolated topology with UDP, ICMP, DNS, DHCP, and
+   packet capture after the core exact-commit lane is repeatable.

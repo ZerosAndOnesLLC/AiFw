@@ -4,6 +4,8 @@ import pytest
 from argon2 import PasswordHasher
 
 from e2e.aifw_e2e import (
+    FULL_LAN_CIDR,
+    FULL_WAN_CIDR,
     HarnessError,
     LabConfig,
     Lifecycle,
@@ -25,6 +27,8 @@ def config(password: str = "temporary-test-password") -> LabConfig:
         image_storage="local",
         vm_storage="local-lvm",
         bridge="vmbr0",
+        wan_bridge="vmbr998",
+        lan_bridge="vmbr999",
         verify_tls=True,
         address_cidr="192.0.2.10/24",
         gateway="192.0.2.1",
@@ -94,6 +98,47 @@ def test_seed_has_only_one_management_interface(
     assert setup["wan_interface"] == "vtnet0"
     assert setup["lan_interface"] is None
     assert setup["default_policy"] == "permissive"
+
+
+def test_full_seed_configures_isolated_wan_lan_and_nat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("e2e.aifw_e2e.shutil.which", lambda _name: "/usr/bin/xorrisofs")
+
+    def fake_run(args: list[str], **_kwargs: object) -> object:
+        Path(args[args.index("-o") + 1]).write_bytes(b"fake iso")
+        return object()
+
+    monkeypatch.setattr("e2e.aifw_e2e.run_checked", fake_run)
+    make_seed(
+        config(), tmp_path, "feed12", "ssh-ed25519 AAAAtest", full=True
+    )
+
+    import json
+
+    setup = json.loads((tmp_path / "seed" / "setup.json").read_text())
+    assert setup["wan_ip"] == FULL_WAN_CIDR
+    assert setup["wan_gateway"] is None
+    assert setup["lan_ip"] == FULL_LAN_CIDR
+    assert setup["lan_interface"] == "vtnet1"
+    assert setup["default_policy"] == "standard"
+    assert setup["nat_enabled"] is True
+    assert setup["dns_servers"] == []
+
+
+def test_full_vm_network_order_is_wan_then_lan() -> None:
+    pve = Proxmox(config())
+    requests: list[dict[str, object]] = []
+
+    def fake_request(method: str, path: str, **kwargs: object) -> None:
+        requests.append({"method": method, "path": path, **kwargs})
+
+    pve.request = fake_request  # type: ignore[method-assign]
+    pve.create_full_appliance_vm(101, "aifw-e2e-feed12", "test")
+    data = requests[0]["data"]
+    assert isinstance(data, dict)
+    assert data["net0"] == "virtio,bridge=vmbr998,firewall=0"
+    assert data["net1"] == "virtio,bridge=vmbr999,firewall=0"
 
 
 def test_builder_seed_uses_reserved_address_and_public_key(
@@ -196,7 +241,14 @@ def test_complete_readiness_retries_transient_pf_state(
         ]
     )
 
-    def fake_checks(_cfg: LabConfig, _key: Path) -> dict[str, object]:
+    def fake_checks(
+        _cfg: LabConfig,
+        _key: Path,
+        host: str | None = None,
+        jump: str | None = None,
+    ) -> dict[str, object]:
+        assert host is None
+        assert jump is None
         result = next(attempts)
         if isinstance(result, BaseException):
             raise result
@@ -267,6 +319,39 @@ def test_cleanup_deletes_owned_resources_and_proves_absence() -> None:
     lifecycle.volumes = ["local:iso/aifw-e2e-seed.iso"]
     lifecycle.cleanup()
     assert pve.audited
+
+
+def test_cleanup_deletes_all_owned_vms() -> None:
+    class FakeProxmox:
+        present = {101, 102, 103}
+        audited: list[int] = []
+
+        def vm_exists(self, vmid: int) -> bool:
+            return vmid in self.present
+
+        def vm_config(self, vmid: int) -> dict[str, str]:
+            return {"name": f"aifw-e2e-owned-{vmid}"}
+
+        def destroy(self, vmid: int) -> None:
+            self.present.remove(vmid)
+
+        def volume_exists(self, _volume: str) -> bool:
+            return False
+
+        def wait_resources_absent(
+            self, vmid: int | None, volumes: list[str]
+        ) -> None:
+            assert vmid not in self.present
+            if vmid != 101:
+                assert volumes == []
+            self.audited.append(vmid)  # type: ignore[arg-type]
+
+    pve = FakeProxmox()
+    lifecycle = Lifecycle(pve, keep_on_failure=False)  # type: ignore[arg-type]
+    lifecycle.vmid = 101
+    lifecycle.additional_vmids = [102, 103]
+    lifecycle.cleanup()
+    assert set(pve.audited) == {101, 102, 103}
 
 
 def test_cleanup_refuses_unowned_volume() -> None:
