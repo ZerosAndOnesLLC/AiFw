@@ -29,6 +29,8 @@ of any failure on the master.
 
 ## What survives a master reboot
 
+> **Qualification status:** the behaviours and timings below describe the intended design and require validation on the exact appliance build and network. AiFw does not yet publish an automated two-node FreeBSD failover artifact, so they are not guarantees.
+
 | Component | Survives | Notes |
 |---|---|---|
 | TCP sessions through the firewall | yes | pfsync replicates state to the backup; `state-policy floating` lets replicated states match traffic on the new master's interface |

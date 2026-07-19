@@ -40,7 +40,7 @@ breadcrumb:
     { "@type": "Question", "name": "Does AiFw support OpenVPN?", "acceptedAnswer": { "@type": "Answer", "text": "Not currently. AiFw supports WireGuard and IPsec only. If OpenVPN is a hard requirement, stay on pfSense or OPNsense." } },
     { "@type": "Question", "name": "Can I run AiFw in a VM (Proxmox, ESXi, KVM, bhyve)?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. AiFw runs anywhere FreeBSD runs — bare metal, KVM, Proxmox, VMware ESXi, bhyve. AWS and DigitalOcean FreeBSD images are untested but should work." } },
     { "@type": "Question", "name": "Does AiFw work with WireGuard mobile clients?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. AiFw generates per-peer .conf files you can scan as a QR code from the WireGuard mobile app. Persistent keepalive can be set per peer. The handshake status is shown live in the web UI." } },
-    { "@type": "Question", "name": "How does HA failover work?", "acceptedAnswer": { "@type": "Answer", "text": "AiFw runs an active-passive pair using CARP (virtual IP) and pfsync (state-table sync). TCP sessions survive a master reboot; WireGuard tunnels reconnect within ~5 seconds if peers have PersistentKeepalive set. Failover detection takes 1.5–3 seconds depending on the configured latency profile. See the HA cluster guide for details." } },
+    { "@type": "Question", "name": "How does HA failover work?", "acceptedAnswer": { "@type": "Answer", "text": "AiFw configures an active-passive pair using CARP and pfsync. Session survival and failover timing depend on the deployment and are not yet backed by a published automated two-node qualification artifact." } },
     { "@type": "Question", "name": "Is the source code auditable / where do I read it?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. The full source is at https://github.com/ZerosAndOnesLLC/AiFw under the MIT license. The codebase is Rust workspace crates plus a Next.js web UI. CLAUDE.md in the repo root has an architectural overview." } }
   ]
 }
@@ -116,7 +116,7 @@ Yes. AiFw generates per-peer `.conf` files you can scan as a QR code from the Wi
 
 ## How does HA failover work?
 
-AiFw runs an active-passive pair using **CARP** (virtual IP) and **pfsync** (state-table sync). TCP sessions survive a master reboot. WireGuard tunnels reconnect within ~5 seconds if peers have `PersistentKeepalive` set. Failover detection takes 1.5–3 seconds depending on the configured latency profile. See the [HA cluster guide]({{ '/ha/' | relative_url }}).
+AiFw configures an active-passive pair using **CARP** and **pfsync**. Session survival and failover timing depend on the deployment and are not yet backed by a published automated two-node FreeBSD qualification artifact. Validate primary shutdown, reboot, pfsync loss, split-brain recovery, NAT state, and long-lived TCP traffic before relying on HA. See the [HA cluster guide]({{ '/ha/' | relative_url }}).
 
 ## Is the source code auditable / where do I read it?
 
