@@ -39,6 +39,9 @@ pub async fn create_nat_rule(
     Json(req): Json<CreateNatRuleRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<NatRule>>), StatusCode> {
     let nat_type = NatType::parse(&req.nat_type).map_err(|_| bad_request())?;
+    if matches!(nat_type, NatType::Nat64 | NatType::Nat46) {
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
     let protocol = Protocol::parse(&req.protocol).map_err(|_| bad_request())?;
 
     let src_addr = req
@@ -101,7 +104,11 @@ pub async fn update_nat_rule(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    rule.nat_type = NatType::parse(&req.nat_type).map_err(|_| bad_request())?;
+    let nat_type = NatType::parse(&req.nat_type).map_err(|_| bad_request())?;
+    if matches!(nat_type, NatType::Nat64 | NatType::Nat46) {
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
+    rule.nat_type = nat_type;
     // Validate interface and label to prevent pf rule injection
     aifw_core::validation::validate_interface_name(&req.interface).map_err(|_| bad_request())?;
     if let Some(ref label) = req.label {

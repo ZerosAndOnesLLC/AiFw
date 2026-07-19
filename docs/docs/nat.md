@@ -27,7 +27,7 @@ breadcrumb:
 
 # NAT
 
-AiFw supports six NAT types &mdash; SNAT, DNAT (port forwarding), Masquerade, 1:1 BiNAT, NAT64, and NAT46. NAT46 is unusual on consumer firewall distributions and lets you front legacy IPv4 clients onto an IPv6-only network. All NAT rules compile into the dedicated `aifw-nat` anchor and never touch the system pf config.
+AiFw supports SNAT, DNAT (port forwarding), Masquerade, and 1:1 BiNAT. NAT64 and NAT46 are retained as experimental model values for compatibility but creation is rejected: the current pf text does not perform cross-family translation. All supported NAT rules compile into the dedicated `aifw-nat` anchor.
 
 ## Quickstart
 
@@ -128,7 +128,7 @@ Bidirectional 1:1 mapping between an internal address and an external address. C
 
 ### NAT64
 
-Translate IPv6 source traffic into IPv4 destination traffic. Pair with a DNS64 resolver (the rDNS resolver has a `dns64` toggle) so IPv6-only clients can still reach IPv4 destinations.
+**Unavailable.** No cross-family FreeBSD data-plane backend is implemented. The API returns `501 Not Implemented` for new or updated NAT64 rules.
 
 ```json
 { "nat_type": "nat64", "interface": "em0",
@@ -138,7 +138,7 @@ Translate IPv6 source traffic into IPv4 destination traffic. Pair with a DNS64 r
 
 ### NAT46
 
-Translate IPv4 source traffic into IPv6 destination traffic. Front legacy IPv4 clients onto an IPv6-only backend network. NAT46 is uncommon on most firewall distros &mdash; AiFw exposes it as a first-class rule type.
+**Unavailable.** No cross-family FreeBSD data-plane backend is implemented. The API returns `501 Not Implemented` for new or updated NAT46 rules.
 
 ```json
 { "nat_type": "nat46", "interface": "em0",
