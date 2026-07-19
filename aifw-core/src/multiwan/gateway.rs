@@ -94,17 +94,25 @@ pub fn evaluate_transition(
     consec_ok_up: u32,
     loss_pct_down: f64,
     loss_pct_up: f64,
+    latency_ms_down: Option<u64>,
+    latency_ms_up: Option<u64>,
 ) -> GatewayState {
     if metrics.consec_fail >= consec_fail_down {
         return GatewayState::Down;
     }
     if metrics.consec_ok >= consec_ok_up {
-        if metrics.recent_loss > loss_pct_up {
+        if metrics.recent_loss > loss_pct_up
+            || latency_ms_up
+                .is_some_and(|limit| metrics.last_rtt_ms.unwrap_or_default() > limit as f64)
+        {
             return GatewayState::Warning;
         }
         return GatewayState::Up;
     }
-    if metrics.recent_loss > loss_pct_down {
+    if metrics.recent_loss > loss_pct_down
+        || latency_ms_down
+            .is_some_and(|limit| metrics.last_rtt_ms.unwrap_or_default() > limit as f64)
+    {
         return GatewayState::Warning;
     }
     current
@@ -392,6 +400,8 @@ impl GatewayEngine {
             gw.consec_ok_up,
             gw.loss_pct_down,
             gw.loss_pct_up,
+            gw.latency_ms_down,
+            gw.latency_ms_up,
         );
         let metrics_snapshot = m.clone();
         drop(metrics_map);
@@ -703,7 +713,7 @@ mod tests {
             consec_fail: 3,
             ..GatewayMetrics::default()
         };
-        let s = evaluate_transition(GatewayState::Up, &m, 3, 5, 20.0, 5.0);
+        let s = evaluate_transition(GatewayState::Up, &m, 3, 5, 20.0, 5.0, None, None);
         assert_eq!(s, GatewayState::Down);
     }
 
@@ -714,7 +724,7 @@ mod tests {
             recent_loss: 8.0,
             ..GatewayMetrics::default()
         };
-        let s = evaluate_transition(GatewayState::Down, &m, 3, 5, 20.0, 5.0);
+        let s = evaluate_transition(GatewayState::Down, &m, 3, 5, 20.0, 5.0, None, None);
         assert_eq!(s, GatewayState::Warning);
     }
 }
