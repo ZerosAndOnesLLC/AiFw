@@ -330,6 +330,9 @@ mount "/dev/${MD}p3" /mnt
 # Clone staged system into USB image
 # Update fstab for USB boot
 cp -a "$STAGEDIR/"* /mnt/
+# rc.d scripts marked KEYWORD:firstboot run only while this sentinel exists.
+# The writable IMG is assembled from a staged root, so create it explicitly.
+touch /mnt/firstboot
 cat > /mnt/etc/fstab <<USBFSTAB
 /dev/ufs/aifw  /       ufs     rw  1  1
 tmpfs          /tmp    tmpfs   rw,mode=01777  0  0

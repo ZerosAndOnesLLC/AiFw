@@ -160,6 +160,33 @@ mod tests {
     }
 
     #[test]
+    fn test_unattended_seed_boot_contract() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let firstboot =
+            std::fs::read_to_string(root.join("freebsd/overlay/usr/local/etc/rc.d/aifw_firstboot"))
+                .expect("read aifw_firstboot");
+        let build = std::fs::read_to_string(root.join("freebsd/build-iso.sh"))
+            .expect("read freebsd/build-iso.sh");
+
+        assert!(firstboot.contains("# KEYWORD: firstboot"));
+        assert!(build.contains("touch /mnt/firstboot"));
+        assert!(firstboot.contains("AIFW_SEED_LABEL=\"AIFW_SEED\""));
+        assert!(firstboot.contains("$AIFW_SETUP --config \"$AIFW_SEED_CONFIG\""));
+        assert!(firstboot.contains("$AIFW_SETUP </dev/console"));
+    }
+
+    #[test]
+    fn test_console_shell_supports_non_interactive_commands() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let console =
+            std::fs::read_to_string(root.join("freebsd/overlay/usr/local/sbin/aifw-console"))
+                .expect("read aifw-console");
+
+        assert!(console.contains("if [ \"${1:-}\" = \"-c\" ] && [ \"$#\" -eq 2 ]"));
+        assert!(console.contains("exec /bin/sh -c \"$2\""));
+    }
+
+    #[test]
     fn test_wan_mode_display() {
         assert_eq!(WanMode::Dhcp.to_string(), "DHCP");
         assert_eq!(WanMode::Static.to_string(), "Static");

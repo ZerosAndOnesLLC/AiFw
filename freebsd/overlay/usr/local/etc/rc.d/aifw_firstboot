@@ -14,6 +14,27 @@ stop_cmd=":"
 AIFW_CONF="/usr/local/etc/aifw/aifw.conf"
 AIFW_SETUP="/usr/local/sbin/aifw-setup"
 AIFW_PF_CONF="/usr/local/etc/aifw/pf.conf.aifw"
+AIFW_SEED_LABEL="AIFW_SEED"
+AIFW_SEED_MOUNT="/tmp/aifw-seed"
+AIFW_SEED_CONFIG="${AIFW_SEED_MOUNT}/setup.json"
+
+mount_seed()
+{
+    mkdir -p "$AIFW_SEED_MOUNT"
+
+    # Prefer the stable filesystem label. Optical-device fallbacks accommodate
+    # firmware and hypervisors that expose the seed before GEOM creates it.
+    for dev in "/dev/iso9660/${AIFW_SEED_LABEL}" /dev/cd1 /dev/cd0; do
+        if [ -e "$dev" ] && mount -t cd9660 -o ro "$dev" "$AIFW_SEED_MOUNT" 2>/dev/null; then
+            if [ -f "$AIFW_SEED_CONFIG" ]; then
+                return 0
+            fi
+            umount "$AIFW_SEED_MOUNT" 2>/dev/null || true
+        fi
+    done
+
+    return 1
+}
 
 aifw_firstboot_start()
 {
@@ -29,8 +50,19 @@ aifw_firstboot_start()
     echo ""
 
     if [ -x "$AIFW_SETUP" ]; then
-        # Run the setup wizard on the console
-        $AIFW_SETUP </dev/console >/dev/console 2>&1
+        if mount_seed; then
+            echo "Found unattended AiFw seed media."
+            $AIFW_SETUP --config "$AIFW_SEED_CONFIG" >/dev/console 2>&1
+            setup_status=$?
+            umount "$AIFW_SEED_MOUNT" 2>/dev/null || true
+            if [ "$setup_status" -ne 0 ]; then
+                echo "ERROR: unattended setup failed (exit $setup_status)"
+                return "$setup_status"
+            fi
+        else
+            # No seed was supplied; retain the normal interactive first boot.
+            $AIFW_SETUP </dev/console >/dev/console 2>&1
+        fi
 
         # If setup succeeded, enable and start services
         if [ -f "$AIFW_CONF" ]; then
