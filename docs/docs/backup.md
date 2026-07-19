@@ -27,6 +27,8 @@ breadcrumb:
 
 # Backup &amp; migration
 
+> **Restore safety:** restore uses snapshot/reapply across SQLite and live services; it is not a single atomic database-and-kernel transaction. Required firewall, NAT, and GeoIP apply failures are returned as errors, but complete failure-injection and verified live-state rollback coverage is still in progress. Keep an out-of-band recovery path and a separately verified backup.
+
 Three workflows live in the same place: **JSON config backup &amp; restore** for day-to-day snapshots, **OPNsense / pfSense XML import** for migrating off another firewall, and **commit-confirm** for safe remote edits that auto-revert if you lose access. Versioned history sits underneath all three so any change is one click away from a rollback.
 
 ## JSON backup &amp; restore

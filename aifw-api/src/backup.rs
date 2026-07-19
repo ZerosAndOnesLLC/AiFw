@@ -1514,7 +1514,8 @@ pub(crate) async fn apply_firewall_config(
             .execute(&state.pool)
             .await
         {
-            tracing::warn!(table, error = %e, "import: DELETE failed before restore");
+            tracing::error!(table, error = %e, "import: required DELETE failed before restore");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
 
@@ -1878,15 +1879,18 @@ pub(crate) async fn apply_firewall_config(
     if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
         state.rule_engine.set_extra_rules(vpn_rules).await;
     }
-    if let Err(e) = state.rule_engine.apply_rules().await {
-        tracing::warn!(error = %e, "import: firewall rules apply failed");
-    }
-    if let Err(e) = state.nat_engine.apply_rules().await {
-        tracing::warn!(error = %e, "import: nat rules apply failed");
-    }
-    if let Err(e) = state.geoip_engine.apply_rules().await {
-        tracing::warn!(error = %e, "import: geoip rules apply failed");
-    }
+    state.rule_engine.apply_rules().await.map_err(|e| {
+        tracing::error!(error = %e, "import: required firewall rules apply failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    state.nat_engine.apply_rules().await.map_err(|e| {
+        tracing::error!(error = %e, "import: required nat rules apply failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    state.geoip_engine.apply_rules().await.map_err(|e| {
+        tracing::error!(error = %e, "import: required geoip rules apply failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(())
 }
