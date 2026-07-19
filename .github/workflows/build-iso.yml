@@ -101,9 +101,13 @@ jobs:
             for row in $(jq -c '.external_repos[]' "$MANIFEST"); do
               NAME=$(echo "$row" | jq -r '.name')
               REPO=$(echo "$row" | jq -r '.repo')
+              REV=$(echo "$row" | jq -r '.rev')
+              echo "$REV" | grep -Eq '^[0-9a-f]{40}$' || { echo "Invalid immutable revision for $NAME"; exit 1; }
               echo "=== Building $NAME ==="
-              git clone "https://github.com/${REPO}.git" "/tmp/${NAME}"
+              git clone --no-checkout "https://github.com/${REPO}.git" "/tmp/${NAME}"
               cd "/tmp/${NAME}"
+              git checkout --detach "$REV"
+              test "$(git rev-parse HEAD)" = "$REV" || exit 1
               cargo build --release
               cd /home/runner/work/AiFw/AiFw
             done

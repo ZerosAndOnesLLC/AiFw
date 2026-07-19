@@ -10,21 +10,25 @@
     {
       "name": "TrafficCop",
       "repo": "ZerosAndOnesLLC/TrafficCop",
+      "rev": "3d4d96595bea1d4f29b8729a452c95dd1be0ed25",
       "binaries": ["trafficcop"]
     },
     {
       "name": "rDHCP",
       "repo": "ZerosAndOnesLLC/rDHCP",
+      "rev": "bddd4868df6f5931b614f8412071daf31af7d0dd",
       "binaries": ["rdhcpd"]
     },
     {
       "name": "rDNS",
       "repo": "ZerosAndOnesLLC/rDNS",
+      "rev": "7bd12e293536ec3adae09e340b572b87e0fe942b",
       "binaries": ["rdns", "rdns-control"]
     },
     {
       "name": "rTIME",
       "repo": "ZerosAndOnesLLC/rTIME",
+      "rev": "444e104db55fa33f6aded7a6b0b7752509bc0a6f",
       "binaries": ["rtime"]
     }
   ],
