@@ -73,6 +73,7 @@ case "$DEST" in
     /usr/local/share/aifw/ui|/usr/local/share/aifw/ui/*) ;;
     /usr/local/share/aifw/backup|/usr/local/share/aifw/backup/*) ;;
     /usr/local/share/aifw/version) ;;
+    /usr/local/share/aifw/components.json) ;;
     /usr/local/etc/aifw/*) ;;
     /usr/local/etc/rdns/*) ;;
     /usr/local/etc/rdhcpd/*) ;;

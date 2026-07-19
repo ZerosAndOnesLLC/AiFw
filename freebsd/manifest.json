@@ -8,23 +8,28 @@
 
   "external_repos": [
     {
+      "_comment": "commit pins the exact revision built into appliance artifacts (#538). CI and build-local.sh check out and verify this SHA and fail if it is missing. To take a companion update: review the upstream diff, bump the SHA here, and land it through a PR.",
       "name": "TrafficCop",
       "repo": "ZerosAndOnesLLC/TrafficCop",
+      "commit": "3d4d96595bea1d4f29b8729a452c95dd1be0ed25",
       "binaries": ["trafficcop"]
     },
     {
       "name": "rDHCP",
       "repo": "ZerosAndOnesLLC/rDHCP",
+      "commit": "bddd4868df6f5931b614f8412071daf31af7d0dd",
       "binaries": ["rdhcpd"]
     },
     {
       "name": "rDNS",
       "repo": "ZerosAndOnesLLC/rDNS",
+      "commit": "7bd12e293536ec3adae09e340b572b87e0fe942b",
       "binaries": ["rdns", "rdns-control"]
     },
     {
       "name": "rTIME",
       "repo": "ZerosAndOnesLLC/rTIME",
+      "commit": "444e104db55fa33f6aded7a6b0b7752509bc0a6f",
       "binaries": ["rtime"]
     }
   ],

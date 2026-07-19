@@ -766,6 +766,26 @@ pub async fn install_from_path(
         }
     };
 
+    // Install the component-revision record (#538) next to the version file
+    // so an appliance can report exactly which AiFw + companion commits it
+    // runs. Best-effort: pre-#538 tarballs don't contain it.
+    {
+        let comp_src = update_dir.join("components.json");
+        if comp_src.exists() {
+            match comp_src.to_str() {
+                Some(comp_src_str) => {
+                    if let Some(err) = step_failure(
+                        &crate::sudo::cp(&[comp_src_str, "/usr/local/share/aifw/components.json"])
+                            .await,
+                    ) {
+                        warn!(error = %err, "update: components.json install failed");
+                    }
+                }
+                None => warn!("update: components.json path is not UTF-8; skipping"),
+            }
+        }
+    }
+
     // Strip stale AiFw version from MOTD template. Idempotent and respects
     // the marker file that `system_apply::apply_banner` sets when the admin
     // edits MOTD via the UI.
