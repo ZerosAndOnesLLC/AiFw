@@ -315,16 +315,6 @@ export function RuleFormModal({
               />
             </div>
             <div>
-              <label className={labelClass}>Gateway</label>
-              <input
-                type="text"
-                value={form.gateway}
-                onChange={(e) => setForm((f) => ({ ...f, gateway: e.target.value }))}
-                placeholder="Policy routing gateway"
-                className={inputClass}
-              />
-            </div>
-            <div>
               <label className={labelClass}>State Type</label>
               <select
                 value={form.state_tracking}

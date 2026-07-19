@@ -41,7 +41,6 @@ export interface RuleForm {
   dst_port: string;
   log: boolean;
   description: string;
-  gateway: string;
   state_tracking: string;
   label: string;
   schedule_id: string;
@@ -66,7 +65,6 @@ export const defaultForm: RuleForm = {
   dst_port: "",
   log: false,
   description: "",
-  gateway: "",
   state_tracking: "keep_state",
   label: "",
   schedule_id: "",
@@ -201,7 +199,6 @@ export function buildRuleBody(form: RuleForm): UpdateRuleRequest {
     quick: true,
     label: form.label || undefined,
     description: form.description || undefined,
-    gateway: form.gateway || null,
     schedule_id: form.schedule_id || null,
     state_tracking: form.state_tracking,
     status: form.disabled ? "disabled" : "active",
@@ -234,7 +231,6 @@ export function ruleToForm(rule: Rule): RuleForm {
     dst_port: rule.rule_match.dst_port ? String(rule.rule_match.dst_port.start) : "",
     log: rule.log,
     description: rule.description || "",
-    gateway: rule.gateway || "",
     state_tracking: rule.state_options.tracking,
     label: rule.label || "",
     schedule_id: rule.schedule_id || "",
@@ -259,7 +255,6 @@ export function toggleStatusRequest(rule: Rule): UpdateRuleRequest {
     log: rule.log,
     label: rule.label || undefined,
     description: rule.description || undefined,
-    gateway: rule.gateway || null,
     schedule_id: rule.schedule_id || null,
     state_tracking: rule.state_options.tracking,
     status: newStatus,
