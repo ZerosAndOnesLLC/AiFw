@@ -80,6 +80,19 @@ const HELPER_CP: &str = "/usr/local/libexec/aifw-sudo-cp";
 const HELPER_TAR: &str = "/usr/local/libexec/aifw-sudo-tar";
 const HELPER_TCPDUMP: &str = "/usr/local/libexec/aifw-sudo-tcpdump";
 const HELPER_SWANCTL: &str = "/usr/local/libexec/aifw-sudo-swanctl";
+const HELPER_DUMMYNET: &str = "/usr/local/libexec/aifw-sudo-dummynet";
+/// Apply dummynet/FQ-CoDel commands through the closed helper.
+pub async fn dummynet_apply(commands: &[String]) -> std::io::Result<()> {
+    let payload = commands.join("\n");
+    let output = run_with_stdin_pipe(&[HELPER_DUMMYNET], payload.as_bytes()).await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.

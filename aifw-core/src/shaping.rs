@@ -1,6 +1,6 @@
 use aifw_common::{
-    Address, AifwError, Bandwidth, BandwidthUnit, Interface, PortRange, Protocol, QueueConfig,
-    QueueStatus, QueueType, RateLimitRule, RateLimitStatus, Result, TrafficClass,
+    Address, AifwError, Bandwidth, BandwidthUnit, FqCodelConfig, Interface, PortRange, Protocol,
+    QueueConfig, QueueStatus, QueueType, RateLimitRule, RateLimitStatus, Result, TrafficClass,
 };
 use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
@@ -57,6 +57,24 @@ impl ShapingEngine {
         )
         .execute(&self.pool)
         .await?;
+        let _ = sqlx::query(
+            "ALTER TABLE queue_configs ADD COLUMN fq_codel_target_ms INTEGER NOT NULL DEFAULT 5",
+        )
+        .execute(&self.pool)
+        .await;
+        let _ = sqlx::query("ALTER TABLE queue_configs ADD COLUMN fq_codel_interval_ms INTEGER NOT NULL DEFAULT 100").execute(&self.pool).await;
+        let _ = sqlx::query("ALTER TABLE queue_configs ADD COLUMN fq_codel_quantum_bytes INTEGER NOT NULL DEFAULT 1514").execute(&self.pool).await;
+        let _ = sqlx::query("ALTER TABLE queue_configs ADD COLUMN fq_codel_limit_packets INTEGER NOT NULL DEFAULT 10240").execute(&self.pool).await;
+        let _ = sqlx::query(
+            "ALTER TABLE queue_configs ADD COLUMN fq_codel_flows INTEGER NOT NULL DEFAULT 1024",
+        )
+        .execute(&self.pool)
+        .await;
+        let _ = sqlx::query(
+            "ALTER TABLE queue_configs ADD COLUMN fq_codel_ecn INTEGER NOT NULL DEFAULT 1",
+        )
+        .execute(&self.pool)
+        .await;
 
         sqlx::query(
             r#"
@@ -90,6 +108,7 @@ impl ShapingEngine {
     /// Insert a queue config row. pf isn't touched until
     /// [`Self::apply_queues`]
     pub async fn add_queue(&self, config: QueueConfig) -> Result<QueueConfig> {
+        config.fq_codel.validate()?;
         self.insert_queue(&config).await?;
         tracing::info!(id = %config.id, name = %config.name, "queue added");
         Ok(config)
@@ -129,13 +148,19 @@ impl ShapingEngine {
             .collect();
 
         let mut pf_lines = Vec::new();
+        let mut dummynet = Vec::new();
         // Group by interface — each needs a parent queue
         let mut interfaces_seen = std::collections::HashSet::new();
         for q in &active {
             if interfaces_seen.insert(q.interface.0.clone()) {
                 pf_lines.push(q.to_pf_parent_queue());
             }
-            pf_lines.push(q.to_pf_queue());
+            if q.queue_type == QueueType::Codel {
+                q.fq_codel.validate()?;
+                dummynet.extend(render_dummynet_commands(q)?);
+            } else {
+                pf_lines.push(q.to_pf_queue());
+            }
         }
 
         tracing::info!(count = pf_lines.len(), "applying queue configs to pf");
@@ -143,6 +168,7 @@ impl ShapingEngine {
             .load_queues(&self.anchor, &pf_lines)
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
+        apply_dummynet(&dummynet).await?;
 
         Ok(())
     }
@@ -231,8 +257,10 @@ impl ShapingEngine {
         sqlx::query(
             r#"
             INSERT INTO queue_configs (id, interface, queue_type, bandwidth_value, bandwidth_unit,
-                name, traffic_class, bandwidth_pct, is_default, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                name, traffic_class, bandwidth_pct, fq_codel_target_ms, fq_codel_interval_ms,
+                fq_codel_quantum_bytes, fq_codel_limit_packets, fq_codel_flows, fq_codel_ecn,
+                is_default, status, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             "#,
         )
         .bind(q.id.to_string())
@@ -243,6 +271,12 @@ impl ShapingEngine {
         .bind(&q.name)
         .bind(q.traffic_class.to_string())
         .bind(q.bandwidth_pct.map(|p| p as i64))
+        .bind(q.fq_codel.target_ms as i64)
+        .bind(q.fq_codel.interval_ms as i64)
+        .bind(q.fq_codel.quantum_bytes as i64)
+        .bind(q.fq_codel.limit_packets as i64)
+        .bind(q.fq_codel.flows as i64)
+        .bind(q.fq_codel.ecn)
         .bind(q.default)
         .bind(match q.status {
             QueueStatus::Active => "active",
@@ -294,8 +328,51 @@ impl ShapingEngine {
 /// `SELECT *` which triggers a sqlx-sqlite column-count panic and blocks
 /// column pruning (#348).
 const QUEUE_COLUMNS: &str = "id, interface, queue_type, bandwidth_value, \
-    bandwidth_unit, name, traffic_class, bandwidth_pct, is_default, status, \
-    created_at, updated_at";
+    bandwidth_unit, name, traffic_class, bandwidth_pct, fq_codel_target_ms, \
+    fq_codel_interval_ms, fq_codel_quantum_bytes, fq_codel_limit_packets, \
+    fq_codel_flows, fq_codel_ecn, is_default, status, created_at, updated_at";
+
+fn render_dummynet_commands(q: &QueueConfig) -> Result<Vec<String>> {
+    let fq = q.fq_codel;
+    fq.validate()?;
+    let id = (q.id.as_u128() & 0x7fff_ffff) as u32;
+    let bandwidth = q.bandwidth.to_bits_per_sec();
+    Ok(vec![
+        format!(
+            "pipe {id} config bw {bandwidth}bit/s queue {limit} sched fq_codel target {target}ms interval {interval}ms quantum {quantum} flows {flows} ecn",
+            limit = fq.limit_packets,
+            target = fq.target_ms,
+            interval = fq.interval_ms,
+            quantum = fq.quantum_bytes,
+            flows = fq.flows
+        ),
+        format!(
+            "ipfw add {} pipe {id} ip from any to any out xmit {}",
+            10000 + id,
+            q.interface
+        ),
+        format!(
+            "ipfw add {} pipe {id} ip from any to any in recv {}",
+            20000 + id,
+            q.interface
+        ),
+    ])
+}
+
+async fn apply_dummynet(commands: &[String]) -> Result<()> {
+    if commands.is_empty() {
+        return Ok(());
+    }
+    #[cfg(not(target_os = "freebsd"))]
+    {
+        let _ = commands;
+        return Ok(());
+    }
+    #[cfg(target_os = "freebsd")]
+    crate::sudo::dummynet_apply(commands)
+        .await
+        .map_err(|e| AifwError::Other(format!("dummynet apply failed: {e}")))
+}
 
 /// Explicit column list for `RateLimitRow` selects, in schema order. Replaces
 /// `SELECT *` which triggers a sqlx-sqlite column-count panic and blocks
@@ -314,6 +391,12 @@ struct QueueRow {
     name: String,
     traffic_class: String,
     bandwidth_pct: Option<i64>,
+    fq_codel_target_ms: i64,
+    fq_codel_interval_ms: i64,
+    fq_codel_quantum_bytes: i64,
+    fq_codel_limit_packets: i64,
+    fq_codel_flows: i64,
+    fq_codel_ecn: bool,
     is_default: bool,
     status: String,
     created_at: String,
@@ -351,6 +434,14 @@ impl QueueRow {
             updated_at: DateTime::parse_from_rfc3339(&self.updated_at)
                 .map_err(|e| AifwError::Database(format!("invalid date: {e}")))?
                 .with_timezone(&Utc),
+            fq_codel: FqCodelConfig {
+                target_ms: self.fq_codel_target_ms as u32,
+                interval_ms: self.fq_codel_interval_ms as u32,
+                quantum_bytes: self.fq_codel_quantum_bytes as u32,
+                limit_packets: self.fq_codel_limit_packets as u32,
+                flows: self.fq_codel_flows as u32,
+                ecn: self.fq_codel_ecn,
+            },
         })
     }
 }

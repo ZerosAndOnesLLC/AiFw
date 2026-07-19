@@ -1,0 +1,18 @@
+#!/bin/sh
+# Apply only AiFw-owned dummynet pipes/IPFW rules.  Commands are parsed as
+# argv by the controller, never evaluated by a shell, and the previous state
+# is restored if any command or live verification fails.
+set -eu
+[ $# -eq 0 ] || { echo "usage: $0" >&2; exit 2; }
+CONTROL=/usr/local/libexec/aifw-dummynet-control
+[ -x "$CONTROL" ] || { echo "dummynet controller is not installed" >&2; exit 1; }
+TMP=$(mktemp /tmp/aifw-dummynet.XXXXXX)
+trap 'rm -f "$TMP"' EXIT INT TERM HUP
+cat >"$TMP"
+[ -s "$TMP" ] || { echo "empty dummynet command set" >&2; exit 1; }
+"$CONTROL" snapshot /var/run/aifw-dummynet.snapshot
+if ! "$CONTROL" apply "$TMP" || ! "$CONTROL" verify; then
+    "$CONTROL" restore /var/run/aifw-dummynet.snapshot >/dev/null 2>&1 || true
+    echo "dummynet apply/verify failed; prior state restored" >&2
+    exit 1
+fi

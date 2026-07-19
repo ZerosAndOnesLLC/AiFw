@@ -676,9 +676,25 @@ mod tests {
         engine.apply_queues().await.unwrap();
 
         let pf_queues = mock.get_queues("aifw").await.unwrap();
-        assert_eq!(pf_queues.len(), 2); // parent + child
+        assert_eq!(pf_queues.len(), 1); // parent only; FQ-CoDel is dummynet
         assert!(pf_queues[0].contains("queue on em0"));
-        assert!(pf_queues[1].contains("queue default_q"));
+    }
+
+    #[test]
+    fn test_fq_codel_uses_dummynet_not_false_pf_queue_options() {
+        let q = QueueConfig::new(
+            Interface("em0".to_string()),
+            QueueType::Codel,
+            Bandwidth {
+                value: 100,
+                unit: BandwidthUnit::Mbps,
+            },
+            "bulk".to_string(),
+            TrafficClass::Bulk,
+        );
+        assert!(q.to_pf_queue().contains("fq_codel"));
+        assert!(!q.to_pf_queue().contains("flows 1024"));
+        assert!(q.fq_codel.validate().is_ok());
     }
 
     #[tokio::test]
