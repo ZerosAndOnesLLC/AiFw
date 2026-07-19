@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "5.99.8"
+version = "5.100.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
@@ -34,7 +34,10 @@ aifw-ids = { path = "aifw-ids" }
 aifw-ids-ipc = { path = "aifw-ids-ipc" }
 aifw-metrics = { path = "aifw-metrics" }
 axum = { version = "0.8", features = ["ws", "multipart"] }
-tower = { version = "0.5", features = ["full"] }
+# Only ServiceBuilder (tower core) is used directly — see aifw-api/src/main.rs.
+# axum/tower-http pull their own tower features via cargo's per-graph union,
+# so nothing broader is needed here (SEC-L6 #321).
+tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "set-header", "compression-gzip", "compression-br"] }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 argon2 = { version = "0.5", features = ["std"] }

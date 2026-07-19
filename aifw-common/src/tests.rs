@@ -636,6 +636,57 @@ mod tests {
         assert!(IpsecProtocol::parse("bogus").is_err());
     }
 
+    // --- Policy routing render tests (#540) ---
+
+    #[test]
+    fn test_rule_route_to_rendering() {
+        let mut rule = Rule::new(
+            Action::Pass,
+            Direction::In,
+            Protocol::Tcp,
+            RuleMatch {
+                src_addr: Address::Any,
+                src_port: None,
+                dst_addr: Address::Any,
+                dst_port: Some(PortRange {
+                    start: 443,
+                    end: 443,
+                }),
+            },
+        );
+        rule.interface = Some(Interface("igb0".to_string()));
+        let pf = rule.to_pf_rule_routed("aifw", Some(("igb1", "203.0.113.1")));
+        assert_eq!(
+            pf,
+            "pass in quick on igb0 route-to (igb1 203.0.113.1) proto tcp to any port 443 keep state"
+        );
+        // Without a resolved gateway the rule renders unchanged
+        assert_eq!(
+            rule.to_pf_rule_routed("aifw", None),
+            rule.to_pf_rule("aifw")
+        );
+    }
+
+    #[test]
+    fn test_rule_route_to_ignored_on_block() {
+        let rule = Rule::new(
+            Action::Block,
+            Direction::In,
+            Protocol::Any,
+            RuleMatch {
+                src_addr: Address::Any,
+                src_port: None,
+                dst_addr: Address::Any,
+                dst_port: None,
+            },
+        );
+        let pf = rule.to_pf_rule_routed("aifw", Some(("igb1", "203.0.113.1")));
+        assert!(
+            !pf.contains("route-to"),
+            "block rules must not emit route-to: {pf}"
+        );
+    }
+
     // --- Schedule window tests (#537) ---
     // All evaluations use an injected NaiveDateTime — no wall clock.
     // 2026-07-15 is a Wednesday.

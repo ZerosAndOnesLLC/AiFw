@@ -400,6 +400,8 @@ pub struct CreateGatewayRequest {
     pub timeout_ms: Option<u64>,
     pub loss_pct_down: Option<f64>,
     pub loss_pct_up: Option<f64>,
+    pub latency_ms_down: Option<u64>,
+    pub latency_ms_up: Option<u64>,
     pub consec_fail_down: Option<u32>,
     pub consec_ok_up: Option<u32>,
     pub weight: Option<u32>,
@@ -410,6 +412,27 @@ pub struct CreateGatewayRequest {
 
 fn req_to_gateway(req: CreateGatewayRequest, id: Option<Uuid>) -> Result<Gateway, StatusCode> {
     let instance_id = Uuid::parse_str(&req.instance_id).map_err(|_| bad_request())?;
+    // Threshold sanity (#539): recovery thresholds must sit at or below
+    // their degrade counterparts or the hysteresis band is inverted, and a
+    // latency recovery threshold without a degrade threshold is meaningless.
+    let loss_down = req.loss_pct_down.unwrap_or(20.0);
+    let loss_up = req.loss_pct_up.unwrap_or(5.0);
+    if !(0.0..=100.0).contains(&loss_down) || !(0.0..=100.0).contains(&loss_up) {
+        return Err(bad_request());
+    }
+    if loss_up > loss_down {
+        return Err(bad_request());
+    }
+    match (req.latency_ms_down, req.latency_ms_up) {
+        (None, Some(_)) => return Err(bad_request()),
+        (Some(0), _) => return Err(bad_request()),
+        (Some(down), Some(up)) if up > down => return Err(bad_request()),
+        _ => {}
+    }
+    // Hold-down longer than a day is almost certainly a unit mistake.
+    if req.dampening_secs.unwrap_or(10) > 86_400 {
+        return Err(bad_request());
+    }
     let now = Utc::now();
     Ok(Gateway {
         id: id.unwrap_or_else(Uuid::new_v4),
@@ -424,10 +447,10 @@ fn req_to_gateway(req: CreateGatewayRequest, id: Option<Uuid>) -> Result<Gateway
         monitor_expect: req.monitor_expect,
         interval_ms: req.interval_ms.unwrap_or(500),
         timeout_ms: req.timeout_ms.unwrap_or(1000),
-        loss_pct_down: req.loss_pct_down.unwrap_or(20.0),
-        loss_pct_up: req.loss_pct_up.unwrap_or(5.0),
-        latency_ms_down: None,
-        latency_ms_up: None,
+        loss_pct_down: loss_down,
+        loss_pct_up: loss_up,
+        latency_ms_down: req.latency_ms_down,
+        latency_ms_up: req.latency_ms_up,
         consec_fail_down: req.consec_fail_down.unwrap_or(3),
         consec_ok_up: req.consec_ok_up.unwrap_or(5),
         weight: req.weight.unwrap_or(1),
@@ -515,6 +538,19 @@ pub async fn delete_gateway(
         .delete(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
+    // Unlink rules that policy-route through this gateway (#540) and reload
+    // so their route-to clauses drop out. On unlink failure the dangling
+    // reference fails open in the engine (default routing) — warn only.
+    if let Err(e) = sqlx::query("UPDATE rules SET gateway = NULL WHERE gateway = ?1")
+        .bind(uuid.to_string())
+        .execute(&state.pool)
+        .await
+    {
+        tracing::warn!(gateway = %uuid, error = %e, "gateway delete: rules unlink failed");
+    }
+    if let Err(e) = state.rule_engine.apply_rules().await {
+        tracing::warn!(gateway = %uuid, error = %e, "gateway delete: rules reload failed");
+    }
     Ok(Json(MessageResponse {
         message: format!("gateway {id} deleted"),
     }))

@@ -2147,6 +2147,106 @@ mod tests {
     }
 
     // ============================================================
+    // Rule policy routing (#540)
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_rule_gateway_round_trip_and_validation() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Default routing instance is seeded; hang a gateway off it.
+        let resp = server
+            .get("/api/v1/multiwan/instances")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let instance_id = body["data"][0]["id"].as_str().unwrap().to_string();
+
+        let resp = server
+            .post("/api/v1/multiwan/gateways")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "name": "wan1",
+                "instance_id": instance_id,
+                "interface": "igb1",
+                "next_hop": "203.0.113.1"
+            }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        let gw_id = body["data"]["id"].as_str().unwrap().to_string();
+
+        // Rule carrying the gateway: accepted, persisted, returned.
+        let resp = server
+            .post("/api/v1/rules")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "action": "pass",
+                "direction": "in",
+                "protocol": "tcp",
+                "dst_port_start": 443,
+                "dst_port_end": 443,
+                "label": "routed",
+                "gateway": gw_id
+            }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["data"]["gateway"].as_str(), Some(gw_id.as_str()));
+        let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+
+        let resp = server
+            .get(&format!("/api/v1/rules/{rule_id}"))
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["data"]["gateway"].as_str(), Some(gw_id.as_str()));
+
+        // Unknown gateway reference is rejected, not silently dropped (#540).
+        let resp = server
+            .post("/api/v1/rules")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "action": "pass",
+                "direction": "in",
+                "protocol": "tcp",
+                "gateway": uuid::Uuid::new_v4().to_string()
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+
+        // Non-UUID gateway is rejected too.
+        let resp = server
+            .post("/api/v1/rules")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "action": "pass",
+                "direction": "in",
+                "protocol": "tcp",
+                "gateway": "not-a-uuid"
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+
+        // Deleting the gateway unlinks the rule.
+        let resp = server
+            .delete(&format!("/api/v1/multiwan/gateways/{gw_id}"))
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let resp = server
+            .get(&format!("/api/v1/rules/{rule_id}"))
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["data"]["gateway"].is_null());
+    }
+
+    // ============================================================
     // Backup/restore strict-apply contract (#535)
     // ============================================================
 

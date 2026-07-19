@@ -86,7 +86,48 @@ fn mos_score(rtt_ms: f64, jitter_ms: f64, loss_pct: f64) -> f64 {
     }
 }
 
+/// How the configured latency thresholds judge the current RTT (#539).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LatencyVerdict {
+    /// RTT at or above `latency_ms_down` — degrade to warning
+    Degrade,
+    /// RTT at or below the recovery threshold (or latency unconfigured / no
+    /// sample yet) — latency does not constrain the state
+    Recover,
+    /// RTT inside the hysteresis band between the two thresholds — keep the
+    /// current latency-driven state
+    Hold,
+}
+
+fn latency_verdict(
+    latency_ms_down: Option<u64>,
+    latency_ms_up: Option<u64>,
+    rtt_ms: Option<f64>,
+) -> LatencyVerdict {
+    match (latency_ms_down, rtt_ms) {
+        (Some(down), Some(rtt)) => {
+            // The recovery threshold defaults to (and can never exceed) the
+            // degrade threshold, so the hysteresis band is well-formed.
+            let up = latency_ms_up.unwrap_or(down).min(down);
+            if rtt >= down as f64 {
+                LatencyVerdict::Degrade
+            } else if rtt <= up as f64 {
+                LatencyVerdict::Recover
+            } else {
+                LatencyVerdict::Hold
+            }
+        }
+        _ => LatencyVerdict::Recover,
+    }
+}
+
 /// Decide next state given current state, metrics, and gateway thresholds.
+///
+/// Precedence (#539): consecutive-failure Down detection always wins (never
+/// delayed by latency or dampening); a latency degrade forces Warning even
+/// while probes succeed; recovery to Up requires the consecutive-success
+/// count AND loss at/below `loss_pct_up` AND RTT out of the latency
+/// hysteresis band.
 pub fn evaluate_transition(
     current: GatewayState,
     metrics: &GatewayMetrics,
@@ -94,12 +135,21 @@ pub fn evaluate_transition(
     consec_ok_up: u32,
     loss_pct_down: f64,
     loss_pct_up: f64,
+    latency_ms_down: Option<u64>,
+    latency_ms_up: Option<u64>,
 ) -> GatewayState {
+    let lat = latency_verdict(latency_ms_down, latency_ms_up, metrics.last_rtt_ms);
     if metrics.consec_fail >= consec_fail_down {
         return GatewayState::Down;
     }
+    if lat == LatencyVerdict::Degrade {
+        return GatewayState::Warning;
+    }
     if metrics.consec_ok >= consec_ok_up {
         if metrics.recent_loss > loss_pct_up {
+            return GatewayState::Warning;
+        }
+        if lat == LatencyVerdict::Hold && current == GatewayState::Warning {
             return GatewayState::Warning;
         }
         return GatewayState::Up;
@@ -110,6 +160,51 @@ pub fn evaluate_transition(
     current
 }
 
+/// Human-readable trigger for a state transition, embedded in gateway
+/// events so operators can see which metric crossed which threshold (#539).
+fn transition_reason(to: GatewayState, metrics: &GatewayMetrics, gw: &Gateway) -> Option<String> {
+    match to {
+        GatewayState::Down => Some(format!(
+            "{} consecutive probe failures (threshold {})",
+            metrics.consec_fail, gw.consec_fail_down
+        )),
+        GatewayState::Warning => {
+            if latency_verdict(gw.latency_ms_down, gw.latency_ms_up, metrics.last_rtt_ms)
+                != LatencyVerdict::Recover
+            {
+                Some(format!(
+                    "rtt {:.0}ms crossed latency_ms_down {}ms",
+                    metrics.last_rtt_ms.unwrap_or(0.0),
+                    gw.latency_ms_down.unwrap_or(0)
+                ))
+            } else {
+                Some(format!(
+                    "loss {:.1}% above threshold ({}%/{}%)",
+                    metrics.recent_loss, gw.loss_pct_down, gw.loss_pct_up
+                ))
+            }
+        }
+        GatewayState::Up => Some(format!(
+            "recovered: {} consecutive successes",
+            metrics.consec_ok
+        )),
+        GatewayState::Unknown => None,
+    }
+}
+
+/// Whether a pending transition must be suppressed by the dampening
+/// hold-down (#539). Pure so tests can drive it with an arbitrary elapsed
+/// time. Transitions TO Down are never held — failure detection must not be
+/// delayed for flap suppression; recovery/degradation transitions are.
+pub fn dampening_holds(
+    elapsed_since_last_transition: std::time::Duration,
+    dampening_secs: u32,
+    to: GatewayState,
+) -> bool {
+    to != GatewayState::Down
+        && elapsed_since_last_transition < std::time::Duration::from_secs(u64::from(dampening_secs))
+}
+
 /// Multi-WAN gateway engine: CRUD over `multiwan_gateways`, per-gateway
 /// background probe monitors, hysteresis-based state transitions, and a
 /// broadcast channel of state-change events
@@ -118,6 +213,10 @@ pub struct GatewayEngine {
     metrics: Arc<RwLock<HashMap<Uuid, GatewayMetrics>>>,
     monitors: Arc<Mutex<HashMap<Uuid, JoinHandle<()>>>>,
     events_tx: broadcast::Sender<GatewayEvent>,
+    /// Monotonic timestamp of each gateway's last persisted state change,
+    /// driving the `dampening_secs` hold-down (#539). Instant, not wall
+    /// clock, so NTP steps can't break or extend the hold-down.
+    last_transition: Arc<RwLock<HashMap<Uuid, std::time::Instant>>>,
 }
 
 impl GatewayEngine {
@@ -130,6 +229,7 @@ impl GatewayEngine {
             metrics: Arc::new(RwLock::new(HashMap::new())),
             monitors: Arc::new(Mutex::new(HashMap::new())),
             events_tx: tx,
+            last_transition: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -385,16 +485,34 @@ impl GatewayEngine {
         let mut metrics_map = self.metrics.write().await;
         let m = metrics_map.entry(gw_id).or_default();
         m.ingest(&outcome, Utc::now());
-        let new_state = evaluate_transition(
+        let mut new_state = evaluate_transition(
             gw.state,
             m,
             gw.consec_fail_down,
             gw.consec_ok_up,
             gw.loss_pct_down,
             gw.loss_pct_up,
+            gw.latency_ms_down,
+            gw.latency_ms_up,
         );
         let metrics_snapshot = m.clone();
         drop(metrics_map);
+        // Dampening hold-down (#539): suppress a fresh transition that lands
+        // inside the hold-down window after the previous one, except
+        // escalation to Down, which is never delayed.
+        if new_state != gw.state
+            && let Some(last) = self.last_transition.read().await.get(&gw_id).copied()
+            && dampening_holds(last.elapsed(), gw.dampening_secs, new_state)
+        {
+            tracing::debug!(
+                gw = %gw.name,
+                from = ?gw.state,
+                to = ?new_state,
+                dampening_secs = gw.dampening_secs,
+                "gateway transition held by dampening"
+            );
+            new_state = gw.state;
+        }
         self.persist_state(&gw, new_state, &outcome, &metrics_snapshot)
             .await?;
         Ok(())
@@ -426,6 +544,17 @@ impl GatewayEngine {
         .map_err(|e| AifwError::Database(e.to_string()))?;
 
         if new_state != gw.state {
+            self.last_transition
+                .write()
+                .await
+                .insert(gw.id, std::time::Instant::now());
+            // Event reason names the metric and threshold that triggered the
+            // transition (#539); the raw probe error is appended when present.
+            let reason = match (transition_reason(new_state, metrics, gw), &outcome.error) {
+                (Some(r), Some(e)) => Some(format!("{r}; probe: {e}")),
+                (Some(r), None) => Some(r),
+                (None, e) => e.clone(),
+            };
             let snap = serde_json::json!({
                 "rtt_ms": metrics.last_rtt_ms,
                 "jitter_ms": metrics.last_jitter_ms,
@@ -433,6 +562,8 @@ impl GatewayEngine {
                 "mos": metrics.last_mos,
                 "consec_fail": metrics.consec_fail,
                 "consec_ok": metrics.consec_ok,
+                "latency_ms_down": gw.latency_ms_down,
+                "latency_ms_up": gw.latency_ms_up,
             })
             .to_string();
             sqlx::query(
@@ -443,7 +574,7 @@ impl GatewayEngine {
             .bind(now.to_rfc3339())
             .bind(gw.state.as_str())
             .bind(new_state.as_str())
-            .bind(outcome.error.clone())
+            .bind(reason.clone())
             .bind(&snap)
             .execute(&self.pool)
             .await
@@ -455,7 +586,7 @@ impl GatewayEngine {
                 ts: now,
                 from_state: Some(gw.state),
                 to_state: new_state,
-                reason: outcome.error.clone(),
+                reason,
                 probe_snapshot_json: Some(snap),
             };
             let _ = self.events_tx.send(event);
@@ -703,7 +834,7 @@ mod tests {
             consec_fail: 3,
             ..GatewayMetrics::default()
         };
-        let s = evaluate_transition(GatewayState::Up, &m, 3, 5, 20.0, 5.0);
+        let s = evaluate_transition(GatewayState::Up, &m, 3, 5, 20.0, 5.0, None, None);
         assert_eq!(s, GatewayState::Down);
     }
 
@@ -714,7 +845,203 @@ mod tests {
             recent_loss: 8.0,
             ..GatewayMetrics::default()
         };
-        let s = evaluate_transition(GatewayState::Down, &m, 3, 5, 20.0, 5.0);
+        let s = evaluate_transition(GatewayState::Down, &m, 3, 5, 20.0, 5.0, None, None);
         assert_eq!(s, GatewayState::Warning);
+    }
+
+    // --- Latency threshold + dampening tests (#539) ---
+
+    #[test]
+    fn latency_degrade_despite_successful_probes() {
+        // All probes succeed but RTT is over latency_ms_down → Warning.
+        let m = GatewayMetrics {
+            consec_ok: 10,
+            recent_loss: 0.0,
+            last_rtt_ms: Some(250.0),
+            ..GatewayMetrics::default()
+        };
+        let s = evaluate_transition(GatewayState::Up, &m, 3, 5, 20.0, 5.0, Some(200), Some(100));
+        assert_eq!(s, GatewayState::Warning);
+    }
+
+    #[test]
+    fn latency_hysteresis_band_holds_current_state() {
+        // RTT between latency_ms_up (100) and latency_ms_down (200): a
+        // Warning gateway stays Warning, an Up gateway stays Up.
+        let m = GatewayMetrics {
+            consec_ok: 10,
+            recent_loss: 0.0,
+            last_rtt_ms: Some(150.0),
+            ..GatewayMetrics::default()
+        };
+        let held = evaluate_transition(
+            GatewayState::Warning,
+            &m,
+            3,
+            5,
+            20.0,
+            5.0,
+            Some(200),
+            Some(100),
+        );
+        assert_eq!(held, GatewayState::Warning);
+        let up = evaluate_transition(GatewayState::Up, &m, 3, 5, 20.0, 5.0, Some(200), Some(100));
+        assert_eq!(up, GatewayState::Up);
+    }
+
+    #[test]
+    fn latency_recovery_below_up_threshold() {
+        let m = GatewayMetrics {
+            consec_ok: 10,
+            recent_loss: 0.0,
+            last_rtt_ms: Some(80.0),
+            ..GatewayMetrics::default()
+        };
+        let s = evaluate_transition(
+            GatewayState::Warning,
+            &m,
+            3,
+            5,
+            20.0,
+            5.0,
+            Some(200),
+            Some(100),
+        );
+        assert_eq!(s, GatewayState::Up);
+    }
+
+    #[test]
+    fn latency_unconfigured_never_constrains() {
+        let m = GatewayMetrics {
+            consec_ok: 10,
+            recent_loss: 0.0,
+            last_rtt_ms: Some(5000.0),
+            ..GatewayMetrics::default()
+        };
+        let s = evaluate_transition(GatewayState::Warning, &m, 3, 5, 20.0, 5.0, None, None);
+        assert_eq!(s, GatewayState::Up);
+    }
+
+    #[test]
+    fn dampening_holds_non_down_transitions_only() {
+        use std::time::Duration;
+        // Inside the hold-down window: recovery/degradation are suppressed,
+        // Down never is.
+        assert!(dampening_holds(
+            Duration::from_secs(3),
+            10,
+            GatewayState::Up
+        ));
+        assert!(dampening_holds(
+            Duration::from_secs(3),
+            10,
+            GatewayState::Warning
+        ));
+        assert!(!dampening_holds(
+            Duration::from_secs(3),
+            10,
+            GatewayState::Down
+        ));
+        // Window elapsed → nothing is held.
+        assert!(!dampening_holds(
+            Duration::from_secs(11),
+            10,
+            GatewayState::Up
+        ));
+        // Zero dampening disables the hold entirely.
+        assert!(!dampening_holds(Duration::ZERO, 0, GatewayState::Up));
+    }
+
+    #[tokio::test]
+    async fn dampening_suppresses_flapping_recovery() {
+        let (engine, inst) = setup().await;
+        let mut gw = make_gw("wan1", inst);
+        gw.latency_ms_down = Some(100);
+        gw.latency_ms_up = Some(50);
+        gw.consec_ok_up = 1;
+        gw.dampening_secs = 3600; // effectively forever for this test
+        let gw = engine.add(gw).await.unwrap();
+
+        // High-RTT success → Unknown → Warning (latency degrade)
+        engine
+            .inject_sample(
+                gw.id,
+                ProbeOutcome {
+                    success: true,
+                    rtt_ms: Some(150.0),
+                    error: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.get(gw.id).await.unwrap().state,
+            GatewayState::Warning
+        );
+
+        // Immediate recovery sample: would flip to Up, but the hold-down
+        // suppresses it.
+        engine
+            .inject_sample(
+                gw.id,
+                ProbeOutcome {
+                    success: true,
+                    rtt_ms: Some(10.0),
+                    error: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.get(gw.id).await.unwrap().state,
+            GatewayState::Warning,
+            "recovery inside the dampening window must be held"
+        );
+
+        // Hard failure escalation is never held by dampening.
+        for _ in 0..3 {
+            engine
+                .inject_sample(
+                    gw.id,
+                    ProbeOutcome {
+                        success: false,
+                        rtt_ms: None,
+                        error: Some("timeout".into()),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(engine.get(gw.id).await.unwrap().state, GatewayState::Down);
+    }
+
+    #[tokio::test]
+    async fn latency_transition_event_names_metric() {
+        let (engine, inst) = setup().await;
+        let mut gw = make_gw("wan1", inst);
+        gw.latency_ms_down = Some(100);
+        gw.dampening_secs = 0;
+        let gw = engine.add(gw).await.unwrap();
+        engine
+            .inject_sample(
+                gw.id,
+                ProbeOutcome {
+                    success: true,
+                    rtt_ms: Some(150.0),
+                    error: None,
+                },
+            )
+            .await
+            .unwrap();
+        let events = engine.list_events(gw.id, 10).await.unwrap();
+        let warn_ev = events
+            .iter()
+            .find(|e| e.to_state == GatewayState::Warning)
+            .expect("warning transition event");
+        let reason = warn_ev.reason.as_deref().unwrap_or_default();
+        assert!(
+            reason.contains("latency_ms_down"),
+            "reason should name the triggering threshold, got: {reason}"
+        );
     }
 }

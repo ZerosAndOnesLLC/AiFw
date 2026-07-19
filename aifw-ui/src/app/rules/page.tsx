@@ -17,6 +17,7 @@ export default function RulesPage() {
     rules,
     interfaces,
     schedules,
+    gateways,
     systemRules,
     loading,
     error,
@@ -208,6 +209,7 @@ export default function RulesPage() {
           submitting={submitting}
           interfaces={interfaces}
           schedules={schedules}
+          gateways={gateways}
           onSubmit={handleSubmit}
           onCancel={handleCancel}
         />

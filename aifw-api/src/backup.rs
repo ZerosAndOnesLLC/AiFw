@@ -410,6 +410,8 @@ pub(crate) async fn capture_runtime_snapshot(state: &AppState) -> Result<String,
                 ip_version: r.ip_version,
                 src_invert: r.src_invert,
                 dst_invert: r.dst_invert,
+                schedule_id: r.schedule_id.clone(),
+                gateway: r.gateway.clone(),
             })
             .collect(),
         nat: nat_rules
@@ -681,6 +683,8 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 ip_version: r.ip_version,
                 src_invert: r.src_invert,
                 dst_invert: r.dst_invert,
+                schedule_id: r.schedule_id.clone(),
+                gateway: r.gateway.clone(),
             })
             .collect(),
         nat: nat_rules
@@ -2288,13 +2292,13 @@ fn rule_from_config(rc: &aifw_core::config::RuleConfig) -> Option<aifw_common::R
         quick: rc.quick,
         label: rc.label.clone(),
         description: None,
-        gateway: None,
+        gateway: rc.gateway.clone(),
         state_options: StateOptions {
             tracking,
             ..Default::default()
         },
         status,
-        schedule_id: None,
+        schedule_id: rc.schedule_id.clone(),
         created_at: now,
         updated_at: now,
     })

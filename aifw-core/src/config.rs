@@ -433,6 +433,14 @@ pub struct RuleConfig {
     /// Negate the destination match (pf `!`)
     #[serde(default)]
     pub dst_invert: bool,
+    /// Schedule reference (#537). Older backups predate this field; restored
+    /// rules without it behave as unscheduled (always on).
+    #[serde(default)]
+    pub schedule_id: Option<String>,
+    /// Policy-routing gateway reference (#540); dangling references fall
+    /// back to default routing at compile time.
+    #[serde(default)]
+    pub gateway: Option<String>,
 }
 
 /// A NAT rule as stored in a config snapshot

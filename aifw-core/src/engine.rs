@@ -10,6 +10,40 @@ use crate::validation::validate_rule;
 
 const DEFAULT_ANCHOR: &str = "aifw";
 
+/// Resolve a rule's policy-routing gateway reference to the `(interface,
+/// next_hop)` pair `route-to` needs (#540). Falls back to default routing
+/// (None) with a warning when the gateway is missing or currently down —
+/// blackholing traffic at a dead next-hop would be worse than the default
+/// route — or when the stored record fails validation.
+fn resolve_rule_route<'a>(
+    rule: &aifw_common::Rule,
+    gateways: &'a std::collections::HashMap<String, (String, String, String)>,
+) -> Option<(&'a str, &'a str)> {
+    let gw_id = rule.gateway.as_deref()?;
+    let Some((iface, next_hop, state)) = gateways.get(gw_id) else {
+        tracing::warn!(rule_id = %rule.id, gateway = %gw_id,
+            "rule references a missing gateway; using default routing");
+        return None;
+    };
+    if state == "down" {
+        tracing::warn!(rule_id = %rule.id, gateway = %gw_id,
+            "policy-routing gateway is down; using default routing");
+        return None;
+    }
+    // Both values land in pf rule text — re-validate shape even though the
+    // gateway API validated them at creation.
+    let iface_ok = !iface.is_empty()
+        && iface
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !iface_ok || next_hop.parse::<std::net::IpAddr>().is_err() {
+        tracing::warn!(rule_id = %rule.id, gateway = %gw_id,
+            "gateway record failed validation; using default routing");
+        return None;
+    }
+    Some((iface.as_str(), next_hop.as_str()))
+}
+
 /// Filter-rule engine: persists [`Rule`]s in the SQLite `rules` table and
 /// renders active ones into pf syntax loaded into the `aifw` anchor
 /// (override via [`Self::with_anchor`]). Every mutation commits its audit
@@ -133,6 +167,7 @@ impl RuleEngine {
     pub async fn apply_rules(&self) -> Result<()> {
         let rules = self.db.list_active_rules().await?;
         let schedules = self.db.list_schedule_specs().await?;
+        let gateways = self.db.list_gateway_routes().await;
         let now = chrono::Local::now().naive_local();
         let mut pf_rules: Vec<String> = rules
             .iter()
@@ -150,7 +185,10 @@ impl RuleEngine {
                     now,
                 )
             })
-            .map(|r| r.to_pf_rule(&self.anchor))
+            .map(|r| {
+                let route = resolve_rule_route(r, &gateways);
+                r.to_pf_rule_routed(&self.anchor, route)
+            })
             .collect();
 
         // Inject extra rules (VPN pass rules, etc.) before the first block rule

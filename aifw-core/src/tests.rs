@@ -233,6 +233,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_engine_gateway_route_to() {
+        // Rules referencing a healthy gateway compile route-to; down or
+        // dangling gateway references fall back to default routing (#540).
+        let db = Database::new_in_memory().await.unwrap();
+        let mock = Arc::new(aifw_pf::PfMock::new());
+        let pf: Arc<dyn PfBackend> = mock.clone();
+        mock.set_fib_count(4).await;
+        let inst = crate::multiwan::InstanceEngine::new(db.pool().clone(), mock.clone());
+        inst.migrate().await.unwrap();
+        let gw_engine = crate::multiwan::GatewayEngine::new(db.pool().clone());
+        gw_engine.migrate().await.unwrap();
+        let engine = RuleEngine::new(db.pool().clone(), pf);
+
+        let insert_gw = |id: &str, name: &str, state: &str| {
+            let q = sqlx::query(
+                "INSERT INTO multiwan_gateways \
+                 (id, name, instance_id, interface, next_hop, state, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            )
+            .bind(id.to_string())
+            .bind(name.to_string())
+            .bind(aifw_common::DEFAULT_INSTANCE_ID.to_string())
+            .bind("igb1")
+            .bind("203.0.113.1")
+            .bind(state.to_string())
+            .bind("2026-01-01T00:00:00Z");
+            let pool = db.pool().clone();
+            async move { q.execute(&pool).await.unwrap() }
+        };
+        let up_id = uuid::Uuid::new_v4().to_string();
+        let down_id = uuid::Uuid::new_v4().to_string();
+        insert_gw(&up_id, "wan-up", "up").await;
+        insert_gw(&down_id, "wan-down", "down").await;
+
+        let mk = |label: &str, gw: Option<String>| {
+            let mut r = Rule::new(
+                Action::Pass,
+                Direction::In,
+                Protocol::Tcp,
+                RuleMatch {
+                    src_addr: Address::Any,
+                    src_port: None,
+                    dst_addr: Address::Any,
+                    dst_port: Some(PortRange { start: 80, end: 80 }),
+                },
+            );
+            r.label = Some(label.to_string());
+            r.gateway = gw;
+            r
+        };
+        engine
+            .add_rule(mk("routed", Some(up_id.clone())))
+            .await
+            .unwrap();
+        engine
+            .add_rule(mk("gw-down", Some(down_id.clone())))
+            .await
+            .unwrap();
+        engine
+            .add_rule(mk("gw-dangling", Some(uuid::Uuid::new_v4().to_string())))
+            .await
+            .unwrap();
+
+        engine.apply_rules().await.unwrap();
+        let pf_rules = mock.get_rules("aifw").await.unwrap();
+        let find = |label: &str| {
+            pf_rules
+                .iter()
+                .find(|r| r.contains(&format!("\"{label}\"")))
+                .unwrap_or_else(|| panic!("rule {label} missing"))
+        };
+        assert!(find("routed").contains("route-to (igb1 203.0.113.1)"));
+        assert!(!find("gw-down").contains("route-to"));
+        assert!(!find("gw-dangling").contains("route-to"));
+
+        // Round-trip: the gateway reference survives persistence
+        let rules = engine.list_rules().await.unwrap();
+        let routed = rules
+            .iter()
+            .find(|r| r.label.as_deref() == Some("routed"))
+            .unwrap();
+        assert_eq!(routed.gateway.as_deref(), Some(up_id.as_str()));
+    }
+
+    #[tokio::test]
     async fn test_engine_flush_rules() {
         let db = Database::new_in_memory().await.unwrap();
         let mock = Arc::new(aifw_pf::PfMock::new());
@@ -1437,6 +1522,8 @@ mod tests {
             ip_version: aifw_common::IpVersion::Both,
             src_invert: false,
             dst_invert: false,
+            schedule_id: None,
+            gateway: None,
         });
         assert_eq!(config.resource_count(), 1);
     }
@@ -1592,6 +1679,8 @@ mod tests {
             ip_version: aifw_common::IpVersion::Both,
             src_invert: false,
             dst_invert: false,
+            schedule_id: None,
+            gateway: None,
         });
         let v2 = mgr.save_version(&c2, "test", None).await.unwrap();
 

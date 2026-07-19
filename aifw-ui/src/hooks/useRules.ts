@@ -10,6 +10,7 @@ import {
   toggleStatusRequest,
   validateRuleForm,
 } from "@/lib/api/rules";
+import { Gateway, listGateways } from "@/lib/api/multiwan-policies";
 
 /// Data + actions for the firewall rules page (#428). Owns the rule,
 /// interface, schedule and live-pf-rule lists plus the create/update/
@@ -22,6 +23,7 @@ export function useRules() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [interfaces, setInterfaces] = useState<InterfaceInfo[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [gateways, setGateways] = useState<Gateway[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [systemRules, setSystemRules] = useState<string[]>([]);
@@ -63,6 +65,11 @@ export function useRules() {
 
       api.listSchedules()
         .then((d) => setSchedules(d.data || []))
+        .catch(() => {});
+
+      // Multi-WAN gateways feed the policy-routing dropdown (#540)
+      listGateways()
+        .then((d) => setGateways(d || []))
         .catch(() => {});
     });
   }, [fetchRules]);
@@ -159,6 +166,7 @@ export function useRules() {
     rules,
     interfaces,
     schedules,
+    gateways,
     systemRules,
     loading,
     error,

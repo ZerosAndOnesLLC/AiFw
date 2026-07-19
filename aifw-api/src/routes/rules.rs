@@ -27,6 +27,31 @@ pub struct CreateRuleRequest {
     pub state_tracking: Option<String>,
     pub status: Option<String>,
     pub schedule_id: Option<String>,
+    /// Multi-WAN gateway id for policy routing (#540). Empty string clears.
+    pub gateway: Option<String>,
+}
+
+/// Resolve the request's `gateway` field to a validated gateway id (#540):
+/// `None`/empty clears the association; anything else must parse as a UUID
+/// and reference an existing multiwan gateway or the request is rejected —
+/// unknown values must not be silently discarded again.
+async fn validate_gateway_ref(
+    state: &AppState,
+    gateway: Option<String>,
+) -> Result<Option<String>, StatusCode> {
+    let Some(gw) = gateway
+        .map(|g| g.trim().to_string())
+        .filter(|g| !g.is_empty())
+    else {
+        return Ok(None);
+    };
+    let uuid = Uuid::parse_str(&gw).map_err(|_| bad_request())?;
+    state
+        .gateway_engine
+        .get(uuid)
+        .await
+        .map_err(|_| bad_request())?;
+    Ok(Some(uuid.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +190,7 @@ pub async fn create_rule(
     }
 
     rule.schedule_id = req.schedule_id;
+    rule.gateway = validate_gateway_ref(&state, req.gateway).await?;
 
     // Validate label and interface to prevent pf rule injection
     if let Some(ref iface) = rule.interface {
@@ -256,6 +282,7 @@ pub async fn update_rule(
         };
     }
     rule.schedule_id = req.schedule_id;
+    rule.gateway = validate_gateway_ref(&state, req.gateway).await?;
     rule.updated_at = chrono::Utc::now();
 
     // Validate label and interface to prevent pf rule injection
