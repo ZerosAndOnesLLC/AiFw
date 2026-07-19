@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import ipaddress
 import json
 import os
 import shlex
@@ -213,6 +214,25 @@ class Proxmox:
         if upid:
             self.wait_task(upid)
 
+    def configure_builder_cloudinit(self, vmid: int, public_key: str) -> None:
+        upid = self.request(
+            "PUT",
+            f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/config",
+            data={
+                "ide2": f"{self.cfg.vm_storage}:cloudinit",
+                "citype": "nocloud",
+                "ciuser": "freebsd",
+                "sshkeys": public_key.strip(),
+                "ipconfig0": (
+                    f"ip={self.cfg.address_cidr},gw={self.cfg.gateway}"
+                ),
+                "nameserver": self.cfg.dns,
+                "searchdomain": "local",
+            },
+        )
+        if upid:
+            self.wait_task(upid)
+
     def start(self, vmid: int) -> None:
         upid = self.request(
             "POST", f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/status/start"
@@ -384,16 +404,24 @@ growpart:
   devices: ['/']
 resize_rootfs: true
 """
+    interface = ipaddress.ip_interface(cfg.address_cidr)
     network_data = {
-        "version": 2,
-        "ethernets": {
-            "vtnet0": {
-                "match": {"name": "vtnet0"},
-                "addresses": [cfg.address_cidr],
-                "routes": [{"to": "default", "via": cfg.gateway}],
-                "nameservers": {"addresses": [cfg.dns]},
+        "version": 1,
+        "config": [
+            {
+                "type": "physical",
+                "name": "vtnet0",
+                "subnets": [
+                    {
+                        "type": "static",
+                        "address": str(interface.ip),
+                        "netmask": str(interface.network.netmask),
+                        "gateway": cfg.gateway,
+                        "dns_nameservers": [cfg.dns],
+                    }
+                ],
             }
-        },
+        ],
     }
     (seed_dir / "user-data").write_text(user_data)
     (seed_dir / "meta-data").write_text(
@@ -641,11 +669,9 @@ def build_image(args: argparse.Namespace) -> int:
 
     try:
         private_key, public_key = make_ssh_key(work_dir)
-        seed = make_builder_seed(cfg, work_dir, run_id, public_key)
         image = prepare_builder_image(Path(args.builder_image), work_dir, run_id)
         image_volume = pve.upload(image, "import")
-        seed_volume = pve.upload(seed, "iso")
-        lifecycle.volumes.extend([image_volume, seed_volume])
+        lifecycle.volumes.append(image_volume)
         vmid = pve.next_vmid()
         lifecycle.vmid = vmid
         name = f"{RESOURCE_PREFIX}builder-{run_id}"
@@ -654,7 +680,8 @@ def build_image(args: argparse.Namespace) -> int:
             name,
             f"AiFw image builder {run_id}; expires {int(time.time()) + 4 * 3600}",
         )
-        pve.attach_imported_disk(vmid, image_volume, seed_volume)
+        pve.attach_imported_disk(vmid, image_volume)
+        pve.configure_builder_cloudinit(vmid, public_key)
         pve.resize_disk(vmid, "virtio0", args.builder_disk_size)
         pve.start(vmid)
 
@@ -665,7 +692,7 @@ def build_image(args: argparse.Namespace) -> int:
             user="builder",
             timeout=args.boot_timeout,
         )
-        copy_git_archive(private_key, cfg.address, "/home/builder/AiFw")
+        copy_git_archive(private_key, cfg.address, "/home/freebsd/AiFw")
         version = run_checked(
             [
                 "sh",
@@ -679,7 +706,7 @@ def build_image(args: argparse.Namespace) -> int:
             raise HarnessError("could not determine workspace version from Cargo.toml")
         remote_artifact = f"/usr/obj/aifw-iso/output/aifw-{version}-amd64.img.xz"
         build_command = (
-            "cd /home/builder/AiFw && "
+            "cd /home/freebsd/AiFw && "
             f"sudo -H sh freebsd/build-local.sh {shlex.quote(version)} && "
             f"sudo test -s {shlex.quote(remote_artifact)}"
         )
@@ -688,7 +715,7 @@ def build_image(args: argparse.Namespace) -> int:
                 private_key,
                 cfg.address,
                 build_command,
-                user="builder",
+                user="freebsd",
             )
         )
         with output.open("wb") as handle:
@@ -697,7 +724,7 @@ def build_image(args: argparse.Namespace) -> int:
                     private_key,
                     cfg.address,
                     f"sudo cat {shlex.quote(remote_artifact)}",
-                    user="builder",
+                    user="freebsd",
                 ),
                 stdout=handle,
             )

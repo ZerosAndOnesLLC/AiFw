@@ -111,7 +111,8 @@ def test_builder_seed_uses_reserved_address_and_public_key(
     network = (tmp_path / "builder-seed" / "network-config").read_text()
     assert "ssh-ed25519 AAAAbuilder" in user_data
     assert "temporary-test-password" not in user_data
-    assert "192.0.2.10/24" in network
+    assert "192.0.2.10" in network
+    assert "255.255.255.0" in network
     assert "192.0.2.1" in network
     assert seed.read_bytes() == b"fake builder seed"
 
