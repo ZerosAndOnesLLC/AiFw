@@ -250,6 +250,9 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
                         "sysrc",
                         &[&format!("ifconfig_{}=inet {}", config.wan_interface, ip)],
                     );
+                    let args = static_interface_args(&config.wan_interface, ip);
+                    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+                    run_best_effort("ifconfig", &args);
                 }
                 if let Some(ref gw) = config.wan_gateway {
                     run_best_effort("sysrc", &[&format!("defaultrouter={}", gw)]);
@@ -289,6 +292,9 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         // keep re-applying over the daemon's DB-driven updates (v5.57.3 fix).
 
         // Load pf rules
+        for setting in pf_rc_settings(&config.config_dir) {
+            run_best_effort("sysrc", &[&setting]);
+        }
         run_best_effort(
             "pfctl",
             &["-f", &format!("{}/pf.conf.aifw", config.config_dir)],
@@ -650,6 +656,23 @@ fn run_best_effort(cmd: &str, args: &[&str]) {
         )),
         Err(e) => console::warn(&format!("failed to run {cmd} {}: {e}", args.join(" "))),
     }
+}
+
+#[cfg(any(target_os = "freebsd", test))]
+pub(crate) fn static_interface_args(interface: &str, address: &str) -> [String; 3] {
+    [
+        interface.to_string(),
+        "inet".to_string(),
+        address.to_string(),
+    ]
+}
+
+#[cfg(any(target_os = "freebsd", test))]
+pub(crate) fn pf_rc_settings(config_dir: &str) -> [String; 2] {
+    [
+        "pf_enable=YES".to_string(),
+        format!("pf_rules={config_dir}/pf.conf.aifw"),
+    ]
 }
 
 /// Print a fallible best-effort step's failure instead of dropping it

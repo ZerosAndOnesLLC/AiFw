@@ -167,6 +167,22 @@ mod tests {
     }
 
     #[test]
+    fn test_static_interface_is_applied_to_the_running_system() {
+        assert_eq!(
+            apply::static_interface_args("vtnet0", "192.0.2.10/24"),
+            ["vtnet0", "inet", "192.0.2.10/24"]
+        );
+    }
+
+    #[test]
+    fn test_pf_boot_settings_use_generated_ruleset() {
+        assert_eq!(
+            apply::pf_rc_settings("/usr/local/etc/aifw"),
+            ["pf_enable=YES", "pf_rules=/usr/local/etc/aifw/pf.conf.aifw"]
+        );
+    }
+
+    #[test]
     fn test_default_policy_display() {
         let s = DefaultPolicy::Standard.to_string();
         assert!(s.contains("block inbound"));
