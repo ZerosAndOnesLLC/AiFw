@@ -217,7 +217,7 @@ npm install          # Install UI dependencies
 npm run dev          # Start dev server on :3000
 ```
 
-The toolchain is pinned in `rust-toolchain.toml` (stable, with `rustfmt` +
+The toolchain is pinned in `rust-toolchain.toml` (Rust 1.97.0, with `rustfmt` +
 `clippy`) and formatting in `rustfmt.toml`, so every contributor and CI run
 use the same compiler and style. After cloning, install the git hooks once:
 

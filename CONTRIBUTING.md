@@ -6,7 +6,7 @@ Thanks for your interest in contributing to AiFw! This guide covers how to get s
 
 ### Prerequisites
 
-- Rust (latest stable via [rustup](https://rustup.rs))
+- Rust 1.97.0 via [rustup](https://rustup.rs) (the repository pin in `rust-toolchain.toml`)
 - Node.js 24+ and npm (for the web UI)
 - FreeBSD 15 (for production testing) or Linux/WSL (for development with mock pf backend)
 

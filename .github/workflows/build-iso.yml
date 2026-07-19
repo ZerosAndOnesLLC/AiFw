@@ -75,8 +75,8 @@ jobs:
             # Install build tools
             pkg install -y curl gmake
 
-            # Install Rust via rustup
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            # Install Rust via rustup; keep the image build on the repository pin.
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.0
             . "$HOME/.cargo/env"
 
           run: |

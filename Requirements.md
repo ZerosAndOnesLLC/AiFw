@@ -20,7 +20,7 @@
 | Component | Requirement |
 |-----------|-------------|
 | **OS** | Any Linux (WSL2 works) |
-| **Rust** | 1.85+ (edition 2024) |
+| **Rust** | 1.97.0 (pinned in `rust-toolchain.toml`) |
 | **SQLite** | Bundled via sqlx (no system install needed) |
 | **Node.js** | 18+ (for web UI development) |
 | **npm** | 9+ |

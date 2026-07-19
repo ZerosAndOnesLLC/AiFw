@@ -1,6 +1,6 @@
 [toolchain]
 # Pin the toolchain so every contributor and CI run uses the same compiler.
-# `stable` tracks the latest stable release (edition 2024 requires >= 1.85).
-channel = "stable"
+# Rust 1.97 is the minimum supported release for this tree.
+channel = "1.97.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

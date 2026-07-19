@@ -9,7 +9,7 @@ labels:
 
 steps:
   - name: rust
-    image: rust:1.95-bookworm
+    image: rust:1.97-bookworm
     environment:
       CARGO_INCREMENTAL: "0"
       RUSTFLAGS: "-D warnings"
