@@ -65,6 +65,13 @@ Open an issue using the [feature request template](.github/ISSUE_TEMPLATE/featur
 6. If you changed the UI: `cd aifw-ui && npm run build`
 7. Submit a pull request
 
+Changes under `e2e/`, `.woodpecker/e2e.yml`, `freebsd/build-*.sh`, or the
+first-boot overlay should follow the staged validation order in
+`e2e/README.md`: unit tests, focused disposable Proxmox contracts, focused
+FreeBSD boot/SSH, builder-only, appliance-only, then one combined manual
+Woodpecker run. Do not use repeated full pipelines to discover individual
+Proxmox or cloud-init API details.
+
 ### Pull Request Guidelines
 
 - Keep PRs focused on a single change

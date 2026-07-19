@@ -7,6 +7,7 @@ from e2e.aifw_e2e import (
     HarnessError,
     LabConfig,
     Proxmox,
+    as_root,
     build_image,
     make_builder_seed,
     make_seed,
@@ -112,8 +113,10 @@ def test_builder_seed_uses_reserved_address_and_public_key(
     assert "ssh-ed25519 AAAAbuilder" in user_data
     assert "temporary-test-password" not in user_data
     assert "192.0.2.10" in network
-    assert "255.255.255.0" in network
+    assert "192.0.2.10/24" in network
     assert "192.0.2.1" in network
+    assert '"version": 2' in network
+    assert '"ethernets"' in network
     assert seed.read_bytes() == b"fake builder seed"
 
 
@@ -145,17 +148,17 @@ def test_build_accepts_precreated_work_root(
         build_image(args)
 
 
-def test_builder_cloudinit_url_encodes_ssh_key() -> None:
-    pve = Proxmox(config())
-    captured: dict[str, object] = {}
+def test_builder_uses_early_default_freebsd_user() -> None:
+    source = Path("e2e/aifw_e2e.py").read_text()
+    build_section = source[source.index("def build_image(") : source.index("def run(")]
+    assert 'user="freebsd"' in build_section
+    assert 'user="builder"' not in build_section
+    assert "/home/freebsd/AiFw" in build_section
+    assert "make_builder_seed" in build_section
+    assert "configure_builder_cloudinit" not in build_section
 
-    def fake_request(method: str, path: str, **kwargs: object) -> None:
-        captured.update(method=method, path=path, **kwargs)
 
-    pve.request = fake_request  # type: ignore[method-assign]
-    pve.configure_builder_cloudinit(101, "ssh-ed25519 AAAAtest aifw-e2e\n")
-
-    data = captured["data"]
-    assert isinstance(data, dict)
-    assert data["sshkeys"] == "ssh-ed25519%20AAAAtest%20aifw-e2e"
-    assert data["ipconfig0"] == "ip=192.0.2.10/24,gw=192.0.2.1"
+def test_as_root_quotes_the_entire_command() -> None:
+    assert as_root("id -u && echo 'safe value'") == (
+        "su -m root -c 'id -u && echo '\"'\"'safe value'\"'\"''"
+    )

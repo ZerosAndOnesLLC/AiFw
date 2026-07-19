@@ -214,27 +214,6 @@ class Proxmox:
         if upid:
             self.wait_task(upid)
 
-    def configure_builder_cloudinit(self, vmid: int, public_key: str) -> None:
-        upid = self.request(
-            "PUT",
-            f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/config",
-            data={
-                "ide2": f"{self.cfg.vm_storage}:cloudinit",
-                "citype": "nocloud",
-                "ciuser": "freebsd",
-                # Proxmox expects this field to contain a URL-encoded
-                # authorized_keys payload inside the form-encoded request.
-                "sshkeys": urllib.parse.quote(public_key.strip(), safe=""),
-                "ipconfig0": (
-                    f"ip={self.cfg.address_cidr},gw={self.cfg.gateway}"
-                ),
-                "nameserver": self.cfg.dns,
-                "searchdomain": "local",
-            },
-        )
-        if upid:
-            self.wait_task(upid)
-
     def start(self, vmid: int) -> None:
         upid = self.request(
             "POST", f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/status/start"
@@ -392,15 +371,11 @@ def make_builder_seed(
 hostname: aifw-builder-{run_id}
 disable_root: true
 ssh_pwauth: false
-users:
-  - default
-  - name: builder
-    gecos: AiFw CI Builder
-    groups: wheel
-    shell: /bin/sh
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    ssh_authorized_keys:
-      - {public_key.strip()}
+# FreeBSD nuageinit processes this top-level key before networking. Entries
+# under `users` are delayed until the stock image's post-network firstboot
+# work, so using the image's default `freebsd` account avoids that delay.
+ssh_authorized_keys:
+  - {public_key.strip()}
 growpart:
   mode: auto
   devices: ['/']
@@ -408,22 +383,16 @@ resize_rootfs: true
 """
     interface = ipaddress.ip_interface(cfg.address_cidr)
     network_data = {
-        "version": 1,
-        "config": [
-            {
-                "type": "physical",
-                "name": "vtnet0",
-                "subnets": [
-                    {
-                        "type": "static",
-                        "address": str(interface.ip),
-                        "netmask": str(interface.network.netmask),
-                        "gateway": cfg.gateway,
-                        "dns_nameservers": [cfg.dns],
-                    }
-                ],
+        # FreeBSD 15's native nuageinit NoCloud parser expects cloud-init
+        # network-config v2 and iterates network.ethernets directly.
+        "version": 2,
+        "ethernets": {
+            "vtnet0": {
+                "addresses": [str(interface)],
+                "gateway4": cfg.gateway,
+                "nameservers": {"addresses": [cfg.dns]},
             }
-        ],
+        },
     }
     (seed_dir / "user-data").write_text(user_data)
     (seed_dir / "meta-data").write_text(
@@ -501,13 +470,15 @@ def wait_ssh(private_key: Path, host: str, timeout: int = 600) -> None:
     raise HarnessError(f"SSH/setup readiness timed out for {host}")
 
 
-def copy_git_archive(private_key: Path, host: str, destination: str) -> None:
+def copy_git_archive(
+    private_key: Path, host: str, destination: str, user: str = "root"
+) -> None:
     run_checked(
         ssh_command(
             private_key,
             host,
             f"mkdir -p {shlex.quote(destination)}",
-            user="builder",
+            user=user,
         )
     )
     archive = subprocess.Popen(["git", "archive", "--format=tar", "HEAD"], stdout=subprocess.PIPE)
@@ -517,7 +488,7 @@ def copy_git_archive(private_key: Path, host: str, destination: str) -> None:
             private_key,
             host,
             f"tar -xf - -C {shlex.quote(destination)}",
-            user="builder",
+            user=user,
         ),
         stdin=archive.stdout,
     )
@@ -525,6 +496,11 @@ def copy_git_archive(private_key: Path, host: str, destination: str) -> None:
     archive_status = archive.wait()
     if archive_status != 0 or unpack.returncode != 0:
         raise HarnessError("failed to copy the checked-out commit to the builder VM")
+
+
+def as_root(command: str) -> str:
+    """Run a shell command as root on FreeBSD's passwordless wheel account."""
+    return f"su -m root -c {shlex.quote(command)}"
 
 
 def login_and_check(cfg: LabConfig) -> dict[str, Any]:
@@ -672,8 +648,10 @@ def build_image(args: argparse.Namespace) -> int:
     try:
         private_key, public_key = make_ssh_key(work_dir)
         image = prepare_builder_image(Path(args.builder_image), work_dir, run_id)
+        seed = make_builder_seed(cfg, work_dir, run_id, public_key)
         image_volume = pve.upload(image, "import")
-        lifecycle.volumes.append(image_volume)
+        seed_volume = pve.upload(seed, "iso")
+        lifecycle.volumes.extend([image_volume, seed_volume])
         vmid = pve.next_vmid()
         lifecycle.vmid = vmid
         name = f"{RESOURCE_PREFIX}builder-{run_id}"
@@ -682,19 +660,30 @@ def build_image(args: argparse.Namespace) -> int:
             name,
             f"AiFw image builder {run_id}; expires {int(time.time()) + 4 * 3600}",
         )
-        pve.attach_imported_disk(vmid, image_volume)
-        pve.configure_builder_cloudinit(vmid, public_key)
+        # Proxmox-generated NoCloud metadata names the interface `eth0` and
+        # uses a schema FreeBSD 15's native nuageinit cannot apply. Attach our
+        # explicit v2/vtnet0 cidata seed instead.
+        pve.attach_imported_disk(vmid, image_volume, seed_volume)
         pve.resize_disk(vmid, "virtio0", args.builder_disk_size)
         pve.start(vmid)
 
         wait_command(
             private_key,
             cfg.address,
-            "test -f /var/lib/cloud/instance/boot-finished",
-            user="builder",
+            (
+                "test -s /var/cache/nuageinit/user_data && "
+                f"ifconfig vtnet0 inet | grep -F {shlex.quote(cfg.address)} && "
+                "netstat -rn -f inet | "
+                f"awk '$1 == \"default\" && $2 == {json.dumps(cfg.gateway)} "
+                "{found=1} END {exit !found}' && "
+                f"{as_root('id -u')} | grep -qx 0"
+            ),
+            user="freebsd",
             timeout=args.boot_timeout,
         )
-        copy_git_archive(private_key, cfg.address, "/home/freebsd/AiFw")
+        copy_git_archive(
+            private_key, cfg.address, "/home/freebsd/AiFw", user="freebsd"
+        )
         version = run_checked(
             [
                 "sh",
@@ -707,10 +696,10 @@ def build_image(args: argparse.Namespace) -> int:
         if not version:
             raise HarnessError("could not determine workspace version from Cargo.toml")
         remote_artifact = f"/usr/obj/aifw-iso/output/aifw-{version}-amd64.img.xz"
-        build_command = (
+        build_command = as_root(
             "cd /home/freebsd/AiFw && "
-            f"sudo -H sh freebsd/build-local.sh {shlex.quote(version)} && "
-            f"sudo test -s {shlex.quote(remote_artifact)}"
+            f"sh freebsd/build-local.sh {shlex.quote(version)} && "
+            f"test -s {shlex.quote(remote_artifact)}"
         )
         run_checked(
             ssh_command(
@@ -725,7 +714,7 @@ def build_image(args: argparse.Namespace) -> int:
                 ssh_command(
                     private_key,
                     cfg.address,
-                    f"sudo cat {shlex.quote(remote_artifact)}",
+                    as_root(f"cat {shlex.quote(remote_artifact)}"),
                     user="freebsd",
                 ),
                 stdout=handle,

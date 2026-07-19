@@ -1,6 +1,9 @@
 when:
   - event: manual
 
+# Experimental until builder-only image production and appliance-only
+# validation documented in e2e/README.md pass. Do not use as a release gate.
+
 # Destructive Proxmox work is restricted to the LAN agent explicitly labelled
 # for the lab. It must never be scheduled on ordinary or remote Docker agents.
 labels:

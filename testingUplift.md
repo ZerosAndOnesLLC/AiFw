@@ -8,33 +8,112 @@ The target definition of done is:
 
 > From one command, the framework creates an isolated appliance environment from the shipped artifact, verifies both control-plane behavior and real forwarded traffic, records actionable evidence, and leaves no Proxmox resources behind—even when setup or testing fails.
 
-## Current state
+## Status snapshot — 2026-07-19
 
-AiFw currently has a strong base of Rust unit and in-process integration tests, but it does not have an appliance-level E2E framework.
+This document separates the implemented current state from the intended full
+framework. The repository now contains an initial appliance lifecycle harness,
+but a complete successful image-build-plus-appliance run has not yet been
+demonstrated.
 
-Existing coverage includes:
+### Implemented and verified
+
+- Forgejo is the private source of truth at `indexarr/AiFw`; Woodpecker repo 87
+  is active.
+- `.woodpecker/ci.yml` runs formatting, Clippy, workspace tests, the UI build,
+  and E2E harness unit tests. The latest normal push pipelines have passed.
+- `.woodpecker/e2e.yml` is manual-only and restricted to the dedicated agent
+  label `proxmox=true`.
+- The Proxmox lab is PVE 9.2 on node `trigproxmox`, using `local` for uploads,
+  `local-lvm` for VM disks, and `vmbr0` for the initial management lane.
+- `192.168.0.26/23` is the reserved sequential builder/appliance address;
+  gateway and DNS are `192.168.0.1`.
+- `e2e/aifw_e2e.py` implements Proxmox task polling, upload/import, tagged VM
+  creation, disk attachment, startup, diagnostics, reboot checks, and guarded
+  `try/finally` teardown.
+- The writable appliance IMG can be imported only after renaming its
+  decompressed form to `.raw`; this PVE 9 API contract was verified directly.
+- Disposable direct tests have verified VM create/read/destroy, import to
+  `local-lvm`, native FreeBSD `nuageinit` bootstrap at `192.168.0.26/23`,
+  ephemeral-key SSH, live routing, non-interactive elevation, and cleanup with
+  zero residual `aifw-e2e-*` VMs or import volumes.
+- First boot can consume an `AIFW_SEED` ISO and invoke
+  `aifw-setup --config`; static WAN setup applies the address immediately, and
+  the console shell supports non-interactive SSH commands.
+- Harness unit tests cover artifact validation, secret exclusion, Argon2 seed
+  generation, one-NIC policy, work-directory reuse, native builder seed
+  schema, command quoting, and builder-user consistency.
+- Woodpecker repository secrets are scoped to manual events. The Proxmox token
+  is not committed or written to generated artifacts.
+
+### Resolved builder bootstrap issue
+
+The official FreeBSD 15.0 BASIC-CLOUDINIT UFS image uses FreeBSD's native
+`nuageinit`, not Python cloud-init. Direct serial and source-level diagnosis
+found two incompatibilities:
+
+1. Proxmox-generated NoCloud network data names the NIC `eth0`, while the
+   VirtIO device is `vtnet0`.
+2. The first custom seed supplied network-config v1. FreeBSD 15's NoCloud
+   parser expects v2 `ethernets` data and failed with a Lua type error.
+
+The harness now uploads a custom `cidata` ISO with v2 network data for
+`vtnet0`, supplies the ephemeral key through the early top-level
+`ssh_authorized_keys` field, and uses the stock `freebsd` account. Its focused
+Proxmox test directly verified the requested address, live default route, SSH,
+passwordless stock wheel-to-root elevation, and zero-residual cleanup. The
+official image has no `sudo`, and `sysrc` does not read settings rendered into
+`/etc/rc.conf.d`; readiness therefore checks live `ifconfig`/`netstat` state
+and uses passwordless `su`.
+
+The Woodpecker E2E workflow remains experimental because builder-only artifact
+production and appliance-only deployment are still unverified, not because
+the builder VM is unable to boot or network.
+
+### Current coverage that predates the VM harness
 
 - Approximately 688 Rust test attributes across the workspace.
-- API integration tests using in-memory SQLite, `PfMock`, and `axum_test::TestServer`.
-- Linux CI running formatting, Clippy, and workspace Rust tests.
-- UI CI running lint and static-export builds.
-- FreeBSD CI compiling binaries and producing ISO, IMG, and update artifacts.
-- A manual deployment script targeting a persistent FreeBSD test VM.
-- `scripts/ha-verify.sh`, which verifies two already-running HA nodes over SSH.
-- `aifw-setup --config <json>`, which supports unattended appliance configuration.
+- API integration tests using in-memory SQLite, `PfMock`, and
+  `axum_test::TestServer`.
+- Linux CI formatting, Clippy, workspace Rust tests, UI lint/build, and FreeBSD
+  artifact build scripts.
+- A manual deployment script for a persistent FreeBSD test VM.
+- `scripts/ha-verify.sh` for assertions against two already-running HA nodes.
+- `aifw-setup --config <json>` for unattended appliance configuration.
 
-Important gaps remain:
+### Remaining gaps to the full target
 
-- No shipped ISO or IMG is booted before publication.
-- No Proxmox provisioning, resource allocation, ownership tagging, or teardown exists.
-- No tracked UI or browser test suite exists.
-- No real FreeBSD `pf`, service, networking, TLS, IDS, DNS, or DHCP behavior is exercised in CI.
-- No real packets are routed through an AiFw appliance under test.
-- No reboot, failure-recovery, installation, update, or rollback suite exists at VM level.
-- UI lint is currently non-blocking.
-- No stale-resource janitor protects the Proxmox environment after interrupted jobs.
+- No successful Woodpecker-built seed-capable IMG has yet completed the full
+  Proxmox boot, service, login, API, reboot, and teardown sequence.
+- No exact shipped ISO or IMG is currently gated before publication.
+- The lab has only an untagged management bridge; no isolated WAN/LAN helper
+  topology exists for routed traffic tests.
+- No tracked Playwright/browser suite exists.
+- No real FreeBSD `pf`, TLS, IDS, DNS, DHCP, NAT, or forwarded-packet behavior
+  is exercised in CI.
+- No ISO installation, update/rollback, failure injection, HA provisioning, or
+  stale-resource janitor exists at VM level.
+- UI lint remains non-blocking while existing lint debt is addressed.
 
-The current suite therefore proves substantial application logic, but not that the released appliance boots and works as an integrated firewall.
+The current suite proves substantial application logic and most Proxmox
+lifecycle contracts, but it does not yet prove that the newly built appliance
+works as an integrated firewall.
+
+## Validation workflow
+
+Infrastructure contract changes must be validated in increasing-cost order:
+
+1. Pure unit tests with mocked Proxmox calls.
+2. A tiny NIC-less create/config/read/destroy VM contract test.
+3. A focused official-FreeBSD boot, address, SSH, and teardown test.
+4. A builder-only run that produces and checksums the IMG.
+5. An appliance-only run against that retained job-local IMG.
+6. One final Woodpecker workflow exercising the combined lifecycle.
+
+Do not use a complete Woodpecker pipeline to discover individual Proxmox form
+fields, cloud-init schema details, usernames, disk buses, or readiness paths.
+Focused runs must use unique `aifw-e2e-*` names, bounded timeouts, and the same
+guarded cleanup code as CI. After every direct test, explicitly assert that no
+run-owned VM or upload remains.
 
 ## Main release risk
 
@@ -64,15 +143,74 @@ Collect diagnostics and browser traces
 Always destroy VMs, disks, seed media, and allocations
 ```
 
-The orchestrator should expose one supported lifecycle command:
+The current orchestrator exposes separate build and appliance commands:
 
 ```sh
-scripts/e2e run \
-  --artifact output/aifw-5.99.6-amd64.img.xz \
-  --suite pr
+python -m e2e.aifw_e2e build \
+  --builder-image FreeBSD-15.0-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz \
+  --output e2e/.run/aifw.img.xz
+
+python -m e2e.aifw_e2e run \
+  --artifact e2e/.run/aifw.img.xz
 ```
 
-It should own provisioning, readiness, testing, artifact collection, and cleanup. Individual tests should never be responsible for creating or destroying shared Proxmox infrastructure.
+The target wrapper should compose those phases and select named suites. The
+orchestrator owns provisioning, readiness, testing, artifact collection, and
+cleanup. Individual functional tests must never create or destroy shared
+Proxmox infrastructure.
+
+### Current Woodpecker lane
+
+The manual `.woodpecker/e2e.yml` workflow is designed to:
+
+1. Run only on the LAN agent labelled `proxmox=true`.
+2. Download the official FreeBSD 15.0 BASIC-CLOUDINIT UFS qcow2 image.
+3. Create an ephemeral 8-vCPU/12-GB FreeBSD builder at the reserved address.
+4. Copy the exact checked-out commit to the builder with `git archive`.
+5. Run `freebsd/build-local.sh` and copy the compressed IMG into job-local
+   storage.
+6. Destroy the builder before reusing the reserved address.
+7. Import the new IMG, attach the `AIFW_SEED` ISO, test the appliance, reboot
+   it, collect diagnostics, and destroy all run resources.
+
+This is the intended current lane, not yet a passing lane. Builder bootstrap
+is directly verified; the next evidence must come from a focused builder-only
+artifact run and a focused appliance-only run before another combined workflow
+is used as acceptance evidence.
+
+### Builder implementation options
+
+The selected correctness-first path is an ephemeral builder created from the
+checksum-verified official FreeBSD image on every run. It is stateless and
+reproducible, but the image performs slow first-boot work and every run must
+install build dependencies.
+
+If measured duration is too high, the recommended optimization is a versioned
+Proxmox builder template:
+
+- Rebuild it on a schedule from the same official image.
+- Pin its FreeBSD release, packages, Rust toolchain, Node version, and template
+  manifest.
+- Clone it for each job; never build concurrently in the template itself.
+- Inject a fresh address and SSH key into every clone, then destroy the clone.
+- Keep a scheduled official-image canary so template caching cannot mask
+  bootstrap or dependency regressions.
+
+Alternatives considered:
+
+- **Offline-customized qcow2:** removes first boot from the job, but adds
+  libguestfs/image tooling and another artifact supply chain.
+- **Persistent FreeBSD builder host:** fastest warm builds, but weaker job
+  isolation, more cache contamination, and no VM-level teardown proof.
+- **Nested KVM or Docker builder:** possible only after intentionally exposing
+  virtualization to the CI agent; it increases runner privilege and is not
+  needed when Proxmox already provides the isolation boundary.
+- **Build from a previous AiFw image:** useful for update testing, but it can
+  hide failures in the clean build/bootstrap path and cannot replace it.
+
+Regardless of builder strategy, the appliance phase must deploy the exact IMG
+returned to the Woodpecker job. A cached builder must never become a substitute
+for artifact-under-test validation.
 
 ## Proxmox lab topology
 
@@ -498,11 +636,11 @@ Target: approximately 15-30 minutes after artifact availability.
 
 Performance regression thresholds should initially warn rather than block until enough stable lab history exists to define meaningful variance.
 
-## Implementation phases
+## Implementation phases and progress
 
 ### Phase 1: appliance automation prerequisites
 
-- Add seed-media detection and unattended first boot.
+- **Implemented:** seed-media detection and unattended first boot.
 - Add explicit unattended installer arguments.
 - Add serial-console progress and failure output.
 - Add a minimal non-sensitive health endpoint.
@@ -510,13 +648,17 @@ Performance regression thresholds should initially warn rather than block until 
 
 ### Phase 2: Proxmox lifecycle foundation
 
-- Implement scoped Proxmox authentication.
+- **Implemented, scope still needs tightening:** Proxmox token authentication.
 - Implement VMID, address, subnet, and VLAN allocation.
-- Import and boot the IMG.
-- Generate and attach seed media.
-- Implement layered readiness.
-- Implement diagnostic collection.
-- Implement verified teardown and scheduled janitor.
+- **Implemented:** dynamic VMID selection and one reserved management address.
+  Dynamic subnet/VLAN allocation remains target-state work.
+- **Directly verified:** upload/import, VM creation, disk configuration, and
+  guarded teardown. Full AiFw IMG boot remains unverified.
+- **Implemented:** appliance seed generation and attachment.
+- **Implemented:** SSH, service, TLS/API, UI, and reboot readiness checks. These
+  await a successful full appliance run.
+- **Implemented:** basic diagnostics and verified per-run teardown.
+- **Not implemented:** scheduled stale-resource janitor.
 
 ### Phase 3: core appliance tests
 
@@ -559,3 +701,16 @@ The first production-useful milestone should meet all of these conditions:
 - A final ownership check proves no run-scoped Proxmox resource remains.
 
 Once this milestone is stable, ISO installation, HA, update rollback, IPv6, and destructive recovery tests can be layered onto the same lifecycle framework.
+
+## Immediate next steps from the current state
+
+1. Run the builder command directly once and retain its IMG long enough to
+   validate checksum, partition table, and expected embedded seed-support
+   files.
+2. Run the appliance command directly against that IMG and fix readiness or
+   appliance bootstrap issues one contract at a time.
+3. Run one combined Woodpecker manual workflow as final integration evidence.
+4. Measure the clean builder duration; introduce a versioned template only if
+   the performance benefit justifies its maintenance and canary requirements.
+5. Add an isolated VLAN-aware or dedicated WAN/LAN lab topology before claiming
+   firewall data-plane E2E coverage.

@@ -227,6 +227,18 @@ sh scripts/install-hooks.sh   # pre-commit runs fmt --check + clippy -D warnings
 
 The hook mirrors CI's fast gates; skip a single run with `git commit --no-verify`.
 
+### Appliance E2E status
+
+An experimental Woodpecker/Proxmox harness lives under `e2e/`. It implements
+tagged VM provisioning, image import, unattended appliance seed generation,
+readiness checks, diagnostics, reboot verification, and guarded teardown.
+Proxmox lifecycle contracts are directly tested, but the complete FreeBSD
+builder-to-appliance workflow is not yet a passing release gate. The FreeBSD
+builder bootstrap now passes focused Proxmox validation using a native
+`nuageinit` v2 seed; image production and appliance validation remain. The
+current state, alternatives, and target WAN/LAN framework are documented in
+`testingUplift.md` and `e2e/README.md`.
+
 ## Target Environment
 
 - **OS**: FreeBSD 15.x
