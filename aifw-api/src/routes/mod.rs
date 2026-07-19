@@ -18,9 +18,8 @@ use uuid::Uuid;
 
 use crate::AppState;
 use aifw_common::{
-    Action, Address, Direction, Interface, IpsecMode, IpsecProtocol, IpsecSa, NatRedirect, NatRule,
-    NatStatus, NatType, PortRange, Protocol, Rule, RuleMatch, RuleStatus, StateTracking, WgPeer,
-    WgTunnel,
+    Action, Address, Direction, Interface, IpsecSa, NatRedirect, NatRule, NatStatus, NatType,
+    PortRange, Protocol, Rule, RuleMatch, RuleStatus, StateTracking, WgPeer, WgTunnel,
 };
 
 pub mod ai;

@@ -373,6 +373,7 @@ pub async fn delete_wg_peer(
 
 // --- VPN: IPsec ---
 
+#[allow(dead_code)] // retained as the documented request shape while creation is disabled
 #[derive(Debug, Deserialize)]
 pub struct CreateIpsecSaRequest {
     pub name: String,
