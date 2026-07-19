@@ -618,7 +618,12 @@ pub async fn import_opnsense(
         if let Some(v) = pre_import_version {
             // Snapshot path fully covers rules/NAT/aliases/routes; this is
             // the cleanest restore.
-            let _ = restore_pre_import(&state, v).await;
+            if let Err(e) = restore_pre_import(&state, v).await {
+                tracing::error!(
+                    error = %e,
+                    "OPNsense import ROLLBACK FAILED — system may be partially configured"
+                );
+            }
         } else {
             // Fallback: surgical cleanup of what we know we inserted.
             tracker.cleanup(&state).await;

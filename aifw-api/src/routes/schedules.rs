@@ -40,6 +40,19 @@ pub struct CreateScheduleRequest {
     pub enabled: Option<bool>,
 }
 
+/// Reload the pf anchor after a schedule mutation so the change is enforced
+/// immediately (#537) — apply_rules re-evaluates schedule windows.
+async fn reapply_rules(state: &AppState) -> Result<(), StatusCode> {
+    match state.vpn_engine.collect_vpn_rules().await {
+        Ok(extras) => state.rule_engine.set_extra_rules(extras).await,
+        Err(e) => tracing::warn!(error = %e, "schedule change: collecting vpn rules failed"),
+    }
+    state.rule_engine.apply_rules().await.map_err(|e| {
+        tracing::error!(error = %e, "schedule change: rules reapply failed");
+        internal()
+    })
+}
+
 pub async fn list_schedules(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<Schedule>>>, StatusCode> {
@@ -154,6 +167,7 @@ pub async fn update_schedule(
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
+    reapply_rules(&state).await?;
     let now = chrono::Utc::now().to_rfc3339();
     Ok(Json(ApiResponse {
         data: Schedule {
@@ -180,11 +194,16 @@ pub async fn delete_schedule(
     if result.rows_affected() == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
-    // Unlink from rules
-    let _ = sqlx::query("UPDATE rules SET schedule_id = NULL WHERE schedule_id = ?1")
+    // Unlink from rules. On failure the dangling reference fails open in the
+    // engine (rule stays active) — warn so the operator can see why.
+    if let Err(e) = sqlx::query("UPDATE rules SET schedule_id = NULL WHERE schedule_id = ?1")
         .bind(&id)
         .execute(&state.pool)
-        .await;
+        .await
+    {
+        tracing::warn!(schedule_id = %id, error = %e, "schedule delete: rules unlink failed");
+    }
+    reapply_rules(&state).await?;
     Ok(Json(MessageResponse {
         message: format!("Schedule {id} deleted"),
     }))

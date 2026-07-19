@@ -2145,4 +2145,54 @@ mod tests {
             .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
     }
+
+    // ============================================================
+    // Backup/restore strict-apply contract (#535)
+    // ============================================================
+
+    fn plain_auth_settings() -> AuthSettings {
+        AuthSettings {
+            jwt_secret: "test-secret-key".to_string(),
+            access_token_expiry_mins: 60,
+            refresh_token_expiry_days: 7,
+            require_totp: false,
+            require_totp_for_oauth: false,
+            auto_create_oauth_users: true,
+            max_login_attempts: 5,
+            lockout_duration_secs: 300,
+            allow_registration: true,
+            password_min_length: 8,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_restore_roundtrip_succeeds() {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .try_init();
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let config = crate::backup::build_current_config(&state).await.unwrap();
+        crate::backup::apply_firewall_config(&state, &config, &Default::default())
+            .await
+            .expect("restoring the current config must succeed");
+    }
+
+    #[tokio::test]
+    async fn test_restore_fails_instead_of_partial_apply() {
+        // A required step failing (here: clearing a table that no longer
+        // exists) must abort the restore with an error, never return Ok after
+        // a partial apply (#535).
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let config = crate::backup::build_current_config(&state).await.unwrap();
+        sqlx::query("DROP TABLE nat_rules")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let res = crate::backup::apply_firewall_config(&state, &config, &Default::default()).await;
+        assert!(res.is_err(), "partial apply must not report success");
+    }
 }

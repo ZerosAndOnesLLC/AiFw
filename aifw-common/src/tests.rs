@@ -5,6 +5,7 @@ mod tests {
     use crate::nat::*;
     use crate::ratelimit::*;
     use crate::rule::*;
+    use crate::schedule::{ScheduleSpec, rule_schedule_active};
     use crate::tls::*;
     use crate::types::*;
     use crate::vpn::*;
@@ -551,7 +552,8 @@ mod tests {
             Interface("wg0".to_string()),
             51820,
             Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 24),
-        );
+        )
+        .unwrap();
         assert_eq!(tunnel.name, "wg0-tunnel");
         assert_eq!(tunnel.listen_port, 51820);
         assert!(!tunnel.private_key.is_empty());
@@ -567,7 +569,8 @@ mod tests {
             Interface("wg0".to_string()),
             51820,
             Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 24),
-        );
+        )
+        .unwrap();
         let rules = tunnel.to_pf_rules();
         assert_eq!(rules.len(), 2);
         assert!(rules[0].contains("proto udp"));
@@ -633,15 +636,148 @@ mod tests {
         assert!(IpsecProtocol::parse("bogus").is_err());
     }
 
+    // --- Schedule window tests (#537) ---
+    // All evaluations use an injected NaiveDateTime — no wall clock.
+    // 2026-07-15 is a Wednesday.
+
+    fn at(day: u32, h: u32, m: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 7, day)
+            .unwrap()
+            .and_hms_opt(h, m, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn test_schedule_business_hours() {
+        let s = ScheduleSpec::parse("08:00-17:00", "mon,tue,wed,thu,fri", true).unwrap();
+        assert!(s.is_active_at(at(15, 9, 0))); // Wed 09:00
+        assert!(s.is_active_at(at(15, 8, 0))); // start inclusive
+        assert!(!s.is_active_at(at(15, 7, 59)));
+        assert!(!s.is_active_at(at(15, 17, 0))); // end exclusive
+        assert!(!s.is_active_at(at(18, 9, 0))); // Saturday
+        assert!(!s.is_active_at(at(19, 9, 0))); // Sunday
+    }
+
+    #[test]
+    fn test_schedule_multiple_ranges() {
+        let s = ScheduleSpec::parse("08:00-12:00,13:00-17:00", "wed", true).unwrap();
+        assert!(s.is_active_at(at(15, 11, 59)));
+        assert!(!s.is_active_at(at(15, 12, 30))); // lunch gap
+        assert!(s.is_active_at(at(15, 13, 0)));
+        assert!(!s.is_active_at(at(16, 11, 0))); // Thursday
+    }
+
+    #[test]
+    fn test_schedule_overnight_wrap() {
+        // Window belongs to the day it starts: Wed 22:00 → Thu 06:00
+        let s = ScheduleSpec::parse("22:00-06:00", "wed", true).unwrap();
+        assert!(s.is_active_at(at(15, 23, 30))); // Wed night
+        assert!(s.is_active_at(at(16, 5, 59))); // Thu early morning
+        assert!(!s.is_active_at(at(16, 6, 0))); // Thu past end
+        assert!(!s.is_active_at(at(15, 5, 0))); // Wed morning is Tue's window
+        assert!(!s.is_active_at(at(16, 23, 0))); // Thu night not listed
+    }
+
+    #[test]
+    fn test_schedule_full_day_range() {
+        // start == end means a 24h window on listed days
+        let s = ScheduleSpec::parse("00:00-00:00", "sat,sun", true).unwrap();
+        assert!(s.is_active_at(at(18, 0, 0)));
+        assert!(s.is_active_at(at(19, 23, 59)));
+        assert!(!s.is_active_at(at(15, 12, 0))); // Wednesday
+    }
+
+    #[test]
+    fn test_schedule_parse_rejects_malformed() {
+        assert!(ScheduleSpec::parse("25:00-26:00", "mon", true).is_none());
+        assert!(ScheduleSpec::parse("08:00-17:60", "mon", true).is_none());
+        assert!(ScheduleSpec::parse("08:00", "mon", true).is_none());
+        assert!(ScheduleSpec::parse("08:00-17:00", "monday", true).is_none());
+    }
+
+    #[test]
+    fn test_rule_schedule_active_fail_open() {
+        use std::collections::HashMap;
+        let mut schedules = HashMap::new();
+        schedules.insert(
+            "off-now".to_string(),
+            ScheduleSpec::parse("08:00-09:00", "mon", true).unwrap(),
+        );
+        schedules.insert(
+            "disabled".to_string(),
+            ScheduleSpec::parse("08:00-09:00", "mon", false).unwrap(),
+        );
+        let now = at(15, 12, 0); // Wed noon — outside every window above
+
+        // No schedule → active
+        assert!(rule_schedule_active(None, &schedules, now));
+        // Dangling reference → fail open, stays active
+        assert!(rule_schedule_active(Some("deleted"), &schedules, now));
+        // Disabled schedule doesn't constrain
+        assert!(rule_schedule_active(Some("disabled"), &schedules, now));
+        // Enabled schedule outside its window → inactive
+        assert!(!rule_schedule_active(Some("off-now"), &schedules, now));
+    }
+
     #[test]
     fn test_wg_key_generation() {
-        let (priv1, pub1) = generate_wg_keypair();
-        let (priv2, pub2) = generate_wg_keypair();
-        // Keys should be non-empty and different each time
-        assert!(!priv1.is_empty());
-        assert!(!pub1.is_empty());
+        let (priv1, pub1) = generate_wg_keypair().unwrap();
+        let (priv2, pub2) = generate_wg_keypair().unwrap();
+        // Standard base64 of 32 bytes: 44 chars including one '=' pad
+        assert_eq!(priv1.len(), 44);
+        assert_eq!(pub1.len(), 44);
         assert_ne!(priv1, priv2);
         assert_ne!(pub1, pub2);
+        assert_ne!(priv1, pub1);
+        // The public key must derive from the private key (#541)
+        assert_eq!(derive_wg_pubkey(&priv1).unwrap(), pub1);
+        assert_eq!(derive_wg_pubkey(&priv2).unwrap(), pub2);
+    }
+
+    #[test]
+    fn test_wg_keypair_matches_wireguard_tools() {
+        // Cross-check in-process derivation against `wg pubkey` when
+        // wireguard-tools is installed (FreeBSD CI / appliance); silently
+        // skipped elsewhere.
+        let Ok(probe) = std::process::Command::new("wg").arg("--version").output() else {
+            return;
+        };
+        if !probe.status.success() {
+            return;
+        }
+        let (privkey, pubkey) = generate_wg_keypair().unwrap();
+        use std::io::Write;
+        let mut child = std::process::Command::new("wg")
+            .arg("pubkey")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(privkey.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), pubkey);
+    }
+
+    #[test]
+    fn test_wg_psk_generation() {
+        let a = generate_wg_psk().unwrap();
+        let b = generate_wg_psk().unwrap();
+        assert_eq!(a.len(), 44);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_derive_wg_pubkey_rejects_malformed_input() {
+        assert!(derive_wg_pubkey("not base64 !!!").is_err());
+        assert!(derive_wg_pubkey("").is_err());
+        // Valid base64 but wrong length (16 bytes)
+        assert!(derive_wg_pubkey("AAAAAAAAAAAAAAAAAAAAAA==").is_err());
     }
 
     // --- Geo-IP tests ---

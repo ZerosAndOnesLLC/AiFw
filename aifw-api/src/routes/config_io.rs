@@ -55,7 +55,7 @@ pub async fn import_config(
     let ipsec_n = config.vpn.ipsec.len();
     let dns_n = config.system.dns_servers.len();
 
-    crate::backup::apply_firewall_config(&state, &config, &iface_map).await?;
+    crate::backup::apply_firewall_config_or_rollback(&state, &config, &iface_map).await?;
 
     let _ = sqlx::query("DELETE FROM static_routes")
         .execute(&state.pool)

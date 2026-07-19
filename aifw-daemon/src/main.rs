@@ -75,7 +75,8 @@ async fn main() -> anyhow::Result<()> {
     let db = Database::new(&args.db).await?;
     let pool = db.pool().clone();
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
-    let engine = RuleEngine::new(pool.clone(), pf.clone()).with_anchor(args.anchor.clone());
+    let engine =
+        Arc::new(RuleEngine::new(pool.clone(), pf.clone()).with_anchor(args.anchor.clone()));
     let nat_engine = NatEngine::new(pool.clone(), pf.clone());
     let alias_engine = AliasEngine::new(pool.clone(), pf.clone());
 
@@ -109,6 +110,47 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(ref iface) = args.interface {
         info!(interface = %iface, "attached to interface");
+    }
+
+    // Schedule boundary watcher (#537) — apply_rules only compiles rules
+    // inside their schedule window, so something must reload the anchor when
+    // a window opens or closes. Re-evaluate every minute (same cadence
+    // pfSense/OPNsense use for schedule ticks; granularity is HH:MM) and
+    // reapply only when a scheduled rule's active/inactive state actually
+    // flips. Schedule CRUD is also picked up within one tick.
+    {
+        let engine = engine.clone();
+        let vpn_engine = aifw_core::VpnEngine::new(pool.clone(), pf.clone());
+        let baseline = schedule_fingerprint(&engine).await;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut last = baseline;
+            loop {
+                ticker.tick().await;
+                let fp = schedule_fingerprint(&engine).await;
+                if fp == last {
+                    continue;
+                }
+                info!("schedule boundary crossed; reloading firewall rules");
+                // Keep VPN pass rules in the anchor across the reload, same
+                // as the API's reload path.
+                match vpn_engine.collect_vpn_rules().await {
+                    Ok(extras) => engine.set_extra_rules(extras).await,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "schedule reload: collecting vpn rules failed")
+                    }
+                }
+                match engine.apply_rules().await {
+                    // Only advance the fingerprint on success so a failed
+                    // reload is retried on the next tick instead of leaving
+                    // the stale ruleset loaded silently.
+                    Ok(()) => last = fp,
+                    Err(e) => error!("schedule reload: apply_rules failed: {e}"),
+                }
+            }
+        });
+        info!("schedule watcher started");
     }
 
     // ========================================================
@@ -358,6 +400,40 @@ async fn main() -> anyhow::Result<()> {
 
     info!("AiFw daemon stopped");
     Ok(())
+}
+
+/// Current schedule gating state: (rule id, inside-window) for every active
+/// rule that references a schedule, sorted for stable comparison (#537).
+/// Returns an empty list on DB errors (logged) — comparison against the
+/// previous tick then goes through apply_rules, whose own error handling
+/// retries on the next tick.
+async fn schedule_fingerprint(engine: &RuleEngine) -> Vec<(String, bool)> {
+    let db = engine.db();
+    let (rules, schedules) =
+        match tokio::try_join!(db.list_active_rules(), db.list_schedule_specs()) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "schedule watcher: db read failed");
+                return Vec::new();
+            }
+        };
+    let now = chrono::Local::now().naive_local();
+    let mut fp: Vec<(String, bool)> = rules
+        .iter()
+        .filter(|r| r.schedule_id.is_some())
+        .map(|r| {
+            (
+                r.id.to_string(),
+                aifw_common::schedule::rule_schedule_active(
+                    r.schedule_id.as_deref(),
+                    &schedules,
+                    now,
+                ),
+            )
+        })
+        .collect();
+    fp.sort_unstable();
+    fp
 }
 
 /// Boot-time drift detection + auto-heal.

@@ -126,13 +126,30 @@ impl RuleEngine {
     }
 
     /// Generate pf rules from active rules and load them into the pf anchor.
+    /// Rules referencing a schedule are only compiled while inside their
+    /// active window, evaluated against appliance local time (#537).
     /// Extra rules (from VPN, etc.) are inserted just before any block rule
     /// so they aren't shadowed by a `block quick` default.
     pub async fn apply_rules(&self) -> Result<()> {
         let rules = self.db.list_active_rules().await?;
+        let schedules = self.db.list_schedule_specs().await?;
+        let now = chrono::Local::now().naive_local();
         let mut pf_rules: Vec<String> = rules
             .iter()
             .filter(|r| r.status == RuleStatus::Active)
+            .filter(|r| {
+                if let Some(id) = r.schedule_id.as_deref()
+                    && !schedules.contains_key(id)
+                {
+                    tracing::warn!(rule_id = %r.id, schedule_id = %id,
+                        "rule references a missing schedule; treating as unscheduled");
+                }
+                aifw_common::schedule::rule_schedule_active(
+                    r.schedule_id.as_deref(),
+                    &schedules,
+                    now,
+                )
+            })
             .map(|r| r.to_pf_rule(&self.anchor))
             .collect();
 

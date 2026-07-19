@@ -44,12 +44,18 @@ pub struct WgTunnel {
 }
 
 impl WgTunnel {
-    /// Create a tunnel with a freshly generated keypair (via `generate_wg_keypair`,
-    /// which shells out to `wg` when available), status `Down`, and no DNS/MTU overrides
-    pub fn new(name: String, interface: Interface, listen_port: u16, address: Address) -> Self {
-        let (private_key, public_key) = generate_wg_keypair();
+    /// Create a tunnel with a freshly generated in-process X25519 keypair,
+    /// status `Down`, and no DNS/MTU overrides. Fails if the OS CSPRNG is
+    /// unavailable — never constructs a tunnel with an invalid keypair.
+    pub fn new(
+        name: String,
+        interface: Interface,
+        listen_port: u16,
+        address: Address,
+    ) -> crate::Result<Self> {
+        let (private_key, public_key) = generate_wg_keypair()?;
         let now = Utc::now();
-        Self {
+        Ok(Self {
             id: Uuid::new_v4(),
             name,
             interface,
@@ -64,7 +70,7 @@ impl WgTunnel {
             status: VpnStatus::Down,
             created_at: now,
             updated_at: now,
-        }
+        })
     }
 
     /// Generate ifconfig commands to create the WireGuard interface
@@ -181,12 +187,13 @@ impl WgPeer {
         }
     }
 
-    /// Create a peer with an auto-generated keypair (private key stored for config export).
-    pub fn new_with_generated_key(tunnel_id: Uuid, name: String) -> Self {
-        let (private_key, public_key) = generate_wg_keypair();
+    /// Create a peer with an auto-generated keypair (private key stored for
+    /// config export). Fails if the OS CSPRNG is unavailable.
+    pub fn new_with_generated_key(tunnel_id: Uuid, name: String) -> crate::Result<Self> {
+        let (private_key, public_key) = generate_wg_keypair()?;
         let mut peer = Self::new(tunnel_id, name, public_key);
         peer.client_private_key = Some(private_key);
-        peer
+        Ok(peer)
     }
 
     /// Generate a WireGuard client .conf file for this peer.
@@ -586,75 +593,51 @@ impl std::fmt::Display for VpnType {
 }
 
 // ============================================================
-// Key generation helpers (mock for non-FreeBSD)
+// Key generation (in-process X25519, no `wg` subprocess)
 // ============================================================
 
-/// Generate a WireGuard keypair (32 random bytes each, base64 encoded).
-/// On FreeBSD with wireguard-tools, uses `wg genkey` + `wg pubkey` for real Curve25519 keys.
-/// Elsewhere, generates random 32-byte keys (valid format but not cryptographically derived).
-pub fn generate_wg_keypair() -> (String, String) {
-    // Try wg genkey first (FreeBSD with wireguard-tools installed)
-    if let Ok(output) = std::process::Command::new("wg").arg("genkey").output()
-        && output.status.success()
-    {
-        let privkey = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if privkey.len() >= 40 {
-            // Derive public key from private key
-            if let Ok(pub_output) = std::process::Command::new("wg")
-                .arg("pubkey")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .and_then(|mut child| {
-                    use std::io::Write;
-                    if let Some(ref mut stdin) = child.stdin {
-                        let _ = stdin.write_all(privkey.as_bytes());
-                    }
-                    child.wait_with_output()
-                })
-                && pub_output.status.success()
-            {
-                let pubkey = String::from_utf8_lossy(&pub_output.stdout)
-                    .trim()
-                    .to_string();
-                if pubkey.len() >= 40 {
-                    return (privkey, pubkey);
-                }
-            }
-        }
-    }
-
-    // Fallback: generate 32 random bytes for each key
-    let mut private_bytes = [0u8; 32];
-    let mut public_bytes = [0u8; 32];
-    let id1 = Uuid::new_v4();
-    let id2 = Uuid::new_v4();
-    private_bytes[..16].copy_from_slice(id1.as_bytes());
-    private_bytes[16..].copy_from_slice(id2.as_bytes());
-    let id3 = Uuid::new_v4();
-    let id4 = Uuid::new_v4();
-    public_bytes[..16].copy_from_slice(id3.as_bytes());
-    public_bytes[16..].copy_from_slice(id4.as_bytes());
-    (base64_encode(&private_bytes), base64_encode(&public_bytes))
+/// Generate a WireGuard keypair: 32 CSPRNG bytes clamped per the Curve25519
+/// convention (matching `wg genkey`), public key derived in-process via
+/// X25519. Fails closed if the OS CSPRNG is unavailable — never returns a
+/// pair whose halves aren't cryptographically related (#541).
+pub fn generate_wg_keypair() -> crate::Result<(String, String)> {
+    let mut secret_bytes = [0u8; 32];
+    getrandom::fill(&mut secret_bytes)
+        .map_err(|e| crate::AifwError::Crypto(format!("OS CSPRNG unavailable: {e}")))?;
+    // Clamp so the stored private key is byte-identical to `wg genkey` output
+    // for the same entropy; X25519 impls clamp on use, so this is idempotent.
+    secret_bytes[0] &= 248;
+    secret_bytes[31] &= 127;
+    secret_bytes[31] |= 64;
+    let secret = x25519_dalek::StaticSecret::from(secret_bytes);
+    let public = x25519_dalek::PublicKey::from(&secret);
+    Ok((
+        base64_encode(&secret.to_bytes()),
+        base64_encode(public.as_bytes()),
+    ))
 }
 
-/// Generate a WireGuard preshared key (32 random bytes, base64 encoded)
-pub fn generate_wg_psk() -> String {
-    // Try wg genpsk first
-    if let Ok(output) = std::process::Command::new("wg").arg("genpsk").output()
-        && output.status.success()
-    {
-        let psk = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if psk.len() >= 40 {
-            return psk;
-        }
-    }
+/// Derive the WireGuard public key for a base64-encoded private key.
+/// Errors on malformed input (not valid base64 / not 32 bytes).
+pub fn derive_wg_pubkey(private_key_b64: &str) -> crate::Result<String> {
+    let bytes = base64_decode(private_key_b64)
+        .ok_or_else(|| crate::AifwError::Crypto("private key is not valid base64".to_string()))?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| crate::AifwError::Crypto("private key must decode to 32 bytes".to_string()))?;
+    let secret = x25519_dalek::StaticSecret::from(arr);
+    Ok(base64_encode(
+        x25519_dalek::PublicKey::from(&secret).as_bytes(),
+    ))
+}
+
+/// Generate a WireGuard preshared key (32 OS-CSPRNG bytes, base64 encoded).
+/// Fails closed if the OS CSPRNG is unavailable.
+pub fn generate_wg_psk() -> crate::Result<String> {
     let mut bytes = [0u8; 32];
-    let id1 = Uuid::new_v4();
-    let id2 = Uuid::new_v4();
-    bytes[..16].copy_from_slice(id1.as_bytes());
-    bytes[16..].copy_from_slice(id2.as_bytes());
-    base64_encode(&bytes)
+    getrandom::fill(&mut bytes)
+        .map_err(|e| crate::AifwError::Crypto(format!("OS CSPRNG unavailable: {e}")))?;
+    Ok(base64_encode(&bytes))
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -688,6 +671,49 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     result
+}
+
+/// Decode standard base64 (with padding). Returns `None` on any malformed
+/// input. Counterpart to `base64_encode`; kept dependency-free like it.
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let s = s.trim().as_bytes();
+    if s.is_empty() || !s.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    for chunk in s.chunks(4) {
+        let pad = chunk.iter().filter(|&&c| c == b'=').count();
+        if pad > 2 || chunk[..4 - pad].iter().any(|&c| val(c).is_none()) {
+            return None;
+        }
+        // '=' only valid as trailing padding
+        if chunk[..4 - pad].contains(&b'=') {
+            return None;
+        }
+        let mut triple: u32 = 0;
+        for (i, &c) in chunk.iter().enumerate() {
+            let v = if c == b'=' { 0 } else { val(c)? };
+            triple |= v << (18 - 6 * i);
+        }
+        out.push((triple >> 16) as u8);
+        if pad < 2 {
+            out.push((triple >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(triple as u8);
+        }
+    }
+    Some(out)
 }
 
 /// Generate a random SPI value for IPsec

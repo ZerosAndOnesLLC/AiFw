@@ -35,6 +35,10 @@ pub enum AifwError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A cryptographic operation failed (key generation, derivation)
+    #[error("crypto error: {0}")]
+    Crypto(String),
+
     /// Catch-all for errors that fit no other variant
     #[error("{0}")]
     Other(String),

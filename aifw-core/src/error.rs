@@ -78,6 +78,7 @@ impl From<aifw_common::AifwError> for CoreError {
             aifw_common::AifwError::Validation(s) => CoreError::Validation(s),
             aifw_common::AifwError::NotFound(s) => CoreError::NotFound(s),
             aifw_common::AifwError::Io(e) => CoreError::Io(e),
+            aifw_common::AifwError::Crypto(s) => CoreError::Other(format!("crypto error: {s}")),
             aifw_common::AifwError::Other(s) => CoreError::Other(s),
         }
     }

@@ -112,7 +112,14 @@ A schedule is a named time window with two fields:
 - `time_ranges` &mdash; one or more `HH:MM-HH:MM` ranges, e.g. `"08:00-12:00,13:00-17:00"`.
 - `days_of_week` &mdash; comma-separated short names, e.g. `"mon,tue,wed,thu,fri"`.
 
-Attach a `schedule_id` to a rule and the rule is only loaded into pf during the active window. Outside the window the rule is silently dropped from the compiled ruleset.
+Attach a `schedule_id` to a rule and the rule is only loaded into pf during the active window. Outside the window the rule is dropped from the compiled ruleset.
+
+Evaluation semantics:
+
+- Windows are evaluated against the appliance's **local time** (system timezone, including DST).
+- Range ends are exclusive (`08:00-17:00` deactivates at 17:00). A range that crosses midnight (`22:00-06:00`) belongs to the day it starts and runs into the next morning. `00:00-00:00` means the whole day.
+- The daemon re-evaluates schedules once per minute (the same cadence pfSense/OPNsense use) and reloads the ruleset when a rule crosses a window boundary; schedule edits via the API reload immediately.
+- A disabled schedule, or a `schedule_id` pointing at a deleted schedule, does not constrain the rule — it stays loaded as if unscheduled (fail-open is deliberate: rules can be `block` as well as `pass`, and unloading a block rule on a dangling reference would open the firewall).
 
 ## Traffic shaping
 
