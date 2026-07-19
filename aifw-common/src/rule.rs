@@ -320,8 +320,10 @@ pub struct Rule {
     /// Free-form admin note; not emitted into the pf rule
     #[serde(default)]
     pub description: Option<String>,
-    /// Gateway name for policy-based routing. Reserved: not persisted by the
-    /// DB layer and not emitted into the pf rule text by `to_pf_rule`.
+    /// Multi-WAN gateway id for policy-based routing (#540). Persisted, and
+    /// compiled into pf `route-to (iface next_hop)` by the rule engine after
+    /// resolving the gateway record. `None` uses default routing. A deleted
+    /// or down gateway falls back to default routing at compile time.
     #[serde(default)]
     pub gateway: Option<String>,
     /// State-tracking options (only emitted for pass rules)
@@ -376,6 +378,16 @@ impl Rule {
     /// state options are only emitted for pass rules. The `anchor` argument
     /// is unused here — callers place the rendered rule into the anchor.
     pub fn to_pf_rule(&self, anchor: &str) -> String {
+        self.to_pf_rule_routed(anchor, None)
+    }
+
+    /// Render with an optional resolved policy-routing gateway (#540):
+    /// emits pf `route-to (iface next_hop)` after the interface clause.
+    /// Only pass rules route — route-to is meaningless on block — and the
+    /// caller (rule engine) is responsible for resolving/validating the
+    /// gateway record before passing it here.
+    pub fn to_pf_rule_routed(&self, anchor: &str, route_to: Option<(&str, &str)>) -> String {
+        let _ = anchor;
         let mut parts = Vec::new();
 
         // action
@@ -401,6 +413,14 @@ impl Rule {
         // interface
         if let Some(ref iface) = self.interface {
             parts.push(format!("on {iface}"));
+        }
+
+        // policy routing (#540) — pf grammar places route-to after the
+        // interface clause and before the address family
+        if let Some((gw_iface, next_hop)) = route_to
+            && self.action == Action::Pass
+        {
+            parts.push(format!("route-to ({gw_iface} {next_hop})"));
         }
 
         // address family — must precede `proto` in pf grammar

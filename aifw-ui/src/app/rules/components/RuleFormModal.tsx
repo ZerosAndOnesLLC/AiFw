@@ -2,6 +2,7 @@
 
 import { Dispatch, SetStateAction } from "react";
 import type { InterfaceInfo, RuleForm, Schedule } from "@/lib/api/rules";
+import type { Gateway } from "@/lib/api/multiwan-policies";
 import {
   ACTIONS,
   IP_VERSIONS,
@@ -30,6 +31,7 @@ export function RuleFormModal({
   submitting,
   interfaces,
   schedules,
+  gateways,
   onSubmit,
   onCancel,
 }: {
@@ -39,6 +41,7 @@ export function RuleFormModal({
   submitting: boolean;
   interfaces: InterfaceInfo[];
   schedules: Schedule[];
+  gateways: Gateway[];
   onSubmit: () => void;
   onCancel: () => void;
 }) {
@@ -316,13 +319,23 @@ export function RuleFormModal({
             </div>
             <div>
               <label className={labelClass}>Gateway</label>
-              <input
-                type="text"
+              <select
                 value={form.gateway}
                 onChange={(e) => setForm((f) => ({ ...f, gateway: e.target.value }))}
-                placeholder="Policy routing gateway"
-                className={inputClass}
-              />
+                className={selectClass}
+              >
+                <option value="">Default routing</option>
+                {gateways.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name} ({g.interface} → {g.next_hop})
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500">
+                Pass rules matching this rule are policy-routed via the
+                selected Multi-WAN gateway (pf route-to). Falls back to
+                default routing while the gateway is down.
+              </p>
             </div>
             <div>
               <label className={labelClass}>State Type</label>

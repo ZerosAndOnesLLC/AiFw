@@ -109,9 +109,12 @@ pub struct Gateway {
     pub loss_pct_down: f64,
     /// Loss percentage the gateway must stay at or below to recover to up
     pub loss_pct_up: f64,
-    /// Latency threshold (ms) for degrading; stored but not yet evaluated by the probe loop
+    /// Latency threshold (ms): RTT at or above this degrades the gateway to
+    /// warning, even while probes succeed (#539)
     pub latency_ms_down: Option<u64>,
-    /// Latency threshold (ms) for recovery; stored but not yet evaluated by the probe loop
+    /// Latency recovery threshold (ms): RTT must fall to this or below before
+    /// the gateway can return to up; RTT between the two thresholds holds the
+    /// current state (hysteresis). Defaults to `latency_ms_down` when unset
     pub latency_ms_up: Option<u64>,
     /// Consecutive failed probes required to transition to down
     pub consec_fail_down: u32,

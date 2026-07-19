@@ -121,6 +121,15 @@ Evaluation semantics:
 - The daemon re-evaluates schedules once per minute (the same cadence pfSense/OPNsense use) and reloads the ruleset when a rule crosses a window boundary; schedule edits via the API reload immediately.
 - A disabled schedule, or a `schedule_id` pointing at a deleted schedule, does not constrain the rule — it stays loaded as if unscheduled (fail-open is deliberate: rules can be `block` as well as `pass`, and unloading a block rule on a dangling reference would open the firewall).
 
+## Policy routing (rule gateway)
+
+A pass rule can reference a Multi-WAN gateway by id (the `gateway` field; a dropdown in the rule form). Matching traffic is compiled with pf `route-to (interface next_hop)` so it egresses via that gateway instead of the default route.
+
+- Only `pass` rules route; the field is ignored on block rules.
+- The API rejects a gateway reference that isn't an existing Multi-WAN gateway — it is never silently discarded.
+- While the gateway is **down** (as judged by its health probes) the rule compiles without `route-to` and traffic falls back to default routing; the daemon reloads the ruleset on gateway state transitions. Deleting a gateway unlinks it from rules.
+- For weighted balancing or failover *groups*, use Multi-WAN policies instead; the rule gateway pins traffic to a single gateway.
+
 ## Traffic shaping
 
 Queue policy lives alongside rules. Three queue disciplines are supported via the `aifw queue` subcommand:

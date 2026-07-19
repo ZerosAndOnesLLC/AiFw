@@ -209,6 +209,45 @@ async fn main() -> anyhow::Result<()> {
         info!(count = gateways.len(), "gateway monitors started");
     }
 
+    // Reload firewall rules when a gateway changes state (#540): rules with
+    // a policy-routing gateway compile to `route-to` while it's healthy and
+    // fall back to default routing while it's down, so state transitions
+    // must recompile the anchor. Skipped when no rule references a gateway.
+    {
+        let engine = engine.clone();
+        let vpn_engine = aifw_core::VpnEngine::new(pool.clone(), pf.clone());
+        let mut rx = gateway_engine.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        match engine.db().has_gateway_rules().await {
+                            Ok(false) => continue,
+                            Ok(true) => {}
+                            Err(e) => {
+                                tracing::warn!(error = %e, "gateway route watcher: db check failed");
+                                continue;
+                            }
+                        }
+                        info!(gateway = %ev.gateway_id, to = ?ev.to_state,
+                            "gateway transition; reloading policy-routed rules");
+                        match vpn_engine.collect_vpn_rules().await {
+                            Ok(extras) => engine.set_extra_rules(extras).await,
+                            Err(e) => tracing::warn!(error = %e,
+                                "gateway route reload: collecting vpn rules failed"),
+                        }
+                        if let Err(e) = engine.apply_rules().await {
+                            error!("gateway route reload: apply_rules failed: {e}");
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        info!("gateway route watcher started");
+    }
+
     // SLA aggregation loop — 1-minute buckets, retention pruned daily
     {
         let sla = sla_engine.clone();

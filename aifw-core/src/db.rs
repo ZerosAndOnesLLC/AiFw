@@ -118,6 +118,7 @@ impl Database {
                 timeout_icmp INTEGER,
                 status TEXT NOT NULL DEFAULT 'active',
                 schedule_id TEXT,
+                gateway TEXT,
                 ip_version TEXT NOT NULL DEFAULT 'both',
                 src_invert INTEGER NOT NULL DEFAULT 0,
                 dst_invert INTEGER NOT NULL DEFAULT 0,
@@ -135,6 +136,8 @@ impl Database {
             "ALTER TABLE rules ADD COLUMN ip_version TEXT NOT NULL DEFAULT 'both'",
             "ALTER TABLE rules ADD COLUMN src_invert INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE rules ADD COLUMN dst_invert INTEGER NOT NULL DEFAULT 0",
+            // Policy-routing gateway reference (#540)
+            "ALTER TABLE rules ADD COLUMN gateway TEXT",
         ] {
             let _ = sqlx::query(stmt).execute(&self.pool).await;
         }
@@ -197,9 +200,9 @@ impl Database {
                 src_addr, src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end,
                 log, quick, label, state_tracking, state_policy, adaptive_start, adaptive_end,
                 timeout_tcp, timeout_udp, timeout_icmp, status, created_at, updated_at, schedule_id,
-                ip_version, src_invert, dst_invert)
+                ip_version, src_invert, dst_invert, gateway)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
+                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
             "#,
         )
         .bind(rule.id.to_string())
@@ -247,6 +250,7 @@ impl Database {
         .bind(format!("{:?}", rule.ip_version).to_lowercase())
         .bind(rule.src_invert)
         .bind(rule.dst_invert)
+        .bind(rule.gateway.as_deref())
         .execute(exec)
         .await?;
 
@@ -314,6 +318,42 @@ impl Database {
         Ok(map)
     }
 
+    /// Resolve multiwan gateways to (interface, next_hop, state) keyed by id,
+    /// for rule policy routing (#540). Returns an empty map when the multiwan
+    /// tables don't exist yet (fresh DB before the gateway engine migrated) —
+    /// rules referencing a gateway then fall back to default routing.
+    pub async fn list_gateway_routes(
+        &self,
+    ) -> std::collections::HashMap<String, (String, String, String)> {
+        let rows = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT id, interface, next_hop, state FROM multiwan_gateways",
+        )
+        .fetch_all(&self.pool)
+        .await;
+        match rows {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(id, iface, hop, state)| (id, (iface, hop, state)))
+                .collect(),
+            Err(e) => {
+                tracing::debug!(error = %e, "gateway route lookup unavailable; rules fall back to default routing");
+                std::collections::HashMap::new()
+            }
+        }
+    }
+
+    /// Whether any rule references a policy-routing gateway (#540); used by
+    /// the daemon to skip rule reloads on gateway transitions nobody routes
+    /// through.
+    pub async fn has_gateway_rules(&self) -> Result<bool> {
+        let n = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM rules WHERE gateway IS NOT NULL AND gateway != '')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n == 1)
+    }
+
     /// Update a filter rule in place (refreshing `updated_at`). Fails with
     /// `NotFound` if the id doesn't exist
     pub async fn update_rule(&self, rule: &Rule) -> Result<()> {
@@ -336,7 +376,7 @@ impl Database {
                 adaptive_start = ?18, adaptive_end = ?19,
                 timeout_tcp = ?20, timeout_udp = ?21, timeout_icmp = ?22,
                 status = ?23, updated_at = ?24, schedule_id = ?25,
-                ip_version = ?26, src_invert = ?27, dst_invert = ?28
+                ip_version = ?26, src_invert = ?27, dst_invert = ?28, gateway = ?29
             WHERE id = ?1
             "#,
         )
@@ -384,6 +424,7 @@ impl Database {
         .bind(format!("{:?}", rule.ip_version).to_lowercase())
         .bind(rule.src_invert)
         .bind(rule.dst_invert)
+        .bind(rule.gateway.as_deref())
         .execute(exec)
         .await?;
 
@@ -491,7 +532,7 @@ const RULE_COLUMNS: &str = "id, priority, action, direction, interface, protocol
     src_addr, src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
     log, quick, label, state_tracking, state_policy, adaptive_start, adaptive_end, \
     timeout_tcp, timeout_udp, timeout_icmp, status, created_at, updated_at, \
-    schedule_id, ip_version, src_invert, dst_invert";
+    schedule_id, ip_version, src_invert, dst_invert, gateway";
 
 #[derive(sqlx::FromRow)]
 struct RuleRow {
@@ -524,6 +565,7 @@ struct RuleRow {
     ip_version: String,
     src_invert: bool,
     dst_invert: bool,
+    gateway: Option<String>,
 }
 
 impl RuleRow {
@@ -572,7 +614,7 @@ impl RuleRow {
             quick: self.quick,
             label: self.label,
             description: None,
-            gateway: None,
+            gateway: self.gateway,
             state_options: StateOptions {
                 tracking: parse_state_tracking(&self.state_tracking),
                 policy: self.state_policy.as_deref().map(parse_state_policy),

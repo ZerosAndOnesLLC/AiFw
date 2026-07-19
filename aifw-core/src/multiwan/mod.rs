@@ -16,7 +16,7 @@ pub mod preflight;
 pub mod probe;
 pub mod sla;
 
-pub use gateway::{GatewayEngine, GatewayMetrics, evaluate_transition};
+pub use gateway::{GatewayEngine, GatewayMetrics, dampening_holds, evaluate_transition};
 pub use group::{GroupEngine, Selection, select};
 pub use instance::InstanceEngine;
 pub use leak::{LEAK_ANCHOR, LeakEngine};
