@@ -95,8 +95,8 @@ date: 2026-05-09
         <div class="feature-icon" style="background: rgba(59,130,246,0.1); border-color: rgba(59,130,246,0.2); color: var(--accent);">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
         </div>
-        <h3>WireGuard &amp; IPsec</h3>
-        <p>Native WireGuard with auto-keypair generation and per-peer config export. IPsec ESP/AH in tunnel or transport mode.</p>
+        <h3>WireGuard (IPsec in dev)</h3>
+        <p>Native WireGuard with auto-keypair generation and per-peer config export. IPsec is in development (config surface exists; kernel data plane being built).</p>
         <div class="feature-tags"><span class="tag">WireGuard</span><span class="tag">ESP</span><span class="tag">AH</span></div>
       </div>
 
@@ -132,7 +132,7 @@ date: 2026-05-09
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
         </div>
         <h3>Full NAT suite</h3>
-        <p>SNAT, DNAT/port forwarding, masquerade, 1:1 binat, <strong>NAT64</strong>, and <strong>NAT46</strong> — the last one is unique.</p>
+        <p>SNAT, DNAT/port forwarding, masquerade, and 1:1 binat. NAT64/NAT46 rule types are in development — cross-family translation is being built.</p>
         <div class="feature-tags"><span class="tag">snat</span><span class="tag">dnat</span><span class="tag">nat64</span><span class="tag">nat46</span></div>
       </div>
 
@@ -269,7 +269,7 @@ date: 2026-05-09
       <div class="row"><div class="feat-name">Suricata IDS</div><div><span class="ind yes">✓</span></div><div><span class="ind yes">✓</span></div><div><span class="ind partial">pkg</span></div></div>
       <div class="row"><div class="feat-name">Sigma + YARA rules</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
       <div class="row"><div class="feat-name">AI behavioural detection</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
-      <div class="row"><div class="feat-name">NAT46</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
+      <div class="row"><div class="feat-name">NAT46</div><div><span class="ind partial">in dev</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
       <div class="row"><div class="feat-name">OAuth / SSO</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
       <div class="row"><div class="feat-name">Commit confirm (auto-rollback)</div><div><span class="ind yes">✓</span></div><div><span class="ind no">—</span></div><div><span class="ind no">—</span></div></div>
       <div class="row"><div class="feat-name">Modern UI stack</div><div>React/Next.js</div><div>PHP</div><div>PHP</div></div>
