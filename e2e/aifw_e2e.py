@@ -250,18 +250,44 @@ class Proxmox:
 
     def delete_volume(self, volume: str) -> None:
         encoded = urllib.parse.quote(volume, safe="")
-        with contextlib.suppress(Exception):
-            upid = self.request(
-                "DELETE",
-                f"/nodes/{self.cfg.pve_node}/storage/{self.cfg.image_storage}/content/{encoded}",
-            )
-            if upid:
-                self.wait_task(upid, timeout=300)
+        upid = self.request(
+            "DELETE",
+            f"/nodes/{self.cfg.pve_node}/storage/{self.cfg.image_storage}/content/{encoded}",
+        )
+        if upid:
+            self.wait_task(upid, timeout=300)
 
     def vm_config(self, vmid: int) -> dict[str, Any]:
         return self.request(
             "GET", f"/nodes/{self.cfg.pve_node}/qemu/{vmid}/config"
         )
+
+    def vm_exists(self, vmid: int) -> bool:
+        resources = self.request("GET", "/cluster/resources", params={"type": "vm"})
+        return any(int(resource.get("vmid", -1)) == vmid for resource in resources)
+
+    def volume_exists(self, volume: str) -> bool:
+        resources = self.request(
+            "GET",
+            f"/nodes/{self.cfg.pve_node}/storage/{self.cfg.image_storage}/content",
+        )
+        return any(resource.get("volid") == volume for resource in resources)
+
+    def wait_resources_absent(
+        self, vmid: int | None, volumes: list[str], timeout: int = 60
+    ) -> None:
+        """Prove that every resource owned by this run has disappeared."""
+        deadline = time.monotonic() + timeout
+        remaining: list[str] = []
+        while time.monotonic() < deadline:
+            remaining = []
+            if vmid is not None and self.vm_exists(vmid):
+                remaining.append(f"VM {vmid}")
+            remaining.extend(volume for volume in volumes if self.volume_exists(volume))
+            if not remaining:
+                return
+            time.sleep(2)
+        raise HarnessError(f"run-owned Proxmox resources remain: {', '.join(remaining)}")
 
 
 def sha256_file(path: Path) -> str:
@@ -633,18 +659,21 @@ class Lifecycle:
         if self.keep_on_failure and self.failed:
             print(f"preserving failed VM {self.vmid} by explicit request", flush=True)
             return
-        if self.vmid is not None:
-            with contextlib.suppress(Exception):
-                config = self.pve.vm_config(self.vmid)
-                name = config.get("name", "")
-                if not name.startswith(RESOURCE_PREFIX):
-                    raise HarnessError(
-                        f"refusing to destroy VM {self.vmid} with unexpected name {name!r}"
-                    )
-                self.pve.destroy(self.vmid)
+        if self.vmid is not None and self.pve.vm_exists(self.vmid):
+            config = self.pve.vm_config(self.vmid)
+            name = config.get("name", "")
+            if not name.startswith(RESOURCE_PREFIX):
+                raise HarnessError(
+                    f"refusing to destroy VM {self.vmid} with unexpected name {name!r}"
+                )
+            self.pve.destroy(self.vmid)
         for volume in self.volumes:
-            if RESOURCE_PREFIX in volume:
+            if RESOURCE_PREFIX not in volume:
+                raise HarnessError(f"refusing to delete unexpected volume {volume!r}")
+            if self.pve.volume_exists(volume):
                 self.pve.delete_volume(volume)
+        self.pve.wait_resources_absent(self.vmid, self.volumes)
+        print("teardown verified: zero run-owned Proxmox resources", flush=True)
 
 
 def build_image(args: argparse.Namespace) -> int:
@@ -838,15 +867,24 @@ def run(args: argparse.Namespace) -> int:
         if lifecycle.vmid is not None and private_key is not None:
             with contextlib.suppress(Exception):
                 collect_diagnostics(pve, cfg, private_key, lifecycle.vmid, output_dir)
-        manifest["finished_at"] = int(time.time())
-        output_dir.joinpath("manifest.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-        )
-        lifecycle.cleanup()
-        # Only remove the exact, prefix-validated per-run directory. This
-        # contains the private key, seed config, and decompressed source IMG.
-        if work_dir.parent == work_root and work_dir.name.startswith(RESOURCE_PREFIX):
-            shutil.rmtree(work_dir)
+        try:
+            lifecycle.cleanup()
+            manifest["teardown_verified"] = True
+        except BaseException:
+            manifest["result"] = "failed"
+            raise
+        finally:
+            manifest.setdefault("teardown_verified", False)
+            manifest["finished_at"] = int(time.time())
+            output_dir.joinpath("manifest.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+            )
+            # Only remove the exact, prefix-validated per-run directory. This
+            # contains the private key, seed config, and decompressed source IMG.
+            if work_dir.parent == work_root and work_dir.name.startswith(
+                RESOURCE_PREFIX
+            ):
+                shutil.rmtree(work_dir)
 
 
 def parser() -> argparse.ArgumentParser:

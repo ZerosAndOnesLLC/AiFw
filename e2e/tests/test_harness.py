@@ -6,6 +6,7 @@ from argon2 import PasswordHasher
 from e2e.aifw_e2e import (
     HarnessError,
     LabConfig,
+    Lifecycle,
     Proxmox,
     as_root,
     build_image,
@@ -225,3 +226,55 @@ def test_import_finishes_before_boot_order_is_set() -> None:
         "ide2": "local:iso/seed.iso,media=cdrom",
     }
     assert requests[1]["data"] == {"boot": "order=virtio0"}
+
+
+def test_cleanup_deletes_owned_resources_and_proves_absence() -> None:
+    class FakeProxmox:
+        vm_present = True
+        present_volumes = {"local:iso/aifw-e2e-seed.iso"}
+        audited = False
+
+        def vm_exists(self, vmid: int) -> bool:
+            assert vmid == 101
+            return self.vm_present
+
+        def vm_config(self, vmid: int) -> dict[str, str]:
+            assert vmid == 101
+            return {"name": "aifw-e2e-abc123"}
+
+        def destroy(self, vmid: int) -> None:
+            assert vmid == 101
+            self.vm_present = False
+
+        def volume_exists(self, volume: str) -> bool:
+            return volume in self.present_volumes
+
+        def delete_volume(self, volume: str) -> None:
+            self.present_volumes.remove(volume)
+
+        def wait_resources_absent(
+            self, vmid: int | None, volumes: list[str]
+        ) -> None:
+            assert vmid == 101
+            assert volumes == ["local:iso/aifw-e2e-seed.iso"]
+            assert not self.vm_present
+            assert not self.present_volumes
+            self.audited = True
+
+    pve = FakeProxmox()
+    lifecycle = Lifecycle(pve, keep_on_failure=False)  # type: ignore[arg-type]
+    lifecycle.vmid = 101
+    lifecycle.volumes = ["local:iso/aifw-e2e-seed.iso"]
+    lifecycle.cleanup()
+    assert pve.audited
+
+
+def test_cleanup_refuses_unowned_volume() -> None:
+    class FakeProxmox:
+        def vm_exists(self, _vmid: int) -> bool:
+            return False
+
+    lifecycle = Lifecycle(FakeProxmox(), keep_on_failure=False)  # type: ignore[arg-type]
+    lifecycle.volumes = ["local:iso/unrelated.iso"]
+    with pytest.raises(HarnessError, match="unexpected volume"):
+        lifecycle.cleanup()

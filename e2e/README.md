@@ -1,9 +1,9 @@
 # AiFw Proxmox E2E harness
 
-Status: directly validated lifecycle foundation as of 2026-07-19. A clean
-official-FreeBSD builder produced the IMG, and appliance-only deployment of the
-corrected equivalent disk passed initial and post-reboot health plus teardown.
-One final combined Woodpecker run of the natively corrected source is pending.
+Status: validated one-NIC lifecycle smoke as of 2026-07-19. Woodpecker pipeline
+14 built AiFw 5.99.14 from commit `9c146232`, deployed that exact IMG, passed
+initial and post-reboot health, and completed teardown. It is a manual release
+smoke, not yet a required gate or routed firewall data-plane suite.
 
 The harness provisions the exact writable AiFw IMG in Proxmox, attaches a
 per-run unattended seed ISO, verifies the running appliance, reboots it, saves
@@ -77,6 +77,13 @@ Passing direct checks:
 - The corrected appliance-only run passed SSH, all core services, TLS login,
   authenticated API/UI health, live `pf`, reboot recovery, and zero-residual
   teardown. Its manifest records `pf_running=true` both before and after reboot.
+- Woodpecker pipeline 14 passed the combined native path in 1,840 seconds. It
+  produced a 221,009,096-byte compressed IMG from commit `9c146232`, deployed
+  it at the reserved address, and passed the same initial/reboot contract.
+- A post-run Proxmox ownership audit found zero `aifw-e2e-*` VMs and zero
+  matching uploaded or imported volumes.
+- Cleanup now polls Proxmox and records `teardown_verified=true` in the run
+  manifest only after the VM and every run-owned volume are absent.
 
 Root cause and correction:
 
@@ -90,13 +97,16 @@ Root cause and correction:
 - The harness waits for asynchronous disk import before setting the boot order;
   a regression test fixes this request ordering contract.
 
-Remaining integration boundary:
+Remaining boundaries:
 
-- The fixes discovered by the focused run must be rebuilt natively and pass one
-  combined Woodpecker run; the passing appliance reused the built IMG with
-  equivalent in-place boot metadata corrections to avoid another full compile.
-- The official image performs slow first-boot maintenance before sshd starts.
-  The current reliable lane tolerates that bounded delay.
+- The official image performs slow first-boot maintenance before sshd starts;
+  the reliable lane tolerates that bounded delay.
+- The passing lane has one NIC on the untagged management bridge. It proves
+  artifact boot, setup, control plane, real `pf` availability, persistence, and
+  cleanup—not forwarding, NAT, policy enforcement, DHCP, or WAN/LAN isolation.
+- Run evidence is currently emitted to the Woodpecker log and job-local
+  manifest. Durable external artifact retention and a stale-resource janitor
+  remain target-state work.
 
 Appliance root causes corrected in source:
 
@@ -111,8 +121,8 @@ Appliance root causes corrected in source:
   of stopping at SSH readiness.
 - Serial/VGA multicons output is enabled for future Proxmox boot diagnostics.
 
-Do not interpret the presence of `.woodpecker/e2e.yml` as evidence that the
-full lane passes or gates releases yet.
+Do not interpret this passing one-NIC smoke as the full WAN/LAN framework or a
+required publication gate.
 
 ## Development and validation order
 

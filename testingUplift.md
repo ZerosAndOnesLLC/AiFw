@@ -12,8 +12,8 @@ The target definition of done is:
 
 This document separates the implemented current state from the intended full
 framework. The repository now contains a directly validated one-NIC appliance
-lifecycle harness. Builder-only image production and corrected appliance-only
-initial/reboot validation pass; one combined native-fix Woodpecker run remains.
+lifecycle harness. Woodpecker pipeline 14 passed the combined native build,
+initial health, reboot health, and teardown path on 2026-07-19.
 
 ### Implemented and verified
 
@@ -49,6 +49,11 @@ initial/reboot validation pass; one combined native-fix Woodpecker run remains.
 - Appliance-only validation passed unattended setup, core services, TLS login,
   authenticated API/UI status, live `pf`, reboot recovery, and teardown after
   applying equivalent boot metadata corrections to the retained IMG.
+- Woodpecker pipeline 14 then rebuilt the fixes natively as AiFw 5.99.14 from
+  commit `9c146232`, produced a 221,009,096-byte compressed IMG, deployed that
+  exact job-local artifact at `192.168.0.26`, and passed in 1,840 seconds.
+- A post-run Proxmox audit found zero run-owned VMs and zero matching uploaded
+  or imported volumes.
 
 ### Resolved builder bootstrap issue
 
@@ -93,11 +98,29 @@ Focused appliance deployment exposed four independent artifact/runtime bugs:
 4. Reboot checks stopped at SSH and could race the parallel rc sequence. They
    now retry the complete services, TLS login, API/UI, and `pf` contract.
 
-The retained image was patched with equivalent boot metadata to prove the
-diagnosis without repeating compilation. Its final manifest records
-`pf_running=true` before and after reboot, and teardown left zero resources.
-The Woodpecker workflow remains experimental only until a natively rebuilt
-image completes the same combined run.
+The retained image was first patched with equivalent boot metadata to prove the
+diagnosis without repeating compilation. Its final manifest recorded
+`pf_running=true` before and after reboot. Pipeline 14 subsequently proved the
+natively rebuilt source through the same combined lifecycle.
+
+### Which failures were FreeBSD-specific?
+
+Most appliance/bootstrap failures were FreeBSD-specific:
+
+- FreeBSD 15 uses native `nuageinit`; its NoCloud network parser required v2
+  data and the VirtIO interface name `vtnet0`, not Linux-style `eth0`.
+- The stock FreeBSD cloud image lacked `sudo` and required the wheel account's
+  passwordless `su`; preserving the caller environment also preserved the wrong
+  home directory.
+- `KEYWORD:firstboot`, UFS versus GPT labels, `rc.conf` `pf_rules`, and FreeBSD
+  rc startup timing caused the first-boot, mount, and reboot failures.
+
+The Proxmox disk-import/boot-order race was not FreeBSD-specific; any guest can
+hit it when an asynchronously imported disk is referenced too early. The
+Woodpecker shell interpolation and checksum-parser escaping failures were also
+generic CI portability issues. The durable design therefore keeps FreeBSD
+guest adapters explicit while treating Proxmox lifecycle and CI orchestration
+as guest-agnostic layers.
 
 ### Current coverage that predates the VM harness
 
@@ -112,21 +135,21 @@ image completes the same combined run.
 
 ### Remaining gaps to the full target
 
-- No successful Woodpecker-built seed-capable IMG has yet completed the full
-  Proxmox boot, service, login, API, reboot, and teardown sequence.
-- No exact shipped ISO or IMG is currently gated before publication.
+- The passing exact-IMG lifecycle is manual, not yet a required publication
+  gate, and has only one successful combined Woodpecker acceptance run.
+- ISO installation is not exercised; the tested artifact is the writable IMG.
 - The lab has only an untagged management bridge; no isolated WAN/LAN helper
   topology exists for routed traffic tests.
 - No tracked Playwright/browser suite exists.
-- No real FreeBSD `pf`, TLS, IDS, DNS, DHCP, NAT, or forwarded-packet behavior
-  is exercised in CI.
+- Real FreeBSD `pf` availability and TLS/API behavior are exercised, but no
+  ruleset enforcement, IDS, DNS, DHCP, NAT, or forwarded-packet behavior is.
 - No ISO installation, update/rollback, failure injection, HA provisioning, or
   stale-resource janitor exists at VM level.
 - UI lint remains non-blocking while existing lint debt is addressed.
 
-The current suite proves substantial application logic and most Proxmox
-lifecycle contracts, but it does not yet prove that the newly built appliance
-works as an integrated firewall.
+The current suite proves the newly built appliance boots, configures, serves
+its control plane, keeps `pf` alive across reboot, and tears down safely. It
+does not yet prove routed firewall behavior.
 
 ## Validation workflow
 
@@ -191,7 +214,7 @@ Proxmox infrastructure.
 
 ### Current Woodpecker lane
 
-The manual `.woodpecker/e2e.yml` workflow is designed to:
+The manual `.woodpecker/e2e.yml` workflow now:
 
 1. Run only on the LAN agent labelled `proxmox=true`.
 2. Download the official FreeBSD 15.0 BASIC-CLOUDINIT UFS qcow2 image.
@@ -203,9 +226,9 @@ The manual `.woodpecker/e2e.yml` workflow is designed to:
 7. Import the new IMG, attach the `AIFW_SEED` ISO, test the appliance, reboot
    it, collect diagnostics, and destroy all run resources.
 
-Builder-only and corrected appliance-only evidence now pass directly. The next
-and only expensive acceptance step is one combined Woodpecker run that rebuilds
-the native fixes and deploys that exact job-local IMG.
+Builder-only, corrected appliance-only, and combined Woodpecker evidence now
+pass. Pipeline 14 rebuilt the native fixes and deployed that exact job-local
+IMG successfully.
 
 ### Builder implementation options
 
@@ -734,9 +757,10 @@ Once this milestone is stable, ISO installation, HA, update rollback, IPv6, and 
 
 ## Immediate next steps from the current state
 
-1. Run one combined Woodpecker manual workflow as final native-build evidence.
-2. Promote the one-NIC lane from experimental to a required release smoke only
-   after that combined run passes consistently.
+1. Repeat the manual lane on release candidates and promote it to a required
+   release smoke after repeatability is established.
+2. Persist manifests and diagnostics outside the ephemeral Woodpecker job, and
+   add a scheduled stale-resource janitor.
 3. Introduce a versioned template only if subsequent measurements show that
    the performance benefit justifies its maintenance and canary requirements.
 4. Add an isolated VLAN-aware or dedicated WAN/LAN lab topology before claiming

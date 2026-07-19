@@ -1,8 +1,8 @@
 when:
   - event: manual
 
-# Experimental until one combined native-fix run passes. Focused builder-only
-# and appliance-only validation now pass; see e2e/README.md.
+# Validated one-NIC lifecycle smoke. Keep manual until repeatability and an
+# isolated WAN/LAN topology justify promotion to a required release gate.
 
 # Destructive Proxmox work is restricted to the LAN agent explicitly labelled
 # for the lab. It must never be scheduled on ordinary or remote Docker agents.
@@ -41,6 +41,7 @@ steps:
       - awk '$1 == "SHA256" && $2 == "(FreeBSD-15.0-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz)" && $3 == "=" { print $4 "  e2e/.run/freebsd-builder.qcow2.xz" }' e2e/.run/CHECKSUM.SHA256 | sha256sum --check --strict -
       - python -m e2e.aifw_e2e build --builder-image e2e/.run/freebsd-builder.qcow2.xz --output e2e/.run/aifw.img.xz --run-id "${CI_PIPELINE_NUMBER}-$(printf '%.8s' "${CI_COMMIT_SHA}")"
       - python -m e2e.aifw_e2e run --artifact e2e/.run/aifw.img.xz --run-id "${CI_PIPELINE_NUMBER}-$(printf '%.8s' "${CI_COMMIT_SHA}")"
+      - python -m json.tool "e2e/artifacts/${CI_PIPELINE_NUMBER}-$(printf '%.8s' "${CI_COMMIT_SHA}")/manifest.json"
 
 # The build VM is destroyed before the appliance starts, allowing the same
 # reserved management address to be reused safely. The appliance VM and all
