@@ -42,7 +42,7 @@ breadcrumb:
 
 # AiFw vs OPNsense vs pfSense
 
-A fair, honest comparison. Where a competitor is stronger, we say so. This matrix is generated from reading the code — AiFw features are verified against the repo, OPNsense and pfSense from their official docs.
+A control-plane comparison based on repository and vendor documentation. A checkmark is not a production-readiness claim; experimental or incomplete AiFw data planes are marked explicitly and tracked in the maturity matrix.
 
 <div class="compare-wrapper" markdown="0">
 <table class="compare">
@@ -66,12 +66,12 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>SNAT (outbound)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>DNAT / port forwarding</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>1:1 NAT (binat)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>NAT64</td><td class="yes">✓</td><td class="partial">plugin</td><td class="yes">✓</td></tr>
-<tr><td>NAT46</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>NAT64</td><td class="no">not implemented</td><td class="partial">plugin</td><td class="yes">✓</td></tr>
+<tr><td>NAT46</td><td class="no">not implemented</td><td class="no">—</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">VPN</td></tr>
 <tr><td>WireGuard</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>IPsec</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>IPsec</td><td class="no">metadata only</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>OpenVPN</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 
 <tr class="section-row"><td colspan="4">IDS / IPS</td></tr>
@@ -95,7 +95,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>DDNS</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 
 <tr class="section-row"><td colspan="4">Traffic shaping</td></tr>
-<tr><td>CoDel</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>CoDel</td><td class="no">not implemented</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>HFSC</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>PRIQ</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>CBQ</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
@@ -115,7 +115,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>TOTP 2FA</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">RADIUS</td></tr>
 <tr><td>LDAP</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>RADIUS</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>OAuth / SSO</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>OAuth / SSO</td><td class="no">callback incomplete</td><td class="no">—</td><td class="no">—</td></tr>
 <tr><td>API keys</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">community</td></tr>
 <tr><td>RBAC (granular perms)</td><td class="yes">37 perms</td><td class="yes">ACL</td><td class="partial">user/group</td></tr>
 

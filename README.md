@@ -2,6 +2,8 @@
 
 High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML threat detection. All features free and open source.
 
+> **Release maturity: beta.** AiFw is under active development. Control-plane support in the API or UI does not by itself mean that a feature has a complete or production-qualified FreeBSD data plane. See the [feature maturity matrix](docs/maturity.md) before deployment.
+
 > **AI is not required.** AiFw is a full-featured firewall, router, DHCP server, DNS resolver, IDS/IPS, reverse proxy, and NTP server that works perfectly without any AI features enabled. You get stateful packet filtering, NAT, VPN, Geo-IP blocking, Suricata-compatible intrusion detection, traffic shaping, and a complete web UI — all without AI. There is no cloud dependency and no telemetry.
 
 > **AI/ML features are a work in progress.** The `aifw-ai` crate contains experimental detectors for port scans, DDoS, brute force, C2 beacons, and DNS tunneling. These are not yet production-ready and are disabled by default. The AI module is an opt-in add-on that will be developed further in future releases. The Threats page in the UI reflects the current WIP status of this module.
@@ -74,15 +76,15 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 ## Features
 
 - **Stateful packet filtering** via FreeBSD's pf with anchor isolation
-- **NAT** — SNAT, DNAT/RDR, masquerade, binat, NAT64/NAT46
+- **NAT** — SNAT, DNAT/RDR, masquerade, and binat. NAT64/NAT46 models are experimental and do not yet provide cross-family translation.
 - **Connection tracking** — real-time state table monitoring, top talkers, protocol breakdown
-- **Rate limiting & traffic shaping** — CoDel/HFSC/PriQ queues, per-IP overload tables, SYN flood protection
+- **Rate limiting & traffic shaping** — experimental queue configuration, per-IP overload tables, SYN flood protection
 - **AI/ML threat detection** *(optional, WIP)* — experimental port scan, DDoS, brute force, C2 beacon, DNS tunnel detection with auto-response (disabled by default, not yet production-ready)
-- **VPN integration** — WireGuard tunnels + peers, IPsec SAs with pf rule generation
+- **VPN integration** — WireGuard tunnels + peers. IPsec SA records currently generate firewall exceptions only; no IKE/kernel-SA backend is implemented.
 - **Geo-IP filtering** — country-based block/allow with GeoLite2 CSV, CIDR aggregation
 - **TLS inspection** — JA3/JA3S fingerprinting, SNI filtering, cert validation, version enforcement
 - **Plugin system** — native Rust + WASM sandboxed plugins with 7 hook points
-- **High availability (active-passive pair)** — Two AiFw nodes share a CARP virtual IP and pfsync state. Reboot the master and TCP sessions survive on the standby with no operator intervention. Setup via the UI in <15 minutes. See [docs/ha.md](docs/ha.md) for setup, ops, and failure modes.
+- **High availability (active-passive pair)** — CARP and pfsync configuration for two-node deployments. Validate failover and session behaviour in your environment; automated multi-node qualification is not yet available. See [docs/ha.md](docs/ha.md).
 - **Metrics engine** — RRD-style ring buffers (1s/1m/1h/1d tiers), optional PostgreSQL backend
 - **REST API** — Axum with JWT auth, API keys, full CRUD for all resources
 - **Terminal UI** — ratatui dashboard with 5 tabs
