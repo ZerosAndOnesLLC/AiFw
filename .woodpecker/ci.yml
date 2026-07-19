@@ -1,0 +1,37 @@
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+  - event: manual
+  - event: tag
+
+labels:
+  platform: linux/amd64
+
+steps:
+  - name: rust
+    image: rust:1.95-bookworm
+    environment:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-D warnings"
+    commands:
+      - rustup component add rustfmt clippy
+      - cargo fmt --all -- --check
+      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo test --workspace --no-fail-fast
+
+  - name: ui
+    image: node:24-bookworm
+    commands:
+      - cd aifw-ui
+      - npm ci --no-audit --no-fund
+      - npm run lint || true
+      - npm run build
+
+  - name: e2e-harness-tests
+    image: python:3.13-bookworm
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends xorriso xz-utils openssh-client
+      - pip install --no-cache-dir -r e2e/requirements.txt
+      - python -m compileall -q e2e
+      - python -m pytest -q e2e/tests

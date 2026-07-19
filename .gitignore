@@ -29,5 +29,11 @@ node_modules/
 freebsd/release/
 freebsd/ui-export/
 
+# E2E run artifacts and ephemeral credentials
+e2e/artifacts/
+e2e/.run/
+__pycache__/
+*.py[cod]
+
 # CLAUDE.md is project policy and is tracked in the repo — do not ignore it.
 Cargo.lock

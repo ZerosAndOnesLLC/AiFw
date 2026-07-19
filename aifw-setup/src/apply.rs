@@ -250,6 +250,11 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
                         "sysrc",
                         &[&format!("ifconfig_{}=inet {}", config.wan_interface, ip)],
                     );
+                    // `sysrc` persists the address for subsequent boots but
+                    // does not configure a running interface. Apply it now so
+                    // unattended first boot (including the Proxmox E2E seed)
+                    // becomes reachable without an extra reboot.
+                    run_best_effort("ifconfig", &[config.wan_interface.as_str(), "inet", ip]);
                 }
                 if let Some(ref gw) = config.wan_gateway {
                     run_best_effort("sysrc", &[&format!("defaultrouter={}", gw)]);

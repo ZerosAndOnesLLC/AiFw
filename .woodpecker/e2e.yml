@@ -1,0 +1,42 @@
+when:
+  - event: manual
+
+# Destructive Proxmox work is restricted to the LAN agent explicitly labelled
+# for the lab. It must never be scheduled on ordinary or remote Docker agents.
+labels:
+  platform: linux/amd64
+  proxmox: "true"
+
+steps:
+  - name: proxmox-e2e
+    image: python:3.13-bookworm
+    environment:
+      PVE_URL: https://192.168.1.159:8006
+      PVE_NODE: trigproxmox
+      PVE_IMAGE_STORAGE: local
+      PVE_VM_STORAGE: local-lvm
+      PVE_BRIDGE: vmbr0
+      PVE_VERIFY_TLS: "false"
+      PVE_TOKEN_ID:
+        from_secret: pve_token_id
+      PVE_TOKEN_SECRET:
+        from_secret: pve_token_secret
+      AIFW_E2E_ADMIN_PASSWORD:
+        from_secret: aifw_e2e_admin_password
+      AIFW_E2E_ADDRESS:
+        from_secret: aifw_e2e_address
+      AIFW_E2E_GATEWAY:
+        from_secret: aifw_e2e_gateway
+      AIFW_E2E_DNS:
+        from_secret: aifw_e2e_dns
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xorriso xz-utils openssh-client
+      - pip install --no-cache-dir -r e2e/requirements.txt
+      - mkdir -p e2e/.run e2e/artifacts
+      - test -n "$CI_PIPELINE_PARAM_ARTIFACT_URL" || { echo "manual parameter artifact_url is required and must point to an IMG built from this seed-capable revision"; exit 2; }
+      - curl --fail --location --retry 3 --output e2e/.run/aifw.img.xz "$CI_PIPELINE_PARAM_ARTIFACT_URL"
+      - python -m e2e.aifw_e2e run --artifact e2e/.run/aifw.img.xz --run-id "${CI_PIPELINE_NUMBER}-${CI_COMMIT_SHA:0:8}"
+
+# Diagnostic collection runs before the harness's finally-block destroys the
+# VM. Add the homelab's selected artifact publisher when one is standardized;
+# until then the manifest and diagnostic paths are reported in the step log.

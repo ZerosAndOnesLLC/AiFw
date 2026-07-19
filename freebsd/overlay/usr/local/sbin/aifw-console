@@ -6,6 +6,13 @@ AIFW_CONF="/usr/local/etc/aifw/aifw.conf"
 AIFW_VERSION_FILE="/usr/local/share/aifw/version"
 AIFW_VERSION=$(cat "$AIFW_VERSION_FILE" 2>/dev/null || echo "unknown")
 
+# login(1) uses this program as root's appliance console shell. sshd invokes a
+# login shell with `-c <command>` for non-interactive automation; honour that
+# contract so key-only diagnostics and E2E checks do not enter the menu loop.
+if [ "${1:-}" = "-c" ] && [ "$#" -eq 2 ]; then
+    exec /bin/sh -c "$2"
+fi
+
 show_banner()
 {
     clear
