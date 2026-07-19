@@ -90,7 +90,7 @@ WireGuard tunnels survive a CARP failover provided peers run with `PersistentKee
 
 ## IPsec
 
-AiFw supports IPsec Security Associations with ESP, AH, or ESP+AH protocols, in either tunnel or transport mode. Each SA gets a random SPI and sensible algorithm defaults (AES-256-GCM + HMAC-SHA256). When the SA is in tunnel mode the engine also emits a `pass quick on enc0` rule so encapsulated traffic flows.
+> **Unavailable.** The current IPsec model stores metadata and can render firewall exceptions, but it does not run IKE or install kernel security associations and policies. New records are rejected until a complete backend exists. Existing records remain readable and deletable for future migration and must not be treated as live tunnels.
 
 ### Quickstart
 

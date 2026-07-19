@@ -394,23 +394,12 @@ pub async fn list_ipsec_sas(
 }
 
 pub async fn create_ipsec_sa(
-    State(state): State<AppState>,
-    Json(req): Json<CreateIpsecSaRequest>,
+    State(_state): State<AppState>,
+    Json(_req): Json<CreateIpsecSaRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<IpsecSa>>), StatusCode> {
-    let src = Address::parse(&req.local_addr).map_err(|_| bad_request())?;
-    let dst = Address::parse(&req.remote_addr).map_err(|_| bad_request())?;
-    let protocol = IpsecProtocol::parse(&req.protocol).map_err(|_| bad_request())?;
-    let mode = match req.mode.as_str() {
-        "transport" => IpsecMode::Transport,
-        _ => IpsecMode::Tunnel,
-    };
-    let sa = IpsecSa::new(req.name, src, dst, protocol, mode);
-    let sa = state
-        .vpn_engine
-        .add_ipsec_sa(sa)
-        .await
-        .map_err(|_| bad_request())?;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: sa })))
+    // Preserve existing rows for migration, but do not create records that
+    // look active when no IKE or kernel SA/SP backend exists.
+    Err(StatusCode::NOT_IMPLEMENTED)
 }
 
 pub async fn delete_ipsec_sa(

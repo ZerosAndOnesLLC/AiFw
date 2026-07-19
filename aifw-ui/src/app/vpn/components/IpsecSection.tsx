@@ -30,7 +30,6 @@ export function IpsecSection({
   ipsecForm,
   setIpsecForm,
   ipsecSubmitting,
-  onToggleForm,
   onSubmit,
   onCancel,
   onDelete,
@@ -53,17 +52,8 @@ export function IpsecSection({
 
       {ipsecOpen && (
         <div className="border-t border-gray-700">
-          {/* Add IPsec SA button */}
-          <div className="px-4 py-3 flex justify-end border-b border-gray-700/50">
-            <button
-              onClick={onToggleForm}
-              className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
-              Add IPsec SA
-            </button>
+          <div className="px-4 py-3 border-b border-gray-700/50 text-sm text-amber-300">
+            Creation is disabled: no IKE or kernel SA/SP backend is implemented. Existing records are retained for migration only.
           </div>
 
           {/* IPsec form */}
