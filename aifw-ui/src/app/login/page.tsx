@@ -78,14 +78,14 @@ export default function LoginPage() {
             )}
 
             <div>
-              <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider block mb-1">Username</label>
-              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)}
+              <label htmlFor="username" className="text-xs text-[var(--text-muted)] uppercase tracking-wider block mb-1">Username</label>
+              <input id="username" name="username" type="text" value={username} onChange={(e) => setUsername(e.target.value)}
                 className={inputClass} required autoFocus />
             </div>
 
             <div>
-              <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider block mb-1">Password</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+              <label htmlFor="password" className="text-xs text-[var(--text-muted)] uppercase tracking-wider block mb-1">Password</label>
+              <input id="password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
                 className={inputClass} required />
             </div>
 
@@ -107,8 +107,8 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider block mb-1">TOTP Code</label>
-              <input type="text" value={totpCode} onChange={(e) => setTotpCode(e.target.value)}
+              <label htmlFor="totp-code" className="text-xs text-[var(--text-muted)] uppercase tracking-wider block mb-1">TOTP Code</label>
+              <input id="totp-code" name="totp_code" type="text" value={totpCode} onChange={(e) => setTotpCode(e.target.value)}
                 className={inputClass} required autoFocus autoComplete="one-time-code"
                 placeholder="000000" maxLength={20} />
             </div>

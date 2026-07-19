@@ -60,12 +60,20 @@ jobs:
 
       - name: npm run lint
         working-directory: aifw-ui
-        # ~70 pre-existing eslint errors (mostly setState-in-effect from Next 16 /
-        # react-hooks plugin upgrade) — running for visibility, not yet blocking.
-        # Tracked: tighten this once UI lint debt is cleaned.
-        continue-on-error: true
         run: npm run lint
 
       - name: npm run build
         working-directory: aifw-ui
         run: npm run build
+
+      - name: npm run test:unit
+        working-directory: aifw-ui
+        run: npm run test:unit
+
+      - name: Install Playwright browser
+        working-directory: aifw-ui
+        run: npx playwright install --with-deps chromium
+
+      - name: npm run test:e2e
+        working-directory: aifw-ui
+        run: npm run test:e2e

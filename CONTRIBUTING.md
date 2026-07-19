@@ -21,6 +21,9 @@ cargo test   # run test suite
 # Web UI
 cd aifw-ui
 npm ci
+npm run test:unit
+npx playwright install chromium # first local browser-test run only
+npm run test:e2e
 npm run build
 ```
 
@@ -62,7 +65,7 @@ Open an issue using the [feature request template](.github/ISSUE_TEMPLATE/featur
 3. Make your changes
 4. Run `cargo check` (zero warnings required)
 5. Run `cargo test`
-6. If you changed the UI: `cd aifw-ui && npm run build`
+6. If you changed the UI: `cd aifw-ui && npm run lint && npm test && npm run build`
 7. Submit a pull request
 
 Changes under `e2e/`, `.woodpecker/e2e.yml`, `freebsd/build-*.sh`, or the
