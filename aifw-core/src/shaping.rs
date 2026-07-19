@@ -361,7 +361,7 @@ fn render_dummynet_commands(q: &QueueConfig) -> Result<Vec<String>> {
 
 async fn apply_dummynet(commands: &[String]) -> Result<()> {
     if commands.is_empty() {
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "freebsd"))]
     {
