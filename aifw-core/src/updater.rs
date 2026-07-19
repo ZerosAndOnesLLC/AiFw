@@ -251,6 +251,9 @@ pub struct AifwUpdateInfo {
     pub tarball_url: Option<String>,
     /// Download URL of the tarball's SHA-256 checksum asset, if present
     pub checksum_url: Option<String>,
+    /// Download URL of the checksum's detached minisign signature.
+    #[serde(default)]
+    pub checksum_signature_url: Option<String>,
     /// True when a rollback backup exists on disk
     pub has_backup: bool,
     /// Version the on-disk backup was taken from, when known
@@ -343,24 +346,7 @@ pub async fn check_for_update(include_prereleases: bool) -> Result<AifwUpdateInf
     let notes = release["body"].as_str().unwrap_or("").to_string();
     let published = release["published_at"].as_str().unwrap_or("").to_string();
 
-    let assets = release["assets"].as_array();
-    let mut tarball_url = None;
-    let mut checksum_url = None;
-
-    if let Some(assets) = assets {
-        for asset in assets {
-            let name = asset["name"].as_str().unwrap_or("");
-            let url = asset["browser_download_url"].as_str().unwrap_or("");
-            if name.starts_with("aifw-update-")
-                && name.ends_with(".tar.xz")
-                && !name.ends_with(".sha256")
-            {
-                tarball_url = Some(url.to_string());
-            } else if name.starts_with("aifw-update-") && name.ends_with(".tar.xz.sha256") {
-                checksum_url = Some(url.to_string());
-            }
-        }
-    }
+    let (tarball_url, checksum_url, checksum_signature_url) = release_asset_urls(&release);
 
     let (has_backup, backup_version) = get_backup_info().await;
     let restart_pending = restart_pending().await;
@@ -374,6 +360,7 @@ pub async fn check_for_update(include_prereleases: bool) -> Result<AifwUpdateInf
         published_at: published,
         tarball_url,
         checksum_url,
+        checksum_signature_url,
         has_backup,
         backup_version,
         restart_pending,
@@ -855,10 +842,15 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         .checksum_url
         .as_deref()
         .ok_or(UpdaterError::NoTarball)?;
+    let signature_url = info
+        .checksum_signature_url
+        .as_deref()
+        .ok_or(UpdaterError::NoTarball)?;
 
     let tmp_dir = "/tmp/aifw-update";
     let tarball_path = std::path::PathBuf::from(format!("{}/update.tar.xz", tmp_dir));
     let checksum_path = format!("{}/update.tar.xz.sha256", tmp_dir);
+    let signature_path = format!("{}/update.tar.xz.sha256.minisig", tmp_dir);
 
     // Clean and create temp dir. NotFound is the normal clean-run case.
     if let Err(e) = tokio::fs::remove_dir_all(tmp_dir).await
@@ -877,6 +869,12 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         .ok_or_else(|| UpdaterError::Install("tarball_path is not UTF-8".into()))?;
     http_download(tarball_url, tarball_path_str).await?;
     http_download(checksum_url, &checksum_path).await?;
+    http_download(signature_url, &signature_path).await?;
+
+    // Publisher authenticity is checked before trusting the checksum. The
+    // public key is provisioned independently on the appliance, so replacing
+    // a release asset and its checksum is insufficient to authorize install.
+    verify_minisign_checksum(&checksum_path, &signature_path).await?;
 
     // Read and parse the expected hash from the downloaded checksum file
     let expected = tokio::fs::read_to_string(&checksum_path)
@@ -904,6 +902,20 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
         "AiFw updated from v{} to v{}",
         info.current_version, new_ver
     ))
+}
+
+async fn verify_minisign_checksum(checksum: &str, signature: &str) -> Result<(), UpdaterError> {
+    const PUBKEY_PATH: &str = "/usr/local/etc/aifw/update-signing.pub";
+    let output = Command::new("minisign")
+        .args(["-Vm", checksum, "-x", signature, "-p", PUBKEY_PATH])
+        .output()
+        .await
+        .map_err(|e| UpdaterError::Download(format!("signature verification unavailable: {e}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(UpdaterError::Checksum)
+    }
 }
 
 /// Services that may have had their rc.d script replaced by an update and
@@ -1323,6 +1335,28 @@ fn extract_hash(checksum_content: &str) -> String {
     line.split_whitespace().next().unwrap_or("").to_string()
 }
 
+fn release_asset_urls(
+    release: &serde_json::Value,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let mut tarball = None;
+    let mut checksum = None;
+    let mut signature = None;
+    if let Some(assets) = release["assets"].as_array() {
+        for asset in assets {
+            let name = asset["name"].as_str().unwrap_or("");
+            let url = asset["browser_download_url"].as_str().unwrap_or("");
+            if name.starts_with("aifw-update-") && name.ends_with(".tar.xz") {
+                tarball = Some(url.to_string());
+            } else if name.starts_with("aifw-update-") && name.ends_with(".tar.xz.sha256.minisig") {
+                signature = Some(url.to_string());
+            } else if name.starts_with("aifw-update-") && name.ends_with(".tar.xz.sha256") {
+                checksum = Some(url.to_string());
+            }
+        }
+    }
+    (tarball, checksum, signature)
+}
+
 async fn http_get(url: &str) -> Result<String, UpdaterError> {
     // Try fetch (FreeBSD) first, fall back to curl
     if let Ok(o) = Command::new("fetch").args(["-qo", "-", url]).output().await
@@ -1542,6 +1576,19 @@ mod tests {
     fn test_extract_hash_plain() {
         let input = "abc123def456";
         assert_eq!(extract_hash(input), "abc123def456");
+    }
+
+    #[test]
+    fn release_assets_require_distinct_checksum_and_signature_sidecars() {
+        let release = serde_json::json!({"assets": [
+            {"name": "aifw-update-6.0.0-amd64.tar.xz", "browser_download_url": "tar"},
+            {"name": "aifw-update-6.0.0-amd64.tar.xz.sha256", "browser_download_url": "sum"},
+            {"name": "aifw-update-6.0.0-amd64.tar.xz.sha256.minisig", "browser_download_url": "sig"}
+        ]});
+        assert_eq!(
+            release_asset_urls(&release),
+            (Some("tar".into()), Some("sum".into()), Some("sig".into()))
+        );
     }
 
     // Regression gate for #469: every overlay libexec script must carry the
