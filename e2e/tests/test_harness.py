@@ -6,6 +6,8 @@ from argon2 import PasswordHasher
 from e2e.aifw_e2e import (
     HarnessError,
     LabConfig,
+    Proxmox,
+    build_image,
     make_builder_seed,
     make_seed,
     prepare_builder_image,
@@ -112,3 +114,31 @@ def test_builder_seed_uses_reserved_address_and_public_key(
     assert "192.0.2.10/24" in network
     assert "192.0.2.1" in network
     assert seed.read_bytes() == b"fake builder seed"
+
+
+def test_build_accepts_precreated_work_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import argparse
+
+    work_root = tmp_path / ".run"
+    work_root.mkdir()
+    builder_image = tmp_path / "builder.qcow2"
+    builder_image.write_bytes(b"builder")
+    monkeypatch.setattr(LabConfig, "from_env", classmethod(lambda _cls: config()))
+    monkeypatch.setattr(Proxmox, "upload", lambda *_args, **_kwargs: (_ for _ in ()).throw(HarnessError("stop after setup")))
+
+    args = argparse.Namespace(
+        run_id="abc123",
+        work_dir=str(work_root),
+        output=str(tmp_path / "aifw.img.xz"),
+        builder_image=str(builder_image),
+        builder_disk_size="+40G",
+        boot_timeout=1,
+    )
+    monkeypatch.setattr("e2e.aifw_e2e.make_ssh_key", lambda path: (path / "key", "ssh-ed25519 test"))
+    monkeypatch.setattr("e2e.aifw_e2e.make_builder_seed", lambda _cfg, path, _run, _key: path / "seed.iso")
+    monkeypatch.setattr("e2e.aifw_e2e.prepare_builder_image", lambda _src, path, _run: path / "builder.qcow2")
+
+    with pytest.raises(HarnessError, match="stop after setup"):
+        build_image(args)

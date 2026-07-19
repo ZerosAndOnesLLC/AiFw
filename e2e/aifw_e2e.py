@@ -624,7 +624,7 @@ def build_image(args: argparse.Namespace) -> int:
     if not all(c in "0123456789abcdef-" for c in run_id.lower()):
         raise HarnessError("run ID may contain only hexadecimal characters and hyphens")
     work_root = Path(args.work_dir)
-    work_root.mkdir(parents=True, mode=0o700)
+    work_root.mkdir(parents=True, mode=0o700, exist_ok=True)
     work_dir = work_root / f"{RESOURCE_PREFIX}{run_id}-builder"
     work_dir.mkdir(mode=0o700)
     output = Path(args.output)
@@ -727,7 +727,7 @@ def run(args: argparse.Namespace) -> int:
     output_dir = Path(args.artifacts) / run_id
     output_dir.mkdir(parents=True, mode=0o700)
     work_root = Path(args.work_dir)
-    work_root.mkdir(parents=True, mode=0o700)
+    work_root.mkdir(parents=True, mode=0o700, exist_ok=True)
     work_dir = work_root / f"{RESOURCE_PREFIX}{run_id}"
     work_dir.mkdir(mode=0o700)
     pve = Proxmox(cfg)
