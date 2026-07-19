@@ -323,8 +323,10 @@ umount /mnt
 # Write bootcode
 gpart bootcode -b "$STAGEDIR/boot/pmbr" -p "$STAGEDIR/boot/gptboot" -i 2 "$MD"
 
-# Format UFS root
-newfs -U -j "/dev/${MD}p3"
+# Format UFS root. The generated fstab and loader.conf both select the root
+# filesystem through /dev/ufs/aifw, which is created by the UFS label (not the
+# GPT partition label).
+newfs -U -j -L aifw "/dev/${MD}p3"
 mount "/dev/${MD}p3" /mnt
 
 # Clone staged system into USB image

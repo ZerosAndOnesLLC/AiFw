@@ -160,6 +160,17 @@ mod tests {
     }
 
     #[test]
+    fn test_writable_image_root_labels_are_consistent() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let script = std::fs::read_to_string(root.join("freebsd/build-iso.sh"))
+            .expect("read freebsd/build-iso.sh");
+
+        assert!(script.contains("newfs -U -j -L aifw \"/dev/${MD}p3\""));
+        assert!(script.contains("/dev/ufs/aifw  /       ufs"));
+        assert!(script.contains("vfs.root.mountfrom=\"ufs:/dev/ufs/aifw\""));
+    }
+
+    #[test]
     fn test_wan_mode_display() {
         assert_eq!(WanMode::Dhcp.to_string(), "DHCP");
         assert_eq!(WanMode::Static.to_string(), "Static");
