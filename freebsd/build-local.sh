@@ -115,12 +115,18 @@ BIN_VER="$("$PROJECT_ROOT/target/release/aifw" --version 2>/dev/null | grep -oE 
 [ "$BIN_VER" = "$VERSION" ] || die "version mismatch: building v${VERSION} but target/release/aifw reports v${BIN_VER:-unknown}. Bump Cargo.toml and rebuild (try 'cargo clean -p aifw') before releasing."
 echo "--- Verified compiled aifw binary is v${VERSION} ---"
 
-# Helper: clone-or-update a companion repo and FAIL LOUDLY on pull errors.
-# Previous version used `git pull 2>/dev/null || true` which silently
-# swallowed stale-checkout / merge-conflict errors, causing releases to
-# ship with ancient bundled rDNS / rDHCP / rTIME binaries.
+# Helper: clone-or-update a companion repo and FAIL LOUDLY on errors.
+# Builds the exact commit pinned in manifest.json (#538) — never branch
+# HEAD, so a rebuild of the same AiFw commit always bundles the same
+# companion source. (The pre-#538 version reset to origin/main; before
+# that, `git pull 2>/dev/null || true` silently shipped stale binaries.)
 build_companion() {
     local name="$1" dir="$2" url="$3"
+    local pin
+    pin=$(jq -r --arg n "$name" \
+        '.external_repos[] | select(.name == $n) | .commit // empty' \
+        "$PROJECT_ROOT/freebsd/manifest.json")
+    [ -n "$pin" ] || die "no pinned commit for $name in manifest.json (#538)"
     if [ ! -d "$dir" ]; then
         echo "Cloning $name from $url ..."
         git clone "$url" "$dir" || {
@@ -128,16 +134,17 @@ build_companion() {
             exit 1
         }
     fi
-    echo "--- Updating $name ---"
+    echo "--- Checking out $name @ $pin ---"
     ( cd "$dir" && \
         git fetch --tags origin && \
-        git reset --hard origin/main ) || {
-        echo "ERROR: git update of $name ($dir) failed — refusing to build stale code" >&2
+        git checkout --detach "$pin" ) || {
+        echo "ERROR: pinned commit $pin not found in $name ($dir)" >&2
         exit 1
     }
-    local sha
-    sha=$(git -C "$dir" rev-parse --short HEAD)
-    echo "--- $name commit: $sha ---"
+    local actual
+    actual=$(git -C "$dir" rev-parse HEAD)
+    [ "$actual" = "$pin" ] || die "$name checked out $actual, expected pinned $pin"
+    echo "--- $name commit: $actual ---"
     ( cd "$dir" && cargo build --release ) || {
         echo "ERROR: cargo build of $name failed" >&2
         exit 1
