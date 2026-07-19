@@ -294,6 +294,15 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         // keep re-applying over the daemon's DB-driven updates (v5.57.3 fix).
 
         // Load pf rules
+        // Persist the non-default rules path before enabling pf. FreeBSD's
+        // rc.d/pf defaults to /etc/pf.conf; AiFw writes pf.conf.aifw under
+        // config_dir. First boot explicitly loaded this file, masking the
+        // missing rc.conf setting until the next reboot.
+        run_best_effort("sysrc", &["pf_enable=YES"]);
+        run_best_effort(
+            "sysrc",
+            &[&format!("pf_rules={}/pf.conf.aifw", config.config_dir)],
+        );
         run_best_effort(
             "pfctl",
             &["-f", &format!("{}/pf.conf.aifw", config.config_dir)],

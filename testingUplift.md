@@ -11,9 +11,9 @@ The target definition of done is:
 ## Status snapshot — 2026-07-19
 
 This document separates the implemented current state from the intended full
-framework. The repository now contains an initial appliance lifecycle harness,
-but a complete successful image-build-plus-appliance run has not yet been
-demonstrated.
+framework. The repository now contains a directly validated one-NIC appliance
+lifecycle harness. Builder-only image production and corrected appliance-only
+initial/reboot validation pass; one combined native-fix Woodpecker run remains.
 
 ### Implemented and verified
 
@@ -44,6 +44,11 @@ demonstrated.
   schema, command quoting, and builder-user consistency.
 - Woodpecker repository secrets are scoped to manual events. The Proxmox token
   is not committed or written to generated artifacts.
+- A clean official-image builder run produced and checksummed the compressed
+  IMG in roughly 15 minutes, copied it back, and left zero Proxmox resources.
+- Appliance-only validation passed unattended setup, core services, TLS login,
+  authenticated API/UI status, live `pf`, reboot recovery, and teardown after
+  applying equivalent boot metadata corrections to the retained IMG.
 
 ### Resolved builder bootstrap issue
 
@@ -73,9 +78,26 @@ The harness now waits for import completion and submits boot order as a second
 task; repairing that setting on the disposable VM made the corrected network
 seed come online immediately. Unit coverage locks in the two-request order.
 
-The Woodpecker E2E workflow remains experimental because builder-only artifact
-production and appliance-only deployment are still unverified, not because
-the builder VM is unable to boot or network.
+### Resolved appliance boot and reboot issues
+
+Focused appliance deployment exposed four independent artifact/runtime bugs:
+
+1. The IMG requested `/dev/ufs/aifw` but created only `/dev/gpt/aifw`, dropping
+   to `mountroot` with error 19. `newfs -L aifw` now creates the label the
+   loader and fstab request.
+2. `aifw_firstboot` used FreeBSD's sentinel-gated `KEYWORD:firstboot`, but a
+   staged writable IMG has no sentinel. It is now a normal idempotent rc
+   service that exits when configured and disables itself after success.
+3. Setup enabled `pf` without persisting `pf_rules`; reboot fell back to the
+   absent `/etc/pf.conf`. Setup now persists the AiFw rules path.
+4. Reboot checks stopped at SSH and could race the parallel rc sequence. They
+   now retry the complete services, TLS login, API/UI, and `pf` contract.
+
+The retained image was patched with equivalent boot metadata to prove the
+diagnosis without repeating compilation. Its final manifest records
+`pf_running=true` before and after reboot, and teardown left zero resources.
+The Woodpecker workflow remains experimental only until a natively rebuilt
+image completes the same combined run.
 
 ### Current coverage that predates the VM harness
 
@@ -181,17 +203,17 @@ The manual `.woodpecker/e2e.yml` workflow is designed to:
 7. Import the new IMG, attach the `AIFW_SEED` ISO, test the appliance, reboot
    it, collect diagnostics, and destroy all run resources.
 
-This is the intended current lane, not yet a passing lane. Builder bootstrap
-is directly verified; the next evidence must come from a focused builder-only
-artifact run and a focused appliance-only run before another combined workflow
-is used as acceptance evidence.
+Builder-only and corrected appliance-only evidence now pass directly. The next
+and only expensive acceptance step is one combined Woodpecker run that rebuilds
+the native fixes and deploys that exact job-local IMG.
 
 ### Builder implementation options
 
 The selected correctness-first path is an ephemeral builder created from the
 checksum-verified official FreeBSD image on every run. It is stateless and
-reproducible, but the image performs slow first-boot work and every run must
-install build dependencies.
+reproducible, and the measured clean run completed in roughly 15 minutes. This
+is acceptable for the manual/release lane and unblocks immediately without
+introducing mutable template state.
 
 If measured duration is too high, the recommended optimization is a versioned
 Proxmox builder template:
@@ -660,11 +682,11 @@ Performance regression thresholds should initially warn rather than block until 
 - Implement VMID, address, subnet, and VLAN allocation.
 - **Implemented:** dynamic VMID selection and one reserved management address.
   Dynamic subnet/VLAN allocation remains target-state work.
-- **Directly verified:** upload/import, VM creation, disk configuration, and
-  guarded teardown. Full AiFw IMG boot remains unverified.
+- **Directly verified:** upload/import, VM creation, disk configuration,
+  builder artifact production, corrected AiFw IMG boot, and guarded teardown.
 - **Implemented:** appliance seed generation and attachment.
-- **Implemented:** SSH, service, TLS/API, UI, and reboot readiness checks. These
-  await a successful full appliance run.
+- **Directly verified:** SSH, service, TLS/API, UI, live `pf`, and reboot
+  readiness checks on the corrected retained IMG.
 - **Implemented:** basic diagnostics and verified per-run teardown.
 - **Not implemented:** scheduled stale-resource janitor.
 
@@ -712,13 +734,10 @@ Once this milestone is stable, ISO installation, HA, update rollback, IPv6, and 
 
 ## Immediate next steps from the current state
 
-1. Run the builder command directly once and retain its IMG long enough to
-   validate checksum, partition table, and expected embedded seed-support
-   files.
-2. Run the appliance command directly against that IMG and fix readiness or
-   appliance bootstrap issues one contract at a time.
-3. Run one combined Woodpecker manual workflow as final integration evidence.
-4. Measure the clean builder duration; introduce a versioned template only if
+1. Run one combined Woodpecker manual workflow as final native-build evidence.
+2. Promote the one-NIC lane from experimental to a required release smoke only
+   after that combined run passes consistently.
+3. Introduce a versioned template only if subsequent measurements show that
    the performance benefit justifies its maintenance and canary requirements.
-5. Add an isolated VLAN-aware or dedicated WAN/LAN lab topology before claiming
+4. Add an isolated VLAN-aware or dedicated WAN/LAN lab topology before claiming
    firewall data-plane E2E coverage.

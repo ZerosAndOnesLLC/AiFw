@@ -200,6 +200,12 @@ cat > "$STAGEDIR/boot/loader.conf" <<'LOADER'
 autoboot_delay="3"
 beastie_disable="YES"
 loader_logo="none"
+# Keep VGA/ttyv0 as the interactive console while mirroring boot and rc output
+# to COM1. Proxmox E2E captures serial0, making early boot failures diagnosable.
+boot_multicons="YES"
+boot_serial="YES"
+comconsole_speed="115200"
+console="comconsole,vidconsole"
 kern.geom.label.disk_ident.enable="0"
 kern.geom.label.gptid.enable="0"
 vfs.root.mountfrom="cd9660:cd0"
@@ -324,7 +330,10 @@ umount /mnt
 gpart bootcode -b "$STAGEDIR/boot/pmbr" -p "$STAGEDIR/boot/gptboot" -i 2 "$MD"
 
 # Format UFS root
-newfs -U -j "/dev/${MD}p3"
+# The generated fstab and loader.conf boot by /dev/ufs/aifw. A GPT partition
+# label alone creates /dev/gpt/aifw, not /dev/ufs/aifw; without this filesystem
+# label the writable IMG drops to mountroot with error 19.
+newfs -U -j -L aifw "/dev/${MD}p3"
 mount "/dev/${MD}p3" /mnt
 
 # Clone staged system into USB image

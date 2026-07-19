@@ -507,7 +507,7 @@ def copy_git_archive(
 
 def as_root(command: str) -> str:
     """Run a shell command as root on FreeBSD's passwordless wheel account."""
-    return f"su -m root -c {shlex.quote(command)}"
+    return f"su root -c {shlex.quote(command)}"
 
 
 def login_and_check(cfg: LabConfig) -> dict[str, Any]:
@@ -556,6 +556,22 @@ def appliance_checks(cfg: LabConfig, private_key: Path) -> dict[str, Any]:
     return login_and_check(cfg)
 
 
+def wait_appliance_ready(
+    cfg: LabConfig, private_key: Path, timeout: int = 600
+) -> dict[str, Any]:
+    """Wait for the complete service/API/pf contract, not merely SSH."""
+    deadline = time.monotonic() + timeout
+    last_error: BaseException | None = None
+    while time.monotonic() < deadline:
+        try:
+            return appliance_checks(cfg, private_key)
+        except (HarnessError, requests.RequestException, subprocess.SubprocessError) as error:
+            last_error = error
+            time.sleep(5)
+    detail = f": {last_error}" if last_error is not None else ""
+    raise HarnessError(f"complete appliance readiness timed out{detail}")
+
+
 def collect_diagnostics(
     pve: Proxmox,
     cfg: LabConfig,
@@ -602,7 +618,7 @@ def reboot_and_check(cfg: LabConfig, private_key: Path) -> dict[str, Any]:
     )
     time.sleep(10)
     wait_ssh(private_key, cfg.address, timeout=600)
-    return appliance_checks(cfg, private_key)
+    return wait_appliance_ready(cfg, private_key, timeout=600)
 
 
 class Lifecycle:
@@ -690,6 +706,20 @@ def build_image(args: argparse.Namespace) -> int:
         )
         copy_git_archive(
             private_key, cfg.address, "/home/freebsd/AiFw", user="freebsd"
+        )
+        commit_sha = run_checked(
+            ["git", "rev-parse", "HEAD"], capture_output=True
+        ).stdout.strip()
+        run_checked(
+            ssh_command(
+                private_key,
+                cfg.address,
+                (
+                    "printf '%s\\n' "
+                    f"{shlex.quote(commit_sha)} > /home/freebsd/AiFw/.aifw-build-commit"
+                ),
+                user="freebsd",
+            )
         )
         version = run_checked(
             [
@@ -794,7 +824,9 @@ def run(args: argparse.Namespace) -> int:
         manifest["vmid"] = vmid
 
         wait_ssh(private_key, cfg.address, timeout=args.boot_timeout)
-        manifest["initial_status"] = appliance_checks(cfg, private_key)
+        manifest["initial_status"] = wait_appliance_ready(
+            cfg, private_key, timeout=args.boot_timeout
+        )
         manifest["post_reboot_status"] = reboot_and_check(cfg, private_key)
         manifest["result"] = "passed"
         return 0

@@ -1,8 +1,9 @@
 # AiFw Proxmox E2E harness
 
-Status: experimental lifecycle foundation as of 2026-07-19. Proxmox resource
-contracts, FreeBSD builder bootstrap, and teardown are directly verified; a
-complete successful image-build-plus-appliance run is still pending.
+Status: directly validated lifecycle foundation as of 2026-07-19. A clean
+official-FreeBSD builder produced the IMG, and appliance-only deployment of the
+corrected equivalent disk passed initial and post-reboot health plus teardown.
+One final combined Woodpecker run of the natively corrected source is pending.
 
 The harness provisions the exact writable AiFw IMG in Proxmox, attaches a
 per-run unattended seed ISO, verifies the running appliance, reboots it, saves
@@ -70,6 +71,12 @@ Passing direct checks:
   tasks. Sending both in the import request silently omitted the not-yet-created
   disk from the boot order and left the guest attempting PXE/CD-ROM boot.
 - Harness unit tests and cleanup verification with zero residual E2E VMs.
+- A clean builder-only run compiled AiFw and all four companion projects,
+  produced/checksummed a 211-MB compressed IMG, returned it to the runner, and
+  destroyed the builder.
+- The corrected appliance-only run passed SSH, all core services, TLS login,
+  authenticated API/UI health, live `pf`, reboot recovery, and zero-residual
+  teardown. Its manifest records `pf_running=true` both before and after reboot.
 
 Root cause and correction:
 
@@ -85,10 +92,24 @@ Root cause and correction:
 
 Remaining integration boundary:
 
-- A builder-only run still needs to complete `freebsd/build-local.sh`, return
-  and checksum the new IMG, then an appliance-only run must validate that IMG.
+- The fixes discovered by the focused run must be rebuilt natively and pass one
+  combined Woodpecker run; the passing appliance reused the built IMG with
+  equivalent in-place boot metadata corrections to avoid another full compile.
 - The official image performs slow first-boot maintenance before sshd starts.
   The current reliable lane tolerates that bounded delay.
+
+Appliance root causes corrected in source:
+
+- The writable IMG now creates UFS label `aifw`; previously only GPT label
+  `aifw` existed while loader/fstab requested `/dev/ufs/aifw`, causing a
+  `mountroot` error 19.
+- `aifw_firstboot` is a normal idempotent rc service, not sentinel-gated, so a
+  staged writable IMG consumes unattended seed media.
+- Setup persists `pf_rules=/usr/local/etc/aifw/pf.conf.aifw`; otherwise first
+  boot enabled `pf` directly but reboot fell back to missing `/etc/pf.conf`.
+- Reboot readiness retries the complete service/API/UI/`pf` contract instead
+  of stopping at SSH readiness.
+- Serial/VGA multicons output is enabled for future Proxmox boot diagnostics.
 
 Do not interpret the presence of `.woodpecker/e2e.yml` as evidence that the
 full lane passes or gates releases yet.
@@ -111,9 +132,10 @@ volume remains.
 ### Builder alternatives
 
 The current implementation starts from the checksum-verified official image
-for maximum reproducibility. If its first-boot and dependency installation
-cost makes the lane too slow, use a versioned, periodically rebuilt Proxmox
-builder template and clone it per run. Pin the template to a FreeBSD release,
+for maximum reproducibility. The measured clean builder completed in roughly
+15 minutes, so this remains the default manual/release lane while correctness
+stabilizes. If measured duration becomes too high, use a versioned, periodically
+rebuilt Proxmox builder template and clone it per run. Pin the template to a FreeBSD release,
 record its package/toolchain manifest, inject a fresh key/network seed into
 every clone, and retain an official-image canary job so cached state cannot
 hide bootstrap regressions.

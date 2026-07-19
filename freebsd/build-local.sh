@@ -100,7 +100,8 @@ cd "$PROJECT_ROOT"
 echo "=== [3/6] Building Rust binaries (release) ==="
 # Ensure cargo is in PATH (rustup installs to $HOME/.cargo/bin)
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-echo "--- AiFw commit: $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown) ---"
+AIFW_COMMIT=$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || cat "$PROJECT_ROOT/.aifw-build-commit" 2>/dev/null || echo unknown)
+echo "--- AiFw commit: $AIFW_COMMIT ---"
 cargo build --release
 
 # --- Guard: the compiled binary version MUST match the release version ---
@@ -268,7 +269,7 @@ echo "$VERSION" > "$TARBALL_DIR/version"
 # repos (which have burned us before — rdns 1.5.1 shipping in a v5.45.0
 # tarball) visible at build time.
 {
-    echo "AiFw             $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "AiFw             $(printf '%s' "$AIFW_COMMIT" | cut -c1-12)"
     [ -d "$TRAFFICCOP_DIR/.git" ] && echo "TrafficCop       $(git -C "$TRAFFICCOP_DIR" rev-parse --short HEAD)"
     [ -d "$RDHCP_DIR/.git" ]      && echo "rDHCP            $(git -C "$RDHCP_DIR"      rev-parse --short HEAD)"
     [ -d "$RDNS_DIR/.git" ]       && echo "rDNS             $(git -C "$RDNS_DIR"       rev-parse --short HEAD)"

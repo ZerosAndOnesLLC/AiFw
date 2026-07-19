@@ -2,7 +2,11 @@
 # PROVIDE: aifw_firstboot
 # REQUIRE: NETWORKING LOGIN
 # BEFORE: aifw_daemon aifw_api
-# KEYWORD: firstboot
+# This service is intentionally not KEYWORD:firstboot. Writable IMG artifacts
+# are assembled from a staged root and do not carry FreeBSD's firstboot
+# sentinel, so rc(8) would skip unattended seed processing entirely. The
+# service is idempotent: it exits when aifw.conf exists and disables itself
+# after successful setup.
 
 . /etc/rc.subr
 

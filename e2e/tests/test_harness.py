@@ -13,6 +13,7 @@ from e2e.aifw_e2e import (
     make_seed,
     prepare_builder_image,
     prepare_image,
+    wait_appliance_ready,
 )
 
 
@@ -160,8 +161,51 @@ def test_builder_uses_early_default_freebsd_user() -> None:
 
 def test_as_root_quotes_the_entire_command() -> None:
     assert as_root("id -u && echo 'safe value'") == (
-        "su -m root -c 'id -u && echo '\"'\"'safe value'\"'\"''"
+        "su root -c 'id -u && echo '\"'\"'safe value'\"'\"''"
     )
+
+
+def test_appliance_firstboot_is_not_sentinel_gated() -> None:
+    source = Path("freebsd/overlay/usr/local/etc/rc.d/aifw_firstboot").read_text()
+    directives = [line for line in source.splitlines() if line.startswith("# KEYWORD:")]
+    assert directives == []
+    assert 'if [ -f "$AIFW_CONF" ]; then' in source
+
+
+def test_writable_image_root_label_matches_boot_configuration() -> None:
+    source = Path("freebsd/build-iso.sh").read_text()
+    assert 'newfs -U -j -L aifw "/dev/${MD}p3"' in source
+    assert "/dev/ufs/aifw  /       ufs" in source
+    assert 'vfs.root.mountfrom="ufs:/dev/ufs/aifw"' in source
+
+
+def test_setup_persists_aifw_pf_rules_path() -> None:
+    source = Path("aifw-setup/src/apply.rs").read_text()
+    assert 'run_best_effort("sysrc", &["pf_enable=YES"])' in source
+    assert 'format!("pf_rules={}/pf.conf.aifw", config.config_dir)' in source
+
+
+def test_complete_readiness_retries_transient_pf_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = iter(
+        [
+            HarnessError("authenticated status reports pf_running=false"),
+            {"pf_running": True},
+        ]
+    )
+
+    def fake_checks(_cfg: LabConfig, _key: Path) -> dict[str, object]:
+        result = next(attempts)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr("e2e.aifw_e2e.appliance_checks", fake_checks)
+    monkeypatch.setattr("e2e.aifw_e2e.time.sleep", lambda _seconds: None)
+    assert wait_appliance_ready(config(), Path("key"), timeout=1) == {
+        "pf_running": True
+    }
 
 
 def test_import_finishes_before_boot_order_is_set() -> None:

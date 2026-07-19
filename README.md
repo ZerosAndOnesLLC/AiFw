@@ -235,7 +235,9 @@ readiness checks, diagnostics, reboot verification, and guarded teardown.
 Proxmox lifecycle contracts are directly tested, but the complete FreeBSD
 builder-to-appliance workflow is not yet a passing release gate. The FreeBSD
 builder bootstrap now passes focused Proxmox validation using a native
-`nuageinit` v2 seed; image production and appliance validation remain. The
+`nuageinit` v2 seed; direct builder-only image production and corrected
+appliance initial/reboot validation also pass. One combined Woodpecker run of
+the native fixes remains before promotion to a release gate. The
 current state, alternatives, and target WAN/LAN framework are documented in
 `testingUplift.md` and `e2e/README.md`.
 
