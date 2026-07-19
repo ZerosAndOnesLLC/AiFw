@@ -125,6 +125,10 @@ jobs:
                 [ -f "/tmp/${NAME}/target/release/${bin}" ] && cp "/tmp/${NAME}/target/release/${bin}" "freebsd/release/${bin}"
               done
             done
+            # Publish a machine-readable inventory alongside release artifacts.
+            # This is an inventory, not an authenticity signature; checksums
+            # remain corruption checks only until signing/attestation is wired.
+            freebsd/generate-sbom.sh freebsd/release/aifw.spdx.json
 
             echo "=== Building update tarball ==="
             VERSION="${{ steps.version.outputs.version }}"

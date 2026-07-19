@@ -29,6 +29,8 @@ breadcrumb:
 
 > **Restore safety:** restore uses snapshot/reapply across SQLite and live services; it is not a single atomic database-and-kernel transaction. Required firewall, NAT, and GeoIP apply failures are returned as errors, but complete failure-injection and verified live-state rollback coverage is still in progress. Keep an out-of-band recovery path and a separately verified backup.
 
+Release SHA-256 files detect corruption but do not authenticate publisher origin. Release signing, key rotation, and keyless provenance attestation remain required before artifacts can be treated as authenticated. The build now emits an SPDX inventory for the Rust workspace; companion binary inventories are tracked separately with their pinned revisions in `freebsd/manifest.json`.
+
 Three workflows live in the same place: **JSON config backup &amp; restore** for day-to-day snapshots, **OPNsense / pfSense XML import** for migrating off another firewall, and **commit-confirm** for safe remote edits that auto-revert if you lose access. Versioned history sits underneath all three so any change is one click away from a rollback.
 
 ## JSON backup &amp; restore
