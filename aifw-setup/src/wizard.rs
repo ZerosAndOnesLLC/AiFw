@@ -746,13 +746,5 @@ fn fetch_github_keys(username: &str) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
-fn hash_password(password: &str) -> String {
-    use argon2::{
-        Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng,
-    };
-    let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .unwrap_or_default()
-}
+// hash_password moved to config.rs so the unattended seed loader shares it.
+use crate::config::hash_password;

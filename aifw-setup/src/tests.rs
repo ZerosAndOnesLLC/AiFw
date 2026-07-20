@@ -417,4 +417,82 @@ mod let_underscore_tests {
             violations.join("\n")
         );
     }
+
+    // --- Unattended seed (#533 Phase 2) ---
+
+    #[test]
+    fn seed_template_parses_and_flags_placeholders() {
+        let tpl = crate::config::SetupConfig::seed_template();
+        let mut cfg: crate::config::SetupConfig =
+            serde_json::from_str(&tpl).expect("seed template must deserialize into SetupConfig");
+        // The unedited template must be rejected by the placeholder guard,
+        // never applied as-is.
+        assert!(cfg.wan_interface.starts_with("CHANGE-ME"));
+        // After filling in the placeholders it must resolve + validate.
+        cfg.wan_interface = "vtnet0".to_string();
+        cfg.resolve_seed_secrets().expect("plaintext pw resolves");
+        cfg.validate_seed().expect("filled template validates");
+        assert!(cfg.admin_password_hash.starts_with("$argon2"));
+        assert!(cfg.admin_password.is_none(), "plaintext must be dropped");
+    }
+
+    #[test]
+    fn seed_secrets_hash_wins_over_plaintext() {
+        let mut cfg: crate::config::SetupConfig =
+            serde_json::from_str(&crate::config::SetupConfig::seed_template()).unwrap();
+        cfg.admin_password_hash = "$argon2id$preexisting".to_string();
+        cfg.admin_password = Some("SomethingElse123".to_string());
+        cfg.resolve_seed_secrets().unwrap();
+        assert_eq!(cfg.admin_password_hash, "$argon2id$preexisting");
+        assert!(cfg.admin_password.is_none());
+    }
+
+    #[test]
+    fn seed_secrets_reject_missing_or_short_password() {
+        let mut cfg: crate::config::SetupConfig =
+            serde_json::from_str(&crate::config::SetupConfig::seed_template()).unwrap();
+        cfg.admin_password = None;
+        assert!(cfg.resolve_seed_secrets().is_err(), "neither pw nor hash");
+
+        let mut cfg: crate::config::SetupConfig =
+            serde_json::from_str(&crate::config::SetupConfig::seed_template()).unwrap();
+        cfg.admin_password = Some("short".to_string());
+        assert!(cfg.resolve_seed_secrets().is_err(), "short password");
+    }
+
+    #[test]
+    fn seed_validation_catches_incoherent_network_config() {
+        let mk = || -> crate::config::SetupConfig {
+            let mut c: crate::config::SetupConfig =
+                serde_json::from_str(&crate::config::SetupConfig::seed_template()).unwrap();
+            c.wan_interface = "vtnet0".to_string();
+            c
+        };
+        let mut c = mk();
+        c.wan_mode = crate::config::WanMode::Static;
+        assert!(c.validate_seed().is_err(), "static without ip/gateway");
+
+        let mut c = mk();
+        c.lan_ip = Some("192.168.1.1/24".to_string());
+        c.lan_interface = None;
+        assert!(c.validate_seed().is_err(), "lan_ip without lan_interface");
+
+        let mut c = mk();
+        c.admin_username = String::new();
+        assert!(c.validate_seed().is_err(), "empty admin username");
+    }
+
+    #[test]
+    fn seed_secrets_never_serialize_back() {
+        let mut cfg: crate::config::SetupConfig =
+            serde_json::from_str(&crate::config::SetupConfig::seed_template()).unwrap();
+        cfg.admin_password = Some("SuperSecret99".to_string());
+        cfg.root_password = Some("RootSecret99".to_string());
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            !json.contains("SuperSecret99") && !json.contains("RootSecret99"),
+            "plaintext seed secrets must never serialize (aifw.conf safety)"
+        );
+        assert!(!json.contains("admin_password\""), "field itself skipped");
+    }
 }
