@@ -1,0 +1,56 @@
+name: FreeBSD functional tests
+
+# #533 Phase 1: real pfctl + real packets in a FreeBSD VM on every PR that
+# touches data-plane code. The harness itself lives in freebsd/tests/ and
+# runs identically by hand on a test VM.
+
+on:
+  pull_request:
+    paths:
+      - 'aifw-pf/**'
+      - 'aifw-core/**'
+      - 'aifw-common/**'
+      - 'aifw-api/**'
+      - 'aifw-daemon/**'
+      - 'freebsd/tests/**'
+      - '.github/workflows/freebsd-functional.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  functional:
+    name: pf data-plane tests (FreeBSD VM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Run harness in FreeBSD VM
+        uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1.5.2
+        with:
+          release: "15.0"
+          usesh: true
+          copyback: true
+          prepare: |
+            pkg install -y curl jq sudo wireguard-tools
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            . "$HOME/.cargo/env"
+          run: |
+            set -e
+            . "$HOME/.cargo/env"
+            cd /home/runner/work/AiFw/AiFw
+            echo "=== Building test binaries (debug) ==="
+            cargo build -p aifw-api -p aifw-daemon
+            echo "=== Running functional harness ==="
+            mkdir -p func-artifacts
+            sh freebsd/tests/run-all.sh --artifacts "$(pwd)/func-artifacts"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: freebsd-functional-artifacts
+          path: func-artifacts/
+          retention-days: 7

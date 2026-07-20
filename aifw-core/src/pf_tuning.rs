@@ -4,23 +4,36 @@
 //! appliance with high connection churn that fills up and pf starts
 //! dropping new states (visible as `match-state` errors and stalled
 //! connections). The operator should be able to lift the cap from the
-//! UI without editing /etc/pf.conf by hand.
+//! UI without editing pf.conf by hand.
 //!
 //! How we apply it without disturbing rules:
-//!  1. Persist the desired value in `auth_config` (key
-//!     `pf_max_states`).
-//!  2. Write `/usr/local/etc/aifw/pf-tuning.conf` containing just
-//!     `set limit states { N }`.
-//!  3. Run `pfctl -m -f <file>` — `-m` merges the options into the
-//!     running pf without flushing rules or NAT.
+//!  1. Persist the desired value in `auth_config` (key `pf_max_states`).
+//!  2. Patch a `set limit states N` line into
+//!     `/usr/local/etc/aifw/pf.conf.aifw` (replace the existing line or
+//!     insert into the options section), validate the staged copy with
+//!     `pfctl -nf`, commit via the narrow `aifw-sudo-write` helper, and
+//!     reload the FULL file with `pfctl -f` — the same
+//!     patch/validate/commit/reload flow the anchor patcher uses, covered
+//!     by the same sudoers grants.
+//!  3. Boot picks the value up naturally because pf_start loads
+//!     pf.conf.aifw; `apply_on_boot` just re-patches idempotently.
 //!
-//! aifw-daemon re-applies the file at boot so the limit survives
-//! restarts; the API re-applies on every save.
+//! HISTORY (#533 harness finding): the previous implementation loaded an
+//! options-only tuning file with `pfctl -m -f`. `-m` merges the *options*,
+//! but `-f` still replaces the *ruleset* with the file's — zero — rules,
+//! so every boot and every save wiped the main pf ruleset. On appliances
+//! the daemon's `reconcile_pf_main` auto-heal immediately reloaded
+//! pf.conf.aifw, masking it (and explaining the long-mysterious
+//! "main ruleset empty at boot" LAN outages it was built to heal); on any
+//! host without pf.conf.aifw the firewall silently stayed rule-less.
 
 use sqlx::SqlitePool;
 use tokio::process::Command;
 
-const TUNING_FILE: &str = "/usr/local/etc/aifw/pf-tuning.conf";
+const PF_CONF_AIFW: &str = "/usr/local/etc/aifw/pf.conf.aifw";
+/// Staging path for the patched copy — matches the existing sudoers grant
+/// `pfctl -nf /tmp/aifw-pf.conf.aifw.patched` (see aifw-setup sudoers).
+const PATCH_STAGE: &str = "/tmp/aifw-pf.conf.aifw.patched";
 const SUDO: &str = "/usr/local/bin/sudo";
 
 /// Default pf state-table cap (matches FreeBSD's stock default).
@@ -79,62 +92,128 @@ pub async fn live_max_states() -> Option<u64> {
     None
 }
 
-/// Write the tuning file + merge it into the running pf via `pfctl -m`.
+/// Patch the limit into pf.conf.aifw and reload the full ruleset.
 /// Called from both the API save path and the daemon boot path.
 pub async fn apply_to_pf(value: u64) -> Result<(), String> {
-    // Write tuning file via sudo install (same pattern as dns_blocklists
-    // — the aifw user can't write under /usr/local/etc directly).
-    let body = render_tuning(value);
-    let tmp = "/tmp/aifw-pf-tuning.tmp";
-    tokio::fs::write(tmp, body)
+    let current = match tokio::fs::read_to_string(PF_CONF_AIFW).await {
+        Ok(c) => c,
+        Err(e) => {
+            // Dev hosts / test harnesses have no appliance pf.conf. The DB
+            // keeps the operator's value; it applies once the file exists.
+            return Err(format!(
+                "{PF_CONF_AIFW} not readable ({e}); limit stored in DB only"
+            ));
+        }
+    };
+
+    let patched = patch_limit_line(&current, value);
+    if patched == current {
+        // Already at the requested value — nothing to reload.
+        return Ok(());
+    }
+
+    tokio::fs::write(PATCH_STAGE, &patched)
         .await
-        .map_err(|e| format!("write tmp: {e}"))?;
-    // Make sure the parent dir exists; goes through the narrow
-    // aifw-sudo-mkdir helper (SEC-C2) which only allows AiFw-managed prefixes.
-    let _ = crate::sudo::mkdir(&["-p", "/usr/local/etc/aifw"]).await;
-    let install = crate::sudo::install(Some("0644"), None, None, tmp, TUNING_FILE)
+        .map_err(|e| format!("stage patched pf.conf: {e}"))?;
+
+    // Dry-run validate the staged copy before touching the real file.
+    let validate = Command::new(SUDO)
+        .args(["/sbin/pfctl", "-nf", PATCH_STAGE])
+        .output()
         .await
-        .map_err(|e| format!("spawn install: {e}"))?;
-    let _ = tokio::fs::remove_file(tmp).await;
-    if !install.status.success() {
+        .map_err(|e| format!("spawn pfctl -nf: {e}"))?;
+    if !validate.status.success() {
+        let _ = tokio::fs::remove_file(PATCH_STAGE).await;
         return Err(format!(
-            "install pf tuning file: {}",
-            String::from_utf8_lossy(&install.stderr).trim()
+            "patched pf.conf did not validate: {}",
+            String::from_utf8_lossy(&validate.stderr).trim()
         ));
     }
 
-    // Merge — does NOT flush filter rules or NAT.
-    let merge = Command::new(SUDO)
-        .args(["/sbin/pfctl", "-m", "-f", TUNING_FILE])
+    // Commit through the narrow aifw-sudo-write helper, then reload the
+    // complete file — anchors are unaffected (pf.conf.aifw carries no
+    // `load anchor` lines since v5.57.3).
+    crate::sudo::write_file(std::path::Path::new(PF_CONF_AIFW), patched.as_bytes())
+        .await
+        .map_err(|e| format!("commit patched pf.conf: {e}"))?;
+    let reload = Command::new(SUDO)
+        .args(["/sbin/pfctl", "-f", PF_CONF_AIFW])
         .output()
         .await
-        .map_err(|e| format!("spawn pfctl: {e}"))?;
-    if !merge.status.success() {
+        .map_err(|e| format!("spawn pfctl -f: {e}"))?;
+    let _ = tokio::fs::remove_file(PATCH_STAGE).await;
+    if !reload.status.success() {
         return Err(format!(
-            "pfctl -mf {TUNING_FILE}: {}",
-            String::from_utf8_lossy(&merge.stderr).trim()
+            "pfctl -f {PF_CONF_AIFW}: {}",
+            String::from_utf8_lossy(&reload.stderr).trim()
         ));
     }
     Ok(())
 }
 
-/// Render the pf.conf tuning fragment. Kept pure so unit tests can assert
-/// the syntax — a regression here puts the whole apply path into a silent-
-/// failure loop (see `set limit states { … }` incident).
-fn render_tuning(value: u64) -> String {
-    format!(
-        "# Managed by AiFw. Do not edit by hand — change in Settings → System.\n\
-         set limit states {value}\n",
-    )
+/// Pure patcher: replace an existing `set limit states …` line, or insert
+/// one after the last `set …` option line (options must precede rules in
+/// pf.conf grammar), or after the leading comment block when no options
+/// exist. Kept pure so unit tests pin the syntax — `set limit states { N }`
+/// (braced single value) is a pf parse error.
+fn patch_limit_line(conf: &str, value: u64) -> String {
+    let limit_line = format!("set limit states {value}");
+    let lines: Vec<&str> = conf.lines().collect();
+
+    if lines
+        .iter()
+        .any(|l| l.trim_start().starts_with("set limit states"))
+    {
+        let out: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                if l.trim_start().starts_with("set limit states") {
+                    limit_line.clone()
+                } else {
+                    (*l).to_string()
+                }
+            })
+            .collect();
+        return out.join("\n") + "\n";
+    }
+
+    // Insert after the last `set ` option line, else after leading comments.
+    let insert_at = lines
+        .iter()
+        .rposition(|l| l.trim_start().starts_with("set "))
+        .map(|i| i + 1)
+        .unwrap_or_else(|| {
+            lines
+                .iter()
+                .position(|l| {
+                    let t = l.trim();
+                    !t.is_empty() && !t.starts_with('#')
+                })
+                .unwrap_or(lines.len())
+        });
+
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
+    for (i, l) in lines.iter().enumerate() {
+        if i == insert_at {
+            out.push(limit_line.clone());
+        }
+        out.push((*l).to_string());
+    }
+    if insert_at >= lines.len() {
+        out.push(limit_line);
+    }
+    out.join("\n") + "\n"
 }
 
-/// Re-apply the saved value at daemon startup.
+/// Re-apply the saved value at daemon startup. Idempotent: when
+/// pf.conf.aifw already carries the value (the normal case — boot loaded
+/// it), this is a no-op with no pf reload.
 pub async fn apply_on_boot(pool: &SqlitePool) {
     let v = configured_max_states(pool).await;
     if let Err(e) = apply_to_pf(v).await {
         tracing::warn!("pf-tuning apply at boot failed: {e}");
     } else {
-        tracing::info!(max_states = v, "pf state-table limit applied");
+        tracing::info!(max_states = v, "pf state-table limit ensured");
     }
 }
 
@@ -145,22 +224,62 @@ mod tests {
     /// `set limit states { N }` is a pf.conf parser error — the braces
     /// wrap the limit-list, not the value. This test pins the correct form.
     #[test]
-    fn render_tuning_uses_unbraced_single_limit() {
-        let out = render_tuning(100_000);
+    fn patch_uses_unbraced_single_limit() {
+        let out = patch_limit_line("set skip on lo0\n\nanchor \"aifw\"\n", 100_000);
         assert!(
             out.contains("set limit states 100000\n"),
             "expected unbraced `set limit states <N>`, got: {out:?}"
         );
-        assert!(
-            !out.contains("states {"),
-            "braces must not wrap a single value; got: {out:?}"
+        assert!(!out.contains("states {"));
+    }
+
+    #[test]
+    fn patch_replaces_existing_limit_line() {
+        let conf = "# header\nset skip on lo0\nset limit states 50000\n\nanchor \"aifw\"\n";
+        let out = patch_limit_line(conf, 250_000);
+        assert!(out.contains("set limit states 250000"));
+        assert!(!out.lines().any(|l| l == "set limit states 50000"));
+        assert_eq!(
+            out.matches("set limit states").count(),
+            1,
+            "must not duplicate the limit line"
         );
     }
 
     #[test]
-    fn render_tuning_embeds_requested_value() {
-        assert!(render_tuning(250_000).contains("set limit states 250000\n"));
-        assert!(render_tuning(MIN_STATES).contains(&format!("states {MIN_STATES}")));
-        assert!(render_tuning(MAX_STATES).contains(&format!("states {MAX_STATES}")));
+    fn patch_inserts_after_last_option() {
+        let conf =
+            "# header\nset skip on lo0\nset block-policy drop\n\nscrub in all\n\nanchor \"aifw\"\n";
+        let out = patch_limit_line(conf, 200_000);
+        let lines: Vec<&str> = out.lines().collect();
+        let opt_idx = lines
+            .iter()
+            .position(|l| *l == "set block-policy drop")
+            .unwrap();
+        assert_eq!(lines[opt_idx + 1], "set limit states 200000");
+        // Options must precede rules — the anchor line must come after.
+        let anchor_idx = lines.iter().position(|l| *l == "anchor \"aifw\"").unwrap();
+        assert!(anchor_idx > opt_idx + 1);
+    }
+
+    #[test]
+    fn patch_handles_conf_without_options() {
+        let conf = "# only comments\n# more\nanchor \"aifw\"\n";
+        let out = patch_limit_line(conf, 150_000);
+        let lines: Vec<&str> = out.lines().collect();
+        let limit_idx = lines
+            .iter()
+            .position(|l| *l == "set limit states 150000")
+            .unwrap();
+        let anchor_idx = lines.iter().position(|l| *l == "anchor \"aifw\"").unwrap();
+        assert!(limit_idx < anchor_idx, "limit must precede rules");
+    }
+
+    #[test]
+    fn patch_is_idempotent() {
+        let conf = "set skip on lo0\nanchor \"aifw\"\n";
+        let once = patch_limit_line(conf, 100_000);
+        let twice = patch_limit_line(&once, 100_000);
+        assert_eq!(once, twice);
     }
 }
