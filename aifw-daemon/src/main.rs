@@ -410,12 +410,14 @@ async fn main() -> anyhow::Result<()> {
     aifw_core::pf_tuning::apply_on_boot(&pool).await;
 
     // Drift detect + auto-heal — runs AFTER all rule engines have populated
-    // their anchors from the DB. If the main pf ruleset is missing our
-    // anchor hooks (pf_start at boot occasionally doesn't load
-    // pf.conf.aifw — exact cause still under investigation but reproducible:
-    // anchors get populated fine by apply_rules, main ruleset ends up empty
-    // so none of the pass/NAT hooks are reachable → LAN outbound silently
-    // breaks at every reboot), reload pf.conf.aifw ourselves.
+    // their anchors from the DB. Root cause of the historical "main ruleset
+    // empty at boot" outages this was built for: pf_tuning used to load an
+    // options-only file with `pfctl -m -f`, which merges options but
+    // REPLACES the ruleset with the file's zero rules — wiping main on
+    // every boot right before this heal reloaded it (found by the #533
+    // functional harness; fixed in pf_tuning by patching pf.conf.aifw and
+    // reloading the full file). The auto-heal stays as belt-and-braces for
+    // any other path that leaves main without our hooks.
     //
     // Safe since v5.57.3: pf.conf.aifw no longer contains
     // `load anchor "aifw" from <file>`, so `pfctl -f` won't wipe the
