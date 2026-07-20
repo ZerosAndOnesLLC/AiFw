@@ -29,8 +29,25 @@ aifw_firstboot_start()
     echo ""
 
     if [ -x "$AIFW_SETUP" ]; then
-        # Run the setup wizard on the console
-        $AIFW_SETUP </dev/console >/dev/console 2>&1
+        # Unattended seed (#533 Phase 2): when a seed file is present, run
+        # non-interactive setup from it instead of the console wizard. The
+        # seed is deleted afterwards — it may carry plaintext passwords.
+        for seed in /usr/local/etc/aifw/seed.json /aifw-seed.json; do
+            if [ -f "$seed" ]; then
+                echo "Unattended seed found at $seed — running non-interactive setup"
+                if $AIFW_SETUP --config "$seed" >/dev/console 2>&1; then
+                    rm -f "$seed"
+                else
+                    echo "Unattended setup FAILED — falling back to the interactive wizard"
+                    rm -f "$seed"
+                fi
+                break
+            fi
+        done
+
+        # Run the setup wizard on the console (skipped when the seed above
+        # already produced aifw.conf)
+        [ -f "$AIFW_CONF" ] || $AIFW_SETUP </dev/console >/dev/console 2>&1
 
         # If setup succeeded, enable and start services
         if [ -f "$AIFW_CONF" ]; then

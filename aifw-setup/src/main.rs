@@ -32,6 +32,11 @@ struct Args {
     /// `visudo -cf -` for syntax validation (#204).
     #[arg(long)]
     print_sudoers: bool,
+
+    /// Print an example seed file for unattended setup (--config) and exit.
+    /// Edit the CHANGE-ME placeholders, then: aifw-setup --config seed.json
+    #[arg(long)]
+    print_seed_template: bool,
 }
 
 #[tokio::main]
@@ -43,7 +48,14 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // If --config provided, load from file instead of wizard
+    if args.print_seed_template {
+        print!("{}", config::SetupConfig::seed_template());
+        return Ok(());
+    }
+
+    // If --config provided, load from file instead of wizard (unattended
+    // setup, #533 Phase 2). The seed may carry plaintext admin/root
+    // passwords; they are hashed/applied here and never written back out.
     if let Some(ref config_path) = args.config {
         let content = std::fs::read_to_string(config_path)?;
         let mut config: config::SetupConfig = serde_json::from_str(&content)?;
@@ -55,6 +67,23 @@ async fn main() -> anyhow::Result<()> {
         if args.pf_only {
             println!("{}", apply::generate_pf_conf(&config));
             return Ok(());
+        }
+
+        config
+            .resolve_seed_secrets()
+            .map_err(|e| anyhow::anyhow!("seed config: {e}"))?;
+        config
+            .validate_seed()
+            .map_err(|e| anyhow::anyhow!("seed config: {e}"))?;
+        if config.wan_interface.starts_with("CHANGE-ME") {
+            anyhow::bail!("seed config: template placeholders not filled in");
+        }
+
+        if let Some(root_pw) = config.root_password.take() {
+            match apply::set_root_password_noninteractive(&root_pw) {
+                Ok(()) => println!("Root password set."),
+                Err(e) => eprintln!("WARNING: root password not set: {e}"),
+            }
         }
 
         apply::apply(&config, &[])

@@ -93,6 +93,18 @@ Once done, reach the web UI at:
 https://<lan-ip>:8080
 ```
 
+### Unattended (headless) setup
+
+For scripted installs, VM farms, and CI, skip the wizard entirely with a seed file:
+
+```sh
+aifw-setup --print-seed-template > seed.json
+# edit the CHANGE-ME placeholders (interfaces, admin_password, …)
+aifw-setup --config seed.json
+```
+
+On first boot the `aifw_firstboot` service also looks for a seed at `/usr/local/etc/aifw/seed.json` or `/aifw-seed.json` (drop one into the image or attached media) and runs non-interactive setup from it, falling back to the console wizard if the seed fails. The seed file is **deleted after use** — it may contain plaintext `admin_password` / `root_password` values, which are hashed/applied during setup and never written back to disk. If you prefer, supply `admin_password_hash` (Argon2id) instead of the plaintext field.
+
 ### Multi-WAN setup later
 
 Multi-WAN can be enabled from the web UI at any time after install — no need to edit `/boot/loader.conf` by hand. See the [multi-WAN guide]({{ '/multi-wan/' | relative_url }}).
