@@ -42,7 +42,7 @@ breadcrumb:
 
 # AiFw vs OPNsense vs pfSense
 
-A fair, honest comparison. Where a competitor is stronger, we say so. This matrix is generated from reading the code — AiFw features are verified against the repo, OPNsense and pfSense from their official docs.
+A fair, honest comparison. Where a competitor is stronger, we say so. This matrix is generated from reading the code — AiFw features are verified against the repo, OPNsense and pfSense from their official docs. Cells marked *in development* have configuration surfaces but no working data plane yet; see the [feature maturity matrix]({{ '/maturity/' | relative_url }}) for the per-feature state.
 
 <div class="compare-wrapper" markdown="0">
 <table class="compare">
@@ -66,19 +66,21 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>SNAT (outbound)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>DNAT / port forwarding</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>1:1 NAT (binat)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>NAT64</td><td class="yes">✓</td><td class="partial">plugin</td><td class="yes">✓</td></tr>
-<tr><td>NAT46</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>NAT64</td><td class="partial">in development</td><td class="partial">plugin</td><td class="yes">✓</td></tr>
+<tr><td>NAT46</td><td class="partial">in development</td><td class="no">—</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">VPN</td></tr>
 <tr><td>WireGuard</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>IPsec</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>IPsec</td><td class="partial">in development</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>OpenVPN</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 
 <tr class="section-row"><td colspan="4">IDS / IPS</td></tr>
-<tr><td>Suricata rules</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">pkg</td></tr>
+<tr><td>Suricata rules</td><td class="partial">subset</td><td class="yes">✓</td><td class="partial">pkg</td></tr>
 <tr><td>Snort rules</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td></tr>
-<tr><td>Sigma rules</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
-<tr><td>YARA rules</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>Sigma rules</td><td class="partial">subset</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>YARA rules</td><td class="partial">subset</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>Inline IPS (drops the triggering packet)</td><td class="partial">planned</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>Reactive source blocking after detection</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>AI/ML threat detection</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">DNS</td></tr>
@@ -95,7 +97,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>DDNS</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 
 <tr class="section-row"><td colspan="4">Traffic shaping</td></tr>
-<tr><td>CoDel</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>CoDel</td><td class="partial">in development</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>HFSC</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>PRIQ</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>CBQ</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
@@ -115,7 +117,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>TOTP 2FA</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">RADIUS</td></tr>
 <tr><td>LDAP</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>RADIUS</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>OAuth / SSO</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>OAuth / SSO</td><td class="partial">in development</td><td class="no">—</td><td class="no">—</td></tr>
 <tr><td>API keys</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">community</td></tr>
 <tr><td>RBAC (granular perms)</td><td class="yes">37 perms</td><td class="yes">ACL</td><td class="partial">user/group</td></tr>
 
@@ -152,9 +154,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 - **OPNsense config import** — drop-in migration. Parse the XML, preview the diff, apply atomically with rollback. Recently rewritten end-to-end (#230, #248–#252).
 - **Built-in reverse proxy + ACME** — TrafficCop runs HTTP, TCP, and UDP. ACME issuance pushes certs straight to the TLS store, file, or webhook. No HAProxy plugin install dance.
 - **AI/ML threat detection** — 5 built-in behavioural detectors (port scan, DDoS, brute force, C2 beacon, DNS tunneling) with auto-response and TTL blocks. Implemented in `aifw-ai/src/detectors/`.
-- **Sigma + YARA rule support** — modern rule formats neither OPNsense nor pfSense support. Full parsers in `aifw-ids/src/rules/`.
-- **NAT46** — IPv4→IPv6 translation. Nobody else has this out of the box.
-- **OAuth / SSO** — first-class auth method, not a plugin.
+- **Sigma + YARA rule support** — modern rule formats neither OPNsense nor pfSense support (practical subsets mapped to network flows, not full engine parity). Parsers in `aifw-ids/src/rules/`.
 - **Commit confirm** — auto-rollback if you lock yourself out. Default 300-second timeout, cancellable via oneshot channel. Both competitors have this as a years-open feature request.
 - **Modern React/Next.js UI** — static export, no Node.js runtime on the appliance. Not PHP.
 - **WebSocket live dashboard** — per-second metrics push, not poll-every-30s.
@@ -172,6 +172,10 @@ Honesty matters. Things you'll miss if you switch:
 - **No CBQ** traffic shaping (has CoDel, HFSC, PRIQ).
 - **No Snort rules** — Suricata-compatible only.
 - **No HAProxy / Nginx** — built-in TrafficCop instead.
+- **IPsec is in development** — SA configuration exists but no kernel data plane or IKE daemon yet; both competitors ship working strongSwan-based IPsec today.
+- **No inline IPS** — AiFw's prevention mode is reactive source blocking after detection; OPNsense/pfSense run Suricata/Snort inline. Inline (divert/netmap) is on the roadmap.
+- **NAT64/NAT46 and CoDel are in development** — configuration surfaces exist; the data planes are being built.
+- **OAuth/SSO login is in development** — provider config and the authorize flow exist, but the token exchange isn't finished yet.
 - **Young project** — OPNsense and pfSense have years of community knowledge, mature plugin ecosystems, and forum Q&A. AiFw is new.
 
 ## Should you switch?
@@ -184,7 +188,6 @@ Honesty matters. Things you'll miss if you switch:
 **Consider AiFw if:**
 - You want modern, AI-assisted threat detection out of the box
 - You've been burned by PHP-era admin interfaces
-- You need OAuth/SSO without writing custom FreeRADIUS configs
 - You care about commit-confirm safety
 - You run this professionally and want reproducible, auditable Rust code
 
@@ -192,6 +195,7 @@ Honesty matters. Things you'll miss if you switch:
 
 ## See also
 
+- [Feature maturity matrix →]({{ '/maturity/' | relative_url }})
 - [Full feature list →]({{ '/features' | relative_url }})
 - [Installation guide →]({{ '/install' | relative_url }})
 - [Source code →](https://github.com/ZerosAndOnesLLC/AiFw)

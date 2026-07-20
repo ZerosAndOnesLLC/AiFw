@@ -27,7 +27,7 @@ breadcrumb:
 
 # VPN
 
-AiFw ships with two VPN protocols: **WireGuard** and **IPsec**. Both compile their pass rules into the dedicated `aifw-vpn` anchor and are managed entirely through the API or CLI &mdash; no hand-edited `wg-quick` or `ipsec.conf` files. OpenVPN is intentionally not shipped; see the [comparison page]({{ '/compare/' | relative_url }}) for the reasoning.
+AiFw ships **WireGuard** as its working VPN protocol today; **IPsec is in development** (see the callout below). Pass rules compile into the dedicated `aifw-vpn` anchor and everything is managed through the API or CLI &mdash; no hand-edited `wg-quick` files. OpenVPN is intentionally not shipped; see the [comparison page]({{ '/compare/' | relative_url }}) for the reasoning.
 
 ## WireGuard
 
@@ -90,7 +90,9 @@ WireGuard tunnels survive a CARP failover provided peers run with `PersistentKee
 
 ## IPsec
 
-AiFw supports IPsec Security Associations with ESP, AH, or ESP+AH protocols, in either tunnel or transport mode. Each SA gets a random SPI and sensible algorithm defaults (AES-256-GCM + HMAC-SHA256). When the SA is in tunnel mode the engine also emits a `pass quick on enc0` rule so encapsulated traffic flows.
+> **In development — configured SAs do not carry traffic yet.** AiFw currently persists IPsec SA configuration (ESP/AH/ESP+AH, tunnel/transport, algorithm selection) and opens the ESP/AH + IKE (UDP 500/4500) firewall ports, but the data plane &mdash; kernel Security Associations/policies and IKE negotiation &mdash; is **not implemented**. A real IPsec backend is committed and tracked in [#530](https://github.com/ZerosAndOnesLLC/AiFw/issues/530). Use WireGuard for working tunnels today.
+
+The configuration surface below describes what is stored and what will drive the future data plane. Each SA gets a random SPI and algorithm defaults (AES-256-GCM + HMAC-SHA256). In tunnel mode the engine also emits a `pass quick on enc0` rule.
 
 ### Quickstart
 

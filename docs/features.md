@@ -20,11 +20,11 @@ breadcrumb:
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
   "featureList": [
     "Stateful packet filtering via FreeBSD pf",
-    "WireGuard and IPsec VPN",
-    "Suricata IDS/IPS with Sigma and YARA rules",
+    "WireGuard VPN (IPsec in development)",
+    "IDS with Suricata, Sigma, and YARA rule subsets; reactive IPS blocking",
     "Multi-WAN with FIB isolation, SLA-driven failover, leak detection",
     "HA clustering with CARP",
-    "NAT including SNAT, DNAT, 1:1, NAT64, NAT46",
+    "NAT including SNAT, DNAT, 1:1 (NAT64/NAT46 in development)",
     "Geo-IP filtering",
     "DNS resolver and DHCP server",
     "OPNsense configuration importer",
@@ -40,7 +40,7 @@ breadcrumb:
 
 # Features
 
-A complete inventory of what AiFw ships with today. All features are MIT-licensed and included in the free download — no paid tiers, no gated features.
+A complete inventory of what AiFw ships with today. All features are MIT-licensed and included in the free download — no paid tiers, no gated features. Items marked *in development* have configuration surfaces but their data planes are still being built; the [feature maturity matrix]({{ '/maturity/' | relative_url }}) tracks the per-feature state.
 
 ## Firewall & filtering
 
@@ -50,7 +50,7 @@ A complete inventory of what AiFw ships with today. All features are MIT-license
 - **Aliases** — named IP/port groups reusable across rules
 - **VLAN support**, 802.1Q tagging
 - **Static routing** with per-route metrics
-- **Traffic shaping** — CoDel, HFSC, PRIQ queues
+- **Traffic shaping** — HFSC, PRIQ queues; CoDel (dummynet FQ-CoDel backend) *in development*
 - **Rate limiting** with overload tables
 
 ## NAT
@@ -59,8 +59,8 @@ A complete inventory of what AiFw ships with today. All features are MIT-license
 - **DNAT / port forwarding** with reflection
 - **Masquerading** (dynamic SNAT to interface address)
 - **1:1 NAT** (binat)
-- **NAT64** (IPv6 → IPv4)
-- **NAT46** (IPv4 → IPv6) — unique to AiFw
+- **NAT64** (IPv6 → IPv4) — *in development*: the rule type exists but real cross-family translation is being built
+- **NAT46** (IPv4 → IPv6) — *in development*, same status
 
 ## Multi-WAN
 
@@ -87,17 +87,13 @@ See the [multi-WAN setup guide]({{ '/multi-wan/' | relative_url }}) for FIB boot
 - Split or full tunnel support
 - Live tunnel status and transfer counters
 
-### IPsec
-- ESP, AH, ESP+AH protocols
-- Tunnel and transport modes
-- AES-256-GCM with HMAC-SHA256 by default
-- Automatic SPI generation
-- IKE (UDP 500, 4500) traffic rules
+### IPsec — *in development*
+IPsec SA configuration (ESP/AH, tunnel/transport, algorithm selection) exists in the API/UI, and the firewall opens the ESP/AH + IKE (UDP 500/4500) ports — but the data plane (kernel SAs/SPD, IKE negotiation) is **not implemented yet**, so configured SAs do not carry protected traffic. Implementation is committed and tracked in [#530](https://github.com/ZerosAndOnesLLC/AiFw/issues/530).
 
 ## IDS / IPS
 
-- **Three modes** — Disabled, IDS (alert-only), IPS (inline drop)
-- **Rule formats** — Suricata, Sigma, YARA
+- **Three modes** — Disabled, IDS (alert-only), IPS (**reactive source blocking**: after a drop-verdict detection the source IP is blocked via a pf table; the triggering packet itself is not stopped — true inline prevention is on the roadmap)
+- **Rule formats** — Suricata, Sigma, YARA (practical subsets mapped to network flows — not full engine parity; Sigma rules always alert, never drop)
 - **ET Open rule source integration** with auto-update
 - **Alert management** — severity levels, acknowledgment, classification, analyst notes
 - **Per-rule suppression** by source IP or destination IP
@@ -187,7 +183,7 @@ See the [reverse proxy guide]({{ '/docs/reverse-proxy/' | relative_url }}) for s
 
 - **Local users** with bcrypt password hashing
 - **TOTP 2FA** with recovery codes
-- **OAuth / SSO** — first-class auth method, not a plugin. Built-in providers for Google, GitHub, generic OIDC. See the [auth &amp; RBAC guide]({{ '/docs/auth/' | relative_url }}) for setup, the full 37-permission RBAC matrix, and TOTP / API-key flows.
+- **OAuth / SSO** — *in development*: provider configuration (Google, GitHub, generic OIDC) and the authorize flow exist, but the token exchange is not finished yet ([#170](https://github.com/ZerosAndOnesLLC/AiFw/issues/170)), so OAuth login cannot complete. See the [auth &amp; RBAC guide]({{ '/docs/auth/' | relative_url }}) for local users, the 37-permission RBAC matrix, and TOTP / API-key flows.
 - **API keys** for programmatic access
 - **JWT token sessions** with refresh tokens
 
@@ -201,9 +197,9 @@ Built-in roles: **admin**, **operator**, **viewer**. Custom roles supported.
 
 ## Backup &amp; migration
 
-- **JSON backup / restore** — entire config in one file, atomically replayable
+- **JSON backup / restore** — entire config in one file; restore is strict (fails rather than partially applying) with automatic snapshot rollback
 - **S3 backup destination** — configurable bucket and prefix; rotation policy
-- **OPNsense XML import** — recently rewritten end-to-end. Parse the XML, preview a diff of what'll change, apply atomically with rollback on failure
+- **OPNsense XML import** — parse the XML, preview a diff of what'll change, apply with automatic snapshot rollback on failure
 - **Versioned config history** — every change is snapshotted; diff and selective restore from the UI
 - **Commit confirm** — every apply auto-reverts on timeout unless explicitly confirmed; default 300-second window
 

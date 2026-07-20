@@ -1,7 +1,7 @@
 ---
 layout: default
 title: "Backup & migration — AiFw config backup, S3, OPNsense import"
-description: "Back up AiFw config to JSON or S3. Import an OPNsense XML config with atomic rollback. Versioned config history and commit-confirm auto-revert."
+description: "Back up AiFw config to JSON or S3. Import an OPNsense XML config with automatic snapshot rollback. Versioned config history and commit-confirm auto-revert."
 permalink: /docs/backup/
 date: 2026-05-09
 breadcrumb:
@@ -14,7 +14,7 @@ breadcrumb:
   "@context": "https://schema.org",
   "@type": "TechArticle",
   "headline": "Backup & migration — AiFw config backup, S3, OPNsense import",
-  "description": "Back up AiFw config to JSON or S3. Import an OPNsense XML config with atomic rollback. Versioned config history and commit-confirm auto-revert.",
+  "description": "Back up AiFw config to JSON or S3. Import an OPNsense XML config with automatic snapshot rollback. Versioned config history and commit-confirm auto-revert.",
   "author": { "@type": "Organization", "name": "ZerosAndOnesLLC" },
   "datePublished": "2026-05-09",
   "dateModified": "2026-05-09",
@@ -91,7 +91,7 @@ Migrating from OPNsense or pfSense? Drop the appliance&rsquo;s `config.xml` stra
 
 1. **Parse first.** `quick-xml` walks the document. Every error that can be detected from the XML alone (malformed source/destination, unknown action, unparseable port range) surfaces in the preview &mdash; no half-applied state.
 2. **Preview the diff.** `POST /api/v1/config/preview-opnsense` returns aliases, NAT entries, rules, and static routes that will be created, plus a **skipped list** for rules that referenced network keywords (`lan`, `wanip`, `(self)`, &hellip;) that don&rsquo;t map cleanly. AiFw drops those to skipped instead of guessing &mdash; silent fidelity loss is the worst outcome.
-3. **Apply atomically.** `POST /api/v1/config/import-opnsense` runs the apply step inside a SQLite transaction that wraps every engine write. Aliases route through `AliasEngine`, NAT through `NatEngine`, rules through `RuleEngine`, static routes through the same `apply_route_to_system` path the manual REST endpoint uses, and DNS forwarders through the same path the rDNS resolver UI writes &mdash; not `/etc/resolv.conf` (see [#231](https://github.com/ZerosAndOnesLLC/AiFw/pull/231)).
+3. **Apply with rollback.** `POST /api/v1/config/import-opnsense` applies strictly — any failed required step aborts — and recovers by re-applying a pre-import snapshot rather than a single wrapping SQL transaction (kernel-side pf/route changes can't be rewound by SQLite; see the documented atomicity model in the importer source). Aliases route through `AliasEngine`, NAT through `NatEngine`, rules through `RuleEngine`, static routes through the same `apply_route_to_system` path the manual REST endpoint uses, and DNS forwarders through the same path the rDNS resolver UI writes &mdash; not `/etc/resolv.conf` (see [#231](https://github.com/ZerosAndOnesLLC/AiFw/pull/231)).
 4. **Snapshot &amp; commit-confirm.** Before any write the importer saves a `pre-OPNsense-import` config-history version, and after a successful apply it arms commit-confirm with a **600-second timeout**. If the admin loses access to the appliance before they confirm, AiFw rolls back automatically.
 5. **Reject &rarr; BlockReturn.** OPNsense&rsquo;s `reject` action maps to AiFw `Action::BlockReturn`, which produces the same per-protocol response (TCP RST, ICMP unreachable for UDP/ICMP) the original ruleset emitted.
 
@@ -169,7 +169,7 @@ curl -X POST https://aifw.local/api/v1/config/commit-confirm/confirm \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-If the timer expires, the snapshot taken at arm time is restored and the config that lost you access is rolled back &mdash; same engine writers, same atomic apply.
+If the timer expires, the snapshot taken at arm time is restored and the config that lost you access is rolled back &mdash; same engine writers, same snapshot-based apply.
 
 ## API endpoints
 

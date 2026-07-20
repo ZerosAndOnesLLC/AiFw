@@ -27,6 +27,8 @@ AiFw supports a two-node active-passive cluster: one master forwarding productio
 traffic, one backup with replicated pf state, ready to take over within seconds
 of any failure on the master.
 
+> **Validation status:** the failover behaviors and timing numbers on this page are design targets, verified interactively but not yet by an automated two-node test suite ([#534](https://github.com/ZerosAndOnesLLC/AiFw/issues/534)). Validate failover in your own environment before relying on it.
+
 ## What survives a master reboot
 
 | Component | Survives | Notes |

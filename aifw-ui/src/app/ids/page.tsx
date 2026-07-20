@@ -190,14 +190,14 @@ export default function IdsDashboardPage() {
                   ? "Engine Stopped"
                   : currentMode === "ids"
                   ? "IDS Running — Monitor Mode"
-                  : "IPS Running — Active Blocking"}
+                  : "IPS Running — Reactive Blocking"}
               </h3>
               <p className="text-xs text-[var(--text-muted)] mt-0.5">
                 {currentMode === "disabled"
                   ? "The intrusion detection engine is not running. Start it to begin monitoring network traffic."
                   : currentMode === "ids"
                   ? "Analyzing traffic and generating alerts. Threats are detected but not blocked."
-                  : "Analyzing traffic and actively blocking threats. Malicious packets are dropped."}
+                  : "Analyzing traffic and reactively blocking detected threat sources via a pf table. The triggering packet itself is not stopped (not inline prevention)."}
               </p>
             </div>
           </div>

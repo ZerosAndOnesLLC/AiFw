@@ -27,7 +27,9 @@ breadcrumb:
 
 # NAT
 
-AiFw supports six NAT types &mdash; SNAT, DNAT (port forwarding), Masquerade, 1:1 BiNAT, NAT64, and NAT46. NAT46 is unusual on consumer firewall distributions and lets you front legacy IPv4 clients onto an IPv6-only network. All NAT rules compile into the dedicated `aifw-nat` anchor and never touch the system pf config.
+AiFw supports four working NAT types today &mdash; SNAT, DNAT (port forwarding), Masquerade, and 1:1 BiNAT. All NAT rules compile into the dedicated `aifw-nat` anchor and never touch the system pf config.
+
+> **NAT64 and NAT46 are in development.** The rule types exist in the API/UI, but the rules they currently emit do **not** perform real cross-family (IPv6↔IPv4) translation &mdash; a proper translation data plane is committed and tracked in [#531](https://github.com/ZerosAndOnesLLC/AiFw/issues/531). Don't rely on these rule types until that lands.
 
 ## Quickstart
 

@@ -41,7 +41,7 @@ function FeedbackBanner({ feedback }: { feedback: SectionFeedback | null }) {
 const modeOptions = [
   { value: "disabled", label: "Disabled", desc: "IDS engine is not running" },
   { value: "ids", label: "IDS", desc: "Monitor and alert only" },
-  { value: "ips", label: "IPS", desc: "Actively block detected threats" },
+  { value: "ips", label: "IPS (reactive blocking)", desc: "Block detected threat sources after detection — the triggering packet is not stopped" },
 ];
 
 export default function IdsSettingsPage() {

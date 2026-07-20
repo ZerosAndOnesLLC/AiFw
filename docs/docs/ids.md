@@ -1,7 +1,7 @@
 ---
 layout: default
 title: "IDS / IPS — AiFw Suricata, Sigma, and YARA"
-description: "Run Suricata, Sigma, and YARA rules on AiFw — three modes (Disabled / IDS alert-only / IPS inline drop), ET Open auto-update, alert classification, suppression, and AI behavioural detectors."
+description: "Run Suricata, Sigma, and YARA rule subsets on AiFw — three modes (Disabled / IDS alert-only / IPS reactive blocking), ET Open auto-update, alert classification, suppression, and AI behavioural detectors."
 permalink: /docs/ids/
 date: 2026-05-09
 breadcrumb:
@@ -14,7 +14,7 @@ breadcrumb:
   "@context": "https://schema.org",
   "@type": "TechArticle",
   "headline": "IDS / IPS — AiFw Suricata, Sigma, and YARA",
-  "description": "Run Suricata, Sigma, and YARA rules on AiFw — three modes (Disabled / IDS alert-only / IPS inline drop), ET Open auto-update, alert classification, suppression, and AI behavioural detectors.",
+  "description": "Run Suricata, Sigma, and YARA rule subsets on AiFw — three modes (Disabled / IDS alert-only / IPS reactive blocking), ET Open auto-update, alert classification, suppression, and AI behavioural detectors.",
   "author": { "@type": "Organization", "name": "ZerosAndOnesLLC" },
   "datePublished": "2026-05-09",
   "dateModified": "2026-05-09",
@@ -27,7 +27,9 @@ breadcrumb:
 
 # IDS / IPS
 
-AiFw ships an in-kernel intrusion detection / prevention engine that consumes three rule formats &mdash; Suricata-compatible, Sigma, and YARA &mdash; and runs in one of three modes: **Disabled**, **IDS** (alert-only), or **IPS** (inline drop). Behavioural AI detectors live alongside the rule engine and are opt-in. No Snort, no separate package install, no second daemon to babysit.
+AiFw ships an intrusion detection engine that consumes three rule formats &mdash; Suricata-compatible, Sigma, and YARA (practical subsets, see below) &mdash; and runs in one of three modes: **Disabled**, **IDS** (alert-only), or **IPS** (**reactive source blocking**). Behavioural AI detectors live alongside the rule engine and are opt-in. No Snort, no separate package install, no second daemon to babysit.
+
+> **What IPS mode does (and doesn't do).** Detection is passive (BPF capture). When a rule with a drop/reject verdict matches, the alert's **source IP** is added to the `aifw-ids-block` pf table, so **subsequent** packets from that source are blocked &mdash; the triggering packet itself is not stopped, and a few more packets may pass before the table update takes effect. Blocking is per-source-address, not per-flow. True inline prevention (dropping the triggering packet) is on the roadmap via divert/netmap interception.
 
 ## Quickstart
 
@@ -37,7 +39,7 @@ Open the Web UI and go to **IDS &rarr; Settings**. Pick a mode and an interface.
 |---|---|
 | `Disabled` | Engine off, no inspection |
 | `IDS` | Inspect and log alerts; never block |
-| `IPS` | Inspect, alert, and drop matching packets inline |
+| `IPS` | Inspect, alert, and reactively block the offending source IP via the `aifw-ids-block` pf table (the triggering packet is not stopped) |
 
 From the API:
 
@@ -60,7 +62,7 @@ curl -X POST https://aifw.local/api/v1/ids/reload \
 
 ## Rule formats
 
-**Suricata-compatible.** The native format. AiFw parses Suricata 7.x syntax directly &mdash; `alert`, `drop`, `pass`, plus the usual `content`, `pcre`, `flow`, `threshold`, and `metadata` keywords. Existing Suricata rulesets drop in unchanged.
+**Suricata-compatible.** The native format. AiFw parses Suricata 7.x syntax &mdash; `alert`, `drop`, `pass`, plus the common `content`, `pcre`, `flow`, `threshold`, and `metadata` keywords. This is a practical **subset**, not full Suricata engine parity: most ET Open-style rules drop in unchanged, but rules relying on unsupported keywords are skipped (visible in the ruleset parse stats).
 
 **Sigma.** YAML detection rules originally designed for log events. AiFw maps the detection section to network flow fields, so a Sigma rule that targets HTTP request URIs or DNS query names will fire on matching traffic. Sigma rules always alert &mdash; they never drop, regardless of mode.
 

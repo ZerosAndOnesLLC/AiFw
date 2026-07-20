@@ -11,7 +11,12 @@ use uuid::Uuid;
 pub enum IdsMode {
     /// Alert only — log detections, never block
     Ids,
-    /// Inline — drop/reject packets matching drop rules
+    /// Reactive source blocking (#536): a drop/reject verdict adds the
+    /// alert's source IP to the `aifw-ids-block` pf table, blocking
+    /// subsequent packets from that source. The triggering packet is NOT
+    /// stopped — this is not inline prevention (inline is tracked
+    /// separately via divert/netmap). Wire value stays "ips" for API
+    /// compatibility.
     Ips,
     /// Engine disabled
     #[default]
@@ -137,9 +142,9 @@ impl RuleSource {
 pub enum IdsAction {
     /// Log the detection only (IDS mode)
     Alert,
-    /// Silently discard the packet (IPS mode)
+    /// Block the source via the pf table (IPS reactive mode; the matching packet is not discarded)
     Drop,
-    /// Discard and send TCP RST / ICMP unreachable back (IPS mode)
+    /// Block the source via the pf table, reject-style rules included (IPS reactive mode)
     Reject,
     /// Explicitly allow the traffic, skipping further rules
     Pass,
