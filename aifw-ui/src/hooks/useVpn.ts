@@ -13,6 +13,10 @@ import type {
   WgTunnel,
   WgPeer,
   IpsecSa,
+  IpsecTunnel,
+  IpsecLiveStatus,
+  IpsecTunnelRequest,
+  AcmeCertOption,
   VpnInterface,
   WgLiveTunnelStatus,
   ConfigModalData,
@@ -35,8 +39,15 @@ import {
   getNextPeerIp,
   getWgPeerConfig,
   listIpsecSas,
-  createIpsecSa,
   deleteIpsecSa,
+  listIpsecTunnels,
+  createIpsecTunnel,
+  updateIpsecTunnel,
+  deleteIpsecTunnel,
+  startIpsecTunnel,
+  stopIpsecTunnel,
+  getIpsecStatus,
+  listAcmeCertOptions,
   listVpnInterfaces,
 } from "@/lib/api/vpn";
 
@@ -56,12 +67,16 @@ export function useVpn() {
   const [peerForm, setPeerForm] = useState(defaultPeerForm);
   const [peerSubmitting, setPeerSubmitting] = useState(false);
 
-  /* ── IPsec state ── */
+  /* ── IPsec state (#530: real tunnels + read-only legacy SA records) ── */
+  const [ipsecTunnels, setIpsecTunnels] = useState<IpsecTunnel[]>([]);
+  const [ipsecStatuses, setIpsecStatuses] = useState<Record<string, IpsecLiveStatus>>({});
   const [ipsecSas, setIpsecSas] = useState<IpsecSa[]>([]);
   const [ipsecLoading, setIpsecLoading] = useState(true);
   const [showIpsecForm, setShowIpsecForm] = useState(false);
   const [ipsecForm, setIpsecForm] = useState(defaultIpsecForm);
+  const [editingIpsecId, setEditingIpsecId] = useState<string | null>(null);
   const [ipsecSubmitting, setIpsecSubmitting] = useState(false);
+  const [acmeCerts, setAcmeCerts] = useState<AcmeCertOption[]>([]);
 
   /* ── Tunnel live status from WebSocket ── */
   const ws = useWs();
@@ -100,12 +115,22 @@ export function useVpn() {
 
   const fetchIpsec = useCallback(async () => {
     try {
-      const data = await listIpsecSas();
-      setIpsecSas(data);
+      const [tunnels, sas] = await Promise.all([listIpsecTunnels(), listIpsecSas()]);
+      setIpsecTunnels(tunnels);
+      setIpsecSas(sas);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load IPsec SAs");
+      setError(err instanceof Error ? err.message : "Failed to load IPsec tunnels");
     } finally {
       setIpsecLoading(false);
+    }
+  }, []);
+
+  const fetchIpsecStatus = useCallback(async () => {
+    try {
+      const statuses = await getIpsecStatus();
+      setIpsecStatuses(Object.fromEntries(statuses.map((s) => [s.tunnel_id, s])));
+    } catch {
+      // status is best-effort; the table just shows no live badge
     }
   }, []);
 
@@ -113,11 +138,20 @@ export function useVpn() {
     queueMicrotask(() => {
       fetchTunnels();
       fetchIpsec();
+      fetchIpsecStatus();
       listVpnInterfaces()
         .then((data) => setInterfaces(data))
         .catch(() => {});
+      listAcmeCertOptions().then(setAcmeCerts);
     });
-  }, [fetchTunnels, fetchIpsec]);
+  }, [fetchTunnels, fetchIpsec, fetchIpsecStatus]);
+
+  /* Poll live IPsec status every 10s while any tunnel exists. */
+  useEffect(() => {
+    if (ipsecTunnels.length === 0) return;
+    const timer = setInterval(fetchIpsecStatus, 10_000);
+    return () => clearInterval(timer);
+  }, [ipsecTunnels.length, fetchIpsecStatus]);
 
   /* ────────────────────────── WireGuard CRUD ────────────────────────── */
 
@@ -323,45 +357,141 @@ export function useVpn() {
     }
   };
 
-  /* ────────────────────────── IPsec CRUD ────────────────────────── */
+  /* ────────────────────────── IPsec tunnel CRUD ────────────────────────── */
 
-  /// Add IPsec SA button: toggles the create form, always resetting to
+  /// Add Tunnel button: toggles the create form, always resetting to
   /// defaults.
   const handleToggleIpsecForm = () => {
-    if (showIpsecForm) {
+    if (showIpsecForm && !editingIpsecId) {
       setShowIpsecForm(false);
       setIpsecForm(defaultIpsecForm);
     } else {
       setIpsecForm(defaultIpsecForm);
+      setEditingIpsecId(null);
       setShowIpsecForm(true);
     }
   };
 
   const handleCancelIpsecForm = () => {
     setShowIpsecForm(false);
+    setEditingIpsecId(null);
     setIpsecForm(defaultIpsecForm);
   };
 
+  const handleEditIpsec = (t: IpsecTunnel) => {
+    setIpsecForm({
+      name: t.name,
+      enabled: t.enabled,
+      local_addr: t.local_addr,
+      remote_addr: t.remote_addr,
+      local_id: t.local_id,
+      remote_id: t.remote_id,
+      auth_method: t.auth_method,
+      psk: "", // blank = keep stored secret
+      cert_source: t.cert_source ?? "manual",
+      acme_cert_id: t.acme_cert_id != null ? String(t.acme_cert_id) : "",
+      local_cert_pem: t.local_cert_pem === "REDACTED" ? "" : t.local_cert_pem,
+      local_key_pem: "", // blank = keep stored secret
+      ca_cert_pem: t.ca_cert_pem,
+      local_ts: t.local_ts.join(", "),
+      remote_ts: t.remote_ts.join(", "),
+      ike_proposal: t.ike_proposal,
+      esp_proposal: t.esp_proposal,
+      ike_lifetime_secs: String(t.ike_lifetime_secs),
+      esp_lifetime_secs: String(t.esp_lifetime_secs),
+      dpd_delay_secs: String(t.dpd_delay_secs),
+      start_action: t.start_action,
+    });
+    setEditingIpsecId(t.id);
+    setShowIpsecForm(true);
+  };
+
+  const splitTs = (s: string) =>
+    s
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+
   const handleIpsecSubmit = async () => {
     if (ipsecSubmitting) return;
-    if (!ipsecForm.name.trim() || !ipsecForm.local_addr.trim() || !ipsecForm.remote_addr.trim()) return;
+    if (!ipsecForm.name.trim() || !ipsecForm.remote_addr.trim()) return;
+    if (!splitTs(ipsecForm.local_ts).length || !splitTs(ipsecForm.remote_ts).length) return;
     setIpsecSubmitting(true);
     setError(null);
     try {
-      await createIpsecSa({
+      const body: IpsecTunnelRequest = {
         name: ipsecForm.name.trim(),
-        local_addr: ipsecForm.local_addr.trim(),
         remote_addr: ipsecForm.remote_addr.trim(),
-        protocol: ipsecForm.protocol,
-        mode: ipsecForm.mode,
-      });
-      setIpsecForm(defaultIpsecForm);
-      setShowIpsecForm(false);
+        local_ts: splitTs(ipsecForm.local_ts),
+        remote_ts: splitTs(ipsecForm.remote_ts),
+        enabled: ipsecForm.enabled,
+        local_addr: ipsecForm.local_addr.trim(),
+        local_id: ipsecForm.local_id.trim(),
+        remote_id: ipsecForm.remote_id.trim(),
+        auth_method: ipsecForm.auth_method,
+        ike_proposal: ipsecForm.ike_proposal.trim(),
+        esp_proposal: ipsecForm.esp_proposal.trim(),
+        ike_lifetime_secs: parseInt(ipsecForm.ike_lifetime_secs, 10) || 14400,
+        esp_lifetime_secs: parseInt(ipsecForm.esp_lifetime_secs, 10) || 3600,
+        dpd_delay_secs: parseInt(ipsecForm.dpd_delay_secs, 10) || 0,
+        start_action: ipsecForm.start_action,
+      };
+      if (ipsecForm.auth_method === "psk") {
+        // Blank on edit means "keep the stored PSK" (send the marker).
+        body.psk = ipsecForm.psk.trim() || (editingIpsecId ? "REDACTED" : "");
+      } else {
+        body.cert_source = ipsecForm.cert_source;
+        if (ipsecForm.cert_source === "acme") {
+          body.acme_cert_id = parseInt(ipsecForm.acme_cert_id, 10);
+        } else {
+          if (ipsecForm.local_cert_pem.trim()) body.local_cert_pem = ipsecForm.local_cert_pem.trim();
+          body.local_key_pem = ipsecForm.local_key_pem.trim() || (editingIpsecId ? "REDACTED" : "");
+        }
+        if (ipsecForm.ca_cert_pem.trim()) body.ca_cert_pem = ipsecForm.ca_cert_pem.trim();
+      }
+
+      if (editingIpsecId) {
+        await updateIpsecTunnel(editingIpsecId, body);
+      } else {
+        await createIpsecTunnel(body);
+      }
+      handleCancelIpsecForm();
       await fetchIpsec();
+      await fetchIpsecStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create IPsec SA");
+      setError(err instanceof Error ? err.message : "Failed to save IPsec tunnel");
     } finally {
       setIpsecSubmitting(false);
+    }
+  };
+
+  const handleDeleteIpsecTunnel = async (id: string) => {
+    setError(null);
+    try {
+      await deleteIpsecTunnel(id);
+      setIpsecTunnels((prev) => prev.filter((t) => t.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete IPsec tunnel");
+    }
+  };
+
+  const handleStartIpsec = async (id: string) => {
+    setError(null);
+    try {
+      await startIpsecTunnel(id);
+      await fetchIpsecStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to initiate IPsec tunnel");
+    }
+  };
+
+  const handleStopIpsec = async (id: string) => {
+    setError(null);
+    try {
+      await stopIpsecTunnel(id);
+      await fetchIpsecStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to terminate IPsec tunnel");
     }
   };
 
@@ -371,7 +501,7 @@ export function useVpn() {
       await deleteIpsecSa(id);
       setIpsecSas((prev) => prev.filter((sa) => sa.id !== id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete IPsec SA");
+      setError(err instanceof Error ? err.message : "Failed to delete legacy IPsec SA record");
     }
   };
 
@@ -408,16 +538,24 @@ export function useVpn() {
     // Config modal
     configModal,
     closeConfigModal,
-    // IPsec
+    // IPsec tunnels + legacy SA records
+    ipsecTunnels,
+    ipsecStatuses,
     ipsecSas,
     ipsecLoading,
     showIpsecForm,
     ipsecForm,
     setIpsecForm,
+    editingIpsecId,
     ipsecSubmitting,
+    acmeCerts,
     handleToggleIpsecForm,
     handleCancelIpsecForm,
+    handleEditIpsec,
     handleIpsecSubmit,
+    handleDeleteIpsecTunnel,
+    handleStartIpsec,
+    handleStopIpsec,
     handleDeleteIpsec,
     // Live status + interfaces + shared error
     vpnStatus,

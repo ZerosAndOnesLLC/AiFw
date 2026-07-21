@@ -188,16 +188,20 @@ established_secs, remote_host }` parsed from `swanctl --list-sas --raw`.
       message, 410, status list). Full suite 762 green.
 - [x] 4g. Version bump to 5.108.0, commit.
 
-### Phase 5 — UI (→ minor bump)
+### Phase 5 — UI (→ 5.109.0) — DONE
 
-- [ ] 5a. `src/lib/api/vpn.ts` + `useVpn.ts`: tunnel types, CRUD, start/stop,
-      live status polling.
-- [ ] 5b. Rework `IpsecSection`/`IpsecForm`: tunnel form (endpoints, IDs,
-      auth method toggle PSK/cert with ACME cert picker, subnets, proposals
-      with sane defaults collapsed under "Advanced"), live state badges
-      (IKE up / child SAs / bytes / rekey countdown), start/stop buttons.
-      Legacy SA rows shown read-only under a "legacy (inactive)" divider.
-- [ ] 5c. `npm run lint` + build; version bump, commit.
+- [x] 5a. `lib/api/vpn.ts`: IpsecTunnel/IpsecLiveStatus/ChildSaStatus/
+      AcmeCertOption types + tunnel CRUD/start/stop/status calls; legacy
+      SA create removed (API 410s it). `useVpn`: tunnel state, 10s live
+      status polling while tunnels exist, edit flow with blank-secret =
+      keep-stored semantics (sends REDACTED marker).
+- [x] 5b. `IpsecForm`: endpoints/subnets, PSK↔cert toggle, ACME cert
+      picker or PEM paste, peer CA, advanced collapse (IDs, proposals,
+      lifetimes, DPD, start action, enabled). `IpsecSection`: tunnels
+      table with IKE-state badge + live bytes/uptime/rekey, start/stop/
+      edit/delete; legacy SA records under an explicit "inactive" divider
+      with delete-only.
+- [x] 5c. ESLint clean, static export builds; bump to 5.109.0, commit.
 
 ### Phase 6 — Functional proof on FreeBSD (→ patch bumps as needed)
 

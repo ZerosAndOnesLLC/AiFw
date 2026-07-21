@@ -34,6 +34,9 @@ export interface WgPeer {
   created_at: string;
 }
 
+/// Legacy pre-#530 IPsec SA record. Configuration-only — never carried
+/// traffic; the API now flags every row `legacy: true` and refuses new
+/// creations (410).
 export interface IpsecSa {
   id: string;
   name: string;
@@ -45,6 +48,67 @@ export interface IpsecSa {
   spi_out: string;
   status: string;
   created_at: string;
+  legacy?: boolean;
+}
+
+/// A real IPsec IKEv2 site-to-site tunnel (#530). Secrets (`psk`,
+/// `local_key_pem`) always arrive as "REDACTED".
+export interface IpsecTunnel {
+  id: string;
+  name: string;
+  enabled: boolean;
+  local_addr: string;
+  remote_addr: string;
+  local_id: string;
+  remote_id: string;
+  auth_method: "psk" | "cert";
+  psk: string;
+  cert_source: "acme" | "manual" | null;
+  acme_cert_id: number | null;
+  local_cert_pem: string;
+  local_key_pem: string;
+  ca_cert_pem: string;
+  ike_proposal: string;
+  esp_proposal: string;
+  local_ts: string[];
+  remote_ts: string[];
+  ike_lifetime_secs: number;
+  esp_lifetime_secs: number;
+  dpd_delay_secs: number;
+  start_action: "start" | "trap" | "none";
+  created_at: string;
+  updated_at: string;
+}
+
+/// Live negotiated state of one child (ESP) SA.
+export interface ChildSaStatus {
+  name: string;
+  state: string;
+  local_ts: string[];
+  remote_ts: string[];
+  bytes_in: number;
+  bytes_out: number;
+  rekey_in_secs: number | null;
+  enc_alg: string | null;
+}
+
+/// Live negotiated tunnel state from charon (`swanctl --list-sas`).
+/// `ike_state` is "DOWN" when no SA exists.
+export interface IpsecLiveStatus {
+  tunnel_id: string;
+  conn_name: string;
+  ike_state: string;
+  established_secs: number | null;
+  remote_host: string | null;
+  ike_version: number | null;
+  child_sas: ChildSaStatus[];
+}
+
+/// ACME store certificate summary, for the cert-auth picker.
+export interface AcmeCertOption {
+  id: number;
+  common_name: string;
+  status: string;
 }
 
 /// Interface entry for the "Listen Interface" dropdown.
@@ -110,13 +174,31 @@ export interface WgPeerRequest {
   preshared_key?: string;
 }
 
-/// Create body for an IPsec SA.
-export interface IpsecSaRequest {
+/// Create/update body for an IPsec tunnel. Optional fields keep
+/// defaults on create / stored values on update; secrets set to
+/// "REDACTED" keep the stored secret.
+export interface IpsecTunnelRequest {
   name: string;
-  local_addr: string;
   remote_addr: string;
-  protocol: string;
-  mode: string;
+  local_ts: string[];
+  remote_ts: string[];
+  enabled?: boolean;
+  local_addr?: string;
+  local_id?: string;
+  remote_id?: string;
+  auth_method?: string;
+  psk?: string;
+  cert_source?: string;
+  acme_cert_id?: number;
+  local_cert_pem?: string;
+  local_key_pem?: string;
+  ca_cert_pem?: string;
+  ike_proposal?: string;
+  esp_proposal?: string;
+  ike_lifetime_secs?: number;
+  esp_lifetime_secs?: number;
+  dpd_delay_secs?: number;
+  start_action?: string;
 }
 
 /* ────────────────────────── Helpers ────────────────────────── */
@@ -179,18 +261,50 @@ export const defaultPeerForm: PeerFormState = {
 
 export interface IpsecFormState {
   name: string;
+  enabled: boolean;
   local_addr: string;
   remote_addr: string;
-  protocol: string;
-  mode: string;
+  local_id: string;
+  remote_id: string;
+  auth_method: "psk" | "cert";
+  psk: string;
+  cert_source: "acme" | "manual";
+  acme_cert_id: string;
+  local_cert_pem: string;
+  local_key_pem: string;
+  ca_cert_pem: string;
+  local_ts: string;
+  remote_ts: string;
+  ike_proposal: string;
+  esp_proposal: string;
+  ike_lifetime_secs: string;
+  esp_lifetime_secs: string;
+  dpd_delay_secs: string;
+  start_action: "start" | "trap" | "none";
 }
 
 export const defaultIpsecForm: IpsecFormState = {
   name: "",
+  enabled: true,
   local_addr: "",
   remote_addr: "",
-  protocol: "esp",
-  mode: "tunnel",
+  local_id: "",
+  remote_id: "",
+  auth_method: "psk",
+  psk: "",
+  cert_source: "manual",
+  acme_cert_id: "",
+  local_cert_pem: "",
+  local_key_pem: "",
+  ca_cert_pem: "",
+  local_ts: "",
+  remote_ts: "",
+  ike_proposal: "aes256gcm16-prfsha256-ecp256",
+  esp_proposal: "aes256gcm16-ecp256",
+  ike_lifetime_secs: "14400",
+  esp_lifetime_secs: "3600",
+  dpd_delay_secs: "30",
+  start_action: "start",
 };
 
 /* ────────────────────────── WireGuard tunnels ────────────────────────── */
@@ -247,17 +361,56 @@ export async function getWgPeerConfig(tunnelId: string, peerId: string): Promise
 
 /* ────────────────────────── IPsec ────────────────────────── */
 
+/// Legacy read-only SA records (creation is 410 Gone on the API).
 export async function listIpsecSas(): Promise<IpsecSa[]> {
   const res = await api.get<{ data: IpsecSa[] }>("/api/v1/vpn/ipsec");
   return res.data;
 }
 
-export async function createIpsecSa(body: IpsecSaRequest): Promise<void> {
-  await api.post("/api/v1/vpn/ipsec", body);
-}
-
 export async function deleteIpsecSa(id: string): Promise<void> {
   await api.delete(`/api/v1/vpn/ipsec/${id}`);
+}
+
+/* ────────────────────────── IPsec tunnels (#530) ────────────────────────── */
+
+export async function listIpsecTunnels(): Promise<IpsecTunnel[]> {
+  const res = await api.get<{ data: IpsecTunnel[] }>("/api/v1/vpn/ipsec/tunnels");
+  return res.data;
+}
+
+export async function createIpsecTunnel(body: IpsecTunnelRequest): Promise<void> {
+  await api.post("/api/v1/vpn/ipsec/tunnels", body);
+}
+
+export async function updateIpsecTunnel(id: string, body: IpsecTunnelRequest): Promise<void> {
+  await api.put(`/api/v1/vpn/ipsec/tunnels/${id}`, body);
+}
+
+export async function deleteIpsecTunnel(id: string): Promise<void> {
+  await api.delete(`/api/v1/vpn/ipsec/tunnels/${id}`);
+}
+
+export async function startIpsecTunnel(id: string): Promise<void> {
+  await api.post(`/api/v1/vpn/ipsec/tunnels/${id}/start`);
+}
+
+export async function stopIpsecTunnel(id: string): Promise<void> {
+  await api.post(`/api/v1/vpn/ipsec/tunnels/${id}/stop`);
+}
+
+/// Live negotiated status for all tunnels (fresh `swanctl --list-sas`).
+export async function getIpsecStatus(): Promise<IpsecLiveStatus[]> {
+  const res = await api.get<{ data: IpsecLiveStatus[] }>("/api/v1/vpn/ipsec/status");
+  return res.data;
+}
+
+/// ACME certs for the cert-auth picker (best-effort; empty on error).
+export async function listAcmeCertOptions(): Promise<AcmeCertOption[]> {
+  try {
+    return await api.get<AcmeCertOption[]>("/api/v1/acme/certs");
+  } catch {
+    return [];
+  }
 }
 
 /* ────────────────────────── Interfaces ────────────────────────── */
