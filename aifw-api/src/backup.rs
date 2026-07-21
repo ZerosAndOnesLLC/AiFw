@@ -1511,6 +1511,146 @@ fn apply_fail(step: &str, e: impl std::fmt::Display) -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
+/// Pre-apply validation (#535): run the target config through the same
+/// converters and validators the apply path uses, *before* the first
+/// destructive DELETE. Entries the apply loop would silently skip
+/// (unparseable rows, interfaces the user chose to drop) are skipped here
+/// too — this only rejects configs that would abort mid-apply.
+pub(crate) fn prevalidate_config(
+    config: &FirewallConfig,
+    iface_map: &InterfaceMap,
+) -> Result<(), String> {
+    config.validate()?;
+
+    for rc in &config.rules {
+        let iface_after = match rc.interface.as_deref() {
+            Some(name) => match map_iface(name, iface_map) {
+                Some(mapped) => Some(mapped),
+                None => continue,
+            },
+            None => None,
+        };
+        let mut rc = rc.clone();
+        rc.interface = iface_after;
+        if let Some(rule) = rule_from_config(&rc) {
+            aifw_core::validation::validate_rule(&rule)
+                .map_err(|e| format!("rule {}: {e}", rc.id))?;
+        }
+    }
+
+    for nc in &config.nat {
+        let Some(mapped) = map_iface(&nc.interface, iface_map) else {
+            continue;
+        };
+        let mut nc = nc.clone();
+        nc.interface = mapped;
+        if let Some(nat) = nat_from_config(&nc) {
+            aifw_core::nat::validate_nat_rule(&nat)
+                .map_err(|e| format!("nat rule {}: {e}", nc.id))?;
+        }
+    }
+
+    for ac in &config.aliases {
+        if aifw_common::AliasType::parse(&ac.alias_type).is_none() {
+            continue;
+        }
+        aifw_core::AliasEngine::validate_name(&ac.name)
+            .map_err(|e| format!("alias {}: {e}", ac.name))?;
+    }
+
+    // WireGuard: mirror the engine's add-time checks, plus duplicate listen
+    // ports *within* the config (the tables are wiped before re-insert, so
+    // only intra-config duplicates can collide).
+    let mut wg_ports = std::collections::HashSet::new();
+    for wg in &config.vpn.wireguard {
+        if aifw_common::Address::parse(&wg.address).is_err()
+            || map_iface(&wg.interface, iface_map).is_none()
+        {
+            continue;
+        }
+        if wg.name.is_empty() {
+            return Err(format!("wg tunnel {}: tunnel name required", wg.id));
+        }
+        if wg.listen_port == 0 {
+            return Err(format!("wg tunnel {}: listen port required", wg.name));
+        }
+        if !wg_ports.insert(wg.listen_port) {
+            return Err(format!(
+                "wg tunnel {}: listen port {} used by another tunnel in this config",
+                wg.name, wg.listen_port
+            ));
+        }
+        for p in &wg.peers {
+            if p.public_key.is_empty() {
+                return Err(format!(
+                    "wg peer {} on {}: public key required",
+                    p.id, wg.name
+                ));
+            }
+        }
+    }
+
+    for sac in &config.vpn.ipsec {
+        if aifw_common::Address::parse(&sac.src_addr).is_err()
+            || aifw_common::Address::parse(&sac.dst_addr).is_err()
+        {
+            continue;
+        }
+        if sac.name.is_empty() {
+            return Err(format!("ipsec SA {}: name required", sac.id));
+        }
+    }
+
+    for tunnel in &config.vpn.ipsec_tunnels {
+        tunnel
+            .validate()
+            .map_err(|e| format!("ipsec tunnel {}: {e}", tunnel.name))?;
+    }
+
+    for rc in &config.rate_limits {
+        if rate_limit_from_config(rc).is_some() {
+            if rc.max_connections == 0 {
+                return Err(format!(
+                    "rate limit {}: max_connections must be > 0",
+                    rc.name
+                ));
+            }
+            if rc.window_secs == 0 {
+                return Err(format!("rate limit {}: window_secs must be > 0", rc.name));
+            }
+        }
+    }
+
+    for sc in &config.tls.sni_rules {
+        if sc.pattern.is_empty() {
+            return Err(format!("sni rule {}: pattern required", sc.id));
+        }
+    }
+
+    for vc in &config.ha.carp_vips {
+        if map_iface(&vc.interface, iface_map).is_none() || carp_vip_from_config(vc).is_none() {
+            continue;
+        }
+        if vc.vhid == 0 {
+            return Err(format!("carp vip {}: VHID must be > 0", vc.virtual_ip));
+        }
+        if vc.password.is_empty() {
+            return Err(format!(
+                "carp vip {}: CARP password required",
+                vc.virtual_ip
+            ));
+        }
+    }
+
+    for nc in &config.ha.nodes {
+        if cluster_node_from_config(nc).is_some() && nc.name.is_empty() {
+            return Err(format!("cluster node {}: name required", nc.id));
+        }
+    }
+
+    Ok(())
+}
+
 /// Restore-with-rollback wrapper around [`apply_firewall_config`] (#535).
 ///
 /// Captures the current running config first, applies the target strictly,
@@ -1529,6 +1669,12 @@ pub(crate) async fn apply_firewall_config_or_rollback(
     config: &FirewallConfig,
     iface_map: &InterfaceMap,
 ) -> Result<(), StatusCode> {
+    // Validate before snapshotting: a config that can't apply must be
+    // rejected with nothing mutated, not "applied" and rolled back.
+    prevalidate_config(config, iface_map).map_err(|e| {
+        tracing::warn!(error = %e, "config apply: pre-validation rejected target config");
+        StatusCode::BAD_REQUEST
+    })?;
     let snapshot = build_current_config(state).await?;
     let Err(apply_err) = apply_firewall_config(state, config, iface_map).await else {
         return Ok(());
@@ -1579,6 +1725,13 @@ pub(crate) async fn apply_firewall_config(
     use aifw_common::{
         Address, CountryCode, GeoIpRule, Interface, IpsecSa, VpnStatus, WgPeer, WgTunnel,
     };
+
+    // Direct callers (commit-confirm rollback timer, cluster snapshot sync)
+    // don't go through the wrapper — validate here too before any DELETE.
+    prevalidate_config(config, iface_map).map_err(|e| {
+        tracing::error!(error = %e, "config apply: pre-validation failed — nothing changed");
+        StatusCode::BAD_REQUEST
+    })?;
 
     // Restore preludes — clear existing rows before re-populating from the
     // imported config. A failed DELETE (locked DB, FK violation, schema

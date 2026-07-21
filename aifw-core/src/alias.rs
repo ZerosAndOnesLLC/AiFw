@@ -88,7 +88,7 @@ impl AliasEngine {
     /// 1-31 alphanumeric/`_`/`-` chars or is reserved (`bruteforce`,
     /// `ai_blocked`).
     pub async fn add(&self, alias: Alias) -> Result<Alias> {
-        self.validate_name(&alias.name)?;
+        Self::validate_name(&alias.name)?;
         let entries_json = serde_json::to_string(&alias.entries)
             .map_err(|e| AifwError::Validation(e.to_string()))?;
 
@@ -110,7 +110,7 @@ impl AliasEngine {
     /// re-synced when enabled). Fails with `NotFound` if the id doesn't
     /// exist, or validation on a bad name.
     pub async fn update(&self, alias: Alias) -> Result<Alias> {
-        self.validate_name(&alias.name)?;
+        Self::validate_name(&alias.name)?;
         let entries_json = serde_json::to_string(&alias.entries)
             .map_err(|e| AifwError::Validation(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
@@ -239,7 +239,10 @@ impl AliasEngine {
         Ok(())
     }
 
-    fn validate_name(&self, name: &str) -> Result<()> {
+    /// Validate an alias name: 1-31 alphanumeric/`_`/`-` chars, not
+    /// reserved. Associated (not `&self`) so the backup restore path can
+    /// pre-validate a whole config with the same checks `add` applies.
+    pub fn validate_name(name: &str) -> Result<()> {
         if name.is_empty() || name.len() > 31 {
             return Err(AifwError::Validation(
                 "Alias name must be 1-31 characters".into(),

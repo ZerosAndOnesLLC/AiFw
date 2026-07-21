@@ -312,7 +312,10 @@ impl NatEngine {
     }
 }
 
-fn validate_nat_rule(rule: &NatRule) -> Result<()> {
+/// Validate a NAT rule before persisting: interface required, DNAT/RDR
+/// needs a destination or redirect port. Public so the backup restore path
+/// can pre-validate a whole config with the same checks `add_rule` applies.
+pub fn validate_nat_rule(rule: &NatRule) -> Result<()> {
     if rule.interface.0.is_empty() {
         return Err(AifwError::Validation(
             "NAT rule requires an interface".to_string(),

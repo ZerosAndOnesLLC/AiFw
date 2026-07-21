@@ -2296,6 +2296,66 @@ mod tests {
         assert!(res.is_err(), "partial apply must not report success");
     }
 
+    #[tokio::test]
+    async fn test_prevalidation_rejects_bad_config_without_mutation() {
+        // A config that would abort mid-apply (rule priority out of range)
+        // must be rejected up front with 400 and zero rows touched (#535).
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let rule = aifw_common::Rule::new(
+            aifw_common::Action::Pass,
+            aifw_common::Direction::In,
+            aifw_common::Protocol::Tcp,
+            aifw_common::RuleMatch {
+                src_addr: aifw_common::Address::Any,
+                src_port: None,
+                dst_addr: aifw_common::Address::Any,
+                dst_port: None,
+            },
+        );
+        state.rule_engine.add_rule(rule).await.unwrap();
+
+        let mut config = crate::backup::build_current_config(&state).await.unwrap();
+        config.rules[0].priority = 20_000; // validate_rule caps at 10000
+
+        let res =
+            crate::backup::apply_firewall_config_or_rollback(&state, &config, &Default::default())
+                .await;
+        assert_eq!(res, Err(axum::http::StatusCode::BAD_REQUEST));
+        let rules = state.rule_engine.list_rules().await.unwrap();
+        assert_eq!(rules.len(), 1, "prevalidation failure must not touch rows");
+    }
+
+    #[tokio::test]
+    async fn test_prevalidation_rejects_duplicate_wg_ports() {
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let mut config = crate::backup::build_current_config(&state).await.unwrap();
+        for name in ["wg-a", "wg-b"] {
+            config
+                .vpn
+                .wireguard
+                .push(aifw_core::config::WireguardTunnelConfig {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: name.to_string(),
+                    interface: "wg0".to_string(),
+                    listen_port: 51820,
+                    address: "10.9.0.1/24".to_string(),
+                    private_key: "k".into(),
+                    public_key: "K".into(),
+                    dns: None,
+                    mtu: None,
+                    peers: vec![],
+                });
+        }
+        let res =
+            crate::backup::apply_firewall_config_or_rollback(&state, &config, &Default::default())
+                .await;
+        assert_eq!(res, Err(axum::http::StatusCode::BAD_REQUEST));
+    }
+
     // --- IPsec tunnels (#530) ---
 
     fn ipsec_tunnel_body() -> Value {
