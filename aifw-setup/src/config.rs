@@ -108,10 +108,8 @@ impl SetupConfig {
         if self.wan_interface.trim().is_empty() {
             return Err("wan_interface must not be empty".to_string());
         }
-        if matches!(self.wan_mode, WanMode::Static)
-            && (self.wan_ip.is_none() || self.wan_gateway.is_none())
-        {
-            return Err("static wan_mode requires wan_ip and wan_gateway".to_string());
+        if matches!(self.wan_mode, WanMode::Static) && self.wan_ip.is_none() {
+            return Err("static wan_mode requires wan_ip".to_string());
         }
         if self.lan_ip.is_some() && self.lan_interface.is_none() {
             return Err("lan_ip requires lan_interface".to_string());
