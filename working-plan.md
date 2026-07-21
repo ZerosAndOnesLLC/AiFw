@@ -203,12 +203,25 @@ established_secs, remote_host }` parsed from `swanctl --list-sas --raw`.
       with delete-only.
 - [x] 5c. ESLint clean, static export builds; bump to 5.109.0, commit.
 
-### Phase 6 — Functional proof on FreeBSD (→ patch bumps as needed)
+### Phase 6 — Functional proof on FreeBSD (→ 5.109.1 so far)
 
-- [ ] 6a. Bring-up: deploy to test VM (172.29.50.220) and appliance
-      (172.29.69.1); establish an IKEv2 PSK tunnel between them; verify
-      `swanctl --list-sas`, kernel SAD/SPD (`setkey -D`, `setkey -DP`),
-      bidirectional ping/iperf across the tunnel subnets.
+Single-box smoke on the dev VM (172.29.50.220, FreeBSD 15.0) — DONE:
+- [x] strongswan pkg installs; default swanctl.conf has `include
+      conf.d/*.conf` (line 587) — no extra config shipping needed.
+- [x] Full lifecycle through the narrow sudo path: CLI ipsec-add →
+      conf rendered root:wheel 0600 in conf.d → `--load-all` → conn
+      loaded (IKEv2, TUNNEL, correct TS/proposals/DPD) → initiate error
+      surfaced with charon diagnostic → live status → terminate →
+      delete removes conf + unloads conn.
+- [x] Caught + fixed: real `--list-sas --raw` is compact `key=value`
+      (no spaces) — tokenizer rewritten, verbatim FreeBSD fixture added
+      (5.109.1). Live CONNECTING state + remote host verified parsing.
+
+Remaining (needs a second endpoint — appliance gets builds via update
+tarball, Mack's call on when):
+- [ ] 6a. Two-endpoint IKEv2 PSK tunnel VM↔appliance: ESTABLISHED,
+      kernel SAD/SPD (`setkey -D` / `-DP`), bidirectional ping/iperf
+      across tunnel subnets.
 - [ ] 6b. Cert-auth tunnel variant (manual CA-signed pair).
 - [ ] 6c. NAT-T case (initiator behind NAT) — verify UDP 4500 encapsulation.
 - [ ] 6d. Rekey observed (short lifetimes), DPD teardown, reboot recovery
