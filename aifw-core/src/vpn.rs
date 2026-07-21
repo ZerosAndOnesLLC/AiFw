@@ -779,16 +779,36 @@ impl VpnEngine {
 
     /// Collect VPN pf filter (pass) rules without loading them. Only tunnels
     /// marked up contribute rules — a stopped tunnel must not hold its
-    /// listen-port open. IPsec SAs are always included.
+    /// listen-port open. Enabled IPsec tunnels (#530 `ipsec_tunnels`)
+    /// contribute IKE/ESP/enc0 rules; legacy `ipsec_sas` records are
+    /// configuration-only and deliberately emit nothing — they never had a
+    /// data plane, so their pf holes were pure attack surface.
     pub async fn collect_vpn_rules(&self) -> Result<Vec<String>> {
         let mut pf_rules = Vec::new();
         let tunnels = self.list_wg_tunnels().await?;
         for t in tunnels.iter().filter(|t| t.status == VpnStatus::Up) {
             pf_rules.extend(t.to_pf_rules());
         }
-        let sas = self.list_ipsec_sas().await?;
-        for sa in &sas {
-            pf_rules.extend(sa.to_pf_rules());
+        // Tolerate a missing ipsec_tunnels table: some callers (daemon
+        // early boot, partial restores) run before IpsecEngine::migrate.
+        match sqlx::query_as::<_, (String, String, String)>(
+            "SELECT id, local_addr, remote_addr FROM ipsec_tunnels WHERE enabled = 1 ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        {
+            Ok(rows) => {
+                for (id, local, remote) in &rows {
+                    pf_rules.extend(aifw_common::ipsec::endpoint_pf_rules(
+                        &format!("aifw-{id}"),
+                        local,
+                        remote,
+                    ));
+                }
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "ipsec_tunnels not readable (pre-migration?) — no IPsec pf rules");
+            }
         }
         Ok(pf_rules)
     }

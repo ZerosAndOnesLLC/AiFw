@@ -165,6 +165,137 @@ impl IkeControl for MockIkeControl {
     }
 }
 
+/// Storage for AiFw-managed swanctl files (conn configs, certs, keys).
+/// Abstracted so the apply/rollback lifecycle is fully testable on
+/// Linux: the real store writes root-owned files through the narrow
+/// sudo helpers, the mock keeps a HashMap.
+#[async_trait]
+pub trait IpsecConfStore: Send + Sync {
+    /// Atomically write `content` to the absolute `path` (root-owned,
+    /// mode fixed by the write helper's per-path policy).
+    async fn write(&self, path: &str, content: &[u8]) -> Result<()>;
+    /// Remove the file at `path`.
+    async fn remove(&self, path: &str) -> Result<()>;
+    /// All AiFw-managed swanctl file paths currently on disk
+    /// (`aifw-*` files across conf.d/private/x509/x509ca).
+    async fn list_managed(&self) -> Result<Vec<String>>;
+}
+
+/// Real store: writes via `aifw-sudo-write`, removes via `aifw-sudo-rm`.
+/// Listing uses plain readdir — the swanctl dirs are root-owned but
+/// world-listable; file *contents* stay root-only.
+pub struct SystemConfStore;
+
+/// The four swanctl directories AiFw manages files in.
+const SWANCTL_DIRS: &[&str] = &[
+    SWANCTL_CONF_DIR,
+    SWANCTL_PRIVATE_DIR,
+    SWANCTL_X509_DIR,
+    SWANCTL_X509CA_DIR,
+];
+
+#[async_trait]
+impl IpsecConfStore for SystemConfStore {
+    async fn write(&self, path: &str, content: &[u8]) -> Result<()> {
+        crate::sudo::write_file(std::path::Path::new(path), content)
+            .await
+            .map_err(|e| AifwError::Config(format!("write {path} failed: {e}")))
+    }
+
+    async fn remove(&self, path: &str) -> Result<()> {
+        let output = crate::sudo::rm(&[path]).await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AifwError::Config(format!(
+                "remove {path} failed: {}",
+                stderr.trim()
+            )));
+        }
+        Ok(())
+    }
+
+    async fn list_managed(&self) -> Result<Vec<String>> {
+        let mut paths = Vec::new();
+        for dir in SWANCTL_DIRS {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue; // dir absent (strongswan not installed yet)
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("aifw-") {
+                    paths.push(format!("{dir}/{name}"));
+                }
+            }
+        }
+        Ok(paths)
+    }
+}
+
+/// In-memory conf store for tests and Linux development.
+#[derive(Debug, Default)]
+pub struct MemConfStore {
+    files: Mutex<std::collections::HashMap<String, Vec<u8>>>,
+}
+
+impl MemConfStore {
+    /// Fresh empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Current content of `path`, if present.
+    pub fn get(&self, path: &str) -> Option<Vec<u8>> {
+        self.files
+            .lock()
+            .expect("mem conf store lock poisoned")
+            .get(path)
+            .cloned()
+    }
+
+    /// Number of stored files.
+    pub fn len(&self) -> usize {
+        self.files
+            .lock()
+            .expect("mem conf store lock poisoned")
+            .len()
+    }
+
+    /// True when no files are stored.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[async_trait]
+impl IpsecConfStore for MemConfStore {
+    async fn write(&self, path: &str, content: &[u8]) -> Result<()> {
+        self.files
+            .lock()
+            .expect("mem conf store lock poisoned")
+            .insert(path.to_string(), content.to_vec());
+        Ok(())
+    }
+
+    async fn remove(&self, path: &str) -> Result<()> {
+        self.files
+            .lock()
+            .expect("mem conf store lock poisoned")
+            .remove(path);
+        Ok(())
+    }
+
+    async fn list_managed(&self) -> Result<Vec<String>> {
+        Ok(self
+            .files
+            .lock()
+            .expect("mem conf store lock poisoned")
+            .keys()
+            .cloned()
+            .collect())
+    }
+}
+
 /// Render one tunnel into its swanctl config file content: a
 /// `connections` section plus, for PSK auth, a matching `secrets`
 /// section. Cert-auth material lives in the swanctl x509/private
@@ -323,7 +454,7 @@ struct IpsecTunnelRow {
     auth_method: String,
     psk: String,
     cert_source: Option<String>,
-    acme_cert_id: Option<String>,
+    acme_cert_id: Option<i64>,
     local_cert_pem: String,
     local_key_pem: String,
     ca_cert_pem: String,
@@ -371,13 +502,7 @@ impl IpsecTunnelRow {
                 None | Some("") => None,
                 Some(s) => Some(IpsecCertSource::parse(s)?),
             },
-            acme_cert_id: match self.acme_cert_id.as_deref() {
-                None | Some("") => None,
-                Some(s) => Some(
-                    Uuid::parse_str(s)
-                        .map_err(|e| AifwError::Database(format!("bad acme_cert_id {s:?}: {e}")))?,
-                ),
-            },
+            acme_cert_id: self.acme_cert_id,
             local_cert_pem: self.local_cert_pem,
             local_key_pem: self.local_key_pem,
             ca_cert_pem: self.ca_cert_pem,
@@ -399,13 +524,15 @@ impl IpsecTunnelRow {
 pub struct IpsecEngine {
     pool: SqlitePool,
     ike: Arc<dyn IkeControl>,
+    store: Arc<dyn IpsecConfStore>,
 }
 
 impl IpsecEngine {
-    /// Build the engine over the shared pool and an IKE control backend
-    /// (SwanctlControl on FreeBSD, MockIkeControl elsewhere).
-    pub fn new(pool: SqlitePool, ike: Arc<dyn IkeControl>) -> Self {
-        Self { pool, ike }
+    /// Build the engine over the shared pool, an IKE control backend and
+    /// a conf store (SwanctlControl + SystemConfStore on FreeBSD,
+    /// mocks elsewhere).
+    pub fn new(pool: SqlitePool, ike: Arc<dyn IkeControl>, store: Arc<dyn IpsecConfStore>) -> Self {
+        Self { pool, ike, store }
     }
 
     /// The IKE control backend (used by the apply/status layer).
@@ -428,7 +555,7 @@ impl IpsecEngine {
                 auth_method TEXT NOT NULL,
                 psk TEXT NOT NULL DEFAULT '',
                 cert_source TEXT,
-                acme_cert_id TEXT,
+                acme_cert_id INTEGER,
                 local_cert_pem TEXT NOT NULL DEFAULT '',
                 local_key_pem TEXT NOT NULL DEFAULT '',
                 ca_cert_pem TEXT NOT NULL DEFAULT '',
@@ -477,7 +604,7 @@ impl IpsecEngine {
         .bind(tunnel.auth_method.to_string())
         .bind(&tunnel.psk)
         .bind(tunnel.cert_source.map(|s| s.to_string()))
-        .bind(tunnel.acme_cert_id.map(|u| u.to_string()))
+        .bind(tunnel.acme_cert_id)
         .bind(&tunnel.local_cert_pem)
         .bind(&tunnel.local_key_pem)
         .bind(&tunnel.ca_cert_pem)
@@ -546,7 +673,7 @@ impl IpsecEngine {
         .bind(tunnel.auth_method.to_string())
         .bind(&tunnel.psk)
         .bind(tunnel.cert_source.map(|s| s.to_string()))
-        .bind(tunnel.acme_cert_id.map(|u| u.to_string()))
+        .bind(tunnel.acme_cert_id)
         .bind(&tunnel.local_cert_pem)
         .bind(&tunnel.local_key_pem)
         .bind(&tunnel.ca_cert_pem)
@@ -582,6 +709,222 @@ impl IpsecEngine {
         }
         Ok(())
     }
+
+    // ============================================================
+    // Apply lifecycle — DB is the source of truth; swanctl files are
+    // derived state, regenerated wholesale on every apply.
+    // ============================================================
+
+    /// The complete set of swanctl files the current DB state demands:
+    /// conn config per enabled tunnel, plus cert/key material for
+    /// cert-auth tunnels (resolved from the ACME store or the stored
+    /// PEM fields).
+    async fn desired_files(
+        &self,
+        tunnels: &[IpsecTunnel],
+    ) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+        use aifw_common::{IpsecAuthMethod, IpsecCertSource};
+
+        let mut files = std::collections::HashMap::new();
+        for t in tunnels.iter().filter(|t| t.enabled) {
+            let conn = t.conn_name();
+            files.insert(
+                format!("{SWANCTL_CONF_DIR}/{conn}.conf"),
+                render_swanctl_conf(t).into_bytes(),
+            );
+
+            if t.auth_method == IpsecAuthMethod::Cert {
+                let (cert_pem, key_pem, chain_pem) = match t.cert_source {
+                    Some(IpsecCertSource::Manual) => {
+                        (t.local_cert_pem.clone(), t.local_key_pem.clone(), None)
+                    }
+                    Some(IpsecCertSource::Acme) => {
+                        let id = t.acme_cert_id.ok_or_else(|| {
+                            AifwError::Config(format!("tunnel {} has no acme_cert_id", t.name))
+                        })?;
+                        let cert =
+                            crate::acme::load_cert(&self.pool, id)
+                                .await
+                                .ok_or_else(|| {
+                                    AifwError::Config(format!(
+                                        "ACME cert {id} referenced by tunnel {} not found",
+                                        t.name
+                                    ))
+                                })?;
+                        let cert_pem = cert.cert_pem.unwrap_or_default();
+                        let key_pem = cert.key_pem.unwrap_or_default();
+                        if cert_pem.is_empty() || key_pem.is_empty() {
+                            return Err(AifwError::Config(format!(
+                                "ACME cert {id} for tunnel {} has no issued material yet",
+                                t.name
+                            )));
+                        }
+                        (cert_pem, key_pem, cert.chain_pem.filter(|c| !c.is_empty()))
+                    }
+                    None => {
+                        return Err(AifwError::Config(format!(
+                            "tunnel {} uses cert auth without a cert source",
+                            t.name
+                        )));
+                    }
+                };
+                files.insert(
+                    format!("{SWANCTL_X509_DIR}/{conn}.pem"),
+                    cert_pem.into_bytes(),
+                );
+                files.insert(
+                    format!("{SWANCTL_PRIVATE_DIR}/{conn}.pem"),
+                    key_pem.into_bytes(),
+                );
+                if let Some(chain) = chain_pem {
+                    files.insert(
+                        format!("{SWANCTL_X509CA_DIR}/{conn}-chain.pem"),
+                        chain.into_bytes(),
+                    );
+                }
+            }
+            if !t.ca_cert_pem.is_empty() {
+                files.insert(
+                    format!("{SWANCTL_X509CA_DIR}/{conn}-ca.pem"),
+                    t.ca_cert_pem.clone().into_bytes(),
+                );
+            }
+        }
+        Ok(files)
+    }
+
+    /// Regenerate every AiFw-managed swanctl file from the DB, remove
+    /// stale ones, and `--load-all`. charon diffs the loaded config:
+    /// changed conns are replaced, vanished conns are unloaded, and
+    /// `start_action = start` children are (re)initiated.
+    pub async fn apply_all(&self) -> Result<()> {
+        let tunnels = self.list_tunnels().await?;
+        let desired = self.desired_files(&tunnels).await?;
+        let existing = self.store.list_managed().await?;
+
+        for path in &existing {
+            if !desired.contains_key(path)
+                && let Err(e) = self.store.remove(path).await
+            {
+                tracing::warn!(path, error = %e, "ipsec: failed to remove stale swanctl file");
+            }
+        }
+        for (path, content) in &desired {
+            self.store.write(path, content).await?;
+        }
+        if desired.is_empty() && existing.is_empty() {
+            // Nothing managed and nothing to clean up — don't poke charon
+            // (it may not even be installed on a box that never used IPsec).
+            return Ok(());
+        }
+        self.ensure_service().await;
+        self.ike.load_all().await
+    }
+
+    /// Validate, persist, and apply a new tunnel. If the apply fails the
+    /// record is rolled back and the previous rendered state restored,
+    /// so a bad tunnel can't take down working ones.
+    pub async fn create_tunnel_applied(&self, tunnel: IpsecTunnel) -> Result<IpsecTunnel> {
+        let tunnel = self.add_tunnel(tunnel).await?;
+        if let Err(e) = self.apply_all().await {
+            tracing::warn!(tunnel = %tunnel.name, error = %e, "ipsec: apply failed — rolling back create");
+            if let Err(re) = self.delete_tunnel(tunnel.id).await {
+                tracing::warn!(error = %re, "ipsec: rollback delete failed");
+            }
+            if let Err(re) = self.apply_all().await {
+                tracing::warn!(error = %re, "ipsec: rollback re-apply failed");
+            }
+            return Err(e);
+        }
+        Ok(tunnel)
+    }
+
+    /// Validate, persist, and apply changes to a tunnel. On apply
+    /// failure the previous record is restored and re-applied.
+    pub async fn update_tunnel_applied(&self, tunnel: IpsecTunnel) -> Result<IpsecTunnel> {
+        let previous = self.get_tunnel(tunnel.id).await?;
+        let updated = self.update_tunnel(tunnel).await?;
+        if let Err(e) = self.apply_all().await {
+            tracing::warn!(tunnel = %updated.name, error = %e, "ipsec: apply failed — restoring previous config");
+            if let Err(re) = self.update_tunnel(previous).await {
+                tracing::warn!(error = %re, "ipsec: rollback restore failed");
+            }
+            if let Err(re) = self.apply_all().await {
+                tracing::warn!(error = %re, "ipsec: rollback re-apply failed");
+            }
+            return Err(e);
+        }
+        Ok(updated)
+    }
+
+    /// Terminate any live SA, delete the record, and apply (which
+    /// removes the rendered files and unloads the conn).
+    pub async fn delete_tunnel_applied(&self, id: Uuid) -> Result<()> {
+        let tunnel = self.get_tunnel(id).await?;
+        if let Err(e) = self.ike.terminate_ike(&tunnel.conn_name(), true).await {
+            // Not fatal: the SA may simply not be up.
+            tracing::debug!(tunnel = %tunnel.name, error = %e, "ipsec: terminate before delete failed");
+        }
+        self.delete_tunnel(id).await?;
+        self.apply_all().await
+    }
+
+    /// Manually initiate a tunnel's child SA (negotiation outcome
+    /// surfaces as the error string on failure).
+    pub async fn start_tunnel(&self, id: Uuid) -> Result<()> {
+        let tunnel = self.get_tunnel(id).await?;
+        if !tunnel.enabled {
+            return Err(AifwError::Validation(format!(
+                "tunnel {} is disabled",
+                tunnel.name
+            )));
+        }
+        self.ike.initiate(&tunnel.child_name(), 30).await
+    }
+
+    /// Tear down a tunnel's IKE SA (and children). The config stays
+    /// loaded; the peer or a manual start can bring it back up.
+    pub async fn stop_tunnel(&self, id: Uuid) -> Result<()> {
+        let tunnel = self.get_tunnel(id).await?;
+        self.ike.terminate_ike(&tunnel.conn_name(), false).await
+    }
+
+    /// Reconcile rendered state with the DB at service startup — covers
+    /// reboot, restore-from-backup, and upgrades. No-op when the box has
+    /// never had IPsec tunnels.
+    pub async fn ensure_applied(&self) -> Result<()> {
+        let have_tunnels = !self.list_tunnels().await?.is_empty();
+        let have_files = !self.store.list_managed().await?.is_empty();
+        if have_tunnels || have_files {
+            self.apply_all().await?;
+        }
+        Ok(())
+    }
+
+    /// Make sure the strongSwan service is enabled and running before we
+    /// talk to it (FreeBSD only; best-effort — a failure surfaces
+    /// naturally as the subsequent `--load-all` error).
+    async fn ensure_service(&self) {
+        if !cfg!(target_os = "freebsd") {
+            return;
+        }
+        let status = crate::sudo::service("strongswan", "status").await;
+        let running = status.map(|o| o.status.success()).unwrap_or(false);
+        if running {
+            return;
+        }
+        if let Err(e) = crate::sudo::sysrc(&["strongswan_enable=YES"]).await {
+            tracing::warn!(error = %e, "ipsec: failed to set strongswan_enable");
+        }
+        match crate::sudo::service("strongswan", "start").await {
+            Ok(o) if !o.status.success() => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                tracing::warn!(stderr = %stderr.trim(), "ipsec: strongswan start failed");
+            }
+            Err(e) => tracing::warn!(error = %e, "ipsec: strongswan start failed"),
+            Ok(_) => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -590,12 +933,13 @@ mod tests {
     use crate::db::Database;
     use aifw_common::{IpsecAuthMethod, IpsecCertSource, IpsecStartAction};
 
-    async fn engine() -> (IpsecEngine, Arc<MockIkeControl>) {
+    async fn engine() -> (IpsecEngine, Arc<MockIkeControl>, Arc<MemConfStore>) {
         let db = Database::new_in_memory().await.unwrap();
         let ike = Arc::new(MockIkeControl::new());
-        let engine = IpsecEngine::new(db.pool().clone(), ike.clone());
+        let store = Arc::new(MemConfStore::new());
+        let engine = IpsecEngine::new(db.pool().clone(), ike.clone(), store.clone());
         engine.migrate().await.unwrap();
-        (engine, ike)
+        (engine, ike, store)
     }
 
     fn tunnel(name: &str) -> IpsecTunnel {
@@ -610,7 +954,7 @@ mod tests {
 
     #[tokio::test]
     async fn crud_roundtrip() {
-        let (engine, _) = engine().await;
+        let (engine, _, _) = engine().await;
         let t = engine.add_tunnel(tunnel("site-a")).await.unwrap();
 
         let fetched = engine.get_tunnel(t.id).await.unwrap();
@@ -639,14 +983,14 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_name_rejected() {
-        let (engine, _) = engine().await;
+        let (engine, _, _) = engine().await;
         engine.add_tunnel(tunnel("dup")).await.unwrap();
         assert!(engine.add_tunnel(tunnel("dup")).await.is_err());
     }
 
     #[tokio::test]
     async fn invalid_tunnel_rejected_before_persist() {
-        let (engine, _) = engine().await;
+        let (engine, _, _) = engine().await;
         let mut t = tunnel("bad");
         t.psk = "short".to_string();
         assert!(matches!(
@@ -658,7 +1002,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_missing_tunnel_is_not_found() {
-        let (engine, _) = engine().await;
+        let (engine, _, _) = engine().await;
         assert!(matches!(
             engine.update_tunnel(tunnel("ghost")).await,
             Err(AifwError::NotFound(_))
@@ -671,7 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn cert_tunnel_roundtrip() {
-        let (engine, _) = engine().await;
+        let (engine, _, _) = engine().await;
         let mut t = tunnel("cert-site");
         t.auth_method = IpsecAuthMethod::Cert;
         t.psk = String::new();
@@ -747,8 +1091,193 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_writes_conf_and_loads() {
+        let (engine, ike, store) = engine().await;
+        let t = engine
+            .create_tunnel_applied(tunnel("site-a"))
+            .await
+            .unwrap();
+        let conf_path = format!("{SWANCTL_CONF_DIR}/{}.conf", t.conn_name());
+        let conf = String::from_utf8(store.get(&conf_path).unwrap()).unwrap();
+        assert!(conf.contains("remote_addrs = 203.0.113.10"));
+        ike.with_state(|s| assert_eq!(s.load_all_calls, 1));
+    }
+
+    #[tokio::test]
+    async fn disabled_tunnel_not_rendered() {
+        let (engine, _, store) = engine().await;
+        let mut t = tunnel("off");
+        t.enabled = false;
+        engine.create_tunnel_applied(t).await.unwrap();
+        assert!(store.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_apply_rolls_back_create() {
+        let (engine, ike, store) = engine().await;
+        engine.create_tunnel_applied(tunnel("good")).await.unwrap();
+        assert_eq!(store.len(), 1);
+
+        ike.with_state(|s| s.fail_load = Some("charon rejected config".to_string()));
+        let err = engine
+            .create_tunnel_applied(tunnel("bad"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("charon rejected config"));
+
+        // Record rolled back; only the good tunnel's file remains after
+        // the (also failing, but file-restoring) rollback re-apply.
+        ike.with_state(|s| s.fail_load = None);
+        let tunnels = engine.list_tunnels().await.unwrap();
+        assert_eq!(tunnels.len(), 1);
+        assert_eq!(tunnels[0].name, "good");
+        assert_eq!(store.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_apply_rolls_back_update() {
+        let (engine, ike, _) = engine().await;
+        let t = engine
+            .create_tunnel_applied(tunnel("site-a"))
+            .await
+            .unwrap();
+
+        ike.with_state(|s| s.fail_load = Some("boom".to_string()));
+        let mut changed = t.clone();
+        changed.remote_addr = "203.0.113.99".to_string();
+        assert!(engine.update_tunnel_applied(changed).await.is_err());
+
+        let fetched = engine.get_tunnel(t.id).await.unwrap();
+        assert_eq!(fetched.remote_addr, "203.0.113.10");
+    }
+
+    #[tokio::test]
+    async fn delete_terminates_and_removes_files() {
+        let (engine, ike, store) = engine().await;
+        let t = engine
+            .create_tunnel_applied(tunnel("site-a"))
+            .await
+            .unwrap();
+        assert_eq!(store.len(), 1);
+
+        engine.delete_tunnel_applied(t.id).await.unwrap();
+        assert!(store.is_empty());
+        ike.with_state(|s| {
+            assert_eq!(s.terminated, vec![t.conn_name()]);
+            assert_eq!(s.load_all_calls, 2);
+        });
+        assert!(engine.list_tunnels().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cert_tunnel_renders_material_files() {
+        let (engine, _, store) = engine().await;
+        let mut t = tunnel("cert-site");
+        t.auth_method = IpsecAuthMethod::Cert;
+        t.psk = String::new();
+        t.cert_source = Some(IpsecCertSource::Manual);
+        t.local_cert_pem =
+            "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----".to_string();
+        t.local_key_pem = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----".to_string();
+        t.ca_cert_pem = "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----".to_string();
+        let t = engine.create_tunnel_applied(t).await.unwrap();
+
+        let conn = t.conn_name();
+        assert!(
+            store
+                .get(&format!("{SWANCTL_CONF_DIR}/{conn}.conf"))
+                .is_some()
+        );
+        assert!(
+            store
+                .get(&format!("{SWANCTL_X509_DIR}/{conn}.pem"))
+                .is_some()
+        );
+        assert!(
+            store
+                .get(&format!("{SWANCTL_PRIVATE_DIR}/{conn}.pem"))
+                .is_some()
+        );
+        assert!(
+            store
+                .get(&format!("{SWANCTL_X509CA_DIR}/{conn}-ca.pem"))
+                .is_some()
+        );
+
+        engine.delete_tunnel_applied(t.id).await.unwrap();
+        assert!(store.is_empty());
+    }
+
+    #[tokio::test]
+    async fn acme_cert_source_missing_cert_fails_apply() {
+        let (engine, _, _) = engine().await;
+        crate::acme::migrate(&engine.pool).await.unwrap();
+        let mut t = tunnel("acme-site");
+        t.auth_method = IpsecAuthMethod::Cert;
+        t.psk = String::new();
+        t.cert_source = Some(IpsecCertSource::Acme);
+        t.acme_cert_id = Some(999);
+        let err = engine.create_tunnel_applied(t).await.unwrap_err();
+        assert!(err.to_string().contains("not found"));
+        assert!(engine.list_tunnels().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn start_stop_drive_ike_control() {
+        let (engine, ike, _) = engine().await;
+        let t = engine
+            .create_tunnel_applied(tunnel("site-a"))
+            .await
+            .unwrap();
+        engine.start_tunnel(t.id).await.unwrap();
+        engine.stop_tunnel(t.id).await.unwrap();
+        ike.with_state(|s| {
+            assert_eq!(s.initiated, vec![t.child_name()]);
+            assert_eq!(s.terminated, vec![t.conn_name()]);
+        });
+
+        let mut disabled = t.clone();
+        disabled.enabled = false;
+        engine.update_tunnel_applied(disabled).await.unwrap();
+        assert!(engine.start_tunnel(t.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ensure_applied_noop_when_untouched() {
+        let (engine, ike, _) = engine().await;
+        engine.ensure_applied().await.unwrap();
+        ike.with_state(|s| assert_eq!(s.load_all_calls, 0));
+
+        engine
+            .create_tunnel_applied(tunnel("site-a"))
+            .await
+            .unwrap();
+        engine.ensure_applied().await.unwrap();
+        ike.with_state(|s| assert_eq!(s.load_all_calls, 2));
+    }
+
+    #[tokio::test]
+    async fn stale_files_removed_on_apply() {
+        let (engine, _, store) = engine().await;
+        store
+            .write(&format!("{SWANCTL_CONF_DIR}/aifw-stale.conf"), b"leftover")
+            .await
+            .unwrap();
+        engine
+            .create_tunnel_applied(tunnel("site-a"))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .get(&format!("{SWANCTL_CONF_DIR}/aifw-stale.conf"))
+                .is_none()
+        );
+        assert_eq!(store.len(), 1);
+    }
+
+    #[tokio::test]
     async fn mock_ike_records_calls() {
-        let (_, ike) = engine().await;
+        let (_, ike, _) = engine().await;
         ike.load_all().await.unwrap();
         ike.initiate("aifw-x-1", 30).await.unwrap();
         ike.terminate_ike("aifw-x", false).await.unwrap();

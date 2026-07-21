@@ -203,8 +203,9 @@ pub struct IpsecTunnel {
     pub psk: String,
     /// Certificate source (auth_method = cert)
     pub cert_source: Option<IpsecCertSource>,
-    /// ACME store certificate id (cert_source = acme)
-    pub acme_cert_id: Option<Uuid>,
+    /// ACME store certificate id (cert_source = acme; the ACME store
+    /// uses integer row ids)
+    pub acme_cert_id: Option<i64>,
     /// Local certificate PEM (cert_source = manual)
     pub local_cert_pem: String,
     /// Local private key PEM (cert_source = manual). Redacted in API output.
@@ -283,6 +284,15 @@ impl IpsecTunnel {
     /// swanctl child SA name for this tunnel's (single) child.
     pub fn child_name(&self) -> String {
         format!("aifw-{}-1", self.id)
+    }
+
+    /// pf pass rules admitting this tunnel's control and data traffic:
+    /// IKE (UDP 500 + 4500 for NAT-T), ESP between the endpoints, and
+    /// decapsulated traffic on `enc0`. Loaded into the `aifw-vpn` anchor.
+    /// Labels use the conn name (validated charset) — never the free-form
+    /// tunnel name.
+    pub fn to_pf_rules(&self) -> Vec<String> {
+        endpoint_pf_rules(&self.conn_name(), &self.local_addr, &self.remote_addr)
     }
 
     /// Copy with secret material blanked, safe for API responses.
@@ -393,6 +403,30 @@ impl IpsecTunnel {
 
         Ok(())
     }
+}
+
+/// pf pass rules for one IPsec tunnel's endpoints (used by
+/// [`IpsecTunnel::to_pf_rules`] and by `VpnEngine`'s scoped
+/// `ipsec_tunnels` query which avoids hydrating full tunnel structs).
+/// `label` must be the conn name (validated charset), never the
+/// free-form tunnel name; empty `local` renders as pf `any`.
+pub fn endpoint_pf_rules(label: &str, local: &str, remote: &str) -> Vec<String> {
+    let local = if local.is_empty() { "any" } else { local };
+    vec![
+        format!(
+            "pass in quick proto esp from {remote} to {local} keep state label \"ipsec-{label}-in\""
+        ),
+        format!(
+            "pass out quick proto esp from {local} to {remote} keep state label \"ipsec-{label}-out\""
+        ),
+        format!(
+            "pass in quick proto udp from {remote} to {local} port {{ 500 4500 }} keep state label \"ike-{label}-in\""
+        ),
+        format!(
+            "pass out quick proto udp from {local} to {remote} port {{ 500 4500 }} keep state label \"ike-{label}-out\""
+        ),
+        format!("pass quick on enc0 keep state label \"ipsec-{label}-enc0\""),
+    ]
 }
 
 /// Endpoint: IP address or DNS hostname (letters/digits/dot/hyphen).
@@ -630,7 +664,7 @@ mod tests {
 
         t.cert_source = Some(IpsecCertSource::Acme);
         assert!(t.validate().is_err()); // no acme_cert_id
-        t.acme_cert_id = Some(Uuid::new_v4());
+        t.acme_cert_id = Some(1);
         t.validate().unwrap();
 
         t.cert_source = Some(IpsecCertSource::Manual);
@@ -660,6 +694,25 @@ mod tests {
         t.ike_lifetime_secs = DEFAULT_IKE_LIFETIME_SECS;
         t.esp_lifetime_secs = 100_000_000;
         assert!(t.validate().is_err());
+    }
+
+    #[test]
+    fn pf_rules_cover_ike_esp_enc0() {
+        let mut t = base_tunnel();
+        t.local_addr = "198.51.100.1".to_string();
+        let rules = t.to_pf_rules();
+        assert_eq!(rules.len(), 5);
+        let label = t.conn_name();
+        assert!(rules[0].contains("proto esp from 203.0.113.10 to 198.51.100.1"));
+        assert!(rules[2].contains("port { 500 4500 }"));
+        assert!(rules[4].contains("on enc0"));
+        assert!(rules.iter().all(|r| r.contains(&label)));
+        // free-form tunnel name must never reach pf rule text
+        assert!(rules.iter().all(|r| !r.contains("site-a")));
+
+        t.local_addr = String::new();
+        let rules = t.to_pf_rules();
+        assert!(rules[0].contains("to any keep state"));
     }
 
     #[test]

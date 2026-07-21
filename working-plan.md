@@ -133,25 +133,35 @@ established_secs, remote_host }` parsed from `swanctl --list-sas --raw`.
       conf.d/*.conf (ship an include line if not).
 - [x] 2e. Version bump to 5.106.0, commit.
 
-### Phase 3 — Apply lifecycle + rollback (→ minor bump)
+### Phase 3 — Apply lifecycle + rollback (→ 5.107.0) — DONE
 
-- [ ] 3a. `apply()`: write conf set atomically (tmp + rename), `--load-all`;
-      on error restore previous files, reload, surface the swanctl stderr.
-- [ ] 3b. `start/stop`: `--initiate`/`--terminate`; `delete` = terminate +
-      remove conf + reload; `update` = re-render + reload (+ re-initiate if
-      it was up and start_action='start').
-- [ ] 3c. Reboot recovery: conf files persist; rc start runs `--load-all`;
-      daemon startup calls `IpsecEngine::ensure_applied()` to re-render from
-      DB (DB is source of truth) — covers restore-from-backup too.
-- [ ] 3d. Cert auth material: from `acme_cert_id` (reuse acme store, re-export
-      on renewal via existing export hooks) or manual PEM; written to
-      swanctl/x509* dirs 0600.
-- [ ] 3e. pf rules from tunnel model (IKE 500/4500 to/from remote_addr, ESP,
-      enc0 pass) into the existing `aifw-vpn` anchor; remove `IpsecSa` rule
-      emission.
-- [ ] 3f. Tests: apply/rollback with a failing mock load; update/delete
-      lifecycle; ensure_applied idempotence.
-- [ ] 3g. Version bump, commit.
+- [x] 3a. `IpsecConfStore` trait (SystemConfStore via aifw-sudo-write/rm +
+      readdir listing; MemConfStore for tests). `apply_all()` regenerates
+      the full managed file set from DB, removes stale files, `--load-all`.
+      Rollback model: DB is source of truth — failed apply reverts the DB
+      mutation and re-applies the previous state (aifw user can't read
+      root-owned conf files back, so file snapshots were a non-starter).
+- [x] 3b. `create/update/delete_tunnel_applied` with rollback;
+      `start_tunnel` (initiate child, 30s timeout) / `stop_tunnel`
+      (terminate ike); delete terminates best-effort first.
+- [x] 3c. `ensure_applied()` — no-op on boxes that never used IPsec;
+      re-renders + reloads otherwise. `ensure_service()` (FreeBSD only):
+      sysrc strongswan_enable=YES + service start when not running.
+- [x] 3d. Cert material: manual PEM or ACME store (`acme::load_cert` by i64
+      id — acme_cert_id type corrected from Uuid; cert→x509, key→private,
+      chain→x509ca aifw-<id>-chain.pem, peer CA→aifw-<id>-ca.pem).
+      NOTE: ACME renewal re-export hook deferred to Phase 6 verification
+      (apply_all re-reads the store, so a renewal + apply picks up new
+      material; automatic re-apply-on-renewal still to wire).
+- [x] 3e. `endpoint_pf_rules` free fn + `IpsecTunnel::to_pf_rules`;
+      `collect_vpn_rules` now emits rules for enabled ipsec_tunnels and
+      NOTHING for legacy ipsec_sas (their pf holes were pure attack
+      surface); tolerates missing table pre-migration.
+- [x] 3f. Tests: apply writes+loads, disabled not rendered, create/update
+      rollback on failing load, delete removes files + terminates, cert
+      material files, missing ACME cert fails apply, start/stop,
+      ensure_applied no-op, stale file cleanup. Full suite 754 green.
+- [x] 3g. Version bump to 5.107.0, commit.
 
 ### Phase 4 — Live status + API/CLI (→ minor bump)
 
