@@ -67,6 +67,9 @@ pub async fn issue(pool: &SqlitePool, cert_id: i64) -> IssueOutcome {
             // Fan out to export targets — best effort, individual failures
             // are recorded on the target row but don't fail the issue.
             crate::acme_export::publish_all(pool, cert_id).await;
+            // Re-apply IPsec tunnels referencing this cert so charon
+            // presents the renewed material (#568). Best effort too.
+            crate::ipsec::on_acme_cert_renewed(pool, cert_id).await;
             IssueOutcome {
                 ok: true,
                 message: format!("issued, expires {expires_at}"),
