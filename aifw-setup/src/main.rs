@@ -37,6 +37,12 @@ struct Args {
     /// Edit the CHANGE-ME placeholders, then: aifw-setup --config seed.json
     #[arg(long)]
     print_seed_template: bool,
+
+    /// Print the OS packages this build requires (one per line, from the
+    /// embedded manifest) and exit. Used by aifw-restart.sh to install
+    /// dependencies a transitional upgrade missed (#565).
+    #[arg(long)]
+    print_packages: bool,
 }
 
 #[tokio::main]
@@ -50,6 +56,13 @@ async fn main() -> anyhow::Result<()> {
 
     if args.print_seed_template {
         print!("{}", config::SetupConfig::seed_template());
+        return Ok(());
+    }
+
+    if args.print_packages {
+        for pkg in aifw_core::updater::manifest_packages() {
+            println!("{pkg}");
+        }
         return Ok(());
     }
 
