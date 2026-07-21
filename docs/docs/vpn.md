@@ -1,7 +1,7 @@
 ---
 layout: default
 title: VPN — AiFw WireGuard and IPsec setup
-description: Set up WireGuard tunnels with auto-keypair generation and per-peer config export, or IPsec ESP/AH tunnels in tunnel or transport mode on AiFw.
+description: Set up WireGuard tunnels with auto-keypair generation and per-peer config export, or strongSwan-powered IKEv2 site-to-site IPsec tunnels with PSK or certificate auth on AiFw.
 permalink: /docs/vpn/
 date: 2026-05-09
 breadcrumb:
@@ -14,7 +14,7 @@ breadcrumb:
   "@context": "https://schema.org",
   "@type": "TechArticle",
   "headline": "VPN — AiFw WireGuard and IPsec setup",
-  "description": "Set up WireGuard tunnels with auto-keypair generation and per-peer config export, or IPsec ESP/AH tunnels in tunnel or transport mode on AiFw.",
+  "description": "Set up WireGuard tunnels with auto-keypair generation and per-peer config export, or strongSwan-powered IKEv2 site-to-site IPsec tunnels with PSK or certificate auth on AiFw.",
   "author": { "@type": "Organization", "name": "ZerosAndOnesLLC" },
   "datePublished": "2026-05-09",
   "dateModified": "2026-05-09",
@@ -27,7 +27,7 @@ breadcrumb:
 
 # VPN
 
-AiFw ships **WireGuard** as its working VPN protocol today; **IPsec is in development** (see the callout below). Pass rules compile into the dedicated `aifw-vpn` anchor and everything is managed through the API or CLI &mdash; no hand-edited `wg-quick` files. OpenVPN is intentionally not shipped; see the [comparison page]({{ '/compare/' | relative_url }}) for the reasoning.
+AiFw ships two working VPN stacks: **WireGuard** for client/road-warrior and site-to-site use, and **IKEv2 IPsec** (strongSwan-powered, tunnel mode, PSK or X.509 auth) for site-to-site interop with other vendors. Pass rules compile into the dedicated `aifw-vpn` anchor and everything is managed through the API or CLI &mdash; no hand-edited `wg-quick` files. OpenVPN is intentionally not shipped; see the [comparison page]({{ '/compare/' | relative_url }}) for the reasoning.
 
 ## WireGuard
 
@@ -90,39 +90,66 @@ WireGuard tunnels survive a CARP failover provided peers run with `PersistentKee
 
 ## IPsec
 
-> **In development — configured SAs do not carry traffic yet.** AiFw currently persists IPsec SA configuration (ESP/AH/ESP+AH, tunnel/transport, algorithm selection) and opens the ESP/AH + IKE (UDP 500/4500) firewall ports, but the data plane &mdash; kernel Security Associations/policies and IKE negotiation &mdash; is **not implemented**. A real IPsec backend is committed and tracked in [#530](https://github.com/ZerosAndOnesLLC/AiFw/issues/530). Use WireGuard for working tunnels today.
+AiFw ships real **IKEv2 site-to-site IPsec** (tunnel mode) powered by [strongSwan](https://www.strongswan.org/): the engine renders swanctl configuration, charon negotiates IKE and installs kernel Security Associations/policies, and live tunnel state is always read back from charon — never from a database status column. Authentication is **pre-shared key** or **X.509 certificate** (from the built-in ACME store or pasted PEM). NAT-T (UDP 4500 encapsulation), rekeying, dead-peer detection, and unattended recovery after reboot are all handled by the daemon.
 
-The configuration surface below describes what is stored and what will drive the future data plane. Each SA gets a random SPI and algorithm defaults (AES-256-GCM + HMAC-SHA256). In tunnel mode the engine also emits a `pass quick on enc0` rule.
+Deliberately **not** offered: IKEv1 (deprecated, RFC 9395), AH, and transport mode — modern ESP with AEAD ciphers covers those use cases, and AiFw only advertises what its functional test matrix proves. Road-warrior/mobile IKEv2 (EAP) is not supported yet; use WireGuard for client VPN.
 
-### Quickstart
+Defaults: `aes256gcm16-prfsha256-ecp256` (IKE) / `aes256gcm16-ecp256` (ESP), 4h IKE / 1h child rekey, 30s DPD.
 
-In the Web UI, go to **VPN &rarr; IPsec &rarr; Add SA**. Provide endpoints, protocol, and mode.
+### Quickstart (PSK site-to-site)
+
+In the Web UI, go to **VPN &rarr; IPsec Tunnels &rarr; Add IPsec Tunnel**: name, remote endpoint, the subnets on each side, and a pre-shared key (16+ characters). Or via the API:
 
 ```bash
-curl -X POST https://aifw.local/api/v1/vpn/ipsec \
+curl -X POST https://aifw.local/api/v1/vpn/ipsec/tunnels \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "office-to-dc",
-    "src_addr": "203.0.113.1",
-    "dst_addr": "198.51.100.1",
-    "protocol": "esp",
-    "mode": "tunnel"
+    "remote_addr": "198.51.100.1",
+    "psk": "use-a-long-random-secret-here",
+    "local_ts": ["10.0.0.0/24"],
+    "remote_ts": ["10.1.0.0/24"]
   }'
 ```
 
-The created SA emits these pass rules into the `aifw-vpn` anchor:
+With the default `start_action: "start"`, charon initiates as soon as the config loads. Check the negotiated state:
 
-- `pass in/out quick proto esp from <peer> to <peer>` (or `ah`)
-- `pass in/out quick proto udp ... port { 500 4500 }` for IKE
-- `pass quick on enc0 ...` (tunnel mode only)
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://aifw.local/api/v1/vpn/ipsec/tunnels/<id>/status
+# → ike_state ESTABLISHED, child SA INSTALLED, bytes/rekey counters
+```
+
+The peer must mirror the config: same PSK, swapped local/remote endpoints and traffic selectors, IKEv2, matching proposals. Any RFC-compliant IKEv2 peer should interoperate; strongSwan↔strongSwan is what AiFw's release matrix tests.
+
+### Certificate authentication
+
+Set `auth_method: "cert"` with either `cert_source: "acme"` + `acme_cert_id` (a cert issued by the built-in [ACME client]({{ '/docs/acme/' | relative_url }})) or `cert_source: "manual"` with `local_cert_pem`/`local_key_pem` pasted. Add the CA that signed the *peer's* certificate as `ca_cert_pem`, and set `local_id`/`remote_id` to the certificate identities (e.g. `CN=fw1.example.com`). Private keys are written root-only into strongSwan's `private/` directory and are redacted in every API response.
+
+### Behavior details
+
+- Each enabled tunnel renders to `/usr/local/etc/swanctl/conf.d/aifw-<id>.conf` (root, 0600). The database is the source of truth; files are regenerated on every change and at service startup, so tunnels **re-establish unattended after reboot or restore-from-backup**.
+- A failed apply rolls back to the previous working configuration — a bad tunnel can't take down good ones. charon's diagnostic is returned in the error response.
+- Firewall openings are scoped per tunnel into the `aifw-vpn` anchor: IKE (UDP 500/4500) and ESP to/from the configured peer only, plus decrypted traffic on `enc0`.
+- `start_action`: `start` (initiate + keep up via DPD restart), `trap` (negotiate on first matching packet), `none` (respond only / manual start).
+- Legacy pre-data-plane "IPsec SA" records (from AiFw ≤ 5.104) are kept read-only and clearly flagged; they never carried traffic and can be deleted or recreated as tunnels.
+
+### Troubleshooting
+
+- **Status shows DOWN** — check the peer is reachable on UDP 500/4500 and PSK/identities match. `POST .../tunnels/<id>/start` returns charon's negotiation error verbatim (e.g. `AUTHENTICATION_FAILED` = wrong PSK/cert identity).
+- **Established but no traffic** — verify the traffic selectors cover the actual source/destination addresses on both sides; in tunnel mode only packets matching `local_ts ↔ remote_ts` are protected.
+- On the box: `sudo swanctl --list-sas` (negotiated state), `setkey -D` / `setkey -DP` (kernel SAD/SPD).
 
 ## CLI
 
 ```bash
 aifw vpn wg-add --name wg0 --interface wg0 --port 51820 --address 10.0.0.1/24
 aifw vpn wg-peer-add --tunnel <id> --name laptop --pubkey <key> --endpoint 1.2.3.4:51820
-aifw vpn ipsec-add --name office --src 203.0.113.1 --dst 198.51.100.1
+aifw vpn ipsec-add --name office --remote 198.51.100.1 --psk <secret> \
+  --local-ts 10.0.0.0/24 --remote-ts 10.1.0.0/24   # PSK; use UI/API for cert auth
+aifw vpn ipsec-status
+aifw vpn ipsec-start <uuid>
+aifw vpn ipsec-stop <uuid>
 aifw vpn list
 aifw vpn remove <uuid>
 ```
@@ -143,17 +170,25 @@ aifw vpn remove <uuid>
 | `GET` | `/api/v1/vpn/wg/{id}/peers/next-ip` | Suggest the next free peer IP |
 | `DELETE` | `/api/v1/vpn/wg/{tid}/peers/{pid}` | Delete a peer |
 | `GET` | `/api/v1/vpn/wg/{tid}/peers/{pid}/config` | Download peer .conf file |
-| `GET` | `/api/v1/vpn/ipsec` | List IPsec SAs |
-| `POST` | `/api/v1/vpn/ipsec` | Create an SA |
-| `DELETE` | `/api/v1/vpn/ipsec/{id}` | Delete an SA |
+| `GET` | `/api/v1/vpn/ipsec/tunnels` | List IPsec tunnels (secrets redacted) |
+| `POST` | `/api/v1/vpn/ipsec/tunnels` | Create a tunnel (applies + loads charon) |
+| `GET`/`PUT`/`DELETE` | `/api/v1/vpn/ipsec/tunnels/{id}` | Get / update / delete a tunnel |
+| `POST` | `/api/v1/vpn/ipsec/tunnels/{id}/start` | Initiate the tunnel now |
+| `POST` | `/api/v1/vpn/ipsec/tunnels/{id}/stop` | Terminate the IKE SA |
+| `GET` | `/api/v1/vpn/ipsec/tunnels/{id}/status` | Live negotiated state from charon |
+| `GET` | `/api/v1/vpn/ipsec/status` | Live state of all tunnels |
+| `GET` | `/api/v1/vpn/ipsec` | List legacy read-only SA records (`legacy: true`) |
+| `DELETE` | `/api/v1/vpn/ipsec/{id}` | Delete a legacy record |
 
 ## Configuration
 
 | Field | Default | Notes |
 |---|---|---|
 | Anchor name | `aifw-vpn` | All WG/IPsec pass rules live here |
-| `enc_algo` (IPsec) | `aes-256-gcm` | Set per SA |
-| `auth_algo` (IPsec) | `hmac-sha256` | Set per SA |
+| `ike_proposal` (IPsec) | `aes256gcm16-prfsha256-ecp256` | swanctl proposal string, validated against a curated allowlist |
+| `esp_proposal` (IPsec) | `aes256gcm16-ecp256` | AEAD + PFS group |
+| `ike_lifetime_secs` / `esp_lifetime_secs` | `14400` / `3600` | Rekey times |
+| `dpd_delay_secs` (IPsec) | `30` | `0` disables dead-peer detection |
 | `persistent_keepalive` (WG) | unset | Set on the peer (typically `25`) so the tunnel survives NAT timeouts and HA failovers |
 | `split_routes` (WG) | unset | Comma-separated CIDRs; falls back to the masked tunnel network |
 
@@ -163,6 +198,7 @@ aifw vpn remove <uuid>
 - [Comparison with pfSense / OPNsense &rarr;]({{ '/compare/' | relative_url }})
 - [Firewall rules &rarr;]({{ '/docs/firewall/' | relative_url }})
 - [HA cluster &rarr;]({{ '/ha/' | relative_url }})
+- Source: [`aifw-core/src/ipsec.rs`](https://github.com/ZerosAndOnesLLC/AiFw/blob/main/aifw-core/src/ipsec.rs)
 - Source: [`aifw-core/src/vpn.rs`](https://github.com/ZerosAndOnesLLC/AiFw/blob/main/aifw-core/src/vpn.rs)
 - Source: [`aifw-common/src/vpn.rs`](https://github.com/ZerosAndOnesLLC/AiFw/blob/main/aifw-common/src/vpn.rs)
 

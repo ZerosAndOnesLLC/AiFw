@@ -28,14 +28,14 @@ Release binaries: `target/release/{aifw,aifw-daemon,aifw-api,aifw-tui,aifw-setup
 
 ## Version Management
 
-All components share one version. Bump BOTH before every commit:
+All components share one version. Versions are bumped **only when cutting a release** — ordinary commits do NOT change them (policy since 2026-07-21; per-commit bumps caused constant merge conflicts between concurrent PRs). At release time, bump BOTH together in one commit:
 
 | File | Field |
 |------|-------|
 | `Cargo.toml` (root) | `[workspace.package] version` |
 | `aifw-ui/package.json` | `"version"` |
 
-Increment: major=breaking, minor=features, patch=fixes.
+Increment: major=breaking, minor=features, patch=fixes. When resolving a version-line merge conflict, take main's version — never invent a new one.
 
 ## Architecture
 
@@ -168,7 +168,7 @@ Base: `http://<ip>:8080/api/v1/`
 
 - **Rules**: `GET/POST /rules`, `GET/PUT/DELETE /rules/{id}`, `PUT /rules/reorder`
 - **NAT**: `GET/POST /nat`, `PUT/DELETE /nat/{id}`
-- **VPN**: `GET/POST /vpn/wg`, `PUT/DELETE /vpn/wg/{id}`, peers at `/vpn/wg/{id}/peers`; IPsec at `/vpn/ipsec`
+- **VPN**: `GET/POST /vpn/wg`, `PUT/DELETE /vpn/wg/{id}`, peers at `/vpn/wg/{id}/peers`; IPsec IKEv2 tunnels at `/vpn/ipsec/tunnels` (CRUD + `/{id}/start|stop|status`, fleet status at `/vpn/ipsec/status`; engine in `aifw-core/src/ipsec.rs`, strongSwan/swanctl-backed); legacy read-only SA records at `/vpn/ipsec`
 - **Geo-IP**: `GET/POST /geoip`, `PUT/DELETE /geoip/{id}`, `GET /geoip/lookup/{ip}`
 - **Auth**: `/auth/login`, `/auth/totp/*`, `/auth/refresh`, `/auth/logout`, `/auth/users`, `/auth/api-keys`, `/auth/oauth/*`
 - **Status**: `GET /status`, `/connections`, `/metrics`, `/logs`, `POST /reload`
