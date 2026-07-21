@@ -52,7 +52,9 @@ swanctl --list-sas --raw > "$RESULTS_DIR/t07-list-sas-raw.txt" 2>&1 || true
 api_reload || fail "reload"
 pfctl_anchor_rules aifw-vpn > "$RESULTS_DIR/t07-vpn-anchor.txt" 2>&1 || true
 grep -q "proto esp" "$RESULTS_DIR/t07-vpn-anchor.txt" || fail "ESP pass rule missing from aifw-vpn anchor"
-grep -q "500" "$RESULTS_DIR/t07-vpn-anchor.txt" || fail "IKE port rule missing from aifw-vpn anchor"
+# pfctl renders `port { 500 4500 }` as the service names isakmp / ipsec-nat-t
+grep -q "isakmp" "$RESULTS_DIR/t07-vpn-anchor.txt" || fail "IKE (500/isakmp) rule missing from aifw-vpn anchor"
+grep -q "ipsec-nat-t" "$RESULTS_DIR/t07-vpn-anchor.txt" || fail "NAT-T (4500) rule missing from aifw-vpn anchor"
 grep -q "enc0" "$RESULTS_DIR/t07-vpn-anchor.txt" || fail "enc0 pass rule missing from aifw-vpn anchor"
 
 # Legacy surface: creating pre-#530 SA records is gone
