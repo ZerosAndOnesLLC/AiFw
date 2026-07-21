@@ -147,6 +147,14 @@ struct ExternalRepo {
     repo: String,
 }
 
+/// OS packages this build requires, from the embedded manifest. Exposed
+/// for `aifw-setup --print-packages`, which aifw-restart.sh queries to
+/// install dependencies a transitional upgrade missed (#565: the old
+/// updater binary's embedded manifest predates newly-added packages).
+pub fn manifest_packages() -> Vec<String> {
+    load_manifest().packages
+}
+
 fn load_manifest() -> Manifest {
     serde_json::from_str(MANIFEST_JSON).expect("freebsd/manifest.json is invalid")
 }
@@ -1468,6 +1476,45 @@ mod tests {
                 "{name} must invoke the refresh_sudoers routine"
             );
         }
+    }
+
+    // #565: the restart driver (new-tarball code, runs as root) must
+    // install packages the old updater binary's embedded manifest didn't
+    // know about — the only reliable hook on a transitional upgrade.
+    #[test]
+    fn test_restart_driver_ensures_packages() {
+        assert!(
+            EMBEDDED_RESTART_SH.contains("aifw-setup --print-packages"),
+            "aifw-restart.sh must query the new binary's package list"
+        );
+        assert!(
+            EMBEDDED_RESTART_SH.contains("pkg install"),
+            "aifw-restart.sh must install missing packages"
+        );
+        assert!(
+            EMBEDDED_RESTART_SH.contains("ensure_packages"),
+            "aifw-restart.sh must invoke the ensure_packages routine"
+        );
+    }
+
+    // #564: aifw-console is root's login shell; it must exec `-c`
+    // commands (ssh/scp/sftp) instead of rendering the menu, and must
+    // exit — not busy-loop — when stdin hits EOF.
+    #[test]
+    fn test_console_passthrough_and_eof_exit() {
+        let console = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../freebsd/overlay/usr/local/sbin/aifw-console"),
+        )
+        .expect("aifw-console exists in the overlay");
+        assert!(
+            console.contains(r#"exec /bin/sh -c "$@""#),
+            "aifw-console must pass -c commands through to a real shell"
+        );
+        assert!(
+            console.contains("read choice || exit"),
+            "aifw-console menu must exit on stdin EOF, not busy-loop"
+        );
     }
 
     #[test]

@@ -6,6 +6,17 @@ AIFW_CONF="/usr/local/etc/aifw/aifw.conf"
 AIFW_VERSION_FILE="/usr/local/share/aifw/version"
 AIFW_VERSION=$(cat "$AIFW_VERSION_FILE" 2>/dev/null || echo "unknown")
 
+# Non-interactive passthrough (#564). aifw-console is root's login shell
+# (aifw-login-migrate.sh), so sshd invokes it as `aifw-console -c <cmd>`
+# for every `ssh root@host <cmd>`, scp, and sftp. The hardening's goal
+# was console autologin, not disabling remote administration — SSH is
+# already key-gated — so command invocations exec through a real shell
+# instead of rendering the menu.
+if [ "${1:-}" = "-c" ]; then
+    shift
+    exec /bin/sh -c "$@"
+fi
+
 show_banner()
 {
     clear
@@ -218,7 +229,10 @@ while true; do
     show_banner
     show_menu
     echo -n "Enter an option: "
-    read choice
+    # Exit on EOF (#564): without this, a non-tty invocation spins the
+    # menu loop forever printing "Invalid option" — a runaway process
+    # per stray ssh/script invocation.
+    read choice || exit 0
 
     case "$choice" in
         0)  exit 0 ;;

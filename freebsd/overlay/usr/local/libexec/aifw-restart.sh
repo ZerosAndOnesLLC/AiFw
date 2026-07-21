@@ -60,6 +60,26 @@ refresh_sudoers() {
 }
 refresh_sudoers
 
+# --- package self-heal (in-place upgrade gap #565) --------------------------
+# The updater's own ensure-packages loop reads the manifest embedded in the
+# RUNNING (old) binary, so the first upgrade to a release that adds an OS
+# package never installs it (strongswan, #530). This driver executes the NEW
+# tarball's code as root, so it asks the freshly-installed aifw-setup for the
+# authoritative package list and installs whatever is missing — before the
+# bounce, so restarted services find their dependencies present.
+ensure_packages() {
+    [ -x /usr/local/sbin/aifw-setup ] || return 0
+    for _pkg in $(/usr/local/sbin/aifw-setup --print-packages 2>/dev/null); do
+        if ! pkg info -q "$_pkg" 2>/dev/null; then
+            log "installing missing dependency: $_pkg"
+            if ! env ASSUME_ALWAYS_YES=yes pkg install "$_pkg" >> "$LOG" 2>&1; then
+                log "WARN pkg install $_pkg failed — dependent features may not start"
+            fi
+        fi
+    done
+}
+ensure_packages
+
 # Settle: let the API HTTP response leave the box and the caller's tokio
 # runtime tear down before we touch services. Matches the 2-second delay
 # used by the previous in-process implementation.
