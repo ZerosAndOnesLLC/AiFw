@@ -62,13 +62,13 @@ client_send_udp "$SERVER_IP" "$UDP_PORT"
 wait_for_file server "$UDP_MARKER" 3 && fail "after removing UDP pass, datagram was delivered"
 
 # 6. ICMP is explicitly exercised instead of being inferred from TCP.
-ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 && fail "default-deny: ICMP reached server with no pass rule"
+jx_client ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 && fail "default-deny: ICMP reached server with no pass rule"
 ICMP_ID=$(add_rule '{"action":"pass","direction":"in","protocol":"icmp","dst_addr":"'"$SERVER_IP"'","label":"t02-icmp-pass"}') || fail "create ICMP pass"
 api_reload || fail "reload ICMP pass"
-ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 || fail "ICMP pass: echo request failed"
+jx_client ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 || fail "ICMP pass: echo request failed"
 api DELETE "/api/v1/rules/$ICMP_ID" >/dev/null || fail "delete ICMP pass"
 api_reload || fail "reload ICMP removal"
-ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 && fail "after removing ICMP pass, echo succeeded"
+jx_client ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 && fail "after removing ICMP pass, echo succeeded"
 
 [ "$FAILURES" = 0 ] || exit 1
 exit 0
