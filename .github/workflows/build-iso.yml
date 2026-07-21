@@ -223,9 +223,51 @@ jobs:
           path: output/aifw-components-*.json
           retention-days: 5
 
+  smoke-boot:
+    name: Appliance boot smoke (qemu)
+    needs: build-iso
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Download IMG
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: aifw-img-amd64
+          path: smoke/
+
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install qemu
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-system-x86 genisoimage jq
+
+      - name: Boot the image (#533 Phase 2)
+        run: |
+          set -e
+          xz -d smoke/aifw-*.img.xz
+          IMG=$(ls smoke/aifw-*.img)
+          sh freebsd/tests/smoke-boot.sh --img "$IMG" --artifacts smoke-artifacts --timeout 600
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: boot-smoke-artifacts
+          path: smoke-artifacts/
+          retention-days: 7
+
   release:
     name: Create GitHub Release
-    needs: build-iso
+    # smoke-boot gates the release: an image nobody booted never ships (#533).
+    needs: [build-iso, smoke-boot]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1

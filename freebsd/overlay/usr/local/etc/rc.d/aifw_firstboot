@@ -32,7 +32,25 @@ aifw_firstboot_start()
         # Unattended seed (#533 Phase 2): when a seed file is present, run
         # non-interactive setup from it instead of the console wizard. The
         # seed is deleted afterwards — it may carry plaintext passwords.
-        for seed in /usr/local/etc/aifw/seed.json /aifw-seed.json; do
+        #
+        # Seed media: also probe attached CD devices (a small ISO carrying
+        # aifw-seed.json at its root) so headless installs and the CI boot
+        # smoke can seed a pristine image without modifying it. The CD copy
+        # is staged into /tmp (read-only media can't be deleted; the /tmp
+        # copy evaporates on reboot).
+        for dev in /dev/cd0 /dev/cd1; do
+            [ -c "$dev" ] || continue
+            mkdir -p /tmp/aifw-seed-media
+            if mount -t cd9660 -o ro "$dev" /tmp/aifw-seed-media 2>/dev/null; then
+                if [ -f /tmp/aifw-seed-media/aifw-seed.json ]; then
+                    cp /tmp/aifw-seed-media/aifw-seed.json /tmp/aifw-seed.json
+                fi
+                umount /tmp/aifw-seed-media 2>/dev/null
+            fi
+            [ -f /tmp/aifw-seed.json ] && break
+        done
+
+        for seed in /tmp/aifw-seed.json /usr/local/etc/aifw/seed.json /aifw-seed.json; do
             if [ -f "$seed" ]; then
                 echo "Unattended seed found at $seed — running non-interactive setup"
                 if $AIFW_SETUP --config "$seed" >/dev/console 2>&1; then

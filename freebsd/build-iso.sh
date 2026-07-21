@@ -188,6 +188,15 @@ rdns_enable="NO"
 rtime_enable="NO"
 RCCONF
 
+# rc(8) only runs KEYWORD: firstboot scripts (aifw_firstboot) when the
+# /firstboot flag file exists, and deletes it after a successful first
+# boot. Without this touch the first-boot setup never auto-ran on ANY
+# boot of the ISO or IMG — found by the #533 Phase 2 boot smoke; real
+# installs were masked by the console menu offering setup manually. On
+# the read-only ISO the flag can't be deleted, so every live boot counts
+# as a first boot — correct for a live CD.
+touch "$STAGEDIR/firstboot"
+
 # fstab for live CD (read-only root + tmpfs)
 cat > "$STAGEDIR/etc/fstab" <<'FSTAB'
 /dev/cd0    /       cd9660  ro          0  0
@@ -195,13 +204,17 @@ tmpfs       /tmp    tmpfs   rw,mode=01777  0  0
 tmpfs       /var    tmpfs   rw          0  0
 FSTAB
 
-# loader.conf
+# loader.conf. Dual console (#533 Phase 2): video stays primary for local
+# operators, serial mirrors boot + firstboot output so headless hosts and
+# the CI boot smoke can observe the appliance without a display.
 cat > "$STAGEDIR/boot/loader.conf" <<'LOADER'
 autoboot_delay="3"
 beastie_disable="YES"
 loader_logo="none"
 kern.geom.label.disk_ident.enable="0"
 kern.geom.label.gptid.enable="0"
+boot_multicons="YES"
+console="vidconsole,comconsole"
 vfs.root.mountfrom="cd9660:cd0"
 LOADER
 
@@ -324,7 +337,12 @@ umount /mnt
 gpart bootcode -b "$STAGEDIR/boot/pmbr" -p "$STAGEDIR/boot/gptboot" -i 2 "$MD"
 
 # Format UFS root
-newfs -U -j "/dev/${MD}p3"
+# -L aifw creates the UFS volume label that fstab and loader.conf mount
+# root by (/dev/ufs/aifw). Without it only the GPT partition label
+# (gpt/aifw) exists and the image drops to the mountroot prompt on every
+# boot — found by the #533 Phase 2 boot smoke; the USB IMG had never
+# actually been booted before it.
+newfs -U -j -L aifw "/dev/${MD}p3"
 mount "/dev/${MD}p3" /mnt
 
 # Clone staged system into USB image

@@ -103,7 +103,14 @@ aifw-setup --print-seed-template > seed.json
 aifw-setup --config seed.json
 ```
 
-On first boot the `aifw_firstboot` service also looks for a seed at `/usr/local/etc/aifw/seed.json` or `/aifw-seed.json` (drop one into the image or attached media) and runs non-interactive setup from it, falling back to the console wizard if the seed fails. The seed file is **deleted after use** — it may contain plaintext `admin_password` / `root_password` values, which are hashed/applied during setup and never written back to disk. If you prefer, supply `admin_password_hash` (Argon2id) instead of the plaintext field.
+On first boot the `aifw_firstboot` service also looks for a seed before starting the console wizard, in this order:
+
+1. **Attached seed media** — any CD/DVD device carrying `aifw-seed.json` at its root. Build one with `genisoimage -o seed.iso -V AIFWSEED -R dir-containing-aifw-seed.json` and attach it to the VM (or burn it). The appliance image itself stays pristine.
+2. `/usr/local/etc/aifw/seed.json` or `/aifw-seed.json` on the system disk.
+
+On success the seed file is **deleted after use** (media copies are staged in `/tmp`, which evaporates on reboot) — it may contain plaintext `admin_password` / `root_password` values, which are hashed/applied during setup and never written back to disk. If you prefer, supply `admin_password_hash` (Argon2id) instead of the plaintext field. If the seed fails, the console wizard runs as usual.
+
+The release pipeline uses exactly this mechanism to boot-test every built image (`freebsd/tests/smoke-boot.sh`): the IMG boots under qemu with a seed CD, and the release is gated on first-boot completing, the seeded admin logging in via the LAN side, and the WAN side staying default-denied.
 
 ### Multi-WAN setup later
 
