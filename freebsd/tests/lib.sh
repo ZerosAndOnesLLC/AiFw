@@ -65,6 +65,18 @@ api() { # $1 = method, $2 = path, $3 = json body (optional). Prints body; rc!=0 
     esac
 }
 
+api_status() { # $1 = method, $2 = path, $3 = json body (optional). Prints only the HTTP status code; always rc 0.
+    _m="$1"; _p="$2"; _b="${3:-}"
+    if [ -n "$_b" ]; then
+        curl -sS -m 15 -o /dev/null -w '%{http_code}' -X "$_m" "$API_BASE$_p" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d "$_b"
+    else
+        curl -sS -m 15 -o /dev/null -w '%{http_code}' -X "$_m" "$API_BASE$_p" \
+            -H "Authorization: Bearer $TOKEN"
+    fi
+}
+
 api_login() { # bootstraps the first user and stores TOKEN
     curl -sS -m 15 -X POST "$API_BASE/api/v1/auth/register" \
         -H 'Content-Type: application/json' \
