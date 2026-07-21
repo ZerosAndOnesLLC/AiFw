@@ -113,22 +113,25 @@ established_secs, remote_host }` parsed from `swanctl --list-sas --raw`.
       smoke-tested (17 arg-validation cases).
 - [x] 1e. Version bump to 5.105.0, commit.
 
-### Phase 2 — Types + engine core (→ minor bump)
+### Phase 2 — Types + engine core (→ 5.106.0) — DONE
 
-- [ ] 2a. `aifw-common/src/ipsec.rs`: `IpsecTunnel`, `IpsecAuthMethod`,
-      `IpsecStartAction`, `IpsecLiveStatus`, `ChildSaStatus`; proposal
-      validation against strongSwan-accepted algorithm strings (curated
-      whitelist + unit tests). Mark old `IpsecSa`/`IpsecSp` `#[deprecated]`
-      internals-only (kept for legacy rows + migration).
-- [ ] 2b. `IkeControl` trait in `aifw-core/src/ipsec.rs` + `SwanctlControl`
-      (cfg FreeBSD path via sudo::swanctl) + `MockIkeControl` (records loads,
-      fabricates list-sas output for tests).
-- [ ] 2c. `IpsecEngine`: migrate() (ipsec_tunnels), CRUD with validation
-      (subnets, addrs, proposal strings, PSK strength ≥ 16 chars, cert
-      presence for cert auth).
-- [ ] 2d. Conf rendering: swanctl conn + secrets sections per tunnel; golden
-      tests for PSK and cert variants, NAT-T implicit (charon handles 4500).
-- [ ] 2e. Version bump, commit.
+- [x] 2a. `aifw-common/src/ipsec.rs`: `IpsecTunnel`, `IpsecAuthMethod`,
+      `IpsecCertSource`, `IpsecStartAction`, `IpsecLiveStatus`,
+      `ChildSaStatus`; curated proposal-token whitelist; validate() doubles
+      as conf-injection guard (no quotes/newlines in rendered values);
+      `redacted()` blanks psk/private key. Old `IpsecSa`/`IpsecSp` kept
+      undeprecated (still compiled by legacy paths) with doc note.
+- [x] 2b. `IkeControl` trait + `SwanctlControl` (sudo::swanctl, stderr
+      surfaced) + `MockIkeControl` (records calls, canned list-sas output,
+      injectable load failure).
+- [x] 2c. `IpsecEngine`: migrate (ipsec_tunnels), add/list/get/update/delete
+      with validation-before-persist; explicit column list (no SELECT *).
+- [x] 2d. `render_swanctl_conf`: conn + children + PSK secrets sections
+      (secrets bound to peer ids); cert auth via x509/private dirs, key
+      never in conf. Golden tests: PSK, cert, multi-TS, trap action.
+      NOTE for Phase 3/6: confirm FreeBSD pkg swanctl.conf includes
+      conf.d/*.conf (ship an include line if not).
+- [x] 2e. Version bump to 5.106.0, commit.
 
 ### Phase 3 — Apply lifecycle + rollback (→ minor bump)
 

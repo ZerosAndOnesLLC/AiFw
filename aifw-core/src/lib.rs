@@ -30,6 +30,7 @@ pub mod error;
 pub mod geoip;
 /// [`ClusterEngine`] and CARP role helpers for high-availability clustering
 pub mod ha;
+pub mod ipsec;
 pub mod migrations;
 pub mod multiwan;
 /// [`NatEngine`] — SNAT/DNAT/masquerade rule CRUD and application to pf
@@ -68,6 +69,7 @@ pub use engine::RuleEngine;
 pub use error::{CoreError, Result};
 pub use geoip::GeoIpEngine;
 pub use ha::{ClusterEngine, current_local_role, is_local_master, sha256_hex};
+pub use ipsec::{IkeControl, IpsecEngine, MockIkeControl, SwanctlControl, render_swanctl_conf};
 pub use multiwan::{
     GatewayEngine, GroupEngine, InstanceEngine, LeakEngine, PolicyEngine, PreflightEngine,
     SlaEngine,
