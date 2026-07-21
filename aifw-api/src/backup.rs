@@ -283,7 +283,15 @@ pub async fn check_config(
         info.push(format!("{} WireGuard tunnel(s)", wg.len()));
     }
     if !ipsec.is_empty() {
-        info.push(format!("{} IPsec SA(s)", ipsec.len()));
+        info.push(format!("{} legacy IPsec SA record(s)", ipsec.len()));
+    }
+    let ipsec_tunnels = state
+        .ipsec_engine
+        .list_tunnels()
+        .await
+        .map_err(|_| internal())?;
+    if !ipsec_tunnels.is_empty() {
+        info.push(format!("{} IPsec tunnel(s)", ipsec_tunnels.len()));
     }
 
     // Check DNS
@@ -575,6 +583,11 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         .list_ipsec_sas()
         .await
         .map_err(|_| internal())?;
+    let ipsec_tunnels = state
+        .ipsec_engine
+        .list_tunnels()
+        .await
+        .map_err(|_| internal())?;
 
     let queues = state.shaping_engine.list_queues().await.unwrap_or_default();
     let rate_limits = state
@@ -753,6 +766,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                     auth_algo: s.auth_algo.clone(),
                 })
                 .collect(),
+            ipsec_tunnels,
         },
         geoip: geoip_rules
             .iter()
@@ -1576,6 +1590,7 @@ pub(crate) async fn apply_firewall_config(
         "wg_peers",
         "wg_tunnels",
         "ipsec_sas",
+        "ipsec_tunnels",
         "geoip_rules",
         "rules",
         "nat_rules",
@@ -1791,6 +1806,22 @@ pub(crate) async fn apply_firewall_config(
             .add_ipsec_sa(sa)
             .await
             .map_err(|e| apply_fail(&format!("ipsec SA {sa_name} restore"), e))?;
+    }
+
+    // Real IPsec tunnels (#530): restore records first, then one apply to
+    // re-render swanctl config and reload charon.
+    for tunnel in &config.vpn.ipsec_tunnels {
+        let name = tunnel.name.clone();
+        state
+            .ipsec_engine
+            .add_tunnel(tunnel.clone())
+            .await
+            .map_err(|e| apply_fail(&format!("ipsec tunnel {name} restore"), e))?;
+    }
+    if !config.vpn.ipsec_tunnels.is_empty()
+        && let Err(e) = state.ipsec_engine.apply_all().await
+    {
+        tracing::warn!(error = %e, "restored IPsec tunnels but swanctl apply failed — tunnels stay down until re-applied");
     }
 
     if !config.system.dns_servers.is_empty() {

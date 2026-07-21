@@ -157,6 +157,7 @@ pub struct AppState {
     pub rule_engine: Arc<RuleEngine>,
     pub nat_engine: Arc<NatEngine>,
     pub vpn_engine: Arc<VpnEngine>,
+    pub ipsec_engine: Arc<aifw_core::IpsecEngine>,
     pub geoip_engine: Arc<GeoIpEngine>,
     pub multiwan_engine: Arc<InstanceEngine>,
     pub gateway_engine: Arc<GatewayEngine>,
@@ -730,6 +731,11 @@ async fn create_state_from_db(
     let nat_engine =
         Arc::new(NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string()));
     let vpn_engine = Arc::new(VpnEngine::new(pool.clone(), pf.clone()));
+    let ipsec_engine = Arc::new(aifw_core::IpsecEngine::new(
+        pool.clone(),
+        aifw_core::create_ike_control(),
+        aifw_core::create_conf_store(),
+    ));
     let geoip_engine = Arc::new(GeoIpEngine::new(pool.clone(), pf.clone()));
     let multiwan_engine = Arc::new(InstanceEngine::new(pool.clone(), pf.clone()));
     let gateway_engine = Arc::new(GatewayEngine::new(pool.clone()));
@@ -751,6 +757,7 @@ async fn create_state_from_db(
     tokio::try_join!(
         async { nat_engine.migrate().await.map_err(anyhow::Error::from) },
         async { vpn_engine.migrate().await.map_err(anyhow::Error::from) },
+        async { ipsec_engine.migrate().await.map_err(anyhow::Error::from) },
         async { geoip_engine.migrate().await.map_err(anyhow::Error::from) },
         async {
             multiwan_engine
@@ -1012,6 +1019,7 @@ async fn create_state_from_db(
         rule_engine,
         nat_engine,
         vpn_engine,
+        ipsec_engine,
         geoip_engine,
         multiwan_engine,
         gateway_engine,
@@ -1475,6 +1483,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Apply all enabled static routes from DB (survives reboot)
     routes::apply_all_routes(&state.pool).await;
+
+    // Re-render IPsec swanctl config from the DB and reload charon (#530).
+    // Covers reboot, restore-from-backup, and upgrade; no-op on boxes that
+    // never configured IPsec tunnels.
+    if let Err(e) = state.ipsec_engine.ensure_applied().await {
+        warn!(error = %e, "IPsec ensure_applied failed — tunnels may need a manual re-apply");
+    }
 
     // One-time migration: appliances upgraded from a version that wrote DNS
     // settings to /etc/resolv.conf still have their list in the legacy

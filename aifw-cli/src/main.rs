@@ -463,23 +463,42 @@ enum VpnAction {
         #[arg(long)]
         keepalive: Option<u16>,
     },
-    /// Add an IPsec SA
+    /// Add an IPsec IKEv2 site-to-site tunnel (PSK auth; use the web
+    /// UI/API for certificate auth)
     IpsecAdd {
-        /// SA name
+        /// Tunnel name
         #[arg(long)]
         name: String,
-        /// Source address
+        /// Remote IKE endpoint (IP address or DNS name)
         #[arg(long)]
-        src: String,
-        /// Destination address
+        remote: String,
+        /// Pre-shared key (at least 16 printable characters)
         #[arg(long)]
-        dst: String,
-        /// Protocol: esp, ah, esp+ah
-        #[arg(long, default_value = "esp")]
-        proto: String,
-        /// Mode: tunnel, transport
-        #[arg(long, default_value = "tunnel")]
-        mode: String,
+        psk: String,
+        /// Local subnets behind this firewall (comma-separated CIDRs)
+        #[arg(long)]
+        local_ts: String,
+        /// Remote subnets behind the peer (comma-separated CIDRs)
+        #[arg(long)]
+        remote_ts: String,
+        /// Local IKE endpoint address (default: any local address)
+        #[arg(long)]
+        local: Option<String>,
+    },
+    /// Initiate an IPsec tunnel's child SA
+    IpsecStart {
+        /// Tunnel ID
+        id: String,
+    },
+    /// Terminate an IPsec tunnel's IKE SA
+    IpsecStop {
+        /// Tunnel ID
+        id: String,
+    },
+    /// Show live IPsec tunnel status (negotiated state from charon)
+    IpsecStatus {
+        #[arg(long)]
+        json: bool,
     },
     /// Remove a VPN tunnel or SA by ID
     Remove {
@@ -1041,12 +1060,31 @@ async fn main() -> anyhow::Result<()> {
             }
             VpnAction::IpsecAdd {
                 name,
-                src,
-                dst,
-                proto,
-                mode,
+                remote,
+                psk,
+                local_ts,
+                remote_ts,
+                local,
             } => {
-                commands::vpn_ipsec_add(&cli.db, &name, &src, &dst, &proto, &mode).await?;
+                commands::vpn_ipsec_add(
+                    &cli.db,
+                    &name,
+                    &remote,
+                    &psk,
+                    &local_ts,
+                    &remote_ts,
+                    local.as_deref(),
+                )
+                .await?;
+            }
+            VpnAction::IpsecStart { id } => {
+                commands::vpn_ipsec_start(&cli.db, &id).await?;
+            }
+            VpnAction::IpsecStop { id } => {
+                commands::vpn_ipsec_stop(&cli.db, &id).await?;
+            }
+            VpnAction::IpsecStatus { json } => {
+                commands::vpn_ipsec_status(&cli.db, json).await?;
             }
             VpnAction::Remove { id } => {
                 commands::vpn_remove(&cli.db, &id).await?;

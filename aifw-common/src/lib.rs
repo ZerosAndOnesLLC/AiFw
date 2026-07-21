@@ -26,6 +26,7 @@ pub mod geoip;
 pub mod ha;
 /// Intrusion detection types: config, rulesets, rules, alerts, suppressions
 pub mod ids;
+pub mod ipsec;
 /// Multi-WAN types: routing instances, gateways, groups, policies, SLA, leak detection
 pub mod multiwan;
 /// NAT types: SNAT/DNAT/masquerade/binat/NAT64/NAT46 rules and pf rendering
@@ -64,6 +65,9 @@ pub use ha::{
 pub use ids::{
     AlertClassification, IdsAction, IdsAlert, IdsConfig, IdsMode, IdsRule, IdsRuleMatch,
     IdsRuleset, IdsSeverity, IdsStats, IdsSuppression, RuleFormat, RuleSource, SuppressType,
+};
+pub use ipsec::{
+    ChildSaStatus, IpsecAuthMethod, IpsecCertSource, IpsecLiveStatus, IpsecStartAction, IpsecTunnel,
 };
 pub use multiwan::{
     DEFAULT_FIB_NUMBER, DEFAULT_INSTANCE_ID, DEFAULT_INSTANCE_NAME, Gateway, GatewayEvent,

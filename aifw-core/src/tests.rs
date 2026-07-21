@@ -1034,6 +1034,8 @@ mod tests {
         tunnel.status = VpnStatus::Up;
         engine.add_wg_tunnel(tunnel).await.unwrap();
 
+        // Legacy CRUD-only SA (#530): must NOT emit pf rules — it has no
+        // data plane, so its pf holes were pure attack surface.
         engine
             .add_ipsec_sa(IpsecSa::new(
                 "ipsec0".to_string(),
@@ -1045,16 +1047,37 @@ mod tests {
             .await
             .unwrap();
 
+        // Real IPsec tunnel (#530 ipsec_tunnels): emits IKE/ESP/enc0 rules.
+        let ipsec_engine = crate::ipsec::IpsecEngine::new(
+            db.pool().clone(),
+            std::sync::Arc::new(crate::ipsec::MockIkeControl::new()),
+            std::sync::Arc::new(crate::ipsec::MemConfStore::new()),
+        );
+        ipsec_engine.migrate().await.unwrap();
+        ipsec_engine
+            .add_tunnel(aifw_common::IpsecTunnel::new(
+                "site-a".to_string(),
+                "203.0.113.10".to_string(),
+                "correct-horse-battery-staple".to_string(),
+                vec!["10.0.0.0/24".to_string()],
+                vec!["10.1.0.0/24".to_string()],
+            ))
+            .await
+            .unwrap();
+
         engine.apply_vpn_rules().await.unwrap();
 
         let pf_rules = mock.get_rules("aifw-vpn").await.unwrap();
-        // 1 NAT rule + 2 WG rules + 5 IPsec rules (tunnel mode)
+        // 1 NAT rule + 2 WG rules + 5 tunnel rules; legacy SA contributes 0
         assert_eq!(pf_rules.len(), 8);
         // NAT must precede filter rules or pfctl rejects the ruleset
         assert_eq!(pf_rules[0], "nat on em0 from 10.0.0.0/24 to any -> (em0)");
         assert!(pf_rules.iter().any(|r| r.contains("port 51820")));
         assert!(pf_rules.iter().any(|r| r.contains("proto esp")));
         assert!(pf_rules.iter().any(|r| r.contains("on enc0")));
+        assert!(pf_rules.iter().any(|r| r.contains("203.0.113.10")));
+        // legacy SA endpoints must not appear anywhere
+        assert!(!pf_rules.iter().any(|r| r.contains("5.6.7.8")));
     }
 
     #[tokio::test]

@@ -55,15 +55,17 @@ export default function VpnPage() {
           value={Object.values(vpn.peersByTunnel).reduce((n, p) => n + p.length, 0)}
           color="blue"
         />
-        <SummaryCard label="IPsec SAs" value={vpn.ipsecSas.length} color="green" />
+        <SummaryCard label="IPsec Tunnels" value={vpn.ipsecTunnels.length} color="green" />
         <SummaryCard
           label="Active VPNs"
           value={
             vpn.tunnels.filter((t) => t.status === "up").length +
-            vpn.ipsecSas.filter((s) => s.status === "up" || s.status === "established").length
+            vpn.ipsecTunnels.filter(
+              (t) => vpn.ipsecStatuses[t.id]?.ike_state === "ESTABLISHED",
+            ).length
           }
           color="green"
-          subtitle={`of ${vpn.tunnels.length + vpn.ipsecSas.length} total`}
+          subtitle={`of ${vpn.tunnels.length + vpn.ipsecTunnels.length} total`}
         />
       </div>
 
@@ -105,16 +107,24 @@ export default function VpnPage() {
 
       {/* IPsec section */}
       <IpsecSection
+        ipsecTunnels={vpn.ipsecTunnels}
+        ipsecStatuses={vpn.ipsecStatuses}
         ipsecSas={vpn.ipsecSas}
         ipsecLoading={vpn.ipsecLoading}
         showIpsecForm={vpn.showIpsecForm}
         ipsecForm={vpn.ipsecForm}
         setIpsecForm={vpn.setIpsecForm}
+        editingIpsecId={vpn.editingIpsecId}
         ipsecSubmitting={vpn.ipsecSubmitting}
+        acmeCerts={vpn.acmeCerts}
         onToggleForm={vpn.handleToggleIpsecForm}
         onSubmit={vpn.handleIpsecSubmit}
         onCancel={vpn.handleCancelIpsecForm}
-        onDelete={vpn.handleDeleteIpsec}
+        onEdit={vpn.handleEditIpsec}
+        onDeleteTunnel={vpn.handleDeleteIpsecTunnel}
+        onStart={vpn.handleStartIpsec}
+        onStop={vpn.handleStopIpsec}
+        onDeleteLegacySa={vpn.handleDeleteIpsec}
       />
 
       {/* Peer client-config modal */}

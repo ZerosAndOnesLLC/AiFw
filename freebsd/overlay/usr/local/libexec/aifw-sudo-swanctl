@@ -1,0 +1,107 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-swanctl <verb> [args...]
+#
+# Narrow-grant wrapper around /usr/local/sbin/swanctl (#530 IPsec data
+# plane). charon runs as root and its VICI control socket is
+# root-only, so the `aifw` user drives it through this wrapper instead
+# of a broad swanctl grant.
+#
+# Allowed forms:
+#   --load-all [--noprompt]                      — (re)load conns/creds from swanctl.conf
+#   --initiate  (--ike|--child <name>)... [--timeout <secs>]
+#   --terminate (--ike|--child <name>)... [--timeout <secs>] [--force]
+#   --list-sas   [--raw] [--ike <name>]
+#   --list-conns [--raw] [--ike <name>]
+#
+# Connection/child names are restricted to the aifw-<id> namespace so a
+# compromised aifw user can't tear down IPsec state configured outside
+# AiFw (e.g. by an operator directly in swanctl.conf).
+
+set -eu
+
+if [ $# -lt 1 ]; then
+    echo "usage: $0 <--load-all|--initiate|--terminate|--list-sas|--list-conns> [args...]" >&2
+    exit 2
+fi
+
+VERB="$1"
+shift
+
+fail() {
+    echo "aifw-sudo-swanctl: $1" >&2
+    exit 1
+}
+
+# aifw-<id> namespace: alnum + hyphen after the prefix (engine uses
+# aifw-<uuid> for conns and aifw-<uuid>-<n> for children).
+valid_name() {
+    case "$1" in
+        aifw-*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[!A-Za-z0-9-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# Validation iterates over "$@" without consuming it, tracking what the
+# next word must be (EXPECT: '' = a flag, 'name' = conn/child name,
+# 'secs' = numeric timeout). The original argv is then passed through
+# verbatim to swanctl.
+EXPECT=""
+SAW_NAME=""
+
+case "$VERB" in
+    --load-all)
+        for a in "$@"; do
+            [ "$a" = "--noprompt" ] || fail "--load-all takes only optional --noprompt"
+        done
+        [ $# -le 1 ] || fail "--load-all takes only optional --noprompt"
+        ;;
+    --initiate|--terminate)
+        for a in "$@"; do
+            case "$EXPECT" in
+                name)
+                    valid_name "$a" || fail "name not in aifw-* namespace: $a"
+                    EXPECT="" ;;
+                secs)
+                    case "$a" in
+                        ""|*[!0-9]*) fail "--timeout must be numeric: $a" ;;
+                    esac
+                    EXPECT="" ;;
+                *)
+                    case "$a" in
+                        --ike|--child) EXPECT=name; SAW_NAME=1 ;;
+                        --timeout)     EXPECT=secs ;;
+                        --force)
+                            [ "$VERB" = "--terminate" ] || fail "--force only valid with --terminate" ;;
+                        *) fail "arg not allowed for $VERB: $a" ;;
+                    esac ;;
+            esac
+        done
+        [ -z "$EXPECT" ] || fail "missing value after last flag"
+        [ -n "$SAW_NAME" ] || fail "$VERB requires --ike or --child <name>"
+        ;;
+    --list-sas|--list-conns)
+        for a in "$@"; do
+            case "$EXPECT" in
+                name)
+                    valid_name "$a" || fail "name not in aifw-* namespace: $a"
+                    EXPECT="" ;;
+                *)
+                    case "$a" in
+                        --raw) ;;
+                        --ike) EXPECT=name ;;
+                        *) fail "arg not allowed for $VERB: $a" ;;
+                    esac ;;
+            esac
+        done
+        [ -z "$EXPECT" ] || fail "missing value after --ike"
+        ;;
+    *)
+        fail "unsupported verb: $VERB"
+        ;;
+esac
+
+exec /usr/local/sbin/swanctl "$VERB" "$@"

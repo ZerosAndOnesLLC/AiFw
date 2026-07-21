@@ -11,6 +11,7 @@
 #   /usr/local/share/aifw/backup/* — pre-upgrade snapshot (updater)
 #   /usr/local/etc/rdns/rpz/*      — rDNS RPZ zone files
 #   /usr/local/etc/rdns/blocklists/* — rDNS blocklist files
+#   /usr/local/etc/swanctl/{conf.d,private,x509,x509ca}/aifw-* — IPsec (#530)
 #   /tmp/aifw-*                    — temp staging files we own
 #   /tmp/aifw_*                    — temp staging files we own (other naming)
 
@@ -55,6 +56,10 @@ case "$TARGET" in
     /usr/local/share/aifw/backup|/usr/local/share/aifw/backup/*) ;;
     /usr/local/etc/rdns/rpz|/usr/local/etc/rdns/rpz/*) ;;
     /usr/local/etc/rdns/blocklists|/usr/local/etc/rdns/blocklists/*) ;;
+    /usr/local/etc/swanctl/conf.d/aifw-*.conf) ;;
+    /usr/local/etc/swanctl/private/aifw-*.pem) ;;
+    /usr/local/etc/swanctl/x509/aifw-*.pem) ;;
+    /usr/local/etc/swanctl/x509ca/aifw-*.pem) ;;
     /tmp/aifw-*|/tmp/aifw_*) ;;
     *)
         echo "aifw-sudo-rm: target not in allowlist: $TARGET" >&2

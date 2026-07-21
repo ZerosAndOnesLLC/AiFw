@@ -2295,4 +2295,154 @@ mod tests {
         let res = crate::backup::apply_firewall_config(&state, &config, &Default::default()).await;
         assert!(res.is_err(), "partial apply must not report success");
     }
+
+    // --- IPsec tunnels (#530) ---
+
+    fn ipsec_tunnel_body() -> Value {
+        json!({
+            "name": "site-a",
+            "remote_addr": "203.0.113.10",
+            "psk": "correct-horse-battery-staple",
+            "local_ts": ["10.0.0.0/24"],
+            "remote_ts": ["10.1.0.0/24"],
+        })
+    }
+
+    #[tokio::test]
+    async fn test_ipsec_tunnel_crud_and_redaction() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Create — PSK must come back redacted
+        let resp = server
+            .post("/api/v1/vpn/ipsec/tunnels")
+            .authorization_bearer(&token)
+            .json(&ipsec_tunnel_body())
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["data"]["name"], "site-a");
+        assert_eq!(body["data"]["psk"], "REDACTED");
+        assert_eq!(body["data"]["ike_proposal"], "aes256gcm16-prfsha256-ecp256");
+        let id = body["data"]["id"].as_str().unwrap().to_string();
+
+        // List
+        let resp = server
+            .get("/api/v1/vpn/ipsec/tunnels")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(body["data"][0]["psk"], "REDACTED");
+
+        // Update with redacted PSK keeps the stored secret and applies
+        // the remote change
+        let mut update = ipsec_tunnel_body();
+        update["psk"] = json!("REDACTED");
+        update["remote_addr"] = json!("203.0.113.99");
+        let resp = server
+            .put(&format!("/api/v1/vpn/ipsec/tunnels/{id}"))
+            .authorization_bearer(&token)
+            .json(&update)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["data"]["remote_addr"], "203.0.113.99");
+
+        // Live status: mock control has no SAs → DOWN
+        let resp = server
+            .get(&format!("/api/v1/vpn/ipsec/tunnels/{id}/status"))
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["data"]["ike_state"], "DOWN");
+
+        // Delete
+        let resp = server
+            .delete(&format!("/api/v1/vpn/ipsec/tunnels/{id}"))
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let resp = server
+            .get("/api/v1/vpn/ipsec/tunnels")
+            .authorization_bearer(&token)
+            .await;
+        let body: Value = resp.json();
+        assert!(body["data"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ipsec_tunnel_validation_surfaces_message() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let mut body = ipsec_tunnel_body();
+        body["psk"] = json!("short");
+        let resp = server
+            .post("/api/v1/vpn/ipsec/tunnels")
+            .authorization_bearer(&token)
+            .json(&body)
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("PSK must be at least 16 characters"),
+            "validation detail must reach the client: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_legacy_ipsec_sa_creation_gone() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .post("/api/v1/vpn/ipsec")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "name": "legacy",
+                "local_addr": "1.2.3.4",
+                "remote_addr": "5.6.7.8",
+                "protocol": "esp",
+                "mode": "tunnel",
+            }))
+            .await;
+        resp.assert_status(StatusCode::GONE);
+        let body: Value = resp.json();
+        assert!(body["message"].as_str().unwrap().contains("tunnels"));
+    }
+
+    #[tokio::test]
+    async fn test_ipsec_status_endpoint_lists_all() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        server
+            .post("/api/v1/vpn/ipsec/tunnels")
+            .authorization_bearer(&token)
+            .json(&ipsec_tunnel_body())
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let resp = server
+            .get("/api/v1/vpn/ipsec/status")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let statuses = body["data"].as_array().unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0]["ike_state"], "DOWN");
+        assert!(
+            statuses[0]["conn_name"]
+                .as_str()
+                .unwrap()
+                .starts_with("aifw-")
+        );
+    }
 }

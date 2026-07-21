@@ -374,46 +374,45 @@ pub async fn delete_wg_peer(
     }))
 }
 
-// --- VPN: IPsec ---
+// --- VPN: IPsec (legacy ipsec_sas records — read/delete only, #530) ---
 
-#[derive(Debug, Deserialize)]
-pub struct CreateIpsecSaRequest {
-    pub name: String,
-    pub local_addr: String,
-    pub remote_addr: String,
-    pub protocol: String,
-    pub mode: String,
+/// Legacy SA record plus an explicit legacy marker so no client can
+/// mistake these configuration-only rows for live tunnels.
+#[derive(Debug, Serialize)]
+pub struct LegacyIpsecSa {
+    #[serde(flatten)]
+    pub sa: IpsecSa,
+    /// Always true: this record predates the real data plane and
+    /// carries no traffic.
+    pub legacy: bool,
 }
 
 pub async fn list_ipsec_sas(
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<Vec<IpsecSa>>>, StatusCode> {
+) -> Result<Json<ApiResponse<Vec<LegacyIpsecSa>>>, StatusCode> {
     let sas = state
         .vpn_engine
         .list_ipsec_sas()
         .await
         .map_err(|_| internal())?;
+    let sas = sas
+        .into_iter()
+        .map(|sa| LegacyIpsecSa { sa, legacy: true })
+        .collect();
     Ok(Json(ApiResponse { data: sas }))
 }
 
-pub async fn create_ipsec_sa(
-    State(state): State<AppState>,
-    Json(req): Json<CreateIpsecSaRequest>,
-) -> Result<(StatusCode, Json<ApiResponse<IpsecSa>>), StatusCode> {
-    let src = Address::parse(&req.local_addr).map_err(|_| bad_request())?;
-    let dst = Address::parse(&req.remote_addr).map_err(|_| bad_request())?;
-    let protocol = IpsecProtocol::parse(&req.protocol).map_err(|_| bad_request())?;
-    let mode = match req.mode.as_str() {
-        "transport" => IpsecMode::Transport,
-        _ => IpsecMode::Tunnel,
-    };
-    let sa = IpsecSa::new(req.name, src, dst, protocol, mode);
-    let sa = state
-        .vpn_engine
-        .add_ipsec_sa(sa)
-        .await
-        .map_err(|_| bad_request())?;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: sa })))
+/// POST /vpn/ipsec is gone (#530): the pre-data-plane SA records could
+/// never carry traffic, so creating more of them is not allowed. Point
+/// callers at the tunnel API.
+pub async fn create_ipsec_sa_gone() -> (StatusCode, Json<MessageResponse>) {
+    (
+        StatusCode::GONE,
+        Json(MessageResponse {
+            message: "legacy IPsec SA records are read-only; use /api/v1/vpn/ipsec/tunnels"
+                .to_string(),
+        }),
+    )
 }
 
 pub async fn delete_ipsec_sa(
@@ -429,4 +428,296 @@ pub async fn delete_ipsec_sa(
     Ok(Json(MessageResponse {
         message: format!("IPsec SA {id} deleted"),
     }))
+}
+
+// --- VPN: IPsec tunnels (real data plane, #530) ---
+
+type IpsecError = (StatusCode, Json<MessageResponse>);
+
+/// Map engine errors to a status + message so validation problems and
+/// charon's negotiation/load diagnostics reach the caller instead of a
+/// bare 500.
+fn ipsec_err(e: aifw_common::AifwError) -> IpsecError {
+    use aifw_common::AifwError;
+    let status = match &e {
+        AifwError::Validation(_) => StatusCode::BAD_REQUEST,
+        AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        Json(MessageResponse {
+            message: e.to_string(),
+        }),
+    )
+}
+
+fn ipsec_bad_request(msg: &str) -> IpsecError {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(MessageResponse {
+            message: msg.to_string(),
+        }),
+    )
+}
+
+/// Create/update payload. Omitted optional fields keep defaults on
+/// create and keep current values on update; `psk`/`local_key_pem`
+/// equal to the redaction marker (or omitted) keep the stored secret.
+#[derive(Debug, Deserialize)]
+pub struct IpsecTunnelRequest {
+    pub name: String,
+    pub remote_addr: String,
+    pub local_ts: Vec<String>,
+    pub remote_ts: Vec<String>,
+    pub enabled: Option<bool>,
+    pub local_addr: Option<String>,
+    pub local_id: Option<String>,
+    pub remote_id: Option<String>,
+    pub auth_method: Option<String>,
+    pub psk: Option<String>,
+    pub cert_source: Option<String>,
+    pub acme_cert_id: Option<i64>,
+    pub local_cert_pem: Option<String>,
+    pub local_key_pem: Option<String>,
+    pub ca_cert_pem: Option<String>,
+    pub ike_proposal: Option<String>,
+    pub esp_proposal: Option<String>,
+    pub ike_lifetime_secs: Option<u32>,
+    pub esp_lifetime_secs: Option<u32>,
+    pub dpd_delay_secs: Option<u32>,
+    pub start_action: Option<String>,
+}
+
+/// Fold a request into a tunnel record. Secrets are only overwritten
+/// when the request carries a real (non-redacted) value.
+fn apply_tunnel_request(
+    tunnel: &mut aifw_common::IpsecTunnel,
+    req: IpsecTunnelRequest,
+) -> Result<(), IpsecError> {
+    use aifw_common::{IpsecAuthMethod, IpsecCertSource, IpsecStartAction};
+
+    tunnel.name = req.name;
+    tunnel.remote_addr = req.remote_addr;
+    tunnel.local_ts = req.local_ts;
+    tunnel.remote_ts = req.remote_ts;
+    if let Some(enabled) = req.enabled {
+        tunnel.enabled = enabled;
+    }
+    if let Some(v) = req.local_addr {
+        tunnel.local_addr = v;
+    }
+    if let Some(v) = req.local_id {
+        tunnel.local_id = v;
+    }
+    if let Some(v) = req.remote_id {
+        tunnel.remote_id = v;
+    }
+    if let Some(ref v) = req.auth_method {
+        tunnel.auth_method = IpsecAuthMethod::parse(v).map_err(ipsec_err)?;
+    }
+    if let Some(psk) = req.psk
+        && psk != "REDACTED"
+    {
+        tunnel.psk = psk;
+    }
+    if let Some(ref v) = req.cert_source {
+        tunnel.cert_source = if v.is_empty() {
+            None
+        } else {
+            Some(IpsecCertSource::parse(v).map_err(ipsec_err)?)
+        };
+    }
+    if req.acme_cert_id.is_some() {
+        tunnel.acme_cert_id = req.acme_cert_id;
+    }
+    if let Some(v) = req.local_cert_pem {
+        tunnel.local_cert_pem = v;
+    }
+    if let Some(key) = req.local_key_pem
+        && key != "REDACTED"
+    {
+        tunnel.local_key_pem = key;
+    }
+    if let Some(v) = req.ca_cert_pem {
+        tunnel.ca_cert_pem = v;
+    }
+    if let Some(v) = req.ike_proposal {
+        tunnel.ike_proposal = v;
+    }
+    if let Some(v) = req.esp_proposal {
+        tunnel.esp_proposal = v;
+    }
+    if let Some(v) = req.ike_lifetime_secs {
+        tunnel.ike_lifetime_secs = v;
+    }
+    if let Some(v) = req.esp_lifetime_secs {
+        tunnel.esp_lifetime_secs = v;
+    }
+    if let Some(v) = req.dpd_delay_secs {
+        tunnel.dpd_delay_secs = v;
+    }
+    if let Some(ref v) = req.start_action {
+        tunnel.start_action = IpsecStartAction::parse(v).map_err(ipsec_err)?;
+    }
+    if tunnel.auth_method == IpsecAuthMethod::Cert && tunnel.cert_source.is_none() {
+        return Err(ipsec_bad_request("cert auth requires cert_source"));
+    }
+    Ok(())
+}
+
+/// Refresh the pass rules the aifw anchor mirrors from the VPN engines
+/// after any IPsec apply (same dance the WG start/stop handlers do).
+async fn refresh_vpn_pf(state: &AppState) {
+    let _ = state.vpn_engine.apply_vpn_rules().await;
+    if let Ok(vpn_rules) = state.vpn_engine.collect_vpn_rules().await {
+        state.rule_engine.set_extra_rules(vpn_rules).await;
+        let _ = state.rule_engine.apply_rules().await;
+    }
+}
+
+pub async fn list_ipsec_tunnels(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<aifw_common::IpsecTunnel>>>, StatusCode> {
+    let tunnels = state
+        .ipsec_engine
+        .list_tunnels()
+        .await
+        .map_err(|_| internal())?;
+    let tunnels = tunnels.iter().map(|t| t.redacted()).collect();
+    Ok(Json(ApiResponse { data: tunnels }))
+}
+
+pub async fn get_ipsec_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<aifw_common::IpsecTunnel>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let tunnel = state
+        .ipsec_engine
+        .get_tunnel(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(ApiResponse {
+        data: tunnel.redacted(),
+    }))
+}
+
+pub async fn create_ipsec_tunnel(
+    State(state): State<AppState>,
+    Json(req): Json<IpsecTunnelRequest>,
+) -> Result<(StatusCode, Json<ApiResponse<aifw_common::IpsecTunnel>>), IpsecError> {
+    let mut tunnel = aifw_common::IpsecTunnel::new(
+        String::new(),
+        String::new(),
+        String::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    apply_tunnel_request(&mut tunnel, req)?;
+    let tunnel = state
+        .ipsec_engine
+        .create_tunnel_applied(tunnel)
+        .await
+        .map_err(ipsec_err)?;
+    refresh_vpn_pf(&state).await;
+    Ok((
+        StatusCode::CREATED,
+        Json(ApiResponse {
+            data: tunnel.redacted(),
+        }),
+    ))
+}
+
+pub async fn update_ipsec_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<IpsecTunnelRequest>,
+) -> Result<Json<ApiResponse<aifw_common::IpsecTunnel>>, IpsecError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| ipsec_bad_request("invalid tunnel id"))?;
+    let mut tunnel = state
+        .ipsec_engine
+        .get_tunnel(uuid)
+        .await
+        .map_err(ipsec_err)?;
+    apply_tunnel_request(&mut tunnel, req)?;
+    let tunnel = state
+        .ipsec_engine
+        .update_tunnel_applied(tunnel)
+        .await
+        .map_err(ipsec_err)?;
+    refresh_vpn_pf(&state).await;
+    Ok(Json(ApiResponse {
+        data: tunnel.redacted(),
+    }))
+}
+
+pub async fn delete_ipsec_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, IpsecError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| ipsec_bad_request("invalid tunnel id"))?;
+    state
+        .ipsec_engine
+        .delete_tunnel_applied(uuid)
+        .await
+        .map_err(ipsec_err)?;
+    refresh_vpn_pf(&state).await;
+    Ok(Json(MessageResponse {
+        message: format!("IPsec tunnel {id} deleted"),
+    }))
+}
+
+pub async fn start_ipsec_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, IpsecError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| ipsec_bad_request("invalid tunnel id"))?;
+    state
+        .ipsec_engine
+        .start_tunnel(uuid)
+        .await
+        .map_err(ipsec_err)?;
+    Ok(Json(MessageResponse {
+        message: "Tunnel initiated".to_string(),
+    }))
+}
+
+pub async fn stop_ipsec_tunnel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<MessageResponse>, IpsecError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| ipsec_bad_request("invalid tunnel id"))?;
+    state
+        .ipsec_engine
+        .stop_tunnel(uuid)
+        .await
+        .map_err(ipsec_err)?;
+    Ok(Json(MessageResponse {
+        message: "Tunnel terminated".to_string(),
+    }))
+}
+
+pub async fn ipsec_tunnel_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<aifw_common::IpsecLiveStatus>>, StatusCode> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+    let status = state
+        .ipsec_engine
+        .tunnel_status(uuid)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(ApiResponse { data: status }))
+}
+
+pub async fn ipsec_status_all(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<aifw_common::IpsecLiveStatus>>>, StatusCode> {
+    let statuses = state
+        .ipsec_engine
+        .live_status()
+        .await
+        .map_err(|_| internal())?;
+    Ok(Json(ApiResponse { data: statuses }))
 }

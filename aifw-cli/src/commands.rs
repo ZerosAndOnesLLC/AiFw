@@ -1,7 +1,7 @@
 use aifw_common::{
     Action, Address, Bandwidth, CountryCode, Direction, GeoIpAction, GeoIpRule, Interface,
-    IpsecMode, IpsecProtocol, IpsecSa, NatRedirect, NatRule, NatType, PortRange, Protocol,
-    QueueConfig, QueueType, RateLimitRule, Rule, RuleMatch, TrafficClass, WgPeer, WgTunnel,
+    NatRedirect, NatRule, NatType, PortRange, Protocol, QueueConfig, QueueType, RateLimitRule,
+    Rule, RuleMatch, TrafficClass, WgPeer, WgTunnel,
 };
 use aifw_core::{
     Database, GatewayEngine, GeoIpEngine, GroupEngine, InstanceEngine, LeakEngine, NatEngine,
@@ -727,34 +727,114 @@ pub async fn vpn_wg_peer_add(
     Ok(())
 }
 
+async fn create_ipsec_engine(db_path: &Path) -> anyhow::Result<aifw_core::IpsecEngine> {
+    let db = Database::new(db_path).await?;
+    let engine = aifw_core::IpsecEngine::new(
+        db.pool().clone(),
+        aifw_core::create_ike_control(),
+        aifw_core::create_conf_store(),
+    );
+    engine.migrate().await?;
+    Ok(engine)
+}
+
+fn split_ts(list: &str) -> Vec<String> {
+    list.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 pub async fn vpn_ipsec_add(
     db_path: &Path,
     name: &str,
-    src: &str,
-    dst: &str,
-    proto: &str,
-    mode: &str,
+    remote: &str,
+    psk: &str,
+    local_ts: &str,
+    remote_ts: &str,
+    local: Option<&str>,
 ) -> anyhow::Result<()> {
-    let engine = create_vpn_engine(db_path).await?;
+    let engine = create_ipsec_engine(db_path).await?;
 
-    let ipsec_mode = match mode {
-        "transport" => IpsecMode::Transport,
-        _ => IpsecMode::Tunnel,
-    };
-
-    let sa = IpsecSa::new(
+    let mut tunnel = aifw_common::IpsecTunnel::new(
         name.to_string(),
-        Address::parse(src)?,
-        Address::parse(dst)?,
-        IpsecProtocol::parse(proto)?,
-        ipsec_mode,
+        remote.to_string(),
+        psk.to_string(),
+        split_ts(local_ts),
+        split_ts(remote_ts),
     );
-    let sa = engine.add_ipsec_sa(sa).await?;
-    println!("Added IPsec SA {}", sa.id);
-    println!("  Name:     {}", sa.name);
-    println!("  SPI:      0x{:08x}", sa.spi);
-    println!("  Protocol: {}", sa.protocol);
-    println!("  Mode:     {}", sa.mode);
+    if let Some(local) = local {
+        tunnel.local_addr = local.to_string();
+    }
+    let tunnel = engine.create_tunnel_applied(tunnel).await?;
+    println!("Added IPsec tunnel {}", tunnel.id);
+    println!("  Name:      {}", tunnel.name);
+    println!("  Remote:    {}", tunnel.remote_addr);
+    println!("  Local TS:  {}", tunnel.local_ts.join(","));
+    println!("  Remote TS: {}", tunnel.remote_ts.join(","));
+    println!("  IKE:       v2, {}", tunnel.ike_proposal);
+    println!("  ESP:       {}", tunnel.esp_proposal);
+    Ok(())
+}
+
+pub async fn vpn_ipsec_start(db_path: &Path, id: &str) -> anyhow::Result<()> {
+    let engine = create_ipsec_engine(db_path).await?;
+    let uuid = Uuid::parse_str(id)?;
+    engine.start_tunnel(uuid).await?;
+    println!("IPsec tunnel {id} initiated");
+    Ok(())
+}
+
+pub async fn vpn_ipsec_stop(db_path: &Path, id: &str) -> anyhow::Result<()> {
+    let engine = create_ipsec_engine(db_path).await?;
+    let uuid = Uuid::parse_str(id)?;
+    engine.stop_tunnel(uuid).await?;
+    println!("IPsec tunnel {id} terminated");
+    Ok(())
+}
+
+pub async fn vpn_ipsec_status(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    let engine = create_ipsec_engine(db_path).await?;
+    let statuses = engine.live_status().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&statuses)?);
+        return Ok(());
+    }
+    if statuses.is_empty() {
+        println!("No IPsec tunnels configured");
+        return Ok(());
+    }
+    println!(
+        "{:<38} {:<14} {:<20} {:<10}",
+        "TUNNEL", "IKE STATE", "REMOTE", "UPTIME"
+    );
+    println!("{}", "-".repeat(85));
+    for s in &statuses {
+        let uptime = s
+            .established_secs
+            .map(|secs| format!("{}m{}s", secs / 60, secs % 60))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "{:<38} {:<14} {:<20} {:<10}",
+            s.tunnel_id,
+            s.ike_state,
+            s.remote_host.as_deref().unwrap_or("-"),
+            uptime,
+        );
+        for c in &s.child_sas {
+            println!(
+                "  child {}: {} in={}B out={}B rekey_in={}s ts={} <-> {}",
+                c.name,
+                c.state,
+                c.bytes_in,
+                c.bytes_out,
+                c.rekey_in_secs.unwrap_or(0),
+                c.local_ts.join(","),
+                c.remote_ts.join(","),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -762,11 +842,15 @@ pub async fn vpn_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let engine = create_vpn_engine(db_path).await?;
     let uuid = Uuid::parse_str(id)?;
 
-    // Try WG tunnel first, then IPsec SA
+    // Try WG tunnel first, then IPsec tunnel, legacy SA, WG peer
     if engine.delete_wg_tunnel(uuid).await.is_ok() {
         println!("Removed WireGuard tunnel {id}");
+    } else if let Ok(ipsec) = create_ipsec_engine(db_path).await
+        && ipsec.delete_tunnel_applied(uuid).await.is_ok()
+    {
+        println!("Removed IPsec tunnel {id}");
     } else if engine.delete_ipsec_sa(uuid).await.is_ok() {
-        println!("Removed IPsec SA {id}");
+        println!("Removed legacy IPsec SA record {id}");
     } else if engine.delete_wg_peer(uuid).await.is_ok() {
         println!("Removed WireGuard peer {id}");
     } else {
@@ -780,11 +864,17 @@ pub async fn vpn_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
 
     let tunnels = engine.list_wg_tunnels().await?;
     let sas = engine.list_ipsec_sas().await?;
+    let ipsec_engine = create_ipsec_engine(db_path).await?;
+    let ipsec_tunnels = ipsec_engine.list_tunnels().await?;
 
     if json {
         let data = serde_json::json!({
             "wireguard": tunnels,
-            "ipsec": sas,
+            "ipsec_tunnels": ipsec_tunnels
+                .iter()
+                .map(|t| t.redacted())
+                .collect::<Vec<_>>(),
+            "ipsec_legacy_sas": sas,
         });
         println!("{}", serde_json::to_string_pretty(&data)?);
         return Ok(());
@@ -828,11 +918,37 @@ pub async fn vpn_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
 
     println!();
 
-    // IPsec
-    if sas.is_empty() {
-        println!("No IPsec SAs configured");
+    // IPsec tunnels (#530 real data plane)
+    if ipsec_tunnels.is_empty() {
+        println!("No IPsec tunnels configured");
     } else {
-        println!("IPsec Security Associations:");
+        println!("IPsec Tunnels:");
+        println!(
+            "{:<38} {:<14} {:<20} {:<8} {:<6} {:<24}",
+            "ID", "NAME", "REMOTE", "AUTH", "ON", "TRAFFIC"
+        );
+        println!("{}", "-".repeat(115));
+        for t in &ipsec_tunnels {
+            println!(
+                "{:<38} {:<14} {:<20} {:<8} {:<6} {:<24}",
+                t.id,
+                t.name,
+                t.remote_addr,
+                t.auth_method,
+                if t.enabled { "yes" } else { "no" },
+                format!("{} <-> {}", t.local_ts.join(","), t.remote_ts.join(",")),
+            );
+        }
+        println!("\n{} tunnel(s)", ipsec_tunnels.len());
+    }
+
+    println!();
+
+    // Legacy IPsec SA records (configuration-only, no data plane)
+    if sas.is_empty() {
+        println!("No legacy IPsec SA records");
+    } else {
+        println!("Legacy IPsec SA records (inactive — no data plane):");
         println!(
             "{:<38} {:<12} {:<20} {:<20} {:<8} {:<10} {:<8}",
             "ID", "NAME", "SOURCE", "DESTINATION", "PROTO", "MODE", "STATUS"
