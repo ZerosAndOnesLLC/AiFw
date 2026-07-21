@@ -29,7 +29,7 @@ printf '%s' "$me" | jq -e '.username == "functest" and (.permissions | type == "
     || fail "auth/me response does not identify the authenticated user: $me"
 
 about=$(api GET /api/v1/about) || fail "about request failed"
-printf '%s' "$about" | jq -e '.version and (.memory | type == "number")' >/dev/null 2>&1 \
+printf '%s' "$about" | jq -e '(.version | type == "string") and (.memory | type == "object")' >/dev/null 2>&1 \
     || fail "about response is missing version/memory: $about"
 
 [ "$FAILURES" = 0 ] || exit 1
