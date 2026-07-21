@@ -132,7 +132,7 @@ server_listen_once() { # $1 = port, $2 = marker file
 # One-shot UDP listener for packet-path tests. UDP has no connection refusal,
 # so callers must wait for the marker rather than rely on nc's exit status.
 server_listen_udp_once() { # $1 = port, $2 = marker file
-    jx_server sh -c "rm -f '$2'; (nc -u -l '$1' >/dev/null 2>&1 && touch '$2') &"
+    jx_server sh -c "rm -f '$2'; (nc -u -l '$1' 2>/dev/null | (IFS= read -r line && touch '$2')) &"
 }
 
 client_send_udp() { # $1 = host, $2 = port
