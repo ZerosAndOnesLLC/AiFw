@@ -231,7 +231,7 @@ log "API up, authenticated"
 
 # ---------------------------------------------------------------- run tests
 
-TESTS="${TESTS:-t01-pfctl-acceptance t02-pass-block t03-schedule-gating t04-nat t05-restore-roundtrip t06-wireguard t07-ipsec}"
+TESTS="${TESTS:-t01-pfctl-acceptance t02-pass-block t03-schedule-gating t04-nat t05-restore-roundtrip t06-wireguard t07-ipsec t08-control-plane}"
 TOTAL=0
 FAILED_TESTS=""
 

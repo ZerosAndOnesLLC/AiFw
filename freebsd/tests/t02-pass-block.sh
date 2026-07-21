@@ -41,5 +41,34 @@ save_pf_artifacts t02
 api DELETE "/api/v1/rules/$PASS_ID" >/dev/null || fail "delete pass"
 api_reload || fail "cleanup reload"
 
+# 5. UDP follows the same default-deny/pass/remove contract. UDP has no
+# handshake, so the server marker is the authoritative evidence of delivery.
+UDP_PORT=8085
+UDP_MARKER=/tmp/aifwfx-t02-udp-marker
+server_listen_udp_once "$UDP_PORT" "$UDP_MARKER"
+client_send_udp "$SERVER_IP" "$UDP_PORT"
+wait_for_file server "$UDP_MARKER" 3 && fail "default-deny: UDP reached server with no pass rule"
+
+UDP_ID=$(add_rule '{"action":"pass","direction":"in","protocol":"udp","dst_addr":"'"$SERVER_IP"'","dst_port_start":'"$UDP_PORT"',"dst_port_end":'"$UDP_PORT"',"label":"t02-udp-pass"}') || fail "create UDP pass"
+api_reload || fail "reload UDP pass"
+server_listen_udp_once "$UDP_PORT" "$UDP_MARKER"
+client_send_udp "$SERVER_IP" "$UDP_PORT"
+wait_for_file server "$UDP_MARKER" 3 || fail "UDP pass: server never saw the datagram"
+
+api DELETE "/api/v1/rules/$UDP_ID" >/dev/null || fail "delete UDP pass"
+api_reload || fail "reload UDP removal"
+server_listen_udp_once "$UDP_PORT" "$UDP_MARKER"
+client_send_udp "$SERVER_IP" "$UDP_PORT"
+wait_for_file server "$UDP_MARKER" 3 && fail "after removing UDP pass, datagram was delivered"
+
+# 6. ICMP is explicitly exercised instead of being inferred from TCP.
+ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 && fail "default-deny: ICMP reached server with no pass rule"
+ICMP_ID=$(add_rule '{"action":"pass","direction":"in","protocol":"icmp","dst_addr":"'"$SERVER_IP"'","label":"t02-icmp-pass"}') || fail "create ICMP pass"
+api_reload || fail "reload ICMP pass"
+ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 || fail "ICMP pass: echo request failed"
+api DELETE "/api/v1/rules/$ICMP_ID" >/dev/null || fail "delete ICMP pass"
+api_reload || fail "reload ICMP removal"
+ping -c 1 -t 2 "$SERVER_IP" >/dev/null 2>&1 && fail "after removing ICMP pass, echo succeeded"
+
 [ "$FAILURES" = 0 ] || exit 1
 exit 0

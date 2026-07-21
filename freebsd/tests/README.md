@@ -30,6 +30,7 @@ by hand on a test VM and under `vmactions/freebsd-vm` in CI
 | `t04-nat` | Outbound SNAT (translation visible in the pf state table) and rdr port-forward into the server jail, with return traffic |
 | `t05-restore-roundtrip` | #535: save → mutate → restore brings both DB and the live anchor back |
 | `t06-wireguard` | Tunnel creation on the real kernel + #541 pubkey-derives-from-privkey via `wg pubkey` (skips without wireguard-kmod) |
+| `t08-control-plane` | Unauthenticated access rejection, invalid-login rejection, live PF/rule counters, identity, and representative JSON response shapes |
 
 ## Running on a test VM
 

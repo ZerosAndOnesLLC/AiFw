@@ -129,6 +129,16 @@ server_listen_once() { # $1 = port, $2 = marker file
     jx_server sh -c "rm -f '$2'; (nc -l '$1' >/dev/null 2>&1 && touch '$2') &"
 }
 
+# One-shot UDP listener for packet-path tests. UDP has no connection refusal,
+# so callers must wait for the marker rather than rely on nc's exit status.
+server_listen_udp_once() { # $1 = port, $2 = marker file
+    jx_server sh -c "rm -f '$2'; (nc -u -l '$1' >/dev/null 2>&1 && touch '$2') &"
+}
+
+client_send_udp() { # $1 = host, $2 = port
+    printf 'aifw-functional-udp\n' | jx_client nc -u -w 2 "$1" "$2" >/dev/null 2>&1
+}
+
 wait_for_file() { # $1 = jail (client|server), $2 = file, $3 = seconds
     _i=0
     while [ "$_i" -lt "$3" ]; do
