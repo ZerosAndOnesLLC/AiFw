@@ -2376,6 +2376,206 @@ mod tests {
         assert!(elapsed.as_secs() < 30, "bulk restore took {elapsed:?}");
     }
 
+    fn any_tcp_rule() -> aifw_common::Rule {
+        aifw_common::Rule::new(
+            aifw_common::Action::Pass,
+            aifw_common::Direction::In,
+            aifw_common::Protocol::Tcp,
+            aifw_common::RuleMatch {
+                src_addr: aifw_common::Address::Any,
+                src_port: None,
+                dst_addr: aifw_common::Address::Any,
+                dst_port: None,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn test_restore_failure_injection_every_db_stage() {
+        // #535: for every table the restore touches, a failure at that stage
+        // must abort the restore with the transaction rolled back — the
+        // pre-restore rules must survive untouched at every injection point.
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .try_init();
+        for table in [
+            "nat_rules",
+            "aliases",
+            "static_routes",
+            "geoip_rules",
+            "wg_tunnels",
+            "wg_peers",
+            "ipsec_sas",
+            "ipsec_tunnels",
+            "queue_configs",
+            "rate_limit_rules",
+            "sni_rules",
+            "ja3_blocklist",
+            "carp_vips",
+            "pfsync_config",
+            "cluster_nodes",
+            "auth_config",
+            "dhcp_subnets",
+            "dhcp_reservations",
+            "dhcp_config",
+            "dhcp_ddns_config",
+            "dhcp_ha_config",
+        ] {
+            let state = crate::create_app_state_in_memory(plain_auth_settings())
+                .await
+                .unwrap();
+            state.rule_engine.add_rule(any_tcp_rule()).await.unwrap();
+            let config = crate::backup::build_current_config(&state).await.unwrap();
+            // Replace the table with a read-only VIEW of the same name: the
+            // engine migrates' CREATE TABLE IF NOT EXISTS no-op on it (so
+            // pre-tx migrates can't undo the injection, unlike a plain DROP)
+            // and the restore's DELETE/INSERT then fails at exactly this
+            // stage.
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {table}")))
+                .execute(&state.pool)
+                .await
+                .unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "CREATE VIEW {table} AS SELECT 1 AS x"
+            )))
+            .execute(&state.pool)
+            .await
+            .unwrap();
+            let res =
+                crate::backup::apply_firewall_config(&state, &config, &Default::default()).await;
+            assert!(res.is_err(), "failure at {table} must abort the restore");
+            let rules = state.rule_engine.list_rules().await.unwrap();
+            assert_eq!(
+                rules.len(),
+                1,
+                "failure at {table} must leave prior rules untouched"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_restore_mid_tx_failure_rolls_back_and_audits() {
+        // Outcome 2 of the #535 contract: apply fails (duplicate alias name
+        // violates the UNIQUE constraint mid-transaction), prior state is
+        // restored, and the rollback is audited.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        state.rule_engine.add_rule(any_tcp_rule()).await.unwrap();
+        state
+            .alias_engine
+            .add(aifw_common::Alias {
+                id: uuid::Uuid::new_v4(),
+                name: "keepme".to_string(),
+                alias_type: aifw_common::AliasType::Host,
+                entries: vec!["192.0.2.1".to_string()],
+                description: None,
+                enabled: true,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let mut config = crate::backup::build_current_config(&state).await.unwrap();
+        for _ in 0..2 {
+            config.aliases.push(aifw_core::config::AliasConfig {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "dup_name".to_string(),
+                alias_type: "host".to_string(),
+                entries: vec!["198.51.100.1".to_string()],
+                description: None,
+                enabled: false,
+            });
+        }
+
+        let res =
+            crate::backup::apply_firewall_config_or_rollback(&state, &config, &Default::default())
+                .await;
+        assert!(res.is_err(), "duplicate alias must abort the restore");
+
+        let aliases = state.alias_engine.list().await.unwrap();
+        assert_eq!(aliases.len(), 1, "prior alias set must be restored");
+        assert_eq!(aliases[0].name, "keepme");
+        assert_eq!(state.rule_engine.list_rules().await.unwrap().len(), 1);
+
+        let (audits,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM audit_log WHERE details LIKE '%rolled back to pre-restore state%'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert!(audits >= 1, "rollback must be audited");
+    }
+
+    #[tokio::test]
+    async fn test_restore_pf_failure_after_commit_rolls_back_cleanly() {
+        // Outcome 2 via the data plane: the target config needs a pf op the
+        // snapshot doesn't (geo-IP table populate), so injecting that
+        // failure aborts the target apply and the snapshot re-applies clean.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        state.rule_engine.add_rule(any_tcp_rule()).await.unwrap();
+        let mock = state
+            .pf
+            .as_any()
+            .downcast_ref::<aifw_pf::PfMock>()
+            .expect("tests run on the mock backend");
+        mock.fail_op("replace_table_entries").await;
+
+        let mut config = crate::backup::build_current_config(&state).await.unwrap();
+        config.geoip.push(aifw_core::config::GeoIpEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            country: "CN".to_string(),
+            action: aifw_common::GeoIpAction::Block,
+            label: None,
+            status: aifw_common::GeoIpRuleStatus::Active,
+        });
+
+        let res =
+            crate::backup::apply_firewall_config_or_rollback(&state, &config, &Default::default())
+                .await;
+        assert!(res.is_err(), "pf failure must abort the restore");
+        assert_eq!(
+            state.geoip_engine.list_rules().await.unwrap().len(),
+            0,
+            "geo-ip rows from the failed target must be rolled back"
+        );
+        assert_eq!(state.rule_engine.list_rules().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_restore_rollback_failure_is_audited_high_severity() {
+        // Outcome 3 of the #535 contract: the apply fails AND the rollback
+        // fails (persistent pf failure hits both); the operator gets an
+        // explicit rollback-failed audit row, never silent partial success.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        state.rule_engine.add_rule(any_tcp_rule()).await.unwrap();
+        let mock = state
+            .pf
+            .as_any()
+            .downcast_ref::<aifw_pf::PfMock>()
+            .expect("tests run on the mock backend");
+        mock.fail_op("load_rules").await;
+
+        let config = crate::backup::build_current_config(&state).await.unwrap();
+        let res =
+            crate::backup::apply_firewall_config_or_rollback(&state, &config, &Default::default())
+                .await;
+        assert!(res.is_err());
+
+        let (audits,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE details LIKE '%rollback failed%'")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert!(audits >= 1, "failed rollback must be audited");
+        mock.clear_fail("load_rules").await;
+    }
+
     #[tokio::test]
     async fn test_commit_confirm_refuses_invalid_rollback_snapshot() {
         // Arming with a snapshot that can't roll back would leave the timer

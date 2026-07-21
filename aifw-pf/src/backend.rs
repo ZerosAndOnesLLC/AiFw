@@ -10,6 +10,10 @@ use std::net::IpAddr;
 /// chosen at compile time via `#[cfg(target_os)]` in [`crate::create_backend`].
 #[async_trait]
 pub trait PfBackend: Send + Sync {
+    /// Downcast support so tests can reach implementation-specific helpers
+    /// (e.g. [`crate::PfMock`] failure injection) through `Arc<dyn PfBackend>`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Add a pf rule to the specified anchor
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), crate::PfError>;
 
