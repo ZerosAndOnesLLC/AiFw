@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$IMG" ] && [ -f "$IMG" ] || { echo "usage: smoke-boot.sh --img PATH" >&2; exit 2; }
 
-for c in qemu-system-x86_64 curl jq; do
+for c in qemu-system-x86_64 curl jq ssh ssh-keygen; do
     command -v "$c" >/dev/null 2>&1 || { echo "missing: $c" >&2; exit 2; }
 done
 MKISO=""
@@ -44,8 +44,13 @@ ADMIN_USER="admin"
 ADMIN_PASS="SmokeTest123"
 LAN_PORT=18443   # host port forwarded to the appliance LAN address
 WAN_PORT=18081   # host port forwarded to the appliance WAN address (must stay blocked)
+SSH_PORT=18422   # root SSH on the LAN side, used for reboot persistence
 
 # ---------------------------------------------------------------- seed ISO
+
+ssh-keygen -q -t ed25519 -N '' -f "$WORK/id_ed25519" \
+    || { echo "ephemeral SSH key generation failed" >&2; exit 2; }
+SSH_PUB=$(cat "$WORK/id_ed25519.pub")
 
 cat > "$WORK/aifw-seed.json" <<EOF
 {
@@ -70,9 +75,9 @@ cat > "$WORK/aifw-seed.json" <<EOF
   "dhcp_enabled": false,
   "default_policy": "standard",
   "nat_enabled": true,
-  "ssh_auth_method": "password",
+  "ssh_auth_method": "keys",
   "ssh_github_user": null,
-  "ssh_authorized_keys": [],
+  "ssh_authorized_keys": ["$SSH_PUB"],
   "db_path": "/var/db/aifw/aifw.db",
   "config_dir": "/usr/local/etc/aifw"
 }
@@ -95,7 +100,7 @@ qemu-system-x86_64 \
     -cdrom "$WORK/seed.iso" \
     -netdev "user,id=wan,hostfwd=tcp:127.0.0.1:$WAN_PORT-:8080" \
     -device virtio-net-pci,netdev=wan \
-    -netdev "user,id=lan,net=192.168.1.0/24,hostfwd=tcp:127.0.0.1:$LAN_PORT-192.168.1.1:8080" \
+    -netdev "user,id=lan,net=192.168.1.0/24,hostfwd=tcp:127.0.0.1:$LAN_PORT-192.168.1.1:8080,hostfwd=tcp:127.0.0.1:$SSH_PORT-192.168.1.1:22" \
     -device virtio-net-pci,netdev=lan \
     -display none \
     -serial "file:$RESULTS_DIR/serial.log" \
@@ -171,6 +176,71 @@ printf '%s' "$status" | jq -e '.pf_running == true and (.aifw_rules | type == "n
     exit 1
 }
 log "status endpoint OK"
+
+# Create a distinctive rule, reboot the real appliance, and prove both the DB
+# record and live PF anchor recover. This catches boot ordering and disabled-PF
+# regressions that an API-only restart cannot expose.
+rule=$(curl -k -s -m 15 -X POST \
+    "$SCHEME://127.0.0.1:$LAN_PORT/api/v1/rules" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"action":"block","direction":"in","protocol":"tcp","src_addr":"203.0.113.77","dst_addr":"192.0.2.77","dst_port_start":65530,"dst_port_end":65530,"label":"smoke-reboot-persist"}')
+RULE_ID=$(printf '%s' "$rule" | jq -r '.data.id // empty')
+[ -n "$RULE_ID" ] || {
+    log "FAIL: could not create reboot-persistence rule: $rule"
+    exit 1
+}
+curl -k -s -m 30 -X POST "$SCHEME://127.0.0.1:$LAN_PORT/api/v1/reload" \
+    -H "Authorization: Bearer $TOKEN" >/dev/null || {
+    log "FAIL: reload before reboot failed"
+    exit 1
+}
+
+SSH="ssh -i $WORK/id_ed25519 -p $SSH_PORT -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5"
+ssh_elapsed=0
+while [ "$ssh_elapsed" -lt 60 ]; do
+    # shellcheck disable=SC2086
+    $SSH root@127.0.0.1 true >/dev/null 2>&1 && break
+    sleep 2
+    ssh_elapsed=$((ssh_elapsed + 2))
+done
+[ "$ssh_elapsed" -lt 60 ] || { log "FAIL: appliance SSH never became reachable"; exit 1; }
+
+log "requesting appliance reboot"
+# A successful reboot normally drops the SSH transport before it can return.
+# shellcheck disable=SC2086
+$SSH root@127.0.0.1 /sbin/shutdown -r now >/dev/null 2>&1 || true
+sleep 10
+
+TOKEN=""
+elapsed=0
+while [ "$elapsed" -lt "$TIMEOUT" ]; do
+    resp=$(curl -k -s -m 5 -X POST "$SCHEME://127.0.0.1:$LAN_PORT/api/v1/auth/login" \
+        -H 'Content-Type: application/json' -d "$login_body" 2>/dev/null) || true
+    TOKEN=$(printf '%s' "$resp" | jq -r '.tokens.access_token // empty' 2>/dev/null)
+    [ -n "$TOKEN" ] && break
+    sleep 5
+    elapsed=$((elapsed + 5))
+done
+[ -n "$TOKEN" ] || { log "FAIL: API did not recover after reboot"; exit 1; }
+
+post_status=$(curl -k -s -m 10 "$SCHEME://127.0.0.1:$LAN_PORT/api/v1/status" \
+    -H "Authorization: Bearer $TOKEN")
+printf '%s' "$post_status" | jq -e '.pf_running == true' >/dev/null 2>&1 || {
+    log "FAIL: post-reboot status reports PF is not running: $post_status"
+    exit 1
+}
+post_rules=$(curl -k -s -m 10 "$SCHEME://127.0.0.1:$LAN_PORT/api/v1/rules" \
+    -H "Authorization: Bearer $TOKEN")
+printf '%s' "$post_rules" | jq -e --arg id "$RULE_ID" '.data[] | select(.id == $id and .label == "smoke-reboot-persist")' >/dev/null 2>&1 || {
+    log "FAIL: persisted rule missing from API after reboot: $post_rules"
+    exit 1
+}
+# shellcheck disable=SC2086
+$SSH root@127.0.0.1 "pfctl -a aifw -sr" 2>/dev/null | grep -q 'smoke-reboot-persist' || {
+    log "FAIL: persisted rule missing from live PF anchor after reboot"
+    exit 1
+}
+log "reboot recovery OK; PF enabled and persisted rule live"
 
 # Default-deny on WAN: the management API port via the WAN interface must
 # NOT answer — the seed configures a LAN, so generate_pf_conf scopes the

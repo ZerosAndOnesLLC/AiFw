@@ -65,7 +65,8 @@ USB IMG unmodified with a seed ISO attached as a CD, waits for
 `aifw_firstboot` to complete unattended setup, then asserts the seeded
 admin can log in through the LAN side, invalid credentials are rejected,
 the static UI is served, live PF/rule counters are reported, and the WAN
-side stays default-denied.
+side stays default-denied. It also creates a rule, reboots the appliance,
+and verifies PF plus the persisted live rule recover after boot.
 
 ```sh
 xz -dk aifw-<ver>-amd64.img.xz
