@@ -126,6 +126,24 @@ pub fn create_conf_store() -> Arc<dyn IpsecConfStore> {
     Arc::new(MemConfStore::new())
 }
 
+/// Best-effort hook for the ACME renewal path (#568): after cert `cert_id`
+/// is renewed (or received via HA cert-push), re-apply IPsec so any tunnel
+/// referencing it presents the new material. Builds the platform-default
+/// engine; failures are only logged — the renewal itself already succeeded
+/// and must not be reported as failed because of a downstream consumer.
+pub async fn on_acme_cert_renewed(pool: &SqlitePool, cert_id: i64) {
+    let engine = IpsecEngine::new(pool.clone(), create_ike_control(), create_conf_store());
+    match engine.reapply_for_acme_cert(cert_id).await {
+        Ok(true) => {
+            tracing::info!(cert_id, "ipsec: re-applied tunnels after ACME cert renewal");
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(cert_id, error = %e, "ipsec: re-apply after ACME cert renewal failed");
+        }
+    }
+}
+
 /// Recorded state of a [`MockIkeControl`], inspectable from tests.
 #[derive(Debug, Default)]
 pub struct MockIkeState {
@@ -849,6 +867,29 @@ impl IpsecEngine {
         self.ike.load_all().await
     }
 
+    /// Re-apply if any enabled tunnel resolves its certificate from ACME
+    /// store row `cert_id` (#568). Called after that cert is renewed so the
+    /// swanctl x509/private files pick up the new material; without this a
+    /// tunnel keeps presenting the pre-renewal cert until some unrelated
+    /// IPsec change triggers an apply. Returns whether an apply ran.
+    /// Reload-safe: established SAs are unaffected until the next IKE
+    /// re-auth/rekey presents the new cert.
+    pub async fn reapply_for_acme_cert(&self, cert_id: i64) -> Result<bool> {
+        let referenced: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ipsec_tunnels \
+             WHERE enabled = 1 AND cert_source = ? AND acme_cert_id = ?",
+        )
+        .bind(aifw_common::IpsecCertSource::Acme.to_string())
+        .bind(cert_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if referenced == 0 {
+            return Ok(false);
+        }
+        self.apply_all().await?;
+        Ok(true)
+    }
+
     /// Validate, persist, and apply a new tunnel. If the apply fails the
     /// record is rolled back and the previous rendered state restored,
     /// so a bad tunnel can't take down working ones.
@@ -1291,6 +1332,76 @@ mod tests {
         let err = engine.create_tunnel_applied(t).await.unwrap_err();
         assert!(err.to_string().contains("not found"));
         assert!(engine.list_tunnels().await.unwrap().is_empty());
+    }
+
+    /// Insert an issued cert directly into `acme_cert` and return its id.
+    async fn insert_acme_cert(pool: &SqlitePool, cert_pem: &str, key_pem: &str) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO acme_cert (common_name, status, cert_pem, key_pem) \
+             VALUES ('vpn.example.com', 'active', ?, ?) RETURNING id",
+        )
+        .bind(cert_pem)
+        .bind(key_pem)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    fn acme_tunnel(name: &str, cert_id: i64) -> IpsecTunnel {
+        let mut t = tunnel(name);
+        t.auth_method = IpsecAuthMethod::Cert;
+        t.psk = String::new();
+        t.cert_source = Some(IpsecCertSource::Acme);
+        t.acme_cert_id = Some(cert_id);
+        t
+    }
+
+    #[tokio::test]
+    async fn acme_renewal_reapplies_referencing_tunnels() {
+        let (engine, ike, store) = engine().await;
+        crate::acme::migrate(&engine.pool).await.unwrap();
+        let cert_id = insert_acme_cert(&engine.pool, "OLD-CERT", "OLD-KEY").await;
+        let t = engine
+            .create_tunnel_applied(acme_tunnel("acme-site", cert_id))
+            .await
+            .unwrap();
+        let x509_path = format!("{SWANCTL_X509_DIR}/{}.pem", t.conn_name());
+        assert_eq!(store.get(&x509_path), Some(b"OLD-CERT".to_vec()));
+
+        // Simulate a renewal, then the #568 hook.
+        sqlx::query("UPDATE acme_cert SET cert_pem = 'NEW-CERT', key_pem = 'NEW-KEY' WHERE id = ?")
+            .bind(cert_id)
+            .execute(&engine.pool)
+            .await
+            .unwrap();
+        assert!(engine.reapply_for_acme_cert(cert_id).await.unwrap());
+        assert_eq!(store.get(&x509_path), Some(b"NEW-CERT".to_vec()));
+        ike.with_state(|s| assert_eq!(s.load_all_calls, 2));
+    }
+
+    #[tokio::test]
+    async fn acme_renewal_skips_apply_when_cert_unreferenced() {
+        let (engine, ike, _) = engine().await;
+        crate::acme::migrate(&engine.pool).await.unwrap();
+        let referenced = insert_acme_cert(&engine.pool, "CERT-A", "KEY-A").await;
+        let unreferenced = insert_acme_cert(&engine.pool, "CERT-B", "KEY-B").await;
+        let t = engine
+            .create_tunnel_applied(acme_tunnel("acme-site", referenced))
+            .await
+            .unwrap();
+
+        // Renewing a cert no tunnel points at must not poke charon.
+        assert!(!engine.reapply_for_acme_cert(unreferenced).await.unwrap());
+        ike.with_state(|s| assert_eq!(s.load_all_calls, 1));
+
+        // A disabled tunnel isn't rendered, so its cert doesn't trigger
+        // an apply either.
+        let mut disabled = t.clone();
+        disabled.enabled = false;
+        engine.update_tunnel_applied(disabled).await.unwrap();
+        ike.with_state(|s| assert_eq!(s.load_all_calls, 2));
+        assert!(!engine.reapply_for_acme_cert(referenced).await.unwrap());
+        ike.with_state(|s| assert_eq!(s.load_all_calls, 2));
     }
 
     #[tokio::test]

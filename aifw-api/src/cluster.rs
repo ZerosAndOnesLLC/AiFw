@@ -889,6 +889,9 @@ async fn cert_push(
     {
         Ok(_) => {
             tracing::info!(cert_id = r.cert_id, "ha: accepted cert push from master");
+            // Standby tunnels referencing this cert must also rotate to the
+            // renewed material (#568) so a failover presents a valid cert.
+            aifw_core::ipsec::on_acme_cert_renewed(&s.pool, r.cert_id).await;
             StatusCode::NO_CONTENT
         }
         Err(e) => {
