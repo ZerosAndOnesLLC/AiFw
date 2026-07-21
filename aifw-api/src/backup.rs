@@ -1733,12 +1733,43 @@ pub(crate) async fn apply_firewall_config(
         StatusCode::BAD_REQUEST
     })?;
 
-    // Restore preludes — clear existing rows before re-populating from the
-    // imported config. A failed DELETE (locked DB, FK violation, schema
-    // drift) used to warn and continue, leaving stale rows in a half-imported
-    // firewall; since #535 it aborts the restore instead. Parse/mapping skips
-    // (`continue`) below are intentional drops the import preview already
-    // surfaced; operational failures are errors.
+    // Engines whose tables may not exist yet. Their migrates are idempotent
+    // DDL — run them before the transaction so the write transaction below
+    // holds only data statements.
+    let shaping = aifw_core::shaping::ShapingEngine::new(state.pool.clone(), state.pf.clone());
+    shaping
+        .migrate()
+        .await
+        .map_err(|e| apply_fail("shaping migrate", e))?;
+    let tls_engine = aifw_core::tls::TlsEngine::new(state.pool.clone(), state.pf.clone());
+    tls_engine
+        .migrate()
+        .await
+        .map_err(|e| apply_fail("tls migrate", e))?;
+    let ha_engine = aifw_core::ha::ClusterEngine::new(state.pool.clone(), state.pf.clone());
+    ha_engine
+        .migrate()
+        .await
+        .map_err(|e| apply_fail("ha migrate", e))?;
+
+    // Single transaction for ALL database mutations (#158/#535): the
+    // DELETE-then-reinsert of every section below either commits wholesale
+    // or rolls back automatically on the first error, so the DB can never
+    // end up half-restored. pf/kernel/service state can't ride in a SQL
+    // transaction — those applies run after commit, with the snapshot
+    // wrapper (`apply_firewall_config_or_rollback`) as their recovery path.
+    // Parse/mapping skips (`continue`) below are intentional drops the
+    // import preview already surfaced; operational failures are errors.
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| apply_fail("begin restore transaction", e))?;
+
+    // NB: "queue_configs"/"rate_limit_rules" are the real shaping table
+    // names — the pre-#535 code deleted from "queues"/"rate_limits" (which
+    // don't exist) and swallowed the error, so shaping rows were never
+    // actually cleared before re-insert.
     for table in [
         "wg_peers",
         "wg_tunnels",
@@ -1749,9 +1780,16 @@ pub(crate) async fn apply_firewall_config(
         "nat_rules",
         "aliases",
         "static_routes",
+        "queue_configs",
+        "rate_limit_rules",
+        "sni_rules",
+        "ja3_blocklist",
+        "carp_vips",
+        "pfsync_config",
+        "cluster_nodes",
     ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
     }
@@ -1768,9 +1806,7 @@ pub(crate) async fn apply_firewall_config(
         rc.interface = iface_after;
         if let Some(rule) = rule_from_config(&rc) {
             let rule_id = rule.id;
-            state
-                .rule_engine
-                .add_rule(rule)
+            aifw_core::Database::insert_rule_on(&mut *tx, &rule)
                 .await
                 .map_err(|e| apply_fail(&format!("rule {rule_id} restore"), e))?;
         } else {
@@ -1786,9 +1822,7 @@ pub(crate) async fn apply_firewall_config(
         nc.interface = mapped_iface;
         if let Some(nat) = nat_from_config(&nc) {
             let nat_id = nat.id;
-            state
-                .nat_engine
-                .add_rule(nat)
+            aifw_core::nat::NatEngine::insert_rule_on(&mut *tx, &nat)
                 .await
                 .map_err(|e| apply_fail(&format!("nat rule {nat_id} restore"), e))?;
         } else {
@@ -1796,9 +1830,8 @@ pub(crate) async fn apply_firewall_config(
         }
     }
 
-    // Aliases — restored from snapshot. AliasEngine.add validates name +
-    // resyncs the pf table; failures here just skip the row (same pattern as
-    // rules/NAT above).
+    // Aliases — rows insert in the transaction; pf tables re-sync after
+    // commit (sync_all_strict below).
     for ac in &config.aliases {
         use aifw_common::{Alias, AliasType};
         let Some(alias_type) = AliasType::parse(&ac.alias_type) else {
@@ -1815,17 +1848,16 @@ pub(crate) async fn apply_firewall_config(
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
-        let alias_name = alias.name.clone();
-        state
-            .alias_engine
-            .add(alias)
+        aifw_core::AliasEngine::insert_on(&mut *tx, &alias)
             .await
-            .map_err(|e| apply_fail(&format!("alias {alias_name} restore"), e))?;
+            .map_err(|e| apply_fail(&format!("alias {} restore", alias.name), e))?;
     }
 
-    // Static routes — restored via direct INSERT + apply_route_to_system,
-    // matching what /api/v1/routes does for manual creates. Interface map
-    // applies if the snapshot pinned a specific iface.
+    // Static routes — restored via direct INSERT, matching what
+    // /api/v1/routes does for manual creates. Interface map applies if the
+    // snapshot pinned a specific iface. Kernel route application is deferred
+    // to after commit (collected here).
+    let mut kernel_routes: Vec<(aifw_core::config::StaticRouteConfig, Option<String>)> = Vec::new();
     for rc in &config.static_routes {
         let iface_after = match rc.interface.as_deref() {
             Some(name) => match map_iface(name, iface_map) {
@@ -1834,7 +1866,7 @@ pub(crate) async fn apply_firewall_config(
             },
             None => None,
         };
-        let insert_res = sqlx::query(
+        sqlx::query(
             "INSERT INTO static_routes (id, destination, gateway, interface, metric, enabled, description, created_at, fib) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )
         .bind(&rc.id)
@@ -1846,21 +1878,11 @@ pub(crate) async fn apply_firewall_config(
         .bind(rc.description.as_deref())
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(rc.fib as i64)
-        .execute(&state.pool)
-        .await;
-        insert_res
-            .map_err(|e| apply_fail(&format!("static route {} restore", rc.destination), e))?;
-        // Kernel route application stays best-effort: it shells out to
-        // `route`, which is absent/unprivileged on dev hosts, and the row is
-        // reapplied at boot.
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| apply_fail(&format!("static route {} restore", rc.destination), e))?;
         if rc.enabled {
-            crate::routes::apply_route_to_system(
-                &rc.destination,
-                &rc.gateway,
-                iface_after.as_deref(),
-                rc.fib,
-            )
-            .await;
+            kernel_routes.push((rc.clone(), iface_after));
         }
     }
 
@@ -1874,9 +1896,7 @@ pub(crate) async fn apply_firewall_config(
         rule.label = gc.label.clone();
         rule.status = gc.status;
         let country = rule.country.0.clone();
-        state
-            .geoip_engine
-            .add_rule(rule)
+        aifw_core::geoip::GeoIpEngine::insert_rule_on(&mut *tx, &rule)
             .await
             .map_err(|e| apply_fail(&format!("geo-ip rule {country} restore"), e))?;
     }
@@ -1906,12 +1926,9 @@ pub(crate) async fn apply_firewall_config(
             created_at: now,
             updated_at: now,
         };
-        let tunnel_name = tunnel.name.clone();
-        state
-            .vpn_engine
-            .add_wg_tunnel(tunnel)
+        aifw_core::vpn::VpnEngine::insert_wg_tunnel_on(&mut *tx, &tunnel)
             .await
-            .map_err(|e| apply_fail(&format!("wg tunnel {tunnel_name} restore"), e))?;
+            .map_err(|e| apply_fail(&format!("wg tunnel {} restore", tunnel.name), e))?;
         for p in &wg.peers {
             let peer_id = uuid::Uuid::parse_str(&p.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
             let allowed_ips: Vec<Address> = p
@@ -1932,12 +1949,9 @@ pub(crate) async fn apply_firewall_config(
                 created_at: now,
                 updated_at: now,
             };
-            let peer_name = peer.name.clone();
-            state
-                .vpn_engine
-                .add_wg_peer(peer)
+            aifw_core::vpn::VpnEngine::insert_wg_peer_on(&mut *tx, &peer)
                 .await
-                .map_err(|e| apply_fail(&format!("wg peer {peer_name} restore"), e))?;
+                .map_err(|e| apply_fail(&format!("wg peer {} restore", peer.name), e))?;
         }
     }
 
@@ -1953,24 +1967,178 @@ pub(crate) async fn apply_firewall_config(
         sa.id = id;
         sa.enc_algo = sac.enc_algo.clone();
         sa.auth_algo = sac.auth_algo.clone();
-        let sa_name = sa.name.clone();
-        state
-            .vpn_engine
-            .add_ipsec_sa(sa)
+        aifw_core::vpn::VpnEngine::insert_ipsec_sa_on(&mut *tx, &sa)
             .await
-            .map_err(|e| apply_fail(&format!("ipsec SA {sa_name} restore"), e))?;
+            .map_err(|e| apply_fail(&format!("ipsec SA {} restore", sa.name), e))?;
     }
 
-    // Real IPsec tunnels (#530): restore records first, then one apply to
-    // re-render swanctl config and reload charon.
+    // Real IPsec tunnels (#530): restore records in the transaction; the
+    // swanctl re-render + charon reload runs after commit.
     for tunnel in &config.vpn.ipsec_tunnels {
-        let name = tunnel.name.clone();
-        state
-            .ipsec_engine
-            .add_tunnel(tunnel.clone())
+        aifw_core::ipsec::IpsecEngine::insert_tunnel_on(&mut *tx, tunnel)
             .await
-            .map_err(|e| apply_fail(&format!("ipsec tunnel {name} restore"), e))?;
+            .map_err(|e| apply_fail(&format!("ipsec tunnel {} restore", tunnel.name), e))?;
     }
+
+    let auth = &config.auth;
+    for (key, value) in [
+        (
+            "access_token_expiry_mins",
+            auth.access_token_expiry_mins.to_string(),
+        ),
+        (
+            "refresh_token_expiry_days",
+            auth.refresh_token_expiry_days.to_string(),
+        ),
+        (
+            "require_totp",
+            if auth.require_totp { "true" } else { "false" }.to_string(),
+        ),
+    ] {
+        sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)")
+            .bind(key)
+            .bind(value)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| apply_fail(&format!("auth config {key} restore"), e))?;
+    }
+
+    // Traffic shaping: queues + per-IP rate limits (tables cleared above)
+    for qc in &config.queues {
+        let Some(mapped) = map_iface(&qc.interface, iface_map) else {
+            continue;
+        };
+        let mut qc = qc.clone();
+        qc.interface = mapped;
+        if let Some(q) = queue_from_config(&qc) {
+            aifw_core::shaping::ShapingEngine::insert_queue_on(&mut *tx, &q)
+                .await
+                .map_err(|e| apply_fail(&format!("shaping queue {} restore", qc.name), e))?;
+        }
+    }
+    for rc in &config.rate_limits {
+        let iface_after = match rc.interface.as_deref() {
+            Some(name) => match map_iface(name, iface_map) {
+                Some(m) => Some(m),
+                None => continue,
+            },
+            None => None,
+        };
+        let mut rc = rc.clone();
+        rc.interface = iface_after;
+        if let Some(r) = rate_limit_from_config(&rc) {
+            aifw_core::shaping::ShapingEngine::insert_rate_limit_on(&mut *tx, &r)
+                .await
+                .map_err(|e| apply_fail("rate limit restore", e))?;
+        }
+    }
+
+    // TLS: SNI rules + JA3 blocklist (tables cleared above)
+    for sc in &config.tls.sni_rules {
+        if let Some(sni) = sni_rule_from_config(sc) {
+            aifw_core::tls::TlsEngine::insert_sni_rule_on(&mut *tx, &sni)
+                .await
+                .map_err(|e| apply_fail(&format!("sni rule {} restore", sc.pattern), e))?;
+        }
+    }
+    for hash in &config.tls.blocked_ja3 {
+        aifw_core::tls::TlsEngine::insert_ja3_block_on(&mut *tx, hash, "restored from backup")
+            .await
+            .map_err(|e| apply_fail(&format!("ja3 block {hash} restore"), e))?;
+    }
+
+    // HA: CARP VIPs + pfsync + cluster nodes (tables cleared above)
+    for vc in &config.ha.carp_vips {
+        let Some(mapped) = map_iface(&vc.interface, iface_map) else {
+            continue;
+        };
+        let mut vc = vc.clone();
+        vc.interface = mapped;
+        if let Some(vip) = carp_vip_from_config(&vc) {
+            aifw_core::ha::ClusterEngine::insert_carp_vip_on(&mut *tx, &vip)
+                .await
+                .map_err(|e| apply_fail(&format!("carp vip {} restore", vc.virtual_ip), e))?;
+        }
+    }
+    if let Some(pc) = &config.ha.pfsync
+        && let Some(mapped_sync) = map_iface(&pc.sync_interface, iface_map)
+    {
+        let mut pc = pc.clone();
+        pc.sync_interface = mapped_sync;
+        if let Some(pfsync) = pfsync_from_config(&pc) {
+            aifw_core::ha::ClusterEngine::set_pfsync_on(&mut tx, &pfsync)
+                .await
+                .map_err(|e| apply_fail("pfsync restore", e))?;
+        }
+    }
+    for nc in &config.ha.nodes {
+        if let Some(node) = cluster_node_from_config(nc) {
+            aifw_core::ha::ClusterEngine::insert_node_on(&mut *tx, &node)
+                .await
+                .map_err(|e| apply_fail("cluster node restore", e))?;
+        }
+    }
+
+    // DHCP: subnets, reservations, global/DDNS/HA config (DB rows only; the
+    // rDHCP service regen runs after commit)
+    apply_dhcp_section_db(&mut tx, &config.dhcp).await?;
+
+    // One audit row for the whole restore, committed atomically with it.
+    // (Pre-#158 each engine `add` wrote a per-row audit entry; a restore is
+    // one operator action, not N rule additions.)
+    aifw_core::AuditLog::log_on(
+        &mut *tx,
+        aifw_core::AuditAction::ConfigChanged,
+        None,
+        &format!(
+            "config restore applied: {} rules, {} nat, {} aliases, {} geoip, {} wg, {} ipsec tunnels",
+            config.rules.len(),
+            config.nat.len(),
+            config.aliases.len(),
+            config.geoip.len(),
+            config.vpn.wireguard.len(),
+            config.vpn.ipsec_tunnels.len(),
+        ),
+        "restore",
+    )
+    .await
+    .map_err(|e| apply_fail("restore audit entry", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| apply_fail("commit restore transaction", e))?;
+
+    // ============================================================
+    // Post-commit: pf / kernel / service applies. The DB is now fully
+    // consistent; a failure below is a data-plane mismatch that must
+    // surface as an error (#535) — the snapshot wrapper re-applies the
+    // prior config to recover. Steps marked best-effort are reapplied at
+    // boot and degrade capacity, not policy.
+    // ============================================================
+
+    // Kernel route application. Best-effort: it shells out to `route`,
+    // which is absent/unprivileged on dev hosts; rows are reapplied at boot.
+    for (rc, iface_after) in &kernel_routes {
+        crate::routes::apply_route_to_system(
+            &rc.destination,
+            &rc.gateway,
+            iface_after.as_deref(),
+            rc.fib,
+        )
+        .await;
+    }
+
+    // Alias pf tables — required; a stale table means rules referencing the
+    // alias match the wrong addresses.
+    state
+        .alias_engine
+        .sync_all_strict()
+        .await
+        .map_err(|e| apply_fail("alias pf table sync", e))?;
+
+    // swanctl re-render + charon reload. Warn-only: strongSwan is a
+    // FreeBSD-side companion service absent on dev hosts; tunnels stay down
+    // until re-applied.
     if !config.vpn.ipsec_tunnels.is_empty()
         && let Err(e) = state.ipsec_engine.apply_all().await
     {
@@ -1992,156 +2160,6 @@ pub(crate) async fn apply_firewall_config(
         }
     }
 
-    let auth = &config.auth;
-    for (key, value) in [
-        (
-            "access_token_expiry_mins",
-            auth.access_token_expiry_mins.to_string(),
-        ),
-        (
-            "refresh_token_expiry_days",
-            auth.refresh_token_expiry_days.to_string(),
-        ),
-        (
-            "require_totp",
-            if auth.require_totp { "true" } else { "false" }.to_string(),
-        ),
-    ] {
-        sqlx::query("INSERT OR REPLACE INTO auth_config (key, value) VALUES (?1, ?2)")
-            .bind(key)
-            .bind(value)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| apply_fail(&format!("auth config {key} restore"), e))?;
-    }
-
-    // Traffic shaping: queues + per-IP rate limits
-    let shaping = aifw_core::shaping::ShapingEngine::new(state.pool.clone(), state.pf.clone());
-    shaping
-        .migrate()
-        .await
-        .map_err(|e| apply_fail("shaping migrate", e))?;
-    // NB: the pre-#535 code deleted from "queues"/"rate_limits" — tables that
-    // don't exist — and swallowed the error, so shaping rows were never
-    // actually cleared before re-insert. These are the real table names.
-    for table in ["queue_configs", "rate_limit_rules"] {
-        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
-            .execute(&state.pool)
-            .await
-            .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
-    }
-    for qc in &config.queues {
-        let Some(mapped) = map_iface(&qc.interface, iface_map) else {
-            continue;
-        };
-        let mut qc = qc.clone();
-        qc.interface = mapped;
-        if let Some(q) = queue_from_config(&qc) {
-            shaping
-                .add_queue(q)
-                .await
-                .map_err(|e| apply_fail(&format!("shaping queue {} restore", qc.name), e))?;
-        }
-    }
-    for rc in &config.rate_limits {
-        let iface_after = match rc.interface.as_deref() {
-            Some(name) => match map_iface(name, iface_map) {
-                Some(m) => Some(m),
-                None => continue,
-            },
-            None => None,
-        };
-        let mut rc = rc.clone();
-        rc.interface = iface_after;
-        if let Some(r) = rate_limit_from_config(&rc) {
-            shaping
-                .add_rate_limit(r)
-                .await
-                .map_err(|e| apply_fail("rate limit restore", e))?;
-        }
-    }
-    shaping
-        .apply_queues()
-        .await
-        .map_err(|e| apply_fail("shaping queues apply", e))?;
-    shaping
-        .apply_rate_limits()
-        .await
-        .map_err(|e| apply_fail("rate limits apply", e))?;
-
-    // TLS: SNI rules + JA3 blocklist
-    let tls_engine = aifw_core::tls::TlsEngine::new(state.pool.clone(), state.pf.clone());
-    tls_engine
-        .migrate()
-        .await
-        .map_err(|e| apply_fail("tls migrate", e))?;
-    for table in ["sni_rules", "ja3_blocklist"] {
-        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
-            .execute(&state.pool)
-            .await
-            .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
-    }
-    for sc in &config.tls.sni_rules {
-        if let Some(sni) = sni_rule_from_config(sc) {
-            tls_engine
-                .add_sni_rule(sni)
-                .await
-                .map_err(|e| apply_fail(&format!("sni rule {} restore", sc.pattern), e))?;
-        }
-    }
-    for hash in &config.tls.blocked_ja3 {
-        tls_engine
-            .add_ja3_block(hash, "restored from backup")
-            .await
-            .map_err(|e| apply_fail(&format!("ja3 block {hash} restore"), e))?;
-    }
-
-    // HA: CARP VIPs + pfsync + cluster nodes
-    let ha_engine = aifw_core::ha::ClusterEngine::new(state.pool.clone(), state.pf.clone());
-    ha_engine
-        .migrate()
-        .await
-        .map_err(|e| apply_fail("ha migrate", e))?;
-    for table in ["carp_vips", "pfsync_config", "cluster_nodes"] {
-        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
-            .execute(&state.pool)
-            .await
-            .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
-    }
-    for vc in &config.ha.carp_vips {
-        let Some(mapped) = map_iface(&vc.interface, iface_map) else {
-            continue;
-        };
-        let mut vc = vc.clone();
-        vc.interface = mapped;
-        if let Some(vip) = carp_vip_from_config(&vc) {
-            ha_engine
-                .add_carp_vip(vip)
-                .await
-                .map_err(|e| apply_fail(&format!("carp vip {} restore", vc.virtual_ip), e))?;
-        }
-    }
-    if let Some(pc) = &config.ha.pfsync
-        && let Some(mapped_sync) = map_iface(&pc.sync_interface, iface_map)
-    {
-        let mut pc = pc.clone();
-        pc.sync_interface = mapped_sync;
-        if let Some(pfsync) = pfsync_from_config(&pc) {
-            ha_engine
-                .set_pfsync(pfsync)
-                .await
-                .map_err(|e| apply_fail("pfsync restore", e))?;
-        }
-    }
-    for nc in &config.ha.nodes {
-        if let Some(node) = cluster_node_from_config(nc) {
-            ha_engine
-                .add_node(node)
-                .await
-                .map_err(|e| apply_fail("cluster node restore", e))?;
-        }
-    }
-
     // pf state-table tuning. Best-effort: this shells out to system tooling
     // absent on dev hosts, the same setting is reapplied at every boot
     // (`pf_tuning::apply_on_boot`, also warn-only), and a missed tuning value
@@ -2156,11 +2174,21 @@ pub(crate) async fn apply_firewall_config(
         }
     }
 
-    // DHCP: subnets, reservations, global/DDNS/HA config
-    apply_dhcp_section(state, &config.dhcp).await?;
+    // Regenerate rDHCP TOML + restart service so the restored config takes
+    // effect. Best-effort: the companion service may be absent (dev hosts);
+    // the DB rows are authoritative and reapplied at boot.
+    crate::dhcp::auto_apply(state).await;
 
     // Final data-plane applies — a failure here means the kernel does NOT
     // match the restored DB, so it must not report success (#535).
+    shaping
+        .apply_queues()
+        .await
+        .map_err(|e| apply_fail("shaping queues apply", e))?;
+    shaping
+        .apply_rate_limits()
+        .await
+        .map_err(|e| apply_fail("rate limits apply", e))?;
     let vpn_rules = state
         .vpn_engine
         .collect_vpn_rules()
@@ -2186,13 +2214,15 @@ pub(crate) async fn apply_firewall_config(
     Ok(())
 }
 
-async fn apply_dhcp_section(
-    state: &AppState,
+/// DHCP section of a restore — DB rows only, on the caller's transaction
+/// connection (#158/#535). The rDHCP service regen (`dhcp::auto_apply`)
+/// runs post-commit in `apply_firewall_config`.
+async fn apply_dhcp_section_db(
+    conn: &mut sqlx::SqliteConnection,
     dhcp: &aifw_core::config::DhcpSection,
 ) -> Result<(), StatusCode> {
-    // Wipe + re-insert for a clean restore. `auto_apply` at the end regenerates
-    // the rDHCP TOML config and restarts the service. DB mutations are
-    // required steps (#535); only the service regeneration is best-effort.
+    // Wipe + re-insert for a clean restore. DB mutations are required
+    // steps (#535).
     for table in [
         "dhcp_subnets",
         "dhcp_reservations",
@@ -2201,7 +2231,7 @@ async fn apply_dhcp_section(
         "dhcp_ha_config",
     ] {
         sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
-            .execute(&state.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| apply_fail(&format!("clearing {table}"), e))?;
     }
@@ -2256,7 +2286,7 @@ async fn apply_dhcp_section(
         sqlx::query("INSERT OR REPLACE INTO dhcp_config (key, value) VALUES (?1, ?2)")
             .bind(k)
             .bind(v)
-            .execute(&state.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| apply_fail(&format!("dhcp config {k} restore"), e))?;
     }
@@ -2333,7 +2363,7 @@ async fn apply_dhcp_section(
         .bind(&s.ntp_servers)
         .bind(&options_json)
         .bind(&s.created_at)
-        .execute(&state.pool)
+        .execute(&mut *conn)
         .await
         .map_err(|e| apply_fail(&format!("dhcp subnet {} restore", s.network), e))?;
     }
@@ -2346,7 +2376,7 @@ async fn apply_dhcp_section(
         )
         .bind(&r.id).bind(&r.subnet_id).bind(&r.mac_address).bind(&r.ip_address)
         .bind(&r.hostname).bind(&r.client_id).bind(&r.description).bind(&r.created_at)
-        .execute(&state.pool).await
+        .execute(&mut *conn).await
         .map_err(|e| apply_fail(&format!("dhcp reservation {} restore", r.ip_address), e))?;
     }
 
@@ -2373,7 +2403,7 @@ async fn apply_dhcp_section(
         sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")
             .bind(k)
             .bind(v)
-            .execute(&state.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| apply_fail(&format!("dhcp ddns config {k} restore"), e))?;
     }
@@ -2410,15 +2440,11 @@ async fn apply_dhcp_section(
         sqlx::query("INSERT OR REPLACE INTO dhcp_ha_config (key, value) VALUES (?1, ?2)")
             .bind(k)
             .bind(v)
-            .execute(&state.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| apply_fail(&format!("dhcp ha config {k} restore"), e))?;
     }
 
-    // Regenerate rDHCP TOML + restart service so the restored config takes
-    // effect. Best-effort: the companion service may be absent (dev hosts);
-    // the DB rows above are authoritative and reapplied at boot.
-    crate::dhcp::auto_apply(state).await;
     Ok(())
 }
 

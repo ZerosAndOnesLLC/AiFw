@@ -88,6 +88,23 @@ impl AliasEngine {
     /// 1-31 alphanumeric/`_`/`-` chars or is reserved (`bruteforce`,
     /// `ai_blocked`).
     pub async fn add(&self, alias: Alias) -> Result<Alias> {
+        Self::insert_on(&self.pool, &alias).await?;
+
+        if alias.enabled {
+            self.sync_to_pf(&alias).await?;
+        }
+
+        tracing::info!(name = %alias.name, alias_type = %alias.alias_type, entries = alias.entries.len(), "alias created");
+        Ok(alias)
+    }
+
+    /// Executor-generic validate + insert with no pf side effects. Public so
+    /// the transactional restore path (#158/#535) can batch alias rows with
+    /// every other section; pf tables are re-synced after commit.
+    pub async fn insert_on<'e, E>(exec: E, alias: &Alias) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         Self::validate_name(&alias.name)?;
         let entries_json = serde_json::to_string(&alias.entries)
             .map_err(|e| AifwError::Validation(e.to_string()))?;
@@ -96,14 +113,8 @@ impl AliasEngine {
             .bind(alias.id.to_string()).bind(&alias.name).bind(alias.alias_type.as_str())
             .bind(&entries_json).bind(alias.description.as_deref())
             .bind(alias.enabled).bind(alias.created_at.to_rfc3339()).bind(alias.updated_at.to_rfc3339())
-            .execute(&self.pool).await.map_err(|e| AifwError::Database(e.to_string()))?;
-
-        if alias.enabled {
-            self.sync_to_pf(&alias).await?;
-        }
-
-        tracing::info!(name = %alias.name, alias_type = %alias.alias_type, entries = alias.entries.len(), "alias created");
-        Ok(alias)
+            .execute(exec).await.map_err(|e| AifwError::Database(e.to_string()))?;
+        Ok(())
     }
 
     /// Update an alias row, then flush and repopulate its pf table (only
@@ -148,6 +159,20 @@ impl AliasEngine {
             .map_err(|e| AifwError::Database(e.to_string()))?;
 
         tracing::info!(name = %alias.name, "alias deleted");
+        Ok(())
+    }
+
+    /// Sync all enabled aliases to pf tables, failing on the first error.
+    /// The restore path uses this after its transaction commits so a pf-side
+    /// failure surfaces as a required-step error (#535) instead of the
+    /// warn-and-continue behavior of [`Self::sync_all`].
+    pub async fn sync_all_strict(&self) -> Result<()> {
+        for alias in self.list().await? {
+            if alias.enabled {
+                let _ = self.pf.flush_table(&alias.name).await;
+                self.sync_to_pf(&alias).await?;
+            }
+        }
         Ok(())
     }
 

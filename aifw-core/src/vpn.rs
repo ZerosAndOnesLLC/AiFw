@@ -162,6 +162,26 @@ impl VpnEngine {
             )));
         }
 
+        Self::insert_wg_tunnel_on(&self.pool, &tunnel).await?;
+
+        tracing::info!(id = %tunnel.id, name = %tunnel.name, "WireGuard tunnel added");
+        Ok(tunnel)
+    }
+
+    /// Executor-generic validate + insert with no duplicate-port lookup
+    /// (callers must ensure port uniqueness, e.g. the restore path
+    /// pre-validates the whole config). Public for the transactional restore
+    /// path (#158/#535).
+    pub async fn insert_wg_tunnel_on<'e, E>(exec: E, tunnel: &WgTunnel) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        if tunnel.name.is_empty() {
+            return Err(AifwError::Validation("tunnel name required".to_string()));
+        }
+        if tunnel.listen_port == 0 {
+            return Err(AifwError::Validation("listen port required".to_string()));
+        }
         sqlx::query(
             r#"
             INSERT INTO wg_tunnels (id, name, interface, private_key, public_key, listen_port,
@@ -183,11 +203,9 @@ impl VpnEngine {
         .bind(tunnel.status.to_string())
         .bind(tunnel.created_at.to_rfc3339())
         .bind(tunnel.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-
-        tracing::info!(id = %tunnel.id, name = %tunnel.name, "WireGuard tunnel added");
-        Ok(tunnel)
+        Ok(())
     }
 
     /// All WireGuard tunnels, oldest first
@@ -327,6 +345,25 @@ impl VpnEngine {
             }
         }
 
+        Self::insert_wg_peer_on(&self.pool, &peer).await?;
+
+        tracing::info!(id = %peer.id, name = %peer.name, "WireGuard peer added");
+        Ok(peer)
+    }
+
+    /// Executor-generic validate + insert with no tunnel-exists or
+    /// duplicate-IP lookups (the restore path inserts the tunnel in the same
+    /// transaction, so those pool-side reads would not see it). Public for
+    /// the transactional restore path (#158/#535).
+    pub async fn insert_wg_peer_on<'e, E>(exec: E, peer: &WgPeer) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        if peer.public_key.is_empty() {
+            return Err(AifwError::Validation(
+                "peer public key required".to_string(),
+            ));
+        }
         let allowed_ips: Vec<String> = peer.allowed_ips.iter().map(|a| a.to_string()).collect();
 
         sqlx::query(
@@ -347,11 +384,9 @@ impl VpnEngine {
         .bind(peer.persistent_keepalive.map(|k| k as i64))
         .bind(peer.created_at.to_rfc3339())
         .bind(peer.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-
-        tracing::info!(id = %peer.id, name = %peer.name, "WireGuard peer added");
-        Ok(peer)
+        Ok(())
     }
 
     /// Peers of one tunnel, oldest first
@@ -442,6 +477,17 @@ impl VpnEngine {
     /// Insert an IPsec security-association row. Fails validation when the
     /// name is empty
     pub async fn add_ipsec_sa(&self, sa: IpsecSa) -> Result<IpsecSa> {
+        Self::insert_ipsec_sa_on(&self.pool, &sa).await?;
+        tracing::info!(id = %sa.id, name = %sa.name, "IPsec SA added");
+        Ok(sa)
+    }
+
+    /// Executor-generic validate + insert. Public for the transactional
+    /// restore path (#158/#535).
+    pub async fn insert_ipsec_sa_on<'e, E>(exec: E, sa: &IpsecSa) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         if sa.name.is_empty() {
             return Err(AifwError::Validation("SA name required".to_string()));
         }
@@ -465,11 +511,9 @@ impl VpnEngine {
         .bind(sa.status.to_string())
         .bind(sa.created_at.to_rfc3339())
         .bind(sa.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-
-        tracing::info!(id = %sa.id, name = %sa.name, "IPsec SA added");
-        Ok(sa)
+        Ok(())
     }
 
     /// All IPsec SAs, oldest first

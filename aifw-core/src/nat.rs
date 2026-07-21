@@ -272,7 +272,9 @@ impl NatEngine {
         Ok(())
     }
 
-    async fn insert_rule_on<'e, E>(exec: E, rule: &NatRule) -> Result<()>
+    /// Executor-generic insert. Public so the transactional restore path
+    /// (#158/#535) can batch NAT rows with every other section.
+    pub async fn insert_rule_on<'e, E>(exec: E, rule: &NatRule) -> Result<()>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {

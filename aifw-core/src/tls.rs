@@ -81,6 +81,17 @@ impl TlsEngine {
 
     /// Insert an SNI rule row. Fails validation when the pattern is empty
     pub async fn add_sni_rule(&self, rule: SniRule) -> Result<SniRule> {
+        Self::insert_sni_rule_on(&self.pool, &rule).await?;
+        tracing::info!(id = %rule.id, pattern = %rule.pattern, action = %rule.action, "SNI rule added");
+        Ok(rule)
+    }
+
+    /// Executor-generic validate + insert. Public for the transactional
+    /// restore path (#158/#535).
+    pub async fn insert_sni_rule_on<'e, E>(exec: E, rule: &SniRule) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         if rule.pattern.is_empty() {
             return Err(AifwError::Validation("SNI pattern required".to_string()));
         }
@@ -95,11 +106,9 @@ impl TlsEngine {
         .bind(match rule.status { SniRuleStatus::Active => "active", SniRuleStatus::Disabled => "disabled" })
         .bind(rule.created_at.to_rfc3339())
         .bind(rule.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-
-        tracing::info!(id = %rule.id, pattern = %rule.pattern, action = %rule.action, "SNI rule added");
-        Ok(rule)
+        Ok(())
     }
 
     /// All SNI rules ordered by pattern
@@ -139,15 +148,25 @@ impl TlsEngine {
 
     /// Insert or replace a JA3 fingerprint hash in the blocklist
     pub async fn add_ja3_block(&self, hash: &str, description: &str) -> Result<()> {
+        Self::insert_ja3_block_on(&self.pool, hash, description).await?;
+        tracing::info!(hash, "JA3 hash blocked");
+        Ok(())
+    }
+
+    /// Executor-generic insert. Public for the transactional restore path
+    /// (#158/#535).
+    pub async fn insert_ja3_block_on<'e, E>(exec: E, hash: &str, description: &str) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         sqlx::query(
             "INSERT OR REPLACE INTO ja3_blocklist (hash, description, created_at) VALUES (?1, ?2, ?3)",
         )
         .bind(hash)
         .bind(description)
         .bind(Utc::now().to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-        tracing::info!(hash, "JA3 hash blocked");
         Ok(())
     }
 

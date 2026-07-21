@@ -2297,6 +2297,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_mid_apply_failure_rolls_back_db_transaction() {
+        // Force a failure LATE in the apply (the DHCP clear runs after every
+        // rules/NAT/alias insert) and verify the single restore transaction
+        // (#158) rewinds everything — the pre-restore rows must survive
+        // untouched even without the snapshot-reapply wrapper.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let rule = aifw_common::Rule::new(
+            aifw_common::Action::Pass,
+            aifw_common::Direction::In,
+            aifw_common::Protocol::Tcp,
+            aifw_common::RuleMatch {
+                src_addr: aifw_common::Address::Any,
+                src_port: None,
+                dst_addr: aifw_common::Address::Any,
+                dst_port: None,
+            },
+        );
+        let rule_id = state.rule_engine.add_rule(rule).await.unwrap().id;
+
+        let config = crate::backup::build_current_config(&state).await.unwrap();
+        sqlx::query("DROP TABLE dhcp_subnets")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let res = crate::backup::apply_firewall_config(&state, &config, &Default::default()).await;
+        assert!(res.is_err(), "late failure must abort the restore");
+
+        let rules = state.rule_engine.list_rules().await.unwrap();
+        assert_eq!(rules.len(), 1, "transaction rollback must keep prior rows");
+        assert_eq!(rules[0].id, rule_id);
+    }
+
+    #[tokio::test]
+    async fn test_restore_1k_rules_round_trips() {
+        // #158 acceptance: a large config restores through the single
+        // transaction and every row survives the round trip.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let mut config = crate::backup::build_current_config(&state).await.unwrap();
+        for i in 0..1000 {
+            config.rules.push(aifw_core::config::RuleConfig {
+                id: uuid::Uuid::new_v4().to_string(),
+                priority: i,
+                action: aifw_common::Action::Pass,
+                direction: aifw_common::Direction::In,
+                protocol: aifw_common::Protocol::Tcp,
+                interface: None,
+                src_addr: Some("any".to_string()),
+                src_port_start: None,
+                src_port_end: None,
+                dst_addr: Some("any".to_string()),
+                dst_port_start: Some(1000 + i as u16),
+                dst_port_end: Some(1000 + i as u16),
+                log: false,
+                quick: true,
+                label: Some(format!("bulk-{i}")),
+                state_tracking: aifw_common::StateTracking::KeepState,
+                status: aifw_common::RuleStatus::Active,
+                ip_version: aifw_common::IpVersion::Both,
+                src_invert: false,
+                dst_invert: false,
+                schedule_id: None,
+                gateway: None,
+            });
+        }
+        let started = std::time::Instant::now();
+        crate::backup::apply_firewall_config(&state, &config, &Default::default())
+            .await
+            .expect("bulk restore must succeed");
+        let elapsed = started.elapsed();
+        let rules = state.rule_engine.list_rules().await.unwrap();
+        assert_eq!(rules.len(), 1000, "every rule must survive the round trip");
+        // Generous bound — the point is one transaction, not per-row fsyncs.
+        assert!(elapsed.as_secs() < 30, "bulk restore took {elapsed:?}");
+    }
+
+    #[tokio::test]
     async fn test_prevalidation_rejects_bad_config_without_mutation() {
         // A config that would abort mid-apply (rule priority out of range)
         // must be rejected up front with 400 and zero rows touched (#535).

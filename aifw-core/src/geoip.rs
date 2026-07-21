@@ -99,6 +99,17 @@ impl GeoIpEngine {
     /// Insert a per-country block/allow rule row. pf tables aren't touched
     /// until the geo-IP rules are next applied
     pub async fn add_rule(&self, rule: GeoIpRule) -> Result<GeoIpRule> {
+        Self::insert_rule_on(&self.pool, &rule).await?;
+        tracing::info!(id = %rule.id, country = %rule.country, action = %rule.action, "geo-ip rule added");
+        Ok(rule)
+    }
+
+    /// Executor-generic insert. Public so the transactional restore path
+    /// (#158/#535) can batch geo-IP rows with every other section.
+    pub async fn insert_rule_on<'e, E>(exec: E, rule: &GeoIpRule) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         sqlx::query(
             r#"
             INSERT INTO geoip_rules (id, country, action, label, status, created_at, updated_at)
@@ -115,11 +126,9 @@ impl GeoIpEngine {
         })
         .bind(rule.created_at.to_rfc3339())
         .bind(rule.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-
-        tracing::info!(id = %rule.id, country = %rule.country, action = %rule.action, "geo-ip rule added");
-        Ok(rule)
+        Ok(())
     }
 
     /// All geo-IP rules ordered by country code
