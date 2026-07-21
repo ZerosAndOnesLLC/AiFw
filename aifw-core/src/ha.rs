@@ -169,6 +169,17 @@ impl ClusterEngine {
 
     /// Store a new CARP virtual IP. Fails validation if VHID is 0 or the password is empty
     pub async fn add_carp_vip(&self, vip: CarpVip) -> Result<CarpVip> {
+        Self::insert_carp_vip_on(&self.pool, &vip).await?;
+        tracing::info!(id = %vip.id, vhid = vip.vhid, ip = %vip.virtual_ip, "CARP VIP added");
+        Ok(vip)
+    }
+
+    /// Executor-generic validate + insert. Public for the transactional
+    /// restore path (#158/#535).
+    pub async fn insert_carp_vip_on<'e, E>(exec: E, vip: &CarpVip) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         if vip.vhid == 0 {
             return Err(AifwError::Validation("VHID must be > 0".to_string()));
         }
@@ -192,11 +203,9 @@ impl ClusterEngine {
         .bind(vip.status.to_string())
         .bind(vip.created_at.to_rfc3339())
         .bind(vip.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-
-        tracing::info!(id = %vip.id, vhid = vip.vhid, ip = %vip.virtual_ip, "CARP VIP added");
-        Ok(vip)
+        Ok(())
     }
 
     /// List all configured CARP VIPs ordered by VHID
@@ -251,9 +260,23 @@ impl ClusterEngine {
 
     /// Store the pfsync configuration, replacing any existing one (singleton table)
     pub async fn set_pfsync(&self, config: PfsyncConfig) -> Result<PfsyncConfig> {
+        let mut conn = self.pool.acquire().await?;
+        Self::set_pfsync_on(&mut conn, &config).await?;
+        tracing::info!(interface = %config.sync_interface, "pfsync configured");
+        Ok(config)
+    }
+
+    /// Replace the pfsync config (DELETE + INSERT) on a single connection.
+    /// Public for the transactional restore path (#158/#535); takes `&mut
+    /// SqliteConnection` rather than a generic executor because it runs two
+    /// statements.
+    pub async fn set_pfsync_on(
+        conn: &mut sqlx::SqliteConnection,
+        config: &PfsyncConfig,
+    ) -> Result<()> {
         // Replace any existing config
         sqlx::query("DELETE FROM pfsync_config")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
 
         sqlx::query(
@@ -273,11 +296,9 @@ impl ClusterEngine {
         .bind(config.heartbeat_interval_ms.map(|n| n as i64))
         .bind(config.dhcp_link)
         .bind(config.created_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await?;
-
-        tracing::info!(interface = %config.sync_interface, "pfsync configured");
-        Ok(config)
+        Ok(())
     }
 
     /// Fetch the pfsync configuration, or `None` if pfsync has never been configured
@@ -296,6 +317,17 @@ impl ClusterEngine {
 
     /// Register a peer node in the cluster. Fails validation if the name is empty
     pub async fn add_node(&self, node: ClusterNode) -> Result<ClusterNode> {
+        Self::insert_node_on(&self.pool, &node).await?;
+        tracing::info!(name = %node.name, role = %node.role, "cluster node added");
+        Ok(node)
+    }
+
+    /// Executor-generic validate + insert. Public for the transactional
+    /// restore path (#158/#535).
+    pub async fn insert_node_on<'e, E>(exec: E, node: &ClusterNode) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         if node.name.is_empty() {
             return Err(AifwError::Validation("node name required".to_string()));
         }
@@ -314,11 +346,9 @@ impl ClusterEngine {
         .bind(node.last_seen.to_rfc3339())
         .bind(node.config_version as i64)
         .bind(node.created_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-
-        tracing::info!(name = %node.name, role = %node.role, "cluster node added");
-        Ok(node)
+        Ok(())
     }
 
     /// List all registered cluster nodes ordered by name

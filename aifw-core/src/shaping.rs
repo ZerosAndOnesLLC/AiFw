@@ -90,7 +90,7 @@ impl ShapingEngine {
     /// Insert a queue config row. pf isn't touched until
     /// [`Self::apply_queues`]
     pub async fn add_queue(&self, config: QueueConfig) -> Result<QueueConfig> {
-        self.insert_queue(&config).await?;
+        Self::insert_queue_on(&self.pool, &config).await?;
         tracing::info!(id = %config.id, name = %config.name, "queue added");
         Ok(config)
     }
@@ -153,20 +153,7 @@ impl ShapingEngine {
     /// `max_connections` or `window_secs` is 0 or the overload table name
     /// is empty. pf isn't touched until [`Self::apply_rate_limits`]
     pub async fn add_rate_limit(&self, rule: RateLimitRule) -> Result<RateLimitRule> {
-        if rule.max_connections == 0 {
-            return Err(AifwError::Validation(
-                "max_connections must be > 0".to_string(),
-            ));
-        }
-        if rule.window_secs == 0 {
-            return Err(AifwError::Validation("window_secs must be > 0".to_string()));
-        }
-        if rule.overload_table.is_empty() {
-            return Err(AifwError::Validation(
-                "overload_table name required".to_string(),
-            ));
-        }
-        self.insert_rate_limit(&rule).await?;
+        Self::insert_rate_limit_on(&self.pool, &rule).await?;
         tracing::info!(id = %rule.id, name = %rule.name, "rate limit rule added");
         Ok(rule)
     }
@@ -221,7 +208,12 @@ impl ShapingEngine {
 
     // --- DB helpers ---
 
-    async fn insert_queue(&self, q: &QueueConfig) -> Result<()> {
+    /// Executor-generic insert. Public for the transactional restore path
+    /// (#158/#535).
+    pub async fn insert_queue_on<'e, E>(exec: E, q: &QueueConfig) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let bw_unit = match q.bandwidth.unit {
             BandwidthUnit::Bps => "bps",
             BandwidthUnit::Kbps => "kbps",
@@ -250,12 +242,30 @@ impl ShapingEngine {
         })
         .bind(q.created_at.to_rfc3339())
         .bind(q.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
         Ok(())
     }
 
-    async fn insert_rate_limit(&self, r: &RateLimitRule) -> Result<()> {
+    /// Executor-generic validate + insert. Public for the transactional
+    /// restore path (#158/#535).
+    pub async fn insert_rate_limit_on<'e, E>(exec: E, r: &RateLimitRule) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        if r.max_connections == 0 {
+            return Err(AifwError::Validation(
+                "max_connections must be > 0".to_string(),
+            ));
+        }
+        if r.window_secs == 0 {
+            return Err(AifwError::Validation("window_secs must be > 0".to_string()));
+        }
+        if r.overload_table.is_empty() {
+            return Err(AifwError::Validation(
+                "overload_table name required".to_string(),
+            ));
+        }
         sqlx::query(
             r#"
             INSERT INTO rate_limit_rules (id, name, interface, protocol, src_addr, dst_addr,
@@ -282,7 +292,7 @@ impl ShapingEngine {
         })
         .bind(r.created_at.to_rfc3339())
         .bind(r.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
         Ok(())
     }

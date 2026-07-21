@@ -96,6 +96,10 @@ async fn pfctl_stdin(args: &[&str], input: &str) -> Result<std::process::Output,
 
 #[async_trait]
 impl PfBackend for PfIoctl {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), PfError> {
         let output = pfctl_stdin(&["-a", anchor, "-f", "-"], rule).await?;
         if !output.status.success() {

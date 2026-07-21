@@ -580,6 +580,19 @@ pub async fn import_opnsense(
     let pre_apply_snapshot_json = match crate::backup::capture_runtime_snapshot(&state).await {
         Ok(snap) => Some(snap),
         Err(e) => {
+            // The caller asked for a commit-confirm safety net; importing
+            // without a rollback target would silently strip it (#535).
+            // Refuse up front rather than apply unprotected.
+            if req.commit_confirm {
+                tracing::error!(
+                    ?e,
+                    "aborting import: commit-confirm requested but pre-apply snapshot capture failed"
+                );
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not capture the pre-import snapshot needed for commit-confirm rollback — import aborted; retry or disable commit_confirm".into(),
+                ));
+            }
             tracing::warn!(
                 ?e,
                 "failed to capture pre-apply snapshot; commit-confirm rollback target unavailable"

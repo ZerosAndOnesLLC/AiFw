@@ -189,8 +189,9 @@ impl Database {
     }
 
     /// Executor-generic variant so engines can run the insert inside a
-    /// transaction alongside its audit row (PERF-H6 #350).
-    pub(crate) async fn insert_rule_on<'e, E>(exec: E, rule: &Rule) -> Result<()>
+    /// transaction alongside its audit row (PERF-H6 #350) and the restore
+    /// path can batch every section into one transaction (#158/#535).
+    pub async fn insert_rule_on<'e, E>(exec: E, rule: &Rule) -> Result<()>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {

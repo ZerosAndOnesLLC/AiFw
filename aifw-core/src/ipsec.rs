@@ -625,6 +625,17 @@ impl IpsecEngine {
 
     /// Validate and persist a new tunnel.
     pub async fn add_tunnel(&self, tunnel: IpsecTunnel) -> Result<IpsecTunnel> {
+        Self::insert_tunnel_on(&self.pool, &tunnel).await?;
+        Ok(tunnel)
+    }
+
+    /// Executor-generic validate + insert with no swanctl side effects.
+    /// Public for the transactional restore path (#158/#535); callers apply
+    /// the swanctl config separately.
+    pub async fn insert_tunnel_on<'e, E>(exec: E, tunnel: &IpsecTunnel) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         tunnel.validate()?;
         sqlx::query(
             r#"
@@ -664,9 +675,9 @@ impl IpsecEngine {
         .bind(tunnel.start_action.to_string())
         .bind(tunnel.created_at.to_rfc3339())
         .bind(tunnel.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-        Ok(tunnel)
+        Ok(())
     }
 
     /// All tunnels, oldest first.
