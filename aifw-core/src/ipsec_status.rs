@@ -23,22 +23,41 @@ enum Node {
 }
 
 /// Tokenize: whitespace-separated atoms, with `{ } [ ]` split off token
-/// edges. A bare `=` token is the key/value separator; `=` inside an
-/// atom (DN identities like `C=US`) stays part of the atom.
+/// edges. The real appliance emits the compact form `key=value` with no
+/// spaces (verified on FreeBSD 15 / strongSwan 5.9), so a fragment
+/// containing `=` splits at the FIRST `=` into key / `=` / value —
+/// later `=` chars stay in the value (DN identities like `C=US`). The
+/// indented `key = value` form tokenizes naturally via the standalone
+/// `=` word.
 fn tokenize(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
+    let push_fragment = |frag: &str, tokens: &mut Vec<String>| {
+        if frag.is_empty() {
+            return;
+        }
+        if frag == "=" {
+            tokens.push("=".to_string());
+            return;
+        }
+        match frag.split_once('=') {
+            Some((key, value)) if !key.is_empty() => {
+                tokens.push(key.to_string());
+                tokens.push("=".to_string());
+                if !value.is_empty() {
+                    tokens.push(value.to_string());
+                }
+            }
+            _ => tokens.push(frag.to_string()),
+        }
+    };
     for word in input.split_whitespace() {
         let mut rest = word;
         loop {
             let Some(pos) = rest.find(['{', '}', '[', ']']) else {
-                if !rest.is_empty() {
-                    tokens.push(rest.to_string());
-                }
+                push_fragment(rest, &mut tokens);
                 break;
             };
-            if pos > 0 {
-                tokens.push(rest[..pos].to_string());
-            }
+            push_fragment(&rest[..pos], &mut tokens);
             tokens.push(rest[pos..pos + 1].to_string());
             rest = &rest[pos + 1..];
         }
@@ -70,7 +89,7 @@ fn parse_entries(tokens: &[String], pos: &mut usize) -> Vec<(String, Node)> {
                     }
                     *pos += 1; // consume "]"
                     entries.push((key, Node::List(items)));
-                } else if *pos < tokens.len() {
+                } else if *pos < tokens.len() && tokens[*pos] != "{" && tokens[*pos] != "}" {
                     entries.push((key, Node::Value(tokens[*pos].clone())));
                     *pos += 1;
                 }
@@ -306,6 +325,25 @@ mod tests {
             .get("aifw-11111111-2222-3333-4444-555555555555")
             .unwrap();
         assert_eq!(sa.ike_state, "CONNECTING");
+        assert!(sa.child_sas.is_empty());
+    }
+
+    // Captured verbatim from FreeBSD 15.0 / strongSwan 5.9.14
+    // (`aifw-sudo-swanctl --list-sas --raw`, tunnel initiating toward an
+    // unreachable peer). The real compact form has NO spaces around `=`.
+    const RAW_REAL: &str = "list-sa event {aifw-2034aa9d-ef08-4c9f-a4c4-f6d80c888823 {uniqueid=1 version=2 state=CONNECTING local-host=172.29.50.220 local-port=500 local-id=%any remote-host=203.0.113.10 remote-port=500 remote-id=%any initiator=yes initiator-spi=00f1cbca60dae3e7 responder-spi=0000000000000000 tasks-active=[IKE_VENDOR IKE_INIT IKE_NATD IKE_CERT_PRE IKE_AUTH IKE_CERT_POST IKE_CONFIG IKE_AUTH_LIFETIME IKE_MOBIKE IKE_ESTABLISH CHILD_CREATE] child-sas {}}}\nlist-sas reply {}\n";
+
+    #[test]
+    fn real_freebsd_compact_output_parses() {
+        let map = parse_list_sas(RAW_REAL);
+        assert_eq!(map.len(), 1);
+        let sa = map
+            .get("aifw-2034aa9d-ef08-4c9f-a4c4-f6d80c888823")
+            .unwrap();
+        assert_eq!(sa.ike_state, "CONNECTING");
+        assert_eq!(sa.ike_version, Some(2));
+        assert_eq!(sa.remote_host.as_deref(), Some("203.0.113.10"));
+        assert_eq!(sa.established_secs, None);
         assert!(sa.child_sas.is_empty());
     }
 }
