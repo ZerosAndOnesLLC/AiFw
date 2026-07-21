@@ -20,10 +20,21 @@ fi
 
 DEST="$1"
 
+# Wildcard-leaf entries below make '..'/'//' traversal a concern (sh
+# case '*' matches '/' too) — reject those forms outright.
+case "$DEST" in
+    *..*|*//*)
+        echo "aifw-sudo-write: '..' or '//' not allowed: $DEST" >&2
+        exit 1
+        ;;
+esac
+
 # Allowlisted destinations + per-path mode/owner. daemon.key is the
 # inter-service auth secret (read by aifw-daemon as the aifw user) and
 # stays root-owned at 640 so a compromise of any of the API/UI surface
-# can't overwrite or chmod the on-disk material.
+# can't overwrite or chmod the on-disk material. swanctl material
+# (#530) is root-owned: conn files + private keys 600 (PSKs/keys are
+# secrets, charon reads them as root), certs 644.
 case "$DEST" in
     /etc/pf.conf)
         FMODE=644; FOWNER=root:wheel ;;
@@ -31,6 +42,14 @@ case "$DEST" in
         FMODE=644; FOWNER=root:wheel ;;
     /usr/local/etc/aifw/daemon.key)
         FMODE=640; FOWNER=root:aifw ;;
+    /usr/local/etc/swanctl/conf.d/aifw-*.conf)
+        FMODE=600; FOWNER=root:wheel ;;
+    /usr/local/etc/swanctl/private/aifw-*.pem)
+        FMODE=600; FOWNER=root:wheel ;;
+    /usr/local/etc/swanctl/x509/aifw-*.pem)
+        FMODE=644; FOWNER=root:wheel ;;
+    /usr/local/etc/swanctl/x509ca/aifw-*.pem)
+        FMODE=644; FOWNER=root:wheel ;;
     *)
         echo "aifw-sudo-write: refusing write outside allowlist: $DEST" >&2
         exit 1

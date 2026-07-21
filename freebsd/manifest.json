@@ -6,6 +6,9 @@
     "local": ["aifw", "aifw-daemon", "aifw-api", "aifw-ids", "aifw-tui", "aifw-setup"]
   },
 
+  "packages": ["curl", "strongswan", "sudo", "unbound", "wireguard-tools"],
+  "_packages_comment": "OS packages required at runtime. build-iso.sh installs them into the image; deploy.sh ensures them on the dev VM; the in-app updater installs any that are missing during upgrade. A workspace test (aifw-core packaging_tests) asserts the build scripts stay in sync with this list.",
+
   "external_repos": [
     {
       "_comment": "commit pins the exact revision built into appliance artifacts (#538). CI and build-local.sh check out and verify this SHA and fail if it is missing. To take a companion update: review the upstream diff, bump the SHA here, and land it through a PR.",
@@ -75,6 +78,10 @@
     "/usr/local/etc/rtime",
     "/var/run/rtime",
     "/var/log/rtime",
-    "/usr/local/lib/aifw/plugins"
+    "/usr/local/lib/aifw/plugins",
+    "/usr/local/etc/swanctl/conf.d",
+    "/usr/local/etc/swanctl/private",
+    "/usr/local/etc/swanctl/x509",
+    "/usr/local/etc/swanctl/x509ca"
   ]
 }

@@ -1,318 +1,216 @@
-# AiFw Enterprise Multi-WAN — Working Plan
+# AiFw IPsec Data Plane (#530) — Working Plan
 
-Goal: add multi-WAN support that exceeds Cisco (IOS PBR + IP SLA + track objects) and Juniper (routing-instances, RPM, `then routing-instance`, rib-groups) in features, usability, correctness, and observability.
+Goal: replace the CRUD-only IPsec surface with a real data plane: strongSwan
+(charon) as the IKE daemon, driven via `swanctl`, establishing kernel
+SAs/SPs on FreeBSD, with live negotiated state reported through the API/UI.
 
-Track progress here per CLAUDE.md workflow: one sub-phase at a time, `cargo check`, commit after each, mark `[x]` when done.
+Decisions (triage + scoping):
+- **Backend**: strongSwan from FreeBSD pkg (`security/strongswan`), config via
+  `swanctl` conf files + CLI. Same architecture as pfSense/OPNsense.
+- **v1 scope**: IKEv2, site-to-site **tunnel mode only**, **PSK and X.509
+  cert** auth (certs can come from the ACME store or pasted PEM), NAT-T,
+  AES-256-GCM / SHA-256 / ECP-256+MODP-2048 defaults. No transport mode, no
+  AH, no IKEv1 in v1 — docs/UI must not claim them.
+- Old `ipsec_sas` rows are preserved as read-only legacy records (never shown
+  as active); new model is `ipsec_tunnels`.
+
+Track progress per CLAUDE.md workflow: one sub-phase at a time, `cargo check`,
+commit after each (bump Cargo.toml + package.json versions), mark `[x]`.
+Branch: `feat/530-ipsec-dataplane` off `main`.
 
 ## Design Principles
 
-1. `cargo check` zero warnings, all tests green, `npm run build` succeeds before every commit.
-2. Mock (Linux/WSL) compiles with full coverage for every FreeBSD-only code path.
-3. Each sub-phase is independently shippable; migrations forward-only.
-4. Default behavior for existing single-WAN users is identical before/after upgrade. Multi-WAN is opt-in.
-5. pf state is global on FreeBSD — every PBR rule emits paired `reply-to` and uses `(if-bound)` state policy.
+1. `cargo check` zero warnings, tests green, `npm run build` before every commit.
+2. Everything compiles and is testable on Linux/WSL: swanctl invocations go
+   through a small `IkeControl` trait (real = sudo swanctl, mock = in-memory)
+   mirroring the PfBackend pattern.
+3. Live state comes from `swanctl --list-sas` (kernel/IKE truth), never from a
+   DB `status` column. DB stores desired config only.
+4. Apply is transactional: render new conf → load → on failure restore the
+   previous conf set and reload (last working state survives).
+5. Secrets (PSKs, private keys) live in 0600 files under
+   `/usr/local/etc/swanctl/` owned by the service user; never logged, redacted
+   in API responses.
+6. Every new sudo command gets an `aifw-sudo-*` wrapper + narrow sudoers grant
+   + guard test (sudoers-drift lesson: grants must match call sites exactly).
 
-## Convergence Contract
+## Architecture
 
-- Probe interval default: 500 ms
-- Declare down after 3 consecutive failures (1.5 s)
-- pf re-apply within 200 ms of state change
-- End-to-end target: ≤3 s median, ≤5 s p99 (probe-fail → dataplane)
-- Failed WAN's `(if-bound)` states → killed via `pfctl -k` scoped to failed iface
+```
+UI / CLI ──► aifw-api (routes/vpn.rs: ipsec_tunnels CRUD, start/stop, live status)
+                 │
+                 ▼
+          IpsecEngine (aifw-core/src/ipsec.rs)
+            │ desired config: SQLite ipsec_tunnels
+            │ render: /usr/local/etc/swanctl/conf.d/aifw-<id>.conf (+ secrets)
+            │ control: IkeControl trait
+            │            ├── SwanctlControl (FreeBSD: sudo swanctl --load-all /
+            │            │                   --initiate / --terminate / --list-sas)
+            │            └── MockIkeControl (Linux/tests)
+            ▼
+        strongSwan charon ──PF_KEY──► FreeBSD kernel SAD/SPD ──► enc0 / ESP
+```
+
+pf side (existing anchors): IKE UDP 500/4500, ESP, and enc0 pass rules are
+emitted from the new tunnel model (replacing `IpsecSa::to_pf_rules`).
 
 ## Data Model
 
-```
-Interface ─(ifconfig fib N)─► RoutingInstance (fib_number unique)
-                                   │
-                                   ▼
-                              Gateway (monitor, state, RTT/loss/jitter/MOS)
-                                   │
-                                   ▼
-                              GatewayGroupMember (tier, weight)
-                                   │
-                                   ▼
-                              GatewayGroup (policy, preempt, sticky, hysteresis)
-
-PolicyRule (priority-ordered, evaluated before aifw anchor)
-  match: src/dst/port/proto/iface-in/schedule/dscp/geoip/user
-  action: SetInstance | SetGateway | SetGroup | MarkDscp | Shape | Mix
-
-RouteLeak (decoupled)
-  src_instance, dst_instance, prefix, proto, ports, direction
-
-GatewayEvent (100 per gw, append-only)
-SlaSample (1-min buckets, 30-day retention)
-```
-
-## Anchor Hierarchy
-
-Root ruleset ordering:
-`aifw-pbr` → `aifw-mwan-leak` → `aifw-mwan-reply` → `aifw-nat` → `aifw` → `aifw-vpn` → `aifw-geoip`
-
-Loader emitter lives in `aifw-setup/src/apply.rs`.
-
-## Kernel / Build Prereqs (one-time, Phase 1)
-
-- [ ] `aifw-setup/src/tuning.rs::generate_tuning()` — append `TuningItem { LoaderConf, "net.fibs", "16", "Multi-WAN" }` gated behind wizard step
-- [ ] `freebsd/overlay/usr/local/etc/rc.d/aifw_fibs` — pins iface→FIB at boot via `aifw-cli multiwan apply-boot`
-- [ ] `freebsd/manifest.json` — add `aifw_fibs` to `rc_scripts`
-- [ ] `docs/multi-wan.md` — document `net.fibs` loader tunable
-
----
-
-## Phase 1 — Foundations: FIB-aware PfBackend + RoutingInstance engine (→ v5.35.0)
-
-User value: declare named routing instances, assign interfaces to FIBs via UI/API. Feature-flagged "Multi-WAN preview."
-
-- [x] 1a. `aifw-common/src/multiwan.rs` — types: `RoutingInstance`, `InstanceStatus`, `InstanceMember`
-- [x] 1b. `PfBackend` additions — `set_interface_fib`, `get_interface_fib`, `list_fibs` (mock + ioctl)
-- [x] 1c. `aifw-core/src/multiwan/instance.rs::InstanceEngine` + migrate (tables + seed `default/fib 0/mgmt_reachable=1`)
-- [x] 1d. `aifw-common/src/permission.rs` — `MultiWanRead`, `MultiWanWrite`
-- [x] 1e. `aifw-api/src/multiwan.rs` — instances CRUD + members + `/fibs` endpoint; wire in `main.rs` AppState + build_router
-- [x] 1f. `aifw-ui/src/app/multi-wan/page.tsx` + nav entry
-- [x] 1g. Tests: unit CRUD, duplicate fib, cascade delete; API integration tests
-- [x] 1h. Version bump to 5.35.0, commit
-
-Tables:
 ```sql
-multiwan_instances (id PK, name UNIQUE, fib_number UNIQUE, description, mgmt_reachable, created_at, updated_at)
-multiwan_instance_members (instance_id FK, interface, PRIMARY KEY (instance_id, interface))
+ipsec_tunnels (
+  id TEXT PK, name TEXT UNIQUE, enabled INTEGER,
+  -- endpoints & identities
+  local_addr TEXT,            -- IP or interface address; '' = %any
+  remote_addr TEXT,           -- peer IP/FQDN
+  local_id TEXT, remote_id TEXT,          -- IKE identities (default = addrs)
+  -- auth
+  auth_method TEXT,           -- 'psk' | 'cert'
+  psk TEXT,                   -- redacted in API output
+  cert_source TEXT,           -- 'acme' | 'manual' (cert auth only)
+  acme_cert_id TEXT,          -- FK acme_cert when cert_source='acme'
+  local_cert_pem TEXT, local_key_pem TEXT, ca_cert_pem TEXT,  -- manual PEM
+  -- proposals
+  ike_proposal TEXT,          -- default 'aes256gcm16-prfsha256-ecp256'
+  esp_proposal TEXT,          -- default 'aes256gcm16-ecp256'
+  -- traffic selectors (tunnel mode)
+  local_ts TEXT,              -- CSV of local subnets
+  remote_ts TEXT,             -- CSV of remote subnets
+  -- behavior
+  ike_lifetime_secs INTEGER,  -- default 14400 (rekey)
+  esp_lifetime_secs INTEGER,  -- default 3600
+  dpd_delay_secs INTEGER,     -- default 30, 0 = off
+  start_action TEXT,          -- 'start' (initiate on load) | 'trap' (on-demand) | 'none'
+  created_at TEXT, updated_at TEXT
+)
+-- legacy ipsec_sas table kept as-is, read-only, flagged legacy in API list
 ```
 
-Risks:
-- `ifconfig fib` on live default iface can drop routes → require `?confirm_drops=true`, pre-flight check via `netstat -rnF 0`
-- Default seed must be idempotent → `INSERT OR IGNORE` with fixed UUID constant
+Live status (not stored): per-tunnel `{ ike_state, child_sas: [{ name, state,
+local_ts, remote_ts, bytes_in, bytes_out, rekey_in_secs, enc_alg }],
+established_secs, remote_host }` parsed from `swanctl --list-sas --raw`.
 
----
+## Phases
 
-## Phase 2 — Gateways + health monitoring
+### Phase 1 — Packaging + control plumbing (→ 5.105.0) — DONE
 
-User value: define gateways; live RTT/loss/jitter/MOS. No dataplane effect.
+- [x] 1a. `freebsd/manifest.json`: `packages` list (strongswan + existing
+      deps) — build-iso.sh/deploy.sh mirror it (guard test enforces sync);
+      updater installs missing packages on upgrade from the manifest list.
+      strongswan_enable via sysrc happens at engine apply time (Phase 3),
+      not install time — no reason to run charon on boxes with no tunnels.
+- [x] 1b. Overlay: `aifw-sudo-swanctl` wrapper (verbs `--load-all`,
+      `--initiate/--terminate --ike|--child <aifw-*>`, `--list-sas`,
+      `--list-conns`; names pinned to aifw-* namespace) + sudoers grant;
+      swanctl dirs in manifest `directories`; also extended allowlists:
+      aifw-sudo-write (swanctl conf/key/cert paths + `..` guard),
+      aifw-sudo-rm (same paths), aifw-sudo-mkdir (/usr/local/etc/swanctl),
+      aifw-sudo-service (strongswan), aifw-sudo-sysrc (strongswan_enable).
+- [x] 1c. `aifw-core/src/sudo.rs`: `swanctl()` (no broad-grant fallback —
+      none ever existed); embedded in EMBEDDED_SUDO_HELPERS for upgrade
+      self-heal; sudoers refresh reaches upgraded boxes via aifw-restart.sh.
+- [x] 1d. Guard tests: sudoers narrow_helpers_are_granted + new
+      test_manifest_packages_synced_with_build_scripts; wrapper validator
+      smoke-tested (17 arg-validation cases).
+- [x] 1e. Version bump to 5.105.0, commit.
 
-- [x] 2a. Probes module in `aifw-core/src/multiwan/probe.rs` (kept inline for minimal deps)
-- [x] 2b. `IcmpProbe` (sudo `/sbin/ping`)
-- [x] 2c. `TcpProbe` (tokio TcpStream + timeout)
-- [x] 2d. `HttpProbe` (curl shell-out with expect status)
-- [x] 2e. `DnsProbe` (`/usr/bin/host` shell-out)
-- [x] 2f. `GatewayEngine` with hysteresis, broadcast event channel, MOS scoring
-- [x] 2g. `aifw-daemon` starts all gateway monitors on boot + spawns SLA aggregation loop
-- [x] 2h. API CRUD + `/probe-now` + `/events` (SSE deferred)
-- [x] 2i. UI `multi-wan/gateways/page.tsx` with full form validation + live polling
-- [ ] 2j. Metrics emission (deferred — `aifw-metrics` integration is a separate effort)
-- [x] 2k. `GatewayEngine::inject_sample` test helper
-- [x] 2l. Tests: transitions emit events, CRUD, probe outcomes, evaluate_transition
+### Phase 2 — Types + engine core (→ minor bump)
 
-Tables:
-```sql
-multiwan_gateways (id, name UNIQUE, instance_id FK, interface, next_hop, ip_version,
-                   monitor_kind, monitor_target, monitor_port, monitor_expect,
-                   interval_ms=500, timeout_ms=1000,
-                   loss_pct_down=20.0, loss_pct_up=5.0, latency_ms_down, latency_ms_up,
-                   consec_fail_down=3, consec_ok_up=5,
-                   weight=1, dampening_secs=10, dscp_tag, enabled=1,
-                   state='unknown', last_rtt_ms, last_jitter_ms, last_loss_pct, last_mos,
-                   last_probe_ts, created_at, updated_at)
-multiwan_gateway_events (id AUTO, gateway_id FK, ts, from_state, to_state, reason,
-                         probe_snapshot_json)
-```
+- [ ] 2a. `aifw-common/src/ipsec.rs`: `IpsecTunnel`, `IpsecAuthMethod`,
+      `IpsecStartAction`, `IpsecLiveStatus`, `ChildSaStatus`; proposal
+      validation against strongSwan-accepted algorithm strings (curated
+      whitelist + unit tests). Mark old `IpsecSa`/`IpsecSp` `#[deprecated]`
+      internals-only (kept for legacy rows + migration).
+- [ ] 2b. `IkeControl` trait in `aifw-core/src/ipsec.rs` + `SwanctlControl`
+      (cfg FreeBSD path via sudo::swanctl) + `MockIkeControl` (records loads,
+      fabricates list-sas output for tests).
+- [ ] 2c. `IpsecEngine`: migrate() (ipsec_tunnels), CRUD with validation
+      (subnets, addrs, proposal strings, PSK strength ≥ 16 chars, cert
+      presence for cert auth).
+- [ ] 2d. Conf rendering: swanctl conn + secrets sections per tunnel; golden
+      tests for PSK and cert variants, NAT-T implicit (charon handles 4500).
+- [ ] 2e. Version bump, commit.
 
----
+### Phase 3 — Apply lifecycle + rollback (→ minor bump)
 
-## Phase 3 — Gateway groups
+- [ ] 3a. `apply()`: write conf set atomically (tmp + rename), `--load-all`;
+      on error restore previous files, reload, surface the swanctl stderr.
+- [ ] 3b. `start/stop`: `--initiate`/`--terminate`; `delete` = terminate +
+      remove conf + reload; `update` = re-render + reload (+ re-initiate if
+      it was up and start_action='start').
+- [ ] 3c. Reboot recovery: conf files persist; rc start runs `--load-all`;
+      daemon startup calls `IpsecEngine::ensure_applied()` to re-render from
+      DB (DB is source of truth) — covers restore-from-backup too.
+- [ ] 3d. Cert auth material: from `acme_cert_id` (reuse acme store, re-export
+      on renewal via existing export hooks) or manual PEM; written to
+      swanctl/x509* dirs 0600.
+- [ ] 3e. pf rules from tunnel model (IKE 500/4500 to/from remote_addr, ESP,
+      enc0 pass) into the existing `aifw-vpn` anchor; remove `IpsecSa` rule
+      emission.
+- [ ] 3f. Tests: apply/rollback with a failing mock load; update/delete
+      lifecycle; ensure_applied idempotence.
+- [ ] 3g. Version bump, commit.
 
-User value: compose gateways into ordered groups with policy.
+### Phase 4 — Live status + API/CLI (→ minor bump)
 
-- [x] 3a. `aifw-core/src/multiwan/group.rs` — pure selection logic for failover/weighted/adaptive/LB
-- [x] 3b. API CRUD + member mgmt + `/active` endpoint
-- [x] 3c. UI `multi-wan/groups/page.tsx` with full form validation, live active-member indicator
-- [ ] 3d. `proptest` dev-dep (chaos harness in `examples/multiwan_chaos.rs` covers similar ground)
-- [x] 3e. Scenario tests: failover lowest-tier, fallback on down, adaptive MOS scaling
+- [ ] 4a. `swanctl --list-sas` parser (`--raw` output) → `IpsecLiveStatus`;
+      unit tests against captured real output fixtures.
+- [ ] 4b. API: `GET/POST /vpn/ipsec/tunnels`, `GET/PUT/DELETE .../{id}`,
+      `POST .../{id}/start|stop`, `GET .../{id}/status`, `GET /vpn/ipsec/status`
+      (all tunnels, 1-min cached poll + on-demand refresh). PSK/keys redacted
+      in every response. Legacy `GET /vpn/ipsec` keeps returning old rows with
+      `legacy: true`; legacy `POST` returns 410 Gone with a pointer.
+- [ ] 4c. Permissions: reuse existing VPN read/write perms; audit-log all
+      mutations.
+- [ ] 4d. Backup/config-io: include `ipsec_tunnels` (secrets included in
+      encrypted backups, consistent with WG private keys).
+- [ ] 4e. CLI: `aifw vpn ipsec list|add|delete|start|stop|status`.
+- [ ] 4f. API integration tests (axum_test + mock control).
+- [ ] 4g. Version bump, commit.
 
-Tables:
-```sql
-multiwan_groups (id, name UNIQUE, policy (failover|weighted_lb|adaptive|load_balance),
-                 preempt=1, sticky (none|src|five_tuple), hysteresis_ms=2000,
-                 kill_states_on_failover=1, created_at, updated_at)
-multiwan_group_members (group_id FK, gateway_id FK, tier=1, weight=1,
-                        PRIMARY KEY (group_id, gateway_id))
-```
+### Phase 5 — UI (→ minor bump)
 
----
+- [ ] 5a. `src/lib/api/vpn.ts` + `useVpn.ts`: tunnel types, CRUD, start/stop,
+      live status polling.
+- [ ] 5b. Rework `IpsecSection`/`IpsecForm`: tunnel form (endpoints, IDs,
+      auth method toggle PSK/cert with ACME cert picker, subnets, proposals
+      with sane defaults collapsed under "Advanced"), live state badges
+      (IKE up / child SAs / bytes / rekey countdown), start/stop buttons.
+      Legacy SA rows shown read-only under a "legacy (inactive)" divider.
+- [ ] 5c. `npm run lint` + build; version bump, commit.
 
-## Phase 4 — Policy routing rules + pf emission
+### Phase 6 — Functional proof on FreeBSD (→ patch bumps as needed)
 
-User value: first dataplane phase. Rules like "LAN→Netflix via WAN2" work end-to-end.
+- [ ] 6a. Bring-up: deploy to test VM (172.29.50.220) and appliance
+      (172.29.69.1); establish an IKEv2 PSK tunnel between them; verify
+      `swanctl --list-sas`, kernel SAD/SPD (`setkey -D`, `setkey -DP`),
+      bidirectional ping/iperf across the tunnel subnets.
+- [ ] 6b. Cert-auth tunnel variant (manual CA-signed pair).
+- [ ] 6c. NAT-T case (initiator behind NAT) — verify UDP 4500 encapsulation.
+- [ ] 6d. Rekey observed (short lifetimes), DPD teardown, reboot recovery
+      (tunnel re-establishes without operator action).
+- [ ] 6e. Failure paths: bad PSK → clear error surfaced, previous config
+      restored on bad apply.
+- [ ] 6f. #533 boot-smoke harness: add IPsec check artifact (swanctl list-sas
+      + cross-tunnel ping output) to CI/functional test collection.
 
-- [x] 4a. `PfBackend` additions: `kill_states_on_iface`, `kill_states_for_label`
-- [x] 4b. `PolicyEngine` with CRUD + `apply()` composing instance/gateway/group into pf
-- [x] 4c. Emitters: `route-to`+`reply-to` for SetGateway; `rtable N` for SetInstance; weighted route-to with sticky-address for SetGroup
-- [x] 4d. Anchor wiring into `aifw-setup/src/apply.rs` — `aifw-pbr`, `aifw-mwan-leak`, `aifw-mwan-reply` emitted ahead of `aifw-nat`/`aifw` in root ruleset
-- [x] 4e. API CRUD + `/apply` under `/api/v1/multiwan/policies`
-- [x] 4f. UI `multi-wan/policies/page.tsx` with target-aware picker + blast-radius preview button
-- [x] 4g. Golden tests: set_instance emits rtable, set_gateway emits paired route-to/reply-to with if-bound, disabled skipped
+### Phase 7 — Docs + issue close-out
 
-Tables:
-```sql
-multiwan_policies (id, priority, name, status, ip_version, iface_in,
-                   src_addr='any', dst_addr='any', src_port, dst_port, protocol='any',
-                   dscp_in, geoip_country, schedule_id,
-                   action_kind, target_id, sticky='none', fallback_target_id,
-                   description, created_at, updated_at)
-```
-
-Emission examples:
-```
-pass out quick on em1 inet proto udp from 10.0.0.0/24 to any port 443 \
-  route-to (em1 203.0.113.1) keep state (if-bound) label "pbr:<id>"
-pass in quick on em0 inet proto udp from 10.0.0.0/24 to any port 443 \
-  reply-to (em1 203.0.113.1) keep state (if-bound) label "pbr:<id>:rep"
-
-pass in quick on em_lan from 10.0.0.0/24 to any \
-  rtable 1 keep state (if-bound) label "pbr:inst:<id>"
-
-pass out quick on em1 inet proto tcp from 10.0.0.0/24 to any \
-  route-to { (em1 203.0.113.1) weight 2, (em2 198.51.100.1) weight 1 } \
-  round-robin sticky-address keep state (if-bound) label "pbr:grp:<id>"
-```
-
-Risks: rule explosion → consolidate via pf tables (`<pbr_src_10_0_0_0_24>`), defer if small.
-
----
-
-## Phase 5 — Route leaking + mgmt escape hatches
-
-User value: cross-FIB traffic for DNS/NTP/API (Juniper rib-groups, declarative).
-
-- [x] 5a. `LeakEngine` + anchor `aifw-mwan-leak`
-- [x] 5b. `seed_mgmt_escapes` — idempotent seeding of src→mgmt leaks for each non-default instance
-- [x] 5c. API CRUD + `/seed-mgmt`
-- [x] 5d. UI `multi-wan/leaks/page.tsx` with validation + "auto-seed mgmt escapes" button
-- [x] 5e. Tests: bidirectional compile, disabled skip; API returns 409 on mgmt-escape deletion
-
-Tables:
-```sql
-multiwan_leaks (id, name, src_instance_id FK, dst_instance_id FK, prefix,
-                protocol='any', ports, direction (bidirectional|one_way), enabled=1,
-                created_at, updated_at)
-```
-
----
-
-## Phase 6 — Pre-flight / blast-radius / force-migrate
-
-User value: nobody in enterprise gear does this well. Dry-run config changes.
-
-- [x] 6a. `PreflightEngine` using `PfBackend::get_states` + policy compile diff
-- [x] 6b. `BlastRadiusReport` with affected_flows, would_strand_mgmt, new/removed_rules, findings
-- [x] 6c. `POST /api/v1/multiwan/preview`
-- [x] 6d. `POST /api/v1/multiwan/apply`
-- [x] 6e. `POST /api/v1/multiwan/flows/{label}/migrate`
-- [x] 6f. UI "Preview blast radius" button on policies page (modal via alert for now)
-- [x] 6g. Tests: mgmt-strand on src=any, specific subnet OK, disabled skipped, missing-mgmt warning
-
----
-
-## Phase 7 — SLA reporting + AI anomaly detection
-
-User value: long-term observability exceeding Cisco IP SLA.
-
-- [x] 7a. `SlaEngine` with `multiwan_sla_samples` table + prune helper
-- [x] 7b. Daemon SLA aggregation loop: 1-min bucket record for each gateway, daily 30-day prune
-- [ ] 7c. AI anomaly hook (requires `aifw-ai` analysis pipeline — tracked separately)
-- [x] 7d. API `/gateways/{id}/sla?window=24h|7d|30d`
-- [x] 7e. UI `multi-wan/sla/page.tsx` with uptime/RTT/loss/MOS stat cards + RTT sparkline
-
----
-
-## Phase 8 — Per-flow visibility + force-migrate UX
-
-User value: live per-flow WAN table with 1-click re-steer.
-
-- [x] 8a. `PfState` gains optional `iface`, `rtable`
-- [x] 8b. `GET /multiwan/flows` exposes flow summaries
-- [x] 8c. `POST /multiwan/flows/{label}/migrate` kills states by label
-- [x] 8d. UI `multi-wan/flows/page.tsx` with filter, auto-refresh, and force-migrate-by-label
-
----
-
-## Phase 9 — GitOps / BGP / discovery
-
-User value: the stuff Cisco/Juniper still make hard.
-
-- [x] 9a. `GET /multiwan/config.yaml` — full config as JSON/YAML-compatible struct
-- [x] 9b. `POST /multiwan/apply-yaml` — upsert all instances/gateways/groups/policies/leaks by id, then apply
-- [ ] 9c. `aifw-bgp` crate — needs separate issue; requires FRR integration
-- [ ] 9d. Auto-discovery — needs separate issue; traceroute + ASN DB
-- [x] 9e. IPv6 parity via `ip_version` field across Gateway/Policy/Instance
-- [ ] 9f. Plugin probe hook — needs plugin-system trait extension; separate issue
-
----
-
-## Phase 10 — Hardening + chaos + docs
-
-- [x] 10a. `cargo run --example multiwan_chaos` — seeded PRNG, invariant checks on oscillation + monotonic events
-- [ ] 10b. FreeBSD dual-WAN VM convergence test — requires VM infra; tracked separately
-- [x] 10c. `docs/multi-wan.md` architecture, quick-start, anchors, convergence, Cisco/Juniper comparison matrix
-
----
-
-## Observability Contract (cross-phase)
-
-Metrics (`aifw-metrics`):
-- `aifw_gateway_{rtt_ms,jitter_ms,loss_ratio,mos,state}{name,instance}` gauges
-- `aifw_gateway_transitions_total{name,from,to}` counter
-- `aifw_policy_flows_current{policy,gw}` gauge
-- `aifw_multiwan_pf_reloads_total{anchor}` counter
-- `aifw_multiwan_convergence_ms` histogram {gw}
-
-Log lines (structured `tracing`):
-- `target=multiwan.gateway event=transition gw=wan1 from=up to=down reason="loss=100%" consec_fail=3`
-- `target=multiwan.policy event=reload anchor=aifw-pbr rules=42 took_ms=87`
-- `target=multiwan.preflight event=block reason=would_strand_mgmt`
-
-Webhooks (`/api/v1/multiwan/webhooks`): `gateway.transition`, `anomaly.detected`, `group.active_changed`.
-
----
-
-## Migration Path
-
-On first run with Phase 1:
-1. Idempotent seed: `default` instance on FIB 0, `mgmt_reachable=1`
-2. All existing interfaces stay on FIB 0 (no `ifconfig fib` calls)
-3. UI shows Multi-WAN nav under "Advanced"
-4. pf anchors `aifw-pbr`/`aifw-mwan-leak`/`aifw-mwan-reply` not emitted when empty → pf output byte-identical to pre-upgrade
-5. Release notes link to `docs/multi-wan.md`
-
----
-
-## Critical File Touchpoints
-
-- `/home/mack/dev/AiFw/aifw-pf/src/backend.rs` — trait additions
-- `/home/mack/dev/AiFw/aifw-pf/src/{mock,ioctl}.rs` — impls
-- `/home/mack/dev/AiFw/aifw-core/src/lib.rs` — re-exports
-- `/home/mack/dev/AiFw/aifw-core/src/multiwan/*.rs` — new engines
-- `/home/mack/dev/AiFw/aifw-api/src/main.rs` — AppState + router
-- `/home/mack/dev/AiFw/aifw-api/src/multiwan.rs` — handlers
-- `/home/mack/dev/AiFw/aifw-common/src/{multiwan,permission}.rs` — types + perms
-- `/home/mack/dev/AiFw/aifw-common/src/rule.rs` — `to_pf_rule` (extend to emit route-to/rtable)
-- `/home/mack/dev/AiFw/aifw-setup/src/{tuning,apply,wizard}.rs` — kernel tuning + anchor wiring + wizard
-- `/home/mack/dev/AiFw/aifw-daemon/` — probe supervisor
-- `/home/mack/dev/AiFw/aifw-ui/src/app/multi-wan/` — new UI
-- `/home/mack/dev/AiFw/freebsd/overlay/usr/local/etc/rc.d/aifw_fibs` — boot pin
-- `/home/mack/dev/AiFw/freebsd/manifest.json` — rc_scripts entry
-
----
+- [ ] 7a. Flip #552 "in development" markers: claims become "IPsec IKEv2
+      site-to-site (tunnel mode, PSK/cert), powered by strongSwan"; remove
+      AH/transport claims everywhere (README, docs, comparison pages).
+- [ ] 7b. `docs/` IPsec guide: setup walkthrough, interop notes (tested:
+      strongSwan↔strongSwan; expected: any IKEv2 peer), troubleshooting.
+- [ ] 7c. Comment + close #530 (and verify #529/#552 consistency), Project
+      #12 → Done.
 
 ## Risk Summary
 
 | Risk | Mitigation |
 |---|---|
-| pf state global → FIB leakage | `(if-bound)` on every PBR rule; `kill_states_on_iface` on failover |
-| Asymmetric return traffic | `reply-to` auto-paired with every `route-to` |
-| Admin lock-out from PBR | Pre-flight validation; default mgmt escape leak seeded |
-| `ROUTETABLES` compile-time cap | `net.fibs` loader tunable; runtime check in `list_fibs` |
-| Daemon lacks raw socket | TCP probe default; sudo ICMP fallback |
-| Rule explosion | pf tables for src/dst sets; debounced reloads; anchor-scoped flushes |
-| Mock/ioctl divergence | Golden pf-output tests run identically against both backends |
-| Probe flapping | Hysteresis (consec_fail/ok), dampening_secs, group hysteresis_ms |
+| charon runs as root; aifw user must drive it | sudo wrapper with whitelisted swanctl subcommands only; guard test |
+| Secrets on disk | 0600 swanctl-owned files, redacted API, encrypted backups |
+| swanctl output format drift | parse `--raw` (machine format); fixture tests from the real pkg version; pin strongSwan pkg version in manifest |
+| Bad apply kills all tunnels | atomic conf-set swap + rollback reload |
+| ACME renewal rotates cert under a live tunnel | hook acme export → re-write x509 files + `--load-all` (reload-safe) |
+| Legacy `ipsec_sas` confusion | read-only, `legacy: true`, POST 410; migration doc note |
+| Mock/real divergence | golden conf-render tests + Phase 6 live matrix is the gate for claims |

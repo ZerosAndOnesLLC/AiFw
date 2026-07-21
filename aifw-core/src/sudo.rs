@@ -79,6 +79,7 @@ const HELPER_MKDIR: &str = "/usr/local/libexec/aifw-sudo-mkdir";
 const HELPER_CP: &str = "/usr/local/libexec/aifw-sudo-cp";
 const HELPER_TAR: &str = "/usr/local/libexec/aifw-sudo-tar";
 const HELPER_TCPDUMP: &str = "/usr/local/libexec/aifw-sudo-tcpdump";
+const HELPER_SWANCTL: &str = "/usr/local/libexec/aifw-sudo-swanctl";
 
 /// Atomically write `contents` to `path`, as root, via the
 /// `aifw-sudo-write` helper script.
@@ -370,6 +371,22 @@ pub async fn tar(args: &[&str]) -> std::io::Result<std::process::Output> {
     let mut fallback: Vec<&str> = vec!["/usr/bin/tar"];
     fallback.extend_from_slice(args);
     sudo_with_fallback(&narrow, &fallback).await
+}
+
+/// Run `swanctl <verb> [args...]` as root via the `aifw-sudo-swanctl`
+/// helper (#530 IPsec data plane).
+///
+/// The helper restricts the verb to `--load-all` / `--initiate` /
+/// `--terminate` / `--list-sas` / `--list-conns` and pins every conn or
+/// child name to the `aifw-*` namespace. Unlike the pre-#204 wrappers
+/// there is no broad-grant fallback: no legacy sudoers ever granted
+/// swanctl, so a refusal means the box's sudoers predates this feature
+/// and simply hasn't been refreshed yet (aifw-restart.sh does that on
+/// the next service bounce).
+pub async fn swanctl(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut argv: Vec<&str> = vec![HELPER_SWANCTL];
+    argv.extend_from_slice(args);
+    Command::new(SUDO).args(&argv).output().await
 }
 
 /// Run tcpdump via `aifw-sudo-tcpdump`. The helper rejects `-z` (postrotate

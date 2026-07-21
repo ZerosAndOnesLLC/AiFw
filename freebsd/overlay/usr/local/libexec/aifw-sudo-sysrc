@@ -64,6 +64,9 @@ case "$KEY" in
     rdhcpd_enable|rdns_enable|rtime_enable|trafficcop_enable) ;;
     local_unbound_enable|unbound_enable) ;;
 
+    # strongSwan IKE daemon (#530 IPsec data plane)
+    strongswan_enable) ;;
+
     # rsync may be pulled in transitively but is never used by AiFw.
     # Allow setting rsyncd_enable=NO so we can silence the
     # `WARNING: $rsyncd_enable is not set properly` noise.

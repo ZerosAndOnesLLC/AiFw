@@ -24,7 +24,7 @@ case "$SERVICE" in
         ;;
     rdhcpd|rdns|rtime|trafficcop)
         ;;
-    unbound|local_unbound|sshd)
+    unbound|local_unbound|sshd|strongswan)
         ;;
     *)
         echo "aifw-sudo-service: service not in allowlist: $SERVICE" >&2

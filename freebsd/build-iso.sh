@@ -113,7 +113,7 @@ cp /etc/resolv.conf "$STAGEDIR/etc/resolv.conf"
 # Bootstrap pkg and install required packages
 chroot "$STAGEDIR" /bin/sh -c '
     env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
-    pkg install -y wireguard-tools sudo unbound curl
+    pkg install -y wireguard-tools sudo unbound curl strongswan
 '
 
 umount "$STAGEDIR/dev"

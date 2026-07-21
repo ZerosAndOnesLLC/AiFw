@@ -108,6 +108,10 @@ const EMBEDDED_SUDO_HELPERS: &[(&str, &str)] = &[
         "aifw-sudo-tcpdump",
         include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-tcpdump"),
     ),
+    (
+        "aifw-sudo-swanctl",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-swanctl"),
+    ),
 ];
 
 #[derive(Deserialize)]
@@ -121,6 +125,12 @@ struct Manifest {
     #[serde(default)]
     libexec_scripts: Vec<String>,
     directories: Vec<String>,
+    /// OS packages the appliance needs at runtime. Installed by
+    /// build-iso.sh at image build; the updater installs any that are
+    /// missing so in-place upgrades pick up new dependencies (#530
+    /// added strongswan this way).
+    #[serde(default)]
+    packages: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -611,8 +621,11 @@ pub async fn install_from_path(
     // artifact shipped by the update tarball / ISO / deploy.sh, written by
     // a privileged installer step.
 
-    // Ensure required packages are installed (older installs may be missing curl)
-    for pkg in &["curl"] {
+    // Ensure required packages are installed — older installs may predate a
+    // dependency (curl pre-5.x, strongswan pre-#530). Driven by the
+    // manifest `packages` list so new deps flow to upgraded boxes.
+    for pkg in &load_manifest().packages {
+        let pkg = pkg.as_str();
         let check = Command::new("pkg").args(["info", "-q", pkg]).output().await;
         let pkg_installed = check.map(|o| o.status.success()).unwrap_or(false);
         if !pkg_installed {
@@ -1533,6 +1546,42 @@ mod tests {
                 "{} exists in the overlay but is missing from \
                  EMBEDDED_SUDO_HELPERS in updater.rs",
                 name
+            );
+        }
+    }
+
+    // manifest.json `packages` is the source of truth for runtime OS
+    // dependencies, but build-iso.sh and deploy.sh carry hardcoded copies
+    // (no jq in the ISO build chroot). Keep them in sync (#530 added
+    // strongswan this way).
+    #[test]
+    fn test_manifest_packages_synced_with_build_scripts() {
+        let manifest = load_manifest();
+        assert!(
+            !manifest.packages.is_empty(),
+            "manifest.json packages list is empty"
+        );
+        let build_iso = include_str!("../../freebsd/build-iso.sh");
+        let deploy = include_str!("../../freebsd/deploy.sh");
+        let iso_line = build_iso
+            .lines()
+            .find(|l| l.contains("pkg install -y"))
+            .expect("build-iso.sh has a pkg install line");
+        let deploy_line = deploy
+            .lines()
+            .find(|l| l.trim_start().starts_with("for pkg in "))
+            .expect("deploy.sh has a dependency for-loop");
+        for pkg in &manifest.packages {
+            let pkg = pkg.as_str();
+            assert!(
+                iso_line.split_whitespace().any(|w| w == pkg),
+                "package {pkg:?} from manifest.json missing from build-iso.sh pkg install line: {iso_line}"
+            );
+            assert!(
+                deploy_line
+                    .split_whitespace()
+                    .any(|w| w.trim_end_matches(';') == pkg),
+                "package {pkg:?} from manifest.json missing from deploy.sh dependency loop: {deploy_line}"
             );
         }
     }
