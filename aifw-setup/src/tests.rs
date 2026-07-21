@@ -96,6 +96,63 @@ mod tests {
         assert!(pf.contains("set skip on pfsync0"));
         assert!(pf.contains("set state-policy floating"));
         assert!(!pf.contains("if-bound"));
+        // #560: management is scoped to the LAN interface, not passed on any.
+        assert!(
+            pf.contains("pass in quick on em1 proto tcp to any port 22"),
+            "ssh should be LAN-scoped: {pf}"
+        );
+        assert!(
+            pf.contains("pass in quick on em1 proto tcp to any port 8080"),
+            "api should be LAN-scoped: {pf}"
+        );
+        assert!(
+            !pf.contains("pass in quick proto tcp to any port 22"),
+            "ssh must NOT be passed on all interfaces when a LAN exists: {pf}"
+        );
+    }
+
+    #[test]
+    fn test_pf_conf_mgmt_scoped_to_lan() {
+        let config = SetupConfig {
+            wan_interface: "vtnet0".to_string(),
+            lan_interface: Some("vtnet1".to_string()),
+            lan_ip: Some("192.168.1.1/24".to_string()),
+            api_port: 8443,
+            ..Default::default()
+        };
+        let pf = apply::generate_pf_conf(&config);
+        assert!(pf.contains("pass in quick on vtnet1 proto tcp to any port 22"));
+        assert!(pf.contains("pass in quick on vtnet1 proto tcp to any port 8443"));
+        // No unscoped management pass rule anywhere.
+        for line in pf.lines() {
+            if line.contains("port 22") || line.contains("port 8443") {
+                assert!(
+                    line.contains("on vtnet1"),
+                    "unscoped management rule leaked to all interfaces: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_pf_conf_mgmt_wan_only_stays_open() {
+        // Single-NIC / WAN-only: management must remain reachable on the
+        // only interface, so the any-interface rule is retained (#560).
+        let config = SetupConfig {
+            wan_interface: "vtnet0".to_string(),
+            lan_interface: None,
+            api_port: 8080,
+            ..Default::default()
+        };
+        let pf = apply::generate_pf_conf(&config);
+        assert!(
+            pf.contains("pass in quick proto tcp to any port 22 keep state label \"ssh\""),
+            "WAN-only box must keep SSH reachable: {pf}"
+        );
+        assert!(
+            pf.contains("pass in quick proto tcp to any port 8080"),
+            "WAN-only box must keep API reachable: {pf}"
+        );
     }
 
     #[test]

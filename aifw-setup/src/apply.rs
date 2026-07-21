@@ -1875,18 +1875,44 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     }
     lines.push(String::new());
 
-    // Allow SSH from anywhere (management access)
-    lines.push("# SSH access".to_string());
-    lines.push("pass in quick proto tcp to any port 22 keep state label \"ssh\"".to_string());
-    lines.push(String::new());
-
-    // Allow API/UI access
-    lines.push("# AiFw API/UI access".to_string());
-    lines.push(format!(
-        "pass in quick proto tcp to any port {} keep state label \"aifw-api\"",
-        config.api_port
-    ));
-    lines.push(String::new());
+    // Management access (SSH + API/UI). Scoped to the LAN interface when one
+    // is configured so the control plane is not exposed on the WAN by
+    // default (#560). A box with no LAN (single-NIC / WAN-only) keeps the
+    // any-interface rule — otherwise the operator would have no way in.
+    match config.lan_interface.as_deref() {
+        Some(lan) => {
+            lines.push("# SSH access (LAN only)".to_string());
+            lines.push(format!(
+                "pass in quick on {lan} proto tcp to any port 22 keep state label \"ssh\""
+            ));
+            lines.push(String::new());
+            lines.push("# AiFw API/UI access (LAN only)".to_string());
+            lines.push(format!(
+                "pass in quick on {lan} proto tcp to any port {} keep state label \"aifw-api\"",
+                config.api_port
+            ));
+            lines.push(String::new());
+        }
+        None => {
+            // WAN-only appliance: management must remain reachable on the
+            // single interface or the operator locks themselves out.
+            lines
+                .push("# SSH access (no LAN configured — reachable on all interfaces)".to_string());
+            lines.push(
+                "pass in quick proto tcp to any port 22 keep state label \"ssh\"".to_string(),
+            );
+            lines.push(String::new());
+            lines.push(
+                "# AiFw API/UI access (no LAN configured — reachable on all interfaces)"
+                    .to_string(),
+            );
+            lines.push(format!(
+                "pass in quick proto tcp to any port {} keep state label \"aifw-api\"",
+                config.api_port
+            ));
+            lines.push(String::new());
+        }
+    }
 
     // LAN to WAN pass rule
     if config.lan_interface.is_some() {

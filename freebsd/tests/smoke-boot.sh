@@ -151,18 +151,15 @@ printf '%s' "$status" | jq -e . >/dev/null 2>&1 || {
 }
 log "status endpoint OK"
 
-# WAN-side exposure check. Today the generated pf.conf deliberately passes
-# the API port (and SSH) on ANY interface — `pass in quick proto tcp to any
-# port <api_port>` in generate_pf_conf — so the management plane IS
-# reachable from the WAN on a default install. That default is under
-# review as a security finding; until it changes this check WARNS instead
-# of failing, and should be flipped to a hard FAIL when the pass rules are
-# scoped to the LAN.
+# Default-deny on WAN: the management API port via the WAN interface must
+# NOT answer — the seed configures a LAN, so generate_pf_conf scopes the
+# SSH/API pass rules to it (#560). A reachable WAN-side API means that
+# scoping regressed.
 if curl -k -s -m 8 "$SCHEME://127.0.0.1:$WAN_PORT/api/v1/status" >/dev/null 2>&1; then
-    log "WARNING: API is reachable via the WAN interface (current default; management-plane exposure finding pending decision)"
-else
-    log "WAN-side default-deny OK (port $WAN_PORT unreachable)"
+    log "FAIL: management API is reachable via the WAN interface — LAN scoping regressed (#560)"
+    exit 1
 fi
+log "WAN-side default-deny OK (port $WAN_PORT unreachable)"
 
 log "boot smoke PASSED"
 exit 0
