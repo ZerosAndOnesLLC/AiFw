@@ -459,6 +459,22 @@ pub(crate) async fn commit_confirm_arm_with_snapshot(
     description: String,
     timeout_secs: u64,
 ) -> Result<String, StatusCode> {
+    // Never arm with a rollback target that can't actually roll back
+    // (#535): the timer would fire, fail to parse or apply the snapshot,
+    // and leave the operator believing a revert happened. Parse and
+    // validate it with the same checks the apply path uses.
+    match serde_json::from_str::<FirewallConfig>(&snapshot_json) {
+        Ok(snapshot) => {
+            if let Err(e) = prevalidate_config(&snapshot, &InterfaceMap::new()) {
+                tracing::error!(error = %e, "refusing to arm commit-confirm: snapshot fails validation");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "refusing to arm commit-confirm: snapshot is not a valid FirewallConfig");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
     {
         let store_read = commit_store().read().await;
         if store_read.is_some() {
@@ -493,14 +509,23 @@ pub(crate) async fn commit_confirm_arm_with_snapshot(
             _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => {
                 // Timer expired — rollback!
                 tracing::warn!("Commit confirm expired after {timeout_secs}s — rolling back");
-                if let Some(inner) = store.write().await.take()
-                    && let Ok(config) = serde_json::from_str::<FirewallConfig>(&inner.rollback_config) {
-                        if let Err(e) = apply_firewall_config(&rollback_state, &config, &InterfaceMap::new()).await {
-                            tracing::error!(error = ?e, "commit confirm ROLLBACK FAILED — system may be partially configured");
-                        } else {
-                            tracing::info!("Config rolled back successfully");
+                if let Some(inner) = store.write().await.take() {
+                    // Parse validated at arm time; a failure here means the
+                    // stored snapshot was corrupted in memory — log loudly,
+                    // never silently skip the rollback (#535).
+                    match serde_json::from_str::<FirewallConfig>(&inner.rollback_config) {
+                        Ok(config) => {
+                            if let Err(e) = apply_firewall_config(&rollback_state, &config, &InterfaceMap::new()).await {
+                                tracing::error!(error = ?e, "commit confirm ROLLBACK FAILED — system may be partially configured");
+                            } else {
+                                tracing::info!("Config rolled back successfully");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "commit confirm ROLLBACK FAILED — stored snapshot unparseable; system keeps the unconfirmed config");
                         }
                     }
+                }
             }
             _ = cancel_rx => {
                 // Confirmed — do nothing, config stays

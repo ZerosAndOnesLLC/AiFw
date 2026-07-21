@@ -2377,6 +2377,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_commit_confirm_refuses_invalid_rollback_snapshot() {
+        // Arming with a snapshot that can't roll back would leave the timer
+        // to fail silently at expiry (#535) — it must be refused up front.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let res = crate::backup::commit_confirm_arm_with_snapshot(
+            state,
+            "{not valid json".to_string(),
+            "test".to_string(),
+            5,
+        )
+        .await;
+        assert_eq!(res, Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[tokio::test]
     async fn test_post_apply_verification_detects_pf_drift() {
         // verify_applied must fail when the pf anchor no longer matches the
         // database (#535 post-apply verification).
