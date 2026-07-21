@@ -63,8 +63,9 @@ Expect ~20–30 minutes; the FreeBSD VM boot + build dominates.
 Runs on a **Linux** host with qemu (KVM when available): boots the built
 USB IMG unmodified with a seed ISO attached as a CD, waits for
 `aifw_firstboot` to complete unattended setup, then asserts the seeded
-admin can log in through the LAN side and that the WAN side stays
-default-denied.
+admin can log in through the LAN side, invalid credentials are rejected,
+the static UI is served, live PF/rule counters are reported, and the WAN
+side stays default-denied.
 
 ```sh
 xz -dk aifw-<ver>-amd64.img.xz

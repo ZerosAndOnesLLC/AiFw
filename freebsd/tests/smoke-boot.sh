@@ -140,6 +140,23 @@ if [ -z "$TOKEN" ]; then
 fi
 log "first boot complete after ~${elapsed}s; admin login OK via LAN ($SCHEME)"
 
+# Exercise the unauthenticated boundary and the shipped static UI before
+# relying on the authenticated status response below.
+invalid=$(curl -k -s -m 10 -o /dev/null -w '%{http_code}' \
+    -X POST "$SCHEME://127.0.0.1:$LAN_PORT/api/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"admin","password":"definitely-wrong"}')
+[ "$invalid" = 401 ] || {
+    log "FAIL: invalid login returned HTTP $invalid (expected 401)"
+    exit 1
+}
+ui=$(curl -k -s -m 10 "$SCHEME://127.0.0.1:$LAN_PORT/")
+printf '%s' "$ui" | grep -q 'AiFw' || {
+    log "FAIL: LAN-served UI did not contain the AiFw marker"
+    exit 1
+}
+log "auth boundary and served UI checks OK"
+
 # Authenticated status call — proves the API is actually serving, not just
 # terminating connections.
 status=$(curl -k -s -m 10 "$SCHEME://127.0.0.1:$LAN_PORT/api/v1/status" \
@@ -147,6 +164,10 @@ status=$(curl -k -s -m 10 "$SCHEME://127.0.0.1:$LAN_PORT/api/v1/status" \
 printf '%s\n' "$status" > "$RESULTS_DIR/status.json"
 printf '%s' "$status" | jq -e . >/dev/null 2>&1 || {
     log "FAIL: /api/v1/status did not return JSON: $status"
+    exit 1
+}
+printf '%s' "$status" | jq -e '.pf_running == true and (.aifw_rules | type == "number") and (.nat_rules | type == "number")' >/dev/null 2>&1 || {
+    log "FAIL: status response did not report live PF/rule counters: $status"
     exit 1
 }
 log "status endpoint OK"
