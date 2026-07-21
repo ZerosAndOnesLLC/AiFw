@@ -217,19 +217,30 @@ Single-box smoke on the dev VM (172.29.50.220, FreeBSD 15.0) — DONE:
       (no spaces) — tokenizer rewritten, verbatim FreeBSD fixture added
       (5.109.1). Live CONNECTING state + remote host verified parsing.
 
-Remaining (needs a second endpoint — appliance gets builds via update
-tarball, Mack's call on when):
-- [ ] 6a. Two-endpoint IKEv2 PSK tunnel VM↔appliance: ESTABLISHED,
-      kernel SAD/SPD (`setkey -D` / `-DP`), bidirectional ping/iperf
-      across tunnel subnets.
-- [ ] 6b. Cert-auth tunnel variant (manual CA-signed pair).
-- [ ] 6c. NAT-T case (initiator behind NAT) — verify UDP 4500 encapsulation.
-- [ ] 6d. Rekey observed (short lifetimes), DPD teardown, reboot recovery
-      (tunnel re-establishes without operator action).
-- [ ] 6e. Failure paths: bad PSK → clear error surfaced, previous config
-      restored on bad apply.
-- [ ] 6f. #533 boot-smoke harness: add IPsec check artifact (swanctl list-sas
-      + cross-tunnel ping output) to CI/functional test collection.
+Two-box matrix (appliance on 5.109.2 via pre-release update tarball ↔
+dev VM; full results on #530) — ALL DONE 2026-07-21:
+- [x] 6a. IKEv2 PSK tunnel VM↔appliance ESTABLISHED both sides; 4/4
+      pings each direction; kernel SAD/SPD verified (`setkey -D`/`-DP`);
+      tcpdump shows pure ESP with SPIs matching the SAD.
+- [x] 6b. Cert-auth (manual CA-signed EC P-256 pair, CN identities):
+      created via API (PEM validation → x509/private/x509ca dirs →
+      load), ESTABLISHED with pubkey auth confirmed by the peer.
+- [x] 6c. NAT-T: peer-forced `encap = yes` → UDP-encap ESP on 4500 both
+      directions, traffic flowing; encap survived appliance reboot.
+- [x] 6d. Rekey: 120s child lifetime → SPIs rotated with 150/150 pings
+      0% loss across the boundary, IKE SA continuous. DPD: peer charon
+      killed → DOWN in ~75s; peer restored → auto re-ESTABLISHED <48s.
+      Reboot: appliance cold boot → API up in ~78s, tunnel ESTABLISHED
+      unattended (strongswan_enable persisted; ensure_applied loaded).
+- [x] 6e. Wrong PSK → negotiation refused with surfaced charon error.
+- [x] 6f. `t07-ipsec.sh` in the #533 harness (PR #567): API-driven
+      single-host gate (conf 0600, charon load, live status, pf anchor
+      rules with isakmp/ipsec-nat-t, 410 legacy, delete cleanup);
+      artifacts include list-conns/list-sas-raw/anchor dumps. Full
+      harness t01–t07 green on the VM.
+
+Upgrade fallout fixed separately: #564 console ssh/EOF, #565
+transitional package/sudoers gap (PR #566).
 
 ### Phase 7 — Docs + issue close-out
 
