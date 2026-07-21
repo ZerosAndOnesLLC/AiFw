@@ -57,8 +57,25 @@ sh freebsd/tests/run-all.sh --stop-services
 FreeBSD 15 VM, runs this harness, and uploads the artifacts directory.
 Expect ~20–30 minutes; the FreeBSD VM boot + build dominates.
 
+## Appliance boot smoke (`smoke-boot.sh`, #533 Phase 2)
+
+Runs on a **Linux** host with qemu (KVM when available): boots the built
+USB IMG unmodified with a seed ISO attached as a CD, waits for
+`aifw_firstboot` to complete unattended setup, then asserts the seeded
+admin can log in through the LAN side and that the WAN side stays
+default-denied.
+
+```sh
+xz -dk aifw-<ver>-amd64.img.xz
+sh freebsd/tests/smoke-boot.sh --img aifw-<ver>-amd64.img
+```
+
+In CI this runs as the `smoke-boot` job in `build-iso.yml` and **gates the
+release** — an image nobody booted never ships. Artifacts: serial console
+log, seed used, `/api/v1/status` response.
+
 ## Not yet covered (later phases of #533)
 
 WireGuard peer handshake + traffic, IDS capture counters, multi-WAN
-failover, IPv6 packet paths, appliance ISO boot smoke (Phase 2), and the
-two-node HA suite (#534, Phase 3).
+failover, IPv6 packet paths, install-to-disk path, and the two-node HA
+suite (#534, Phase 3).
