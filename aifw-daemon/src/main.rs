@@ -536,21 +536,10 @@ async fn reconcile_pf_main() {
     }
 
     let has_hooks = stdout.contains("aifw-nat") || stdout.contains("anchor \"aifw\"");
-    if has_hooks {
-        info!("pf drift check: main ruleset has aifw anchor hooks");
-        return;
-    }
+    let auto_heal_disabled =
+        pf_auto_heal_disabled(std::env::var("AIFW_NO_PF_AUTO_HEAL").ok().as_deref());
 
-    let auto_heal_disabled = std::env::var("AIFW_NO_PF_AUTO_HEAL")
-        .map(|v| {
-            !v.is_empty()
-                && v != "0"
-                && !v.eq_ignore_ascii_case("no")
-                && !v.eq_ignore_ascii_case("false")
-        })
-        .unwrap_or(false);
-
-    if auto_heal_disabled {
+    if !has_hooks && auto_heal_disabled {
         error!(
             "pf drift check: main ruleset is MISSING aifw anchor hooks — \
              auto-heal disabled via AIFW_NO_PF_AUTO_HEAL; run `aifw reconcile` to reload from {PF_CONF}"
@@ -558,27 +547,124 @@ async fn reconcile_pf_main() {
         return;
     }
 
-    error!(
-        "pf drift check: main ruleset is MISSING aifw anchor hooks — auto-healing by reloading {PF_CONF}"
-    );
-    let reload = tokio::process::Command::new("/usr/local/bin/sudo")
-        .args(["/sbin/pfctl", "-f", PF_CONF])
+    if has_hooks {
+        info!("pf drift check: main ruleset has aifw anchor hooks");
+    } else {
+        error!(
+            "pf drift check: main ruleset is MISSING aifw anchor hooks — auto-healing by reloading {PF_CONF}"
+        );
+        let reload = tokio::process::Command::new("/usr/local/bin/sudo")
+            .args(["/sbin/pfctl", "-f", PF_CONF])
+            .output()
+            .await;
+        match reload {
+            Ok(o) if o.status.success() => {
+                info!("pf drift check: auto-heal succeeded — {PF_CONF} loaded into main ruleset");
+            }
+            Ok(o) => {
+                error!(
+                    "pf drift check: auto-heal FAILED (status {}): {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+                return;
+            }
+            Err(e) => {
+                error!("pf drift check: auto-heal could not spawn pfctl: {e}");
+                return;
+            }
+        }
+    }
+
+    // A valid ruleset can still be present while packet filtering itself is
+    // disabled. In that state `pfctl -sn` succeeds and the anchor check above
+    // looks healthy, but traffic bypasses every rule. Only enable pf after the
+    // ruleset is known to be valid, and preserve the detect-only opt-out.
+    let status = tokio::process::Command::new("/usr/local/bin/sudo")
+        .args(["/sbin/pfctl", "-si"])
         .output()
         .await;
-    match reload {
-        Ok(o) if o.status.success() => {
-            info!("pf drift check: auto-heal succeeded — {PF_CONF} loaded into main ruleset");
+    match status {
+        Ok(o) if o.status.success() && pf_status_is_disabled(&o.stdout) => {
+            if auto_heal_disabled {
+                error!(
+                    "pf drift check: packet filter is DISABLED — auto-heal disabled via \
+                     AIFW_NO_PF_AUTO_HEAL; run `pfctl -e` to enable it"
+                );
+                return;
+            }
+
+            let enable = tokio::process::Command::new("/usr/local/bin/sudo")
+                .args(["/sbin/pfctl", "-e"])
+                .output()
+                .await;
+            match enable {
+                Ok(o) if o.status.success() => {
+                    info!("pf drift check: packet filter was disabled; enabled it")
+                }
+                Ok(o) => error!(
+                    "pf drift check: pfctl -e FAILED (status {}): {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                Err(e) => error!("pf drift check: could not spawn pfctl -e: {e}"),
+            }
         }
         Ok(o) => {
-            error!(
-                "pf drift check: auto-heal FAILED (status {}): {}",
-                o.status,
-                String::from_utf8_lossy(&o.stderr).trim()
+            if !o.status.success() {
+                info!(
+                    "pf drift check: pfctl -si failed (status {}): {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+            }
+        }
+        Err(e) => info!("pf drift check: could not inspect pf status: {e}"),
+    }
+}
+
+fn pf_auto_heal_disabled(value: Option<&str>) -> bool {
+    value
+        .map(|v| {
+            !v.is_empty()
+                && v != "0"
+                && !v.eq_ignore_ascii_case("no")
+                && !v.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+fn pf_status_is_disabled(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .any(|line| line.trim_start().starts_with("Status: Disabled"))
+}
+
+#[cfg(test)]
+mod pf_reconcile_tests {
+    use super::{pf_auto_heal_disabled, pf_status_is_disabled};
+
+    #[test]
+    fn auto_heal_opt_out_parses_false_values() {
+        for value in [None, Some(""), Some("0"), Some("no"), Some("FALSE")] {
+            assert!(
+                !pf_auto_heal_disabled(value),
+                "unexpected opt-out: {value:?}"
             );
         }
-        Err(e) => {
-            error!("pf drift check: auto-heal could not spawn pfctl: {e}");
-        }
+        assert!(pf_auto_heal_disabled(Some("1")));
+        assert!(pf_auto_heal_disabled(Some("yes")));
+    }
+
+    #[test]
+    fn disabled_status_is_detected_without_matching_enabled_status() {
+        assert!(pf_status_is_disabled(
+            b"Status: Disabled for 0 days 00:01:00\nDebug: Urgent\n"
+        ));
+        assert!(pf_status_is_disabled(b"  Status: Disabled\n"));
+        assert!(!pf_status_is_disabled(
+            b"Status: Enabled for 0 days 00:01:00\n"
+        ));
     }
 }
 
