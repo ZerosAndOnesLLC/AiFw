@@ -93,6 +93,8 @@ Once done, reach the web UI at:
 https://<lan-ip>:8080
 ```
 
+> **Management access is LAN-only by default.** When you configure a LAN interface, the generated firewall rules allow SSH and the web UI / API **only on the LAN** — the control plane is not exposed to the WAN. A single-NIC (WAN-only) install keeps management reachable on its one interface. To allow management from the WAN on a LAN-equipped box, add an explicit `pass` rule for port 22 / your API port on the WAN interface via **Firewall → Rules**.
+
 ### Unattended (headless) setup
 
 For scripted installs, VM farms, and CI, skip the wizard entirely with a seed file:
