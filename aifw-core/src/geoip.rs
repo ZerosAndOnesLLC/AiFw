@@ -315,6 +315,33 @@ impl GeoIpEngine {
         Ok(())
     }
 
+    /// Verify the pf anchor holds exactly the geo-IP lines
+    /// [`Self::apply_rules`] would render right now (#535 post-apply
+    /// verification). Table *contents* aren't compared — only the table
+    /// definitions and block/allow rules.
+    pub async fn verify_applied(&self) -> Result<()> {
+        let rules = self.list_rules().await?;
+        let expected: Vec<String> = rules
+            .iter()
+            .filter(|r| r.status == GeoIpRuleStatus::Active)
+            .flat_map(|r| [r.to_pf_table(), r.to_pf_rule()])
+            .collect();
+        let actual = self
+            .pf
+            .get_rules(&self.anchor)
+            .await
+            .map_err(|e| AifwError::Pf(e.to_string()))?;
+        if actual != expected {
+            return Err(AifwError::Pf(format!(
+                "anchor {} holds {} geo-ip lines but {} were expected — pf does not match the database",
+                self.anchor,
+                actual.len(),
+                expected.len()
+            )));
+        }
+        Ok(())
+    }
+
     /// Get database statistics
     pub async fn db_stats(&self) -> (usize, usize) {
         let index = self.index.load();

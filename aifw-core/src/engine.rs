@@ -159,12 +159,9 @@ impl RuleEngine {
         *self.extra_rules.write().await = rules;
     }
 
-    /// Generate pf rules from active rules and load them into the pf anchor.
-    /// Rules referencing a schedule are only compiled while inside their
-    /// active window, evaluated against appliance local time (#537).
-    /// Extra rules (from VPN, etc.) are inserted just before any block rule
-    /// so they aren't shadowed by a `block quick` default.
-    pub async fn apply_rules(&self) -> Result<()> {
+    /// Render the pf ruleset that [`Self::apply_rules`] would load: active
+    /// rules inside their schedule window, plus injected extra rules.
+    async fn render_pf_rules(&self) -> Result<Vec<String>> {
         let rules = self.db.list_active_rules().await?;
         let schedules = self.db.list_schedule_specs().await?;
         let gateways = self.db.list_gateway_routes().await;
@@ -202,6 +199,16 @@ impl RuleEngine {
                 pf_rules.extend(extras.iter().cloned());
             }
         }
+        Ok(pf_rules)
+    }
+
+    /// Generate pf rules from active rules and load them into the pf anchor.
+    /// Rules referencing a schedule are only compiled while inside their
+    /// active window, evaluated against appliance local time (#537).
+    /// Extra rules (from VPN, etc.) are inserted just before any block rule
+    /// so they aren't shadowed by a `block quick` default.
+    pub async fn apply_rules(&self) -> Result<()> {
+        let pf_rules = self.render_pf_rules().await?;
 
         tracing::info!(
             anchor = %self.anchor,
@@ -223,6 +230,27 @@ impl RuleEngine {
             )
             .await?;
 
+        Ok(())
+    }
+
+    /// Verify the pf anchor holds exactly the ruleset [`Self::apply_rules`]
+    /// would render right now (#535 post-apply verification). Fails with a
+    /// `Pf` error describing the mismatch.
+    pub async fn verify_applied(&self) -> Result<()> {
+        let expected = self.render_pf_rules().await?;
+        let actual = self
+            .pf
+            .get_rules(&self.anchor)
+            .await
+            .map_err(|e| AifwError::Pf(e.to_string()))?;
+        if actual != expected {
+            return Err(AifwError::Pf(format!(
+                "anchor {} holds {} rules but {} were expected — pf does not match the database",
+                self.anchor,
+                actual.len(),
+                expected.len()
+            )));
+        }
         Ok(())
     }
 

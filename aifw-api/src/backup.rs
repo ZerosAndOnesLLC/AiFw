@@ -1760,6 +1760,10 @@ pub(crate) async fn apply_firewall_config(
     // wrapper (`apply_firewall_config_or_rollback`) as their recovery path.
     // Parse/mapping skips (`continue`) below are intentional drops the
     // import preview already surfaced; operational failures are errors.
+    // Rows actually inserted per table, checked against committed counts
+    // after the transaction lands (#535 post-apply verification).
+    let mut inserted = std::collections::BTreeMap::<&str, i64>::new();
+
     let mut tx = state
         .pool
         .begin()
@@ -1809,6 +1813,7 @@ pub(crate) async fn apply_firewall_config(
             aifw_core::Database::insert_rule_on(&mut *tx, &rule)
                 .await
                 .map_err(|e| apply_fail(&format!("rule {rule_id} restore"), e))?;
+            *inserted.entry("rules").or_default() += 1;
         } else {
             tracing::warn!(rule_id = %rc.id, "import: skipping unparseable rule entry");
         }
@@ -1825,6 +1830,7 @@ pub(crate) async fn apply_firewall_config(
             aifw_core::nat::NatEngine::insert_rule_on(&mut *tx, &nat)
                 .await
                 .map_err(|e| apply_fail(&format!("nat rule {nat_id} restore"), e))?;
+            *inserted.entry("nat_rules").or_default() += 1;
         } else {
             tracing::warn!(nat_id = %nc.id, "import: skipping unparseable nat entry");
         }
@@ -1851,6 +1857,7 @@ pub(crate) async fn apply_firewall_config(
         aifw_core::AliasEngine::insert_on(&mut *tx, &alias)
             .await
             .map_err(|e| apply_fail(&format!("alias {} restore", alias.name), e))?;
+        *inserted.entry("aliases").or_default() += 1;
     }
 
     // Static routes — restored via direct INSERT, matching what
@@ -1881,6 +1888,7 @@ pub(crate) async fn apply_firewall_config(
         .execute(&mut *tx)
         .await
         .map_err(|e| apply_fail(&format!("static route {} restore", rc.destination), e))?;
+        *inserted.entry("static_routes").or_default() += 1;
         if rc.enabled {
             kernel_routes.push((rc.clone(), iface_after));
         }
@@ -1899,6 +1907,7 @@ pub(crate) async fn apply_firewall_config(
         aifw_core::geoip::GeoIpEngine::insert_rule_on(&mut *tx, &rule)
             .await
             .map_err(|e| apply_fail(&format!("geo-ip rule {country} restore"), e))?;
+        *inserted.entry("geoip_rules").or_default() += 1;
     }
 
     for wg in &config.vpn.wireguard {
@@ -1929,6 +1938,7 @@ pub(crate) async fn apply_firewall_config(
         aifw_core::vpn::VpnEngine::insert_wg_tunnel_on(&mut *tx, &tunnel)
             .await
             .map_err(|e| apply_fail(&format!("wg tunnel {} restore", tunnel.name), e))?;
+        *inserted.entry("wg_tunnels").or_default() += 1;
         for p in &wg.peers {
             let peer_id = uuid::Uuid::parse_str(&p.id).unwrap_or_else(|_| uuid::Uuid::new_v4());
             let allowed_ips: Vec<Address> = p
@@ -1952,6 +1962,7 @@ pub(crate) async fn apply_firewall_config(
             aifw_core::vpn::VpnEngine::insert_wg_peer_on(&mut *tx, &peer)
                 .await
                 .map_err(|e| apply_fail(&format!("wg peer {} restore", peer.name), e))?;
+            *inserted.entry("wg_peers").or_default() += 1;
         }
     }
 
@@ -1970,6 +1981,7 @@ pub(crate) async fn apply_firewall_config(
         aifw_core::vpn::VpnEngine::insert_ipsec_sa_on(&mut *tx, &sa)
             .await
             .map_err(|e| apply_fail(&format!("ipsec SA {} restore", sa.name), e))?;
+        *inserted.entry("ipsec_sas").or_default() += 1;
     }
 
     // Real IPsec tunnels (#530): restore records in the transaction; the
@@ -1978,6 +1990,7 @@ pub(crate) async fn apply_firewall_config(
         aifw_core::ipsec::IpsecEngine::insert_tunnel_on(&mut *tx, tunnel)
             .await
             .map_err(|e| apply_fail(&format!("ipsec tunnel {} restore", tunnel.name), e))?;
+        *inserted.entry("ipsec_tunnels").or_default() += 1;
     }
 
     let auth = &config.auth;
@@ -2014,6 +2027,7 @@ pub(crate) async fn apply_firewall_config(
             aifw_core::shaping::ShapingEngine::insert_queue_on(&mut *tx, &q)
                 .await
                 .map_err(|e| apply_fail(&format!("shaping queue {} restore", qc.name), e))?;
+            *inserted.entry("queue_configs").or_default() += 1;
         }
     }
     for rc in &config.rate_limits {
@@ -2030,6 +2044,7 @@ pub(crate) async fn apply_firewall_config(
             aifw_core::shaping::ShapingEngine::insert_rate_limit_on(&mut *tx, &r)
                 .await
                 .map_err(|e| apply_fail("rate limit restore", e))?;
+            *inserted.entry("rate_limit_rules").or_default() += 1;
         }
     }
 
@@ -2039,6 +2054,7 @@ pub(crate) async fn apply_firewall_config(
             aifw_core::tls::TlsEngine::insert_sni_rule_on(&mut *tx, &sni)
                 .await
                 .map_err(|e| apply_fail(&format!("sni rule {} restore", sc.pattern), e))?;
+            *inserted.entry("sni_rules").or_default() += 1;
         }
     }
     for hash in &config.tls.blocked_ja3 {
@@ -2058,6 +2074,7 @@ pub(crate) async fn apply_firewall_config(
             aifw_core::ha::ClusterEngine::insert_carp_vip_on(&mut *tx, &vip)
                 .await
                 .map_err(|e| apply_fail(&format!("carp vip {} restore", vc.virtual_ip), e))?;
+            *inserted.entry("carp_vips").or_default() += 1;
         }
     }
     if let Some(pc) = &config.ha.pfsync
@@ -2076,6 +2093,7 @@ pub(crate) async fn apply_firewall_config(
             aifw_core::ha::ClusterEngine::insert_node_on(&mut *tx, &node)
                 .await
                 .map_err(|e| apply_fail("cluster node restore", e))?;
+            *inserted.entry("cluster_nodes").or_default() += 1;
         }
     }
 
@@ -2107,6 +2125,41 @@ pub(crate) async fn apply_firewall_config(
     tx.commit()
         .await
         .map_err(|e| apply_fail("commit restore transaction", e))?;
+
+    // Post-commit DB verification (#535): the transaction guarantees
+    // atomicity, but confirm the committed row counts match what the
+    // restore inserted before touching the data plane. (Key/value config
+    // tables and INSERT OR REPLACE targets are excluded — duplicates
+    // legitimately collapse there.)
+    for table in [
+        "rules",
+        "nat_rules",
+        "aliases",
+        "static_routes",
+        "geoip_rules",
+        "wg_tunnels",
+        "wg_peers",
+        "ipsec_sas",
+        "ipsec_tunnels",
+        "queue_configs",
+        "rate_limit_rules",
+        "sni_rules",
+        "carp_vips",
+        "cluster_nodes",
+    ] {
+        let expected = inserted.get(table).copied().unwrap_or(0);
+        let (count,): (i64,) =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                .fetch_one(&state.pool)
+                .await
+                .map_err(|e| apply_fail(&format!("verifying {table}"), e))?;
+        if count != expected {
+            return Err(apply_fail(
+                &format!("verifying {table}"),
+                format!("{count} rows committed but {expected} were inserted"),
+            ));
+        }
+    }
 
     // ============================================================
     // Post-commit: pf / kernel / service applies. The DB is now fully
@@ -2210,6 +2263,25 @@ pub(crate) async fn apply_firewall_config(
         .apply_rules()
         .await
         .map_err(|e| apply_fail("geoip rules apply", e))?;
+
+    // Post-apply data-plane verification (#535): pf must hold exactly the
+    // rulesets the engines just rendered. Catches a backend that reported
+    // success but didn't take the rules.
+    state
+        .rule_engine
+        .verify_applied()
+        .await
+        .map_err(|e| apply_fail("firewall rules verification", e))?;
+    state
+        .nat_engine
+        .verify_applied()
+        .await
+        .map_err(|e| apply_fail("nat rules verification", e))?;
+    state
+        .geoip_engine
+        .verify_applied()
+        .await
+        .map_err(|e| apply_fail("geoip rules verification", e))?;
 
     Ok(())
 }

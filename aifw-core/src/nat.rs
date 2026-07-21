@@ -251,6 +251,28 @@ impl NatEngine {
         Ok(())
     }
 
+    /// Verify the pf anchor holds exactly the NAT ruleset
+    /// [`Self::apply_rules`] would render right now (#535 post-apply
+    /// verification).
+    pub async fn verify_applied(&self) -> Result<()> {
+        let rules = self.list_active_rules().await?;
+        let expected: Vec<String> = rules.iter().flat_map(|r| r.to_pf_rules()).collect();
+        let actual = self
+            .pf
+            .get_nat_rules(&self.anchor)
+            .await
+            .map_err(|e| AifwError::Pf(e.to_string()))?;
+        if actual != expected {
+            return Err(AifwError::Pf(format!(
+                "anchor {} holds {} NAT rules but {} were expected — pf does not match the database",
+                self.anchor,
+                actual.len(),
+                expected.len()
+            )));
+        }
+        Ok(())
+    }
+
     /// Flush all NAT rules from the pf anchor and record an audit entry.
     /// Fails if the pf backend rejects the flush
     pub async fn flush_rules(&self) -> Result<()> {

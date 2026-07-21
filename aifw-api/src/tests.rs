@@ -2377,6 +2377,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_post_apply_verification_detects_pf_drift() {
+        // verify_applied must fail when the pf anchor no longer matches the
+        // database (#535 post-apply verification).
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let rule = aifw_common::Rule::new(
+            aifw_common::Action::Pass,
+            aifw_common::Direction::In,
+            aifw_common::Protocol::Tcp,
+            aifw_common::RuleMatch {
+                src_addr: aifw_common::Address::Any,
+                src_port: None,
+                dst_addr: aifw_common::Address::Any,
+                dst_port: None,
+            },
+        );
+        state.rule_engine.add_rule(rule).await.unwrap();
+        state.rule_engine.apply_rules().await.unwrap();
+        state
+            .rule_engine
+            .verify_applied()
+            .await
+            .expect("freshly applied ruleset must verify");
+
+        state.pf.flush_rules("aifw").await.unwrap();
+        assert!(
+            state.rule_engine.verify_applied().await.is_err(),
+            "flushed anchor must fail verification"
+        );
+    }
+
+    #[tokio::test]
     async fn test_prevalidation_rejects_bad_config_without_mutation() {
         // A config that would abort mid-apply (rule priority out of range)
         // must be rejected up front with 400 and zero rows touched (#535).
