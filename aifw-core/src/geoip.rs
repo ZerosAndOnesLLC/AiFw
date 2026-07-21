@@ -315,10 +315,12 @@ impl GeoIpEngine {
         Ok(())
     }
 
-    /// Verify the pf anchor holds exactly the geo-IP lines
-    /// [`Self::apply_rules`] would render right now (#535 post-apply
-    /// verification). Table *contents* aren't compared — only the table
-    /// definitions and block/allow rules.
+    /// Verify the pf anchor holds the geo-IP lines [`Self::apply_rules`]
+    /// would render right now (#535 post-apply verification). Table
+    /// *contents* aren't compared — only the table definitions and
+    /// block/allow rules. Exact comparison on backends that echo loaded
+    /// rules; emptiness invariant on real pfctl, which re-renders rules and
+    /// omits table definitions from `-sr` (see `RuleEngine::verify_applied`).
     pub async fn verify_applied(&self) -> Result<()> {
         let rules = self.list_rules().await?;
         let expected: Vec<String> = rules
@@ -331,7 +333,12 @@ impl GeoIpEngine {
             .get_rules(&self.anchor)
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
-        if actual != expected {
+        let mismatch = if self.pf.echoes_exact_rules() {
+            actual != expected
+        } else {
+            actual.is_empty() != expected.is_empty()
+        };
+        if mismatch {
             return Err(AifwError::Pf(format!(
                 "anchor {} holds {} geo-ip lines but {} were expected — pf does not match the database",
                 self.anchor,

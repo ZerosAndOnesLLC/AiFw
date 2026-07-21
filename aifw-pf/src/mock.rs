@@ -84,6 +84,10 @@ impl PfBackend for PfMock {
         self
     }
 
+    fn echoes_exact_rules(&self) -> bool {
+        true
+    }
+
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), PfError> {
         self.check_fail("add_rule").await?;
         tracing::debug!(anchor, rule, "mock: add_rule");

@@ -233,9 +233,13 @@ impl RuleEngine {
         Ok(())
     }
 
-    /// Verify the pf anchor holds exactly the ruleset [`Self::apply_rules`]
-    /// would render right now (#535 post-apply verification). Fails with a
-    /// `Pf` error describing the mismatch.
+    /// Verify the pf anchor holds the ruleset [`Self::apply_rules`] would
+    /// render right now (#535 post-apply verification). Exact string
+    /// comparison only works on backends that echo the loaded rules (the
+    /// mock); real pfctl lists rules in canonical re-rendered form, so
+    /// there the check degrades to the emptiness invariant (loaded a
+    /// non-empty ruleset ⇒ anchor is non-empty, and vice versa). Full
+    /// pfctl-side verification is tracked under the FreeBSD CI epic (#533).
     pub async fn verify_applied(&self) -> Result<()> {
         let expected = self.render_pf_rules().await?;
         let actual = self
@@ -243,7 +247,12 @@ impl RuleEngine {
             .get_rules(&self.anchor)
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
-        if actual != expected {
+        let mismatch = if self.pf.echoes_exact_rules() {
+            actual != expected
+        } else {
+            actual.is_empty() != expected.is_empty()
+        };
+        if mismatch {
             return Err(AifwError::Pf(format!(
                 "anchor {} holds {} rules but {} were expected — pf does not match the database",
                 self.anchor,

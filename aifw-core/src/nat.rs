@@ -251,9 +251,10 @@ impl NatEngine {
         Ok(())
     }
 
-    /// Verify the pf anchor holds exactly the NAT ruleset
-    /// [`Self::apply_rules`] would render right now (#535 post-apply
-    /// verification).
+    /// Verify the pf anchor holds the NAT ruleset [`Self::apply_rules`]
+    /// would render right now (#535 post-apply verification). Exact
+    /// comparison on backends that echo loaded rules; emptiness invariant
+    /// on real pfctl (see `RuleEngine::verify_applied`).
     pub async fn verify_applied(&self) -> Result<()> {
         let rules = self.list_active_rules().await?;
         let expected: Vec<String> = rules.iter().flat_map(|r| r.to_pf_rules()).collect();
@@ -262,7 +263,12 @@ impl NatEngine {
             .get_nat_rules(&self.anchor)
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
-        if actual != expected {
+        let mismatch = if self.pf.echoes_exact_rules() {
+            actual != expected
+        } else {
+            actual.is_empty() != expected.is_empty()
+        };
+        if mismatch {
             return Err(AifwError::Pf(format!(
                 "anchor {} holds {} NAT rules but {} were expected — pf does not match the database",
                 self.anchor,
