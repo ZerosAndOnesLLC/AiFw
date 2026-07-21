@@ -163,22 +163,30 @@ established_secs, remote_host }` parsed from `swanctl --list-sas --raw`.
       ensure_applied no-op, stale file cleanup. Full suite 754 green.
 - [x] 3g. Version bump to 5.107.0, commit.
 
-### Phase 4 — Live status + API/CLI (→ minor bump)
+### Phase 4 — Live status + API/CLI (→ 5.108.0) — DONE
 
-- [ ] 4a. `swanctl --list-sas` parser (`--raw` output) → `IpsecLiveStatus`;
-      unit tests against captured real output fixtures.
-- [ ] 4b. API: `GET/POST /vpn/ipsec/tunnels`, `GET/PUT/DELETE .../{id}`,
-      `POST .../{id}/start|stop`, `GET .../{id}/status`, `GET /vpn/ipsec/status`
-      (all tunnels, 1-min cached poll + on-demand refresh). PSK/keys redacted
-      in every response. Legacy `GET /vpn/ipsec` keeps returning old rows with
-      `legacy: true`; legacy `POST` returns 410 Gone with a pointer.
-- [ ] 4c. Permissions: reuse existing VPN read/write perms; audit-log all
-      mutations.
-- [ ] 4d. Backup/config-io: include `ipsec_tunnels` (secrets included in
-      encrypted backups, consistent with WG private keys).
-- [ ] 4e. CLI: `aifw vpn ipsec list|add|delete|start|stop|status`.
-- [ ] 4f. API integration tests (axum_test + mock control).
-- [ ] 4g. Version bump, commit.
+- [x] 4a. `ipsec_status.rs`: tolerant tokenizer/tree parser for
+      `--list-sas --raw` (vici_dump shape; handles DN ids with embedded
+      `=`, bracketed TS lists, compact + indented forms); unit fixtures —
+      swap in a captured real-appliance fixture during Phase 6.
+      `IpsecEngine::live_status()`/`tunnel_status()` degrade to DOWN when
+      charon is unreachable.
+- [x] 4b. API: tunnels CRUD + start/stop + per-tunnel and all-tunnels
+      status; PSK/private key redacted everywhere; mutations return
+      status+message errors so charon/validation detail reaches clients.
+      Legacy `GET /vpn/ipsec` rows now carry `legacy: true`; POST → 410
+      pointing at the tunnels API; DELETE kept for cleanup. Polling left
+      to the UI (Phase 5) — status endpoint is a fresh list-sas each call.
+- [x] 4c. Permissions: VpnRead/VpnWrite groups (router.rs).
+- [x] 4d. Backup/config-io: VpnConfig.ipsec_tunnels (serde default),
+      table cleared+restored on import, one apply after restore; export
+      counts tunnels; startup ensure_applied in aifw-api main.
+- [x] 4e. CLI: `aifw vpn ipsec-add` now creates a real IKEv2 tunnel
+      (legacy SA creation removed); new ipsec-start/ipsec-stop/
+      ipsec-status; list shows tunnels + legacy records separately.
+- [x] 4f. 4 axum_test integration tests (CRUD+redaction, validation
+      message, 410, status list). Full suite 762 green.
+- [x] 4g. Version bump to 5.108.0, commit.
 
 ### Phase 5 — UI (→ minor bump)
 

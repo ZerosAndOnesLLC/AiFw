@@ -530,13 +530,18 @@ pub struct RateLimitEntry {
     pub status: RateLimitStatus,
 }
 
-/// VPN section: WireGuard tunnels and IPsec SAs
+/// VPN section: WireGuard tunnels, IPsec tunnels, and legacy IPsec SAs
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VpnConfig {
     /// WireGuard tunnel definitions (including peers)
     pub wireguard: Vec<WireguardTunnelConfig>,
-    /// IPsec security association definitions
+    /// Legacy pre-#530 IPsec SA records (configuration-only, no data plane)
     pub ipsec: Vec<IpsecSaConfig>,
+    /// Real IPsec tunnels (#530). Full records including PSKs/private
+    /// keys, so exports must be treated as secrets (same as WireGuard).
+    /// Defaults empty so pre-#530 backups import cleanly.
+    #[serde(default)]
+    pub ipsec_tunnels: Vec<aifw_common::IpsecTunnel>,
 }
 
 /// A WireGuard tunnel as stored in a config snapshot. Contains the

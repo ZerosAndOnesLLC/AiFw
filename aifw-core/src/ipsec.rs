@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use aifw_common::{AifwError, IpsecTunnel, Result};
+use aifw_common::{AifwError, IpsecLiveStatus, IpsecTunnel, Result};
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -96,6 +96,34 @@ impl IkeControl for SwanctlControl {
         let output = swanctl_checked(&["--list-conns", "--raw"]).await?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
+}
+
+/// Platform-appropriate IKE control, mirroring `aifw_pf::create_backend`:
+/// swanctl on FreeBSD, in-memory mock everywhere else.
+#[cfg(target_os = "freebsd")]
+pub fn create_ike_control() -> Arc<dyn IkeControl> {
+    Arc::new(SwanctlControl)
+}
+
+/// Platform-appropriate IKE control, mirroring `aifw_pf::create_backend`:
+/// swanctl on FreeBSD, in-memory mock everywhere else.
+#[cfg(not(target_os = "freebsd"))]
+pub fn create_ike_control() -> Arc<dyn IkeControl> {
+    Arc::new(MockIkeControl::new())
+}
+
+/// Platform-appropriate swanctl conf store: real root-owned files on
+/// FreeBSD, in-memory map everywhere else.
+#[cfg(target_os = "freebsd")]
+pub fn create_conf_store() -> Arc<dyn IpsecConfStore> {
+    Arc::new(SystemConfStore)
+}
+
+/// Platform-appropriate swanctl conf store: real root-owned files on
+/// FreeBSD, in-memory map everywhere else.
+#[cfg(not(target_os = "freebsd"))]
+pub fn create_conf_store() -> Arc<dyn IpsecConfStore> {
+    Arc::new(MemConfStore::new())
 }
 
 /// Recorded state of a [`MockIkeControl`], inspectable from tests.
@@ -899,6 +927,49 @@ impl IpsecEngine {
             self.apply_all().await?;
         }
         Ok(())
+    }
+
+    /// Live negotiated status for every tunnel, ordered like
+    /// `list_tunnels`. Tunnels charon has no SA for — including disabled
+    /// ones — report as `DOWN`. A failing `list-sas` (charon not
+    /// running) degrades to all-down rather than erroring: status pages
+    /// must render on a box where IPsec never started.
+    pub async fn live_status(&self) -> Result<Vec<IpsecLiveStatus>> {
+        let tunnels = self.list_tunnels().await?;
+        if tunnels.is_empty() {
+            return Ok(Vec::new());
+        }
+        let raw = match self.ike.list_sas_raw().await {
+            Ok(raw) => raw,
+            Err(e) => {
+                tracing::warn!(error = %e, "ipsec: list-sas failed — reporting all tunnels down");
+                String::new()
+            }
+        };
+        let mut live = crate::ipsec_status::parse_list_sas(&raw);
+        Ok(tunnels
+            .iter()
+            .map(|t| {
+                live.remove(&t.conn_name())
+                    .unwrap_or_else(|| IpsecLiveStatus::down(t.id, t.conn_name()))
+            })
+            .collect())
+    }
+
+    /// Live negotiated status for one tunnel.
+    pub async fn tunnel_status(&self, id: Uuid) -> Result<IpsecLiveStatus> {
+        let tunnel = self.get_tunnel(id).await?;
+        let raw = match self.ike.list_sas_raw().await {
+            Ok(raw) => raw,
+            Err(e) => {
+                tracing::warn!(error = %e, "ipsec: list-sas failed — reporting tunnel down");
+                String::new()
+            }
+        };
+        let mut live = crate::ipsec_status::parse_list_sas(&raw);
+        Ok(live
+            .remove(&tunnel.conn_name())
+            .unwrap_or_else(|| IpsecLiveStatus::down(tunnel.id, tunnel.conn_name())))
     }
 
     /// Make sure the strongSwan service is enabled and running before we

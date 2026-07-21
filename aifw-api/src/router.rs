@@ -109,6 +109,16 @@ pub(crate) fn vpn_read() -> Router<AppState> {
         )
         .route("/api/v1/vpn/wg/{id}/status", get(routes::wg_tunnel_status))
         .route("/api/v1/vpn/ipsec", get(routes::list_ipsec_sas))
+        .route("/api/v1/vpn/ipsec/status", get(routes::ipsec_status_all))
+        .route("/api/v1/vpn/ipsec/tunnels", get(routes::list_ipsec_tunnels))
+        .route(
+            "/api/v1/vpn/ipsec/tunnels/{id}",
+            get(routes::get_ipsec_tunnel),
+        )
+        .route(
+            "/api/v1/vpn/ipsec/tunnels/{id}/status",
+            get(routes::ipsec_tunnel_status),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::VpnRead)))
 }
 
@@ -126,8 +136,26 @@ pub(crate) fn vpn_write() -> Router<AppState> {
             "/api/v1/vpn/wg/{tid}/peers/{pid}",
             put(routes::update_wg_peer).delete(routes::delete_wg_peer),
         )
-        .route("/api/v1/vpn/ipsec", post(routes::create_ipsec_sa))
+        // Legacy SA records (#530): creation is gone, deletion still
+        // allowed so operators can clean the read-only leftovers up.
+        .route("/api/v1/vpn/ipsec", post(routes::create_ipsec_sa_gone))
         .route("/api/v1/vpn/ipsec/{id}", delete(routes::delete_ipsec_sa))
+        .route(
+            "/api/v1/vpn/ipsec/tunnels",
+            post(routes::create_ipsec_tunnel),
+        )
+        .route(
+            "/api/v1/vpn/ipsec/tunnels/{id}",
+            put(routes::update_ipsec_tunnel).delete(routes::delete_ipsec_tunnel),
+        )
+        .route(
+            "/api/v1/vpn/ipsec/tunnels/{id}/start",
+            post(routes::start_ipsec_tunnel),
+        )
+        .route(
+            "/api/v1/vpn/ipsec/tunnels/{id}/stop",
+            post(routes::stop_ipsec_tunnel),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::VpnWrite)))
 }
 
