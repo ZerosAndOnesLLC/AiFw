@@ -242,15 +242,19 @@ dev VM; full results on #530) — ALL DONE 2026-07-21:
 Upgrade fallout fixed separately: #564 console ssh/EOF, #565
 transitional package/sudoers gap (PR #566).
 
-### Phase 7 — Docs + issue close-out
+### Phase 7 — Docs + issue close-out — DONE
 
-- [ ] 7a. Flip #552 "in development" markers: claims become "IPsec IKEv2
-      site-to-site (tunnel mode, PSK/cert), powered by strongSwan"; remove
-      AH/transport claims everywhere (README, docs, comparison pages).
-- [ ] 7b. `docs/` IPsec guide: setup walkthrough, interop notes (tested:
-      strongSwan↔strongSwan; expected: any IKEv2 peer), troubleshooting.
-- [ ] 7c. Comment + close #530 (and verify #529/#552 consistency), Project
-      #12 → Done.
+- [x] 7a. All #552 "in development" markers flipped (maturity matrix,
+      compare, README, index.html, features, FAQ, CLI docs): claim is
+      "IKEv2 site-to-site, tunnel mode, PSK/X.509, NAT-T, powered by
+      strongSwan"; explicit non-claims for IKEv1/AH/transport/mobile-EAP;
+      stale --src/--dst CLI examples updated to the real flags.
+- [x] 7b. docs/docs/vpn.md rewritten: PSK + cert quickstarts, behavior
+      details (DB-as-truth, rollback, reboot recovery, per-peer pf
+      scoping, legacy records), troubleshooting, new endpoint table.
+- [x] 7c. Docs PR closes #530 on merge; #529/#552 already closed;
+      follow-up #568 filed (ACME renewal → tunnel re-apply hook).
+      CLAUDE.md: release-time-only versioning policy + IPsec endpoints.
 
 ## Risk Summary
 

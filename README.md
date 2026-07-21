@@ -78,7 +78,7 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 - **Connection tracking** — real-time state table monitoring, top talkers, protocol breakdown
 - **Rate limiting & traffic shaping** — HFSC/PriQ queues, per-IP overload tables, SYN flood protection (CoDel via dummynet FQ-CoDel in development, #532)
 - **AI/ML threat detection** *(optional, WIP)* — experimental port scan, DDoS, brute force, C2 beacon, DNS tunnel detection with auto-response (disabled by default, not yet production-ready)
-- **VPN integration** — WireGuard tunnels + peers (IPsec in development: SA config + pf rules exist, kernel data plane/IKE being built, #530)
+- **VPN integration** — WireGuard tunnels + peers, and IKEv2 site-to-site IPsec (tunnel mode, PSK or X.509 auth, NAT-T) powered by strongSwan
 - **Geo-IP filtering** — country-based block/allow with GeoLite2 CSV, CIDR aggregation
 - **TLS inspection** — JA3/JA3S fingerprinting, SNI filtering, cert validation, version enforcement
 - **Plugin system** — native Rust + WASM sandboxed plugins with 7 hook points
@@ -157,7 +157,7 @@ aifw queue add --name voip --interface em0 --type priq --bandwidth 100Mb --class
 # VPN
 aifw vpn wg-add --name wg0 --interface wg0 --port 51820 --address 10.0.0.1/24
 aifw vpn wg-peer-add --tunnel <id> --name laptop --pubkey <key> --endpoint 1.2.3.4:51820
-aifw vpn ipsec-add --name office --src 203.0.113.1 --dst 198.51.100.1
+aifw vpn ipsec-add --name office --remote 198.51.100.1 --psk <secret> --local-ts 10.0.0.0/24 --remote-ts 10.1.0.0/24
 
 # Geo-IP
 aifw geoip add --country CN --action block
@@ -198,7 +198,7 @@ NextJS application with 11 pages:
 - **Connections** — auto-refreshing live state table
 - **Threats** — AI detection timeline, severity scoring, auto-response history *(WIP — AI module is experimental)*
 - **Geo-IP** — country rules, IP lookup
-- **VPN** — WireGuard tunnels + peers, IPsec SAs
+- **VPN** — WireGuard tunnels + peers, IKEv2 IPsec site-to-site tunnels
 - **Cluster** — CARP VIPs, pfsync, node health, health checks
 - **Logs** — filterable audit log with color-coded actions
 - **Settings** — metrics backend (local/PostgreSQL), API, TLS policy

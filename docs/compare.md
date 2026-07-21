@@ -71,7 +71,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 
 <tr class="section-row"><td colspan="4">VPN</td></tr>
 <tr><td>WireGuard</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>IPsec</td><td class="partial">in development</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>IPsec (IKEv2 site-to-site)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>OpenVPN</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 
 <tr class="section-row"><td colspan="4">IDS / IPS</td></tr>
@@ -172,7 +172,7 @@ Honesty matters. Things you'll miss if you switch:
 - **No CBQ** traffic shaping (has CoDel, HFSC, PRIQ).
 - **No Snort rules** — Suricata-compatible only.
 - **No HAProxy / Nginx** — built-in TrafficCop instead.
-- **IPsec is in development** — SA configuration exists but no kernel data plane or IKE daemon yet; both competitors ship working strongSwan-based IPsec today.
+- **IPsec is site-to-site IKEv2 only** — AiFw ships working strongSwan-based tunnels (tunnel mode, PSK/X.509, NAT-T) like both competitors, but does not offer IKEv1, mobile/road-warrior EAP clients, AH, or transport mode; pfSense/OPNsense cover those legacy and mobile cases.
 - **No inline IPS** — AiFw's prevention mode is reactive source blocking after detection; OPNsense/pfSense run Suricata/Snort inline. Inline (divert/netmap) is on the roadmap.
 - **NAT64/NAT46 and CoDel are in development** — configuration surfaces exist; the data planes are being built.
 - **OAuth/SSO login is in development** — provider config and the authorize flow exist, but the token exchange isn't finished yet.

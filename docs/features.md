@@ -20,7 +20,7 @@ breadcrumb:
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
   "featureList": [
     "Stateful packet filtering via FreeBSD pf",
-    "WireGuard VPN (IPsec in development)",
+    "WireGuard VPN and IKEv2 site-to-site IPsec",
     "IDS with Suricata, Sigma, and YARA rule subsets; reactive IPS blocking",
     "Multi-WAN with FIB isolation, SLA-driven failover, leak detection",
     "HA clustering with CARP",
@@ -87,8 +87,8 @@ See the [multi-WAN setup guide]({{ '/multi-wan/' | relative_url }}) for FIB boot
 - Split or full tunnel support
 - Live tunnel status and transfer counters
 
-### IPsec — *in development*
-IPsec SA configuration (ESP/AH, tunnel/transport, algorithm selection) exists in the API/UI, and the firewall opens the ESP/AH + IKE (UDP 500/4500) ports — but the data plane (kernel SAs/SPD, IKE negotiation) is **not implemented yet**, so configured SAs do not carry protected traffic. Implementation is committed and tracked in [#530](https://github.com/ZerosAndOnesLLC/AiFw/issues/530).
+### IPsec
+IKEv2 **site-to-site** tunnels (tunnel mode) powered by strongSwan: charon negotiates IKE and installs real kernel SAs/policies, with NAT-T, rekeying, dead-peer detection, and unattended reboot recovery. Authentication via pre-shared key or X.509 certificate (built-in ACME store or pasted PEM); live negotiated state (IKE state, child SAs, byte counters, rekey countdown) is read from charon, never a database column. Verified end-to-end between two FreeBSD endpoints — including rekey with zero packet loss — before these claims shipped ([#530](https://github.com/ZerosAndOnesLLC/AiFw/issues/530)). Deliberately not offered: IKEv1, AH, transport mode, and mobile/EAP clients (use WireGuard for road-warrior).
 
 ## IDS / IPS
 

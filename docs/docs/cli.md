@@ -166,7 +166,7 @@ aifw geoip remove <id>
 
 ## vpn
 
-WireGuard tunnels and IPsec SAs in one tree.
+WireGuard and IPsec tunnels in one tree.
 
 ```bash
 # WireGuard tunnel
@@ -178,10 +178,15 @@ aifw vpn wg-peer-add --tunnel <tunnel-id> \
   --name laptop --pubkey <peer-public-key> \
   --allowed-ips 10.50.0.10/32 --keepalive 25
 
-# IPsec SA
+# IPsec IKEv2 site-to-site tunnel (PSK; use the web UI/API for cert auth)
 aifw vpn ipsec-add --name site-to-site \
-  --src 198.51.100.5 --dst 203.0.113.7 \
-  --proto esp --mode tunnel
+  --remote 203.0.113.7 --psk <16+ char secret> \
+  --local-ts 10.0.0.0/24 --remote-ts 10.1.0.0/24
+
+# Live negotiated state from charon; manual initiate/terminate
+aifw vpn ipsec-status
+aifw vpn ipsec-start <tunnel-id>
+aifw vpn ipsec-stop <tunnel-id>
 
 aifw vpn list
 ```
