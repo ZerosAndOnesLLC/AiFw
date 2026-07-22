@@ -43,9 +43,12 @@ export function WgPeerForm({
             <Help title="Client IP" size="xs">
               This device&apos;s address inside the
               tunnel, e.g. <code>10.10.0.2/32</code>.
+              On a dual-stack tunnel give both,
+              comma-separated:{" "}
+              <code>10.10.0.2/32, fd00:a1f0::2/128</code>.
               Every peer needs its own — <b>Auto</b>{" "}
-              picks the next free IP in the tunnel
-              subnet.
+              picks the next free IP in every subnet
+              the tunnel carries.
             </Help>
           </label>
           <div className="flex gap-1">

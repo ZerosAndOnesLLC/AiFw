@@ -827,6 +827,7 @@ mod tests {
         .unwrap();
         tunnel.dns = Some("1.1.1.1".to_string());
         tunnel.mtu = Some(1420);
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
         let id = tunnel.id;
         engine.add_wg_tunnel(tunnel).await.unwrap();
 
@@ -835,8 +836,109 @@ mod tests {
         assert_eq!(fetched.interface.0, "wg1");
         assert_eq!(fetched.dns, Some("1.1.1.1".to_string()));
         assert_eq!(fetched.mtu, Some(1420));
+        assert_eq!(
+            fetched.address6,
+            Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64))
+        );
         assert!(!fetched.private_key.is_empty());
         assert!(!fetched.public_key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_next_peer_ip_v4_skips_used() {
+        let engine = create_vpn_engine().await;
+        let tunnel = WgTunnel::new(
+            "wg0".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network("10.0.0.1".parse().unwrap(), 24),
+        )
+        .unwrap();
+        let tid = tunnel.id;
+        engine.add_wg_tunnel(tunnel).await.unwrap();
+
+        assert_eq!(engine.next_peer_ip(tid).await.unwrap(), "10.0.0.2/32");
+
+        let mut peer = WgPeer::new(tid, "p1".to_string(), "pk1".to_string());
+        peer.allowed_ips = vec![Address::Network("10.0.0.2".parse().unwrap(), 32)];
+        engine.add_wg_peer(peer).await.unwrap();
+
+        assert_eq!(engine.next_peer_ip(tid).await.unwrap(), "10.0.0.3/32");
+    }
+
+    #[tokio::test]
+    async fn test_next_peer_ip_dual_stack() {
+        let engine = create_vpn_engine().await;
+        let mut tunnel = WgTunnel::new(
+            "wg0".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network("10.0.0.1".parse().unwrap(), 24),
+        )
+        .unwrap();
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        let tid = tunnel.id;
+        engine.add_wg_tunnel(tunnel).await.unwrap();
+
+        assert_eq!(
+            engine.next_peer_ip(tid).await.unwrap(),
+            "10.0.0.2/32, fd00:a1f0::2/128"
+        );
+
+        let mut peer = WgPeer::new(tid, "p1".to_string(), "pk1".to_string());
+        peer.allowed_ips = vec![
+            Address::Network("10.0.0.2".parse().unwrap(), 32),
+            Address::Network("fd00:a1f0::2".parse().unwrap(), 128),
+        ];
+        engine.add_wg_peer(peer).await.unwrap();
+
+        assert_eq!(
+            engine.next_peer_ip(tid).await.unwrap(),
+            "10.0.0.3/32, fd00:a1f0::3/128"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_next_peer_ip_v6_only_tunnel() {
+        let engine = create_vpn_engine().await;
+        let tunnel = WgTunnel::new(
+            "wg6".to_string(),
+            Interface("wg0".to_string()),
+            51820,
+            Address::Network("fd00:b::1".parse().unwrap(), 64),
+        )
+        .unwrap();
+        let tid = tunnel.id;
+        engine.add_wg_tunnel(tunnel).await.unwrap();
+
+        assert_eq!(engine.next_peer_ip(tid).await.unwrap(), "fd00:b::2/128");
+    }
+
+    #[tokio::test]
+    async fn test_wg_tunnel_address6_validation() {
+        let engine = create_vpn_engine().await;
+
+        // address6 must actually be IPv6
+        let mut t = WgTunnel::new(
+            "bad6".to_string(),
+            Interface("wg0".to_string()),
+            51830,
+            Address::Network("10.9.0.1".parse().unwrap(), 24),
+        )
+        .unwrap();
+        t.address6 = Some(Address::Network("192.168.1.1".parse().unwrap(), 24));
+        assert!(engine.add_wg_tunnel(t).await.is_err());
+
+        // with address6 set, the primary address must be IPv4
+        let mut t = WgTunnel::new(
+            "doublev6".to_string(),
+            Interface("wg0".to_string()),
+            51831,
+            Address::Network("fd00:1::1".parse().unwrap(), 64),
+        )
+        .unwrap();
+        t.address6 = Some(Address::Network("fd00:2::1".parse().unwrap(), 64));
+        assert!(engine.add_wg_tunnel(t).await.is_err());
     }
 
     #[tokio::test]

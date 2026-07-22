@@ -62,13 +62,13 @@ export function WgTunnelForm({
         </div>
         <div>
           <label className={labelCls}>
-            Address (CIDR){" "}
+            IPv4 Address (CIDR){" "}
             <Help title="Tunnel address" size="xs">
               The firewall&apos;s IP <i>inside</i> the VPN, plus the
               tunnel subnet size — e.g. <code>10.10.0.1/24</code>.
               Peers get other IPs from this subnet. Use a private
               range that doesn&apos;t overlap your LAN or any
-              network you connect from. IPv4 only for now.
+              network you connect from.
             </Help>
           </label>
           <input
@@ -79,6 +79,29 @@ export function WgTunnelForm({
             className={inputCls}
           />
         </div>
+        <div>
+          <label className={labelCls}>
+            IPv6 Address (optional){" "}
+            <Help title="IPv6 tunnel address" size="xs">
+              Add this to make the tunnel dual-stack: peers get an
+              IPv6 address too, and full-tunnel configs route IPv6
+              through the VPN. Use a unique-local subnet like{" "}
+              <code>fd00:a1f0::1/64</code>. IPv6 egress is NAT&apos;d
+              through the WAN automatically (the WAN needs a working
+              IPv6 address for peers to reach the v6 internet).
+              Leave empty for an IPv4-only tunnel.
+            </Help>
+          </label>
+          <input
+            type="text"
+            value={wgForm.address6}
+            onChange={(e) => setWgForm((f) => ({ ...f, address6: e.target.value }))}
+            placeholder="fd00:a1f0::1/64"
+            className={inputCls}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
         <div>
           <label className={labelCls}>
             Listen Interface{" "}
@@ -101,8 +124,6 @@ export function WgTunnelForm({
             ))}
           </select>
         </div>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
         <div>
           <label className={labelCls}>
             DNS Servers{" "}
@@ -173,8 +194,9 @@ export function WgTunnelForm({
         />
         <p className="text-xs text-gray-500 mt-1">
           When a client uses split-tunnel mode, only these networks are
-          routed through the VPN. Empty = just the tunnel&apos;s own
-          subnet. Use this to reach your whole LAN over the VPN.
+          routed through the VPN. IPv6 CIDRs work too. Empty = just the
+          tunnel&apos;s own subnet(s). Use this to reach your whole LAN
+          over the VPN.
         </p>
       </div>
       <div className="flex gap-2 mt-3">

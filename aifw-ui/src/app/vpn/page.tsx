@@ -41,9 +41,12 @@ export default function VpnPage() {
           another router, forward the listen port (UDP) to it there.
         </p>
         <p>
-          Peers can <i>connect</i> to the firewall over IPv4 or IPv6, but
-          traffic <i>inside</i> the tunnel is IPv4-only for now — client
-          configs are generated accordingly.
+          Peers can <i>connect</i> to the firewall over IPv4 or IPv6. Give
+          a tunnel an IPv6 address too (e.g. <code>fd00:a1f0::1/64</code>)
+          and it carries both families <i>inside</i>: peers get dual-stack
+          addresses and full-tunnel configs route IPv6 through the VPN.
+          Tunnels without one stay IPv4-only and client configs are
+          generated accordingly.
         </p>
       </HelpBanner>
 

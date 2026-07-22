@@ -90,6 +90,12 @@ impl VpnEngine {
             .execute(&self.pool)
             .await;
 
+        // Add address6 column: the server's IPv6 tunnel address for
+        // dual-stack tunnels (#471). NULL means no inner IPv6.
+        let _ = sqlx::query("ALTER TABLE wg_tunnels ADD COLUMN address6 TEXT")
+            .execute(&self.pool)
+            .await;
+
         // Shared with aifw-setup / aifw-api (QUAL-C5) — wan_interface() below
         // reads it to build the WireGuard outbound NAT rule.
         sqlx::query(aifw_common::schemas::INTERFACE_ROLES_CREATE)
@@ -182,11 +188,13 @@ impl VpnEngine {
         if tunnel.listen_port == 0 {
             return Err(AifwError::Validation("listen port required".to_string()));
         }
+        tunnel.validate_addresses()?;
         sqlx::query(
             r#"
             INSERT INTO wg_tunnels (id, name, interface, private_key, public_key, listen_port,
-                address, dns, mtu, listen_interface, split_routes, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                address, address6, dns, mtu, listen_interface, split_routes, status,
+                created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             "#,
         )
         .bind(tunnel.id.to_string())
@@ -196,6 +204,7 @@ impl VpnEngine {
         .bind(&tunnel.public_key)
         .bind(tunnel.listen_port as i64)
         .bind(tunnel.address.to_string())
+        .bind(tunnel.address6.as_ref().map(|a| a.to_string()))
         .bind(tunnel.dns.as_deref())
         .bind(tunnel.mtu.map(|m| m as i64))
         .bind(tunnel.listen_interface.as_deref())
@@ -257,18 +266,21 @@ impl VpnEngine {
             )));
         }
 
+        tunnel.validate_addresses()?;
+
         let result = sqlx::query(
             r#"
             UPDATE wg_tunnels
-               SET name = ?1, listen_port = ?2, address = ?3, dns = ?4, mtu = ?5,
-                   listen_interface = ?6, split_routes = ?7,
-                   private_key = ?8, public_key = ?9, updated_at = ?10
-             WHERE id = ?11
+               SET name = ?1, listen_port = ?2, address = ?3, address6 = ?4, dns = ?5,
+                   mtu = ?6, listen_interface = ?7, split_routes = ?8,
+                   private_key = ?9, public_key = ?10, updated_at = ?11
+             WHERE id = ?12
             "#,
         )
         .bind(&tunnel.name)
         .bind(tunnel.listen_port as i64)
         .bind(tunnel.address.to_string())
+        .bind(tunnel.address6.as_ref().map(|a| a.to_string()))
         .bind(tunnel.dns.as_deref())
         .bind(tunnel.mtu.map(|m| m as i64))
         .bind(tunnel.listen_interface.as_deref())
@@ -573,9 +585,24 @@ impl VpnEngine {
             )));
         }
 
-        // Set address and bring up
+        // Set addresses and bring up. The keyword must match the address
+        // family — FreeBSD's `ifconfig <if> inet <v6-addr>` fails, which is
+        // how IPv6 tunnel addresses used to silently not configure (#471).
         let addr = tunnel.address.to_string();
-        let _ = crate::sudo::ifconfig(iface, "inet", &[&addr, "up"]).await;
+        let v6_primary = matches!(
+            &tunnel.address,
+            Address::Single(std::net::IpAddr::V6(_)) | Address::Network(std::net::IpAddr::V6(_), _)
+        );
+        if v6_primary {
+            Self::ifconfig_logged(iface, "inet6", &[&addr]).await;
+            Self::ifconfig_logged(iface, "up", &[]).await;
+        } else {
+            Self::ifconfig_logged(iface, "inet", &[&addr, "up"]).await;
+        }
+        if let Some(ref a6) = tunnel.address6 {
+            let a6 = a6.to_string();
+            Self::ifconfig_logged(iface, "inet6", &[&a6]).await;
+        }
 
         // Set MTU if specified
         if let Some(mtu) = tunnel.mtu {
@@ -633,6 +660,25 @@ impl VpnEngine {
 
         tracing::info!(%id, iface, "WireGuard tunnel started");
         Ok(())
+    }
+
+    /// Run an ifconfig action, logging (not failing) on error. Address
+    /// configuration problems shouldn't abort tunnel startup, but they must
+    /// be visible — a swallowed error here is how IPv6 addresses silently
+    /// failed to configure before #471.
+    async fn ifconfig_logged(iface: &str, action: &str, args: &[&str]) {
+        match crate::sudo::ifconfig(iface, action, args).await {
+            Ok(out) if !out.status.success() => {
+                tracing::warn!(
+                    iface,
+                    action,
+                    stderr = %String::from_utf8_lossy(&out.stderr),
+                    "ifconfig failed"
+                );
+            }
+            Err(e) => tracing::warn!(iface, action, error = %e, "ifconfig failed"),
+            _ => {}
+        }
     }
 
     /// Stop a WireGuard tunnel: destroy the interface.
@@ -781,40 +827,43 @@ impl VpnEngine {
         Ok(started)
     }
 
-    /// Compute the next available IP in a tunnel's subnet for auto-assigning to a new peer.
+    /// Compute the next available IP(s) in a tunnel's subnet for
+    /// auto-assigning to a new peer. IPv4 tunnels yield `a.b.c.d/32`;
+    /// dual-stack tunnels (#471) yield `a.b.c.d/32, x::y/128` so the new
+    /// peer gets an address in every family the tunnel carries. Errors when
+    /// any carried family has no free addresses left — a dual-stack peer
+    /// with only half its addresses would silently lose one family.
     pub async fn next_peer_ip(&self, tunnel_id: Uuid) -> Result<String> {
-        let tunnel = self.get_wg_tunnel(tunnel_id).await?;
-        let addr_str = tunnel.address.to_string();
-        // Parse "10.10.0.1/24" → base "10.10.0", server_last = 1
-        let parts: Vec<&str> = addr_str.split('/').collect();
-        let ip_str = parts[0];
-        let octets: Vec<u8> = ip_str.split('.').filter_map(|o| o.parse().ok()).collect();
-        if octets.len() != 4 {
-            return Err(AifwError::Validation("Invalid tunnel address".to_string()));
-        }
+        use std::net::IpAddr;
 
-        // Collect existing peer IPs
+        let tunnel = self.get_wg_tunnel(tunnel_id).await?;
         let peers = self.list_wg_peers(tunnel_id).await?;
-        let used: std::collections::HashSet<String> = peers
+        let used: std::collections::HashSet<IpAddr> = peers
             .iter()
-            .flat_map(|p| {
-                p.allowed_ips
-                    .iter()
-                    .map(|a| a.to_string().split('/').next().unwrap_or("").to_string())
+            .flat_map(|p| p.allowed_ips.iter())
+            .filter_map(|a| match a {
+                Address::Single(ip) => Some(*ip),
+                Address::Network(ip, _) => Some(*ip),
+                _ => None,
             })
             .collect();
 
-        // Find next free IP in the /24 (or smaller) range
-        let base = [octets[0], octets[1], octets[2]];
-        for last in 2u8..=254 {
-            let candidate = format!("{}.{}.{}.{}", base[0], base[1], base[2], last);
-            if candidate != ip_str && !used.contains(&candidate) {
-                return Ok(format!("{candidate}/32"));
-            }
+        let mut parts: Vec<String> = Vec::new();
+        // A Single (prefix-less) tunnel address falls back to the
+        // conventional subnet size for its family.
+        match &tunnel.address {
+            Address::Single(IpAddr::V4(ip)) => parts.push(next_free_v4(*ip, 24, &used)?),
+            Address::Network(IpAddr::V4(ip), p) => parts.push(next_free_v4(*ip, *p, &used)?),
+            Address::Single(IpAddr::V6(ip)) => parts.push(next_free_v6(*ip, 64, &used)?),
+            Address::Network(IpAddr::V6(ip), p) => parts.push(next_free_v6(*ip, *p, &used)?),
+            _ => return Err(AifwError::Validation("Invalid tunnel address".to_string())),
         }
-        Err(AifwError::Validation(
-            "No free IPs in tunnel subnet".to_string(),
-        ))
+        match &tunnel.address6 {
+            Some(Address::Single(IpAddr::V6(ip))) => parts.push(next_free_v6(*ip, 64, &used)?),
+            Some(Address::Network(IpAddr::V6(ip), p)) => parts.push(next_free_v6(*ip, *p, &used)?),
+            _ => {}
+        }
+        Ok(parts.join(", "))
     }
 
     // ============================================================
@@ -858,7 +907,8 @@ impl VpnEngine {
     }
 
     /// Collect outbound NAT rules for up WireGuard tunnels so clients reach
-    /// the internet through the WAN (#469). These load into the `aifw-vpn`
+    /// the internet through the WAN — IPv4 masquerade (#469) plus NAT66 for
+    /// tunnels carrying inner IPv6 (#471). These load into the `aifw-vpn`
     /// nat-anchor declared in pf.conf — do NOT mix them into the filter-rule
     /// extras, pfctl requires translation rules before filter rules.
     pub async fn collect_vpn_nat_rules(&self) -> Result<Vec<String>> {
@@ -876,7 +926,7 @@ impl VpnEngine {
             );
             return Ok(Vec::new());
         };
-        Ok(up.iter().filter_map(|t| t.to_nat_rule(&wan)).collect())
+        Ok(up.iter().flat_map(|t| t.to_nat_rules(&wan)).collect())
     }
 
     /// Resolve the WAN interface from the interface_roles table (seeded by
@@ -914,6 +964,73 @@ impl VpnEngine {
     }
 }
 
+/// Scanning more candidates than this per family means the subnet is
+/// effectively full for auto-assignment purposes (a /64 has 2^64 hosts —
+/// exhaustive iteration is not an option).
+const MAX_AUTO_IP_SCAN: u32 = 65536;
+
+/// Next free IPv4 host in `server`'s subnet as a `/32` peer address:
+/// skips the network address, the broadcast address, the server itself,
+/// and every already-assigned peer IP.
+fn next_free_v4(
+    server: std::net::Ipv4Addr,
+    prefix: u8,
+    used: &std::collections::HashSet<std::net::IpAddr>,
+) -> Result<String> {
+    let p = prefix.min(32);
+    let server_bits = u32::from(server);
+    let mask: u32 = if p == 0 { 0 } else { u32::MAX << (32 - p) };
+    let net = server_bits & mask;
+    let bcast = net | !mask;
+
+    let mut candidate = net.saturating_add(1);
+    let mut tries = 0u32;
+    while candidate < bcast && tries < MAX_AUTO_IP_SCAN {
+        if candidate != server_bits {
+            let ip = std::net::Ipv4Addr::from(candidate);
+            if !used.contains(&std::net::IpAddr::V4(ip)) {
+                return Ok(format!("{ip}/32"));
+            }
+        }
+        candidate += 1;
+        tries += 1;
+    }
+    Err(AifwError::Validation(
+        "No free IPv4 addresses in tunnel subnet".to_string(),
+    ))
+}
+
+/// Next free IPv6 host in `server`'s subnet as a `/128` peer address:
+/// skips the subnet-router anycast address (all-zero host part), the
+/// server itself, and every already-assigned peer IP.
+fn next_free_v6(
+    server: std::net::Ipv6Addr,
+    prefix: u8,
+    used: &std::collections::HashSet<std::net::IpAddr>,
+) -> Result<String> {
+    let p = prefix.min(128);
+    let server_bits = u128::from(server);
+    let mask: u128 = if p == 0 { 0 } else { u128::MAX << (128 - p) };
+    let net = server_bits & mask;
+    let last = net | !mask;
+
+    let mut candidate = net.saturating_add(1);
+    let mut tries = 0u32;
+    while candidate <= last && tries < MAX_AUTO_IP_SCAN {
+        if candidate != server_bits {
+            let ip = std::net::Ipv6Addr::from(candidate);
+            if !used.contains(&std::net::IpAddr::V6(ip)) {
+                return Ok(format!("{ip}/128"));
+            }
+        }
+        candidate += 1;
+        tries += 1;
+    }
+    Err(AifwError::Validation(
+        "No free IPv6 addresses in tunnel subnet".to_string(),
+    ))
+}
+
 // ============================================================
 // Row types
 // ============================================================
@@ -925,7 +1042,7 @@ impl VpnEngine {
 /// CREATE TABLE (base columns then ALTER-added columns).
 const WG_TUNNEL_COLUMNS: &str = "id, name, interface, private_key, public_key, \
     listen_port, address, dns, mtu, status, created_at, updated_at, \
-    listen_interface, split_routes";
+    listen_interface, split_routes, address6";
 
 #[derive(sqlx::FromRow)]
 struct WgTunnelRow {
@@ -941,6 +1058,8 @@ struct WgTunnelRow {
     listen_interface: Option<String>,
     #[sqlx(default)]
     split_routes: Option<String>,
+    #[sqlx(default)]
+    address6: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -956,6 +1075,7 @@ impl WgTunnelRow {
             public_key: self.public_key,
             listen_port: self.listen_port as u16,
             address: Address::parse(&self.address)?,
+            address6: self.address6.as_deref().map(Address::parse).transpose()?,
             dns: self.dns,
             mtu: self.mtu.map(|m| m as u16),
             listen_interface: self.listen_interface,

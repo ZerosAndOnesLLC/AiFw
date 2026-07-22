@@ -54,7 +54,7 @@ export function WgPeerTable({ tunnelId, peers, vpnStatus, onShowConfig, onDelete
                 {peer.public_key.slice(0, 16)}...
               </td>
               <td className="py-2 px-2 font-mono text-gray-300">
-                {peer.allowed_ips}
+                {peer.allowed_ips.join(", ")}
               </td>
               <td className="py-2 px-2 font-mono text-gray-400">
                 {peer.endpoint || "-"}
