@@ -37,7 +37,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # --- Ensure dependencies ---
-for pkg in sudo unbound curl wireguard-tools strongswan; do
+for pkg in sudo unbound curl wireguard-tools strongswan minisign; do
     if ! pkg info -q "$pkg" 2>/dev/null; then
         echo "Installing $pkg..."
         pkg install -y "$pkg"

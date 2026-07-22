@@ -223,6 +223,12 @@ pub enum UpdaterError {
     /// Downloaded tarball didn't match its published SHA-256
     #[error("Checksum verification failed")]
     Checksum,
+    /// The release did not contain a detached signature for its checksum
+    #[error("Release checksum signature is missing")]
+    NoSignature,
+    /// The checksum's publisher signature could not be verified
+    #[error("Release signature verification failed")]
+    Signature,
     /// Extracting or installing the update failed
     #[error("Installation failed: {0}")]
     Install(String),
@@ -845,7 +851,7 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     let signature_url = info
         .checksum_signature_url
         .as_deref()
-        .ok_or(UpdaterError::NoTarball)?;
+        .ok_or(UpdaterError::NoSignature)?;
 
     let tmp_dir = "/tmp/aifw-update";
     let tarball_path = std::path::PathBuf::from(format!("{}/update.tar.xz", tmp_dir));
@@ -914,7 +920,7 @@ async fn verify_minisign_checksum(checksum: &str, signature: &str) -> Result<(),
     if output.status.success() {
         Ok(())
     } else {
-        Err(UpdaterError::Checksum)
+        Err(UpdaterError::Signature)
     }
 }
 
