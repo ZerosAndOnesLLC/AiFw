@@ -123,6 +123,32 @@ if [ -z "$ISO_UPLOAD" ] && [ -z "$IMG_UPLOAD" ] && [ -z "$UPDATE_TARBALL" ]; the
     die "No artifacts to release. Run build-local.sh first."
 fi
 
+# --- Sign checksums (publisher authenticity) ---
+# The in-app updater fails closed: a release without a valid .minisig for
+# its update tarball checksum cannot be installed by any appliance. Signing
+# happens here — the single local publish gate — so build-local.sh /
+# build-update.sh test iterations don't need the key.
+# Key management: freebsd/RELEASE-SIGNING.md.
+SIGNKEY="${AIFW_MINISIGN_SECKEY:-$HOME/.minisign/aifw-update.key}"
+PUBKEY="$PROJECT_ROOT/freebsd/overlay/usr/local/etc/aifw/update-signing.pub"
+command -v minisign >/dev/null 2>&1 || die "minisign is required to sign release checksums: pkg install -y minisign"
+[ -f "$PUBKEY" ] || die "Missing committed public key: $PUBKEY"
+SIG_ASSETS=""
+for sha in "$ISO_SHA_UPLOAD" "$IMG_SHA_UPLOAD" "$UPDATE_SHA"; do
+    [ -n "$sha" ] || continue
+    sig="${sha}.minisig"
+    if [ ! -f "$sig" ] || [ "$sha" -nt "$sig" ]; then
+        [ -f "$SIGNKEY" ] || die "No signing key at $SIGNKEY (override with AIFW_MINISIGN_SECKEY). Unsigned releases cannot be installed — see freebsd/RELEASE-SIGNING.md."
+        minisign -S -s "$SIGNKEY" -m "$sha" -x "$sig" || die "Signing failed for $sha"
+    fi
+    # Verify against the COMMITTED public key — the one compiled into the
+    # appliance updater. Catches signing with a stale/rotated secret key
+    # before the release is published.
+    minisign -Vm "$sha" -x "$sig" -p "$PUBKEY" >/dev/null || die "Signature for $sha does not verify against $PUBKEY — signed with the wrong key?"
+    SIG_ASSETS="$SIG_ASSETS $sig"
+done
+echo "Signed and verified $(echo "$SIG_ASSETS" | wc -w | tr -d ' ') checksum file(s)"
+
 echo "Artifacts:"
 [ -n "$ISO_UPLOAD" ]      && ls -lh "$ISO_UPLOAD"
 [ -n "$IMG_UPLOAD" ]      && ls -lh "$IMG_UPLOAD"
@@ -205,6 +231,13 @@ ${DECOMPRESS_NOTE}
 
 ### Verify Downloads
 
+Each \`.sha256\` file is signed with the AiFw release key (\`update-signing.pub\`):
+
+\`\`\`bash
+minisign -Vm <file>.sha256 -x <file>.sha256.minisig -p update-signing.pub
+sha256sum -c <file>.sha256
+\`\`\`
+
 \`\`\`
 ${SHASUMS}\`\`\`"
 
@@ -215,6 +248,7 @@ ASSETS=""
 [ -n "$ISO_UPLOAD" ]      && ASSETS="$ASSETS $ISO_UPLOAD $ISO_SHA_UPLOAD"
 [ -n "$IMG_UPLOAD" ]      && ASSETS="$ASSETS $IMG_UPLOAD $IMG_SHA_UPLOAD"
 [ -n "$UPDATE_TARBALL" ]  && ASSETS="$ASSETS $UPDATE_TARBALL $UPDATE_SHA"
+ASSETS="$ASSETS $SIG_ASSETS $PUBKEY"
 
 # Publish as a PRE-RELEASE by default so it can be tested before the
 # community auto-pulls it: the in-app updater's stable channel uses GitHub
@@ -251,7 +285,7 @@ fi
 
 # --- Cleanup temp files ---
 if [ -n "$XZ_IMG" ]; then
-    rm -f "$XZ_IMG" "$IMG_SHA_UPLOAD"
+    rm -f "$XZ_IMG" "$IMG_SHA_UPLOAD" "${IMG_SHA_UPLOAD}.minisig"
     echo "Cleaned up temp files in /tmp"
 fi
 

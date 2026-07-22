@@ -39,6 +39,7 @@ export interface AifwUpdateInfo {
   published_at: string;
   tarball_url: string | null;
   checksum_url: string | null;
+  checksum_signature_url: string | null;
   has_backup: boolean;
   backup_version: string | null;
   // True when the on-disk version differs from the running binary —

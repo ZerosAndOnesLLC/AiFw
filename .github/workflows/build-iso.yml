@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
   FREEBSD_VERSION: "15.0"
@@ -187,6 +189,10 @@ jobs:
               if [ -f "$f" ] && [ ! -f "${f}.xz" ]; then
                 xz -T0 -9 "$f"
                 sha256 "${f}.xz" > "${f}.xz.sha256"
+                # build-iso.sh hashed the uncompressed file, which no
+                # longer exists after xz — drop its checksum so we never
+                # sign or publish a sum nobody can verify.
+                rm -f "${f}.sha256"
               fi
             done
             cd /home/runner/work/AiFw/AiFw
@@ -194,6 +200,45 @@ jobs:
             # Move outputs to workspace root for upload
             mkdir -p /home/runner/work/AiFw/AiFw/output
             cp /usr/obj/aifw-iso/output/* /home/runner/work/AiFw/AiFw/output/
+
+      # Scan the SOURCE tree, not output/: the release artifacts are
+      # xz-compressed images syft cannot see inside, so an SBOM of output/
+      # would be an empty inventory. The source scan covers Cargo.lock and
+      # aifw-ui/package-lock.json — the dependency set actually compiled
+      # into this release.
+      - name: Generate release CycloneDX SBOM
+        uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b # v0.20.6
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: output/aifw-release.cdx.json
+          upload-artifact: false
+
+      - name: Sign release checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$MINISIGN_SECRET_KEY" || { echo "MINISIGN_SECRET_KEY is required" >&2; exit 1; }
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          key_file="$RUNNER_TEMP/minisign.key"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$MINISIGN_SECRET_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          pubkey=freebsd/overlay/usr/local/etc/aifw/update-signing.pub
+          cp "$pubkey" output/update-signing.pub
+          for checksum in output/*.sha256; do
+            # minisign reads the key password from stdin when there is no
+            # tty; harmless if the key is passwordless.
+            printf '%s\n' "${MINISIGN_PASSWORD:-}" | \
+              minisign -S -s "$key_file" -m "$checksum" -x "${checksum}.minisig"
+            # Verify against the COMMITTED public key immediately: catches a
+            # rotated/mismatched MINISIGN_SECRET_KEY before anything ships,
+            # since appliances verify with the key compiled from this file.
+            minisign -Vm "$checksum" -x "${checksum}.minisig" -p "$pubkey"
+          done
 
       - name: Upload ISO artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -222,6 +267,25 @@ jobs:
           name: components
           path: output/aifw-components-*.json
           retention-days: 5
+
+      - name: Upload SBOMs and signatures
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: supply-chain
+          path: |
+            output/*.cdx.json
+            output/*.minisig
+            output/update-signing.pub
+          retention-days: 5
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            output/aifw-*.iso.xz
+            output/aifw-*.img.xz
+            output/aifw-update-*.tar.xz
+            output/aifw-release.cdx.json
 
   smoke-boot:
     name: Appliance boot smoke (qemu)
@@ -263,7 +327,6 @@ jobs:
           name: boot-smoke-artifacts
           path: smoke-artifacts/
           retention-days: 7
-
   release:
     name: Create GitHub Release
     # smoke-boot gates the release: an image nobody booted never ships (#533).
@@ -295,6 +358,25 @@ jobs:
         with:
           name: components
           path: release-assets/
+
+      - name: Download supply-chain assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: supply-chain
+          path: release-assets/
+
+      - name: Verify signatures before publication
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          # The committed key from checkout — the same file compiled into
+          # the appliance updater — not a copy that traveled with the
+          # artifacts being verified.
+          pubkey=freebsd/overlay/usr/local/etc/aifw/update-signing.pub
+          for checksum in release-assets/*.sha256; do
+            minisign -Vm "$checksum" -x "${checksum}.minisig" -p "$pubkey"
+          done
 
       - name: Extract version from tag
         id: version
@@ -335,6 +417,15 @@ jobs:
             ### Verify Downloads
 
             ```bash
-            sha256sum -c aifw-${{ steps.version.outputs.version }}-amd64.iso.sha256
-            sha256sum -c aifw-${{ steps.version.outputs.version }}-amd64.img.sha256
+            minisign -Vm aifw-${{ steps.version.outputs.version }}-amd64.iso.xz.sha256 \
+              -x aifw-${{ steps.version.outputs.version }}-amd64.iso.xz.sha256.minisig \
+              -p update-signing.pub
+            sha256sum -c aifw-${{ steps.version.outputs.version }}-amd64.iso.xz.sha256
+            ```
+
+            GitHub build provenance can also be verified with:
+
+            ```bash
+            gh attestation verify aifw-${{ steps.version.outputs.version }}-amd64.iso.xz \
+              --repo ${{ github.repository }}
             ```
