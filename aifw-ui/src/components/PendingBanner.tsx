@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { api, getWsTicket } from "@/lib/api";
+import { api, getWsTicket, isAuthed } from "@/lib/api";
 
 interface PendingState {
   firewall: boolean;
@@ -19,8 +19,7 @@ export default function PendingBanner() {
 
   // One-shot fetch for initial state or fallback
   const fetchPending = useCallback(async () => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-    if (!token) return;
+    if (!isAuthed()) return;
     try {
       setPending(await api.get<PendingState>("/api/v1/pending"));
     } catch { /* silent */ }
@@ -28,8 +27,7 @@ export default function PendingBanner() {
 
   // SSE connection
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-    if (!token) return;
+    if (!isAuthed()) return;
 
     const connect = async () => {
       // EventSource can't set Authorization, so auth rides via a single-use

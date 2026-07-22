@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
-import { decodePermissions } from "@/lib/permissions";
+import { api, isAuthed } from "@/lib/api";
 
 interface AuthState {
   userId: string | null;
@@ -21,44 +21,36 @@ const defaultState: AuthState = {
 
 const AuthContext = createContext<AuthState>(defaultState);
 
-function decodeJwt(token: string): AuthState {
-  try {
-    let b64 = token.split(".")[1];
-    b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
-    while (b64.length % 4) b64 += "=";
-    const payload = JSON.parse(atob(b64));
-
-    // Check expiry
-    if (payload.exp && payload.exp * 1000 < Date.now()) {
-      return { ...defaultState, isLoading: false };
-    }
-
-    const permissions = payload.perm != null
-      ? decodePermissions(payload.perm)
-      : new Set<string>(); // Legacy token — no permissions in JWT
-
-    return {
-      userId: payload.sub || null,
-      username: payload.username || null,
-      role: payload.role || null,
-      permissions,
-      isLoading: false,
-    };
-  } catch {
-    return { ...defaultState, isLoading: false };
-  }
+/// Shape of GET /api/v1/auth/me (see aifw-api routes::rbac::get_current_user).
+interface MeResponse {
+  id: string;
+  username: string;
+  role: string;
+  permissions?: string[];
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(defaultState);
 
+  // The session lives in an HttpOnly cookie (SEC-M7 #304), so identity and
+  // permissions come from /auth/me rather than decoding a stored JWT.
   const refresh = useCallback(() => {
-    const token = localStorage.getItem("aifw_token");
-    if (!token) {
+    if (!isAuthed()) {
       setState({ ...defaultState, isLoading: false });
       return;
     }
-    setState(decodeJwt(token));
+    api
+      .get<MeResponse>("/api/v1/auth/me")
+      .then((me) =>
+        setState({
+          userId: me.id || null,
+          username: me.username || null,
+          role: me.role || null,
+          permissions: new Set(me.permissions ?? []),
+          isLoading: false,
+        }),
+      )
+      .catch(() => setState({ ...defaultState, isLoading: false }));
   }, []);
 
   useEffect(() => {

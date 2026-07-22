@@ -40,18 +40,6 @@ interface Feedback {
   message: string;
 }
 
-function getCurrentUserId(): string | null {
-  const token = localStorage.getItem("aifw_token");
-  if (!token) return null;
-  try {
-    let b64 = token.split(".")[1];
-    b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
-    while (b64.length % 4) b64 += "=";
-    const payload = JSON.parse(atob(b64));
-    return payload.sub || null;
-  } catch { return null; }
-}
-
 const roleColors: Record<string, { badge: string; accent: string }> = {
   admin: { badge: "bg-red-500/20 text-red-400 border-red-500/30", accent: "border-red-500/40" },
   operator: { badge: "bg-blue-500/20 text-blue-400 border-blue-500/30", accent: "border-blue-500/40" },
@@ -214,9 +202,8 @@ export default function UsersPage() {
   const [editRoleDesc, setEditRoleDesc] = useState("");
   const [deletingRoleId, setDeletingRoleId] = useState<string | null>(null);
 
-  const { permissions: myPerms } = useAuth();
+  const { permissions: myPerms, userId: currentUserId } = useAuth();
   const canWriteUsers = myPerms.has("users:write");
-  const currentUserId = getCurrentUserId();
 
   // User count per role
   const userCountByRole = useMemo(() => {

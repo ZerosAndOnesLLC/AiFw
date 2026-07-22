@@ -183,7 +183,6 @@ export function installLocalPackage(
   onProgress: (percent: number) => void,
 ): Promise<LocalInstallResult> {
   return new Promise((resolve) => {
-    const token = localStorage.getItem("aifw_token") ?? "";
     const xhr = new XMLHttpRequest();
     xhr.upload.addEventListener("progress", (e) => {
       if (e.lengthComputable) {
@@ -204,7 +203,9 @@ export function installLocalPackage(
       resolve({ ok, message });
     });
     xhr.open("POST", "/api/v1/updates/aifw/install-local");
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    // Auth rides the HttpOnly session cookie (same-origin XHR sends it
+    // automatically); the custom header satisfies the API's CSRF check.
+    xhr.setRequestHeader("X-AiFw-Csrf", "1");
     xhr.send(form);
   });
 }

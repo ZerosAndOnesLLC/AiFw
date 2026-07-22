@@ -179,6 +179,10 @@ pub struct AppState {
     /// Never changes without a config write, so a one-shot read is correct.
     pub cluster_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub cluster_events: aifw_common::ClusterEventBus,
+    /// Whether the API is serving TLS — controls the `Secure` attribute on
+    /// the session cookies (SEC-M7 #304). Set from `!args.no_tls` in `main`;
+    /// defaults to `false` in tests.
+    pub tls_enabled: bool,
     /// Ring buffer of deflate-compressed `WsHistoryEntry` JSON frames
     /// (PERF-M5). ~2-3 KB of repetitive JSON per tick compresses 4-8x, so a
     /// 1800-entry ring costs ~1 MB instead of ~5 MB. Compress/decompress
@@ -1039,6 +1043,7 @@ async fn create_state_from_db(
         tls_engine,
         cluster_enabled,
         cluster_events,
+        tls_enabled: false,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
         metrics_history_max: Arc::new(std::sync::atomic::AtomicUsize::new(history_max)),
         redis: None,
@@ -1765,6 +1770,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let tls_enabled = !args.no_tls;
+    state.tls_enabled = tls_enabled;
     let app = build_router(
         state,
         args.ui_dir.as_deref(),

@@ -50,74 +50,98 @@ pub async fn auth_middleware(
     use std::time::Instant;
 
     // Credentials: Authorization: Bearer <jwt>, Authorization: ApiKey <key>,
-    // or ?ticket=<id> (short-lived, single-use; see auth::ws_ticket).
+    // ?ticket=<id> (short-lived, single-use; see auth::ws_ticket), or the
+    // HttpOnly session cookie set at login (SEC-M7 #304 — browser UI).
     let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok());
 
+    // The cookie is a fallback only: an Authorization header or ticket wins,
+    // so non-browser clients and the WS/SSE ticket flow are unaffected.
+    let cookie_token = if auth_header.is_none() && query_ticket(request.uri().query()).is_none() {
+        super::cookies::cookie_value(&headers, super::cookies::ACCESS_COOKIE)
+    } else {
+        None
+    };
+
+    // CSRF defense in depth (on top of SameSite=Strict): a cookie is attached
+    // by the browser, not the page, so state-changing requests must also carry
+    // the custom header only same-origin script can set.
+    if cookie_token.is_some()
+        && !matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+        )
+        && !headers.contains_key(super::cookies::CSRF_HEADER)
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     // Resolve (user_id, perm_from_token, role_from_token, api_key_name) from the credential
-    let (user_id, jwt_perm, jwt_role, api_key_name) =
-        if let Some(token) = auth_header.and_then(|h| h.strip_prefix("Bearer ")) {
-            // PERF-H21: reuse a previously decoded token. The entry deadline
-            // is capped at the token's `exp` on insert, so a live cache hit
-            // is always still within the token's validity window.
-            let now = Instant::now();
-            let claims = if let Some(entry) = state.auth_token_cache.get(token)
-                && entry.value().1 > now
-            {
-                entry.value().0.clone()
-            } else {
-                let claims = verify_access_token(token, &state.auth_settings)
-                    .map_err(|_| StatusCode::UNAUTHORIZED)?
-                    .claims;
-                // Cap TTL at the token's remaining lifetime (never negative),
-                // and at AUTH_TOKEN_CACHE_TTL so a rotated jwt_secret can't
-                // keep validating an old token for longer than that window.
-                let ttl = std::time::Duration::from_secs(token_cache_ttl_secs(
-                    claims.exp,
-                    chrono::Utc::now().timestamp(),
-                ));
-                // Bound memory: sweep expired entries when the map grows large
-                // (these caches are otherwise evicted only lazily).
-                if state.auth_token_cache.len() >= AUTH_TOKEN_CACHE_MAX {
-                    state
-                        .auth_token_cache
-                        .retain(|_, (_, deadline)| *deadline > now);
-                }
+    let (user_id, jwt_perm, jwt_role, api_key_name) = if let Some(token) = auth_header
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .or(cookie_token.as_deref())
+    {
+        // PERF-H21: reuse a previously decoded token. The entry deadline
+        // is capped at the token's `exp` on insert, so a live cache hit
+        // is always still within the token's validity window.
+        let now = Instant::now();
+        let claims = if let Some(entry) = state.auth_token_cache.get(token)
+            && entry.value().1 > now
+        {
+            entry.value().0.clone()
+        } else {
+            let claims = verify_access_token(token, &state.auth_settings)
+                .map_err(|_| StatusCode::UNAUTHORIZED)?
+                .claims;
+            // Cap TTL at the token's remaining lifetime (never negative),
+            // and at AUTH_TOKEN_CACHE_TTL so a rotated jwt_secret can't
+            // keep validating an old token for longer than that window.
+            let ttl = std::time::Duration::from_secs(token_cache_ttl_secs(
+                claims.exp,
+                chrono::Utc::now().timestamp(),
+            ));
+            // Bound memory: sweep expired entries when the map grows large
+            // (these caches are otherwise evicted only lazily).
+            if state.auth_token_cache.len() >= AUTH_TOKEN_CACHE_MAX {
                 state
                     .auth_token_cache
-                    .insert(token.to_string(), (claims.clone(), now + ttl));
-                claims
-            };
-            let jti = &claims.jti;
-            // JTI revocation: positive cache to skip the DB lookup. Cached
-            // entry value=true means revoked, value=false means not revoked.
-            let revoked = if let Some(entry) = state.auth_jti_cache.get(jti)
-                && entry.value().1 > now
-            {
-                entry.value().0
-            } else {
-                let r = is_token_revoked(&state.pool, jti).await;
-                state
-                    .auth_jti_cache
-                    .insert(jti.clone(), (r, now + AUTH_JTI_CACHE_TTL));
-                r
-            };
-            if revoked {
-                return Err(StatusCode::UNAUTHORIZED);
+                    .retain(|_, (_, deadline)| *deadline > now);
             }
-            (claims.sub, claims.perm, claims.role, None)
-        } else if let Some(key) = auth_header.and_then(|h| h.strip_prefix("ApiKey ")) {
-            let (uid, key_name) = verify_api_key(&state.pool, key).await?;
-            (uid, None, None, Some(key_name)) // API keys don't carry JWT claims — will do DB lookup
-        } else if let Some(ticket_id) = query_ticket(request.uri().query()) {
-            let uid = state
-                .ws_tickets
-                .consume(&ticket_id)
-                .await
-                .ok_or(StatusCode::UNAUTHORIZED)?;
-            (uid, None, None, None) // tickets inherit permissions from the DB row
-        } else {
-            return Err(StatusCode::UNAUTHORIZED);
+            state
+                .auth_token_cache
+                .insert(token.to_string(), (claims.clone(), now + ttl));
+            claims
         };
+        let jti = &claims.jti;
+        // JTI revocation: positive cache to skip the DB lookup. Cached
+        // entry value=true means revoked, value=false means not revoked.
+        let revoked = if let Some(entry) = state.auth_jti_cache.get(jti)
+            && entry.value().1 > now
+        {
+            entry.value().0
+        } else {
+            let r = is_token_revoked(&state.pool, jti).await;
+            state
+                .auth_jti_cache
+                .insert(jti.clone(), (r, now + AUTH_JTI_CACHE_TTL));
+            r
+        };
+        if revoked {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        (claims.sub, claims.perm, claims.role, None)
+    } else if let Some(key) = auth_header.and_then(|h| h.strip_prefix("ApiKey ")) {
+        let (uid, key_name) = verify_api_key(&state.pool, key).await?;
+        (uid, None, None, Some(key_name)) // API keys don't carry JWT claims — will do DB lookup
+    } else if let Some(ticket_id) = query_ticket(request.uri().query()) {
+        let uid = state
+            .ws_tickets
+            .consume(&ticket_id)
+            .await
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        (uid, None, None, None) // tickets inherit permissions from the DB row
+    } else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
 
     // User-by-id with TTL cache. Disabled-user lockout has up to
     // AUTH_USER_CACHE_TTL latency — acceptable trade for skipping a DB hit

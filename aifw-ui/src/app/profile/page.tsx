@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 
 interface UserProfile {
   id: string;
@@ -43,24 +44,19 @@ export default function ProfilePage() {
     setTimeout(() => setFeedback(null), 5000);
   };
 
-  // Get current user ID from JWT
-  const getUserId = (): string | null => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-    if (!token) return null;
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      return payload.sub;
-    } catch { return null; }
-  };
+  // Current user ID comes from AuthContext (/auth/me) — the session is an
+  // HttpOnly cookie, so there is no JWT to decode client-side (SEC-M7 #304).
+  const { userId, isLoading: authLoading } = useAuth();
 
   useEffect(() => {
-    const userId = getUserId();
-    if (!userId) return;
+    // No userId with auth settled means the guard is about to redirect to
+    // /login — leave the spinner up rather than flash an empty profile.
+    if (authLoading || !userId) return;
     api.get<{ data: UserProfile }>(`/api/v1/auth/users/${userId}`)
       .then((d) => setUser(d.data))
       .catch(() => showFeedback("error", "Failed to load profile"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [userId, authLoading]);
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,7 +79,6 @@ export default function ProfilePage() {
         return;
       }
 
-      const userId = getUserId();
       await api.put(`/api/v1/auth/users/${userId}`, { password: newPassword });
       showFeedback("success", "Password changed successfully");
       setCurrentPassword("");
