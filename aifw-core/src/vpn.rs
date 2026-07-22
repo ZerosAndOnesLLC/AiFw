@@ -827,40 +827,43 @@ impl VpnEngine {
         Ok(started)
     }
 
-    /// Compute the next available IP in a tunnel's subnet for auto-assigning to a new peer.
+    /// Compute the next available IP(s) in a tunnel's subnet for
+    /// auto-assigning to a new peer. IPv4 tunnels yield `a.b.c.d/32`;
+    /// dual-stack tunnels (#471) yield `a.b.c.d/32, x::y/128` so the new
+    /// peer gets an address in every family the tunnel carries. Errors when
+    /// any carried family has no free addresses left — a dual-stack peer
+    /// with only half its addresses would silently lose one family.
     pub async fn next_peer_ip(&self, tunnel_id: Uuid) -> Result<String> {
-        let tunnel = self.get_wg_tunnel(tunnel_id).await?;
-        let addr_str = tunnel.address.to_string();
-        // Parse "10.10.0.1/24" → base "10.10.0", server_last = 1
-        let parts: Vec<&str> = addr_str.split('/').collect();
-        let ip_str = parts[0];
-        let octets: Vec<u8> = ip_str.split('.').filter_map(|o| o.parse().ok()).collect();
-        if octets.len() != 4 {
-            return Err(AifwError::Validation("Invalid tunnel address".to_string()));
-        }
+        use std::net::IpAddr;
 
-        // Collect existing peer IPs
+        let tunnel = self.get_wg_tunnel(tunnel_id).await?;
         let peers = self.list_wg_peers(tunnel_id).await?;
-        let used: std::collections::HashSet<String> = peers
+        let used: std::collections::HashSet<IpAddr> = peers
             .iter()
-            .flat_map(|p| {
-                p.allowed_ips
-                    .iter()
-                    .map(|a| a.to_string().split('/').next().unwrap_or("").to_string())
+            .flat_map(|p| p.allowed_ips.iter())
+            .filter_map(|a| match a {
+                Address::Single(ip) => Some(*ip),
+                Address::Network(ip, _) => Some(*ip),
+                _ => None,
             })
             .collect();
 
-        // Find next free IP in the /24 (or smaller) range
-        let base = [octets[0], octets[1], octets[2]];
-        for last in 2u8..=254 {
-            let candidate = format!("{}.{}.{}.{}", base[0], base[1], base[2], last);
-            if candidate != ip_str && !used.contains(&candidate) {
-                return Ok(format!("{candidate}/32"));
-            }
+        let mut parts: Vec<String> = Vec::new();
+        // A Single (prefix-less) tunnel address falls back to the
+        // conventional subnet size for its family.
+        match &tunnel.address {
+            Address::Single(IpAddr::V4(ip)) => parts.push(next_free_v4(*ip, 24, &used)?),
+            Address::Network(IpAddr::V4(ip), p) => parts.push(next_free_v4(*ip, *p, &used)?),
+            Address::Single(IpAddr::V6(ip)) => parts.push(next_free_v6(*ip, 64, &used)?),
+            Address::Network(IpAddr::V6(ip), p) => parts.push(next_free_v6(*ip, *p, &used)?),
+            _ => return Err(AifwError::Validation("Invalid tunnel address".to_string())),
         }
-        Err(AifwError::Validation(
-            "No free IPs in tunnel subnet".to_string(),
-        ))
+        match &tunnel.address6 {
+            Some(Address::Single(IpAddr::V6(ip))) => parts.push(next_free_v6(*ip, 64, &used)?),
+            Some(Address::Network(IpAddr::V6(ip), p)) => parts.push(next_free_v6(*ip, *p, &used)?),
+            _ => {}
+        }
+        Ok(parts.join(", "))
     }
 
     // ============================================================
@@ -958,6 +961,73 @@ impl VpnEngine {
 
         Ok(())
     }
+}
+
+/// Scanning more candidates than this per family means the subnet is
+/// effectively full for auto-assignment purposes (a /64 has 2^64 hosts —
+/// exhaustive iteration is not an option).
+const MAX_AUTO_IP_SCAN: u32 = 65536;
+
+/// Next free IPv4 host in `server`'s subnet as a `/32` peer address:
+/// skips the network address, the broadcast address, the server itself,
+/// and every already-assigned peer IP.
+fn next_free_v4(
+    server: std::net::Ipv4Addr,
+    prefix: u8,
+    used: &std::collections::HashSet<std::net::IpAddr>,
+) -> Result<String> {
+    let p = prefix.min(32);
+    let server_bits = u32::from(server);
+    let mask: u32 = if p == 0 { 0 } else { u32::MAX << (32 - p) };
+    let net = server_bits & mask;
+    let bcast = net | !mask;
+
+    let mut candidate = net.saturating_add(1);
+    let mut tries = 0u32;
+    while candidate < bcast && tries < MAX_AUTO_IP_SCAN {
+        if candidate != server_bits {
+            let ip = std::net::Ipv4Addr::from(candidate);
+            if !used.contains(&std::net::IpAddr::V4(ip)) {
+                return Ok(format!("{ip}/32"));
+            }
+        }
+        candidate += 1;
+        tries += 1;
+    }
+    Err(AifwError::Validation(
+        "No free IPv4 addresses in tunnel subnet".to_string(),
+    ))
+}
+
+/// Next free IPv6 host in `server`'s subnet as a `/128` peer address:
+/// skips the subnet-router anycast address (all-zero host part), the
+/// server itself, and every already-assigned peer IP.
+fn next_free_v6(
+    server: std::net::Ipv6Addr,
+    prefix: u8,
+    used: &std::collections::HashSet<std::net::IpAddr>,
+) -> Result<String> {
+    let p = prefix.min(128);
+    let server_bits = u128::from(server);
+    let mask: u128 = if p == 0 { 0 } else { u128::MAX << (128 - p) };
+    let net = server_bits & mask;
+    let last = net | !mask;
+
+    let mut candidate = net.saturating_add(1);
+    let mut tries = 0u32;
+    while candidate <= last && tries < MAX_AUTO_IP_SCAN {
+        if candidate != server_bits {
+            let ip = std::net::Ipv6Addr::from(candidate);
+            if !used.contains(&std::net::IpAddr::V6(ip)) {
+                return Ok(format!("{ip}/128"));
+            }
+        }
+        candidate += 1;
+        tries += 1;
+    }
+    Err(AifwError::Validation(
+        "No free IPv6 addresses in tunnel subnet".to_string(),
+    ))
 }
 
 // ============================================================
