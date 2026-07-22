@@ -229,6 +229,11 @@ pub enum UpdaterError {
     /// The checksum's publisher signature could not be verified
     #[error("Release signature verification failed")]
     Signature,
+    /// minisign could not be located or executed, so the signature could
+    /// not be checked at all (distinct from a signature that checked and
+    /// failed — the operator fixes this one with `pkg install minisign`)
+    #[error("Signature verification unavailable: {0}")]
+    VerifyUnavailable(String),
     /// Extracting or installing the update failed
     #[error("Installation failed: {0}")]
     Install(String),
@@ -637,6 +642,32 @@ pub async fn install_from_path(
         }
     }
 
+    // Keep the operator-facing copy of the release-signing public key in
+    // sync with the running build (it changes only on key rotation).
+    // Verification itself uses the compiled-in key, so this is best-effort.
+    let on_disk_pubkey = tokio::fs::read_to_string(PUBKEY_PATH).await.ok();
+    if on_disk_pubkey.as_deref() != Some(EMBEDDED_PUBKEY) {
+        let staged = "/tmp/aifw-update-signing.pub";
+        let stage_ok = tokio::fs::write(staged, EMBEDDED_PUBKEY).await.is_ok();
+        if stage_ok {
+            if let Some(err) = step_failure(
+                &crate::sudo::install(
+                    Some("0644"),
+                    Some("root"),
+                    Some("wheel"),
+                    staged,
+                    PUBKEY_PATH,
+                )
+                .await,
+            ) {
+                warn!(error = %err, "update: could not provision update-signing.pub");
+            }
+            if let Err(e) = tokio::fs::remove_file(staged).await {
+                debug!(error = %e, "update: staged pubkey cleanup failed");
+            }
+        }
+    }
+
     let manifest = load_manifest();
 
     // Install rc.d scripts. Same reasoning as binaries above: iterate the
@@ -878,8 +909,8 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     http_download(signature_url, &signature_path).await?;
 
     // Publisher authenticity is checked before trusting the checksum. The
-    // public key is provisioned independently on the appliance, so replacing
-    // a release asset and its checksum is insufficient to authorize install.
+    // public key is compiled into the running binary, so replacing a release
+    // asset and its checksum is insufficient to authorize an install.
     verify_minisign_checksum(&checksum_path, &signature_path).await?;
 
     // Read and parse the expected hash from the downloaded checksum file
@@ -910,16 +941,62 @@ pub async fn download_and_install(info: &AifwUpdateInfo) -> Result<String, Updat
     ))
 }
 
+/// On-disk copy of the release-signing public key. Informational only —
+/// provisioned for operators who want to run `minisign -Vm` by hand.
+/// Verification always uses the compiled-in key below, so an appliance
+/// upgraded from a build that never shipped this file still enforces.
+const PUBKEY_PATH: &str = "/usr/local/etc/aifw/update-signing.pub";
+
+/// Release-signing public key, compiled in from the repo. Trust is pinned
+/// to the running build: a key rotation ships a release signed with the
+/// OLD key that embeds the NEW key, so every appliance crosses over by
+/// installing that release (see freebsd/RELEASE-SIGNING.md).
+const EMBEDDED_PUBKEY: &str =
+    include_str!("../../freebsd/overlay/usr/local/etc/aifw/update-signing.pub");
+
+/// The base64 key line of the embedded minisign public key (the line after
+/// the "untrusted comment:" header), suitable for `minisign -P`.
+fn embedded_pubkey_b64() -> Result<&'static str, UpdaterError> {
+    EMBEDDED_PUBKEY
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty() && !l.starts_with("untrusted comment:"))
+        .filter(|l| l.starts_with("RW"))
+        .ok_or_else(|| {
+            UpdaterError::VerifyUnavailable(
+                "embedded update-signing public key is malformed".into(),
+            )
+        })
+}
+
 async fn verify_minisign_checksum(checksum: &str, signature: &str) -> Result<(), UpdaterError> {
-    const PUBKEY_PATH: &str = "/usr/local/etc/aifw/update-signing.pub";
-    let output = Command::new("minisign")
-        .args(["-Vm", checksum, "-x", signature, "-p", PUBKEY_PATH])
-        .output()
-        .await
-        .map_err(|e| UpdaterError::Download(format!("signature verification unavailable: {e}")))?;
+    let pubkey = embedded_pubkey_b64()?;
+    let args = ["-Vm", checksum, "-x", signature, "-P", pubkey];
+
+    let mut result = Command::new("minisign").args(args).output().await;
+    if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        // An appliance upgraded from a pre-signing build doesn't have
+        // minisign yet: the OLD updater that installed this build worked
+        // from its own embedded package list, which predates the minisign
+        // entry in the manifest. The pkg sudo grant does exist on such
+        // appliances, so install it here rather than failing the upgrade.
+        info!("minisign not found; installing via pkg");
+        if let Some(err) = step_failure(&crate::sudo::pkg("install", &["-y", "minisign"]).await) {
+            return Err(UpdaterError::VerifyUnavailable(format!(
+                "minisign is not installed and installing it failed: {err}"
+            )));
+        }
+        result = Command::new("minisign").args(args).output().await;
+    }
+    let output = result
+        .map_err(|e| UpdaterError::VerifyUnavailable(format!("failed to run minisign: {e}")))?;
     if output.status.success() {
         Ok(())
     } else {
+        warn!(
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "release checksum signature rejected"
+        );
         Err(UpdaterError::Signature)
     }
 }
@@ -1582,6 +1659,20 @@ mod tests {
     fn test_extract_hash_plain() {
         let input = "abc123def456";
         assert_eq!(extract_hash(input), "abc123def456");
+    }
+
+    // The compiled-in signing key is the trust root for every self-update:
+    // if the committed .pub file is reformatted into something this parser
+    // rejects, all appliances fail closed on the next release.
+    #[test]
+    fn embedded_update_signing_pubkey_parses() {
+        let key = embedded_pubkey_b64().expect("embedded public key must parse");
+        assert!(
+            key.starts_with("RW"),
+            "minisign keys are RW-prefixed: {key}"
+        );
+        assert!(!key.contains(char::is_whitespace));
+        assert_eq!(key.len(), 56, "Ed25519 minisign pubkey is 56 base64 chars");
     }
 
     #[test]
