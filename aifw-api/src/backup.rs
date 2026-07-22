@@ -2230,13 +2230,14 @@ pub(crate) async fn apply_firewall_config(
             .system
             .dns_servers
             .iter()
-            .map(|s| format!("nameserver {s}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        // Best-effort: /etc/resolv.conf is a root-owned system file the aifw
-        // user may not be able to write; the DB remains the source of truth.
-        if let Err(e) = tokio::fs::write("/etc/resolv.conf", &content).await {
-            tracing::warn!(error = %e, "import: /etc/resolv.conf write failed");
+            .map(|s| format!("nameserver {s}\n"))
+            .collect();
+        // /etc/resolv.conf is root-owned, so a direct write as the aifw user
+        // fails on FreeBSD (#307); stage in /tmp and go through the
+        // `aifw-sudo-install` allowlist instead. Warn-only like the other
+        // post-commit system applies: the helper is absent on dev hosts.
+        if let Err(e) = install_resolv_conf(&content).await {
+            tracing::warn!(error = %e, "import: /etc/resolv.conf install failed — restored DNS servers not applied to the system resolver");
         }
     }
 
@@ -2310,6 +2311,32 @@ pub(crate) async fn apply_firewall_config(
         .await
         .map_err(|e| apply_fail("geoip rules verification", e))?;
 
+    Ok(())
+}
+
+/// Stage `content` in /tmp and atomically install it as `/etc/resolv.conf`
+/// via `aifw_core::sudo::install`. The destination is on the
+/// `aifw-sudo-install` allowlist; a direct `tokio::fs::write` silently
+/// fails as the unprivileged aifw user on FreeBSD (#307).
+async fn install_resolv_conf(content: &str) -> Result<(), String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = format!("/tmp/aifw.resolv.conf.{nanos}.tmp");
+    tokio::fs::write(&tmp, content)
+        .await
+        .map_err(|e| format!("stage tmp: {e}"))?;
+    let result = aifw_core::sudo::install(Some("0644"), None, None, &tmp, "/etc/resolv.conf")
+        .await
+        .map_err(|e| format!("spawn sudo install: {e}"));
+    // Best-effort tmp cleanup; the install result below is what matters.
+    let _ = tokio::fs::remove_file(&tmp).await;
+    let out = result?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
     Ok(())
 }
 
