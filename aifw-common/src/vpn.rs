@@ -24,6 +24,10 @@ pub struct WgTunnel {
     pub listen_port: u16,
     /// Server's tunnel address with prefix (e.g. 10.10.0.1/24); defines the tunnel subnet
     pub address: Address,
+    /// Server's IPv6 tunnel address with prefix (e.g. fd00:a1f0::1/64) for
+    /// dual-stack tunnels (#471); None means the tunnel carries no inner IPv6
+    #[serde(default)]
+    pub address6: Option<Address>,
     /// DNS server(s) pushed to clients in generated configs; None omits the DNS line
     pub dns: Option<String>,
     /// Interface MTU; None uses the system default
@@ -63,6 +67,7 @@ impl WgTunnel {
             public_key,
             listen_port,
             address,
+            address6: None,
             dns: None,
             mtu: None,
             listen_interface: None,
@@ -73,16 +78,46 @@ impl WgTunnel {
         })
     }
 
-    /// Generate ifconfig commands to create the WireGuard interface
+    /// Generate ifconfig commands to create the WireGuard interface.
+    /// Uses the address-family-correct keyword (`inet`/`inet6`) — configuring
+    /// an IPv6 address with `inet` silently fails on FreeBSD (#471).
     pub fn to_ifconfig_cmds(&self) -> Vec<String> {
+        let family = if address_is_v6(&self.address) {
+            "inet6"
+        } else {
+            "inet"
+        };
         let mut cmds = vec![
             format!("ifconfig {} create", self.interface),
-            format!("ifconfig {} inet {} up", self.interface, self.address),
+            format!("ifconfig {} {} {} up", self.interface, family, self.address),
         ];
+        if let Some(ref addr6) = self.address6 {
+            cmds.push(format!("ifconfig {} inet6 {}", self.interface, addr6));
+        }
         if let Some(mtu) = self.mtu {
             cmds.push(format!("ifconfig {} mtu {mtu}", self.interface));
         }
         cmds
+    }
+
+    /// Validate the address/address6 pairing: `address6` must be IPv6, and
+    /// when it is set `address` must be IPv4 (dual-stack means one of each —
+    /// two v6 addresses belong in a differently shaped config).
+    pub fn validate_addresses(&self) -> crate::Result<()> {
+        if let Some(ref a6) = self.address6 {
+            if !address_is_v6(a6) {
+                return Err(crate::AifwError::Validation(
+                    "IPv6 tunnel address must be an IPv6 address (e.g. fd00:a1f0::1/64)"
+                        .to_string(),
+                ));
+            }
+            if address_is_v6(&self.address) {
+                return Err(crate::AifwError::Validation(
+                    "with an IPv6 tunnel address set, the primary address must be IPv4".to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Generate pf rules to allow WireGuard traffic
@@ -112,6 +147,13 @@ impl WgTunnel {
         address_network_cidr(&self.address)
     }
 
+    /// Network CIDR of the IPv6 tunnel subnet, masked to the network boundary
+    /// (e.g. address6 fd00:a1f0::1/64 → "fd00:a1f0::/64"); None when the
+    /// tunnel has no inner IPv6.
+    pub fn network_cidr6(&self) -> Option<String> {
+        self.address6.as_ref().map(address_network_cidr)
+    }
+
     /// Outbound NAT rule so tunnel clients reach the internet through the
     /// WAN (#469). Only IPv4 tunnel subnets are NAT'd — returns None for
     /// IPv6 / alias / any addresses so we never masquerade 0.0.0.0/0.
@@ -125,6 +167,15 @@ impl WgTunnel {
             _ => None,
         }
     }
+}
+
+/// Whether an Address is IPv6 (Single or Network variant).
+fn address_is_v6(addr: &Address) -> bool {
+    use std::net::IpAddr;
+    matches!(
+        addr,
+        Address::Single(IpAddr::V6(_)) | Address::Network(IpAddr::V6(_), _)
+    )
 }
 
 /// AllowedIPs for a full-tunnel client config, scoped to the address
@@ -787,6 +838,7 @@ mod split_tunnel_tests {
             public_key: "y".into(),
             listen_port: 51820,
             address: Address::Network("172.29.240.1".parse().unwrap(), 24),
+            address6: None,
             dns: None,
             mtu: None,
             listen_interface: None,
@@ -822,6 +874,7 @@ mod split_tunnel_tests {
             public_key: "y".into(),
             listen_port: 51820,
             address: Address::Network("172.29.240.1".parse().unwrap(), 24),
+            address6: None,
             dns: None,
             mtu: None,
             listen_interface: None,
@@ -857,6 +910,7 @@ mod split_tunnel_tests {
             public_key: "y".into(),
             listen_port: 51820,
             address,
+            address6: None,
             dns: None,
             mtu: None,
             listen_interface: None,
@@ -897,6 +951,39 @@ mod split_tunnel_tests {
         let cfg = test_peer(tunnel.id).to_client_config(&tunnel, "vpn.example.com", false);
         assert!(cfg.contains("AllowedIPs = ::/0\n"));
         assert!(!cfg.contains("0.0.0.0/0"));
+    }
+
+    #[test]
+    fn ifconfig_cmds_dual_stack_configures_both_families() {
+        let mut tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        let cmds = tunnel.to_ifconfig_cmds();
+        assert_eq!(cmds[1], "ifconfig wg0 inet 10.10.0.1/24 up");
+        assert_eq!(cmds[2], "ifconfig wg0 inet6 fd00:a1f0::1/64");
+    }
+
+    #[test]
+    fn ifconfig_cmds_v6_primary_uses_inet6() {
+        let tunnel = test_tunnel(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        assert!(tunnel.to_ifconfig_cmds()[1].starts_with("ifconfig wg0 inet6 "));
+    }
+
+    #[test]
+    fn validate_addresses_rejects_bad_pairings() {
+        // v4 in the address6 slot
+        let mut t = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        t.address6 = Some(Address::Network("192.168.1.1".parse().unwrap(), 24));
+        assert!(t.validate_addresses().is_err());
+
+        // two v6 addresses
+        let mut t = test_tunnel(Address::Network("fd00:1::1".parse().unwrap(), 64));
+        t.address6 = Some(Address::Network("fd00:2::1".parse().unwrap(), 64));
+        assert!(t.validate_addresses().is_err());
+
+        // proper dual-stack is fine
+        let mut t = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        t.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        assert!(t.validate_addresses().is_ok());
     }
 
     #[test]

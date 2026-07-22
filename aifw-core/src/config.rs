@@ -558,6 +558,9 @@ pub struct WireguardTunnelConfig {
     pub listen_port: u16,
     /// Tunnel interface address (IP/prefix)
     pub address: String,
+    /// Optional IPv6 tunnel address for dual-stack tunnels (#471)
+    #[serde(default)]
+    pub address6: Option<String>,
     /// Local WireGuard private key (base64; sensitive)
     pub private_key: String,
     /// Local WireGuard public key (base64)

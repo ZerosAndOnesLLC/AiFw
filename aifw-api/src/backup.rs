@@ -661,6 +661,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             private_key: t.private_key.clone(),
             public_key: t.public_key.clone(),
             address: t.address.to_string(),
+            address6: t.address6.as_ref().map(|a| a.to_string()),
             dns: t.dns.clone(),
             mtu: t.mtu,
             peers: peers
@@ -1952,6 +1953,7 @@ pub(crate) async fn apply_firewall_config(
             public_key: wg.public_key.clone(),
             listen_port: wg.listen_port,
             address,
+            address6: wg.address6.as_deref().and_then(|s| Address::parse(s).ok()),
             dns: wg.dns.clone(),
             mtu: wg.mtu,
             listen_interface: None,

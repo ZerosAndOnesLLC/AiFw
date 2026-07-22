@@ -827,6 +827,7 @@ mod tests {
         .unwrap();
         tunnel.dns = Some("1.1.1.1".to_string());
         tunnel.mtu = Some(1420);
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
         let id = tunnel.id;
         engine.add_wg_tunnel(tunnel).await.unwrap();
 
@@ -835,8 +836,39 @@ mod tests {
         assert_eq!(fetched.interface.0, "wg1");
         assert_eq!(fetched.dns, Some("1.1.1.1".to_string()));
         assert_eq!(fetched.mtu, Some(1420));
+        assert_eq!(
+            fetched.address6,
+            Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64))
+        );
         assert!(!fetched.private_key.is_empty());
         assert!(!fetched.public_key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_wg_tunnel_address6_validation() {
+        let engine = create_vpn_engine().await;
+
+        // address6 must actually be IPv6
+        let mut t = WgTunnel::new(
+            "bad6".to_string(),
+            Interface("wg0".to_string()),
+            51830,
+            Address::Network("10.9.0.1".parse().unwrap(), 24),
+        )
+        .unwrap();
+        t.address6 = Some(Address::Network("192.168.1.1".parse().unwrap(), 24));
+        assert!(engine.add_wg_tunnel(t).await.is_err());
+
+        // with address6 set, the primary address must be IPv4
+        let mut t = WgTunnel::new(
+            "doublev6".to_string(),
+            Interface("wg0".to_string()),
+            51831,
+            Address::Network("fd00:1::1".parse().unwrap(), 64),
+        )
+        .unwrap();
+        t.address6 = Some(Address::Network("fd00:2::1".parse().unwrap(), 64));
+        assert!(engine.add_wg_tunnel(t).await.is_err());
     }
 
     #[tokio::test]

@@ -7,6 +7,9 @@ pub struct CreateWgTunnelRequest {
     pub name: String,
     pub listen_port: u16,
     pub address: String,
+    /// Optional IPv6 tunnel address for dual-stack tunnels (#471),
+    /// e.g. `fd00:a1f0::1/64`. Empty/omitted means IPv4-only.
+    pub address6: Option<String>,
     pub private_key: Option<String>,
     pub dns: Option<String>,
     pub mtu: Option<u16>,
@@ -14,6 +17,14 @@ pub struct CreateWgTunnelRequest {
     /// Comma-separated CIDRs to advertise as split-tunnel AllowedIPs.
     /// When empty/omitted, falls back to the tunnel's network CIDR.
     pub split_routes: Option<String>,
+}
+
+/// Parse the optional IPv6 tunnel address; empty/whitespace means None.
+fn parse_address6(raw: Option<&str>) -> Result<Option<Address>, StatusCode> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Address::parse(s).map(Some).map_err(|_| bad_request()),
+        None => Ok(None),
+    }
 }
 
 pub async fn list_wg_tunnels(
@@ -32,6 +43,7 @@ pub async fn create_wg_tunnel(
     Json(req): Json<CreateWgTunnelRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<WgTunnel>>), StatusCode> {
     let address = Address::parse(&req.address).map_err(|_| bad_request())?;
+    let address6 = parse_address6(req.address6.as_deref())?;
     // FreeBSD requires short interface names: wg0, wg1, etc. (not wg51820)
     let existing = state.vpn_engine.list_wg_tunnels().await.unwrap_or_default();
     let used_indices: std::collections::HashSet<u32> = existing
@@ -52,6 +64,7 @@ pub async fn create_wg_tunnel(
         tunnel.public_key = aifw_common::vpn::derive_wg_pubkey(pk).map_err(|_| bad_request())?;
         tunnel.private_key = pk.clone();
     }
+    tunnel.address6 = address6;
     tunnel.dns = req.dns;
     tunnel.mtu = req.mtu;
     tunnel.listen_interface = req.listen_interface;
@@ -83,6 +96,7 @@ pub async fn update_wg_tunnel(
     tunnel.name = req.name;
     tunnel.listen_port = req.listen_port;
     tunnel.address = Address::parse(&req.address).map_err(|_| bad_request())?;
+    tunnel.address6 = parse_address6(req.address6.as_deref())?;
     tunnel.dns = req.dns;
     tunnel.mtu = req.mtu;
     tunnel.listen_interface = req.listen_interface;

@@ -2673,6 +2673,7 @@ mod tests {
                     interface: "wg0".to_string(),
                     listen_port: 51820,
                     address: "10.9.0.1/24".to_string(),
+                    address6: None,
                     private_key: "k".into(),
                     public_key: "K".into(),
                     dns: None,

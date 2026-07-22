@@ -90,6 +90,12 @@ impl VpnEngine {
             .execute(&self.pool)
             .await;
 
+        // Add address6 column: the server's IPv6 tunnel address for
+        // dual-stack tunnels (#471). NULL means no inner IPv6.
+        let _ = sqlx::query("ALTER TABLE wg_tunnels ADD COLUMN address6 TEXT")
+            .execute(&self.pool)
+            .await;
+
         // Shared with aifw-setup / aifw-api (QUAL-C5) — wan_interface() below
         // reads it to build the WireGuard outbound NAT rule.
         sqlx::query(aifw_common::schemas::INTERFACE_ROLES_CREATE)
@@ -182,11 +188,13 @@ impl VpnEngine {
         if tunnel.listen_port == 0 {
             return Err(AifwError::Validation("listen port required".to_string()));
         }
+        tunnel.validate_addresses()?;
         sqlx::query(
             r#"
             INSERT INTO wg_tunnels (id, name, interface, private_key, public_key, listen_port,
-                address, dns, mtu, listen_interface, split_routes, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                address, address6, dns, mtu, listen_interface, split_routes, status,
+                created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             "#,
         )
         .bind(tunnel.id.to_string())
@@ -196,6 +204,7 @@ impl VpnEngine {
         .bind(&tunnel.public_key)
         .bind(tunnel.listen_port as i64)
         .bind(tunnel.address.to_string())
+        .bind(tunnel.address6.as_ref().map(|a| a.to_string()))
         .bind(tunnel.dns.as_deref())
         .bind(tunnel.mtu.map(|m| m as i64))
         .bind(tunnel.listen_interface.as_deref())
@@ -257,18 +266,21 @@ impl VpnEngine {
             )));
         }
 
+        tunnel.validate_addresses()?;
+
         let result = sqlx::query(
             r#"
             UPDATE wg_tunnels
-               SET name = ?1, listen_port = ?2, address = ?3, dns = ?4, mtu = ?5,
-                   listen_interface = ?6, split_routes = ?7,
-                   private_key = ?8, public_key = ?9, updated_at = ?10
-             WHERE id = ?11
+               SET name = ?1, listen_port = ?2, address = ?3, address6 = ?4, dns = ?5,
+                   mtu = ?6, listen_interface = ?7, split_routes = ?8,
+                   private_key = ?9, public_key = ?10, updated_at = ?11
+             WHERE id = ?12
             "#,
         )
         .bind(&tunnel.name)
         .bind(tunnel.listen_port as i64)
         .bind(tunnel.address.to_string())
+        .bind(tunnel.address6.as_ref().map(|a| a.to_string()))
         .bind(tunnel.dns.as_deref())
         .bind(tunnel.mtu.map(|m| m as i64))
         .bind(tunnel.listen_interface.as_deref())
@@ -573,9 +585,24 @@ impl VpnEngine {
             )));
         }
 
-        // Set address and bring up
+        // Set addresses and bring up. The keyword must match the address
+        // family — FreeBSD's `ifconfig <if> inet <v6-addr>` fails, which is
+        // how IPv6 tunnel addresses used to silently not configure (#471).
         let addr = tunnel.address.to_string();
-        let _ = crate::sudo::ifconfig(iface, "inet", &[&addr, "up"]).await;
+        let v6_primary = matches!(
+            &tunnel.address,
+            Address::Single(std::net::IpAddr::V6(_)) | Address::Network(std::net::IpAddr::V6(_), _)
+        );
+        if v6_primary {
+            Self::ifconfig_logged(iface, "inet6", &[&addr]).await;
+            Self::ifconfig_logged(iface, "up", &[]).await;
+        } else {
+            Self::ifconfig_logged(iface, "inet", &[&addr, "up"]).await;
+        }
+        if let Some(ref a6) = tunnel.address6 {
+            let a6 = a6.to_string();
+            Self::ifconfig_logged(iface, "inet6", &[&a6]).await;
+        }
 
         // Set MTU if specified
         if let Some(mtu) = tunnel.mtu {
@@ -633,6 +660,25 @@ impl VpnEngine {
 
         tracing::info!(%id, iface, "WireGuard tunnel started");
         Ok(())
+    }
+
+    /// Run an ifconfig action, logging (not failing) on error. Address
+    /// configuration problems shouldn't abort tunnel startup, but they must
+    /// be visible — a swallowed error here is how IPv6 addresses silently
+    /// failed to configure before #471.
+    async fn ifconfig_logged(iface: &str, action: &str, args: &[&str]) {
+        match crate::sudo::ifconfig(iface, action, args).await {
+            Ok(out) if !out.status.success() => {
+                tracing::warn!(
+                    iface,
+                    action,
+                    stderr = %String::from_utf8_lossy(&out.stderr),
+                    "ifconfig failed"
+                );
+            }
+            Err(e) => tracing::warn!(iface, action, error = %e, "ifconfig failed"),
+            _ => {}
+        }
     }
 
     /// Stop a WireGuard tunnel: destroy the interface.
@@ -925,7 +971,7 @@ impl VpnEngine {
 /// CREATE TABLE (base columns then ALTER-added columns).
 const WG_TUNNEL_COLUMNS: &str = "id, name, interface, private_key, public_key, \
     listen_port, address, dns, mtu, status, created_at, updated_at, \
-    listen_interface, split_routes";
+    listen_interface, split_routes, address6";
 
 #[derive(sqlx::FromRow)]
 struct WgTunnelRow {
@@ -941,6 +987,8 @@ struct WgTunnelRow {
     listen_interface: Option<String>,
     #[sqlx(default)]
     split_routes: Option<String>,
+    #[sqlx(default)]
+    address6: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -956,6 +1004,7 @@ impl WgTunnelRow {
             public_key: self.public_key,
             listen_port: self.listen_port as u16,
             address: Address::parse(&self.address)?,
+            address6: self.address6.as_deref().map(Address::parse).transpose()?,
             dns: self.dns,
             mtu: self.mtu.map(|m| m as u16),
             listen_interface: self.listen_interface,
