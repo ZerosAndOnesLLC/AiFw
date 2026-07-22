@@ -197,12 +197,19 @@ fn address_is_v6(addr: &Address) -> bool {
 }
 
 /// AllowedIPs for a full-tunnel client config, scoped to the address
-/// families the tunnel's inner network can carry.
-fn full_tunnel_allowed_ips(addr: &Address) -> &'static str {
+/// families the tunnel's inner network can carry. A dual-stack tunnel
+/// (v4 primary + address6) routes both families (#471); emitting `::/0`
+/// for a v4-only tunnel blackholes client IPv6 (#469).
+fn full_tunnel_allowed_ips(tunnel: &WgTunnel) -> &'static str {
     use std::net::IpAddr;
-    match addr {
-        Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _) => "0.0.0.0/0",
-        Address::Single(IpAddr::V6(_)) | Address::Network(IpAddr::V6(_), _) => "::/0",
+    let has_v6 = tunnel.address6.is_some() || address_is_v6(&tunnel.address);
+    let has_v4 = matches!(
+        &tunnel.address,
+        Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _)
+    );
+    match (has_v4, has_v6) {
+        (true, false) => "0.0.0.0/0",
+        (false, true) => "::/0",
         _ => "0.0.0.0/0, ::/0",
     }
 }
@@ -282,9 +289,11 @@ impl WgPeer {
         } else {
             conf.push_str("PrivateKey = <paste-your-private-key-here>\n");
         }
-        // Use the first allowed_ip as the client's address
-        if let Some(addr) = self.allowed_ips.first() {
-            conf.push_str(&format!("Address = {addr}\n"));
+        // The allowed_ips double as the client's addresses — emit them all
+        // so a dual-stack peer (v4/32 + v6/128) gets both families (#471).
+        if !self.allowed_ips.is_empty() {
+            let addrs: Vec<String> = self.allowed_ips.iter().map(|a| a.to_string()).collect();
+            conf.push_str(&format!("Address = {}\n", addrs.join(", ")));
         }
         if let Some(ref dns) = tunnel.dns
             && !dns.is_empty()
@@ -304,16 +313,20 @@ impl WgPeer {
         ));
         if split_tunnel {
             // Prefer admin-configured split routes; otherwise derive the
-            // network CIDR from the tunnel address (so 172.29.240.1/24 yields
-            // 172.29.240.0/24 instead of a host/prefix that confuses some
-            // clients).
+            // network CIDR(s) from the tunnel addresses (so 172.29.240.1/24
+            // yields 172.29.240.0/24 instead of a host/prefix that confuses
+            // some clients; dual-stack tunnels include the v6 subnet too).
             let routes = tunnel
                 .split_routes
                 .as_deref()
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| address_network_cidr(&tunnel.address));
+                .unwrap_or_else(|| {
+                    let mut nets = vec![address_network_cidr(&tunnel.address)];
+                    nets.extend(tunnel.network_cidr6());
+                    nets.join(", ")
+                });
             conf.push_str(&format!("AllowedIPs = {routes}\n"));
         } else {
             // Route all traffic through the VPN — but only the address
@@ -322,7 +335,7 @@ impl WgPeer {
             // dual-stack clients (#469).
             conf.push_str(&format!(
                 "AllowedIPs = {}\n",
-                full_tunnel_allowed_ips(&tunnel.address)
+                full_tunnel_allowed_ips(tunnel)
             ));
         }
         if let Some(ka) = self.persistent_keepalive {
@@ -969,6 +982,28 @@ mod split_tunnel_tests {
         let cfg = test_peer(tunnel.id).to_client_config(&tunnel, "vpn.example.com", false);
         assert!(cfg.contains("AllowedIPs = ::/0\n"));
         assert!(!cfg.contains("0.0.0.0/0"));
+    }
+
+    #[test]
+    fn full_tunnel_dual_stack_routes_both_families() {
+        let mut tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        let mut peer = test_peer(tunnel.id);
+        peer.allowed_ips = vec![
+            Address::Network("10.10.0.2".parse().unwrap(), 32),
+            Address::Network("fd00:a1f0::2".parse().unwrap(), 128),
+        ];
+        let cfg = peer.to_client_config(&tunnel, "vpn.example.com", false);
+        assert!(cfg.contains("Address = 10.10.0.2/32, fd00:a1f0::2/128\n"));
+        assert!(cfg.contains("AllowedIPs = 0.0.0.0/0, ::/0\n"));
+    }
+
+    #[test]
+    fn split_tunnel_fallback_includes_v6_subnet() {
+        let mut tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        let cfg = test_peer(tunnel.id).to_client_config(&tunnel, "vpn.example.com", true);
+        assert!(cfg.contains("AllowedIPs = 10.10.0.0/24, fd00:a1f0::/64\n"));
     }
 
     #[test]
