@@ -10,6 +10,20 @@ use std::net::IpAddr;
 /// chosen at compile time via `#[cfg(target_os)]` in [`crate::create_backend`].
 #[async_trait]
 pub trait PfBackend: Send + Sync {
+    /// Downcast support so tests can reach implementation-specific helpers
+    /// (e.g. [`crate::PfMock`] failure injection) through `Arc<dyn PfBackend>`.
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Whether `get_rules`/`get_nat_rules` return the exact strings that were
+    /// loaded. True for the in-memory mock; false for the pfctl backend,
+    /// which lists rules in pfctl's canonical re-rendered form (normalized
+    /// keywords, possible expansion), so string equality against the loaded
+    /// source is not meaningful there. Verification code uses this to pick
+    /// between exact comparison and weaker invariants.
+    fn echoes_exact_rules(&self) -> bool {
+        false
+    }
+
     /// Add a pf rule to the specified anchor
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), crate::PfError>;
 

@@ -251,6 +251,34 @@ impl NatEngine {
         Ok(())
     }
 
+    /// Verify the pf anchor holds the NAT ruleset [`Self::apply_rules`]
+    /// would render right now (#535 post-apply verification). Exact
+    /// comparison on backends that echo loaded rules; emptiness invariant
+    /// on real pfctl (see `RuleEngine::verify_applied`).
+    pub async fn verify_applied(&self) -> Result<()> {
+        let rules = self.list_active_rules().await?;
+        let expected: Vec<String> = rules.iter().flat_map(|r| r.to_pf_rules()).collect();
+        let actual = self
+            .pf
+            .get_nat_rules(&self.anchor)
+            .await
+            .map_err(|e| AifwError::Pf(e.to_string()))?;
+        let mismatch = if self.pf.echoes_exact_rules() {
+            actual != expected
+        } else {
+            actual.is_empty() != expected.is_empty()
+        };
+        if mismatch {
+            return Err(AifwError::Pf(format!(
+                "anchor {} holds {} NAT rules but {} were expected — pf does not match the database",
+                self.anchor,
+                actual.len(),
+                expected.len()
+            )));
+        }
+        Ok(())
+    }
+
     /// Flush all NAT rules from the pf anchor and record an audit entry.
     /// Fails if the pf backend rejects the flush
     pub async fn flush_rules(&self) -> Result<()> {
@@ -272,7 +300,9 @@ impl NatEngine {
         Ok(())
     }
 
-    async fn insert_rule_on<'e, E>(exec: E, rule: &NatRule) -> Result<()>
+    /// Executor-generic insert. Public so the transactional restore path
+    /// (#158/#535) can batch NAT rows with every other section.
+    pub async fn insert_rule_on<'e, E>(exec: E, rule: &NatRule) -> Result<()>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -312,7 +342,10 @@ impl NatEngine {
     }
 }
 
-fn validate_nat_rule(rule: &NatRule) -> Result<()> {
+/// Validate a NAT rule before persisting: interface required, DNAT/RDR
+/// needs a destination or redirect port. Public so the backup restore path
+/// can pre-validate a whole config with the same checks `add_rule` applies.
+pub fn validate_nat_rule(rule: &NatRule) -> Result<()> {
     if rule.interface.0.is_empty() {
         return Err(AifwError::Validation(
             "NAT rule requires an interface".to_string(),

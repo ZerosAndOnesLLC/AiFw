@@ -99,6 +99,17 @@ impl GeoIpEngine {
     /// Insert a per-country block/allow rule row. pf tables aren't touched
     /// until the geo-IP rules are next applied
     pub async fn add_rule(&self, rule: GeoIpRule) -> Result<GeoIpRule> {
+        Self::insert_rule_on(&self.pool, &rule).await?;
+        tracing::info!(id = %rule.id, country = %rule.country, action = %rule.action, "geo-ip rule added");
+        Ok(rule)
+    }
+
+    /// Executor-generic insert. Public so the transactional restore path
+    /// (#158/#535) can batch geo-IP rows with every other section.
+    pub async fn insert_rule_on<'e, E>(exec: E, rule: &GeoIpRule) -> Result<()>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         sqlx::query(
             r#"
             INSERT INTO geoip_rules (id, country, action, label, status, created_at, updated_at)
@@ -115,11 +126,9 @@ impl GeoIpEngine {
         })
         .bind(rule.created_at.to_rfc3339())
         .bind(rule.updated_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(exec)
         .await?;
-
-        tracing::info!(id = %rule.id, country = %rule.country, action = %rule.action, "geo-ip rule added");
-        Ok(rule)
+        Ok(())
     }
 
     /// All geo-IP rules ordered by country code
@@ -303,6 +312,40 @@ impl GeoIpEngine {
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
 
+        Ok(())
+    }
+
+    /// Verify the pf anchor holds the geo-IP lines [`Self::apply_rules`]
+    /// would render right now (#535 post-apply verification). Table
+    /// *contents* aren't compared — only the table definitions and
+    /// block/allow rules. Exact comparison on backends that echo loaded
+    /// rules; emptiness invariant on real pfctl, which re-renders rules and
+    /// omits table definitions from `-sr` (see `RuleEngine::verify_applied`).
+    pub async fn verify_applied(&self) -> Result<()> {
+        let rules = self.list_rules().await?;
+        let expected: Vec<String> = rules
+            .iter()
+            .filter(|r| r.status == GeoIpRuleStatus::Active)
+            .flat_map(|r| [r.to_pf_table(), r.to_pf_rule()])
+            .collect();
+        let actual = self
+            .pf
+            .get_rules(&self.anchor)
+            .await
+            .map_err(|e| AifwError::Pf(e.to_string()))?;
+        let mismatch = if self.pf.echoes_exact_rules() {
+            actual != expected
+        } else {
+            actual.is_empty() != expected.is_empty()
+        };
+        if mismatch {
+            return Err(AifwError::Pf(format!(
+                "anchor {} holds {} geo-ip lines but {} were expected — pf does not match the database",
+                self.anchor,
+                actual.len(),
+                expected.len()
+            )));
+        }
         Ok(())
     }
 

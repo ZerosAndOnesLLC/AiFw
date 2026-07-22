@@ -527,7 +527,13 @@ mod let_underscore_tests {
         };
         let mut c = mk();
         c.wan_mode = crate::config::WanMode::Static;
-        assert!(c.validate_seed().is_err(), "static without ip/gateway");
+        assert!(c.validate_seed().is_err(), "static without ip");
+
+        c.wan_ip = Some("198.18.0.1/24".to_string());
+        assert!(
+            c.validate_seed().is_ok(),
+            "static WAN without a default gateway is valid"
+        );
 
         let mut c = mk();
         c.lan_ip = Some("192.168.1.1/24".to_string());
