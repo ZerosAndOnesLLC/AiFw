@@ -640,34 +640,6 @@ fn pf_status_is_disabled(stdout: &[u8]) -> bool {
         .any(|line| line.trim_start().starts_with("Status: Disabled"))
 }
 
-#[cfg(test)]
-mod pf_reconcile_tests {
-    use super::{pf_auto_heal_disabled, pf_status_is_disabled};
-
-    #[test]
-    fn auto_heal_opt_out_parses_false_values() {
-        for value in [None, Some(""), Some("0"), Some("no"), Some("FALSE")] {
-            assert!(
-                !pf_auto_heal_disabled(value),
-                "unexpected opt-out: {value:?}"
-            );
-        }
-        assert!(pf_auto_heal_disabled(Some("1")));
-        assert!(pf_auto_heal_disabled(Some("yes")));
-    }
-
-    #[test]
-    fn disabled_status_is_detected_without_matching_enabled_status() {
-        assert!(pf_status_is_disabled(
-            b"Status: Disabled for 0 days 00:01:00\nDebug: Urgent\n"
-        ));
-        assert!(pf_status_is_disabled(b"  Status: Disabled\n"));
-        assert!(!pf_status_is_disabled(
-            b"Status: Enabled for 0 days 00:01:00\n"
-        ));
-    }
-}
-
 /// Boot-time drift detection for rc.conf vs DB DNS backend.
 /// Logs an error on mismatch. Does NOT auto-write rc.conf — too risky to
 /// force-flip enable flags on boot without operator oversight.
@@ -746,4 +718,32 @@ async fn shutdown_signal() {
 
     #[cfg(not(unix))]
     ctrl_c.await;
+}
+
+#[cfg(test)]
+mod pf_reconcile_tests {
+    use super::{pf_auto_heal_disabled, pf_status_is_disabled};
+
+    #[test]
+    fn auto_heal_opt_out_parses_false_values() {
+        for value in [None, Some(""), Some("0"), Some("no"), Some("FALSE")] {
+            assert!(
+                !pf_auto_heal_disabled(value),
+                "unexpected opt-out: {value:?}"
+            );
+        }
+        assert!(pf_auto_heal_disabled(Some("1")));
+        assert!(pf_auto_heal_disabled(Some("yes")));
+    }
+
+    #[test]
+    fn disabled_status_is_detected_without_matching_enabled_status() {
+        assert!(pf_status_is_disabled(
+            b"Status: Disabled for 0 days 00:01:00\nDebug: Urgent\n"
+        ));
+        assert!(pf_status_is_disabled(b"  Status: Disabled\n"));
+        assert!(!pf_status_is_disabled(
+            b"Status: Enabled for 0 days 00:01:00\n"
+        ));
+    }
 }
