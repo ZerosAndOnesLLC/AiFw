@@ -83,7 +83,7 @@ function ifaceForIp(table: Route[], ip: string): string | null {
 }
 
 type WgTunnelLite = { id: string; interface: string; address: string | null; split_routes: string | null };
-type WgPeerLite = { allowed_ips: string };
+type WgPeerLite = { allowed_ips: string[] };
 
 /* ────────────────────────── Pipe geometry helpers ──────────────────────────
  *
@@ -239,7 +239,7 @@ export default function NatFlowsPage() {
         try {
           const pRes = await fetchApi<{ data: WgPeerLite[] }>(`/api/v1/vpn/wg/${t.id}/peers`);
           for (const p of pRes.data || [])
-            for (const a of (p.allowed_ips || "").split(/[,\s]+/)) if (a) add(a);
+            for (const a of p.allowed_ips || []) if (a) add(a);
         } catch { /* peers are optional — address/split_routes already cover the interface */ }
       }
       setWgRoutes(routes);

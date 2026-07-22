@@ -79,7 +79,7 @@ export function ConfigModal({ config, onClose }: ConfigModalProps) {
           </div>
           <p className="text-xs text-gray-400 mb-3">
             {configTab === "full"
-              ? "Everything goes through the VPN: the device reaches the internet via the firewall\u2019s WAN address. Use this on untrusted networks (public Wi-Fi) or to apply the firewall\u2019s filtering everywhere. IPv6 traffic stays on the device\u2019s normal connection \u2014 the tunnel carries IPv4 only for now."
+              ? "Everything goes through the VPN: the device reaches the internet via the firewall\u2019s WAN address. Use this on untrusted networks (public Wi-Fi) or to apply the firewall\u2019s filtering everywhere. IPv6 goes through the VPN too when the tunnel has an IPv6 address; otherwise it stays on the device\u2019s normal connection."
               : "Only the VPN subnet (plus any split-tunnel routes configured on the tunnel) goes through the VPN \u2014 use this to reach home/office devices while everything else uses the device\u2019s normal connection. Faster, but internet traffic is not protected by the VPN."}
           </p>
           <pre className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-sm font-mono text-green-400 whitespace-pre-wrap select-all overflow-x-auto">
