@@ -907,7 +907,8 @@ impl VpnEngine {
     }
 
     /// Collect outbound NAT rules for up WireGuard tunnels so clients reach
-    /// the internet through the WAN (#469). These load into the `aifw-vpn`
+    /// the internet through the WAN — IPv4 masquerade (#469) plus NAT66 for
+    /// tunnels carrying inner IPv6 (#471). These load into the `aifw-vpn`
     /// nat-anchor declared in pf.conf — do NOT mix them into the filter-rule
     /// extras, pfctl requires translation rules before filter rules.
     pub async fn collect_vpn_nat_rules(&self) -> Result<Vec<String>> {
@@ -925,7 +926,7 @@ impl VpnEngine {
             );
             return Ok(Vec::new());
         };
-        Ok(up.iter().filter_map(|t| t.to_nat_rule(&wan)).collect())
+        Ok(up.iter().flat_map(|t| t.to_nat_rules(&wan)).collect())
     }
 
     /// Resolve the WAN interface from the interface_roles table (seeded by

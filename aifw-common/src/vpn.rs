@@ -154,18 +154,36 @@ impl WgTunnel {
         self.address6.as_ref().map(address_network_cidr)
     }
 
-    /// Outbound NAT rule so tunnel clients reach the internet through the
-    /// WAN (#469). Only IPv4 tunnel subnets are NAT'd — returns None for
-    /// IPv6 / alias / any addresses so we never masquerade 0.0.0.0/0.
-    pub fn to_nat_rule(&self, wan_if: &str) -> Option<String> {
+    /// Outbound NAT rules so tunnel clients reach the internet through the
+    /// WAN: the #469 IPv4 masquerade plus, for tunnels carrying inner IPv6,
+    /// an NPTv6-style NAT66 masquerade (#471) — same shape pf uses for
+    /// NAT64 (`nat on <if> inet6`). Only Single/Network tunnel subnets are
+    /// NAT'd — alias/any addresses emit nothing so we never masquerade a
+    /// whole address family.
+    pub fn to_nat_rules(&self, wan_if: &str) -> Vec<String> {
         use std::net::IpAddr;
+        let mut rules = Vec::new();
         match &self.address {
-            Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _) => Some(format!(
-                "nat on {wan_if} from {} to any -> ({wan_if})",
-                self.network_cidr()
-            )),
-            _ => None,
+            Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _) => {
+                rules.push(format!(
+                    "nat on {wan_if} from {} to any -> ({wan_if})",
+                    self.network_cidr()
+                ));
+            }
+            Address::Single(IpAddr::V6(_)) | Address::Network(IpAddr::V6(_), _) => {
+                rules.push(format!(
+                    "nat on {wan_if} inet6 from {} to any -> ({wan_if})",
+                    self.network_cidr()
+                ));
+            }
+            _ => {}
         }
+        if let Some(net6) = self.network_cidr6() {
+            rules.push(format!(
+                "nat on {wan_if} inet6 from {net6} to any -> ({wan_if})"
+            ));
+        }
+        rules
     }
 }
 
@@ -990,16 +1008,36 @@ mod split_tunnel_tests {
     fn nat_rule_masks_to_network_boundary() {
         let tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
         assert_eq!(
-            tunnel.to_nat_rule("em0").as_deref(),
-            Some("nat on em0 from 10.10.0.0/24 to any -> (em0)")
+            tunnel.to_nat_rules("em0"),
+            vec!["nat on em0 from 10.10.0.0/24 to any -> (em0)"]
         );
     }
 
     #[test]
-    fn nat_rule_skipped_for_non_v4_addresses() {
+    fn nat_rules_dual_stack_adds_nat66() {
+        let mut tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        assert_eq!(
+            tunnel.to_nat_rules("em0"),
+            vec![
+                "nat on em0 from 10.10.0.0/24 to any -> (em0)",
+                "nat on em0 inet6 from fd00:a1f0::/64 to any -> (em0)",
+            ]
+        );
+    }
+
+    #[test]
+    fn nat_rules_v6_only_tunnel_gets_nat66() {
         let v6 = test_tunnel(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
-        assert_eq!(v6.to_nat_rule("em0"), None);
+        assert_eq!(
+            v6.to_nat_rules("em0"),
+            vec!["nat on em0 inet6 from fd00:a1f0::/64 to any -> (em0)"]
+        );
+    }
+
+    #[test]
+    fn nat_rules_skipped_for_alias_and_any_addresses() {
         let any = test_tunnel(Address::Any);
-        assert_eq!(any.to_nat_rule("em0"), None);
+        assert!(any.to_nat_rules("em0").is_empty());
     }
 }
