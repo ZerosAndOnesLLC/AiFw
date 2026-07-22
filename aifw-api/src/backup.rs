@@ -733,6 +733,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 bandwidth_pct: q.bandwidth_pct,
                 default: q.default,
                 status: q.status,
+                fq_codel: q.fq_codel,
             })
             .collect(),
         rate_limits: rate_limits
@@ -2415,6 +2416,7 @@ fn queue_from_config(qc: &aifw_core::config::QueueConfigEntry) -> Option<aifw_co
         status,
         created_at: now,
         updated_at: now,
+        fq_codel: qc.fq_codel,
     })
 }
 

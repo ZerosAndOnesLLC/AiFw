@@ -6,7 +6,7 @@
     "local": ["aifw", "aifw-daemon", "aifw-api", "aifw-ids", "aifw-tui", "aifw-setup"]
   },
 
-  "packages": ["curl", "strongswan", "sudo", "unbound", "wireguard-tools"],
+  "packages": ["curl", "minisign", "strongswan", "sudo", "unbound", "wireguard-tools"],
   "_packages_comment": "OS packages required at runtime. build-iso.sh installs them into the image; deploy.sh ensures them on the dev VM; the in-app updater installs any that are missing during upgrade. A workspace test (aifw-core packaging_tests) asserts the build scripts stay in sync with this list.",
 
   "external_repos": [

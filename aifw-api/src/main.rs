@@ -515,6 +515,8 @@ pub fn build_router(
         .merge(router::rules_write())
         .merge(router::nat_read())
         .merge(router::nat_write())
+        .merge(router::shaper_read())
+        .merge(router::shaper_write())
         .merge(router::vpn_read())
         .merge(router::vpn_write())
         .merge(router::geoip_read())

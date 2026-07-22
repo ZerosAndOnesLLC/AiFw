@@ -95,6 +95,24 @@ pub(crate) fn nat_write() -> Router<AppState> {
         .layer(middleware::from_fn(perm_check!(Permission::NatWrite)))
 }
 
+pub(crate) fn shaper_read() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/shaper/queues", get(routes::list_shaper_queues))
+        .route("/api/v1/shaper/status", get(routes::shaper_status))
+        .layer(middleware::from_fn(perm_check!(Permission::RulesRead)))
+}
+
+pub(crate) fn shaper_write() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/shaper/queues", post(routes::create_shaper_queue))
+        .route(
+            "/api/v1/shaper/queues/{id}",
+            put(routes::update_shaper_queue).delete(routes::delete_shaper_queue),
+        )
+        .route("/api/v1/shaper/apply", post(routes::apply_shaper))
+        .layer(middleware::from_fn(perm_check!(Permission::RulesWrite)))
+}
+
 pub(crate) fn vpn_read() -> Router<AppState> {
     Router::new()
         .route("/api/v1/vpn/wg", get(routes::list_wg_tunnels))

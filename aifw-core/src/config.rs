@@ -501,6 +501,9 @@ pub struct QueueConfigEntry {
     pub default: bool,
     /// Whether the queue is loaded into pf
     pub status: QueueStatus,
+    /// FQ-CoDel scheduler parameters, retained across backup and rollback.
+    #[serde(default)]
+    pub fq_codel: aifw_common::FqCodelConfig,
 }
 
 /// A per-source-IP connection rate limit as stored in a config snapshot

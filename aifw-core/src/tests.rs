@@ -676,8 +676,7 @@ mod tests {
         engine.apply_queues().await.unwrap();
 
         let pf_queues = mock.get_queues("aifw").await.unwrap();
-        assert_eq!(pf_queues.len(), 1); // parent only; FQ-CoDel is dummynet
-        assert!(pf_queues[0].contains("queue on em0"));
+        assert!(pf_queues.is_empty()); // FQ-CoDel is entirely dummynet
     }
 
     #[test]
@@ -692,7 +691,7 @@ mod tests {
             "bulk".to_string(),
             TrafficClass::Bulk,
         );
-        assert!(q.to_pf_queue().contains("fq_codel"));
+        assert!(q.to_pf_queue().is_empty());
         assert!(!q.to_pf_queue().contains("flows 1024"));
         assert!(q.fq_codel.validate().is_ok());
     }

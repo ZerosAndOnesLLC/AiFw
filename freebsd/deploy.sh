@@ -37,7 +37,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # --- Ensure dependencies ---
-for pkg in sudo unbound curl wireguard-tools strongswan; do
+for pkg in sudo unbound curl wireguard-tools strongswan minisign; do
     if ! pkg info -q "$pkg" 2>/dev/null; then
         echo "Installing $pkg..."
         pkg install -y "$pkg"
@@ -255,7 +255,7 @@ done
 # login migrate, shutdown hook, narrow-grant sudo wrappers from #204).
 # Mode 755 so the daemon supervisor / sudo can exec them.
 mkdir -p /usr/local/libexec
-for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh aifw-shutdown-hook.sh aifw-sudo-write aifw-sudo-wg aifw-sudo-freebsd-update aifw-sudo-pkg aifw-sudo-service aifw-sudo-chown aifw-sudo-ifconfig aifw-sudo-install aifw-sudo-sysrc aifw-sudo-dhclient aifw-sudo-route aifw-sudo-pkill aifw-sudo-rm aifw-sudo-mkdir aifw-sudo-cp aifw-sudo-tar aifw-sudo-tcpdump aifw-sudo-dummynet; do
+for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-migrate.sh aifw-shutdown-hook.sh aifw-sudo-write aifw-sudo-wg aifw-sudo-freebsd-update aifw-sudo-pkg aifw-sudo-service aifw-sudo-chown aifw-sudo-ifconfig aifw-sudo-install aifw-sudo-sysrc aifw-sudo-dhclient aifw-sudo-route aifw-sudo-pkill aifw-sudo-rm aifw-sudo-mkdir aifw-sudo-cp aifw-sudo-tar aifw-sudo-tcpdump aifw-sudo-dummynet aifw-dummynet-control; do
     src="$REPO_DIR/freebsd/overlay/usr/local/libexec/$script"
     if [ -f "$src" ]; then
         install -m 755 "$src" "/usr/local/libexec/$script"

@@ -1,0 +1,87 @@
+#!/bin/sh
+# Ownership-safe dummynet/IPFW controller for AiFw's reserved ranges.
+set -eu
+set -f
+
+PIPE_MIN=10000
+PIPE_MAX=19999
+RULE_MIN=30000
+RULE_MAX=49999
+
+die() { echo "dummynet-control: $*" >&2; exit 1; }
+valid_id() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]; }
+
+snapshot() {
+    [ "$#" -eq 1 ] || die "snapshot requires a path"
+    case "$1" in /var/run/aifw-dummynet.snapshot) ;; *) die "invalid snapshot path";; esac
+    { echo '# aifw snapshot'; ipfw -a list; dnctl list; } > "$1"
+}
+
+apply() {
+    [ "$#" -eq 1 ] || die "apply requires a command file"
+    [ -f "$1" ] || die "command file missing"
+    desired="$1"
+    # A single apply owns the reserved ranges. Remove only those objects before
+    # installing the desired set; administrator-owned IDs are never touched.
+    ipfw -q delete $(ipfw -a list | awk '$1 >= 30000 && $1 <= 49999 { print $1 }') 2>/dev/null || true
+    dnctl -q queue delete $(dnctl queue list | awk '$1 ~ /^[0-9]+/ { id=$1; sub(/:.*/, "", id); if (id >= 10000 && id <= 19999) print id }') 2>/dev/null || true
+    dnctl -q sched delete $(dnctl sched list | awk '$1 ~ /^[0-9]+/ { id=$1; sub(/:.*/, "", id); if (id >= 10000 && id <= 19999) print id }') 2>/dev/null || true
+    dnctl -q pipe delete $(dnctl pipe list | awk '$1 ~ /^[0-9]+/ { id=$1; sub(/:.*/, "", id); if (id >= 10000 && id <= 19999) print id }') 2>/dev/null || true
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -n "$line" ] || continue
+        [ "$line" = clear ] && continue
+        set -- $line
+        case "$1" in
+        pipe)
+            [ "$#" -ge 4 ] || die "invalid pipe command"
+            valid_id "$2" "$PIPE_MIN" "$PIPE_MAX" || die "pipe outside AiFw range"
+            [ "$3" = config ] || die "invalid pipe operation"
+            dnctl "$@"
+            ;;
+        sched|queue)
+            [ "$#" -ge 4 ] || die "invalid scheduler command"
+            valid_id "$2" "$PIPE_MIN" "$PIPE_MAX" || die "object outside AiFw range"
+            [ "$3" = config ] || die "invalid scheduler operation"
+            dnctl "$@"
+            ;;
+        ipfw)
+            [ "$#" -ge 4 ] || die "invalid ipfw command"
+            [ "$2" = add ] || die "only ipfw add is permitted"
+            valid_id "$3" "$RULE_MIN" "$RULE_MAX" || die "rule outside AiFw range"
+            shift
+            ipfw "$@"
+            ;;
+        *) die "unsupported command: $1";;
+        esac
+    done < "$desired"
+}
+
+verify() {
+    expected=${1:-}
+    [ -f "$expected" ] || die "verify requires desired command file"
+    [ "$(sed '/^clear$/d;/^$/d' "$expected" | wc -l | tr -d ' ')" -eq 0 ] && return 0
+    live=$(dnctl list; ipfw -a list)
+    for id in $(awk '$1 == "pipe" || $1 == "sched" || $1 == "queue" {print $2} $1 == "ipfw" && $2 == "add" {print $3}' "$expected" | sort -u); do
+        echo "$live" | grep -Eq "(^|[[:space:]])${id}([:[:space:]]|$)" || die "managed id $id missing after apply"
+    done
+}
+
+restore() {
+    [ "$#" -eq 1 ] || die "restore requires a path"
+    [ -f "$1" ] || die "snapshot missing"
+    # Restore is intentionally conservative: remove only AiFw-owned objects.
+    ipfw -q delete $(ipfw -a list | awk '$1 >= 30000 && $1 <= 49999 { print $1 }') 2>/dev/null || true
+    dnctl -q queue delete $(dnctl queue list | awk '$1 ~ /^[0-9]+/ { id=$1; sub(/:.*/, "", id); if (id >= 10000 && id <= 19999) print id }') 2>/dev/null || true
+    dnctl -q sched delete $(dnctl sched list | awk '$1 ~ /^[0-9]+/ { id=$1; sub(/:.*/, "", id); if (id >= 10000 && id <= 19999) print id }') 2>/dev/null || true
+    dnctl -q pipe delete $(dnctl pipe list | awk '$1 ~ /^[0-9]+/ { id=$1; sub(/:.*/, "", id); if (id >= 10000 && id <= 19999) print id }') 2>/dev/null || true
+    [ -s "$1" ] && apply "$1"
+}
+
+[ "$#" -ge 1 ] || die "usage: snapshot|apply|verify|restore"
+case "$1" in
+snapshot) shift; snapshot "$@";;
+apply) shift; apply "$@";;
+verify) shift; verify "$@";;
+restore) shift; restore "$@";;
+*) die "unknown operation";;
+esac

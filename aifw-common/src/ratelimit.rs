@@ -58,8 +58,8 @@ impl FqCodelConfig {
                 "invalid FQ-CoDel target/interval".to_string(),
             ));
         }
-        if !(64..=65_536).contains(&self.quantum_bytes)
-            || !(1..=1_000_000).contains(&self.limit_packets)
+        if !(64..=9_000).contains(&self.quantum_bytes)
+            || !(1..=20_480).contains(&self.limit_packets)
             || !(1..=65_536).contains(&self.flows)
         {
             return Err(crate::AifwError::Validation(
@@ -305,7 +305,10 @@ impl QueueConfig {
         }
 
         match self.queue_type {
-            QueueType::Codel => parts.push("fq_codel".to_string()),
+            // FQ-CoDel is rendered by the dummynet backend. Returning no PF
+            // queue syntax here prevents callers from accidentally loading a
+            // same-family ALTQ approximation into pf.
+            QueueType::Codel => return String::new(),
             QueueType::Hfsc => {}
             QueueType::Priq => parts.push(format!("priority {}", self.traffic_class.priority())),
         }

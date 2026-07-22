@@ -456,8 +456,7 @@ mod tests {
             TrafficClass::Default,
         );
         q.default = true;
-        let pf = q.to_pf_queue();
-        assert!(pf.contains("default"));
+        assert!(q.to_pf_queue().is_empty());
     }
 
     #[test]

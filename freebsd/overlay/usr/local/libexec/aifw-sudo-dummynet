@@ -7,12 +7,15 @@ set -eu
 CONTROL=/usr/local/libexec/aifw-dummynet-control
 [ -x "$CONTROL" ] || { echo "dummynet controller is not installed" >&2; exit 1; }
 TMP=$(mktemp /tmp/aifw-dummynet.XXXXXX)
-trap 'rm -f "$TMP"' EXIT INT TERM HUP
+LAST=/var/run/aifw-dummynet.last-good
+SNAP=$(mktemp /tmp/aifw-dummynet-snapshot.XXXXXX)
+trap 'rm -f "$TMP" "$SNAP"' EXIT INT TERM HUP
 cat >"$TMP"
 [ -s "$TMP" ] || { echo "empty dummynet command set" >&2; exit 1; }
-"$CONTROL" snapshot /var/run/aifw-dummynet.snapshot
-if ! "$CONTROL" apply "$TMP" || ! "$CONTROL" verify; then
-    "$CONTROL" restore /var/run/aifw-dummynet.snapshot >/dev/null 2>&1 || true
+if [ -f "$LAST" ]; then cp "$LAST" "$SNAP"; fi
+if ! "$CONTROL" apply "$TMP" || ! "$CONTROL" verify "$TMP"; then
+    "$CONTROL" restore "$SNAP" >/dev/null 2>&1 || true
     echo "dummynet apply/verify failed; prior state restored" >&2
     exit 1
 fi
+cp "$TMP" "$LAST"
