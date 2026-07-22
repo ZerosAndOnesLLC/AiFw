@@ -2511,6 +2511,7 @@ aifw ALL=(root) NOPASSWD: /sbin/pfctl -sr
 # gets a password-required error, bails, and never heals -> LAN outage. Do
 # NOT drop this (it was missing in v5.96.16 and caused a LAN-down regression).
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -sn
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -e
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss -v
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -ss -vv
@@ -2676,6 +2677,7 @@ mod sudoers_tests {
             ("get_rules", "/sbin/pfctl -a aifw* -sr"),
             ("get_nat_rules", "/sbin/pfctl -a aifw* -sn"),
             ("daemon pf drift auto-heal (global -sn)", "/sbin/pfctl -sn"),
+            ("daemon pf re-enable after boot", "/sbin/pfctl -e"),
             ("get_queues", "/sbin/pfctl -a aifw* -sq"),
             ("flush_rules", "/sbin/pfctl -a aifw* -Fr"),
             ("flush_nat_rules", "/sbin/pfctl -a aifw* -Fn"),
