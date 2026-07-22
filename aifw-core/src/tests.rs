@@ -1865,5 +1865,43 @@ mod tests {
         assert_eq!(c.system.domain, ""); // default
         assert_eq!(c.system.timezone, "UTC"); // default
         assert_eq!(c.system.ssh.port, 22); // default
+        assert!(
+            c.dns_resolver.is_none(),
+            "pre-#589 backups must restore with the resolver section absent, not defaulted"
+        );
+    }
+
+    #[test]
+    fn dns_resolver_section_round_trips() {
+        let c = crate::FirewallConfig {
+            dns_resolver: Some(crate::config::DnsResolverSection {
+                forwarding_servers: vec!["9.9.9.9".into()],
+                enabled: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        c.validate().expect("valid resolver section must pass");
+
+        let json = c.to_json();
+        let back = crate::FirewallConfig::from_json(&json).expect("round trip");
+        let r = back.dns_resolver.expect("section must survive round trip");
+        assert_eq!(r.forwarding_servers, vec!["9.9.9.9".to_string()]);
+        assert!(r.enabled);
+    }
+
+    #[test]
+    fn dns_resolver_section_validates_forwarder_ips() {
+        let c = crate::FirewallConfig {
+            dns_resolver: Some(crate::config::DnsResolverSection {
+                forwarding_servers: vec!["not-an-ip; rm -rf /".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(
+            c.validate().is_err(),
+            "non-IP forwarding_servers entries must fail validation"
+        );
     }
 }

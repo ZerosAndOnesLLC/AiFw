@@ -2280,6 +2280,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_restore_round_trips_dns_resolver_config() {
+        // #589: resolver settings live in dns_resolver_config, not
+        // /etc/resolv.conf — a backup/restore must carry them.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+
+        let resolver = crate::dns_resolver::ResolverConfig {
+            forwarding_servers: vec!["9.9.9.9".to_string()],
+            blocklists_enabled: true,
+            ..Default::default()
+        };
+        let mut conn = state.pool.acquire().await.unwrap();
+        crate::dns_resolver::save_config_on(&mut conn, &resolver)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let config = crate::backup::build_current_config(&state).await.unwrap();
+        let exported = config
+            .dns_resolver
+            .as_ref()
+            .expect("export must include resolver");
+        assert_eq!(exported.forwarding_servers, vec!["9.9.9.9".to_string()]);
+        assert!(exported.blocklists_enabled);
+
+        // Simulate drift after the backup was taken.
+        sqlx::query(
+            "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('forwarding_servers', '8.8.4.4')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        crate::backup::apply_firewall_config(&state, &config, &Default::default())
+            .await
+            .expect("restore must succeed");
+
+        let (servers,): (String,) = sqlx::query_as(
+            "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            servers, "9.9.9.9",
+            "restore must reinstate the backed-up forwarders"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_resolver_section_leaves_config_untouched() {
+        // A pre-#589 backup has no dns_resolver section — restoring it must
+        // not reset the box's resolver config to defaults.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('forwarding_servers', '9.9.9.9')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let mut config = crate::backup::build_current_config(&state).await.unwrap();
+        config.dns_resolver = None;
+        crate::backup::apply_firewall_config(&state, &config, &Default::default())
+            .await
+            .expect("restore must succeed");
+
+        let (servers,): (String,) = sqlx::query_as(
+            "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            servers, "9.9.9.9",
+            "legacy restore must not clobber resolver config"
+        );
+    }
+
+    #[tokio::test]
     async fn test_restore_fails_instead_of_partial_apply() {
         // A required step failing (here: clearing a table that no longer
         // exists) must abort the restore with an error, never return Ok after

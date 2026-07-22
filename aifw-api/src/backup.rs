@@ -857,6 +857,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         dhcp: build_dhcp_section(&state.pool).await,
         aliases: build_aliases_section(state).await,
         static_routes: build_static_routes_section(&state.pool).await,
+        dns_resolver: Some(crate::dns_resolver::load_config(&state.pool).await),
     };
 
     Ok(config)
@@ -2128,6 +2129,15 @@ pub(crate) async fn apply_firewall_config(
     // rDHCP service regen runs after commit)
     apply_dhcp_section_db(&mut tx, &config.dhcp).await?;
 
+    // DNS resolver settings (#589). `None` = backup predates the section;
+    // leave the box's resolver config untouched instead of resetting it to
+    // defaults. Service regen runs after commit.
+    if let Some(resolver) = &config.dns_resolver {
+        crate::dns_resolver::save_config_on(&mut tx, resolver)
+            .await
+            .map_err(|e| apply_fail("dns resolver config restore", e))?;
+    }
+
     // One audit row for the whole restore, committed atomically with it.
     // (Pre-#158 each engine `add` wrote a per-row audit entry; a restore is
     // one operator action, not N rule additions.)
@@ -2259,6 +2269,22 @@ pub(crate) async fn apply_firewall_config(
     // effect. Best-effort: the companion service may be absent (dev hosts);
     // the DB rows are authoritative and reapplied at boot.
     crate::dhcp::auto_apply(state).await;
+
+    // Regenerate resolver config + restart the DNS backend so the restored
+    // settings take effect (#589). Best-effort like rDHCP above: the backend
+    // service may be absent (dev hosts); the DB rows are authoritative and
+    // switch_backend probes + auto-rolls-back on a failed start.
+    if let Some(resolver) = &config.dns_resolver {
+        let report = crate::dns_resolver::switch_backend(state, &resolver.backend, resolver).await;
+        if report.rolled_back || (resolver.enabled && !report.probe_udp) {
+            tracing::warn!(
+                backend = %resolver.backend,
+                rolled_back = report.rolled_back,
+                message = %report.message,
+                "import: DNS resolver apply did not come up healthy — settings are restored in the DB, re-apply via /dns/resolver/apply"
+            );
+        }
+    }
 
     // Final data-plane applies — a failure here means the kernel does NOT
     // match the restored DB, so it must not report success (#535).
