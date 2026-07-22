@@ -75,7 +75,7 @@ cat > "$WORK/aifw-seed.json" <<EOF
   "dhcp_enabled": false,
   "default_policy": "standard",
   "nat_enabled": true,
-  "ssh_auth_method": "keys",
+  "ssh_auth_method": "key_only",
   "ssh_github_user": null,
   "ssh_authorized_keys": ["$SSH_PUB"],
   "db_path": "/var/db/aifw/aifw.db",
