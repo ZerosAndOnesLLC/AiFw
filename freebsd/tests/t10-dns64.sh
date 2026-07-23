@@ -42,6 +42,9 @@ cat > "$T10_DIR/upstream.toml" <<EOF
 [server]
 mode = "authoritative"
 pidfile = "/dev/null"
+# harness runs as root; drop to an account every FreeBSD host has
+user = "nobody"
+group = "nobody"
 [listeners]
 udp = ["127.0.0.1:15355"]
 tcp = ["127.0.0.1:15355"]
@@ -58,6 +61,8 @@ cat > "$T10_DIR/front.toml" <<EOF
 [server]
 mode = "resolver"
 pidfile = "/dev/null"
+user = "nobody"
+group = "nobody"
 [listeners]
 udp = ["127.0.0.1:15354"]
 tcp = ["127.0.0.1:15354"]
