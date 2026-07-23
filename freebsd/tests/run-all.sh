@@ -156,6 +156,20 @@ jx_server ifconfig "${EPAIR_S}b" inet "$SERVER_IP/24" up
 jx_server ifconfig lo0 127.0.0.1/8 up
 jx_server route -q add default "$SERVER_NET_HOST" >/dev/null
 
+# IPv6 for the cross-family tests (t09): client jail is dual-stack, host
+# routes v6, server leg keeps a host-side v6 for NAT46 sourcing. dad_count=0
+# avoids multi-second DAD holds on the freshly created epairs; -ifdisabled
+# clears the default IFDISABLED flag jail-cloned interfaces inherit.
+sysctl net.inet6.ip6.forwarding=1 >/dev/null
+sysctl net.inet6.ip6.dad_count=0 >/dev/null 2>&1 || true
+jx_client sysctl net.inet6.ip6.dad_count=0 >/dev/null 2>&1 || true
+jx_server sysctl net.inet6.ip6.dad_count=0 >/dev/null 2>&1 || true
+ifconfig "${EPAIR_C}a" inet6 -ifdisabled "$CLIENT6_NET_HOST/64" up
+ifconfig "${EPAIR_S}a" inet6 -ifdisabled "$SERVER6_NET_HOST/64" up
+jx_client ifconfig "${EPAIR_C}b" inet6 -ifdisabled "$CLIENT6_IP/64" up
+jx_client route -q add -inet6 default "$CLIENT6_NET_HOST" >/dev/null
+jx_server ifconfig "${EPAIR_S}b" inet6 -ifdisabled auto_linklocal up
+
 # ---------------------------------------------------------------- pf.conf
 
 # Mirrors the anchor layout aifw-setup generates for the appliance
@@ -231,7 +245,7 @@ log "API up, authenticated"
 
 # ---------------------------------------------------------------- run tests
 
-TESTS="${TESTS:-t01-pfctl-acceptance t02-pass-block t03-schedule-gating t04-nat t05-restore-roundtrip t06-wireguard t07-ipsec t08-control-plane}"
+TESTS="${TESTS:-t01-pfctl-acceptance t02-pass-block t03-schedule-gating t04-nat t05-restore-roundtrip t06-wireguard t07-ipsec t08-control-plane t09-nat64}"
 TOTAL=0
 FAILED_TESTS=""
 
