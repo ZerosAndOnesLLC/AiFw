@@ -1247,6 +1247,12 @@ async fn ensure_rdr_anchor() {
     // pass rules, so an install predating `anchor "aifw-nat"` would load
     // them but never evaluate them (#531).
     let has_nat_filter = lines.iter().any(|l| l.trim() == "anchor \"aifw-nat\"");
+    // ICMPv6 neighbor discovery: aifw-setup only emits this into NEWLY
+    // generated pf.conf files, so upgraded appliances keep dropping ND and
+    // all IPv6 (incl. NAT64) stays broken until healed here (#601).
+    const ND_RULE: &str =
+        "pass quick inet6 proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }";
+    let has_nd = lines.iter().any(|l| l.trim() == ND_RULE);
     let mwan_anchors = ["aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"];
     let has_mwan: Vec<bool> = mwan_anchors
         .iter()
@@ -1257,6 +1263,7 @@ async fn ensure_rdr_anchor() {
         .collect();
 
     let mut mwan_inserted = false;
+    let mut nd_inserted = false;
 
     for line in lines.iter() {
         let t = line.trim();
@@ -1273,6 +1280,20 @@ async fn ensure_rdr_anchor() {
 
         // 2. Before the filter-section `anchor "aifw"` (trimmed EXACTLY — won't
         //    match nat-anchor or rdr-anchor), inject any missing mwan anchors.
+        // ND pass must precede the FIRST filter anchor — anchors hold
+        // `block quick` rules that would otherwise eat neighbor
+        // solicitations (#601). Checked against every filter-anchor form so
+        // it lands before aifw-pbr when the mwan anchors already exist.
+        if !has_nd
+            && !nd_inserted
+            && (t == "anchor \"aifw\""
+                || mwan_anchors.iter().any(|a| t == format!("anchor \"{a}\"")))
+        {
+            out.push(ND_RULE.to_string());
+            nd_inserted = true;
+            changed = true;
+        }
+
         if !mwan_inserted && t == "anchor \"aifw\"" {
             for (i, a) in mwan_anchors.iter().enumerate() {
                 if !has_mwan[i] {
@@ -1700,6 +1721,12 @@ async fn main() -> anyhow::Result<()> {
         let mem_state = state.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            // 24h alert count cache (#601): the COUNT rides an index but
+            // still costs >1s on multi-million-row tables — too expensive
+            // for a per-minute heartbeat. Refresh every 10th tick; the
+            // heartbeat is a health signal, not a live stat.
+            let mut alerts_24h_cache: i64 = 0;
+            let mut heartbeat_ticks: u32 = 0;
             loop {
                 interval.tick().await;
                 let hist_entries = mem_state.metrics_history.read().await.len();
@@ -1743,13 +1770,19 @@ async fn main() -> anyhow::Result<()> {
                 // rides idx_ids_alerts_ts instead of full-scanning a
                 // multi-million-row table every tick (and contending with
                 // ingestion). This is a health signal — recent persistence,
-                // not lifetime total — hence the _24h field name.
-                let (ids_alerts_db_24h,): (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*) FROM ids_alerts WHERE timestamp >= datetime('now', '-1 day')",
-                )
-                .fetch_one(&mem_state.pool)
-                .await
-                .unwrap_or((0,));
+                // not lifetime total — hence the _24h field name. Refreshed
+                // every 10 minutes, cached between (#601).
+                if heartbeat_ticks.is_multiple_of(10) {
+                    let (count,): (i64,) = sqlx::query_as(
+                        "SELECT COUNT(*) FROM ids_alerts WHERE timestamp >= datetime('now', '-1 day')",
+                    )
+                    .fetch_one(&mem_state.pool)
+                    .await
+                    .unwrap_or((0,));
+                    alerts_24h_cache = count;
+                }
+                heartbeat_ticks = heartbeat_ticks.wrapping_add(1);
+                let ids_alerts_db_24h = alerts_24h_cache;
                 // PERF-H12: native RSS syscall, not a `ps` fork (finishes the
                 // main.rs shell-out #356 also cited).
                 let rss_mb =

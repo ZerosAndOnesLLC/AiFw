@@ -99,6 +99,12 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("init engine: {e}"))?,
     );
 
+    // Alert retention runs regardless of engine mode (#601): pruning and
+    // the clock-skew scrub are hygiene for rows already in the DB, and
+    // gating them behind the mode check left disabled-IDS appliances with
+    // multi-million-row ids_alerts tables that never shrink.
+    engine.spawn_retention_worker();
+
     // Compile and start if mode != Disabled.
     if let Ok(cfg) = engine.load_config().await
         && cfg.mode != aifw_common::ids::IdsMode::Disabled
