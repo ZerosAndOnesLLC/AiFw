@@ -420,6 +420,11 @@ pub(crate) async fn load_config(pool: &SqlitePool) -> ResolverConfig {
             "port" => c.port = v.parse().unwrap_or(53),
             "dnssec" => c.dnssec = v == "true",
             "dns64" => c.dns64 = v == "true",
+            "dns64_prefix" => {
+                if !v.is_empty() {
+                    c.dns64_prefix = v
+                }
+            }
             "register_dhcp" => c.register_dhcp = v == "true",
             "local_zone_type" => c.local_zone_type = v,
             "outgoing_interface" => {
@@ -857,6 +862,14 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
         "dnssec = {}\nqname_minimization = true\n",
         c.dnssec
     ));
+    // DNS64 (RFC 6147, #531): emit only when enabled; the prefix must match
+    // the NAT64 rule prefix for the combined workflow to function.
+    if c.dns64 {
+        toml.push_str(&format!(
+            "dns64 = true\ndns64_prefix = \"{}\"\n",
+            c.dns64_prefix
+        ));
+    }
     if c.query_timeout_ms > 0 {
         toml.push_str(&format!("query_timeout_ms = {}\n", c.query_timeout_ms));
     }
@@ -1424,6 +1437,7 @@ pub(crate) async fn save_config_on(
         ("port", c.port.to_string()),
         ("dnssec", bool_str(c.dnssec).to_string()),
         ("dns64", bool_str(c.dns64).to_string()),
+        ("dns64_prefix", c.dns64_prefix.clone()),
         ("register_dhcp", bool_str(c.register_dhcp).to_string()),
         ("local_zone_type", c.local_zone_type.clone()),
         (
