@@ -1,5 +1,21 @@
 const API_BASE = "";
-const TOKEN_KEY = "aifw_token";
+/// Non-sensitive "logged in" marker (SEC-M7 #304). The real credential is an
+/// HttpOnly session cookie the page can't read; this flag only gates eager
+/// fetches and drives cross-tab login/logout sync via the storage event.
+const AUTH_FLAG_KEY = "aifw_authed";
+/// Custom header the API requires on cookie-authenticated state-changing
+/// requests (CSRF defense in depth) — a cross-site page can't set it.
+const CSRF_HEADER = "X-AiFw-Csrf";
+
+export function isAuthed(): boolean {
+  return typeof window !== "undefined" && localStorage.getItem(AUTH_FLAG_KEY) === "1";
+}
+
+export function setAuthed(value: boolean): void {
+  if (typeof window === "undefined") return;
+  if (value) localStorage.setItem(AUTH_FLAG_KEY, "1");
+  else localStorage.removeItem(AUTH_FLAG_KEY);
+}
 
 /// Error thrown for any non-2xx response. `message` carries the
 /// server-provided error/message body field when one exists, so call
@@ -23,8 +39,25 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
-function authToken(): string | null {
-  return typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+/// In-flight session refresh, shared so parallel 401s trigger exactly one
+/// rotation — a second concurrent rotate of the same refresh token would
+/// trip the server's reuse detection and revoke the whole token family.
+let refreshPromise: Promise<boolean> | null = null;
+
+/// Rotate the session via the HttpOnly refresh cookie. Resolves true when a
+/// new access cookie was installed.
+function refreshSession(): Promise<boolean> {
+  refreshPromise ??= fetch(`${API_BASE}/api/v1/auth/refresh`, {
+    method: "POST",
+    headers: { [CSRF_HEADER]: "1" },
+    credentials: "same-origin",
+  })
+    .then((r) => r.ok)
+    .catch(() => false)
+    .finally(() => {
+      refreshPromise = null;
+    });
+  return refreshPromise;
 }
 
 /// Pull a human-readable message out of an error response. The API mostly
@@ -48,17 +81,17 @@ async function errorMessage(res: Response): Promise<string> {
   return `API ${res.status}: ${res.statusText || "request failed"}`;
 }
 
-/// Core request: attaches the Bearer token, JSON-encodes plain bodies
-/// (FormData passes through untouched so the browser sets the multipart
-/// boundary), centralizes the 401 → /login redirect, and throws ApiError
-/// with the server's error message on any non-2xx status.
+/// Core request: rides the HttpOnly session cookie (with the CSRF header the
+/// API requires on writes), JSON-encodes plain bodies (FormData passes
+/// through untouched so the browser sets the multipart boundary), silently
+/// refreshes an expired session once, centralizes the 401 → /login redirect,
+/// and throws ApiError with the server's error message on any non-2xx status.
 async function request(
   method: string,
   path: string,
   body?: unknown,
   opts: RequestOptions = {},
 ): Promise<Response> {
-  const token = authToken();
   const isForm = typeof FormData !== "undefined" && body instanceof FormData;
   // Strings are passed through as-is (already-serialized JSON from legacy
   // fetchApi callers); FormData passes through so the browser sets the
@@ -72,22 +105,34 @@ async function request(
         : undefined;
   const headers: Record<string, string> = {
     ...(body !== undefined && !isForm ? { "Content-Type": "application/json" } : {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    [CSRF_HEADER]: "1",
     ...(opts.headers ?? {}),
   };
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    body: rawBody,
-    signal: opts.signal,
-  });
+  const doFetch = () =>
+    fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: rawBody,
+      signal: opts.signal,
+      credentials: "same-origin",
+    });
 
-  if (!res.ok) {
-    if (res.status === 401 && !opts.noAuthRedirect && typeof window !== "undefined") {
-      localStorage.removeItem(TOKEN_KEY);
+  let res = await doFetch();
+
+  if (res.status === 401 && !opts.noAuthRedirect && typeof window !== "undefined") {
+    // Access cookie may just have expired — rotate via the refresh cookie
+    // and retry once before treating the session as dead.
+    if (await refreshSession()) {
+      res = await doFetch();
+    }
+    if (res.status === 401) {
+      setAuthed(false);
       window.location.href = "/login";
     }
+  }
+
+  if (!res.ok) {
     throw new ApiError(res.status, await errorMessage(res));
   }
   return res;

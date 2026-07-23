@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { api } from "@/lib/api";
+import { api, isAuthed, setAuthed } from "@/lib/api";
 
 interface NavChild { href: string; label: string; permission?: string; }
 interface NavItem {
@@ -187,8 +187,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
   const [interfaces, setInterfaces] = useState<{ name: string; role?: string }[]>([]);
 
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-    if (!token) return;
+    if (!isAuthed()) return;
     api
       .get<{ data?: { name: string; role?: string }[] }>("/api/v1/interfaces")
       .then((d) => {
@@ -361,7 +360,13 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
           My Profile
         </Link>
         <button
-          onClick={() => { localStorage.removeItem("aifw_token"); window.location.href = "/login"; }}
+          onClick={async () => {
+            // Revoke the session server-side and clear the HttpOnly cookies;
+            // best-effort — always fall through to the login page.
+            try { await api.post("/api/v1/auth/logout", undefined, { noAuthRedirect: true }); } catch { /* ignore */ }
+            setAuthed(false);
+            window.location.href = "/login";
+          }}
           className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors w-full">
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />

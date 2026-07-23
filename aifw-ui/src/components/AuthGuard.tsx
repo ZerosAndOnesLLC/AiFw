@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { isAuthed } from "@/lib/api";
 
 const PUBLIC_PATHS = ["/login", "/login/"];
 
@@ -9,51 +10,36 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [checked, setChecked] = useState(false);
-  const [authed, setAuthed] = useState(false);
+  const [authed, setAuthedState] = useState(false);
 
   useEffect(() => {
     queueMicrotask(() => {
-      const token = localStorage.getItem("aifw_token");
+      // The session itself is an HttpOnly cookie the page can't inspect
+      // (SEC-M7 #304); this flag is the client-side marker set at login.
+      // Expiry is handled by the API: a 401 triggers a silent refresh and,
+      // failing that, the centralized redirect to /login (see lib/api.ts).
+      const loggedIn = isAuthed();
 
       if (PUBLIC_PATHS.includes(pathname)) {
         // On login page — if already authed, redirect to dashboard
-        if (token) {
+        if (loggedIn) {
           router.replace("/");
         }
         setChecked(true);
-        setAuthed(!!token);
+        setAuthedState(loggedIn);
         return;
       }
 
-      // Protected page — redirect to login if no token
-      if (!token) {
+      // Protected page — redirect to login if not logged in
+      if (!loggedIn) {
         router.replace("/login");
         setChecked(true);
-        setAuthed(false);
+        setAuthedState(false);
         return;
-      }
-
-      // Validate token isn't expired (decode JWT payload)
-      try {
-        // Handle URL-safe base64 and missing padding
-        let b64 = token.split(".")[1];
-        b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
-        while (b64.length % 4) b64 += "=";
-        const payload = JSON.parse(atob(b64));
-        if (payload.exp && payload.exp * 1000 < Date.now()) {
-          localStorage.removeItem("aifw_token");
-          router.replace("/login");
-          setChecked(true);
-          setAuthed(false);
-          return;
-        }
-      } catch {
-        // If decode fails, don't log out — just trust the token exists
-        // The API will return 401 if it's actually invalid
       }
 
       setChecked(true);
-      setAuthed(true);
+      setAuthedState(true);
     });
   }, [pathname, router]);
 

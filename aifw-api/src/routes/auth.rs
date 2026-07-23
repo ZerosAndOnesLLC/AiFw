@@ -8,11 +8,23 @@
 use super::*;
 use crate::auth;
 
+/// Build the `Set-Cookie` response headers installing a token pair as the
+/// browser session (SEC-M7 #304). Non-browser clients keep using the tokens
+/// from the JSON body; the cookies are additive.
+fn session_cookie_headers(state: &AppState, tokens: &auth::TokenPair) -> HeaderMap {
+    let mut h = HeaderMap::new();
+    auth::cookies::append_set_cookies(
+        &mut h,
+        auth::cookies::session_cookies(tokens, &state.auth_settings, state.tls_enabled),
+    );
+    h
+}
+
 pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<auth::LoginRequest>,
-) -> Result<Json<auth::LoginResponse>, StatusCode> {
+) -> Result<(HeaderMap, Json<auth::LoginResponse>), StatusCode> {
     // Rate-limit on two axes: the X-Forwarded-For-ish client IP (best
     // effort — spoofable without a trusted-proxies allow-list, tracked
     // as a follow-up) AND the username. The username axis guarantees a
@@ -74,18 +86,24 @@ pub async fn login(
 
     // Check if TOTP is required
     if user.totp_enabled {
-        return Ok(Json(auth::LoginResponse {
-            tokens: None,
-            totp_required: true,
-        }));
+        return Ok((
+            HeaderMap::new(),
+            Json(auth::LoginResponse {
+                tokens: None,
+                totp_required: true,
+            }),
+        ));
     }
 
     // Check if TOTP enforcement is on but user hasn't set it up
     if state.auth_settings.require_totp && !user.totp_enabled {
-        return Ok(Json(auth::LoginResponse {
-            tokens: None,
-            totp_required: true,
-        }));
+        return Ok((
+            HeaderMap::new(),
+            Json(auth::LoginResponse {
+                tokens: None,
+                totp_required: true,
+            }),
+        ));
     }
 
     // Resolve permissions for the JWT
@@ -114,16 +132,20 @@ pub async fn login(
     )
     .await;
 
-    Ok(Json(auth::LoginResponse {
-        tokens: Some(tokens),
-        totp_required: false,
-    }))
+    let cookies = session_cookie_headers(&state, &tokens);
+    Ok((
+        cookies,
+        Json(auth::LoginResponse {
+            tokens: Some(tokens),
+            totp_required: false,
+        }),
+    ))
 }
 
 pub async fn totp_login(
     State(state): State<AppState>,
     Json(req): Json<auth::totp::TotpLoginRequest>,
-) -> Result<Json<auth::TokenPair>, StatusCode> {
+) -> Result<(HeaderMap, Json<auth::TokenPair>), StatusCode> {
     let user = auth::get_user_by_username(&state.pool, &req.username)
         .await?
         .ok_or(StatusCode::UNAUTHORIZED)?;
@@ -171,20 +193,27 @@ pub async fn totp_login(
     .await
     .map_err(|_| internal())?;
 
-    Ok(Json(tokens))
+    let cookies = session_cookie_headers(&state, &tokens);
+    Ok((cookies, Json(tokens)))
 }
 
 pub async fn refresh_token(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<auth::tokens::RefreshRequest>,
-) -> Result<Json<auth::TokenPair>, StatusCode> {
+    body: Option<Json<auth::tokens::RefreshRequest>>,
+) -> Result<(HeaderMap, Json<auth::TokenPair>), StatusCode> {
+    // Token comes from the JSON body (header-auth clients) or, for the
+    // browser UI, from the HttpOnly refresh cookie (SEC-M7 #304).
+    let refresh_token = body
+        .map(|Json(r)| r.refresh_token)
+        .or_else(|| auth::cookies::cookie_value(&headers, auth::cookies::REFRESH_COOKIE))
+        .ok_or(bad_request())?;
     // SEC-H8: rate-limit refresh like login. Key on the client IP (best
     // effort, spoofable without a trusted-proxy allow-list) and on the
     // token prefix so a spray of forged tokens from one source is capped.
     // Falling back to the prefix as the IP key when there's no XFF avoids a
     // single shared global bucket that would block unrelated clients.
-    let token_prefix = auth::tokens::refresh_prefix(&req.refresh_token).to_string();
+    let token_prefix = auth::tokens::refresh_prefix(&refresh_token).to_string();
     let client_ip = headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
@@ -200,40 +229,56 @@ pub async fn refresh_token(
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
-    let tokens = match auth::tokens::rotate_refresh_token(
-        &state.pool,
-        &req.refresh_token,
-        &state.auth_settings,
-    )
-    .await
-    {
-        Ok(t) => t,
-        Err(_) => {
-            state
-                .login_limiter
-                .record_failure(&client_ip, &token_prefix)
-                .await;
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    };
+    let tokens =
+        match auth::tokens::rotate_refresh_token(&state.pool, &refresh_token, &state.auth_settings)
+            .await
+        {
+            Ok(t) => t,
+            Err(_) => {
+                state
+                    .login_limiter
+                    .record_failure(&client_ip, &token_prefix)
+                    .await;
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        };
 
     state.login_limiter.clear(&client_ip, &token_prefix).await;
-    Ok(Json(tokens))
+    let cookies = session_cookie_headers(&state, &tokens);
+    Ok((cookies, Json(tokens)))
 }
 
 pub async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<auth::tokens::LogoutRequest>,
-) -> Result<Json<MessageResponse>, StatusCode> {
-    // Revoke the refresh token
-    auth::tokens::revoke_refresh_token(&state.pool, &req.refresh_token)
-        .await
-        .map_err(|_| bad_request())?;
-    // Also revoke the current access token if present
-    if let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok())
-        && let Some(token) = auth_header.strip_prefix("Bearer ")
-        && let Ok(data) = auth::verify_access_token(token, &state.auth_settings)
+    body: Option<Json<auth::tokens::LogoutRequest>>,
+) -> Result<(HeaderMap, Json<MessageResponse>), StatusCode> {
+    // Revoke the refresh token. Body token (header-auth clients) keeps the
+    // strict 400-on-unknown contract; the cookie fallback is best-effort so
+    // a stale cookie can't wedge the browser in a can't-log-out state.
+    match body {
+        Some(Json(req)) => {
+            auth::tokens::revoke_refresh_token(&state.pool, &req.refresh_token)
+                .await
+                .map_err(|_| bad_request())?;
+        }
+        None => {
+            if let Some(rt) = auth::cookies::cookie_value(&headers, auth::cookies::REFRESH_COOKIE)
+                && let Err(e) = auth::tokens::revoke_refresh_token(&state.pool, &rt).await
+            {
+                tracing::warn!(error = %e, "logout: refresh cookie revocation failed");
+            }
+        }
+    }
+    // Also revoke the current access token if present (header or cookie)
+    let access_token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(str::to_string)
+        .or_else(|| auth::cookies::cookie_value(&headers, auth::cookies::ACCESS_COOKIE));
+    if let Some(token) = access_token
+        && let Ok(data) = auth::verify_access_token(&token, &state.auth_settings)
     {
         let exp = chrono::DateTime::from_timestamp(data.claims.exp, 0)
             .map(|d| d.to_rfc3339())
@@ -243,9 +288,18 @@ pub async fn logout(
         // can't ride the positive-cache TTL.
         state.auth_jti_cache.remove(&data.claims.jti);
     }
-    Ok(Json(MessageResponse {
-        message: "Logged out".to_string(),
-    }))
+    // Expire the session cookies regardless of revocation outcome.
+    let mut cookies = HeaderMap::new();
+    auth::cookies::append_set_cookies(
+        &mut cookies,
+        auth::cookies::clear_cookies(state.tls_enabled),
+    );
+    Ok((
+        cookies,
+        Json(MessageResponse {
+            message: "Logged out".to_string(),
+        }),
+    ))
 }
 
 pub async fn totp_setup(
@@ -564,19 +618,19 @@ pub async fn create_api_key(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
-/// Pull the authenticated user's id out of a `Bearer` token. Shared with
-/// `routes::users`, which needs the actor id for audit entries.
+/// Pull the authenticated user's id out of a `Bearer` token or the session
+/// cookie (SEC-M7 #304). Shared with `routes::users`, which needs the actor
+/// id for audit entries.
 pub(super) fn extract_user_id(headers: &HeaderMap, state: &AppState) -> Result<String, StatusCode> {
-    let auth_header = headers
+    let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(str::to_string)
+        .or_else(|| auth::cookies::cookie_value(headers, auth::cookies::ACCESS_COOKIE))
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    if let Some(token) = auth_header.strip_prefix("Bearer ") {
-        let data = auth::verify_access_token(token, &state.auth_settings)
-            .map_err(|_| StatusCode::UNAUTHORIZED)?;
-        Ok(data.claims.sub)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
+    let data = auth::verify_access_token(&token, &state.auth_settings)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    Ok(data.claims.sub)
 }

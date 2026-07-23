@@ -7,6 +7,7 @@
 
 pub mod api_keys;
 pub mod config;
+pub mod cookies;
 pub mod jwt_key;
 pub mod middleware;
 pub mod migrate;
