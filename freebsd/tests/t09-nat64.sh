@@ -64,7 +64,9 @@ api_reload || fail "reload nat46"
 
 PORT46=8093
 MARKER46=/tmp/aifwfx-t09-nat46-marker
-server_listen_once $PORT46 $MARKER46
+# Explicit -6: plain `nc -l` binds the IPv4 wildcard only, so the translated
+# IPv6 SYN would be RST'd and the test would fail with no listener at fault.
+jx_server sh -c "rm -f '$MARKER46'; (nc -6 -l '$PORT46' >/dev/null 2>&1 && touch '$MARKER46') &"
 if client_can_reach "$NAT46_V4" $PORT46; then
     wait_for_file server $MARKER46 5 || fail "nat46 tcp: connected but server never saw it"
 else
