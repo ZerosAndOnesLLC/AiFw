@@ -104,7 +104,13 @@ export default function TrafficPage() {
   const prevIface = useRef<Record<string, { bytes_in: number; bytes_out: number }>>({});
   const prevTime = useRef(0);
 
-  const ifaceNames = (ws.interfaces as IfaceData[]);
+  // Stable name order (#601): the WS payload's interface order shifts with
+  // traffic, which made the graph cards (and their colors, keyed by index)
+  // jump around on every tick.
+  const ifaceNames = useMemo(
+    () => [...(ws.interfaces as IfaceData[])].sort((a, b) => a.name.localeCompare(b.name)),
+    [ws.interfaces],
+  );
   const allSelected = selectedNics.size === 0 || selectedNics.size === ifaceNames.length;
 
   const toggleNic = (name: string) => {
@@ -226,7 +232,7 @@ export default function TrafficPage() {
     connections.reduce<{ ip: string; bytes: number; conns: number }[]>((a, c) => {
       const e = a.find(t => t.ip === c.src_addr), tot = (c.bytes_in || 0) + (c.bytes_out || 0);
       if (e) { e.bytes += tot; e.conns++; } else a.push({ ip: c.src_addr, bytes: tot, conns: 1 }); return a;
-    }, []).sort((a, b) => b.bytes - a.bytes).slice(0, 10),
+    }, []).sort((a, b) => b.bytes - a.bytes || a.ip.localeCompare(b.ip)).slice(0, 10),
   [connections]);
   const maxTB = topTalkers[0]?.bytes || 1;
 
@@ -234,7 +240,7 @@ export default function TrafficPage() {
     connections.reduce<{ port: number; proto: string; conns: number }[]>((a, c) => {
       const key = `${c.dst_port}-${c.protocol}`, e = a.find(p => `${p.port}-${p.proto}` === key);
       if (e) e.conns++; else a.push({ port: c.dst_port, proto: c.protocol, conns: 1 }); return a;
-    }, []).sort((a, b) => b.conns - a.conns).slice(0, 15),
+    }, []).sort((a, b) => b.conns - a.conns || a.port - b.port).slice(0, 15),
   [connections]);
   const maxPC = topPorts[0]?.conns || 1;
 

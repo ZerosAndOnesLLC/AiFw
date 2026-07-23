@@ -40,11 +40,19 @@ log "starting (pid $$)"
 # service bounce so the restarted services come up with correct grants.
 refresh_sudoers() {
     [ -x /usr/local/sbin/aifw-setup ] || return 0
+    # Absolute path (#601): visudo lives in /usr/local/sbin, which daemon(8)
+    # contexts don't have in PATH — a bare name fails command-not-found and
+    # reads as a validation failure.
+    VISUDO=/usr/local/sbin/visudo
+    [ -x "$VISUDO" ] || VISUDO=$(command -v visudo) || {
+        log "WARN visudo not found; sudoers refresh skipped"
+        return 0
+    }
     _tmp=$(mktemp /tmp/aifw-sudoers.XXXXXX) || return 0
     if /usr/local/sbin/aifw-setup --print-sudoers > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
         # Validate before installing — a malformed sudoers file would void
         # every NOPASSWD grant the appliance depends on.
-        if visudo -cf "$_tmp" >/dev/null 2>&1; then
+        if "$VISUDO" -cf "$_tmp" >/dev/null 2>&1; then
             if ! cmp -s "$_tmp" /usr/local/etc/sudoers.d/aifw 2>/dev/null; then
                 if install -m 440 -o root -g wheel "$_tmp" /usr/local/etc/sudoers.d/aifw; then
                     log "refreshed /usr/local/etc/sudoers.d/aifw from aifw-setup"

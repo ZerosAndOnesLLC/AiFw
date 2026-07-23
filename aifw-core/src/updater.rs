@@ -1580,8 +1580,15 @@ mod tests {
                 script.contains("aifw-setup --print-sudoers"),
                 "{name} must regenerate sudoers from aifw-setup"
             );
+            // Absolute path required (#601): a bare `visudo` isn't found
+            // under the daemon(8) default PATH, silently disabling the
+            // refresh on every boot.
             assert!(
-                script.contains("visudo -cf"),
+                script.contains("VISUDO=/usr/local/sbin/visudo"),
+                "{name} must resolve visudo by absolute path (not in daemon PATH)"
+            );
+            assert!(
+                script.contains("\"$VISUDO\" -cf"),
                 "{name} must validate sudoers with visudo before installing"
             );
             assert!(
