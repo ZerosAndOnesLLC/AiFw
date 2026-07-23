@@ -391,7 +391,12 @@ jobs:
         with:
           name: "AiFw v${{ steps.version.outputs.version }}"
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          # ALWAYS pre-release: field appliances auto-pull /releases/latest,
+          # which skips pre-releases. A plain v* tag used to publish stable
+          # instantly — an untested build every appliance would grab the
+          # moment CI finished. Promote after testing with:
+          #   gh release edit <tag> --prerelease=false --latest
+          prerelease: true
           generate_release_notes: true
           files: |
             release-assets/*

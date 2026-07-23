@@ -272,8 +272,18 @@ fi
 # Create release (or update if exists)
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "Release ${TAG} exists, uploading assets..."
+    # Pre-release gate FIRST, upload after: field appliances poll
+    # /releases/latest, so fresh assets must never sit on a stable release
+    # even for the duration of the upload. Strict (no || true) — if the
+    # flag can't be applied, abort before any asset lands. The stable flip
+    # for AIFW_RELEASE_FINAL stays AFTER the upload for the same reason,
+    # in the publish edit below.
+    if [ -z "${AIFW_RELEASE_FINAL:-}" ]; then
+        gh release edit "$TAG" --prerelease=true
+    fi
     gh release upload "$TAG" $ASSETS --clobber
-    # Ensure it's not stuck as a draft, and apply the chosen pre-release state.
+    # Publish last: un-draft, retitle, and (for FINAL) flip to stable only
+    # once the asset set is complete.
     gh release edit "$TAG" --draft=false $EDIT_PRE --title "AiFw v${VERSION}" --notes "$BODY" 2>/dev/null || true
 else
     gh release create "$TAG" \
