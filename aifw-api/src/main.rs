@@ -965,21 +965,18 @@ async fn create_state_from_db(
             .await
             .unwrap_or_default();
     for (name,) in &enabled_plugins {
-        // Unload disabled version and re-register as enabled
-        let _ = plugin_mgr.unload(name).await;
-        let plugin: Option<Box<dyn aifw_plugins::Plugin>> = match name.as_str() {
-            "logging" => Some(Box::new(aifw_plugins::examples::LoggingPlugin::new())),
-            "ip_reputation" => Some(Box::new(aifw_plugins::examples::IpReputationPlugin::new())),
-            "webhook" => Some(Box::new(aifw_plugins::examples::WebhookPlugin::new())),
-            _ => None,
-        };
-        if let Some(p) = plugin {
+        // Unload disabled version and re-register as enabled, with the
+        // persisted settings — plugins only read settings in init() (#586).
+        let reg_name = plugins::canonical_builtin(name).unwrap_or(name);
+        let _ = plugin_mgr.unload(reg_name).await;
+        if let Some(p) = plugins::instantiate_builtin(name) {
+            let settings = plugins::load_settings(&pool, name).await;
             let _ = plugin_mgr
                 .register(
                     p,
                     aifw_plugins::PluginConfig {
                         enabled: true,
-                        ..Default::default()
+                        settings,
                     },
                 )
                 .await;
