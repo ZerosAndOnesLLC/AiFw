@@ -222,7 +222,7 @@ impl NatEngine {
     /// Generate pf NAT rules and load them into the anchor
     pub async fn apply_rules(&self) -> Result<()> {
         let rules = self.list_active_rules().await?;
-        let pf_rules: Vec<String> = rules.iter().flat_map(|r| r.to_pf_rules()).collect();
+        let pf_rules = self.render_ruleset(&rules);
 
         tracing::info!(
             anchor = %self.anchor,
@@ -251,29 +251,55 @@ impl NatEngine {
         Ok(())
     }
 
+    /// Render the full pf ruleset for a set of NAT rules, translation-class
+    /// lines first (traditional pf.conf section order). Cross-family
+    /// (af-to) rules render as filter-class `pass` lines and pf evaluates
+    /// the two classes independently, so cross-class order has no effect —
+    /// this ordering just keeps the loaded file conventional.
+    fn render_ruleset(&self, rules: &[NatRule]) -> Vec<String> {
+        let (translation, filter): (Vec<String>, Vec<String>) = rules
+            .iter()
+            .flat_map(|r| r.to_pf_rules())
+            .partition(|l| is_translation_class(l));
+        translation.into_iter().chain(filter).collect()
+    }
+
     /// Verify the pf anchor holds the NAT ruleset [`Self::apply_rules`]
     /// would render right now (#535 post-apply verification). Exact
-    /// comparison on backends that echo loaded rules; emptiness invariant
-    /// on real pfctl (see `RuleEngine::verify_applied`).
+    /// per-class comparison on backends that echo loaded rules; per-class
+    /// emptiness invariant on real pfctl (see `RuleEngine::verify_applied`).
+    /// Cross-family (af-to) rules are filter-class and surface via
+    /// `get_rules`, not `get_nat_rules`.
     pub async fn verify_applied(&self) -> Result<()> {
         let rules = self.list_active_rules().await?;
-        let expected: Vec<String> = rules.iter().flat_map(|r| r.to_pf_rules()).collect();
-        let actual = self
+        let (expected_nat, expected_filter): (Vec<String>, Vec<String>) = rules
+            .iter()
+            .flat_map(|r| r.to_pf_rules())
+            .partition(|l| is_translation_class(l));
+        let actual_nat = self
             .pf
             .get_nat_rules(&self.anchor)
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
+        let actual_filter = self
+            .pf
+            .get_rules(&self.anchor)
+            .await
+            .map_err(|e| AifwError::Pf(e.to_string()))?;
         let mismatch = if self.pf.echoes_exact_rules() {
-            actual != expected
+            actual_nat != expected_nat || actual_filter != expected_filter
         } else {
-            actual.is_empty() != expected.is_empty()
+            actual_nat.is_empty() != expected_nat.is_empty()
+                || actual_filter.is_empty() != expected_filter.is_empty()
         };
         if mismatch {
             return Err(AifwError::Pf(format!(
-                "anchor {} holds {} NAT rules but {} were expected — pf does not match the database",
+                "anchor {} holds {} nat-class / {} filter-class rules but {} / {} were expected — pf does not match the database",
                 self.anchor,
-                actual.len(),
-                expected.len()
+                actual_nat.len(),
+                actual_filter.len(),
+                expected_nat.len(),
+                expected_filter.len()
             )));
         }
         Ok(())
@@ -340,6 +366,14 @@ impl NatEngine {
 
         Ok(())
     }
+}
+
+/// True for pf translation-class rule text (`nat`/`rdr`/`binat`), false for
+/// filter-class lines (the af-to `pass` rules cross-family NAT renders to).
+fn is_translation_class(rule: &str) -> bool {
+    ["nat ", "rdr ", "binat "]
+        .iter()
+        .any(|p| rule.starts_with(p))
 }
 
 /// Validate a NAT rule before persisting: interface required, DNAT/RDR

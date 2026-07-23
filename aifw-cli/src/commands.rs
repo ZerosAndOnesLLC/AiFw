@@ -303,7 +303,9 @@ pub async fn reload(db_path: &Path) -> anyhow::Result<()> {
 async fn create_nat_engine(db_path: &Path) -> anyhow::Result<NatEngine> {
     let db = Database::new(db_path).await?;
     let pf = Arc::from(aifw_pf::create_backend());
-    Ok(NatEngine::new(db.pool().clone(), pf))
+    // "aifw-nat" — must match the API/daemon anchor; NAT loads replace every
+    // rule class in their anchor since #531.
+    Ok(NatEngine::new(db.pool().clone(), pf).with_anchor("aifw-nat".to_string()))
 }
 
 /// Heal drift between running kernel state and the source of truth

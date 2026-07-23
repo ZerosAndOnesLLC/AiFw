@@ -448,8 +448,13 @@ impl PfBackend for PfIoctl {
         let ruleset = rules.join("\n");
         tracing::debug!(anchor, rules = %ruleset, "loading pf NAT rules");
 
-        // SEC-H5: pipe via stdin (`pfctl -N -f -`) — no /tmp staging.
-        let output = pfctl_stdin(&["-a", anchor, "-N", "-f", "-"], &ruleset).await?;
+        // Plain `-f` (not `-N`): the NAT engine's ruleset can mix nat-class
+        // rules with filter-class `af-to` pass rules (#531), and `-N` would
+        // silently drop the latter. A plain load replaces every rule class
+        // in the anchor atomically (pfctl parses the whole set before
+        // committing, so a rejected ruleset leaves the old one intact).
+        // SEC-H5: pipe via stdin — no /tmp staging.
+        let output = pfctl_stdin(&["-a", anchor, "-f", "-"], &ruleset).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -468,7 +473,10 @@ impl PfBackend for PfIoctl {
     }
 
     async fn flush_nat_rules(&self, anchor: &str) -> Result<(), PfError> {
+        // The NAT anchor holds nat-class rules AND filter-class af-to pass
+        // rules (#531) — flush both classes.
         pfctl(&["-a", anchor, "-Fn"]).await?;
+        pfctl(&["-a", anchor, "-Fr"]).await?;
         Ok(())
     }
 

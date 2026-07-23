@@ -550,6 +550,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_nat_apply_mixed_classes_and_flush() {
+        let db = Database::new_in_memory().await.unwrap();
+        let mock = Arc::new(aifw_pf::PfMock::new());
+        let pf: Arc<dyn PfBackend> = mock.clone();
+        let engine =
+            crate::nat::NatEngine::new(db.pool().clone(), pf).with_anchor("aifw-nat".to_string());
+
+        engine.add_rule(make_test_nat_rule()).await.unwrap();
+        engine.add_rule(make_test_nat64_rule()).await.unwrap();
+        engine.apply_rules().await.unwrap();
+
+        // nat-class rule lands in the nat ruleset; the af-to pass rule is
+        // filter-class and must land in the filter ruleset (#531).
+        let nat_rules = mock.get_nat_rules("aifw-nat").await.unwrap();
+        assert_eq!(nat_rules.len(), 1);
+        assert!(nat_rules[0].starts_with("nat on em0"));
+        let filter_rules = mock.get_rules("aifw-nat").await.unwrap();
+        assert_eq!(filter_rules.len(), 1);
+        assert!(filter_rules[0].contains("af-to inet from 203.0.113.1"));
+
+        // per-class post-apply verification passes
+        engine.verify_applied().await.unwrap();
+
+        // flush clears both classes
+        engine.flush_rules().await.unwrap();
+        assert!(mock.get_nat_rules("aifw-nat").await.unwrap().is_empty());
+        assert!(mock.get_rules("aifw-nat").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_nat_validation_dnat_needs_port() {
         let engine = create_nat_engine().await;
 

@@ -204,8 +204,24 @@ impl PfBackend for PfMock {
     async fn load_nat_rules(&self, anchor: &str, rules: &[String]) -> Result<(), PfError> {
         self.check_fail("load_nat_rules").await?;
         tracing::debug!(anchor, count = rules.len(), "mock: load_nat_rules");
-        let mut nat_rules = self.nat_rules.write().await;
-        nat_rules.insert(anchor.to_string(), rules.to_vec());
+        // Mirror real pf semantics (#531): a plain `-f` load replaces every
+        // rule class in the anchor. nat-class lines land in the nat ruleset
+        // (`-sn`), filter-class lines (af-to pass rules) in the filter
+        // ruleset (`-sr`).
+        let (nat_class, filter_class): (Vec<String>, Vec<String>) =
+            rules.iter().cloned().partition(|r| {
+                ["nat ", "rdr ", "binat ", "nat-anchor", "rdr-anchor"]
+                    .iter()
+                    .any(|p| r.starts_with(p))
+            });
+        self.nat_rules
+            .write()
+            .await
+            .insert(anchor.to_string(), nat_class);
+        self.rules
+            .write()
+            .await
+            .insert(anchor.to_string(), filter_class);
         Ok(())
     }
 
@@ -218,8 +234,9 @@ impl PfBackend for PfMock {
     async fn flush_nat_rules(&self, anchor: &str) -> Result<(), PfError> {
         self.check_fail("flush_nat_rules").await?;
         tracing::debug!(anchor, "mock: flush_nat_rules");
-        let mut nat_rules = self.nat_rules.write().await;
-        nat_rules.remove(anchor);
+        // Both classes, matching PfIoctl (-Fn + -Fr) — see load_nat_rules.
+        self.nat_rules.write().await.remove(anchor);
+        self.rules.write().await.remove(anchor);
         Ok(())
     }
 

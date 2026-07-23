@@ -77,7 +77,10 @@ async fn main() -> anyhow::Result<()> {
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
     let engine =
         Arc::new(RuleEngine::new(pool.clone(), pf.clone()).with_anchor(args.anchor.clone()));
-    let nat_engine = NatEngine::new(pool.clone(), pf.clone());
+    // Same anchor as the API's engine ("aifw-nat", not the default "aifw"):
+    // NAT loads replace every rule class in their anchor since #531, so a
+    // boot-time apply into "aifw" would wipe the filter rules loaded above.
+    let nat_engine = NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string());
     let alias_engine = AliasEngine::new(pool.clone(), pf.clone());
 
     // Check pf status
