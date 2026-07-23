@@ -2,6 +2,14 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api, NatRule, CreateNatRequest, UpdateNatRequest } from "@/lib/api";
+import CrossFamilyHint from "./components/CrossFamilyHint";
+import {
+  WELL_KNOWN_PREFIX,
+  directionSummary,
+  fieldMeta,
+  isCrossFamily,
+  validateCrossFamily,
+} from "./components/crossFamily";
 
 const defaultForm = {
   nat_type: "dnat",
@@ -30,6 +38,8 @@ function natTypeBadge(natType: string) {
     snat: "bg-green-500/20 text-green-400 border-green-500/30",
     masquerade: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
     binat: "bg-purple-500/20 text-purple-400 border-purple-500/30",
+    nat64: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
+    nat46: "bg-orange-500/20 text-orange-400 border-orange-500/30",
   };
   const cls = colors[natType.toLowerCase()] || "bg-gray-500/20 text-gray-400 border-gray-500/30";
   return (
@@ -179,6 +189,36 @@ export default function NatPage() {
     setForm((f) => ({ ...f, [field]: value }));
   };
 
+  // Type switches prefill sensible cross-family defaults: nat64 practically
+  // always uses the well-known prefix, and af-to has no port rewriting.
+  const handleTypeChange = (value: string) => {
+    setForm((f) => {
+      const next = { ...f, nat_type: value };
+      if (value === "nat64" && (!f.dst_addr || f.dst_addr === "any")) {
+        next.dst_addr = WELL_KNOWN_PREFIX;
+        next.protocol = "any";
+      }
+      if (f.nat_type === "nat64" && value !== "nat64" && f.dst_addr === WELL_KNOWN_PREFIX) {
+        next.dst_addr = "";
+      }
+      if (isCrossFamily(value)) {
+        next.redirect_port_start = "";
+        next.redirect_port_end = "";
+      }
+      return next;
+    });
+  };
+
+  const meta = fieldMeta(form.nat_type);
+  const fieldErrors = validateCrossFamily(
+    form.nat_type,
+    form.src_addr.trim() || "any",
+    form.dst_addr.trim(),
+    form.redirect_addr.trim(),
+  );
+  const hasFieldErrors = Boolean(fieldErrors.src || fieldErrors.dst || fieldErrors.redirect);
+  const fieldErrCls = "mt-1 text-[11px] text-red-400";
+
   const inputCls =
     "w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 transition-colors";
   const selectCls =
@@ -237,11 +277,13 @@ export default function NatPage() {
             {/* Type */}
             <div>
               <label className={labelCls}>Type</label>
-              <select value={form.nat_type} onChange={(e) => updateField("nat_type", e.target.value)} className={selectCls}>
+              <select value={form.nat_type} onChange={(e) => handleTypeChange(e.target.value)} className={selectCls}>
                 <option value="dnat">dnat (Redirect)</option>
                 <option value="snat">snat (Source NAT)</option>
                 <option value="masquerade">masquerade</option>
                 <option value="binat">binat (Bidirectional)</option>
+                <option value="nat64">nat64 (IPv6 → IPv4)</option>
+                <option value="nat46">nat46 (IPv4 → IPv6)</option>
               </select>
             </div>
             {/* Interface */}
@@ -261,6 +303,7 @@ export default function NatPage() {
               <select value={form.protocol} onChange={(e) => updateField("protocol", e.target.value)} className={selectCls}>
                 <option value="tcp">tcp</option>
                 <option value="udp">udp</option>
+                <option value="icmp">icmp</option>
                 <option value="any">any</option>
               </select>
             </div>
@@ -276,14 +319,15 @@ export default function NatPage() {
             )}
             {/* Source Address */}
             <div>
-              <label className={labelCls}>Source Address</label>
+              <label className={labelCls}>{meta.srcLabel}</label>
               <input
                 type="text"
                 value={form.src_addr}
                 onChange={(e) => updateField("src_addr", e.target.value)}
-                placeholder="any"
+                placeholder={meta.srcPlaceholder}
                 className={inputCls}
               />
+              {fieldErrors.src && <p className={fieldErrCls}>{fieldErrors.src}</p>}
             </div>
             {/* Source Port */}
             <div>
@@ -298,14 +342,15 @@ export default function NatPage() {
             </div>
             {/* Destination Address */}
             <div>
-              <label className={labelCls}>Destination Address</label>
+              <label className={labelCls}>{meta.dstLabel}</label>
               <input
                 type="text"
                 value={form.dst_addr}
                 onChange={(e) => updateField("dst_addr", e.target.value)}
-                placeholder="any"
+                placeholder={meta.dstPlaceholder}
                 className={inputCls}
               />
+              {fieldErrors.dst && <p className={fieldErrCls}>{fieldErrors.dst}</p>}
             </div>
             {/* Destination Port */}
             <div>
@@ -319,27 +364,33 @@ export default function NatPage() {
               />
             </div>
             {/* Redirect Address */}
-            <div>
-              <label className={labelCls}>Redirect Address</label>
+            <div className={isCrossFamily(form.nat_type) ? "md:col-span-2" : ""}>
+              <label className={labelCls}>{meta.redirectLabel}</label>
               <input
                 type="text"
                 value={form.redirect_addr}
                 onChange={(e) => updateField("redirect_addr", e.target.value)}
-                placeholder="e.g. 10.0.0.5"
+                placeholder={meta.redirectPlaceholder}
                 className={inputCls}
               />
+              {fieldErrors.redirect && <p className={fieldErrCls}>{fieldErrors.redirect}</p>}
+              {!fieldErrors.redirect && meta.redirectHelp && (
+                <p className="mt-1 text-[11px] text-gray-500">{meta.redirectHelp}</p>
+              )}
             </div>
-            {/* Redirect Port */}
-            <div>
-              <label className={labelCls}>Redirect Port</label>
-              <input
-                type="text"
-                value={form.redirect_port_start}
-                onChange={(e) => updateField("redirect_port_start", e.target.value)}
-                placeholder="e.g. 8080"
-                className={inputCls}
-              />
-            </div>
+            {/* Redirect Port — af-to translates addresses, not ports */}
+            {meta.showRedirectPort && (
+              <div>
+                <label className={labelCls}>Redirect Port</label>
+                <input
+                  type="text"
+                  value={form.redirect_port_start}
+                  onChange={(e) => updateField("redirect_port_start", e.target.value)}
+                  placeholder="e.g. 8080"
+                  className={inputCls}
+                />
+              </div>
+            )}
             {/* Label */}
             <div className="md:col-span-2">
               <label className={labelCls}>Label</label>
@@ -352,10 +403,15 @@ export default function NatPage() {
               />
             </div>
           </div>
+          <CrossFamilyHint
+            natType={form.nat_type}
+            dstAddr={form.dst_addr.trim()}
+            redirectAddr={form.redirect_addr.trim()}
+          />
           <div className="flex gap-2 mt-3">
             <button
               onClick={handleSubmit}
-              disabled={submitting || !form.redirect_addr.trim()}
+              disabled={submitting || !form.redirect_addr.trim() || hasFieldErrors}
               className="px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
             >
               {submitting ? "Saving..." : editingId ? "Update" : "Add"}
@@ -431,11 +487,19 @@ export default function NatPage() {
                       </td>
                       {/* Redirect To */}
                       <td className="py-2.5 px-3">
-                        <span className="font-mono text-xs text-green-400">
-                          {rule.redirect
-                            ? formatAddrPort(rule.redirect.address, rule.redirect.port)
-                            : "-"}
-                        </span>
+                        {directionSummary(rule.nat_type) ? (
+                          <span className="font-mono text-xs text-cyan-400">
+                            {directionSummary(rule.nat_type)}{" "}
+                            <span className="text-gray-500">via</span>{" "}
+                            <span className="text-green-400">{rule.redirect?.address || "-"}</span>
+                          </span>
+                        ) : (
+                          <span className="font-mono text-xs text-green-400">
+                            {rule.redirect
+                              ? formatAddrPort(rule.redirect.address, rule.redirect.port)
+                              : "-"}
+                          </span>
+                        )}
                       </td>
                       {/* Label */}
                       <td className="py-2.5 px-3">
