@@ -588,6 +588,127 @@ mod tests {
         assert!(engine.add_rule(rule).await.is_err());
     }
 
+    fn make_test_nat64_rule() -> NatRule {
+        NatRule::new(
+            NatType::Nat64,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Any,
+            Address::Network(std::net::IpAddr::V6("64:ff9b::".parse().unwrap()), 96),
+            NatRedirect {
+                address: Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                    203, 0, 113, 1,
+                ))),
+                port: None,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn test_nat64_validation_accepts_well_formed_rule() {
+        let engine = create_nat_engine().await;
+        engine.add_rule(make_test_nat64_rule()).await.unwrap();
+
+        // NAT46 mirror: v4 match, v6 translation source
+        let nat46 = NatRule::new(
+            NatType::Nat46,
+            Interface("em0".to_string()),
+            Protocol::Tcp,
+            Address::Any,
+            Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 99, 1, 1))),
+            NatRedirect {
+                address: Address::Single(std::net::IpAddr::V6("2001:db8:2::1".parse().unwrap())),
+                port: None,
+            },
+        );
+        engine.add_rule(nat46).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_nat64_validation_rejects_bad_families() {
+        let engine = create_nat_engine().await;
+
+        // dst not a /96 prefix
+        let mut rule = make_test_nat64_rule();
+        rule.dst_addr = Address::Network(std::net::IpAddr::V6("64:ff9b::".parse().unwrap()), 64);
+        assert!(engine.add_rule(rule).await.is_err());
+
+        // dst IPv4
+        let mut rule = make_test_nat64_rule();
+        rule.dst_addr = Address::Network(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 0)),
+            8,
+        );
+        assert!(engine.add_rule(rule).await.is_err());
+
+        // source in the wrong (translated) family
+        let mut rule = make_test_nat64_rule();
+        rule.src_addr = Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)));
+        assert!(engine.add_rule(rule).await.is_err());
+
+        // translation source IPv6 (must be IPv4 for nat64)
+        let mut rule = make_test_nat64_rule();
+        rule.redirect.address =
+            Address::Single(std::net::IpAddr::V6("2001:db8::1".parse().unwrap()));
+        assert!(engine.add_rule(rule).await.is_err());
+
+        // translation source as network (must be a single host)
+        let mut rule = make_test_nat64_rule();
+        rule.redirect.address = Address::Network(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 0)),
+            24,
+        );
+        assert!(engine.add_rule(rule).await.is_err());
+
+        // redirect port unsupported by af-to
+        let mut rule = make_test_nat64_rule();
+        rule.redirect.port = Some(PortRange { start: 80, end: 80 });
+        assert!(engine.add_rule(rule).await.is_err());
+
+        // pf tables can't determine family
+        let mut rule = make_test_nat64_rule();
+        rule.src_addr = Address::Table("v6clients".to_string());
+        assert!(engine.add_rule(rule).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_nat46_validation_rejects_bad_families() {
+        let engine = create_nat_engine().await;
+
+        let make = || {
+            NatRule::new(
+                NatType::Nat46,
+                Interface("em0".to_string()),
+                Protocol::Any,
+                Address::Any,
+                Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 99, 1, 1))),
+                NatRedirect {
+                    address: Address::Single(std::net::IpAddr::V6(
+                        "2001:db8:2::1".parse().unwrap(),
+                    )),
+                    port: None,
+                },
+            )
+        };
+
+        // dst IPv6 (must be the concrete IPv4 target)
+        let mut rule = make();
+        rule.dst_addr = Address::Single(std::net::IpAddr::V6("2001:db8::5".parse().unwrap()));
+        assert!(engine.add_rule(rule).await.is_err());
+
+        // dst Any (a concrete IPv4 destination is required)
+        let mut rule = make();
+        rule.dst_addr = Address::Any;
+        assert!(engine.add_rule(rule).await.is_err());
+
+        // translation source IPv4 (must be IPv6 for nat46)
+        let mut rule = make();
+        rule.redirect.address = Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+            203, 0, 113, 1,
+        )));
+        assert!(engine.add_rule(rule).await.is_err());
+    }
+
     // --- Shaping engine tests ---
 
     async fn create_shaping_engine() -> crate::shaping::ShapingEngine {

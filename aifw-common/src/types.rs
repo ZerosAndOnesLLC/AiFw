@@ -69,6 +69,21 @@ impl fmt::Display for Address {
 }
 
 impl Address {
+    /// The concrete IP behind this address, if it has one (`Single`/`Network`).
+    /// `Any` and `Table` return `None` — their family is indeterminate.
+    pub fn ip(&self) -> Option<IpAddr> {
+        match self {
+            Address::Single(ip) | Address::Network(ip, _) => Some(*ip),
+            Address::Any | Address::Table(_) => None,
+        }
+    }
+
+    /// `Some(true)` for a concrete IPv6 address/network, `Some(false)` for
+    /// IPv4, `None` when the family is indeterminate (`Any`/`Table`).
+    pub fn is_ipv6(&self) -> Option<bool> {
+        self.ip().map(|ip| ip.is_ipv6())
+    }
+
     /// Validate a pf table name. pf table names are letters, digits, `_` and
     /// `-`, 1-31 characters. Rejecting anything else (notably whitespace and
     /// newlines) prevents pf rule injection: `Display` renders a table as

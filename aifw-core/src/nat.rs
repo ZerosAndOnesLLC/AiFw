@@ -364,6 +364,83 @@ pub fn validate_nat_rule(rule: &NatRule) -> Result<()> {
         // This is fine — we'll ignore the redirect address and use the interface
     }
 
+    // Cross-family (af-to) rules: pf requires the matched side and the
+    // translation source to be in opposite, concrete families (#531).
+    match rule.nat_type {
+        NatType::Nat64 => validate_af_to(rule, true)?,
+        NatType::Nat46 => validate_af_to(rule, false)?,
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Family/prefix checks for pf `af-to` rules. `inet6_match` is true for
+/// NAT64 (rule matches IPv6, translates to IPv4) and false for NAT46.
+fn validate_af_to(rule: &NatRule, inet6_match: bool) -> Result<()> {
+    let (kind, matched, translated) = if inet6_match {
+        ("nat64", "IPv6", "IPv4")
+    } else {
+        ("nat46", "IPv4", "IPv6")
+    };
+
+    // pf tables can mix families — af-to needs concrete same-family matches.
+    if matches!(rule.src_addr, Address::Table(_)) || matches!(rule.dst_addr, Address::Table(_)) {
+        return Err(AifwError::Validation(format!(
+            "{kind} rules cannot use pf tables for source/destination — the matched family must be concrete"
+        )));
+    }
+
+    // Source must be `any` or in the matched family.
+    if rule.src_addr.is_ipv6() == Some(!inet6_match) {
+        return Err(AifwError::Validation(format!(
+            "{kind} source address must be {matched} (the rule matches {matched} traffic)"
+        )));
+    }
+
+    if inet6_match {
+        // NAT64 destination is the translation prefix: an IPv6 network with
+        // a /96 prefix so the IPv4 destination embeds in the low 32 bits
+        // (RFC 6052). pf's af-to extraction supports /96 exactly.
+        match rule.dst_addr {
+            Address::Network(std::net::IpAddr::V6(_), 96) => {}
+            _ => {
+                return Err(AifwError::Validation(
+                    "nat64 destination must be an IPv6 /96 translation prefix (e.g. 64:ff9b::/96)"
+                        .to_string(),
+                ));
+            }
+        }
+    } else {
+        // NAT46 destination is the concrete IPv4 host/network being reached.
+        match rule.dst_addr.is_ipv6() {
+            Some(false) => {}
+            _ => {
+                return Err(AifwError::Validation(
+                    "nat46 destination must be a concrete IPv4 address or network".to_string(),
+                ));
+            }
+        }
+    }
+
+    // Translation source: a single concrete host in the translated family
+    // (pf: `af-to inet|inet6 from <addr>` — the new source of the packet).
+    match (&rule.redirect.address, rule.redirect.address.is_ipv6()) {
+        (Address::Single(_), Some(v6)) if v6 != inet6_match => {}
+        _ => {
+            return Err(AifwError::Validation(format!(
+                "{kind} translation source (redirect) must be a single {translated} address the firewall owns"
+            )));
+        }
+    }
+
+    // af-to has no port-rewrite syntax.
+    if rule.redirect.port.is_some() {
+        return Err(AifwError::Validation(format!(
+            "{kind} rules do not support a redirect port — af-to translates addresses, not ports"
+        )));
+    }
+
     Ok(())
 }
 
