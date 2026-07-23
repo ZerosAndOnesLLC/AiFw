@@ -26,7 +26,7 @@
     {
       "name": "rDNS",
       "repo": "ZerosAndOnesLLC/rDNS",
-      "commit": "7bd12e293536ec3adae09e340b572b87e0fe942b",
+      "commit": "04d5975f2386f883db9b357424ca550a1bf72bce",
       "binaries": ["rdns", "rdns-control"]
     },
     {
