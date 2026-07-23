@@ -190,6 +190,10 @@ rdr-anchor "aifw-nat"
 nat-anchor "aifw-vpn"
 
 pass quick on $MGMT_IF keep state
+# ICMPv6 neighbor discovery — unlike ARP, ND is filterable IPv6 traffic and
+# the trailing block would eat neighbor solicitations, killing all IPv6 on
+# the test path (t09 NAT64, #531). Mirrors the appliance pf.conf.
+pass quick inet6 proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }
 anchor "aifw-pbr"
 anchor "aifw-mwan-leak"
 anchor "aifw-mwan-reply"
