@@ -73,9 +73,14 @@ allow_recursion = ["127.0.0.0/8"]
 sandbox = false
 EOF
 
-"$RDNS_BIN" --config "$T10_DIR/upstream.toml" > "$RESULTS_DIR/t10-upstream.log" 2>&1 &
+# Per-instance lock paths: rdns holds a host-wide singleton lock by
+# default (rc.d double-start protection), which would kill the second
+# instance here. RDNS_LOCK_PATH exists exactly for this two-instance case.
+RDNS_LOCK_PATH="$T10_DIR/upstream.lock" \
+    "$RDNS_BIN" --config "$T10_DIR/upstream.toml" > "$RESULTS_DIR/t10-upstream.log" 2>&1 &
 T10_UP_PID=$!
-"$RDNS_BIN" --config "$T10_DIR/front.toml" > "$RESULTS_DIR/t10-front.log" 2>&1 &
+RDNS_LOCK_PATH="$T10_DIR/front.lock" \
+    "$RDNS_BIN" --config "$T10_DIR/front.toml" > "$RESULTS_DIR/t10-front.log" 2>&1 &
 T10_FRONT_PID=$!
 t10_cleanup() { kill "$T10_UP_PID" "$T10_FRONT_PID" 2>/dev/null; }
 sleep 2
