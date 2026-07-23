@@ -544,7 +544,7 @@ mod tests {
         engine.add_rule(make_test_nat_rule()).await.unwrap();
         engine.apply_rules().await.unwrap();
 
-        let nat_rules = mock.get_nat_rules("aifw").await.unwrap();
+        let nat_rules = mock.get_nat_rules("aifw-nat").await.unwrap();
         assert_eq!(nat_rules.len(), 1);
         assert!(nat_rules[0].contains("nat on em0"));
     }

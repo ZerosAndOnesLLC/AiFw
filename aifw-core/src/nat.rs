@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::audit::{AuditAction, AuditLog};
 
 /// NAT engine: persists SNAT/DNAT/masquerade rules in the `nat_rules`
-/// SQLite table and loads active ones as pf NAT rules into the `aifw`
+/// SQLite table and loads active ones as pf NAT rules into the `aifw-nat`
 /// anchor (override via [`Self::with_anchor`]). Every mutation commits its
 /// audit row in the same transaction.
 pub struct NatEngine {
@@ -23,14 +23,19 @@ pub struct NatEngine {
 
 impl NatEngine {
     /// Build a NAT engine over the shared pool and pf backend, targeting
-    /// the default `aifw` anchor
+    /// the default `aifw-nat` anchor.
+    ///
+    /// The default MUST stay `aifw-nat` (#531 review L1): `apply_rules`
+    /// replaces every rule class in its anchor, so an engine accidentally
+    /// pointed at `aifw` would wipe the RuleEngine's filter ruleset on the
+    /// first NAT apply.
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         let audit = AuditLog::new(pool.clone());
         Self {
             pool,
             pf,
             audit,
-            anchor: "aifw".to_string(),
+            anchor: "aifw-nat".to_string(),
         }
     }
 
@@ -268,6 +273,16 @@ impl NatEngine {
         if candidate.status == NatStatus::Active {
             prospective.push(candidate.clone());
         }
+        // Only fork pfctl when the ruleset contains cross-family rules —
+        // the classic nat/rdr/binat renderers are fully covered by
+        // validate_nat_rule, and gating them too would cost O(N²) pfctl
+        // execs on a scripted bulk load (#531 review L5).
+        if !prospective
+            .iter()
+            .any(|r| matches!(r.nat_type, NatType::Nat64 | NatType::Nat46))
+        {
+            return Ok(());
+        }
         let rendered = self.render_ruleset(&prospective);
         self.pf
             .validate_rules(&self.anchor, &rendered)
@@ -408,6 +423,16 @@ pub fn validate_nat_rule(rule: &NatRule) -> Result<()> {
         return Err(AifwError::Validation(
             "NAT rule requires an interface".to_string(),
         ));
+    }
+
+    // pf-injection guards at the engine level (#531 review M2): the API
+    // route validates these too, but the CLI, TUI, and backup-restore
+    // paths reach this function without passing through it — and
+    // cross-family (af-to) rules render the label into pf rule text, so a
+    // quote+newline label would become an arbitrary extra pf rule line.
+    crate::validation::validate_interface_name(&rule.interface.0)?;
+    if let Some(ref label) = rule.label {
+        crate::validation::validate_label(label)?;
     }
 
     // DNAT requires a destination port or redirect port

@@ -7,7 +7,14 @@ export function isCrossFamily(natType: string): boolean {
   return natType === "nat64" || natType === "nat46";
 }
 
-/** Expand an IPv6 address string to its 8 groups, or null if malformed. */
+/**
+ * Expand an IPv6 address string to its 8 groups, or null if malformed.
+ * Strict: hex groups only (1-4 digits) — `parseInt` alone would accept
+ * trailing garbage like `64:ff9bzz::` or dotted-quad tails, and a wrong
+ * parse here mis-renders the RFC 6052 preview users configure against.
+ */
+const HEX_GROUP = /^[0-9a-fA-F]{1,4}$/;
+
 function expandV6(addr: string): number[] | null {
   const parts = addr.split("::");
   if (parts.length > 2) return null;
@@ -18,8 +25,8 @@ function expandV6(addr: string): number[] | null {
   if (parts.length === 1 && head.length !== 8) return null;
   const groups = [...head, ...Array(Math.max(missing, 0)).fill("0"), ...tail];
   if (groups.length !== 8) return null;
-  const nums = groups.map((g) => parseInt(g || "0", 16));
-  return nums.every((n) => Number.isInteger(n) && n >= 0 && n <= 0xffff) ? nums : null;
+  if (!groups.every((g) => g === "0" || HEX_GROUP.test(g))) return null;
+  return groups.map((g) => parseInt(g, 16));
 }
 
 export function isV6Host(addr: string): boolean {
@@ -34,7 +41,7 @@ export function isV6Prefix96(addr: string): boolean {
 export function isV6AddrOrNet(addr: string): boolean {
   if (addr === "" || addr === "any") return true;
   const [ip, len] = addr.split("/");
-  if (len !== undefined && !/^\d{1,3}$/.test(len)) return false;
+  if (len !== undefined && (!/^\d{1,3}$/.test(len) || parseInt(len, 10) > 128)) return false;
   return expandV6(ip) !== null;
 }
 
@@ -52,7 +59,7 @@ export function isV4Host(addr: string): boolean {
 export function isV4AddrOrNet(addr: string): boolean {
   if (addr === "" || addr === "any") return true;
   const [ip, len] = addr.split("/");
-  if (len !== undefined && !/^\d{1,2}$/.test(len)) return false;
+  if (len !== undefined && (!/^\d{1,2}$/.test(len) || parseInt(len, 10) > 32)) return false;
   return parseV4(ip) !== null;
 }
 

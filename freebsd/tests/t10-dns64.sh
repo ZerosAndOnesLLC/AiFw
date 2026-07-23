@@ -16,6 +16,15 @@ if [ ! -x "$RDNS_BIN" ]; then
     exit 0
 fi
 
+# Capability probe on the BINARY, not the runtime log: a build that knows
+# DNS64 embeds the enable-log string. This keeps "binary predates DNS64"
+# (skip) distinct from "DNS64 configured but failed to enable" (fail) —
+# otherwise a regression in the enable path would go green-by-skip.
+if ! strings "$RDNS_BIN" 2>/dev/null | grep -q "DNS64 synthesis enabled"; then
+    note "SKIP: rdns at $RDNS_BIN has no DNS64 support (pre-#531 build)"
+    exit 0
+fi
+
 T10_DIR="$WORK_DIR/t10-dns64"
 mkdir -p "$T10_DIR/zones"
 
@@ -26,6 +35,7 @@ cat > "$T10_DIR/zones/t10test.internal.zone" <<EOF
 @   IN  NS  ns.t10test.internal.
 ns      IN  A   127.0.0.1
 v4only  IN  A   10.99.2.2
+alias   IN  CNAME v4only.t10test.internal.
 EOF
 
 cat > "$T10_DIR/upstream.toml" <<EOF
@@ -70,16 +80,25 @@ T10_FRONT_PID=$!
 t10_cleanup() { kill "$T10_UP_PID" "$T10_FRONT_PID" 2>/dev/null; }
 sleep 2
 
+# The binary supports DNS64 (probed above), so a missing enable line here
+# is a real failure, not a skip.
 if ! grep -q "DNS64 synthesis enabled" "$RESULTS_DIR/t10-front.log"; then
-    note "SKIP: rdns at $RDNS_BIN has no DNS64 support (pre-#531 build)"
+    fail "dns64: binary supports DNS64 but it did not enable (see t10-front.log)"
     t10_cleanup
-    exit 0
+    exit 1
 fi
 
 # A-only name through DNS64: expect the RFC 6052 embedding of 10.99.2.2.
 drill -p 15354 @127.0.0.1 AAAA v4only.t10test.internal > "$RESULTS_DIR/t10-aaaa.txt" 2>&1
 grep -q "64:ff9b::a63:202" "$RESULTS_DIR/t10-aaaa.txt" \
     || fail "dns64: AAAA for A-only name not synthesized (see t10-aaaa.txt)"
+
+# CNAME to an A-only target must ALSO synthesize (RFC 6147 §5.1.6) — the
+# answer section is non-empty (the chain), which the original gate got
+# wrong; this is the CDN-hosted-site shape (#531 review H1).
+drill -p 15354 @127.0.0.1 AAAA alias.t10test.internal > "$RESULTS_DIR/t10-cname.txt" 2>&1
+grep -q "64:ff9b::a63:202" "$RESULTS_DIR/t10-cname.txt" \
+    || fail "dns64: CNAME'd A-only name not synthesized (see t10-cname.txt)"
 
 # The A record itself must still resolve normally.
 drill -p 15354 @127.0.0.1 A v4only.t10test.internal > "$RESULTS_DIR/t10-a.txt" 2>&1

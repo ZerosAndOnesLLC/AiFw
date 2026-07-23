@@ -863,12 +863,19 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
         c.dnssec
     ));
     // DNS64 (RFC 6147, #531): emit only when enabled; the prefix must match
-    // the NAT64 rule prefix for the combined workflow to function.
+    // the NAT64 rule prefix for the combined workflow to function. Re-check
+    // the prefix here too — the handler validates on save, but a restored
+    // legacy value must never reach the root-managed TOML unparsed.
     if c.dns64 {
-        toml.push_str(&format!(
-            "dns64 = true\ndns64_prefix = \"{}\"\n",
-            c.dns64_prefix
-        ));
+        match validate_dns64_prefix(&c.dns64_prefix) {
+            Ok(()) => toml.push_str(&format!(
+                "dns64 = true\ndns64_prefix = \"{}\"\n",
+                c.dns64_prefix
+            )),
+            Err(e) => {
+                tracing::warn!(error = %e, "dns64 enabled but prefix invalid; omitting from rdns.toml")
+            }
+        }
     }
     if c.query_timeout_ms > 0 {
         toml.push_str(&format!("query_timeout_ms = {}\n", c.query_timeout_ms));
@@ -1406,14 +1413,53 @@ pub async fn get_config_handler(
     Ok(Json(load_config(&state.pool).await))
 }
 
+/// Validate a `dns64_prefix` value: an IPv6 address or `addr/96` (only /96
+/// is supported — the same rule rDNS enforces). The value is interpolated
+/// into the root-managed rdns.toml, so anything that doesn't parse is
+/// rejected outright rather than escaped (#531 review M1: a quote+newline
+/// payload could otherwise inject arbitrary config sections).
+pub(crate) fn validate_dns64_prefix(s: &str) -> Result<(), String> {
+    let (addr, len) = match s.split_once('/') {
+        Some((a, l)) => (a, l),
+        None => (s, "96"),
+    };
+    if len.trim() != "96" {
+        return Err(format!(
+            "dns64_prefix must be an IPv6 /96 prefix (e.g. 64:ff9b::/96), got '{s}'"
+        ));
+    }
+    if addr.trim().parse::<std::net::Ipv6Addr>().is_err() {
+        return Err(format!("dns64_prefix is not a valid IPv6 prefix: '{s}'"));
+    }
+    Ok(())
+}
+
 pub async fn update_config_handler(
     State(state): State<AppState>,
     Json(c): Json<ResolverConfig>,
-) -> Result<Json<MessageResponse>, StatusCode> {
-    let mut conn = state.pool.acquire().await.map_err(|_| internal())?;
+) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+    if let Err(msg) = validate_dns64_prefix(&c.dns64_prefix) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(MessageResponse { message: msg }),
+        ));
+    }
+    let mut conn = state.pool.acquire().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(MessageResponse {
+                message: "database unavailable".to_string(),
+            }),
+        )
+    })?;
     save_config_on(&mut conn, &c).await.map_err(|e| {
         tracing::error!(error = %e, "resolver config save failed");
-        internal()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(MessageResponse {
+                message: "resolver config save failed".to_string(),
+            }),
+        )
     })?;
     state.set_pending(|p| p.dns = true).await;
     Ok(Json(MessageResponse {

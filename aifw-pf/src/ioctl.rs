@@ -474,9 +474,16 @@ impl PfBackend for PfIoctl {
 
     async fn flush_nat_rules(&self, anchor: &str) -> Result<(), PfError> {
         // The NAT anchor holds nat-class rules AND filter-class af-to pass
-        // rules (#531) — flush both classes.
-        pfctl(&["-a", anchor, "-Fn"]).await?;
-        pfctl(&["-a", anchor, "-Fr"]).await?;
+        // rules (#531). Loading an empty ruleset replaces every class in
+        // one pf transaction — atomic, unlike sequential -Fn + -Fr which
+        // could leave orphaned af-to rules if the second flush failed
+        // (verified against real pfctl on FreeBSD 15.0). Uses the same
+        // sudoers grant as load_nat_rules.
+        let output = pfctl_stdin(&["-a", anchor, "-f", "-"], "").await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PfError::Rule(format!("NAT flush error: {stderr}")));
+        }
         Ok(())
     }
 
