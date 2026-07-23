@@ -32,6 +32,45 @@ pub struct MessageResponse {
     pub message: String,
 }
 
+/// Canonical registered name (`PluginInfo::name`) of a built-in plugin.
+/// Accepts both the registered name (what the UI sends, taken from the
+/// plugin list) and the legacy short keys the API historically matched on.
+pub(crate) fn canonical_builtin(name: &str) -> Option<&'static str> {
+    match name {
+        "custom-logger" | "logging" => Some("custom-logger"),
+        "ip-reputation" | "ip_reputation" => Some("ip-reputation"),
+        "webhook-notifier" | "webhook" => Some("webhook-notifier"),
+        _ => None,
+    }
+}
+
+/// Create a fresh instance of a built-in plugin by name (either spelling).
+pub(crate) fn instantiate_builtin(name: &str) -> Option<Box<dyn aifw_plugins::Plugin>> {
+    match canonical_builtin(name)? {
+        "custom-logger" => Some(Box::new(aifw_plugins::examples::LoggingPlugin::new())),
+        "ip-reputation" => Some(Box::new(aifw_plugins::examples::IpReputationPlugin::new())),
+        "webhook-notifier" => Some(Box::new(aifw_plugins::examples::WebhookPlugin::new())),
+        _ => None,
+    }
+}
+
+/// Load a plugin's persisted settings from the DB. Missing rows or
+/// malformed JSON yield an empty map.
+pub(crate) async fn load_settings(
+    pool: &SqlitePool,
+    name: &str,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT settings FROM plugin_config WHERE name = ?1")
+            .bind(name)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+    row.and_then(|(s,)| s)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 pub async fn list_plugins(
     State(state): State<AppState>,
 ) -> Result<Json<PluginsResponse>, StatusCode> {
@@ -78,9 +117,12 @@ pub async fn enable_plugin(
         .execute(&state.pool).await;
 
     let mut mgr = state.plugin_manager.write().await;
+    // Plugins are registered under their PluginInfo::name — normalize so
+    // legacy short keys ("logging") hit the same instance ("custom-logger").
+    let reg_name = canonical_builtin(name).unwrap_or(name);
 
     if !enabled {
-        let _ = mgr.unload(name).await;
+        let _ = mgr.unload(reg_name).await;
         // Sync the atomic shadow counter (PERF-C12).
         state
             .plugin_running_count
@@ -90,21 +132,18 @@ pub async fn enable_plugin(
         }))
     } else {
         // Re-register with enabled=true — need to create a new instance
-        let plugin: Option<Box<dyn aifw_plugins::Plugin>> = match name {
-            "logging" => Some(Box::new(aifw_plugins::examples::LoggingPlugin::new())),
-            "ip_reputation" => Some(Box::new(aifw_plugins::examples::IpReputationPlugin::new())),
-            "webhook" => Some(Box::new(aifw_plugins::examples::WebhookPlugin::new())),
-            _ => None,
-        };
-        if let Some(p) = plugin {
+        if let Some(p) = instantiate_builtin(name) {
+            // Plugins read settings only in init(), so pass the persisted
+            // settings — otherwise a saved webhook URL etc. never applies (#586).
+            let settings = load_settings(&state.pool, name).await;
             // Unload old instance if exists
-            let _ = mgr.unload(name).await;
+            let _ = mgr.unload(reg_name).await;
             let _ = mgr
                 .register(
                     p,
                     aifw_plugins::PluginConfig {
                         enabled: true,
-                        ..Default::default()
+                        settings,
                     },
                 )
                 .await;
@@ -160,13 +199,68 @@ pub async fn update_plugin_config(
         .unwrap_or(serde_json::json!({}));
     let settings_str = serde_json::to_string(&settings).unwrap_or_default();
 
-    let _ = sqlx::query(
+    sqlx::query(
         "INSERT INTO plugin_config (name, enabled, settings) VALUES (?1, 0, ?2) ON CONFLICT(name) DO UPDATE SET settings=excluded.settings"
-    ).bind(&name).bind(&settings_str).execute(&state.pool).await;
+    ).bind(&name).bind(&settings_str).execute(&state.pool).await
+    .map_err(|e| {
+        tracing::error!(error = %e, plugin = %name, "plugins: failed to persist config");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    Ok(Json(MessageResponse {
-        message: format!("Plugin '{name}' config updated."),
-    }))
+    // Plugins read settings only in init(), so a running instance keeps its
+    // old config until re-registered — restart it with the new settings (#586).
+    let mut mgr = state.plugin_manager.write().await;
+    let reg_name = canonical_builtin(&name).unwrap_or(&name);
+    let running = mgr
+        .list_plugins()
+        .iter()
+        .any(|(info, s)| info.name == reg_name && *s == aifw_plugins::PluginState::Running);
+    if !running {
+        return Ok(Json(MessageResponse {
+            message: format!("Plugin '{name}' config updated."),
+        }));
+    }
+
+    let Some(plugin) = instantiate_builtin(&name) else {
+        return Ok(Json(MessageResponse {
+            message: format!("Plugin '{name}' config updated."),
+        }));
+    };
+    let settings_map: std::collections::HashMap<String, serde_json::Value> =
+        serde_json::from_value(settings).unwrap_or_default();
+
+    if let Err(e) = mgr.unload(reg_name).await {
+        tracing::warn!(error = %e, plugin = %name, "plugins: unload before config reload failed");
+    }
+    let message = match mgr
+        .register(
+            plugin,
+            aifw_plugins::PluginConfig {
+                enabled: true,
+                settings: settings_map,
+            },
+        )
+        .await
+    {
+        Ok(()) => format!("Plugin '{name}' config updated and applied."),
+        Err(e) => {
+            tracing::error!(error = %e, plugin = %name, "plugins: restart with new config failed");
+            // Keep the plugin listed (stopped) so the UI can still show it.
+            if let Some(p) = instantiate_builtin(&name)
+                && let Err(e2) = mgr.register(p, aifw_plugins::PluginConfig::default()).await
+            {
+                tracing::warn!(error = %e2, plugin = %name, "plugins: fallback re-register failed");
+            }
+            format!(
+                "Plugin '{name}' config saved, but restarting it with the new settings failed: {e}"
+            )
+        }
+    };
+    state
+        .plugin_running_count
+        .store(mgr.running_count(), std::sync::atomic::Ordering::Relaxed);
+
+    Ok(Json(MessageResponse { message }))
 }
 
 pub async fn get_plugin_logs(
@@ -432,6 +526,114 @@ mod dispatch_tests {
             }
             other => panic!("unexpected event data: {other:?}"),
         }
+    }
+
+    /// Drift guard: `canonical_builtin` must return exactly the name each
+    /// built-in registers under (`PluginInfo::name`) — the UI keys every
+    /// toggle/config call on that name.
+    #[test]
+    fn canonical_builtin_matches_plugin_info_names() {
+        for key in ["custom-logger", "ip-reputation", "webhook-notifier"] {
+            let canonical = canonical_builtin(key).expect("builtin key must resolve");
+            let info = instantiate_builtin(key)
+                .expect("builtin must instantiate")
+                .info();
+            assert_eq!(canonical, info.name, "canonical name drifted for '{key}'");
+        }
+    }
+
+    #[tokio::test]
+    async fn update_config_restarts_running_plugin() {
+        let state = crate::create_app_state_in_memory(test_auth_settings())
+            .await
+            .unwrap();
+
+        // Enable the built-in logging plugin through the handler, using the
+        // registered name the UI sends (from the plugin list).
+        let resp = enable_plugin(
+            axum::extract::State(state.clone()),
+            Json(serde_json::json!({"name": "custom-logger", "enabled": true})),
+        )
+        .await
+        .unwrap();
+        assert!(
+            resp.0.message.contains("enabled"),
+            "unexpected enable message: {}",
+            resp.0.message
+        );
+
+        // Save new settings — the running instance must be restarted with them.
+        let resp = update_plugin_config(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("custom-logger".to_string()),
+            Json(serde_json::json!({"settings": {"max_entries": 5}})),
+        )
+        .await
+        .unwrap();
+        assert!(
+            resp.0.message.contains("applied"),
+            "expected applied message, got: {}",
+            resp.0.message
+        );
+
+        let mgr = state.plugin_manager.read().await;
+        let running = mgr.list_plugins().iter().any(|(info, s)| {
+            info.name == "custom-logger" && *s == aifw_plugins::PluginState::Running
+        });
+        assert!(running, "plugin must still be running after config update");
+        assert_eq!(
+            state
+                .plugin_running_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            mgr.running_count(),
+            "shadow counter must stay in sync"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_config_on_stopped_plugin_only_persists() {
+        let state = crate::create_app_state_in_memory(test_auth_settings())
+            .await
+            .unwrap();
+
+        let resp = update_plugin_config(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("custom-logger".to_string()),
+            Json(serde_json::json!({"settings": {"max_entries": 7}})),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !resp.0.message.contains("applied"),
+            "stopped plugin must not report an applied restart: {}",
+            resp.0.message
+        );
+
+        // Settings persisted and readable back.
+        let cfg = get_plugin_config(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("custom-logger".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cfg.0["settings"]["max_entries"], 7);
+
+        // Enabling afterwards must pick the saved settings up (init-time read).
+        let resp = enable_plugin(
+            axum::extract::State(state.clone()),
+            Json(serde_json::json!({"name": "custom-logger", "enabled": true})),
+        )
+        .await
+        .unwrap();
+        assert!(
+            resp.0.message.contains("enabled"),
+            "unexpected enable message: {}",
+            resp.0.message
+        );
+        let mgr = state.plugin_manager.read().await;
+        assert!(mgr.list_plugins().iter().any(|(info, s)| {
+            info.name == "custom-logger" && *s == aifw_plugins::PluginState::Running
+        }));
     }
 
     #[tokio::test]
