@@ -2639,8 +2639,10 @@ mod pf_conf_tests {
         let nd = conf
             .find("proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }")
             .expect("ICMPv6 ND pass rule missing from generated pf.conf");
+        // Leading newline — a bare substring search would match the earlier
+        // `nat-anchor "aifw"` line instead of the filter anchor.
         let anchors = conf
-            .find("anchor \"aifw\"")
+            .find("\nanchor \"aifw\"")
             .expect("filter anchors missing");
         assert!(nd < anchors, "ND pass must precede the filter anchors");
     }
