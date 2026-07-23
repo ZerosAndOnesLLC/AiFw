@@ -66,8 +66,8 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>SNAT (outbound)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>DNAT / port forwarding</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>1:1 NAT (binat)</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>NAT64</td><td class="partial">in development</td><td class="partial">plugin</td><td class="yes">✓</td></tr>
-<tr><td>NAT46</td><td class="partial">in development</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>NAT64</td><td class="yes">✓</td><td class="partial">plugin</td><td class="yes">✓</td></tr>
+<tr><td>NAT46</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">VPN</td></tr>
 <tr><td>WireGuard</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
@@ -174,7 +174,7 @@ Honesty matters. Things you'll miss if you switch:
 - **No HAProxy / Nginx** — built-in TrafficCop instead.
 - **IPsec is site-to-site IKEv2 only** — AiFw ships working strongSwan-based tunnels (tunnel mode, PSK/X.509, NAT-T) like both competitors, but does not offer IKEv1, mobile/road-warrior EAP clients, AH, or transport mode; pfSense/OPNsense cover those legacy and mobile cases.
 - **No inline IPS** — AiFw's prevention mode is reactive source blocking after detection; OPNsense/pfSense run Suricata/Snort inline. Inline (divert/netmap) is on the roadmap.
-- **NAT64/NAT46 and CoDel are in development** — configuration surfaces exist; the data planes are being built.
+- **CoDel shaping is in development** — the configuration surface exists; the data plane is being built. (NAT64/NAT46 now perform real pf `af-to` translation, validated by live-traffic tests.)
 - **OAuth/SSO login is in development** — provider config and the authorize flow exist, but the token exchange isn't finished yet.
 - **Young project** — OPNsense and pfSense have years of community knowledge, mature plugin ecosystems, and forum Q&A. AiFw is new.
 
