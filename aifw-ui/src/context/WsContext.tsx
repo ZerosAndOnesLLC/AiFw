@@ -54,6 +54,10 @@ export function WsProvider({ children }: { children: ReactNode }) {
     try {
       ticket = await getWsTicket();
     } catch {
+      // Transient ticket failure (API restart, network blip): retry like the
+      // post-close path does, otherwise all shared live data stays dead
+      // until a full page reload (#584).
+      reconRef.current = setTimeout(() => connectRef.current(), 3000);
       return;
     }
 
