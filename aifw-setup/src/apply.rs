@@ -1818,6 +1818,16 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
         lines.push(String::new());
     }
 
+    // ICMPv6 neighbor discovery — unlike ARP (layer 2, unfiltered), ND is
+    // IPv6 traffic pf filters, and the default block policy would eat
+    // neighbor solicitations, breaking ALL IPv6 (incl. NAT64, #531).
+    lines.push("# ICMPv6 neighbor discovery — required for IPv6 to function".to_string());
+    lines.push(
+        "pass quick inet6 proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }"
+            .to_string(),
+    );
+    lines.push(String::new());
+
     lines.push("# AiFw filter anchors".to_string());
     // Multi-WAN anchors MUST be evaluated first so policy-routing decisions
     // (route-to / rtable) are set before general filtering.
@@ -2491,6 +2501,7 @@ pub fn sudoers_content() -> &'static str {
 # world-writable /tmp file (SEC-H5); the old `-f /tmp/aifw_pf_*.conf` grants
 # were removed with that fix.
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f -
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -n -f -
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -N -f -
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /usr/local/etc/aifw/anchors/aifw*
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sr
@@ -2617,6 +2628,27 @@ pub mod tests_support {
 }
 
 #[cfg(test)]
+mod pf_conf_tests {
+    /// Guard (#531): the generated pf.conf must pass ICMPv6 neighbor
+    /// discovery before the anchors/default policy. ND is filterable IPv6
+    /// traffic (unlike ARP) — without this rule the default block policy
+    /// silently kills all IPv6, including NAT64.
+    #[test]
+    fn icmp6_neighbor_discovery_passes_before_anchors() {
+        let conf = super::tests_support::test_pf_conf();
+        let nd = conf
+            .find("proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }")
+            .expect("ICMPv6 ND pass rule missing from generated pf.conf");
+        // Leading newline — a bare substring search would match the earlier
+        // `nat-anchor "aifw"` line instead of the filter anchor.
+        let anchors = conf
+            .find("\nanchor \"aifw\"")
+            .expect("filter anchors missing");
+        assert!(nd < anchors, "ND pass must precede the filter anchors");
+    }
+}
+
+#[cfg(test)]
 mod sudoers_tests {
     use super::sudoers_content;
 
@@ -2674,6 +2706,10 @@ mod sudoers_tests {
             ("add_rule (stdin)", "/sbin/pfctl -a aifw* -f -"),
             ("load_queues (stdin)", "/sbin/pfctl -a aifw* -f -"),
             ("load_nat_rules (stdin)", "/sbin/pfctl -a aifw* -N -f -"),
+            (
+                "validate_rules (stdin dry-run)",
+                "/sbin/pfctl -a aifw* -n -f -",
+            ),
             ("get_rules", "/sbin/pfctl -a aifw* -sr"),
             ("get_nat_rules", "/sbin/pfctl -a aifw* -sn"),
             ("daemon pf drift auto-heal (global -sn)", "/sbin/pfctl -sn"),

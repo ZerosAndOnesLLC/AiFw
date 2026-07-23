@@ -750,8 +750,25 @@ enum DhcpAction {
 #[derive(Subcommand)]
 enum NatAction {
     /// Add a NAT rule
+    #[command(after_help = "\
+EXAMPLES:
+    # Source NAT a LAN behind a WAN address
+    aifw nat add --nat-type snat --interface em0 --src 192.168.1.0/24 --redirect 203.0.113.1
+
+    # Port-forward WAN :80 to an internal host
+    aifw nat add --nat-type dnat --interface em0 --dst-port 80 --redirect 10.0.0.5 --redirect-port 8080
+
+    # NAT64: IPv6-only clients reach IPv4 hosts (pf af-to, FreeBSD 15+).
+    # --dst defaults to the well-known prefix 64:ff9b::/96; --redirect is
+    # the IPv4 the firewall sources translated traffic from.
+    aifw nat add --nat-type nat64 --interface em1 --redirect 203.0.113.1
+
+    # NAT46: IPv4-only clients reach an IPv6 service. The v6 server must
+    # hold the RFC 6052 embedding of --dst in --redirect's /96 subnet
+    # (print it with: aifw nat embed <redirect> <dst>).
+    aifw nat add --nat-type nat46 --interface em1 --dst 10.99.1.1 --redirect 2001:db8:2::1")]
     Add {
-        /// NAT type: snat, dnat, masquerade, binat, nat64, nat46
+        /// NAT type: snat, dnat, masquerade, binat, nat64 (IPv6→IPv4 af-to), nat46 (IPv4→IPv6 af-to)
         #[arg(long, name = "type")]
         nat_type: String,
 
@@ -759,7 +776,7 @@ enum NatAction {
         #[arg(long)]
         interface: String,
 
-        /// Protocol: tcp, udp, any
+        /// Protocol: tcp, udp, icmp, any (icmp auto-normalizes to icmp6 on nat64)
         #[arg(long, default_value = "any")]
         proto: String,
 
@@ -771,19 +788,21 @@ enum NatAction {
         #[arg(long)]
         src_port: Option<String>,
 
-        /// Destination address
-        #[arg(long, default_value = "any")]
-        dst: String,
+        /// Destination address. nat64: the /96 translation prefix
+        /// (defaults to 64:ff9b::/96). nat46: the IPv4 destination (required).
+        #[arg(long)]
+        dst: Option<String>,
 
         /// Destination port
         #[arg(long)]
         dst_port: Option<String>,
 
-        /// Redirect target address
+        /// Redirect target. nat64/nat46: the translation source address the
+        /// firewall owns in the translated family (IPv4 for nat64, IPv6 for nat46)
         #[arg(long)]
         redirect: String,
 
-        /// Redirect target port
+        /// Redirect target port (not valid for nat64/nat46)
         #[arg(long)]
         redirect_port: Option<String>,
 
@@ -801,6 +820,18 @@ enum NatAction {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Print the RFC 6052 NAT64 address embedding an IPv4 host in a /96 prefix
+    #[command(after_help = "\
+EXAMPLES:
+    aifw nat embed 64:ff9b::/96 8.8.8.8        # -> 64:ff9b::808:808
+    aifw nat embed 2001:db8:2::1 10.99.1.1     # -> 2001:db8:2::a63:101")]
+    Embed {
+        /// IPv6 /96 prefix (or an address whose /96 subnet is used)
+        prefix: String,
+
+        /// IPv4 address to embed
+        ipv4: String,
     },
 }
 
@@ -930,6 +961,15 @@ async fn main() -> anyhow::Result<()> {
                 redirect_port,
                 label,
             } => {
+                // Smart default: nat64 practically always matches the
+                // well-known prefix; every other type keeps "any".
+                let dst = dst.unwrap_or_else(|| {
+                    if nat_type == "nat64" {
+                        "64:ff9b::/96".to_string()
+                    } else {
+                        "any".to_string()
+                    }
+                });
                 commands::nat_add(
                     &cli.db,
                     &nat_type,
@@ -950,6 +990,9 @@ async fn main() -> anyhow::Result<()> {
             }
             NatAction::List { json } => {
                 commands::nat_list(&cli.db, json).await?;
+            }
+            NatAction::Embed { prefix, ipv4 } => {
+                commands::nat_embed(&prefix, &ipv4)?;
             }
         },
         Commands::Queue { action } => match action {

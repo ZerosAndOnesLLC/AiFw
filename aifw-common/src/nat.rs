@@ -231,29 +231,61 @@ impl NatRule {
         parts.join(" ")
     }
 
-    /// NAT64: `nat on <iface> inet6 from <src> to <dst> -> <redirect>`
+    /// NAT64 (IPv6→IPv4), pf `af-to` address-family translation (FreeBSD 15+):
+    /// `pass in quick on <iface> inet6 [proto <p>] from <src> to <prefix/96> af-to inet from <v4-src> [label "..."]`
+    ///
+    /// `af-to` is a filter-class rule and only valid on inbound rules; `quick`
+    /// is required because the main ruleset's default policy follows the
+    /// anchor hooks and would otherwise override the pass (last-match wins).
+    /// The translated destination is the IPv4 embedded in the low 32 bits of
+    /// the matched /96 prefix (RFC 6052).
     fn to_pf_nat64(&self) -> String {
-        let mut parts = vec![format!("nat on {} inet6", self.interface)];
-        self.push_proto(&mut parts);
+        let mut parts = vec![format!("pass in quick on {} inet6", self.interface)];
+        self.push_af_proto(&mut parts, true);
         self.push_from_to(&mut parts);
-        parts.push(format!("-> {}", self.redirect));
-        self.push_label(&mut parts);
+        parts.push(format!("af-to inet from {}", self.redirect.address));
+        self.push_filter_label(&mut parts);
         parts.join(" ")
     }
 
-    /// NAT46: `nat on <iface> inet from <src> to <dst> -> <redirect>`
+    /// NAT46 (IPv4→IPv6), pf `af-to` address-family translation (FreeBSD 15+):
+    /// `pass in quick on <iface> inet [proto <p>] from <src> to <v4-dst> af-to inet6 from <v6-src> [label "..."]`
+    ///
+    /// The translated destination defaults to the RFC 6052 embedding of the
+    /// original IPv4 destination in the /96 subnet of the new IPv6 source.
     fn to_pf_nat46(&self) -> String {
-        let mut parts = vec![format!("nat on {} inet", self.interface)];
-        self.push_proto(&mut parts);
+        let mut parts = vec![format!("pass in quick on {} inet", self.interface)];
+        self.push_af_proto(&mut parts, false);
         self.push_from_to(&mut parts);
-        parts.push(format!("-> {}", self.redirect));
-        self.push_label(&mut parts);
+        parts.push(format!("af-to inet6 from {}", self.redirect.address));
+        self.push_filter_label(&mut parts);
         parts.join(" ")
     }
 
     fn push_proto(&self, parts: &mut Vec<String>) {
         if self.protocol != crate::Protocol::Any {
             parts.push(format!("proto {}", self.protocol));
+        }
+    }
+
+    /// Protocol clause for `af-to` rules. The keyword must match the
+    /// pre-translation family (a NAT64 rule matches IPv6 ingress), so
+    /// `icmp`/`icmp6` are normalized to the matching side's family.
+    fn push_af_proto(&self, parts: &mut Vec<String>, inet6_match: bool) {
+        let proto = match (self.protocol, inet6_match) {
+            (crate::Protocol::Any, _) => return,
+            (crate::Protocol::Icmp, true) => "icmp6".to_string(),
+            (crate::Protocol::Icmp6, false) => "icmp".to_string(),
+            (p, _) => p.to_string(),
+        };
+        parts.push(format!("proto {proto}"));
+    }
+
+    /// Label clause for filter-class (`af-to`) rules — unlike nat-class
+    /// rules, pass rules support pf labels for per-rule counters.
+    fn push_filter_label(&self, parts: &mut Vec<String>) {
+        if let Some(ref label) = self.label {
+            parts.push(format!("label \"{label}\""));
         }
     }
 
@@ -277,4 +309,14 @@ impl NatRule {
         // pf NAT rules do not support the label keyword — labels are filter-only.
         // The label is stored in the DB for UI display purposes only.
     }
+}
+
+/// Embed an IPv4 address into an IPv6 /96 prefix per RFC 6052 §2.2 — the
+/// NAT64 address mapping (e.g. `64:ff9b::/96` + `10.99.2.2` →
+/// `64:ff9b::a63:202`). This is the address an IPv6-only client uses to
+/// reach an IPv4 host through a NAT64 rule.
+pub fn embed_rfc6052(prefix: std::net::Ipv6Addr, v4: std::net::Ipv4Addr) -> std::net::Ipv6Addr {
+    let mut octets = prefix.octets();
+    octets[12..16].copy_from_slice(&v4.octets());
+    std::net::Ipv6Addr::from(octets)
 }

@@ -34,19 +34,50 @@ pub async fn list_nat_rules(
     Ok(Json(ApiResponse { data: rules }))
 }
 
+/// Error payload for NAT create/update: status + human-readable message so
+/// engine/pf validation feedback (e.g. af-to family errors) reaches the UI
+/// instead of a bare status code (#531).
+type NatError = (StatusCode, Json<MessageResponse>);
+
+fn nat_bad_request(msg: impl Into<String>) -> NatError {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(MessageResponse {
+            message: msg.into(),
+        }),
+    )
+}
+
+fn nat_engine_error(e: aifw_common::AifwError) -> NatError {
+    use aifw_common::AifwError;
+    let code = match &e {
+        AifwError::Validation(_) => StatusCode::BAD_REQUEST,
+        AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        code,
+        Json(MessageResponse {
+            message: e.to_string(),
+        }),
+    )
+}
+
 pub async fn create_nat_rule(
     State(state): State<AppState>,
     Json(req): Json<CreateNatRuleRequest>,
-) -> Result<(StatusCode, Json<ApiResponse<NatRule>>), StatusCode> {
-    let nat_type = NatType::parse(&req.nat_type).map_err(|_| bad_request())?;
-    let protocol = Protocol::parse(&req.protocol).map_err(|_| bad_request())?;
+) -> Result<(StatusCode, Json<ApiResponse<NatRule>>), NatError> {
+    let nat_type = NatType::parse(&req.nat_type)
+        .map_err(|_| nat_bad_request(format!("unknown NAT type '{}'", req.nat_type)))?;
+    let protocol = Protocol::parse(&req.protocol)
+        .map_err(|_| nat_bad_request(format!("unknown protocol '{}'", req.protocol)))?;
 
     let src_addr = req
         .src_addr
         .as_deref()
         .map(Address::parse)
         .transpose()
-        .map_err(|_| bad_request())?
+        .map_err(|e| nat_bad_request(format!("invalid source address: {e}")))?
         .unwrap_or(Address::Any);
 
     let dst_addr = req
@@ -54,15 +85,17 @@ pub async fn create_nat_rule(
         .as_deref()
         .map(Address::parse)
         .transpose()
-        .map_err(|_| bad_request())?
+        .map_err(|e| nat_bad_request(format!("invalid destination address: {e}")))?
         .unwrap_or(Address::Any);
 
-    let redirect_addr = Address::parse(&req.redirect_addr).map_err(|_| bad_request())?;
+    let redirect_addr = Address::parse(&req.redirect_addr)
+        .map_err(|e| nat_bad_request(format!("invalid redirect address: {e}")))?;
 
     // Validate interface and label to prevent pf rule injection
-    aifw_core::validation::validate_interface_name(&req.interface).map_err(|_| bad_request())?;
+    aifw_core::validation::validate_interface_name(&req.interface)
+        .map_err(|e| nat_bad_request(e.to_string()))?;
     if let Some(ref label) = req.label {
-        aifw_core::validation::validate_label(label).map_err(|_| bad_request())?;
+        aifw_core::validation::validate_label(label).map_err(|e| nat_bad_request(e.to_string()))?;
     }
 
     let mut rule = NatRule::new(
@@ -84,7 +117,7 @@ pub async fn create_nat_rule(
         .nat_engine
         .add_rule(rule)
         .await
-        .map_err(|_| bad_request())?;
+        .map_err(nat_engine_error)?;
     state.set_pending(|p| p.nat = true).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
@@ -93,29 +126,32 @@ pub async fn update_nat_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<CreateNatRuleRequest>,
-) -> Result<Json<ApiResponse<NatRule>>, StatusCode> {
-    let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
+) -> Result<Json<ApiResponse<NatRule>>, NatError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| nat_bad_request("invalid rule id"))?;
     let mut rule = state
         .nat_engine
         .get_rule(uuid)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(nat_engine_error)?;
 
-    rule.nat_type = NatType::parse(&req.nat_type).map_err(|_| bad_request())?;
+    rule.nat_type = NatType::parse(&req.nat_type)
+        .map_err(|_| nat_bad_request(format!("unknown NAT type '{}'", req.nat_type)))?;
     // Validate interface and label to prevent pf rule injection
-    aifw_core::validation::validate_interface_name(&req.interface).map_err(|_| bad_request())?;
+    aifw_core::validation::validate_interface_name(&req.interface)
+        .map_err(|e| nat_bad_request(e.to_string()))?;
     if let Some(ref label) = req.label {
-        aifw_core::validation::validate_label(label).map_err(|_| bad_request())?;
+        aifw_core::validation::validate_label(label).map_err(|e| nat_bad_request(e.to_string()))?;
     }
 
     rule.interface = Interface(req.interface);
-    rule.protocol = Protocol::parse(&req.protocol).map_err(|_| bad_request())?;
+    rule.protocol = Protocol::parse(&req.protocol)
+        .map_err(|_| nat_bad_request(format!("unknown protocol '{}'", req.protocol)))?;
     rule.src_addr = req
         .src_addr
         .as_deref()
         .map(Address::parse)
         .transpose()
-        .map_err(|_| bad_request())?
+        .map_err(|e| nat_bad_request(format!("invalid source address: {e}")))?
         .unwrap_or(Address::Any);
     rule.src_port = port_range(req.src_port_start, req.src_port_end);
     rule.dst_addr = req
@@ -123,11 +159,12 @@ pub async fn update_nat_rule(
         .as_deref()
         .map(Address::parse)
         .transpose()
-        .map_err(|_| bad_request())?
+        .map_err(|e| nat_bad_request(format!("invalid destination address: {e}")))?
         .unwrap_or(Address::Any);
     rule.dst_port = port_range(req.dst_port_start, req.dst_port_end);
     rule.redirect = NatRedirect {
-        address: Address::parse(&req.redirect_addr).map_err(|_| bad_request())?,
+        address: Address::parse(&req.redirect_addr)
+            .map_err(|e| nat_bad_request(format!("invalid redirect address: {e}")))?,
         port: port_range(req.redirect_port_start, req.redirect_port_end),
     };
     rule.label = req.label;
@@ -135,7 +172,7 @@ pub async fn update_nat_rule(
         rule.status = match s.as_str() {
             "active" => NatStatus::Active,
             "disabled" => NatStatus::Disabled,
-            _ => return Err(bad_request()),
+            _ => return Err(nat_bad_request(format!("unknown status '{s}'"))),
         };
     }
     rule.updated_at = chrono::Utc::now();
@@ -144,7 +181,7 @@ pub async fn update_nat_rule(
         .nat_engine
         .update_rule(&rule)
         .await
-        .map_err(|_| internal())?;
+        .map_err(nat_engine_error)?;
     state.set_pending(|p| p.nat = true).await;
     Ok(Json(ApiResponse { data: rule }))
 }
@@ -168,16 +205,21 @@ pub async fn delete_nat_rule(
 pub async fn get_nat_pf_output(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
-    let nat_rules = state.pf.get_nat_rules("aifw").await.unwrap_or_default();
-    let filter_rules = state.pf.get_rules("aifw").await.unwrap_or_default();
+    // The NAT engine loads into "aifw-nat" (this endpoint used to read the
+    // "aifw" filter anchor and always came back empty). Cross-family af-to
+    // rules are filter-class, so both rulesets of the anchor are shown.
+    let nat_rules = state.pf.get_nat_rules("aifw-nat").await.unwrap_or_default();
+    let filter_rules = state.pf.get_rules("aifw-nat").await.unwrap_or_default();
     let mut output = Vec::new();
     if !nat_rules.is_empty() {
-        output.push("# NAT Rules (anchor: aifw)".to_string());
+        output.push("# NAT rules (anchor: aifw-nat)".to_string());
         output.extend(nat_rules);
     }
     if !filter_rules.is_empty() {
-        output.push("".to_string());
-        output.push("# Filter Rules (anchor: aifw)".to_string());
+        if !output.is_empty() {
+            output.push("".to_string());
+        }
+        output.push("# Translation pass rules — af-to (anchor: aifw-nat)".to_string());
         output.extend(filter_rules);
     }
     Ok(Json(ApiResponse { data: output }))

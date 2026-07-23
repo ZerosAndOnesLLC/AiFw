@@ -115,6 +115,16 @@ CLIENT_IP="10.99.1.2"
 SERVER_NET_HOST="10.99.2.1"
 SERVER_IP="10.99.2.2"
 
+# IPv6 addressing for the cross-family (NAT64/NAT46, t09) tests. The client
+# jail is dual-stack; the server jail is v4-only plus an embedded-address
+# alias added by t09 for the NAT46 leg.
+CLIENT6_NET_HOST="2001:db8:1::1"
+CLIENT6_IP="2001:db8:1::2"
+SERVER6_NET_HOST="2001:db8:2::1"
+# Well-known NAT64 prefix + RFC 6052 embedding of SERVER_IP (10.99.2.2).
+NAT64_PREFIX="64:ff9b::/96"
+SERVER_IP_EMBEDDED="64:ff9b::a63:202"
+
 jx_client() { jexec "$CLIENT_JAIL" "$@"; }
 jx_server() { jexec "$SERVER_JAIL" "$@"; }
 

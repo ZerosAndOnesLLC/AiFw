@@ -1243,6 +1243,10 @@ async fn ensure_rdr_anchor() {
     let mut changed = false;
 
     let has_rdr = lines.iter().any(|l| l.trim() == "rdr-anchor \"aifw-nat\"");
+    // Filter-class hook for the NAT anchor: cross-family af-to rules are
+    // pass rules, so an install predating `anchor "aifw-nat"` would load
+    // them but never evaluate them (#531).
+    let has_nat_filter = lines.iter().any(|l| l.trim() == "anchor \"aifw-nat\"");
     let mwan_anchors = ["aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"];
     let has_mwan: Vec<bool> = mwan_anchors
         .iter()
@@ -1278,6 +1282,12 @@ async fn ensure_rdr_anchor() {
             }
             mwan_inserted = true;
             out.push((*line).to_string());
+            // 3. After the filter `anchor "aifw"`, inject the filter-class
+            //    `anchor "aifw-nat"` hook if absent (af-to rules, #531).
+            if !has_nat_filter {
+                out.push("anchor \"aifw-nat\"".to_string());
+                changed = true;
+            }
             continue;
         }
 

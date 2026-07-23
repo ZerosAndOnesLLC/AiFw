@@ -74,7 +74,7 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 ## Features
 
 - **Stateful packet filtering** via FreeBSD's pf with anchor isolation
-- **NAT** — SNAT, DNAT/RDR, masquerade, binat (NAT64/NAT46 in development — rule types exist, cross-family translation data plane is being built, #531)
+- **NAT** — SNAT, DNAT/RDR, masquerade, binat, NAT64/NAT46 (real cross-family translation via pf af-to, FreeBSD 15+, with DNS64 in the resolver)
 - **Connection tracking** — real-time state table monitoring, top talkers, protocol breakdown
 - **Rate limiting & traffic shaping** — HFSC/PriQ queues, per-IP overload tables, SYN flood protection (CoDel via dummynet FQ-CoDel in development, #532)
 - **AI/ML threat detection** *(optional, WIP)* — experimental port scan, DDoS, brute force, C2 beacon, DNS tunnel detection with auto-response (disabled by default, not yet production-ready)

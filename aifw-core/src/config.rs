@@ -1026,6 +1026,8 @@ pub struct DnsResolverSection {
     pub dnssec: bool,
     /// DNS64 synthesis
     pub dns64: bool,
+    /// DNS64 /96 prefix — must match the NAT64 rule prefix (#531)
+    pub dns64_prefix: String,
     /// Register DHCP leases in DNS
     pub register_dhcp: bool,
     /// Domain for DHCP lease DNS registration (e.g. `local`)
@@ -1114,6 +1116,7 @@ impl Default for DnsResolverSection {
             port: 53,
             dnssec: true,
             dns64: false,
+            dns64_prefix: "64:ff9b::/96".to_string(),
             register_dhcp: true,
             dhcp_domain: "local".to_string(),
             local_zone_type: "transparent".to_string(),

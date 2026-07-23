@@ -303,7 +303,9 @@ pub async fn reload(db_path: &Path) -> anyhow::Result<()> {
 async fn create_nat_engine(db_path: &Path) -> anyhow::Result<NatEngine> {
     let db = Database::new(db_path).await?;
     let pf = Arc::from(aifw_pf::create_backend());
-    Ok(NatEngine::new(db.pool().clone(), pf))
+    // "aifw-nat" — must match the API/daemon anchor; NAT loads replace every
+    // rule class in their anchor since #531.
+    Ok(NatEngine::new(db.pool().clone(), pf).with_anchor("aifw-nat".to_string()))
 }
 
 /// Heal drift between running kernel state and the source of truth
@@ -430,9 +432,57 @@ pub async fn nat_add(
     rule.dst_port = dst_port.map(parse_port).transpose()?;
     rule.label = label.map(String::from);
 
-    let rule = nat.add_rule(rule).await?;
+    let rule = nat.add_rule(rule).await.map_err(|e| {
+        let msg = e.to_string();
+        match nat_flag_hint(&msg) {
+            Some(hint) => anyhow::anyhow!("{msg}\n  hint: {hint}"),
+            None => anyhow::anyhow!(msg),
+        }
+    })?;
     println!("Added NAT rule {}", rule.id);
     println!("  pf: {}", rule.to_pf_rule());
+    if rule.nat_type == NatType::Nat64
+        && let aifw_common::Address::Network(std::net::IpAddr::V6(p6), 96) = rule.dst_addr
+    {
+        let example = aifw_common::embed_rfc6052(p6, std::net::Ipv4Addr::new(10, 0, 0, 1));
+        println!("  IPv6 clients reach IPv4 hosts via {p6}/96 (e.g. 10.0.0.1 -> {example})");
+    }
+    Ok(())
+}
+
+/// Map engine validation messages to the CLI flag the user should fix.
+fn nat_flag_hint(msg: &str) -> Option<&'static str> {
+    if msg.contains("nat64 destination") {
+        Some(
+            "set --dst to an IPv6 /96 prefix, e.g. --dst 64:ff9b::/96 (or omit --dst for the default)",
+        )
+    } else if msg.contains("nat46 destination") {
+        Some("set --dst to the IPv4 address being reached, e.g. --dst 10.99.1.1")
+    } else if msg.contains("translation source") {
+        Some(
+            "set --redirect to a single address the firewall owns in the translated family (IPv4 for nat64, IPv6 for nat46)",
+        )
+    } else if msg.contains("redirect port") {
+        Some("drop --redirect-port — af-to translates addresses, not ports")
+    } else if msg.contains("source address must be") {
+        Some("fix --src: it must match the rule's ingress family (IPv6 for nat64, IPv4 for nat46)")
+    } else {
+        None
+    }
+}
+
+/// Print the RFC 6052 embedded address for a prefix + IPv4 pair.
+pub fn nat_embed(prefix: &str, ipv4: &str) -> anyhow::Result<()> {
+    let p: std::net::Ipv6Addr = prefix
+        .split('/')
+        .next()
+        .unwrap_or(prefix)
+        .parse()
+        .map_err(|_| anyhow::anyhow!("'{prefix}' is not a valid IPv6 prefix"))?;
+    let v4: std::net::Ipv4Addr = ipv4
+        .parse()
+        .map_err(|_| anyhow::anyhow!("'{ipv4}' is not a valid IPv4 address"))?;
+    println!("{}", aifw_common::embed_rfc6052(p, v4));
     Ok(())
 }
 
@@ -481,7 +531,12 @@ pub async fn nat_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
                 .map(|p| format!(":{p}"))
                 .unwrap_or_default()
         );
-        let redir = format!("{}", rule.redirect);
+        // Cross-family rules read as a direction, not an address rewrite.
+        let redir = match rule.nat_type {
+            NatType::Nat64 => format!("v6->v4 via {}", rule.redirect.address),
+            NatType::Nat46 => format!("v4->v6 via {}", rule.redirect.address),
+            _ => format!("{}", rule.redirect),
+        };
         let status = match rule.status {
             aifw_common::NatStatus::Active => "",
             aifw_common::NatStatus::Disabled => " [disabled]",

@@ -131,7 +131,8 @@ Issue #231 (commit `22c28b8`) routes `/api/v1/dns` and the OPNsense importer thr
 | `backend` | `rdns` | Switch to `unbound` to use the legacy backend |
 | `port` | `53` | The resolver listens on this port |
 | `dnssec` | `true` | Validate DNSSEC signatures upstream |
-| `dns64` | `false` | Synthesize AAAA records for NAT64 |
+| `dns64` | `false` | Synthesize AAAA records for IPv4-only names (RFC 6147) so v6-only clients work through NAT64 |
+| `dns64_prefix` | `64:ff9b::/96` | /96 prefix for synthesized AAAAs — must match the NAT64 rule prefix |
 | `register_dhcp` | `true` | Auto-publish DHCP leases as A records |
 | `dhcp_domain` | `local` | Suffix appended to lease hostnames |
 | `cache_max_ttl` / `cache_min_ttl` | `86400` / `0` | Resolver cache TTL bounds |

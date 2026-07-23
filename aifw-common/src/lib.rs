@@ -75,7 +75,7 @@ pub use multiwan::{
     LeakDirection, MwIpVersion, MwProtocol, PolicyRule, PolicyStatus, RouteAction, RouteLeak,
     RoutingInstance, StickyMode,
 };
-pub use nat::{NatRedirect, NatRule, NatStatus, NatType};
+pub use nat::{NatRedirect, NatRule, NatStatus, NatType, embed_rfc6052};
 pub use permission::{ALL_PERMISSIONS, Permission, PermissionSet, builtin_role_permissions};
 pub use ratelimit::{
     Bandwidth, BandwidthUnit, QueueConfig, QueueStatus, QueueType, RateLimitRule, RateLimitStatus,

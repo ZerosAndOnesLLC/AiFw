@@ -118,18 +118,24 @@ aifw nat list
 
 # Port-forward 443 to an internal host
 aifw nat add \
-  --type dnat --interface em0 --proto tcp \
+  --nat-type dnat --interface em0 --proto tcp \
   --dst any --dst-port 443 \
   --redirect 10.0.0.20 --redirect-port 443 \
   --label "ingress-https"
 
 # Outbound NAT (masquerade)
 aifw nat add \
-  --type masquerade --interface em0 --proto any \
+  --nat-type masquerade --interface em0 --proto any \
   --src 10.0.0.0/24 --dst any --redirect any
+
+# NAT64 — IPv6-only clients reach IPv4 hosts (dst defaults to 64:ff9b::/96)
+aifw nat add --nat-type nat64 --interface em1 --redirect 203.0.113.1
+
+# Print the RFC 6052 embedded address clients use for an IPv4 host
+aifw nat embed 64:ff9b::/96 10.1.2.3     # -> 64:ff9b::a01:203
 ```
 
-Supported NAT types: `snat`, `dnat`, `masquerade`, `binat`, `nat64`, `nat46`.
+Supported NAT types: `snat`, `dnat`, `masquerade`, `binat`, `nat64`, `nat46` (cross-family types translate via pf `af-to`, FreeBSD 15+).
 
 ## queue &amp; ratelimit
 

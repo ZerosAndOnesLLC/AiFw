@@ -24,7 +24,7 @@ breadcrumb:
     "IDS with Suricata, Sigma, and YARA rule subsets; reactive IPS blocking",
     "Multi-WAN with FIB isolation, SLA-driven failover, leak detection",
     "HA clustering with CARP",
-    "NAT including SNAT, DNAT, 1:1 (NAT64/NAT46 in development)",
+    "NAT including SNAT, DNAT, 1:1, NAT64, NAT46",
     "Geo-IP filtering",
     "DNS resolver and DHCP server",
     "OPNsense configuration importer",
@@ -59,8 +59,8 @@ A complete inventory of what AiFw ships with today. All features are MIT-license
 - **DNAT / port forwarding** with reflection
 - **Masquerading** (dynamic SNAT to interface address)
 - **1:1 NAT** (binat)
-- **NAT64** (IPv6 → IPv4) — *in development*: the rule type exists but real cross-family translation is being built
-- **NAT46** (IPv4 → IPv6) — *in development*, same status
+- **NAT64** (IPv6 → IPv4) — real cross-family translation via pf `af-to`, with DNS64 synthesis in the built-in resolver
+- **NAT46** (IPv4 → IPv6) — the reverse direction, a first-class rule type few firewall distros offer
 
 ## Multi-WAN
 
