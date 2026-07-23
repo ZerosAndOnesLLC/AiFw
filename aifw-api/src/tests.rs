@@ -442,6 +442,73 @@ mod tests {
         resp.assert_status_ok();
     }
 
+    #[tokio::test]
+    async fn test_nat64_create_happy_path() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .post("/api/v1/nat")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "nat_type": "nat64",
+                "interface": "em0",
+                "protocol": "any",
+                "src_addr": "2001:db8:1::/64",
+                "dst_addr": "64:ff9b::/96",
+                "redirect_addr": "203.0.113.1",
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["data"]["nat_type"], "nat64");
+    }
+
+    #[tokio::test]
+    async fn test_nat64_create_wrong_family_gets_message() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // IPv4 redirect required for nat64 — an IPv6 one must 400 with a
+        // human-readable message (surfaced to the UI banner, #531).
+        let resp = server
+            .post("/api/v1/nat")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "nat_type": "nat64",
+                "interface": "em0",
+                "protocol": "any",
+                "dst_addr": "64:ff9b::/96",
+                "redirect_addr": "2001:db8::1",
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        let msg = body["message"].as_str().unwrap();
+        assert!(
+            msg.contains("nat64"),
+            "message should name the rule type: {msg}"
+        );
+
+        // Missing /96 prefix on the destination
+        let resp = server
+            .post("/api/v1/nat")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "nat_type": "nat64",
+                "interface": "em0",
+                "protocol": "any",
+                "dst_addr": "64:ff9b::/64",
+                "redirect_addr": "203.0.113.1",
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        assert!(body["message"].as_str().unwrap().contains("/96"));
+    }
+
     // --- New auth system tests ---
 
     #[tokio::test]

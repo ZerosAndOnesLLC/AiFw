@@ -81,6 +81,7 @@ impl NatEngine {
     /// neither a destination nor a redirect port.
     pub async fn add_rule(&self, rule: NatRule) -> Result<NatRule> {
         validate_nat_rule(&rule)?;
+        self.parser_gate_with(&rule).await?;
         let pf_syntax = rule.to_pf_rule();
         // PERF-H6 (#350): mutation + audit row commit together — one fsync
         // instead of two per NAT rule change.
@@ -140,6 +141,7 @@ impl NatEngine {
     /// pf is untouched until [`Self::apply_rules`].
     pub async fn update_rule(&self, rule: &NatRule) -> Result<()> {
         validate_nat_rule(rule)?;
+        self.parser_gate_with(rule).await?;
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r#"
@@ -249,6 +251,28 @@ impl NatEngine {
             .await?;
 
         Ok(())
+    }
+
+    /// Real-parser gate (#531): dry-run the full prospective active ruleset
+    /// (current active rules with `candidate` inserted/substituted) through
+    /// `pfctl -n` before persisting, so rules only real pf can judge (af-to
+    /// family constraints, prefix extraction limits) never land in the DB
+    /// unloadable. No-op on the mock backend (dev/tests).
+    async fn parser_gate_with(&self, candidate: &NatRule) -> Result<()> {
+        let mut prospective: Vec<NatRule> = self
+            .list_active_rules()
+            .await?
+            .into_iter()
+            .filter(|r| r.id != candidate.id)
+            .collect();
+        if candidate.status == NatStatus::Active {
+            prospective.push(candidate.clone());
+        }
+        let rendered = self.render_ruleset(&prospective);
+        self.pf
+            .validate_rules(&self.anchor, &rendered)
+            .await
+            .map_err(|e| AifwError::Validation(format!("pf rejected NAT ruleset: {e}")))
     }
 
     /// Render the full pf ruleset for a set of NAT rules, translation-class
