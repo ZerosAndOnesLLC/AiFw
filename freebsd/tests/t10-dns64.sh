@@ -31,7 +31,7 @@ mkdir -p "$T10_DIR/zones"
 cat > "$T10_DIR/zones/t10test.internal.zone" <<EOF
 \$TTL 60
 \$ORIGIN t10test.internal.
-@   IN  SOA ns.t10test.internal. admin.t10test.internal. (1 3600 900 604800 60)
+@   IN  SOA ns.t10test.internal. admin.t10test.internal. 1 3600 900 604800 60
 @   IN  NS  ns.t10test.internal.
 ns      IN  A   127.0.0.1
 v4only  IN  A   10.99.2.2
