@@ -103,10 +103,27 @@ impl PfBackend for PfIoctl {
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), PfError> {
         let output = pfctl_stdin(&["-a", anchor, "-f", "-"], rule).await?;
         if !output.status.success() {
+            // Strict: pfctl rejects rules with messages that don't contain
+            // "syntax error" (e.g. af-to family mismatches report "no
+            // translation address with matching address family found"), so
+            // any non-zero exit is a load failure (#531).
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("syntax error") {
-                return Err(PfError::Rule(stderr.to_string()));
-            }
+            return Err(PfError::Rule(format!("rule error: {stderr}")));
+        }
+        Ok(())
+    }
+
+    async fn validate_rules(&self, anchor: &str, rules: &[String]) -> Result<(), PfError> {
+        if rules.is_empty() {
+            return Ok(());
+        }
+        let ruleset = rules.join("\n");
+        // `pfctl -n` parses the full ruleset without committing anything —
+        // the real-parser gate for rules only pfctl can judge (#531).
+        let output = pfctl_stdin(&["-a", anchor, "-n", "-f", "-"], &ruleset).await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PfError::Rule(format!("pf rejected ruleset: {stderr}")));
         }
         Ok(())
     }

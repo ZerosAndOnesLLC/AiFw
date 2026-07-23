@@ -2491,6 +2491,7 @@ pub fn sudoers_content() -> &'static str {
 # world-writable /tmp file (SEC-H5); the old `-f /tmp/aifw_pf_*.conf` grants
 # were removed with that fix.
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f -
+aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -n -f -
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -N -f -
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -f /usr/local/etc/aifw/anchors/aifw*
 aifw ALL=(root) NOPASSWD: /sbin/pfctl -a aifw* -sr
@@ -2674,6 +2675,10 @@ mod sudoers_tests {
             ("add_rule (stdin)", "/sbin/pfctl -a aifw* -f -"),
             ("load_queues (stdin)", "/sbin/pfctl -a aifw* -f -"),
             ("load_nat_rules (stdin)", "/sbin/pfctl -a aifw* -N -f -"),
+            (
+                "validate_rules (stdin dry-run)",
+                "/sbin/pfctl -a aifw* -n -f -",
+            ),
             ("get_rules", "/sbin/pfctl -a aifw* -sr"),
             ("get_nat_rules", "/sbin/pfctl -a aifw* -sn"),
             ("daemon pf drift auto-heal (global -sn)", "/sbin/pfctl -sn"),

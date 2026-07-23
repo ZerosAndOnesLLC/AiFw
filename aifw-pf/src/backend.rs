@@ -27,6 +27,15 @@ pub trait PfBackend: Send + Sync {
     /// Add a pf rule to the specified anchor
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), crate::PfError>;
 
+    /// Dry-run parse a prospective ruleset against the real pf parser
+    /// (`pfctl -n`) without applying it. Backends without a real parser
+    /// (mock) accept everything — engines call this as a best-effort gate
+    /// before persisting rules whose syntax only real pfctl can judge
+    /// (e.g. af-to cross-family translation, #531).
+    async fn validate_rules(&self, _anchor: &str, _rules: &[String]) -> Result<(), crate::PfError> {
+        Ok(())
+    }
+
     /// Remove all rules from the specified anchor
     async fn flush_rules(&self, anchor: &str) -> Result<(), crate::PfError>;
 
