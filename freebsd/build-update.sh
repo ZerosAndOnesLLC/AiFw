@@ -169,6 +169,13 @@ build_companion() {
     ( cd "$dir" && cargo build --release ) || rc=1
     git -C "$dir" checkout --quiet "$prev" || \
         echo "WARN: could not restore $name to '$prev' — left detached at $pin" >&2
+    # Root-run builds litter the operator's repo with root-owned .git
+    # objects and target/ artifacts, breaking their later git/cargo use
+    # (seen live: 'insufficient permission for adding an object'). Hand
+    # the repo back to the invoking user.
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        chown -R "$SUDO_USER" "$dir" 2>/dev/null || true
+    fi
     if [ "$rc" -ne 0 ]; then
         echo "ERROR: cargo build of $name failed" >&2
         exit 1
