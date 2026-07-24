@@ -16,7 +16,7 @@ permissions:
   attestations: write
 
 env:
-  FREEBSD_VERSION: "15.0"
+  FREEBSD_VERSION: "15.1"
 
 jobs:
   build-ui:
