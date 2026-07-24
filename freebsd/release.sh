@@ -123,6 +123,24 @@ if [ -z "$ISO_UPLOAD" ] && [ -z "$IMG_UPLOAD" ] && [ -z "$UPDATE_TARBALL" ]; the
     die "No artifacts to release. Run build-local.sh first."
 fi
 
+# --- Guard: signing writes .minisig files next to the checksums, so the
+# output dir must be writable by this (unprivileged) user. Builds run as
+# root and used to leave root-owned artifacts, killing every release run
+# with "Permission denied" mid-signing. The build scripts now chown their
+# output, but self-heal here too for artifacts from older builds — sudo -n
+# only, so this never hangs on a password prompt.
+UNWRITABLE=0
+[ -w "$OUTPUTDIR" ] || UNWRITABLE=1
+for f in "$OUTPUTDIR"/*; do
+    [ -e "$f" ] || continue
+    [ -w "$f" ] || { UNWRITABLE=1; break; }
+done
+if [ "$UNWRITABLE" = 1 ]; then
+    echo "Output dir has files this user can't write (root-owned build artifacts); fixing ownership..."
+    sudo -n chown -R "$(id -un)" "$OUTPUTDIR" 2>/dev/null \
+        || die "Cannot write to ${OUTPUTDIR} — run: sudo chown -R $(id -un) ${OUTPUTDIR}"
+fi
+
 # --- Sign checksums (publisher authenticity) ---
 # The in-app updater fails closed: a release without a valid .minisig for
 # its update tarball checksum cannot be installed by any appliance. Signing
