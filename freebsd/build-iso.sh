@@ -12,8 +12,8 @@ ARCH="${2:-amd64}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-FREEBSD_VERSION="15.0"
-FREEBSD_RELEASE="15.0-RELEASE"
+FREEBSD_VERSION="15.1"
+FREEBSD_RELEASE="15.1-RELEASE"
 FREEBSD_MIRROR="https://download.freebsd.org/releases/${ARCH}/${FREEBSD_RELEASE}"
 
 WORKDIR="/usr/obj/aifw-iso"

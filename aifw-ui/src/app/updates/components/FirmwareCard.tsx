@@ -55,6 +55,16 @@ export function FirmwareCard({
               </span>
             )}
           </div>
+          {info?.checksum_signature_url && (
+            <a
+              href={info.checksum_signature_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-blue-400 hover:text-blue-300 underline"
+            >
+              Verify signed checksum
+            </a>
+          )}
           <label className="flex items-center gap-2 pt-2 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -80,7 +90,10 @@ export function FirmwareCard({
             {checking ? "Checking..." : "Check for Update"}
           </button>
 
-          {info?.update_available && info?.tarball_url && (
+          {info?.update_available &&
+            info?.tarball_url &&
+            info?.checksum_url &&
+            info?.checksum_signature_url && (
             <button
               onClick={onInstall}
               disabled={installing}
@@ -91,6 +104,12 @@ export function FirmwareCard({
               )}
               {installing ? "Installing..." : `Update to v${info.latest_version}`}
             </button>
+          )}
+
+          {info?.update_available && !info?.checksum_signature_url && (
+            <p className="max-w-56 text-xs text-red-400">
+              Installation blocked: this release has no signed checksum.
+            </p>
           )}
 
           {info?.has_backup && (

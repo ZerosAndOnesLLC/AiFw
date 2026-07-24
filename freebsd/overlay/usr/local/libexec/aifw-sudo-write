@@ -38,6 +38,10 @@ esac
 case "$DEST" in
     /etc/pf.conf)
         FMODE=644; FOWNER=root:wheel ;;
+    /usr/local/etc/aifw/pf.conf.aifw)
+        # pf_tuning + the API's anchor self-heal commit their patched
+        # pf.conf here; missing entry broke every boot-time tuning apply (#601).
+        FMODE=644; FOWNER=root:wheel ;;
     /usr/local/etc/trafficcop/config.yaml)
         FMODE=644; FOWNER=root:wheel ;;
     /usr/local/etc/aifw/daemon.key)

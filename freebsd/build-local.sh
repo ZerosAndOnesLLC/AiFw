@@ -134,21 +134,39 @@ build_companion() {
             exit 1
         }
     fi
-    echo "--- Checking out $name @ $pin ---"
+    # Remember the operator's checkout so we can put it back: these are the
+    # same working repos they develop in, and leaving them detached at the
+    # pin meant manually switching back to main after every build.
+    local prev
+    prev=$(git -C "$dir" symbolic-ref --quiet --short HEAD || git -C "$dir" rev-parse HEAD)
+    echo "--- Checking out $name @ $pin (will restore '$prev' after build) ---"
     ( cd "$dir" && \
         git fetch --tags origin && \
-        git checkout --detach "$pin" ) || {
-        echo "ERROR: pinned commit $pin not found in $name ($dir)" >&2
+        git checkout --quiet --detach "$pin" ) || {
+        echo "ERROR: pinned commit $pin not found in $name ($dir), or the" >&2
+        echo "       working tree has uncommitted changes — commit/stash first" >&2
         exit 1
     }
     local actual
     actual=$(git -C "$dir" rev-parse HEAD)
     [ "$actual" = "$pin" ] || die "$name checked out $actual, expected pinned $pin"
     echo "--- $name commit: $actual ---"
-    ( cd "$dir" && cargo build --release ) || {
+    local rc=0
+    ( cd "$dir" && cargo build --release ) || rc=1
+    # Restore the original ref even when the build fails.
+    git -C "$dir" checkout --quiet "$prev" || \
+        echo "WARN: could not restore $name to '$prev' — left detached at $pin" >&2
+    # Root-run builds litter the operator's repo with root-owned .git
+    # objects and target/ artifacts, breaking their later git/cargo use
+    # (seen live: 'insufficient permission for adding an object'). Hand
+    # the repo back to the invoking user.
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        chown -R "$SUDO_USER" "$dir" 2>/dev/null || true
+    fi
+    if [ "$rc" -ne 0 ]; then
         echo "ERROR: cargo build of $name failed" >&2
         exit 1
-    }
+    fi
 }
 
 # Build companion services (reverse proxy, DHCP, DNS, NTP).
@@ -276,10 +294,14 @@ echo "$VERSION" > "$TARBALL_DIR/version"
 # tarball) visible at build time.
 {
     echo "AiFw             $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    [ -d "$TRAFFICCOP_DIR/.git" ] && echo "TrafficCop       $(git -C "$TRAFFICCOP_DIR" rev-parse --short HEAD)"
-    [ -d "$RDHCP_DIR/.git" ]      && echo "rDHCP            $(git -C "$RDHCP_DIR"      rev-parse --short HEAD)"
-    [ -d "$RDNS_DIR/.git" ]       && echo "rDNS             $(git -C "$RDNS_DIR"       rev-parse --short HEAD)"
-    [ -d "$RTIME_DIR/.git" ]      && echo "rTIME            $(git -C "$RTIME_DIR"      rev-parse --short HEAD)"
+    # Companion SHAs come from the manifest pins — build_companion verified
+    # each checkout matched its pin and then RESTORED the operator's branch,
+    # so the repos' HEADs no longer reflect what was built.
+    for n in TrafficCop rDHCP rDNS rTIME; do
+        p=$(jq -r --arg n "$n" '.external_repos[] | select(.name == $n) | .commit // empty' \
+            "$PROJECT_ROOT/freebsd/manifest.json")
+        [ -n "$p" ] && printf '%-16s %.12s (manifest pin)\n' "$n" "$p"
+    done
     if [ -f "$TARBALL_DIR/bin/rdns" ]; then
         rver=$(grep -ao 'rDNS [0-9][0-9.]*' "$TARBALL_DIR/bin/rdns" | head -1 || true)
         echo "rdns binary      ${rver:-unknown}"
@@ -352,6 +374,15 @@ for d in stage dist iso efi-stage; do
     fi
 done
 echo "  Removed staged binaries, UI export, and build intermediates"
+
+# Hand the artifacts to the user who invoked the build: this script runs as
+# root, but release.sh runs unprivileged (it needs the operator's gh auth
+# and minisign key) and must be able to write .minisig files next to the
+# checksums. Without this, every release run died on "Permission denied".
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    chown -R "$SUDO_USER" "$OUTPUTDIR"
+    echo "  Output ownership -> $SUDO_USER (for unprivileged release.sh)"
+fi
 
 # --- Done ---
 echo ""

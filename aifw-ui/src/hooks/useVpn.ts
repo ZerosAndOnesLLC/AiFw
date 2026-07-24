@@ -177,6 +177,9 @@ export function useVpn() {
         listen_port: parseInt(wgForm.listen_port, 10),
         address: wgForm.address.trim(),
       };
+      if (wgForm.address6.trim()) {
+        body.address6 = wgForm.address6.trim();
+      }
       if (wgForm.private_key.trim()) {
         body.private_key = wgForm.private_key.trim();
       }
@@ -210,6 +213,7 @@ export function useVpn() {
       name: tunnel.name,
       listen_port: String(tunnel.listen_port),
       address: tunnel.address,
+      address6: tunnel.address6 || "",
       private_key: "",
       dns: tunnel.dns || "",
       mtu: tunnel.mtu ? String(tunnel.mtu) : "",

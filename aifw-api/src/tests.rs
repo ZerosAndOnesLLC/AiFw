@@ -442,6 +442,73 @@ mod tests {
         resp.assert_status_ok();
     }
 
+    #[tokio::test]
+    async fn test_nat64_create_happy_path() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .post("/api/v1/nat")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "nat_type": "nat64",
+                "interface": "em0",
+                "protocol": "any",
+                "src_addr": "2001:db8:1::/64",
+                "dst_addr": "64:ff9b::/96",
+                "redirect_addr": "203.0.113.1",
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["data"]["nat_type"], "nat64");
+    }
+
+    #[tokio::test]
+    async fn test_nat64_create_wrong_family_gets_message() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // IPv4 redirect required for nat64 — an IPv6 one must 400 with a
+        // human-readable message (surfaced to the UI banner, #531).
+        let resp = server
+            .post("/api/v1/nat")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "nat_type": "nat64",
+                "interface": "em0",
+                "protocol": "any",
+                "dst_addr": "64:ff9b::/96",
+                "redirect_addr": "2001:db8::1",
+            }))
+            .await;
+
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        let msg = body["message"].as_str().unwrap();
+        assert!(
+            msg.contains("nat64"),
+            "message should name the rule type: {msg}"
+        );
+
+        // Missing /96 prefix on the destination
+        let resp = server
+            .post("/api/v1/nat")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "nat_type": "nat64",
+                "interface": "em0",
+                "protocol": "any",
+                "dst_addr": "64:ff9b::/64",
+                "redirect_addr": "203.0.113.1",
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        assert!(body["message"].as_str().unwrap().contains("/96"));
+    }
+
     // --- New auth system tests ---
 
     #[tokio::test]
@@ -2280,6 +2347,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_restore_round_trips_dns_resolver_config() {
+        // #589: resolver settings live in dns_resolver_config, not
+        // /etc/resolv.conf — a backup/restore must carry them.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+
+        let resolver = crate::dns_resolver::ResolverConfig {
+            forwarding_servers: vec!["9.9.9.9".to_string()],
+            blocklists_enabled: true,
+            ..Default::default()
+        };
+        let mut conn = state.pool.acquire().await.unwrap();
+        crate::dns_resolver::save_config_on(&mut conn, &resolver)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let config = crate::backup::build_current_config(&state).await.unwrap();
+        let exported = config
+            .dns_resolver
+            .as_ref()
+            .expect("export must include resolver");
+        assert_eq!(exported.forwarding_servers, vec!["9.9.9.9".to_string()]);
+        assert!(exported.blocklists_enabled);
+
+        // Simulate drift after the backup was taken.
+        sqlx::query(
+            "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('forwarding_servers', '8.8.4.4')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        crate::backup::apply_firewall_config(&state, &config, &Default::default())
+            .await
+            .expect("restore must succeed");
+
+        let (servers,): (String,) = sqlx::query_as(
+            "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            servers, "9.9.9.9",
+            "restore must reinstate the backed-up forwarders"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_resolver_section_leaves_config_untouched() {
+        // A pre-#589 backup has no dns_resolver section — restoring it must
+        // not reset the box's resolver config to defaults.
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES ('forwarding_servers', '9.9.9.9')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let mut config = crate::backup::build_current_config(&state).await.unwrap();
+        config.dns_resolver = None;
+        crate::backup::apply_firewall_config(&state, &config, &Default::default())
+            .await
+            .expect("restore must succeed");
+
+        let (servers,): (String,) = sqlx::query_as(
+            "SELECT value FROM dns_resolver_config WHERE key = 'forwarding_servers'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            servers, "9.9.9.9",
+            "legacy restore must not clobber resolver config"
+        );
+    }
+
+    #[tokio::test]
     async fn test_restore_fails_instead_of_partial_apply() {
         // A required step failing (here: clearing a table that no longer
         // exists) must abort the restore with an error, never return Ok after
@@ -2673,6 +2823,7 @@ mod tests {
                     interface: "wg0".to_string(),
                     listen_port: 51820,
                     address: "10.9.0.1/24".to_string(),
+                    address6: None,
                     private_key: "k".into(),
                     public_key: "K".into(),
                     dns: None,
@@ -2834,5 +2985,207 @@ mod tests {
                 .unwrap()
                 .starts_with("aifw-")
         );
+    }
+
+    // ============ Session-cookie auth (SEC-M7 #304) ============
+
+    /// Collect the `Set-Cookie` header values from a response.
+    fn set_cookies(resp: &axum_test::TestResponse) -> Vec<String> {
+        resp.headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_string))
+            .collect()
+    }
+
+    /// Extract `<name>=<value>` (value only) from a `Set-Cookie` list.
+    fn cookie_from(cookies: &[String], name: &str) -> String {
+        cookies
+            .iter()
+            .find(|c| c.starts_with(&format!("{name}=")))
+            .and_then(|c| c.split(';').next())
+            .and_then(|kv| kv.split('=').nth(1))
+            .unwrap_or_else(|| panic!("cookie {name} not found in {cookies:?}"))
+            .to_string()
+    }
+
+    /// Register the first user and log in, returning the raw `Set-Cookie`
+    /// values from the login response.
+    async fn login_cookies(server: &TestServer) -> Vec<String> {
+        server
+            .post("/api/v1/auth/register")
+            .json(&json!({"username": "admin", "password": "TestPass123"}))
+            .await;
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username": "admin", "password": "TestPass123"}))
+            .await;
+        resp.assert_status_ok();
+        set_cookies(&resp)
+    }
+
+    #[tokio::test]
+    async fn test_login_sets_httponly_session_cookies() {
+        let (server, _) = test_app().await;
+        let cookies = login_cookies(&server).await;
+
+        assert_eq!(cookies.len(), 2, "expected access + refresh cookies");
+        for c in &cookies {
+            assert!(c.contains("HttpOnly"), "{c}");
+            assert!(c.contains("SameSite=Strict"), "{c}");
+        }
+        let access = cookies.iter().find(|c| c.starts_with("aifw_at=")).unwrap();
+        assert!(access.contains("Path=/;"), "{access}");
+        let refresh = cookies.iter().find(|c| c.starts_with("aifw_rt=")).unwrap();
+        assert!(refresh.contains("Path=/api/v1/auth;"), "{refresh}");
+    }
+
+    #[tokio::test]
+    async fn test_cookie_authenticates_requests() {
+        let (server, _) = test_app().await;
+        let cookies = login_cookies(&server).await;
+        let access = cookie_from(&cookies, "aifw_at");
+
+        // No Authorization header — the cookie alone must authenticate.
+        let resp = server
+            .get("/api/v1/auth/me")
+            .add_header("cookie", format!("aifw_at={access}"))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["username"], "admin");
+    }
+
+    #[tokio::test]
+    async fn test_cookie_write_requires_csrf_header() {
+        let (server, _) = test_app().await;
+        let cookies = login_cookies(&server).await;
+        let access = cookie_from(&cookies, "aifw_at");
+
+        // Unsafe method with cookie auth but no CSRF header → 403.
+        let resp = server
+            .post("/api/v1/auth/ws-ticket")
+            .add_header("cookie", format!("aifw_at={access}"))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+
+        // Same request with the custom header succeeds.
+        let resp = server
+            .post("/api/v1/auth/ws-ticket")
+            .add_header("cookie", format!("aifw_at={access}"))
+            .add_header("x-aifw-csrf", "1")
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn test_bearer_writes_do_not_need_csrf_header() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Header-auth clients are CSRF-immune; no custom header required.
+        let resp = server
+            .post("/api/v1/auth/ws-ticket")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn test_refresh_via_cookie_rotates_session() {
+        let (server, _) = test_app().await;
+        let cookies = login_cookies(&server).await;
+        let refresh = cookie_from(&cookies, "aifw_rt");
+
+        // No JSON body — the refresh token rides the cookie.
+        let resp = server
+            .post("/api/v1/auth/refresh")
+            .add_header("cookie", format!("aifw_rt={refresh}"))
+            .await;
+        resp.assert_status_ok();
+
+        let rotated = set_cookies(&resp);
+        let new_access = cookie_from(&rotated, "aifw_at");
+        let new_refresh = cookie_from(&rotated, "aifw_rt");
+        assert_ne!(new_refresh, refresh, "refresh token must rotate");
+
+        // The rotated access cookie authenticates.
+        server
+            .get("/api/v1/auth/me")
+            .add_header("cookie", format!("aifw_at={new_access}"))
+            .await
+            .assert_status_ok();
+
+        // The old refresh token was revoked by the rotation.
+        let resp = server
+            .post("/api/v1/auth/refresh")
+            .add_header("cookie", format!("aifw_rt={refresh}"))
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_logout_via_cookies_clears_and_revokes() {
+        let (server, _) = test_app().await;
+        let cookies = login_cookies(&server).await;
+        let access = cookie_from(&cookies, "aifw_at");
+        let refresh = cookie_from(&cookies, "aifw_rt");
+
+        // Cookie-only logout: no body, no Authorization header.
+        let resp = server
+            .post("/api/v1/auth/logout")
+            .add_header("cookie", format!("aifw_at={access}; aifw_rt={refresh}"))
+            .add_header("x-aifw-csrf", "1")
+            .await;
+        resp.assert_status_ok();
+        for c in set_cookies(&resp) {
+            assert!(c.contains("Max-Age=0"), "logout must expire cookies: {c}");
+        }
+
+        // Access token was revoked (JTI) — cookie no longer authenticates.
+        let resp = server
+            .get("/api/v1/auth/me")
+            .add_header("cookie", format!("aifw_at={access}"))
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+
+        // Refresh token was revoked too.
+        let resp = server
+            .post("/api/v1/auth/refresh")
+            .add_header("cookie", format!("aifw_rt={refresh}"))
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_totp_required_login_sets_no_cookies() {
+        let (server, _) = test_app().await;
+        // First login normally to create the user, then enable TOTP.
+        let token = create_user_and_login(&server).await;
+        let resp = server
+            .post("/api/v1/auth/totp/setup")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let secret = body["secret"].as_str().unwrap().to_string();
+        let code = crate::auth::totp::generate_current(&secret).unwrap();
+        server
+            .post("/api/v1/auth/totp/verify")
+            .authorization_bearer(&token)
+            .json(&json!({"code": code}))
+            .await
+            .assert_status_ok();
+
+        // Password-only login now returns totp_required and must NOT install
+        // session cookies.
+        let resp = server
+            .post("/api/v1/auth/login")
+            .json(&json!({"username": "admin", "password": "TestPass123"}))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["totp_required"], true);
+        assert!(set_cookies(&resp).is_empty(), "no cookies before 2FA");
     }
 }

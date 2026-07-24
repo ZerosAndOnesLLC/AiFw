@@ -24,6 +24,10 @@ pub struct WgTunnel {
     pub listen_port: u16,
     /// Server's tunnel address with prefix (e.g. 10.10.0.1/24); defines the tunnel subnet
     pub address: Address,
+    /// Server's IPv6 tunnel address with prefix (e.g. fd00:a1f0::1/64) for
+    /// dual-stack tunnels (#471); None means the tunnel carries no inner IPv6
+    #[serde(default)]
+    pub address6: Option<Address>,
     /// DNS server(s) pushed to clients in generated configs; None omits the DNS line
     pub dns: Option<String>,
     /// Interface MTU; None uses the system default
@@ -63,6 +67,7 @@ impl WgTunnel {
             public_key,
             listen_port,
             address,
+            address6: None,
             dns: None,
             mtu: None,
             listen_interface: None,
@@ -73,16 +78,46 @@ impl WgTunnel {
         })
     }
 
-    /// Generate ifconfig commands to create the WireGuard interface
+    /// Generate ifconfig commands to create the WireGuard interface.
+    /// Uses the address-family-correct keyword (`inet`/`inet6`) — configuring
+    /// an IPv6 address with `inet` silently fails on FreeBSD (#471).
     pub fn to_ifconfig_cmds(&self) -> Vec<String> {
+        let family = if address_is_v6(&self.address) {
+            "inet6"
+        } else {
+            "inet"
+        };
         let mut cmds = vec![
             format!("ifconfig {} create", self.interface),
-            format!("ifconfig {} inet {} up", self.interface, self.address),
+            format!("ifconfig {} {} {} up", self.interface, family, self.address),
         ];
+        if let Some(ref addr6) = self.address6 {
+            cmds.push(format!("ifconfig {} inet6 {}", self.interface, addr6));
+        }
         if let Some(mtu) = self.mtu {
             cmds.push(format!("ifconfig {} mtu {mtu}", self.interface));
         }
         cmds
+    }
+
+    /// Validate the address/address6 pairing: `address6` must be IPv6, and
+    /// when it is set `address` must be IPv4 (dual-stack means one of each —
+    /// two v6 addresses belong in a differently shaped config).
+    pub fn validate_addresses(&self) -> crate::Result<()> {
+        if let Some(ref a6) = self.address6 {
+            if !address_is_v6(a6) {
+                return Err(crate::AifwError::Validation(
+                    "IPv6 tunnel address must be an IPv6 address (e.g. fd00:a1f0::1/64)"
+                        .to_string(),
+                ));
+            }
+            if address_is_v6(&self.address) {
+                return Err(crate::AifwError::Validation(
+                    "with an IPv6 tunnel address set, the primary address must be IPv4".to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Generate pf rules to allow WireGuard traffic
@@ -112,28 +147,69 @@ impl WgTunnel {
         address_network_cidr(&self.address)
     }
 
-    /// Outbound NAT rule so tunnel clients reach the internet through the
-    /// WAN (#469). Only IPv4 tunnel subnets are NAT'd — returns None for
-    /// IPv6 / alias / any addresses so we never masquerade 0.0.0.0/0.
-    pub fn to_nat_rule(&self, wan_if: &str) -> Option<String> {
+    /// Network CIDR of the IPv6 tunnel subnet, masked to the network boundary
+    /// (e.g. address6 fd00:a1f0::1/64 → "fd00:a1f0::/64"); None when the
+    /// tunnel has no inner IPv6.
+    pub fn network_cidr6(&self) -> Option<String> {
+        self.address6.as_ref().map(address_network_cidr)
+    }
+
+    /// Outbound NAT rules so tunnel clients reach the internet through the
+    /// WAN: the #469 IPv4 masquerade plus, for tunnels carrying inner IPv6,
+    /// an NPTv6-style NAT66 masquerade (#471) — same shape pf uses for
+    /// NAT64 (`nat on <if> inet6`). Only Single/Network tunnel subnets are
+    /// NAT'd — alias/any addresses emit nothing so we never masquerade a
+    /// whole address family.
+    pub fn to_nat_rules(&self, wan_if: &str) -> Vec<String> {
         use std::net::IpAddr;
+        let mut rules = Vec::new();
         match &self.address {
-            Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _) => Some(format!(
-                "nat on {wan_if} from {} to any -> ({wan_if})",
-                self.network_cidr()
-            )),
-            _ => None,
+            Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _) => {
+                rules.push(format!(
+                    "nat on {wan_if} from {} to any -> ({wan_if})",
+                    self.network_cidr()
+                ));
+            }
+            Address::Single(IpAddr::V6(_)) | Address::Network(IpAddr::V6(_), _) => {
+                rules.push(format!(
+                    "nat on {wan_if} inet6 from {} to any -> ({wan_if})",
+                    self.network_cidr()
+                ));
+            }
+            _ => {}
         }
+        if let Some(net6) = self.network_cidr6() {
+            rules.push(format!(
+                "nat on {wan_if} inet6 from {net6} to any -> ({wan_if})"
+            ));
+        }
+        rules
     }
 }
 
-/// AllowedIPs for a full-tunnel client config, scoped to the address
-/// families the tunnel's inner network can carry.
-fn full_tunnel_allowed_ips(addr: &Address) -> &'static str {
+/// Whether an Address is IPv6 (Single or Network variant).
+fn address_is_v6(addr: &Address) -> bool {
     use std::net::IpAddr;
-    match addr {
-        Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _) => "0.0.0.0/0",
-        Address::Single(IpAddr::V6(_)) | Address::Network(IpAddr::V6(_), _) => "::/0",
+    matches!(
+        addr,
+        Address::Single(IpAddr::V6(_)) | Address::Network(IpAddr::V6(_), _)
+    )
+}
+
+/// AllowedIPs for a full-tunnel client config, scoped to the address
+/// families the tunnel's inner network can carry. A dual-stack tunnel
+/// (v4 primary + address6) routes both families (#471); emitting `::/0`
+/// for a v4-only tunnel blackholes client IPv6 (#469).
+fn full_tunnel_allowed_ips(tunnel: &WgTunnel) -> &'static str {
+    use std::net::IpAddr;
+    let has_v6 = tunnel.address6.is_some() || address_is_v6(&tunnel.address);
+    let has_v4 = matches!(
+        &tunnel.address,
+        Address::Single(IpAddr::V4(_)) | Address::Network(IpAddr::V4(_), _)
+    );
+    match (has_v4, has_v6) {
+        (true, false) => "0.0.0.0/0",
+        (false, true) => "::/0",
         _ => "0.0.0.0/0, ::/0",
     }
 }
@@ -213,9 +289,11 @@ impl WgPeer {
         } else {
             conf.push_str("PrivateKey = <paste-your-private-key-here>\n");
         }
-        // Use the first allowed_ip as the client's address
-        if let Some(addr) = self.allowed_ips.first() {
-            conf.push_str(&format!("Address = {addr}\n"));
+        // The allowed_ips double as the client's addresses — emit them all
+        // so a dual-stack peer (v4/32 + v6/128) gets both families (#471).
+        if !self.allowed_ips.is_empty() {
+            let addrs: Vec<String> = self.allowed_ips.iter().map(|a| a.to_string()).collect();
+            conf.push_str(&format!("Address = {}\n", addrs.join(", ")));
         }
         if let Some(ref dns) = tunnel.dns
             && !dns.is_empty()
@@ -235,16 +313,20 @@ impl WgPeer {
         ));
         if split_tunnel {
             // Prefer admin-configured split routes; otherwise derive the
-            // network CIDR from the tunnel address (so 172.29.240.1/24 yields
-            // 172.29.240.0/24 instead of a host/prefix that confuses some
-            // clients).
+            // network CIDR(s) from the tunnel addresses (so 172.29.240.1/24
+            // yields 172.29.240.0/24 instead of a host/prefix that confuses
+            // some clients; dual-stack tunnels include the v6 subnet too).
             let routes = tunnel
                 .split_routes
                 .as_deref()
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| address_network_cidr(&tunnel.address));
+                .unwrap_or_else(|| {
+                    let mut nets = vec![address_network_cidr(&tunnel.address)];
+                    nets.extend(tunnel.network_cidr6());
+                    nets.join(", ")
+                });
             conf.push_str(&format!("AllowedIPs = {routes}\n"));
         } else {
             // Route all traffic through the VPN — but only the address
@@ -253,7 +335,7 @@ impl WgPeer {
             // dual-stack clients (#469).
             conf.push_str(&format!(
                 "AllowedIPs = {}\n",
-                full_tunnel_allowed_ips(&tunnel.address)
+                full_tunnel_allowed_ips(tunnel)
             ));
         }
         if let Some(ka) = self.persistent_keepalive {
@@ -787,6 +869,7 @@ mod split_tunnel_tests {
             public_key: "y".into(),
             listen_port: 51820,
             address: Address::Network("172.29.240.1".parse().unwrap(), 24),
+            address6: None,
             dns: None,
             mtu: None,
             listen_interface: None,
@@ -822,6 +905,7 @@ mod split_tunnel_tests {
             public_key: "y".into(),
             listen_port: 51820,
             address: Address::Network("172.29.240.1".parse().unwrap(), 24),
+            address6: None,
             dns: None,
             mtu: None,
             listen_interface: None,
@@ -857,6 +941,7 @@ mod split_tunnel_tests {
             public_key: "y".into(),
             listen_port: 51820,
             address,
+            address6: None,
             dns: None,
             mtu: None,
             listen_interface: None,
@@ -900,19 +985,94 @@ mod split_tunnel_tests {
     }
 
     #[test]
+    fn full_tunnel_dual_stack_routes_both_families() {
+        let mut tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        let mut peer = test_peer(tunnel.id);
+        peer.allowed_ips = vec![
+            Address::Network("10.10.0.2".parse().unwrap(), 32),
+            Address::Network("fd00:a1f0::2".parse().unwrap(), 128),
+        ];
+        let cfg = peer.to_client_config(&tunnel, "vpn.example.com", false);
+        assert!(cfg.contains("Address = 10.10.0.2/32, fd00:a1f0::2/128\n"));
+        assert!(cfg.contains("AllowedIPs = 0.0.0.0/0, ::/0\n"));
+    }
+
+    #[test]
+    fn split_tunnel_fallback_includes_v6_subnet() {
+        let mut tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        let cfg = test_peer(tunnel.id).to_client_config(&tunnel, "vpn.example.com", true);
+        assert!(cfg.contains("AllowedIPs = 10.10.0.0/24, fd00:a1f0::/64\n"));
+    }
+
+    #[test]
+    fn ifconfig_cmds_dual_stack_configures_both_families() {
+        let mut tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        let cmds = tunnel.to_ifconfig_cmds();
+        assert_eq!(cmds[1], "ifconfig wg0 inet 10.10.0.1/24 up");
+        assert_eq!(cmds[2], "ifconfig wg0 inet6 fd00:a1f0::1/64");
+    }
+
+    #[test]
+    fn ifconfig_cmds_v6_primary_uses_inet6() {
+        let tunnel = test_tunnel(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        assert!(tunnel.to_ifconfig_cmds()[1].starts_with("ifconfig wg0 inet6 "));
+    }
+
+    #[test]
+    fn validate_addresses_rejects_bad_pairings() {
+        // v4 in the address6 slot
+        let mut t = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        t.address6 = Some(Address::Network("192.168.1.1".parse().unwrap(), 24));
+        assert!(t.validate_addresses().is_err());
+
+        // two v6 addresses
+        let mut t = test_tunnel(Address::Network("fd00:1::1".parse().unwrap(), 64));
+        t.address6 = Some(Address::Network("fd00:2::1".parse().unwrap(), 64));
+        assert!(t.validate_addresses().is_err());
+
+        // proper dual-stack is fine
+        let mut t = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        t.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        assert!(t.validate_addresses().is_ok());
+    }
+
+    #[test]
     fn nat_rule_masks_to_network_boundary() {
         let tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
         assert_eq!(
-            tunnel.to_nat_rule("em0").as_deref(),
-            Some("nat on em0 from 10.10.0.0/24 to any -> (em0)")
+            tunnel.to_nat_rules("em0"),
+            vec!["nat on em0 from 10.10.0.0/24 to any -> (em0)"]
         );
     }
 
     #[test]
-    fn nat_rule_skipped_for_non_v4_addresses() {
+    fn nat_rules_dual_stack_adds_nat66() {
+        let mut tunnel = test_tunnel(Address::Network("10.10.0.1".parse().unwrap(), 24));
+        tunnel.address6 = Some(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
+        assert_eq!(
+            tunnel.to_nat_rules("em0"),
+            vec![
+                "nat on em0 from 10.10.0.0/24 to any -> (em0)",
+                "nat on em0 inet6 from fd00:a1f0::/64 to any -> (em0)",
+            ]
+        );
+    }
+
+    #[test]
+    fn nat_rules_v6_only_tunnel_gets_nat66() {
         let v6 = test_tunnel(Address::Network("fd00:a1f0::1".parse().unwrap(), 64));
-        assert_eq!(v6.to_nat_rule("em0"), None);
+        assert_eq!(
+            v6.to_nat_rules("em0"),
+            vec!["nat on em0 inet6 from fd00:a1f0::/64 to any -> (em0)"]
+        );
+    }
+
+    #[test]
+    fn nat_rules_skipped_for_alias_and_any_addresses() {
         let any = test_tunnel(Address::Any);
-        assert_eq!(any.to_nat_rule("em0"), None);
+        assert!(any.to_nat_rules("em0").is_empty());
     }
 }

@@ -179,6 +179,10 @@ pub struct AppState {
     /// Never changes without a config write, so a one-shot read is correct.
     pub cluster_enabled: Arc<std::sync::atomic::AtomicBool>,
     pub cluster_events: aifw_common::ClusterEventBus,
+    /// Whether the API is serving TLS — controls the `Secure` attribute on
+    /// the session cookies (SEC-M7 #304). Set from `!args.no_tls` in `main`;
+    /// defaults to `false` in tests.
+    pub tls_enabled: bool,
     /// Ring buffer of deflate-compressed `WsHistoryEntry` JSON frames
     /// (PERF-M5). ~2-3 KB of repetitive JSON per tick compresses 4-8x, so a
     /// 1800-entry ring costs ~1 MB instead of ~5 MB. Compress/decompress
@@ -963,21 +967,18 @@ async fn create_state_from_db(
             .await
             .unwrap_or_default();
     for (name,) in &enabled_plugins {
-        // Unload disabled version and re-register as enabled
-        let _ = plugin_mgr.unload(name).await;
-        let plugin: Option<Box<dyn aifw_plugins::Plugin>> = match name.as_str() {
-            "logging" => Some(Box::new(aifw_plugins::examples::LoggingPlugin::new())),
-            "ip_reputation" => Some(Box::new(aifw_plugins::examples::IpReputationPlugin::new())),
-            "webhook" => Some(Box::new(aifw_plugins::examples::WebhookPlugin::new())),
-            _ => None,
-        };
-        if let Some(p) = plugin {
+        // Unload disabled version and re-register as enabled, with the
+        // persisted settings — plugins only read settings in init() (#586).
+        let reg_name = plugins::canonical_builtin(name).unwrap_or(name);
+        let _ = plugin_mgr.unload(reg_name).await;
+        if let Some(p) = plugins::instantiate_builtin(name) {
+            let settings = plugins::load_settings(&pool, name).await;
             let _ = plugin_mgr
                 .register(
                     p,
                     aifw_plugins::PluginConfig {
                         enabled: true,
-                        ..Default::default()
+                        settings,
                     },
                 )
                 .await;
@@ -1041,6 +1042,7 @@ async fn create_state_from_db(
         tls_engine,
         cluster_enabled,
         cluster_events,
+        tls_enabled: false,
         metrics_history: Arc::new(RwLock::new(VecDeque::with_capacity(history_max.min(86400)))),
         metrics_history_max: Arc::new(std::sync::atomic::AtomicUsize::new(history_max)),
         redis: None,
@@ -1243,6 +1245,16 @@ async fn ensure_rdr_anchor() {
     let mut changed = false;
 
     let has_rdr = lines.iter().any(|l| l.trim() == "rdr-anchor \"aifw-nat\"");
+    // Filter-class hook for the NAT anchor: cross-family af-to rules are
+    // pass rules, so an install predating `anchor "aifw-nat"` would load
+    // them but never evaluate them (#531).
+    let has_nat_filter = lines.iter().any(|l| l.trim() == "anchor \"aifw-nat\"");
+    // ICMPv6 neighbor discovery: aifw-setup only emits this into NEWLY
+    // generated pf.conf files, so upgraded appliances keep dropping ND and
+    // all IPv6 (incl. NAT64) stays broken until healed here (#601).
+    const ND_RULE: &str =
+        "pass quick inet6 proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }";
+    let has_nd = lines.iter().any(|l| l.trim() == ND_RULE);
     let mwan_anchors = ["aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"];
     let has_mwan: Vec<bool> = mwan_anchors
         .iter()
@@ -1253,6 +1265,7 @@ async fn ensure_rdr_anchor() {
         .collect();
 
     let mut mwan_inserted = false;
+    let mut nd_inserted = false;
 
     for line in lines.iter() {
         let t = line.trim();
@@ -1269,6 +1282,20 @@ async fn ensure_rdr_anchor() {
 
         // 2. Before the filter-section `anchor "aifw"` (trimmed EXACTLY — won't
         //    match nat-anchor or rdr-anchor), inject any missing mwan anchors.
+        // ND pass must precede the FIRST filter anchor — anchors hold
+        // `block quick` rules that would otherwise eat neighbor
+        // solicitations (#601). Checked against every filter-anchor form so
+        // it lands before aifw-pbr when the mwan anchors already exist.
+        if !has_nd
+            && !nd_inserted
+            && (t == "anchor \"aifw\""
+                || mwan_anchors.iter().any(|a| t == format!("anchor \"{a}\"")))
+        {
+            out.push(ND_RULE.to_string());
+            nd_inserted = true;
+            changed = true;
+        }
+
         if !mwan_inserted && t == "anchor \"aifw\"" {
             for (i, a) in mwan_anchors.iter().enumerate() {
                 if !has_mwan[i] {
@@ -1278,6 +1305,12 @@ async fn ensure_rdr_anchor() {
             }
             mwan_inserted = true;
             out.push((*line).to_string());
+            // 3. After the filter `anchor "aifw"`, inject the filter-class
+            //    `anchor "aifw-nat"` hook if absent (af-to rules, #531).
+            if !has_nat_filter {
+                out.push("anchor \"aifw-nat\"".to_string());
+                changed = true;
+            }
             continue;
         }
 
@@ -1690,6 +1723,12 @@ async fn main() -> anyhow::Result<()> {
         let mem_state = state.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            // 24h alert count cache (#601): the COUNT rides an index but
+            // still costs >1s on multi-million-row tables — too expensive
+            // for a per-minute heartbeat. Refresh every 10th tick; the
+            // heartbeat is a health signal, not a live stat.
+            let mut alerts_24h_cache: i64 = 0;
+            let mut heartbeat_ticks: u32 = 0;
             loop {
                 interval.tick().await;
                 let hist_entries = mem_state.metrics_history.read().await.len();
@@ -1733,13 +1772,19 @@ async fn main() -> anyhow::Result<()> {
                 // rides idx_ids_alerts_ts instead of full-scanning a
                 // multi-million-row table every tick (and contending with
                 // ingestion). This is a health signal — recent persistence,
-                // not lifetime total — hence the _24h field name.
-                let (ids_alerts_db_24h,): (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*) FROM ids_alerts WHERE timestamp >= datetime('now', '-1 day')",
-                )
-                .fetch_one(&mem_state.pool)
-                .await
-                .unwrap_or((0,));
+                // not lifetime total — hence the _24h field name. Refreshed
+                // every 10 minutes, cached between (#601).
+                if heartbeat_ticks.is_multiple_of(10) {
+                    let (count,): (i64,) = sqlx::query_as(
+                        "SELECT COUNT(*) FROM ids_alerts WHERE timestamp >= datetime('now', '-1 day')",
+                    )
+                    .fetch_one(&mem_state.pool)
+                    .await
+                    .unwrap_or((0,));
+                    alerts_24h_cache = count;
+                }
+                heartbeat_ticks = heartbeat_ticks.wrapping_add(1);
+                let ids_alerts_db_24h = alerts_24h_cache;
                 // PERF-H12: native RSS syscall, not a `ps` fork (finishes the
                 // main.rs shell-out #356 also cited).
                 let rss_mb =
@@ -1767,6 +1812,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let tls_enabled = !args.no_tls;
+    state.tls_enabled = tls_enabled;
     let app = build_router(
         state,
         args.ui_dir.as_deref(),

@@ -412,3 +412,30 @@ pub async fn tcpdump(args: &[&str]) -> std::io::Result<std::process::Output> {
     fallback.extend_from_slice(args);
     sudo_with_fallback(&narrow, &fallback).await
 }
+
+#[cfg(test)]
+mod allowlist_tests {
+    /// Guard (#601): every path the code writes through `aifw-sudo-write`
+    /// must appear in the helper's allowlist. `pf.conf.aifw` was missing,
+    /// so pf-tuning's boot apply failed silently on every appliance —
+    /// the same drift family as the sudoers guard in aifw-setup.
+    #[test]
+    fn sudo_write_allowlist_covers_call_sites() {
+        let helper = include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-write");
+        for path in [
+            "/etc/pf.conf",
+            "/usr/local/etc/aifw/pf.conf.aifw",
+            "/usr/local/etc/trafficcop/config.yaml",
+            "/usr/local/etc/aifw/daemon.key",
+            "/usr/local/etc/swanctl/conf.d/aifw-*.conf",
+            "/usr/local/etc/swanctl/private/aifw-*.pem",
+            "/usr/local/etc/swanctl/x509/aifw-*.pem",
+            "/usr/local/etc/swanctl/x509ca/aifw-*.pem",
+        ] {
+            assert!(
+                helper.contains(path),
+                "aifw-sudo-write allowlist is missing {path} — runtime writes to it are refused"
+            );
+        }
+    }
+}

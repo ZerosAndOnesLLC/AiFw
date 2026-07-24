@@ -54,9 +54,18 @@ log "starting (pid $$, interval ${INTERVAL}s)"
 # validated; a no-op once the file already matches.
 refresh_sudoers() {
     [ -x /usr/local/sbin/aifw-setup ] || return 0
+    # Absolute path (#601): visudo lives in /usr/local/sbin, which is NOT in
+    # the daemon(8) default PATH the watchdog runs under — the bare name
+    # made this check fail command-not-found on every boot, so the refresh
+    # never ran and the failure was misreported as a validation error.
+    VISUDO=/usr/local/sbin/visudo
+    [ -x "$VISUDO" ] || VISUDO=$(command -v visudo) || {
+        log "WARN visudo not found; sudoers refresh skipped"
+        return 0
+    }
     _tmp=$(mktemp /tmp/aifw-sudoers.XXXXXX) || return 0
     if /usr/local/sbin/aifw-setup --print-sudoers > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
-        if visudo -cf "$_tmp" >/dev/null 2>&1; then
+        if "$VISUDO" -cf "$_tmp" >/dev/null 2>&1; then
             if ! cmp -s "$_tmp" /usr/local/etc/sudoers.d/aifw 2>/dev/null; then
                 if install -m 440 -o root -g wheel "$_tmp" /usr/local/etc/sudoers.d/aifw; then
                     log "refreshed /usr/local/etc/sudoers.d/aifw from aifw-setup"

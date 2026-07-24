@@ -68,6 +68,12 @@ pub struct FirewallConfig {
     /// snapshot/restore silently drops every route the user defined.
     #[serde(default)]
     pub static_routes: Vec<StaticRouteConfig>,
+    /// rDNS/unbound resolver settings (the `dns_resolver_config` table).
+    /// `None` means the backup predates this section (#589) — restore
+    /// leaves the box's resolver config untouched rather than resetting
+    /// it to defaults.
+    #[serde(default)]
+    pub dns_resolver: Option<DnsResolverSection>,
 }
 
 impl Default for FirewallConfig {
@@ -88,6 +94,7 @@ impl Default for FirewallConfig {
             dhcp: DhcpSection::default(),
             aliases: Vec::new(),
             static_routes: Vec::new(),
+            dns_resolver: None,
         }
     }
 }
@@ -221,6 +228,24 @@ impl FirewallConfig {
         }
         if self.system.api_port == 0 {
             return Err("system.api_port cannot be 0".to_string());
+        }
+        if let Some(r) = &self.dns_resolver {
+            for s in &r.forwarding_servers {
+                if s.parse::<std::net::IpAddr>().is_err() {
+                    return Err(format!(
+                        "dns_resolver.forwarding_servers entry {s} is not a valid IP"
+                    ));
+                }
+            }
+            if r.blocklist_urls.len() > 10_000
+                || r.whitelist.len() > 100_000
+                || r.forwarding_servers.len() > 100
+                || r.dot_upstream.len() > 100
+                || r.listen_interfaces.len() > 100
+                || r.private_addresses.len() > 1_000
+            {
+                return Err("dns_resolver list length exceeds cap".to_string());
+            }
         }
         Ok(())
     }
@@ -561,6 +586,9 @@ pub struct WireguardTunnelConfig {
     pub listen_port: u16,
     /// Tunnel interface address (IP/prefix)
     pub address: String,
+    /// Optional IPv6 tunnel address for dual-stack tunnels (#471)
+    #[serde(default)]
+    pub address6: Option<String>,
     /// Local WireGuard private key (base64; sensitive)
     pub private_key: String,
     /// Local WireGuard public key (base64)
@@ -976,6 +1004,173 @@ pub struct DhcpHaSection {
     pub tls_key: Option<String>,
     /// TLS CA certificate path for peer verification
     pub tls_ca: Option<String>,
+}
+
+// ============================================================
+// DNS resolver (rDNS / unbound)
+// ============================================================
+
+/// rDNS/unbound resolver settings — the `dns_resolver_config` key/value
+/// table materialized as a struct. This is the same type the
+/// `/api/v1/dns/resolver/config` endpoint speaks (aifw-api re-exports it
+/// as `ResolverConfig`); it lives here so config snapshots can round-trip
+/// it (#589).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DnsResolverSection {
+    /// Resolver backend: `rdns` or `unbound`
+    pub backend: String,
+    /// Whether the resolver service runs
+    pub enabled: bool,
+    /// Listen addresses (e.g. `0.0.0.0`)
+    pub listen_interfaces: Vec<String>,
+    /// DNS listen port (default 53)
+    pub port: u16,
+    /// DNSSEC validation
+    pub dnssec: bool,
+    /// DNS64 synthesis
+    pub dns64: bool,
+    /// DNS64 /96 prefix — must match the NAT64 rule prefix (#531)
+    pub dns64_prefix: String,
+    /// Register DHCP leases in DNS
+    pub register_dhcp: bool,
+    /// Domain for DHCP lease DNS registration (e.g. `local`)
+    pub dhcp_domain: String,
+    /// Local zone type — transparent, static, redirect, etc.
+    pub local_zone_type: String,
+    /// Interface for outgoing queries; None = any
+    pub outgoing_interface: Option<String>,
+    // Advanced
+    /// Worker thread count
+    pub num_threads: u32,
+    /// Message cache size (e.g. `8m`)
+    pub msg_cache_size: String,
+    /// RRset cache size (e.g. `16m`)
+    pub rrset_cache_size: String,
+    /// Maximum cache TTL in seconds
+    pub cache_max_ttl: u32,
+    /// Minimum cache TTL in seconds
+    pub cache_min_ttl: u32,
+    /// Prefetch popular records before expiry
+    pub prefetch: bool,
+    /// Prefetch DNSKEY records
+    pub prefetch_key: bool,
+    /// Host infrastructure cache TTL in seconds
+    pub infra_host_ttl: u32,
+    /// Unwanted-reply threshold before cache flush
+    pub unwanted_reply_threshold: u32,
+    /// Log client queries
+    pub log_queries: bool,
+    /// Log replies
+    pub log_replies: bool,
+    /// Log verbosity level
+    pub log_verbosity: u32,
+    /// Ceiling on a single query's resolution (ms). 0 = rDNS built-in
+    /// per-transport defaults (UDP 3000, TCP/DoT 30000).
+    #[serde(default)]
+    pub query_timeout_ms: u32,
+    /// Refuse id.server/hostname.bind queries
+    pub hide_identity: bool,
+    /// Refuse version.server/version.bind queries
+    pub hide_version: bool,
+    /// DNS-rebind protection
+    pub rebind_protection: bool,
+    /// Private address ranges for rebind protection
+    pub private_addresses: Vec<String>,
+    // Forwarding
+    /// Forward to upstream servers instead of full recursion
+    pub forwarding_enabled: bool,
+    /// Plain upstream DNS IPs (e.g. `8.8.8.8`, `1.1.1.1`)
+    pub forwarding_servers: Vec<String>,
+    /// Also forward to /etc/resolv.conf nameservers
+    pub use_system_nameservers: bool,
+    // DoT
+    /// DNS-over-TLS forwarding
+    pub dot_enabled: bool,
+    /// DoT upstreams (`1.1.1.1@853#cloudflare-dns.com`)
+    pub dot_upstream: Vec<String>,
+    // Blocklists
+    /// Enable domain blocklists
+    pub blocklists_enabled: bool,
+    /// Blocklist source URLs
+    pub blocklist_urls: Vec<String>,
+    /// Domains exempted from blocklists
+    pub whitelist: Vec<String>,
+    /// `nxdomain` or `redirect`
+    pub blocklist_action: String,
+    /// Redirect target when blocklist_action is `redirect`
+    pub blocklist_redirect_ip: Option<String>,
+    // Custom
+    /// Free-form extra config lines appended to the generated config
+    pub custom_options: String,
+    // Safety
+    /// Probe :53 after a resolver switch and auto-rollback on failure.
+    /// Default: true. Disable to restore the old fire-and-forget behavior
+    /// (e.g. for debugging, or on boxes where the probe misfires).
+    #[serde(default = "default_true")]
+    pub probe_enabled: bool,
+}
+
+impl Default for DnsResolverSection {
+    fn default() -> Self {
+        Self {
+            backend: "rdns".to_string(),
+            enabled: false,
+            listen_interfaces: vec!["0.0.0.0".to_string()],
+            port: 53,
+            dnssec: true,
+            dns64: false,
+            dns64_prefix: "64:ff9b::/96".to_string(),
+            register_dhcp: true,
+            dhcp_domain: "local".to_string(),
+            local_zone_type: "transparent".to_string(),
+            outgoing_interface: None,
+            num_threads: 2,
+            msg_cache_size: "8m".to_string(),
+            rrset_cache_size: "16m".to_string(),
+            cache_max_ttl: 86400,
+            cache_min_ttl: 0,
+            prefetch: true,
+            prefetch_key: true,
+            infra_host_ttl: 900,
+            unwanted_reply_threshold: 10000,
+            log_queries: false,
+            log_replies: false,
+            log_verbosity: 1,
+            query_timeout_ms: 0,
+            hide_identity: true,
+            hide_version: true,
+            rebind_protection: true,
+            private_addresses: vec![
+                "10.0.0.0/8".into(),
+                "172.16.0.0/12".into(),
+                "192.168.0.0/16".into(),
+                "169.254.0.0/16".into(),
+                "fd00::/8".into(),
+                "fe80::/10".into(),
+            ],
+            // Default ON. Iterative recursion in rDNS 1.12.8 returns referrals
+            // instead of following them to completion, leaving clients with
+            // 0-answer responses for anything not already cached. Forwarding
+            // to public resolvers is the battle-tested fallback and keeps DNS
+            // working out of the box. Operators who want pure recursion can
+            // flip this off in the UI.
+            forwarding_enabled: true,
+            forwarding_servers: vec!["1.1.1.1".into(), "8.8.8.8".into()],
+            use_system_nameservers: false,
+            dot_enabled: false,
+            dot_upstream: vec![
+                "1.1.1.1@853#cloudflare-dns.com".into(),
+                "1.0.0.1@853#cloudflare-dns.com".into(),
+            ],
+            blocklists_enabled: false,
+            blocklist_urls: vec![],
+            whitelist: vec![],
+            blocklist_action: "nxdomain".to_string(),
+            blocklist_redirect_ip: None,
+            custom_options: String::new(),
+            probe_enabled: true,
+        }
+    }
 }
 
 // ============================================================

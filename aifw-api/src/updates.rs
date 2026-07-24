@@ -565,6 +565,7 @@ pub async fn aifw_update_status(
         published_at: String::new(),
         tarball_url: None,
         checksum_url: None,
+        checksum_signature_url: None,
         has_backup: std::path::Path::new("/usr/local/share/aifw/backup/version").exists(),
         backup_version: tokio::fs::read_to_string("/usr/local/share/aifw/backup/version")
             .await

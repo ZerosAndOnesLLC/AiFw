@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { api } from "@/lib/api";
+import { api, setAuthed } from "@/lib/api";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -21,14 +21,15 @@ export default function LoginPage() {
     try {
       // noAuthRedirect: a 401 here means bad credentials, not an expired
       // session — redirecting to /login would just loop.
+      // On success the server installs the session as HttpOnly cookies
+      // (SEC-M7 #304); the page only records the logged-in marker.
       const data = await api.post<{ tokens?: { access_token?: string }; totp_required?: boolean }>(
         "/api/v1/auth/login",
         { username, password },
         { noAuthRedirect: true },
       );
-      const token = data.tokens?.access_token;
-      if (token) {
-        localStorage.setItem("aifw_token", token);
+      if (data.tokens?.access_token) {
+        setAuthed(true);
         window.location.href = "/";
       } else if (data.totp_required) {
         setTotpRequired(true);
@@ -50,9 +51,8 @@ export default function LoginPage() {
         { username, password, totp_code: totpCode },
         { noAuthRedirect: true },
       );
-      const token = data.access_token;
-      if (token) {
-        localStorage.setItem("aifw_token", token);
+      if (data.access_token) {
+        setAuthed(true);
         window.location.href = "/";
       }
     } catch {

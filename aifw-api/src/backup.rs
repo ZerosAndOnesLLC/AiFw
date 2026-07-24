@@ -661,6 +661,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             private_key: t.private_key.clone(),
             public_key: t.public_key.clone(),
             address: t.address.to_string(),
+            address6: t.address6.as_ref().map(|a| a.to_string()),
             dns: t.dns.clone(),
             mtu: t.mtu,
             peers: peers
@@ -857,6 +858,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         dhcp: build_dhcp_section(&state.pool).await,
         aliases: build_aliases_section(state).await,
         static_routes: build_static_routes_section(&state.pool).await,
+        dns_resolver: Some(crate::dns_resolver::load_config(&state.pool).await),
     };
 
     Ok(config)
@@ -1953,6 +1955,7 @@ pub(crate) async fn apply_firewall_config(
             public_key: wg.public_key.clone(),
             listen_port: wg.listen_port,
             address,
+            address6: wg.address6.as_deref().and_then(|s| Address::parse(s).ok()),
             dns: wg.dns.clone(),
             mtu: wg.mtu,
             listen_interface: None,
@@ -2127,6 +2130,15 @@ pub(crate) async fn apply_firewall_config(
     // rDHCP service regen runs after commit)
     apply_dhcp_section_db(&mut tx, &config.dhcp).await?;
 
+    // DNS resolver settings (#589). `None` = backup predates the section;
+    // leave the box's resolver config untouched instead of resetting it to
+    // defaults. Service regen runs after commit.
+    if let Some(resolver) = &config.dns_resolver {
+        crate::dns_resolver::save_config_on(&mut tx, resolver)
+            .await
+            .map_err(|e| apply_fail("dns resolver config restore", e))?;
+    }
+
     // One audit row for the whole restore, committed atomically with it.
     // (Pre-#158 each engine `add` wrote a per-row audit entry; a restore is
     // one operator action, not N rule additions.)
@@ -2229,13 +2241,14 @@ pub(crate) async fn apply_firewall_config(
             .system
             .dns_servers
             .iter()
-            .map(|s| format!("nameserver {s}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        // Best-effort: /etc/resolv.conf is a root-owned system file the aifw
-        // user may not be able to write; the DB remains the source of truth.
-        if let Err(e) = tokio::fs::write("/etc/resolv.conf", &content).await {
-            tracing::warn!(error = %e, "import: /etc/resolv.conf write failed");
+            .map(|s| format!("nameserver {s}\n"))
+            .collect();
+        // /etc/resolv.conf is root-owned, so a direct write as the aifw user
+        // fails on FreeBSD (#307); stage in /tmp and go through the
+        // `aifw-sudo-install` allowlist instead. Warn-only like the other
+        // post-commit system applies: the helper is absent on dev hosts.
+        if let Err(e) = install_resolv_conf(&content).await {
+            tracing::warn!(error = %e, "import: /etc/resolv.conf install failed — restored DNS servers not applied to the system resolver");
         }
     }
 
@@ -2257,6 +2270,22 @@ pub(crate) async fn apply_firewall_config(
     // effect. Best-effort: the companion service may be absent (dev hosts);
     // the DB rows are authoritative and reapplied at boot.
     crate::dhcp::auto_apply(state).await;
+
+    // Regenerate resolver config + restart the DNS backend so the restored
+    // settings take effect (#589). Best-effort like rDHCP above: the backend
+    // service may be absent (dev hosts); the DB rows are authoritative and
+    // switch_backend probes + auto-rolls-back on a failed start.
+    if let Some(resolver) = &config.dns_resolver {
+        let report = crate::dns_resolver::switch_backend(state, &resolver.backend, resolver).await;
+        if report.rolled_back || (resolver.enabled && !report.probe_udp) {
+            tracing::warn!(
+                backend = %resolver.backend,
+                rolled_back = report.rolled_back,
+                message = %report.message,
+                "import: DNS resolver apply did not come up healthy — settings are restored in the DB, re-apply via /dns/resolver/apply"
+            );
+        }
+    }
 
     // Final data-plane applies — a failure here means the kernel does NOT
     // match the restored DB, so it must not report success (#535).
@@ -2309,6 +2338,32 @@ pub(crate) async fn apply_firewall_config(
         .await
         .map_err(|e| apply_fail("geoip rules verification", e))?;
 
+    Ok(())
+}
+
+/// Stage `content` in /tmp and atomically install it as `/etc/resolv.conf`
+/// via `aifw_core::sudo::install`. The destination is on the
+/// `aifw-sudo-install` allowlist; a direct `tokio::fs::write` silently
+/// fails as the unprivileged aifw user on FreeBSD (#307).
+async fn install_resolv_conf(content: &str) -> Result<(), String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = format!("/tmp/aifw.resolv.conf.{nanos}.tmp");
+    tokio::fs::write(&tmp, content)
+        .await
+        .map_err(|e| format!("stage tmp: {e}"))?;
+    let result = aifw_core::sudo::install(Some("0644"), None, None, &tmp, "/etc/resolv.conf")
+        .await
+        .map_err(|e| format!("spawn sudo install: {e}"));
+    // Best-effort tmp cleanup; the install result below is what matters.
+    let _ = tokio::fs::remove_file(&tmp).await;
+    let out = result?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
     Ok(())
 }
 

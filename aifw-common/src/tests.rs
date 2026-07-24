@@ -363,19 +363,99 @@ mod tests {
 
     #[test]
     fn test_nat64_pf_rule() {
+        // NAT64: v6 clients (src) hitting the /96 prefix (dst) are translated
+        // to IPv4 sourced from the redirect address.
         let rule = NatRule::new(
             NatType::Nat64,
             Interface("em0".to_string()),
             Protocol::Any,
-            Address::Network(IpAddr::V6("64:ff9b::".parse().unwrap()), 96),
             Address::Any,
+            Address::Network(IpAddr::V6("64:ff9b::".parse().unwrap()), 96),
             NatRedirect {
-                address: Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 0))),
+                address: Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
                 port: None,
             },
         );
         let pf = rule.to_pf_rule();
-        assert!(pf.starts_with("nat on em0 inet6"));
+        assert_eq!(
+            pf,
+            "pass in quick on em0 inet6 from any to 64:ff9b::/96 af-to inet from 203.0.113.1"
+        );
+    }
+
+    #[test]
+    fn test_nat64_pf_rule_proto_normalization_and_label() {
+        // `icmp` on a NAT64 rule must render as `icmp6` (the rule matches
+        // IPv6 ingress); af-to rules are filter-class so labels are emitted.
+        let mut rule = NatRule::new(
+            NatType::Nat64,
+            Interface("em0".to_string()),
+            Protocol::Icmp,
+            Address::Network(IpAddr::V6("2001:db8:1::".parse().unwrap()), 64),
+            Address::Network(IpAddr::V6("64:ff9b::".parse().unwrap()), 96),
+            NatRedirect {
+                address: Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
+                port: None,
+            },
+        );
+        rule.label = Some("nat64-icmp".to_string());
+        assert_eq!(
+            rule.to_pf_rule(),
+            "pass in quick on em0 inet6 proto icmp6 from 2001:db8:1::/64 to 64:ff9b::/96 af-to inet from 203.0.113.1 label \"nat64-icmp\""
+        );
+        // tcp passes through untouched, with port clauses
+        rule.protocol = Protocol::Tcp;
+        rule.label = None;
+        rule.dst_port = Some(PortRange { start: 80, end: 80 });
+        assert_eq!(
+            rule.to_pf_rule(),
+            "pass in quick on em0 inet6 proto tcp from 2001:db8:1::/64 to 64:ff9b::/96 port 80 af-to inet from 203.0.113.1"
+        );
+    }
+
+    #[test]
+    fn test_nat46_pf_rule() {
+        // NAT46: v4 clients (src) hitting a v4 destination are translated to
+        // IPv6 sourced from the redirect address; translated destination is
+        // the RFC 6052 embedding in the new source's /96 subnet (pf default).
+        let mut rule = NatRule::new(
+            NatType::Nat46,
+            Interface("em1".to_string()),
+            Protocol::Icmp6,
+            Address::Any,
+            Address::Single(IpAddr::V4(Ipv4Addr::new(10, 99, 1, 1))),
+            NatRedirect {
+                address: Address::Single(IpAddr::V6("2001:db8:2::1".parse().unwrap())),
+                port: None,
+            },
+        );
+        // `icmp6` normalizes to `icmp` (the rule matches IPv4 ingress)
+        assert_eq!(
+            rule.to_pf_rule(),
+            "pass in quick on em1 inet proto icmp from any to 10.99.1.1 af-to inet6 from 2001:db8:2::1"
+        );
+        rule.protocol = Protocol::Any;
+        assert_eq!(
+            rule.to_pf_rule(),
+            "pass in quick on em1 inet from any to 10.99.1.1 af-to inet6 from 2001:db8:2::1"
+        );
+    }
+
+    #[test]
+    fn test_embed_rfc6052() {
+        let prefix: std::net::Ipv6Addr = "64:ff9b::".parse().unwrap();
+        let embedded = crate::nat::embed_rfc6052(prefix, Ipv4Addr::new(10, 99, 2, 2));
+        assert_eq!(
+            embedded,
+            "64:ff9b::a63:202".parse::<std::net::Ipv6Addr>().unwrap()
+        );
+        // embedding into a non-zero-host prefix overwrites only the low 32 bits
+        let prefix: std::net::Ipv6Addr = "2001:db8:2::1".parse().unwrap();
+        let embedded = crate::nat::embed_rfc6052(prefix, Ipv4Addr::new(10, 99, 1, 1));
+        assert_eq!(
+            embedded,
+            "2001:db8:2::a63:101".parse::<std::net::Ipv6Addr>().unwrap()
+        );
     }
 
     // --- Rate limiting / queue tests ---

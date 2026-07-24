@@ -303,7 +303,9 @@ pub async fn reload(db_path: &Path) -> anyhow::Result<()> {
 async fn create_nat_engine(db_path: &Path) -> anyhow::Result<NatEngine> {
     let db = Database::new(db_path).await?;
     let pf = Arc::from(aifw_pf::create_backend());
-    Ok(NatEngine::new(db.pool().clone(), pf))
+    // "aifw-nat" — must match the API/daemon anchor; NAT loads replace every
+    // rule class in their anchor since #531.
+    Ok(NatEngine::new(db.pool().clone(), pf).with_anchor("aifw-nat".to_string()))
 }
 
 /// Heal drift between running kernel state and the source of truth
@@ -430,9 +432,57 @@ pub async fn nat_add(
     rule.dst_port = dst_port.map(parse_port).transpose()?;
     rule.label = label.map(String::from);
 
-    let rule = nat.add_rule(rule).await?;
+    let rule = nat.add_rule(rule).await.map_err(|e| {
+        let msg = e.to_string();
+        match nat_flag_hint(&msg) {
+            Some(hint) => anyhow::anyhow!("{msg}\n  hint: {hint}"),
+            None => anyhow::anyhow!(msg),
+        }
+    })?;
     println!("Added NAT rule {}", rule.id);
     println!("  pf: {}", rule.to_pf_rule());
+    if rule.nat_type == NatType::Nat64
+        && let aifw_common::Address::Network(std::net::IpAddr::V6(p6), 96) = rule.dst_addr
+    {
+        let example = aifw_common::embed_rfc6052(p6, std::net::Ipv4Addr::new(10, 0, 0, 1));
+        println!("  IPv6 clients reach IPv4 hosts via {p6}/96 (e.g. 10.0.0.1 -> {example})");
+    }
+    Ok(())
+}
+
+/// Map engine validation messages to the CLI flag the user should fix.
+fn nat_flag_hint(msg: &str) -> Option<&'static str> {
+    if msg.contains("nat64 destination") {
+        Some(
+            "set --dst to an IPv6 /96 prefix, e.g. --dst 64:ff9b::/96 (or omit --dst for the default)",
+        )
+    } else if msg.contains("nat46 destination") {
+        Some("set --dst to the IPv4 address being reached, e.g. --dst 10.99.1.1")
+    } else if msg.contains("translation source") {
+        Some(
+            "set --redirect to a single address the firewall owns in the translated family (IPv4 for nat64, IPv6 for nat46)",
+        )
+    } else if msg.contains("redirect port") {
+        Some("drop --redirect-port — af-to translates addresses, not ports")
+    } else if msg.contains("source address must be") {
+        Some("fix --src: it must match the rule's ingress family (IPv6 for nat64, IPv4 for nat46)")
+    } else {
+        None
+    }
+}
+
+/// Print the RFC 6052 embedded address for a prefix + IPv4 pair.
+pub fn nat_embed(prefix: &str, ipv4: &str) -> anyhow::Result<()> {
+    let p: std::net::Ipv6Addr = prefix
+        .split('/')
+        .next()
+        .unwrap_or(prefix)
+        .parse()
+        .map_err(|_| anyhow::anyhow!("'{prefix}' is not a valid IPv6 prefix"))?;
+    let v4: std::net::Ipv4Addr = ipv4
+        .parse()
+        .map_err(|_| anyhow::anyhow!("'{ipv4}' is not a valid IPv4 address"))?;
+    println!("{}", aifw_common::embed_rfc6052(p, v4));
     Ok(())
 }
 
@@ -481,7 +531,12 @@ pub async fn nat_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
                 .map(|p| format!(":{p}"))
                 .unwrap_or_default()
         );
-        let redir = format!("{}", rule.redirect);
+        // Cross-family rules read as a direction, not an address rewrite.
+        let redir = match rule.nat_type {
+            NatType::Nat64 => format!("v6->v4 via {}", rule.redirect.address),
+            NatType::Nat46 => format!("v4->v6 via {}", rule.redirect.address),
+            _ => format!("{}", rule.redirect),
+        };
         let status = match rule.status {
             aifw_common::NatStatus::Active => "",
             aifw_common::NatStatus::Disabled => " [disabled]",
@@ -3370,4 +3425,103 @@ pub async fn cluster_verify(as_json: bool) -> anyhow::Result<()> {
     } else {
         std::process::exit(1);
     }
+}
+
+/// Delete every stored IDS alert and reclaim the disk space. A bare DELETE
+/// only frees pages to SQLite's freelist (#601: a 2.9GB file holding 34
+/// rows), so this follows up with VACUUM + a TRUNCATE WAL checkpoint.
+/// "no such table" means the IDS subsystem has never initialized this DB —
+/// for read/purge paths that's simply "nothing stored", not an error.
+fn ids_table_missing(e: &sqlx::Error) -> bool {
+    e.to_string().contains("no such table")
+}
+
+pub async fn ids_purge_alerts(db_path: &Path, yes: bool) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    let (count,): (i64,) = match sqlx::query_as("SELECT COUNT(*) FROM ids_alerts")
+        .fetch_one(pool)
+        .await
+    {
+        Ok(row) => row,
+        Err(e) if ids_table_missing(&e) => {
+            println!("No IDS alerts stored.");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if count == 0 {
+        println!("No IDS alerts stored.");
+        return Ok(());
+    }
+    if !yes {
+        use std::io::Write;
+        print!("Delete ALL {count} IDS alerts? This cannot be undone. [y/N] ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        if !matches!(line.trim(), "y" | "Y" | "yes") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+    sqlx::query("DELETE FROM ids_alerts").execute(pool).await?;
+    println!("Deleted {count} alerts; reclaiming disk space (may take a moment)...");
+    sqlx::query("VACUUM").execute(pool).await?;
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .fetch_all(pool)
+        .await?;
+    println!("Done.");
+    Ok(())
+}
+
+/// Show or set the alert retention window (days). The hourly retention
+/// sweep in aifw-ids prunes past it and reclaims space after big purges.
+pub async fn ids_retention(db_path: &Path, days: Option<u32>) -> anyhow::Result<()> {
+    let db = Database::new(db_path).await?;
+    let pool = db.pool();
+    match days {
+        None => {
+            let cur: Option<(String,)> = match sqlx::query_as(
+                "SELECT value FROM ids_config WHERE key = 'alert_retention_days'",
+            )
+            .fetch_optional(pool)
+            .await
+            {
+                Ok(row) => row,
+                Err(e) if ids_table_missing(&e) => None,
+                Err(e) => return Err(e.into()),
+            };
+            match cur {
+                Some((v,)) => println!("Alert retention: {v} days"),
+                None => println!("Alert retention: 7 days (default)"),
+            }
+        }
+        Some(d) => {
+            anyhow::ensure!(
+                (1..=365).contains(&d),
+                "retention must be between 1 and 365 days"
+            );
+            if let Err(e) = sqlx::query(
+                "INSERT INTO ids_config (key, value, updated_at) VALUES ('alert_retention_days', ?1, datetime('now')) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+            )
+            .bind(d.to_string())
+            .execute(pool)
+            .await
+            {
+                if ids_table_missing(&e) {
+                    anyhow::bail!(
+                        "IDS database not initialized yet — start aifw-api/aifw-ids once, then retry"
+                    );
+                }
+                return Err(e.into());
+            }
+            println!("Alert retention set to {d} day(s).");
+            println!(
+                "  The running aifw-ids applies it after an IDS reload (UI) or 'service aifw_ids restart'."
+            );
+        }
+    }
+    Ok(())
 }

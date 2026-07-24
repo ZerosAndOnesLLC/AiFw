@@ -205,127 +205,10 @@ fn sanitize_zone_filename(name: &str) -> String {
 // Types
 // ============================================================
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ResolverConfig {
-    pub backend: String, // "unbound" or "rdns"
-    pub enabled: bool,
-    pub listen_interfaces: Vec<String>,
-    pub port: u16,
-    pub dnssec: bool,
-    pub dns64: bool,
-    pub register_dhcp: bool,
-    pub dhcp_domain: String, // domain for DHCP lease DNS registration (e.g. "local")
-    pub local_zone_type: String, // transparent, static, redirect, etc.
-    pub outgoing_interface: Option<String>,
-    // Advanced
-    pub num_threads: u32,
-    pub msg_cache_size: String,
-    pub rrset_cache_size: String,
-    pub cache_max_ttl: u32,
-    pub cache_min_ttl: u32,
-    pub prefetch: bool,
-    pub prefetch_key: bool,
-    pub infra_host_ttl: u32,
-    pub unwanted_reply_threshold: u32,
-    pub log_queries: bool,
-    pub log_replies: bool,
-    pub log_verbosity: u32,
-    /// Ceiling on a single query's resolution (ms). 0 = rDNS built-in
-    /// per-transport defaults (UDP 3000, TCP/DoT 30000).
-    #[serde(default)]
-    pub query_timeout_ms: u32,
-    pub hide_identity: bool,
-    pub hide_version: bool,
-    pub rebind_protection: bool,
-    pub private_addresses: Vec<String>,
-    // Forwarding
-    pub forwarding_enabled: bool,
-    pub forwarding_servers: Vec<String>, // plain upstream DNS IPs (e.g. "8.8.8.8", "1.1.1.1")
-    pub use_system_nameservers: bool,    // also forward to /etc/resolv.conf nameservers
-    // DoT
-    pub dot_enabled: bool,
-    pub dot_upstream: Vec<String>, // "1.1.1.1@853#cloudflare-dns.com"
-    // Blocklists
-    pub blocklists_enabled: bool,
-    pub blocklist_urls: Vec<String>,
-    pub whitelist: Vec<String>,
-    pub blocklist_action: String, // "nxdomain" | "redirect"
-    pub blocklist_redirect_ip: Option<String>,
-    // Custom
-    pub custom_options: String,
-    // Safety
-    /// Probe :53 after a resolver switch and auto-rollback on failure.
-    /// Default: true. Disable to restore the old fire-and-forget behavior
-    /// (e.g. for debugging, or on boxes where the probe misfires).
-    #[serde(default = "default_true")]
-    pub probe_enabled: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for ResolverConfig {
-    fn default() -> Self {
-        Self {
-            backend: "rdns".to_string(),
-            enabled: false,
-            listen_interfaces: vec!["0.0.0.0".to_string()],
-            port: 53,
-            dnssec: true,
-            dns64: false,
-            register_dhcp: true,
-            dhcp_domain: "local".to_string(),
-            local_zone_type: "transparent".to_string(),
-            outgoing_interface: None,
-            num_threads: 2,
-            msg_cache_size: "8m".to_string(),
-            rrset_cache_size: "16m".to_string(),
-            cache_max_ttl: 86400,
-            cache_min_ttl: 0,
-            prefetch: true,
-            prefetch_key: true,
-            infra_host_ttl: 900,
-            unwanted_reply_threshold: 10000,
-            log_queries: false,
-            log_replies: false,
-            log_verbosity: 1,
-            query_timeout_ms: 0,
-            hide_identity: true,
-            hide_version: true,
-            rebind_protection: true,
-            private_addresses: vec![
-                "10.0.0.0/8".into(),
-                "172.16.0.0/12".into(),
-                "192.168.0.0/16".into(),
-                "169.254.0.0/16".into(),
-                "fd00::/8".into(),
-                "fe80::/10".into(),
-            ],
-            // Default ON. Iterative recursion in rDNS 1.12.8 returns referrals
-            // instead of following them to completion, leaving clients with
-            // 0-answer responses for anything not already cached. Forwarding
-            // to public resolvers is the battle-tested fallback and keeps DNS
-            // working out of the box. Operators who want pure recursion can
-            // flip this off in the UI.
-            forwarding_enabled: true,
-            forwarding_servers: vec!["1.1.1.1".into(), "8.8.8.8".into()],
-            use_system_nameservers: false,
-            dot_enabled: false,
-            dot_upstream: vec![
-                "1.1.1.1@853#cloudflare-dns.com".into(),
-                "1.0.0.1@853#cloudflare-dns.com".into(),
-            ],
-            blocklists_enabled: false,
-            blocklist_urls: vec![],
-            whitelist: vec![],
-            blocklist_action: "nxdomain".to_string(),
-            blocklist_redirect_ip: None,
-            custom_options: String::new(),
-            probe_enabled: true,
-        }
-    }
-}
+/// The resolver settings struct lives in aifw-core so config snapshots can
+/// round-trip it as `FirewallConfig::dns_resolver` (#589). Same JSON shape
+/// the `/api/v1/dns/resolver/config` endpoint has always spoken.
+pub use aifw_core::config::DnsResolverSection as ResolverConfig;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HostOverride {
@@ -516,7 +399,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 // Config helpers
 // ============================================================
 
-async fn load_config(pool: &SqlitePool) -> ResolverConfig {
+pub(crate) async fn load_config(pool: &SqlitePool) -> ResolverConfig {
     let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM dns_resolver_config")
         .fetch_all(pool)
         .await
@@ -537,6 +420,11 @@ async fn load_config(pool: &SqlitePool) -> ResolverConfig {
             "port" => c.port = v.parse().unwrap_or(53),
             "dnssec" => c.dnssec = v == "true",
             "dns64" => c.dns64 = v == "true",
+            "dns64_prefix" => {
+                if !v.is_empty() {
+                    c.dns64_prefix = v
+                }
+            }
             "register_dhcp" => c.register_dhcp = v == "true",
             "local_zone_type" => c.local_zone_type = v,
             "outgoing_interface" => {
@@ -974,6 +862,21 @@ async fn generate_rdns_conf(pool: &SqlitePool) -> String {
         "dnssec = {}\nqname_minimization = true\n",
         c.dnssec
     ));
+    // DNS64 (RFC 6147, #531): emit only when enabled; the prefix must match
+    // the NAT64 rule prefix for the combined workflow to function. Re-check
+    // the prefix here too — the handler validates on save, but a restored
+    // legacy value must never reach the root-managed TOML unparsed.
+    if c.dns64 {
+        match validate_dns64_prefix(&c.dns64_prefix) {
+            Ok(()) => toml.push_str(&format!(
+                "dns64 = true\ndns64_prefix = \"{}\"\n",
+                c.dns64_prefix
+            )),
+            Err(e) => {
+                tracing::warn!(error = %e, "dns64 enabled but prefix invalid; omitting from rdns.toml")
+            }
+        }
+    }
     if c.query_timeout_ms > 0 {
         toml.push_str(&format!("query_timeout_ms = {}\n", c.query_timeout_ms));
     }
@@ -1510,74 +1413,138 @@ pub async fn get_config_handler(
     Ok(Json(load_config(&state.pool).await))
 }
 
+/// Validate a `dns64_prefix` value: an IPv6 address or `addr/96` (only /96
+/// is supported — the same rule rDNS enforces). The value is interpolated
+/// into the root-managed rdns.toml, so anything that doesn't parse is
+/// rejected outright rather than escaped (#531 review M1: a quote+newline
+/// payload could otherwise inject arbitrary config sections).
+pub(crate) fn validate_dns64_prefix(s: &str) -> Result<(), String> {
+    let (addr, len) = match s.split_once('/') {
+        Some((a, l)) => (a, l),
+        None => (s, "96"),
+    };
+    if len.trim() != "96" {
+        return Err(format!(
+            "dns64_prefix must be an IPv6 /96 prefix (e.g. 64:ff9b::/96), got '{s}'"
+        ));
+    }
+    if addr.trim().parse::<std::net::Ipv6Addr>().is_err() {
+        return Err(format!("dns64_prefix is not a valid IPv6 prefix: '{s}'"));
+    }
+    Ok(())
+}
+
 pub async fn update_config_handler(
     State(state): State<AppState>,
     Json(c): Json<ResolverConfig>,
-) -> Result<Json<MessageResponse>, StatusCode> {
-    let pool = &state.pool;
-    save_key(pool, "backend", &c.backend).await;
-    save_key(pool, "enabled", bool_str(c.enabled)).await;
-    save_key(pool, "dhcp_domain", &c.dhcp_domain).await;
-    save_key(pool, "listen_interfaces", &c.listen_interfaces.join(",")).await;
-    save_key(pool, "port", &c.port.to_string()).await;
-    save_key(pool, "dnssec", bool_str(c.dnssec)).await;
-    save_key(pool, "dns64", bool_str(c.dns64)).await;
-    save_key(pool, "register_dhcp", bool_str(c.register_dhcp)).await;
-    save_key(pool, "local_zone_type", &c.local_zone_type).await;
-    save_key(
-        pool,
-        "outgoing_interface",
-        c.outgoing_interface.as_deref().unwrap_or(""),
-    )
-    .await;
-    save_key(pool, "num_threads", &c.num_threads.to_string()).await;
-    save_key(pool, "msg_cache_size", &c.msg_cache_size).await;
-    save_key(pool, "rrset_cache_size", &c.rrset_cache_size).await;
-    save_key(pool, "cache_max_ttl", &c.cache_max_ttl.to_string()).await;
-    save_key(pool, "cache_min_ttl", &c.cache_min_ttl.to_string()).await;
-    save_key(pool, "prefetch", bool_str(c.prefetch)).await;
-    save_key(pool, "prefetch_key", bool_str(c.prefetch_key)).await;
-    save_key(pool, "infra_host_ttl", &c.infra_host_ttl.to_string()).await;
-    save_key(
-        pool,
-        "unwanted_reply_threshold",
-        &c.unwanted_reply_threshold.to_string(),
-    )
-    .await;
-    save_key(pool, "log_queries", bool_str(c.log_queries)).await;
-    save_key(pool, "log_replies", bool_str(c.log_replies)).await;
-    save_key(pool, "log_verbosity", &c.log_verbosity.to_string()).await;
-    save_key(pool, "query_timeout_ms", &c.query_timeout_ms.to_string()).await;
-    save_key(pool, "hide_identity", bool_str(c.hide_identity)).await;
-    save_key(pool, "hide_version", bool_str(c.hide_version)).await;
-    save_key(pool, "rebind_protection", bool_str(c.rebind_protection)).await;
-    save_key(pool, "private_addresses", &c.private_addresses.join(",")).await;
-    save_key(pool, "forwarding_enabled", bool_str(c.forwarding_enabled)).await;
-    save_key(pool, "forwarding_servers", &c.forwarding_servers.join(",")).await;
-    save_key(
-        pool,
-        "use_system_nameservers",
-        bool_str(c.use_system_nameservers),
-    )
-    .await;
-    save_key(pool, "dot_enabled", bool_str(c.dot_enabled)).await;
-    save_key(pool, "dot_upstream", &c.dot_upstream.join(",")).await;
-    save_key(pool, "blocklists_enabled", bool_str(c.blocklists_enabled)).await;
-    save_key(pool, "blocklist_urls", &c.blocklist_urls.join("\n")).await;
-    save_key(pool, "whitelist", &c.whitelist.join("\n")).await;
-    save_key(pool, "blocklist_action", &c.blocklist_action).await;
-    save_key(
-        pool,
-        "blocklist_redirect_ip",
-        c.blocklist_redirect_ip.as_deref().unwrap_or(""),
-    )
-    .await;
-    save_key(pool, "custom_options", &c.custom_options).await;
-    save_key(pool, "probe_enabled", bool_str(c.probe_enabled)).await;
+) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+    if let Err(msg) = validate_dns64_prefix(&c.dns64_prefix) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(MessageResponse { message: msg }),
+        ));
+    }
+    let mut conn = state.pool.acquire().await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(MessageResponse {
+                message: "database unavailable".to_string(),
+            }),
+        )
+    })?;
+    save_config_on(&mut conn, &c).await.map_err(|e| {
+        tracing::error!(error = %e, "resolver config save failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(MessageResponse {
+                message: "resolver config save failed".to_string(),
+            }),
+        )
+    })?;
     state.set_pending(|p| p.dns = true).await;
     Ok(Json(MessageResponse {
         message: "DNS resolver config saved".to_string(),
     }))
+}
+
+/// Persist every `ResolverConfig` field into `dns_resolver_config`. Shared
+/// by the `PUT /dns/resolver/config` handler and the backup restore path
+/// (#589) — the latter runs it on the restore transaction, so this takes a
+/// connection rather than the pool.
+pub(crate) async fn save_config_on(
+    conn: &mut sqlx::SqliteConnection,
+    c: &ResolverConfig,
+) -> Result<(), sqlx::Error> {
+    for (k, v) in [
+        ("backend", c.backend.clone()),
+        ("enabled", bool_str(c.enabled).to_string()),
+        ("dhcp_domain", c.dhcp_domain.clone()),
+        ("listen_interfaces", c.listen_interfaces.join(",")),
+        ("port", c.port.to_string()),
+        ("dnssec", bool_str(c.dnssec).to_string()),
+        ("dns64", bool_str(c.dns64).to_string()),
+        ("dns64_prefix", c.dns64_prefix.clone()),
+        ("register_dhcp", bool_str(c.register_dhcp).to_string()),
+        ("local_zone_type", c.local_zone_type.clone()),
+        (
+            "outgoing_interface",
+            c.outgoing_interface.clone().unwrap_or_default(),
+        ),
+        ("num_threads", c.num_threads.to_string()),
+        ("msg_cache_size", c.msg_cache_size.clone()),
+        ("rrset_cache_size", c.rrset_cache_size.clone()),
+        ("cache_max_ttl", c.cache_max_ttl.to_string()),
+        ("cache_min_ttl", c.cache_min_ttl.to_string()),
+        ("prefetch", bool_str(c.prefetch).to_string()),
+        ("prefetch_key", bool_str(c.prefetch_key).to_string()),
+        ("infra_host_ttl", c.infra_host_ttl.to_string()),
+        (
+            "unwanted_reply_threshold",
+            c.unwanted_reply_threshold.to_string(),
+        ),
+        ("log_queries", bool_str(c.log_queries).to_string()),
+        ("log_replies", bool_str(c.log_replies).to_string()),
+        ("log_verbosity", c.log_verbosity.to_string()),
+        ("query_timeout_ms", c.query_timeout_ms.to_string()),
+        ("hide_identity", bool_str(c.hide_identity).to_string()),
+        ("hide_version", bool_str(c.hide_version).to_string()),
+        (
+            "rebind_protection",
+            bool_str(c.rebind_protection).to_string(),
+        ),
+        ("private_addresses", c.private_addresses.join(",")),
+        (
+            "forwarding_enabled",
+            bool_str(c.forwarding_enabled).to_string(),
+        ),
+        ("forwarding_servers", c.forwarding_servers.join(",")),
+        (
+            "use_system_nameservers",
+            bool_str(c.use_system_nameservers).to_string(),
+        ),
+        ("dot_enabled", bool_str(c.dot_enabled).to_string()),
+        ("dot_upstream", c.dot_upstream.join(",")),
+        (
+            "blocklists_enabled",
+            bool_str(c.blocklists_enabled).to_string(),
+        ),
+        ("blocklist_urls", c.blocklist_urls.join("\n")),
+        ("whitelist", c.whitelist.join("\n")),
+        ("blocklist_action", c.blocklist_action.clone()),
+        (
+            "blocklist_redirect_ip",
+            c.blocklist_redirect_ip.clone().unwrap_or_default(),
+        ),
+        ("custom_options", c.custom_options.clone()),
+        ("probe_enabled", bool_str(c.probe_enabled).to_string()),
+    ] {
+        sqlx::query("INSERT OR REPLACE INTO dns_resolver_config (key, value) VALUES (?1, ?2)")
+            .bind(k)
+            .bind(v)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
 }
 
 // ============================================================

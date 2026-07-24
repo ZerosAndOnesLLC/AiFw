@@ -36,6 +36,7 @@ export interface ResolverConfig {
   port: number;
   dnssec: boolean;
   dns64: boolean;
+  dns64_prefix: string;
   register_dhcp: boolean;
   dhcp_domain: string;
   local_zone_type: string;
@@ -83,6 +84,7 @@ export const defaultResolverConfig: ResolverConfig = {
   port: 53,
   dnssec: true,
   dns64: false,
+  dns64_prefix: "64:ff9b::/96",
   register_dhcp: false,
   dhcp_domain: "local",
   local_zone_type: "transparent",

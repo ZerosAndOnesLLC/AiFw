@@ -11,6 +11,8 @@ export interface WgTunnel {
   interface: string;
   listen_port: number;
   address: string;
+  /** IPv6 tunnel address for dual-stack tunnels (#471); null = IPv4-only */
+  address6: string | null;
   private_key: string;
   public_key: string;
   dns: string | null;
@@ -29,7 +31,9 @@ export interface WgPeer {
   preshared_key: string | null;
   client_private_key: string | null;
   endpoint: string | null;
-  allowed_ips: string;
+  /** Serialized by the API as an array of CIDR strings (one per family
+   *  on dual-stack tunnels, e.g. ["10.10.0.2/32", "fd00:a1f0::2/128"]) */
+  allowed_ips: string[];
   persistent_keepalive: number | null;
   created_at: string;
 }
@@ -156,6 +160,7 @@ export interface WgTunnelRequest {
   name: string;
   listen_port: number;
   address: string;
+  address6?: string;
   private_key?: string;
   dns?: string;
   mtu?: number;
@@ -221,6 +226,7 @@ export interface WgFormState {
   name: string;
   listen_port: string;
   address: string;
+  address6: string;
   private_key: string;
   dns: string;
   mtu: string;
@@ -232,6 +238,7 @@ export const defaultWgForm: WgFormState = {
   name: "",
   listen_port: "",
   address: "",
+  address6: "",
   private_key: "",
   dns: "",
   mtu: "",

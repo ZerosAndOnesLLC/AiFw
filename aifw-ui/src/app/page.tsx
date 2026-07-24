@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useWs } from "@/context/WsContext";
-import { api } from "@/lib/api";
+import { api, isAuthed } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
 
 interface StatusData {
@@ -332,8 +332,7 @@ export default function Dashboard() {
 
   // Fetch DNS/DHCP/Time status on mount + every 30s (paused while hidden)
   const fetchSvc = useCallback(async () => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-    if (!token) return;
+    if (!isAuthed()) return;
     const [dnsRes, dhcpRes, timeRes] = await Promise.allSettled([
       api.get<{ running: boolean; version: string; total_hosts: number; total_domains: number; total_acls: number; queries_total: number; cache_hits: number; cache_misses: number }>("/api/v1/dns/resolver/status"),
       api.get<{ running: boolean; version: string; total_subnets: number; active_leases: number; total_reservations: number }>("/api/v1/dhcp/status"),
@@ -350,8 +349,7 @@ export default function Dashboard() {
 
   // Fetch HA status once on mount — only show card when HA is configured
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-    if (!token) return;
+    if (!isAuthed()) return;
     api.get<{ role?: string; peer_reachable?: boolean }>("/api/v1/cluster/status")
       .then((s) => {
         if (s && s.role && s.role !== "standalone") {

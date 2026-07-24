@@ -115,6 +115,16 @@ CLIENT_IP="10.99.1.2"
 SERVER_NET_HOST="10.99.2.1"
 SERVER_IP="10.99.2.2"
 
+# IPv6 addressing for the cross-family (NAT64/NAT46, t09) tests. The client
+# jail is dual-stack; the server jail is v4-only plus an embedded-address
+# alias added by t09 for the NAT46 leg.
+CLIENT6_NET_HOST="2001:db8:1::1"
+CLIENT6_IP="2001:db8:1::2"
+SERVER6_NET_HOST="2001:db8:2::1"
+# Well-known NAT64 prefix + RFC 6052 embedding of SERVER_IP (10.99.2.2).
+NAT64_PREFIX="64:ff9b::/96"
+SERVER_IP_EMBEDDED="64:ff9b::a63:202"
+
 jx_client() { jexec "$CLIENT_JAIL" "$@"; }
 jx_server() { jexec "$SERVER_JAIL" "$@"; }
 
@@ -127,6 +137,16 @@ client_can_reach() { # $1 = host, $2 = port
 # marker file when a connection arrives.
 server_listen_once() { # $1 = port, $2 = marker file
     jx_server sh -c "rm -f '$2'; (nc -l '$1' >/dev/null 2>&1 && touch '$2') &"
+}
+
+# One-shot UDP listener for packet-path tests. UDP has no connection refusal,
+# so callers must wait for the marker rather than rely on nc's exit status.
+server_listen_udp_once() { # $1 = port, $2 = marker file
+    jx_server sh -c "rm -f '$2'; (nc -u -l '$1' 2>/dev/null | (IFS= read -r line && touch '$2')) &"
+}
+
+client_send_udp() { # $1 = host, $2 = port
+    printf 'aifw-functional-udp\n' | jx_client nc -u -w 2 "$1" "$2" >/dev/null 2>&1
 }
 
 wait_for_file() { # $1 = jail (client|server), $2 = file, $3 = seconds

@@ -11,6 +11,7 @@ ALWAYS=$(api POST /api/v1/schedules '{"name":"t03-always","time_ranges":"00:00-0
 # Closed window: a one-minute range starting two hours from now (local time,
 # same evaluation the engine uses), so it is deterministically inactive.
 H=$(date +%H)
+H=${H#0} # strip leading zero — POSIX $(( )) reads "08"/"09" as bad octal
 CLOSED_H=$(( (H + 2) % 24 ))
 CLOSED_RANGE=$(printf '%02d:00-%02d:01' "$CLOSED_H" "$CLOSED_H")
 CLOSED=$(api POST /api/v1/schedules "{\"name\":\"t03-closed\",\"time_ranges\":\"$CLOSED_RANGE\",\"days_of_week\":\"mon,tue,wed,thu,fri,sat,sun\"}" | jq -r '.data.id') || fail "create closed schedule"

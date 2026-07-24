@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::audit::{AuditAction, AuditLog};
 
 /// NAT engine: persists SNAT/DNAT/masquerade rules in the `nat_rules`
-/// SQLite table and loads active ones as pf NAT rules into the `aifw`
+/// SQLite table and loads active ones as pf NAT rules into the `aifw-nat`
 /// anchor (override via [`Self::with_anchor`]). Every mutation commits its
 /// audit row in the same transaction.
 pub struct NatEngine {
@@ -23,14 +23,19 @@ pub struct NatEngine {
 
 impl NatEngine {
     /// Build a NAT engine over the shared pool and pf backend, targeting
-    /// the default `aifw` anchor
+    /// the default `aifw-nat` anchor.
+    ///
+    /// The default MUST stay `aifw-nat` (#531 review L1): `apply_rules`
+    /// replaces every rule class in its anchor, so an engine accidentally
+    /// pointed at `aifw` would wipe the RuleEngine's filter ruleset on the
+    /// first NAT apply.
     pub fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Self {
         let audit = AuditLog::new(pool.clone());
         Self {
             pool,
             pf,
             audit,
-            anchor: "aifw".to_string(),
+            anchor: "aifw-nat".to_string(),
         }
     }
 
@@ -81,6 +86,7 @@ impl NatEngine {
     /// neither a destination nor a redirect port.
     pub async fn add_rule(&self, rule: NatRule) -> Result<NatRule> {
         validate_nat_rule(&rule)?;
+        self.parser_gate_with(&rule).await?;
         let pf_syntax = rule.to_pf_rule();
         // PERF-H6 (#350): mutation + audit row commit together — one fsync
         // instead of two per NAT rule change.
@@ -140,6 +146,7 @@ impl NatEngine {
     /// pf is untouched until [`Self::apply_rules`].
     pub async fn update_rule(&self, rule: &NatRule) -> Result<()> {
         validate_nat_rule(rule)?;
+        self.parser_gate_with(rule).await?;
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r#"
@@ -222,7 +229,7 @@ impl NatEngine {
     /// Generate pf NAT rules and load them into the anchor
     pub async fn apply_rules(&self) -> Result<()> {
         let rules = self.list_active_rules().await?;
-        let pf_rules: Vec<String> = rules.iter().flat_map(|r| r.to_pf_rules()).collect();
+        let pf_rules = self.render_ruleset(&rules);
 
         tracing::info!(
             anchor = %self.anchor,
@@ -251,29 +258,87 @@ impl NatEngine {
         Ok(())
     }
 
+    /// Real-parser gate (#531): dry-run the full prospective active ruleset
+    /// (current active rules with `candidate` inserted/substituted) through
+    /// `pfctl -n` before persisting, so rules only real pf can judge (af-to
+    /// family constraints, prefix extraction limits) never land in the DB
+    /// unloadable. No-op on the mock backend (dev/tests).
+    async fn parser_gate_with(&self, candidate: &NatRule) -> Result<()> {
+        let mut prospective: Vec<NatRule> = self
+            .list_active_rules()
+            .await?
+            .into_iter()
+            .filter(|r| r.id != candidate.id)
+            .collect();
+        if candidate.status == NatStatus::Active {
+            prospective.push(candidate.clone());
+        }
+        // Only fork pfctl when the ruleset contains cross-family rules —
+        // the classic nat/rdr/binat renderers are fully covered by
+        // validate_nat_rule, and gating them too would cost O(N²) pfctl
+        // execs on a scripted bulk load (#531 review L5).
+        if !prospective
+            .iter()
+            .any(|r| matches!(r.nat_type, NatType::Nat64 | NatType::Nat46))
+        {
+            return Ok(());
+        }
+        let rendered = self.render_ruleset(&prospective);
+        self.pf
+            .validate_rules(&self.anchor, &rendered)
+            .await
+            .map_err(|e| AifwError::Validation(format!("pf rejected NAT ruleset: {e}")))
+    }
+
+    /// Render the full pf ruleset for a set of NAT rules, translation-class
+    /// lines first (traditional pf.conf section order). Cross-family
+    /// (af-to) rules render as filter-class `pass` lines and pf evaluates
+    /// the two classes independently, so cross-class order has no effect —
+    /// this ordering just keeps the loaded file conventional.
+    fn render_ruleset(&self, rules: &[NatRule]) -> Vec<String> {
+        let (translation, filter): (Vec<String>, Vec<String>) = rules
+            .iter()
+            .flat_map(|r| r.to_pf_rules())
+            .partition(|l| is_translation_class(l));
+        translation.into_iter().chain(filter).collect()
+    }
+
     /// Verify the pf anchor holds the NAT ruleset [`Self::apply_rules`]
     /// would render right now (#535 post-apply verification). Exact
-    /// comparison on backends that echo loaded rules; emptiness invariant
-    /// on real pfctl (see `RuleEngine::verify_applied`).
+    /// per-class comparison on backends that echo loaded rules; per-class
+    /// emptiness invariant on real pfctl (see `RuleEngine::verify_applied`).
+    /// Cross-family (af-to) rules are filter-class and surface via
+    /// `get_rules`, not `get_nat_rules`.
     pub async fn verify_applied(&self) -> Result<()> {
         let rules = self.list_active_rules().await?;
-        let expected: Vec<String> = rules.iter().flat_map(|r| r.to_pf_rules()).collect();
-        let actual = self
+        let (expected_nat, expected_filter): (Vec<String>, Vec<String>) = rules
+            .iter()
+            .flat_map(|r| r.to_pf_rules())
+            .partition(|l| is_translation_class(l));
+        let actual_nat = self
             .pf
             .get_nat_rules(&self.anchor)
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
+        let actual_filter = self
+            .pf
+            .get_rules(&self.anchor)
+            .await
+            .map_err(|e| AifwError::Pf(e.to_string()))?;
         let mismatch = if self.pf.echoes_exact_rules() {
-            actual != expected
+            actual_nat != expected_nat || actual_filter != expected_filter
         } else {
-            actual.is_empty() != expected.is_empty()
+            actual_nat.is_empty() != expected_nat.is_empty()
+                || actual_filter.is_empty() != expected_filter.is_empty()
         };
         if mismatch {
             return Err(AifwError::Pf(format!(
-                "anchor {} holds {} NAT rules but {} were expected — pf does not match the database",
+                "anchor {} holds {} nat-class / {} filter-class rules but {} / {} were expected — pf does not match the database",
                 self.anchor,
-                actual.len(),
-                expected.len()
+                actual_nat.len(),
+                actual_filter.len(),
+                expected_nat.len(),
+                expected_filter.len()
             )));
         }
         Ok(())
@@ -342,6 +407,14 @@ impl NatEngine {
     }
 }
 
+/// True for pf translation-class rule text (`nat`/`rdr`/`binat`), false for
+/// filter-class lines (the af-to `pass` rules cross-family NAT renders to).
+fn is_translation_class(rule: &str) -> bool {
+    ["nat ", "rdr ", "binat "]
+        .iter()
+        .any(|p| rule.starts_with(p))
+}
+
 /// Validate a NAT rule before persisting: interface required, DNAT/RDR
 /// needs a destination or redirect port. Public so the backup restore path
 /// can pre-validate a whole config with the same checks `add_rule` applies.
@@ -350,6 +423,16 @@ pub fn validate_nat_rule(rule: &NatRule) -> Result<()> {
         return Err(AifwError::Validation(
             "NAT rule requires an interface".to_string(),
         ));
+    }
+
+    // pf-injection guards at the engine level (#531 review M2): the API
+    // route validates these too, but the CLI, TUI, and backup-restore
+    // paths reach this function without passing through it — and
+    // cross-family (af-to) rules render the label into pf rule text, so a
+    // quote+newline label would become an arbitrary extra pf rule line.
+    crate::validation::validate_interface_name(&rule.interface.0)?;
+    if let Some(ref label) = rule.label {
+        crate::validation::validate_label(label)?;
     }
 
     // DNAT requires a destination port or redirect port
@@ -362,6 +445,83 @@ pub fn validate_nat_rule(rule: &NatRule) -> Result<()> {
     // Masquerade redirect is the interface itself, no address needed
     if rule.nat_type == NatType::Masquerade && rule.redirect.address != Address::Any {
         // This is fine — we'll ignore the redirect address and use the interface
+    }
+
+    // Cross-family (af-to) rules: pf requires the matched side and the
+    // translation source to be in opposite, concrete families (#531).
+    match rule.nat_type {
+        NatType::Nat64 => validate_af_to(rule, true)?,
+        NatType::Nat46 => validate_af_to(rule, false)?,
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Family/prefix checks for pf `af-to` rules. `inet6_match` is true for
+/// NAT64 (rule matches IPv6, translates to IPv4) and false for NAT46.
+fn validate_af_to(rule: &NatRule, inet6_match: bool) -> Result<()> {
+    let (kind, matched, translated) = if inet6_match {
+        ("nat64", "IPv6", "IPv4")
+    } else {
+        ("nat46", "IPv4", "IPv6")
+    };
+
+    // pf tables can mix families — af-to needs concrete same-family matches.
+    if matches!(rule.src_addr, Address::Table(_)) || matches!(rule.dst_addr, Address::Table(_)) {
+        return Err(AifwError::Validation(format!(
+            "{kind} rules cannot use pf tables for source/destination — the matched family must be concrete"
+        )));
+    }
+
+    // Source must be `any` or in the matched family.
+    if rule.src_addr.is_ipv6() == Some(!inet6_match) {
+        return Err(AifwError::Validation(format!(
+            "{kind} source address must be {matched} (the rule matches {matched} traffic)"
+        )));
+    }
+
+    if inet6_match {
+        // NAT64 destination is the translation prefix: an IPv6 network with
+        // a /96 prefix so the IPv4 destination embeds in the low 32 bits
+        // (RFC 6052). pf's af-to extraction supports /96 exactly.
+        match rule.dst_addr {
+            Address::Network(std::net::IpAddr::V6(_), 96) => {}
+            _ => {
+                return Err(AifwError::Validation(
+                    "nat64 destination must be an IPv6 /96 translation prefix (e.g. 64:ff9b::/96)"
+                        .to_string(),
+                ));
+            }
+        }
+    } else {
+        // NAT46 destination is the concrete IPv4 host/network being reached.
+        match rule.dst_addr.is_ipv6() {
+            Some(false) => {}
+            _ => {
+                return Err(AifwError::Validation(
+                    "nat46 destination must be a concrete IPv4 address or network".to_string(),
+                ));
+            }
+        }
+    }
+
+    // Translation source: a single concrete host in the translated family
+    // (pf: `af-to inet|inet6 from <addr>` — the new source of the packet).
+    match (&rule.redirect.address, rule.redirect.address.is_ipv6()) {
+        (Address::Single(_), Some(v6)) if v6 != inet6_match => {}
+        _ => {
+            return Err(AifwError::Validation(format!(
+                "{kind} translation source (redirect) must be a single {translated} address the firewall owns"
+            )));
+        }
+    }
+
+    // af-to has no port-rewrite syntax.
+    if rule.redirect.port.is_some() {
+        return Err(AifwError::Validation(format!(
+            "{kind} rules do not support a redirect port — af-to translates addresses, not ports"
+        )));
     }
 
     Ok(())

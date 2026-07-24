@@ -30,6 +30,7 @@ by hand on a test VM and under `vmactions/freebsd-vm` in CI
 | `t04-nat` | Outbound SNAT (translation visible in the pf state table) and rdr port-forward into the server jail, with return traffic |
 | `t05-restore-roundtrip` | #535: save → mutate → restore brings both DB and the live anchor back |
 | `t06-wireguard` | Tunnel creation on the real kernel + #541 pubkey-derives-from-privkey via `wg pubkey` (skips without wireguard-kmod) |
+| `t08-control-plane` | Unauthenticated access rejection, invalid-login rejection, live PF/rule counters, identity, and representative JSON response shapes |
 
 ## Running on a test VM
 
@@ -62,8 +63,10 @@ Expect ~20–30 minutes; the FreeBSD VM boot + build dominates.
 Runs on a **Linux** host with qemu (KVM when available): boots the built
 USB IMG unmodified with a seed ISO attached as a CD, waits for
 `aifw_firstboot` to complete unattended setup, then asserts the seeded
-admin can log in through the LAN side and that the WAN side stays
-default-denied.
+admin can log in through the LAN side, invalid credentials are rejected,
+the static UI is served, live PF/rule counters are reported, and the WAN
+side stays default-denied. It also creates a rule, reboots the appliance,
+and verifies PF plus the persisted live rule recover after boot.
 
 ```sh
 xz -dk aifw-<ver>-amd64.img.xz

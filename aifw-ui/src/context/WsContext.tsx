@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef, useState, useCallback, ReactNode } from "react";
-import { getWsTicket } from "@/lib/api";
+import { getWsTicket, isAuthed } from "@/lib/api";
 
 interface WsData {
   status: Record<string, unknown> | null;
@@ -47,14 +47,17 @@ export function WsProvider({ children }: { children: ReactNode }) {
   const connectRef = useRef<() => void>(() => {});
 
   const connect = useCallback(async () => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("aifw_token") : null;
-    if (!token) return;
+    if (!isAuthed()) return;
     if (wsRef.current && wsRef.current.readyState <= 1) return;
 
     let ticket: string;
     try {
       ticket = await getWsTicket();
     } catch {
+      // Transient ticket failure (API restart, network blip): retry like the
+      // post-close path does, otherwise all shared live data stays dead
+      // until a full page reload (#584).
+      reconRef.current = setTimeout(() => connectRef.current(), 3000);
       return;
     }
 

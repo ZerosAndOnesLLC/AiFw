@@ -105,7 +105,10 @@ export function WgTunnelRow({
           </div>
           <div>
             <span className="text-gray-500">Address:</span>{" "}
-            <span className="text-gray-300 font-mono">{tunnel.address}</span>
+            <span className="text-gray-300 font-mono">
+              {tunnel.address}
+              {tunnel.address6 ? `, ${tunnel.address6}` : ""}
+            </span>
           </div>
           <div className="md:col-span-2">
             <span className="text-gray-500">Public Key:</span>{" "}

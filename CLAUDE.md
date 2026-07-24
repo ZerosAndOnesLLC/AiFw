@@ -99,6 +99,10 @@ Central type: `Database` struct in `aifw-core/src/db.rs` wrapping `SqlitePool`.
 - `Authorization: ApiKey <key>` header
 - `?ticket=<id>` query param (WebSocket/SSE) — single-use, 30-second
   ticket issued by `POST /auth/ws-ticket` (see `auth::ws_ticket`).
+- `aifw_at` HttpOnly session cookie (browser UI; SEC-M7 #304, see
+  `auth::cookies`) — fallback when no header/ticket is present. Cookie-authed
+  non-GET requests must also send the `X-AiFw-Csrf` header; the UI never
+  stores the JWT in `localStorage`.
 
 **AppState** holds all engines as `Arc<T>`, shared `Arc<dyn PfBackend>`, and `SqlitePool`. Passed to handlers via Axum's `State` extractor.
 

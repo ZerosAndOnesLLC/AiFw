@@ -140,6 +140,25 @@ export function GeneralTab({ config, setConfig, interfaces, isAllInterfaces, tog
         onToggle={() => setConfig((p) => ({ ...p, dns64: !p.dns64 }))}
         label="DNS64"
       />
+      {config.dns64 && (
+        <div className="ml-4 pl-4 border-l border-gray-700">
+          <label className="block text-xs text-[var(--text-muted)] mb-1">DNS64 Prefix (/96)</label>
+          <input
+            type="text"
+            value={config.dns64_prefix}
+            onChange={(e) => setConfig((p) => ({ ...p, dns64_prefix: e.target.value }))}
+            placeholder="64:ff9b::/96"
+            className="w-full max-w-xs bg-gray-900 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+          />
+          <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+            AAAA records are synthesized in this prefix for IPv4-only names. Must match your NAT64
+            rule prefix so v6-only clients can reach the translated addresses.
+          </p>
+          {!/^[0-9a-fA-F:]+\/96$/.test(config.dns64_prefix.trim()) && (
+            <p className="mt-1 text-[11px] text-red-400">Must be an IPv6 prefix with /96 (e.g. 64:ff9b::/96)</p>
+          )}
+        </div>
+      )}
 
       {/* Register DHCP leases */}
       <ToggleRow

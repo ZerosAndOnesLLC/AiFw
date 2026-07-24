@@ -29,7 +29,7 @@ breadcrumb:
 
 AiFw supports four working NAT types today &mdash; SNAT, DNAT (port forwarding), Masquerade, and 1:1 BiNAT. All NAT rules compile into the dedicated `aifw-nat` anchor and never touch the system pf config.
 
-> **NAT64 and NAT46 are in development.** The rule types exist in the API/UI, but the rules they currently emit do **not** perform real cross-family (IPv6↔IPv4) translation &mdash; a proper translation data plane is committed and tracked in [#531](https://github.com/ZerosAndOnesLLC/AiFw/issues/531). Don't rely on these rule types until that lands.
+> **NAT64 and NAT46 perform real cross-family translation** via pf `af-to` (FreeBSD 15+), validated by automated live-traffic tests (TCP, UDP, and ICMP↔ICMPv6) in CI. See the per-type sections below for the address-mapping rules.
 
 ## Quickstart
 
@@ -130,23 +130,49 @@ Bidirectional 1:1 mapping between an internal address and an external address. C
 
 ### NAT64
 
-Translate IPv6 source traffic into IPv4 destination traffic. Pair with a DNS64 resolver (the rDNS resolver has a `dns64` toggle) so IPv6-only clients can still reach IPv4 destinations.
+Let IPv6-only clients reach IPv4 servers. Compiles to a pf `af-to` filter rule (FreeBSD 15+) that statefully translates the address family, including return traffic and ICMPv6↔ICMP (RFC 7915):
+
+```
+pass in quick on em0 inet6 from any to 64:ff9b::/96 af-to inet from 203.0.113.1
+```
+
+Field mapping:
+
+| Field | Meaning | Requirement |
+|---|---|---|
+| `src_addr` | IPv6 clients allowed to translate | IPv6 network or `any` |
+| `dst_addr` | The NAT64 translation prefix | IPv6 prefix, exactly `/96` (default `64:ff9b::/96`) |
+| `redirect.address` | IPv4 the firewall sources translated traffic from (usually the WAN address) | single IPv4 host |
+
+Clients reach an IPv4 host by embedding its address in the low 32 bits of the prefix (RFC 6052): `10.1.2.3` becomes `64:ff9b::a01:203`. Print the embedding with `aifw nat embed 64:ff9b::/96 10.1.2.3`. The UI shows a live preview as you type.
 
 ```json
 { "nat_type": "nat64", "interface": "em0",
-  "src_addr": "64:ff9b::/96", "dst_addr": "any",
+  "src_addr": "any", "dst_addr": "64:ff9b::/96",
   "redirect": { "address": "203.0.113.1" } }
 ```
 
+**DNS64**: enable the `DNS64` toggle in DNS &rarr; Settings (rDNS backend) and set its prefix to the **same /96 prefix as the NAT64 rule**. The resolver then synthesizes AAAA records for IPv4-only names, so v6-only clients resolve and connect with no per-host configuration. If a name has real AAAA records those are used as-is (no synthesis, no translation).
+
+Selecting protocol `icmp` on a NAT64 rule renders as `icmp6` automatically &mdash; the rule matches the IPv6 side.
+
 ### NAT46
 
-Translate IPv4 source traffic into IPv6 destination traffic. Front legacy IPv4 clients onto an IPv6-only backend network. NAT46 is uncommon on most firewall distros &mdash; AiFw exposes it as a first-class rule type.
+Let IPv4-only clients reach an IPv6 service. Compiles to the opposite `af-to` direction:
+
+```
+pass in quick on em0 inet from any to 192.0.2.80 af-to inet6 from 2001:db8:2::1
+```
+
+Field mapping: `src_addr`/`dst_addr` are IPv4 (a concrete destination is required); `redirect.address` is a single IPv6 host the firewall owns. The translated destination is the IPv4 destination embedded in the /96 subnet of that IPv6 source (RFC 6052) &mdash; so the IPv6 server must answer on the embedded address (`192.0.2.80` under `2001:db8:2::/96` &rarr; `2001:db8:2::c000:250`; check with `aifw nat embed`). An explicit arbitrary-destination field is tracked as a follow-up. NAT46 is uncommon on most firewall distros &mdash; AiFw exposes it as a first-class rule type.
 
 ```json
 { "nat_type": "nat46", "interface": "em0",
-  "src_addr": "any", "dst_addr": "any",
-  "redirect": { "address": "2001:db8::1" } }
+  "src_addr": "any", "dst_addr": "192.0.2.80",
+  "redirect": { "address": "2001:db8:2::1" } }
 ```
+
+Cross-family notes (both types): `af-to` translates addresses, not ports (`redirect.port` is rejected); rules apply to inbound traffic on the selected interface; pf tables aren't allowed on the matched side (family must be concrete); requires FreeBSD 15+ (every AiFw appliance image ships on 15.x).
 
 ## Configuration
 
@@ -155,7 +181,7 @@ Translate IPv4 source traffic into IPv6 destination traffic. Front legacy IPv4 c
 | Anchor name | `aifw-nat` | NAT rules live in their own anchor, separate from filter rules |
 | `protocol` | `any` | NAT applies regardless of L4 protocol unless you scope it |
 | Reflection (DNAT) | always on | A second `nat` rule is auto-generated so replies route back through the firewall |
-| `label` | optional | NAT rules don't accept the pf `label` keyword; AiFw stores the label for UI display only |
+| `label` | optional | nat-class rules can't carry the pf `label` keyword (stored for UI display); NAT64/NAT46 rules are filter-class and DO emit the label for per-rule counters |
 
 ## See also
 

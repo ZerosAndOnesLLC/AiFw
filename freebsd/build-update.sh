@@ -128,10 +128,22 @@ BIN_VER="$("$PROJECT_ROOT/target/release/aifw" --version 2>/dev/null | grep -oE 
 [ "$BIN_VER" = "$VERSION" ] || die "version mismatch: building v${VERSION} but target/release/aifw reports v${BIN_VER:-unknown}. Bump Cargo.toml and rebuild (try 'cargo clean -p aifw') before releasing."
 echo "--- Verified compiled aifw binary is v${VERSION} ---"
 
-# Clone-or-update a companion repo; fail loudly on pull errors.
-# (Same function as in build-local.sh — keep them in sync.)
+# Clone-or-build a companion repo at its manifest pin, restoring the
+# operator's checkout afterwards. (Same function as in build-local.sh —
+# keep them in sync.)
+#
+# This used to `git reset --hard origin/main`, which (a) silently discarded
+# any uncommitted work in the operator's companion repos, (b) left them
+# moved off their branch, and (c) bypassed the #538 manifest pins — the
+# update tarball shipped whatever origin/main happened to be, not the
+# reviewed revision.
 build_companion() {
     local name="$1" dir="$2" url="$3"
+    local pin
+    pin=$(jq -r --arg n "$name" \
+        '.external_repos[] | select(.name == $n) | .commit // empty' \
+        "$PROJECT_ROOT/freebsd/manifest.json")
+    [ -n "$pin" ] || die "no pinned commit for $name in manifest.json (#538)"
     if [ ! -d "$dir" ]; then
         echo "Cloning $name from $url ..."
         git clone "$url" "$dir" || {
@@ -139,20 +151,35 @@ build_companion() {
             exit 1
         }
     fi
-    echo "--- Updating $name ---"
+    local prev
+    prev=$(git -C "$dir" symbolic-ref --quiet --short HEAD || git -C "$dir" rev-parse HEAD)
+    echo "--- Checking out $name @ $pin (will restore '$prev' after build) ---"
     ( cd "$dir" && \
         git fetch --tags origin && \
-        git reset --hard origin/main ) || {
-        echo "ERROR: git update of $name ($dir) failed — refusing to build stale code" >&2
+        git checkout --quiet --detach "$pin" ) || {
+        echo "ERROR: pinned commit $pin not found in $name ($dir), or the" >&2
+        echo "       working tree has uncommitted changes — commit/stash first" >&2
         exit 1
     }
-    local sha
-    sha=$(git -C "$dir" rev-parse --short HEAD)
-    echo "--- $name commit: $sha ---"
-    ( cd "$dir" && cargo build --release ) || {
+    local actual
+    actual=$(git -C "$dir" rev-parse HEAD)
+    [ "$actual" = "$pin" ] || die "$name checked out $actual, expected pinned $pin"
+    echo "--- $name commit: $actual ---"
+    local rc=0
+    ( cd "$dir" && cargo build --release ) || rc=1
+    git -C "$dir" checkout --quiet "$prev" || \
+        echo "WARN: could not restore $name to '$prev' — left detached at $pin" >&2
+    # Root-run builds litter the operator's repo with root-owned .git
+    # objects and target/ artifacts, breaking their later git/cargo use
+    # (seen live: 'insufficient permission for adding an object'). Hand
+    # the repo back to the invoking user.
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        chown -R "$SUDO_USER" "$dir" 2>/dev/null || true
+    fi
+    if [ "$rc" -ne 0 ]; then
         echo "ERROR: cargo build of $name failed" >&2
         exit 1
-    }
+    fi
 }
 
 echo "=== [4/6] Building companion services ==="
@@ -227,10 +254,13 @@ echo "$VERSION" > "$TARBALL_DIR/version"
 # Write a BUILD_MANIFEST so stale companion repos are visible at build time.
 {
     echo "AiFw             $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    [ -d "$TRAFFICCOP_DIR/.git" ] && echo "TrafficCop       $(git -C "$TRAFFICCOP_DIR" rev-parse --short HEAD)"
-    [ -d "$RDHCP_DIR/.git" ]      && echo "rDHCP            $(git -C "$RDHCP_DIR"      rev-parse --short HEAD)"
-    [ -d "$RDNS_DIR/.git" ]       && echo "rDNS             $(git -C "$RDNS_DIR"       rev-parse --short HEAD)"
-    [ -d "$RTIME_DIR/.git" ]      && echo "rTIME            $(git -C "$RTIME_DIR"      rev-parse --short HEAD)"
+    # Companion SHAs from the manifest pins — build_companion verified each
+    # checkout matched its pin, then restored the operator's branch.
+    for n in TrafficCop rDHCP rDNS rTIME; do
+        p=$(jq -r --arg n "$n" '.external_repos[] | select(.name == $n) | .commit // empty' \
+            "$PROJECT_ROOT/freebsd/manifest.json")
+        [ -n "$p" ] && printf '%-16s %.12s (manifest pin)\n' "$n" "$p"
+    done
     if [ -f "$TARBALL_DIR/bin/rdns" ]; then
         rver=$(grep -ao 'rDNS [0-9][0-9.]*' "$TARBALL_DIR/bin/rdns" | head -1 || true)
         echo "rdns binary      ${rver:-unknown}"
@@ -264,6 +294,11 @@ if [ -z "${AIFW_STAGE_OUT:-}" ]; then
     mv "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz.sha256" "$OUTPUTDIR/"
     rmdir "$STAGE_OUT" 2>/dev/null || true
     STAGE_OUT="$OUTPUTDIR"
+    # release.sh runs unprivileged and signs next to these files — hand
+    # them to the invoking user when this build ran under sudo.
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        chown -R "$SUDO_USER" "$OUTPUTDIR" 2>/dev/null || true
+    fi
 fi
 
 echo ""

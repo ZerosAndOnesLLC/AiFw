@@ -114,7 +114,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
 
             {/* Main content */}
-            <main className="flex-1 min-h-screen" style={{ marginLeft: typeof window !== "undefined" && window.innerWidth >= 1024 ? sidebarWidth : 0 }}>
+            <main
+              className="flex-1 min-h-screen ml-0 lg:ml-[var(--sidebar-width)]"
+              style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
+            >
               {/* Mobile header bar */}
               <div className="lg:hidden sticky top-0 z-20 bg-[var(--bg-secondary)] border-b border-[var(--border)] px-4 py-3 flex items-center gap-3">
                 <button onClick={() => setSidebarOpen(true)} className="text-[var(--text-primary)] hover:text-[var(--accent)] transition-colors">

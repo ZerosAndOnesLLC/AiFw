@@ -10,7 +10,7 @@ assignees: ''
 e.g. 5.8.0
 
 **FreeBSD Version**
-e.g. FreeBSD 15.0-RELEASE
+e.g. FreeBSD 15.1-RELEASE
 
 **Component**
 Which part of AiFw is affected?

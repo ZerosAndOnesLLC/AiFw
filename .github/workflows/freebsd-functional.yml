@@ -30,7 +30,7 @@ jobs:
       - name: Run harness in FreeBSD VM
         uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1.5.2
         with:
-          release: "15.0"
+          release: "15.1"
           usesh: true
           copyback: true
           prepare: |

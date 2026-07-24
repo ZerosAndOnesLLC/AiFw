@@ -103,10 +103,27 @@ impl PfBackend for PfIoctl {
     async fn add_rule(&self, anchor: &str, rule: &str) -> Result<(), PfError> {
         let output = pfctl_stdin(&["-a", anchor, "-f", "-"], rule).await?;
         if !output.status.success() {
+            // Strict: pfctl rejects rules with messages that don't contain
+            // "syntax error" (e.g. af-to family mismatches report "no
+            // translation address with matching address family found"), so
+            // any non-zero exit is a load failure (#531).
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("syntax error") {
-                return Err(PfError::Rule(stderr.to_string()));
-            }
+            return Err(PfError::Rule(format!("rule error: {stderr}")));
+        }
+        Ok(())
+    }
+
+    async fn validate_rules(&self, anchor: &str, rules: &[String]) -> Result<(), PfError> {
+        if rules.is_empty() {
+            return Ok(());
+        }
+        let ruleset = rules.join("\n");
+        // `pfctl -n` parses the full ruleset without committing anything —
+        // the real-parser gate for rules only pfctl can judge (#531).
+        let output = pfctl_stdin(&["-a", anchor, "-n", "-f", "-"], &ruleset).await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PfError::Rule(format!("pf rejected ruleset: {stderr}")));
         }
         Ok(())
     }
@@ -431,8 +448,13 @@ impl PfBackend for PfIoctl {
         let ruleset = rules.join("\n");
         tracing::debug!(anchor, rules = %ruleset, "loading pf NAT rules");
 
-        // SEC-H5: pipe via stdin (`pfctl -N -f -`) — no /tmp staging.
-        let output = pfctl_stdin(&["-a", anchor, "-N", "-f", "-"], &ruleset).await?;
+        // Plain `-f` (not `-N`): the NAT engine's ruleset can mix nat-class
+        // rules with filter-class `af-to` pass rules (#531), and `-N` would
+        // silently drop the latter. A plain load replaces every rule class
+        // in the anchor atomically (pfctl parses the whole set before
+        // committing, so a rejected ruleset leaves the old one intact).
+        // SEC-H5: pipe via stdin — no /tmp staging.
+        let output = pfctl_stdin(&["-a", anchor, "-f", "-"], &ruleset).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -451,7 +473,17 @@ impl PfBackend for PfIoctl {
     }
 
     async fn flush_nat_rules(&self, anchor: &str) -> Result<(), PfError> {
-        pfctl(&["-a", anchor, "-Fn"]).await?;
+        // The NAT anchor holds nat-class rules AND filter-class af-to pass
+        // rules (#531). Loading an empty ruleset replaces every class in
+        // one pf transaction — atomic, unlike sequential -Fn + -Fr which
+        // could leave orphaned af-to rules if the second flush failed
+        // (verified against real pfctl on FreeBSD 15.0). Uses the same
+        // sudoers grant as load_nat_rules.
+        let output = pfctl_stdin(&["-a", anchor, "-f", "-"], "").await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PfError::Rule(format!("NAT flush error: {stderr}")));
+        }
         Ok(())
     }
 
