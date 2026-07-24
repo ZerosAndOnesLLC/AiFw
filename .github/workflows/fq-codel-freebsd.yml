@@ -1,0 +1,37 @@
+name: FQ-CoDel FreeBSD qualification
+
+on:
+  pull_request:
+    paths:
+      - "aifw-common/src/ratelimit.rs"
+      - "aifw-core/src/shaping.rs"
+      - "freebsd/overlay/usr/local/libexec/aifw*dummynet*"
+      - "freebsd/tests/t08-fq-codel.sh"
+      - ".github/workflows/fq-codel-freebsd.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  functional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Exercise real FreeBSD dummynet
+        uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1.5.2
+        with:
+          release: "15.0"
+          usesh: true
+          prepare: |
+            install -m 755 freebsd/overlay/usr/local/libexec/aifw-dummynet-control /usr/local/libexec/aifw-dummynet-control
+          run: |
+            sh freebsd/tests/t08-fq-codel.sh 2>&1 | tee fq-codel-results.txt
+      - name: Upload raw result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fq-codel-freebsd-${{ github.sha }}
+          path: fq-codel-results.txt
+          if-no-files-found: warn

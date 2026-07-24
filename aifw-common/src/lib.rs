@@ -78,8 +78,8 @@ pub use multiwan::{
 pub use nat::{NatRedirect, NatRule, NatStatus, NatType, embed_rfc6052};
 pub use permission::{ALL_PERMISSIONS, Permission, PermissionSet, builtin_role_permissions};
 pub use ratelimit::{
-    Bandwidth, BandwidthUnit, QueueConfig, QueueStatus, QueueType, RateLimitRule, RateLimitStatus,
-    SynFloodConfig, TrafficClass,
+    Bandwidth, BandwidthUnit, FqCodelConfig, QueueConfig, QueueStatus, QueueType, RateLimitRule,
+    RateLimitStatus, SynFloodConfig, TrafficClass,
 };
 pub use rule::{
     Action, AdaptiveTimeouts, Direction, IpVersion, Protocol, Rule, RuleMatch, RuleStatus,

@@ -17,6 +17,59 @@ pub enum QueueType {
     Priq,
 }
 
+/// dummynet scheduler configuration for the FQ-CoDel backend.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FqCodelConfig {
+    /// Target queueing delay in milliseconds.
+    pub target_ms: u32,
+    /// CoDel interval in milliseconds.
+    pub interval_ms: u32,
+    /// Per-flow quantum in bytes.
+    pub quantum_bytes: u32,
+    /// Maximum queue length in packets.
+    pub limit_packets: u32,
+    /// Number of flow buckets.
+    pub flows: u32,
+    /// Enable ECN marking.
+    pub ecn: bool,
+}
+
+impl Default for FqCodelConfig {
+    fn default() -> Self {
+        Self {
+            target_ms: 5,
+            interval_ms: 100,
+            quantum_bytes: 1514,
+            limit_packets: 10240,
+            flows: 1024,
+            ecn: true,
+        }
+    }
+}
+
+impl FqCodelConfig {
+    /// Reject values outside FreeBSD dummynet's safe scheduler bounds.
+    pub fn validate(&self) -> crate::Result<()> {
+        if !(1..=1_000).contains(&self.target_ms)
+            || self.interval_ms < self.target_ms
+            || self.interval_ms > 10_000
+        {
+            return Err(crate::AifwError::Validation(
+                "invalid FQ-CoDel target/interval".to_string(),
+            ));
+        }
+        if !(64..=9_000).contains(&self.quantum_bytes)
+            || !(1..=20_480).contains(&self.limit_packets)
+            || !(1..=65_536).contains(&self.flows)
+        {
+            return Err(crate::AifwError::Validation(
+                "invalid FQ-CoDel quantum, limit, or flow count".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl std::fmt::Display for QueueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -195,6 +248,9 @@ pub struct QueueConfig {
     pub created_at: DateTime<Utc>,
     /// Last modification timestamp (UTC)
     pub updated_at: DateTime<Utc>,
+    /// FQ-CoDel parameters (used when queue_type is Codel).
+    #[serde(default)]
+    pub fq_codel: FqCodelConfig,
 }
 
 /// Enabled/disabled state of a queue
@@ -230,6 +286,7 @@ impl QueueConfig {
             status: QueueStatus::Active,
             created_at: now,
             updated_at: now,
+            fq_codel: FqCodelConfig::default(),
         }
     }
 
@@ -248,9 +305,10 @@ impl QueueConfig {
         }
 
         match self.queue_type {
-            QueueType::Codel => {
-                parts.push("flows 1024 quantum 1514 target 5 interval 100".to_string())
-            }
+            // FQ-CoDel is rendered by the dummynet backend. Returning no PF
+            // queue syntax here prevents callers from accidentally loading a
+            // same-family ALTQ approximation into pf.
+            QueueType::Codel => return String::new(),
             QueueType::Hfsc => {}
             QueueType::Priq => parts.push(format!("priority {}", self.traffic_class.priority())),
         }

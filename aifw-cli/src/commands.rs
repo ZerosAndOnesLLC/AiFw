@@ -592,6 +592,7 @@ pub async fn queue_add(
     config.default = default;
 
     let config = engine.add_queue(config).await?;
+    engine.apply_queues().await?;
     println!("Added queue {}", config.id);
     println!("  pf: {}", config.to_pf_queue());
     Ok(())
@@ -601,6 +602,7 @@ pub async fn queue_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let engine = create_shaping_engine(db_path).await?;
     let uuid = Uuid::parse_str(id)?;
     engine.delete_queue(uuid).await?;
+    engine.apply_queues().await?;
     println!("Removed queue {id}");
     Ok(())
 }
