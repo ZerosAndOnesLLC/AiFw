@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { ApiError } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
 import { useFeedback } from "@/hooks/useFeedback";
 import {
@@ -320,13 +321,21 @@ export function useUpdates() {
   // Operator-confirmed restart. Posts to the dedicated restart endpoint
   // and switches to the bounce overlay.
   const handleConfirmRestart = async () => {
+    setRestartPrompt(null);
     try {
       await restartAifwServices();
-      setRestartPrompt(null);
-      watchRestart();
     } catch (err) {
-      showFeedback("error", err instanceof Error ? err.message : "Failed to restart services");
+      // A real API error (4xx/5xx) means the restart was refused — report
+      // it. A network failure means the API bounced before the response
+      // flushed (#601 follow-up: seen live — the restart driver SIGKILLs a
+      // slow-stopping API), so the restart IS running: fall through to the
+      // overlay, whose polling handles recovery either way.
+      if (err instanceof ApiError) {
+        showFeedback("error", err.message);
+        return;
+      }
     }
+    watchRestart();
   };
 
   // Operator-confirmed full system reboot. shutdown(8) defers actual
@@ -365,9 +374,28 @@ export function useUpdates() {
         setLocalInstalling(false);
         setInstallLocalResult(result);
         if (result.ok) {
+          if (installRestart) {
+            // Services bounce right after install — show the overlay and
+            // poll for the API to come back instead of leaving the page up.
+            watchRestart();
+            return;
+          }
           fetchHistory();
           fetchAifwStatus();
         }
+      })
+      .catch((err) => {
+        setUploadProgress(null);
+        setLocalInstalling(false);
+        // Network failure on a restart-install means the API bounced before
+        // the response flushed — the install itself succeeded and services
+        // are restarting. Watch the bounce instead of hanging the spinner
+        // forever (the exact symptom this replaced, #601 follow-up).
+        if (installRestart && !(err instanceof ApiError)) {
+          watchRestart();
+          return;
+        }
+        showFeedback("error", err instanceof Error ? err.message : "Install failed");
       });
   };
 

@@ -273,7 +273,6 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // 8. Configure network interfaces in rc.conf
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
         console::info("Configuring network interfaces...");
 
         // WAN interface
@@ -319,7 +318,6 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // 9. Start services
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
         console::info("Starting services...");
 
         // Anchor population is handled at runtime by aifw-daemon reading from
@@ -443,7 +441,6 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
 fn create_service_user() -> Result<(), String> {
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
         // Check if user already exists
         let status = Command::new("pw").args(["usershow", "aifw"]).output();
         if let Ok(out) = status {
@@ -486,8 +483,6 @@ fn create_service_user() -> Result<(), String> {
 fn configure_devfs() -> Result<(), String> {
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
-
         // Write rules directly to /etc/devfs.rules (the canonical location)
         let devfs_rules_path = "/etc/devfs.rules";
         let existing = std::fs::read_to_string(devfs_rules_path).unwrap_or_default();
