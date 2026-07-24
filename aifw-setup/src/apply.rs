@@ -273,7 +273,6 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // 8. Configure network interfaces in rc.conf
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
         console::info("Configuring network interfaces...");
 
         // WAN interface
@@ -319,7 +318,6 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     // 9. Start services
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
         console::info("Starting services...");
 
         // Anchor population is handled at runtime by aifw-daemon reading from
@@ -443,9 +441,10 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
 fn create_service_user() -> Result<(), String> {
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
         // Check if user already exists
-        let status = Command::new("pw").args(["usershow", "aifw"]).output();
+        let status = std::process::Command::new("pw")
+            .args(["usershow", "aifw"])
+            .output();
         if let Ok(out) = status {
             if out.status.success() {
                 return Ok(()); // user exists
@@ -454,7 +453,7 @@ fn create_service_user() -> Result<(), String> {
         // Create group
         run_best_effort("pw", &["groupadd", "aifw", "-g", "470"]);
         // Create user: no login shell, no home, system account
-        let out = Command::new("pw")
+        let out = std::process::Command::new("pw")
             .args([
                 "useradd",
                 "aifw",
@@ -486,8 +485,6 @@ fn create_service_user() -> Result<(), String> {
 fn configure_devfs() -> Result<(), String> {
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
-
         // Write rules directly to /etc/devfs.rules (the canonical location)
         let devfs_rules_path = "/etc/devfs.rules";
         let existing = std::fs::read_to_string(devfs_rules_path).unwrap_or_default();
@@ -655,7 +652,6 @@ fn create_dirs(config: &SetupConfig) -> Result<(), String> {
     // Set ownership: config dir readable by aifw, db/log owned by aifw
     #[cfg(target_os = "freebsd")]
     {
-        use std::process::Command;
         // Config dir: root owns, aifw group can read
         run_best_effort("chown", &["root:aifw", &config.config_dir]);
         run_best_effort("chmod", &["750", &config.config_dir]);

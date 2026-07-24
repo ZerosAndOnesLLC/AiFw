@@ -8,8 +8,10 @@ pub mod factory;
 pub mod pcap;
 pub mod types;
 
+/// BPF-based packet capture (FreeBSD /dev/bpf).
 #[cfg(target_os = "freebsd")]
 pub mod bpf;
+/// netmap-based high-rate capture (FreeBSD, experimental — #484).
 #[cfg(target_os = "freebsd")]
 pub mod netmap;
 

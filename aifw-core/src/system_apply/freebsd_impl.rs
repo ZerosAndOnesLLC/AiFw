@@ -5,6 +5,8 @@ use super::freebsd_helpers::{rewrite_hosts_loopback, rewrite_resolv_conf_search}
 use super::{ApplyReport, BannerInput, ConsoleInput, GeneralInput, SshInput, SystemInfo};
 use crate::system_apply_helpers::replace_managed_block;
 
+/// Apply general system settings (hostname, domain, DNS search) via
+/// sysrc for persistence plus the live equivalents.
 pub async fn apply_general(i: &GeneralInput) -> ApplyReport {
     let mut warnings: Vec<String> = Vec::new();
 
@@ -58,6 +60,7 @@ pub async fn apply_general(i: &GeneralInput) -> ApplyReport {
     }
 }
 
+/// Install the login banner (/etc/issue) and MOTD content.
 pub async fn apply_banner(i: &BannerInput) -> ApplyReport {
     let mut warnings: Vec<String> = Vec::new();
 
@@ -84,12 +87,16 @@ pub async fn apply_banner(i: &BannerInput) -> ApplyReport {
     }
 }
 
+/// Whether the operator has hand-edited the MOTD (marker file set) —
+/// when true, apply paths must not overwrite it.
 pub async fn motd_user_edited_marker_set() -> bool {
     tokio::fs::try_exists("/var/db/aifw/motd.user-edited")
         .await
         .unwrap_or(false)
 }
 
+/// Apply SSH daemon settings (enable flag via sysrc + sshd_config
+/// managed block) and restart sshd when changed.
 pub async fn apply_ssh(i: &SshInput) -> ApplyReport {
     let mut warnings: Vec<String> = Vec::new();
 
@@ -141,6 +148,7 @@ pub async fn apply_ssh(i: &SshInput) -> ApplyReport {
     r
 }
 
+/// Apply the console kind (serial/video/dual) to /boot/loader.conf.
 pub async fn apply_console(i: &ConsoleInput) -> ApplyReport {
     let console_val = match i.kind {
         crate::config::ConsoleKind::Serial => "comconsole",
@@ -164,6 +172,8 @@ pub async fn apply_console(i: &ConsoleInput) -> ApplyReport {
     r
 }
 
+/// Collect live system facts (hostname, OS release, uptime, etc.) for
+/// the system-info API.
 pub async fn collect_info() -> SystemInfo {
     let hostname = read_sysctl_str("kern.hostname").unwrap_or_default();
     let os_release = run_stdout("/usr/bin/uname", &["-sr"])
