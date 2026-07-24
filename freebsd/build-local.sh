@@ -353,6 +353,15 @@ for d in stage dist iso efi-stage; do
 done
 echo "  Removed staged binaries, UI export, and build intermediates"
 
+# Hand the artifacts to the user who invoked the build: this script runs as
+# root, but release.sh runs unprivileged (it needs the operator's gh auth
+# and minisign key) and must be able to write .minisig files next to the
+# checksums. Without this, every release run died on "Permission denied".
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    chown -R "$SUDO_USER" "$OUTPUTDIR"
+    echo "  Output ownership -> $SUDO_USER (for unprivileged release.sh)"
+fi
+
 # --- Done ---
 echo ""
 echo "=== Complete ==="

@@ -264,6 +264,11 @@ if [ -z "${AIFW_STAGE_OUT:-}" ]; then
     mv "${STAGE_OUT}/aifw-update-${VERSION}-amd64.tar.xz.sha256" "$OUTPUTDIR/"
     rmdir "$STAGE_OUT" 2>/dev/null || true
     STAGE_OUT="$OUTPUTDIR"
+    # release.sh runs unprivileged and signs next to these files — hand
+    # them to the invoking user when this build ran under sudo.
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        chown -R "$SUDO_USER" "$OUTPUTDIR" 2>/dev/null || true
+    fi
 fi
 
 echo ""
