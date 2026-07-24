@@ -230,7 +230,7 @@ fi
 
 BODY="## AiFw v${VERSION}
 
-AI-Powered Firewall for FreeBSD 15.0
+AI-Powered Firewall for FreeBSD 15.1
 ${TARBALL_ONLY_NOTE}
 
 ### Downloads
