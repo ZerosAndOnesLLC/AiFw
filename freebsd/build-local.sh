@@ -287,6 +287,9 @@ fi
 chmod 755 "$TARBALL_DIR"/rc.d/* "$TARBALL_DIR"/sbin/* "$TARBALL_DIR"/libexec/* 2>/dev/null || true
 
 echo "$VERSION" > "$TARBALL_DIR/version"
+# OS floor stamp (#612): the updater refuses this tarball on a FreeBSD
+# older than the build host — its binaries wouldn't link.
+freebsd-version -u | sed 's/-.*//' > "$TARBALL_DIR/required-os"
 
 # Write a manifest of what made it into the tarball — commit SHAs for every
 # component plus a quick sanity check on rDNS features. Makes stale companion

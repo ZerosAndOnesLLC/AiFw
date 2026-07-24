@@ -54,6 +54,28 @@ export interface AifwUpdateInfo {
   // Operator opted this box into the pre-release update channel. When on,
   // checks/installs consider GitHub pre-releases, not just stable releases.
   include_prereleases?: boolean;
+  // Minimum FreeBSD release the update needs (parsed from `Requires-OS:`
+  // in the release notes). Null on releases published before OS stamping.
+  required_os?: string | null;
+  // The release needs a newer FreeBSD than this box runs — the OS upgrade
+  // flow must happen first; the installer refuses otherwise (#612).
+  os_upgrade_required?: boolean;
+}
+
+// ---- OS release upgrade (#613) ----
+
+export interface OsUpgradeState {
+  target: string;
+  // fetching | installing | reboot_required | finalizing | done | failed
+  phase: string;
+  detail: string;
+  started_at: string;
+  updated_at: string;
+}
+
+export interface OsUpgradeStatus {
+  current_os: string | null;
+  state: OsUpgradeState | null;
 }
 
 export interface UpdateInstallResponse {
@@ -98,6 +120,14 @@ export function installUpdates(): Promise<{ message?: string }> {
 
 export function scheduleReboot(): Promise<{ message?: string }> {
   return api.post<{ message?: string }>("/api/v1/updates/reboot");
+}
+
+export function getOsUpgrade(): Promise<OsUpgradeStatus> {
+  return api.get<OsUpgradeStatus>("/api/v1/updates/os/upgrade");
+}
+
+export function startOsUpgrade(target: string): Promise<{ message?: string }> {
+  return api.post<{ message?: string }>("/api/v1/updates/os/upgrade", { target });
 }
 
 // ---- AiFw firmware updates ----

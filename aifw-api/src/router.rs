@@ -640,6 +640,10 @@ pub(crate) fn updates_read() -> Router<AppState> {
             "/api/v1/updates/aifw/check",
             post(updates::aifw_check_update),
         )
+        .route(
+            "/api/v1/updates/os/upgrade",
+            get(updates::os_upgrade_status),
+        )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesRead)))
 }
 
@@ -663,6 +667,10 @@ pub(crate) fn updates_install() -> Router<AppState> {
         .route(
             "/api/v1/updates/aifw/prerelease",
             post(updates::set_prerelease_channel),
+        )
+        .route(
+            "/api/v1/updates/os/upgrade",
+            post(updates::start_os_upgrade),
         )
         .layer(middleware::from_fn(perm_check!(Permission::UpdatesInstall)))
 }

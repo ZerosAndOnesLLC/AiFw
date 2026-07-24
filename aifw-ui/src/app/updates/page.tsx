@@ -6,6 +6,7 @@ import { FirmwareCard } from "./components/FirmwareCard";
 import { LocalInstallCard } from "./components/LocalInstallCard";
 import { MaintenanceWindowCard } from "./components/MaintenanceWindowCard";
 import { OsStatusCard } from "./components/OsStatusCard";
+import { OsUpgradeCard } from "./components/OsUpgradeCard";
 import { PendingPackagesCard } from "./components/PendingPackagesCard";
 import { RebootOverlay } from "./components/RebootOverlay";
 import { RestartConfirmModal } from "./components/RestartConfirmModal";
@@ -57,6 +58,18 @@ export default function UpdatesPage() {
       {updates.aifwInfo?.restart_pending && !updates.restartPrompt && (
         <RestartPendingBanner info={updates.aifwInfo} onRestart={updates.handleConfirmRestart} />
       )}
+
+      {/* OS release upgrade (#613) — shown when the newest AiFw release
+          needs a newer FreeBSD, or while an upgrade job is running. Sits
+          above the firmware card because it must happen first. */}
+      <OsUpgradeCard
+        osUpgrade={updates.osUpgrade}
+        aifwInfo={updates.aifwInfo}
+        starting={updates.osUpgradeStarting}
+        rebooting={updates.aifwRebooting}
+        onStart={updates.handleOsUpgrade}
+        onReboot={updates.handleConfirmReboot}
+      />
 
       {/* AiFw Firmware Card */}
       <FirmwareCard

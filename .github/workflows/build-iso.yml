@@ -6,6 +6,13 @@ on:
       version:
         description: 'Version (e.g. 5.32.7)'
         required: true
+      freebsd_version:
+        description: >-
+          FreeBSD release to build on (default 15.1). Set to an older
+          release to cut a transitional build installable on appliances
+          that have not upgraded their OS yet (#612).
+        required: false
+        default: '15.1'
   push:
     tags:
       - 'v*'
@@ -16,7 +23,7 @@ permissions:
   attestations: write
 
 env:
-  FREEBSD_VERSION: "15.1"
+  FREEBSD_VERSION: ${{ inputs.freebsd_version || '15.1' }}
 
 jobs:
   build-ui:
@@ -172,6 +179,9 @@ jobs:
             cp -a freebsd/overlay/usr/local/libexec/* "$TARBALL_DIR/libexec/"
             chmod 755 "$TARBALL_DIR"/rc.d/* "$TARBALL_DIR"/sbin/* "$TARBALL_DIR"/libexec/*
             echo "$VERSION" > "$TARBALL_DIR/version"
+            # OS floor stamp (#612): the updater refuses this tarball on a
+            # FreeBSD older than the VM it was built in.
+            freebsd-version -u | sed 's/-.*//' > "$TARBALL_DIR/required-os"
             cp /tmp/aifw-components.json "$TARBALL_DIR/components.json"
             tar -C /tmp -cJf "/usr/obj/aifw-iso/output/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"
             cd /usr/obj/aifw-iso/output
@@ -404,6 +414,8 @@ jobs:
             ## AiFw v${{ steps.version.outputs.version }}
 
             AI-Powered Firewall for FreeBSD ${{ env.FREEBSD_VERSION }}
+
+            Requires-OS: FreeBSD ${{ env.FREEBSD_VERSION }}
 
             ### Downloads
 
