@@ -394,7 +394,7 @@ impl Default for IdsConfig {
             ],
             external_net: vec!["!$HOME_NET".into()],
             interfaces: Vec::new(),
-            alert_retention_days: 30,
+            alert_retention_days: 7,
             eve_log_enabled: false,
             eve_log_path: None,
             syslog_target: None,
