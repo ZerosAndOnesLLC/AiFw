@@ -164,7 +164,7 @@ impl ShapingEngine {
                 config.id
             )));
         }
-        self.insert_queue(&config).await?;
+        Self::insert_queue_on(&self.pool, &config).await?;
         Ok(config)
     }
 
