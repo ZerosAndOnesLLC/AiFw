@@ -50,7 +50,7 @@ export default function IdsSettingsPage() {
     home_net: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
     external_net: ["!$HOME_NET"],
     interfaces: [],
-    alert_retention_days: 30,
+    alert_retention_days: 7,
     eve_log_enabled: false,
     eve_log_path: "/var/log/aifw/eve.json",
     syslog_target: "",
@@ -83,7 +83,7 @@ export default function IdsSettingsPage() {
         home_net: d.home_net || ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
         external_net: d.external_net || ["!$HOME_NET"],
         interfaces: d.interfaces || [],
-        alert_retention_days: d.alert_retention_days ?? 30,
+        alert_retention_days: d.alert_retention_days ?? 7,
         eve_log_enabled: d.eve_log_enabled ?? false,
         eve_log_path: d.eve_log_path || "/var/log/aifw/eve.json",
         syslog_target: d.syslog_target || "",
@@ -335,21 +335,27 @@ export default function IdsSettingsPage() {
           {/* Alert Retention */}
           <div>
             <label className="block text-xs text-[var(--text-muted)] mb-1">
-              Alert Retention (days)
+              Alert Retention
             </label>
-            <input
-              type="number"
+            <select
               value={config.alert_retention_days}
               onChange={(e) =>
                 setConfig({
                   ...config,
-                  alert_retention_days: parseInt(e.target.value) || 30,
+                  alert_retention_days: parseInt(e.target.value) || 7,
                 })
               }
-              min={1}
-              max={365}
               className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors"
-            />
+            >
+              <option value={1}>1 day</option>
+              <option value={7}>7 days (default)</option>
+              <option value={30}>1 month</option>
+              <option value={90}>3 months</option>
+              <option value={365}>1 year</option>
+            </select>
+            <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+              Older alerts are pruned hourly; disk space is reclaimed automatically after large purges.
+            </p>
           </div>
 
           {/* Syslog Target */}

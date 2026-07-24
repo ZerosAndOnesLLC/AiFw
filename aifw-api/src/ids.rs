@@ -243,8 +243,38 @@ pub async fn purge_alerts(
         .execute(&state.pool)
         .await
         .map_err(|_| internal())?;
+
+    // Reclaim the space: a bare DELETE only moves pages to the freelist —
+    // seen live as a 2.9GB DB file with 34 rows (#601). VACUUM rewrites the
+    // file; the TRUNCATE checkpoint then shrinks the WAL that the rewrite
+    // itself produced (the rewrite streams through the WAL, so without this
+    // the reclaimed gigabytes just move into aifw.db-wal). Failures are
+    // non-fatal — the rows are gone either way.
+    let mut reclaimed = " and space reclaimed";
+    if let Err(e) = sqlx::query("VACUUM").execute(&state.pool).await {
+        tracing::warn!(error = %e, "ids purge: vacuum failed; space not reclaimed");
+        reclaimed = " (space reclaim deferred: vacuum busy)";
+    } else if let Err(e) = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .fetch_all(&state.pool)
+        .await
+    {
+        tracing::warn!(error = %e, "ids purge: wal checkpoint failed");
+    }
+
+    if let Err(e) = aifw_core::audit::AuditLog::new(state.pool.clone())
+        .log(
+            aifw_core::audit::AuditAction::ConfigChanged,
+            None,
+            &format!("ids: purged all alerts ({} rows)", res.rows_affected()),
+            "ids_api",
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "ids purge: audit log write failed");
+    }
+
     Ok(Json(MessageResponse {
-        message: format!("{} alerts purged", res.rows_affected()),
+        message: format!("{} alerts purged{reclaimed}", res.rows_affected()),
     }))
 }
 

@@ -82,6 +82,8 @@ export default function IdsAlertsPage() {
 
   // Acknowledging
   const [ackingId, setAckingId] = useState<string | null>(null);
+  const [purgeConfirm, setPurgeConfirm] = useState(false);
+  const [purging, setPurging] = useState(false);
 
   const clearFeedback = useCallback(() => {
     setTimeout(() => setFeedback(null), 4000);
@@ -133,6 +135,27 @@ export default function IdsAlertsPage() {
       clearFeedback();
     } finally {
       setAckingId(null);
+    }
+  }
+
+  async function handlePurgeAll() {
+    setPurging(true);
+    setFeedback(null);
+    try {
+      // Deletes every stored alert and reclaims the disk space (VACUUM) —
+      // millions of stale alerts have bloated appliances to multi-GB DBs.
+      const res = await api.delete<{ message?: string }>("/api/v1/ids/alerts");
+      setFeedback({ type: "success", message: res.message || "All alerts purged" });
+      clearFeedback();
+      setPage(0);
+      await fetchAlerts();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to purge alerts";
+      setFeedback({ type: "error", message: msg });
+      clearFeedback();
+    } finally {
+      setPurging(false);
+      setPurgeConfirm(false);
     }
   }
 
@@ -199,8 +222,40 @@ export default function IdsAlertsPage() {
           >
             Filter
           </button>
+          <button
+            onClick={() => setPurgeConfirm(true)}
+            disabled={purging || total === 0}
+            className="ml-auto px-4 py-2 bg-red-600/80 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-md transition-colors"
+            title="Delete every stored alert and reclaim disk space"
+          >
+            {purging ? "Clearing..." : "Clear All Alerts"}
+          </button>
         </div>
       </div>
+
+      {/* Clear-all confirmation */}
+      {purgeConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setPurgeConfirm(false)}>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6 max-w-md w-full mx-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-[var(--text-primary)]">Clear all IDS alerts?</h3>
+            <p className="text-sm text-[var(--text-muted)]">
+              This permanently deletes all {total.toLocaleString()} stored alerts and reclaims the
+              disk space. It cannot be undone. Retention normally prunes alerts automatically
+              (IDS &rarr; Settings &rarr; Alert Retention) — use this for one-off cleanup.
+            </p>
+            <div className="flex gap-2 justify-end pt-1">
+              <button onClick={() => setPurgeConfirm(false)}
+                className="px-4 py-1.5 text-sm rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
+                Cancel
+              </button>
+              <button onClick={handlePurgeAll} disabled={purging}
+                className="px-4 py-1.5 text-sm font-medium rounded-md bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white transition-colors">
+                {purging ? "Clearing..." : "Delete All"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Alerts Table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">

@@ -142,7 +142,7 @@ impl RuntimeConfig {
                     cfg.interfaces = serde_json::from_str(&value).unwrap_or_default();
                 }
                 "alert_retention_days" => {
-                    cfg.alert_retention_days = value.parse().unwrap_or(30);
+                    cfg.alert_retention_days = value.parse().unwrap_or(7);
                 }
                 "eve_log_enabled" => {
                     cfg.eve_log_enabled = value == "true" || value == "1";
@@ -314,12 +314,14 @@ mod tests {
 
         let mut cfg = (*config.config()).clone();
         cfg.mode = IdsMode::Ids;
-        cfg.alert_retention_days = 7;
+        // Non-default value (default is 7) so the round-trip proves the
+        // saved value is read back, not the default.
+        cfg.alert_retention_days = 3;
         config.save_to_db(&pool, &cfg).await.unwrap();
 
         let loaded = config.load_from_db(&pool).await.unwrap();
         assert_eq!(loaded.mode, IdsMode::Ids);
-        assert_eq!(loaded.alert_retention_days, 7);
+        assert_eq!(loaded.alert_retention_days, 3);
     }
 
     #[tokio::test]

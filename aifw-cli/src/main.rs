@@ -36,6 +36,11 @@ enum Commands {
         #[command(subcommand)]
         action: NatAction,
     },
+    /// Manage the IDS engine (alerts, retention)
+    Ids {
+        #[command(subcommand)]
+        action: IdsAction,
+    },
     /// Manage traffic queues
     Queue {
         #[command(subcommand)]
@@ -748,6 +753,30 @@ enum DhcpAction {
 // add allocator overhead for a CLI command type that lives briefly on the stack.
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
+enum IdsAction {
+    /// Delete ALL stored IDS alerts and reclaim the disk space
+    #[command(after_help = "\
+EXAMPLES:
+    aifw ids purge-alerts            # asks for confirmation first
+    aifw ids purge-alerts --yes      # non-interactive (scripts/cron)")]
+    PurgeAlerts {
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show or set how long alerts are kept (pruned hourly by aifw-ids)
+    #[command(after_help = "\
+EXAMPLES:
+    aifw ids retention               # show the current setting
+    aifw ids retention 7             # keep one week (the default)
+    aifw ids retention 30            # keep one month")]
+    Retention {
+        /// Days to keep alerts (1-365). Omit to show the current value.
+        days: Option<u32>,
+    },
+}
+
+#[derive(Subcommand)]
 enum NatAction {
     /// Add a NAT rule
     #[command(after_help = "\
@@ -946,6 +975,14 @@ async fn main() -> anyhow::Result<()> {
             }
             RulesAction::List { json } => {
                 commands::rules_list(&cli.db, json).await?;
+            }
+        },
+        Commands::Ids { action } => match action {
+            IdsAction::PurgeAlerts { yes } => {
+                commands::ids_purge_alerts(&cli.db, yes).await?;
+            }
+            IdsAction::Retention { days } => {
+                commands::ids_retention(&cli.db, days).await?;
             }
         },
         Commands::Nat { action } => match action {

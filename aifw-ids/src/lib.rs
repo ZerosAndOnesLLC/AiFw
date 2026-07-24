@@ -488,31 +488,46 @@ impl IdsEngine {
     /// deliberately ignores the engine `running` flag: it owns no capture
     /// resources and dies with the process.
     pub fn spawn_retention_worker(&self) {
+        // Auto-vacuum threshold: once this many rows have been purged since
+        // the last space reclaim, run VACUUM + WAL truncate. Deleted rows
+        // only hit SQLite's freelist otherwise, and the file never shrinks
+        // (#601: 2.9GB file, 34 live rows).
+        const VACUUM_AFTER_PURGED_ROWS: u64 = 100_000;
+
         let retention_pool = self.pool.clone();
         let retention_config = self.config.clone();
         tokio::spawn(async move {
             let output = crate::output::sqlite::SqliteOutput::new(retention_pool);
+            let mut purged_since_vacuum: u64 = 0;
 
             // Initial scrub on startup so a stale appliance cleans itself up
             // without waiting an hour.
             match output.purge_invalid_timestamps().await {
                 Ok(0) => {}
-                Ok(n) => warn!(
-                    rows = n,
-                    "ids retention: scrubbed alerts with implausible timestamps"
-                ),
+                Ok(n) => {
+                    purged_since_vacuum += n;
+                    warn!(
+                        rows = n,
+                        "ids retention: scrubbed alerts with implausible timestamps"
+                    )
+                }
                 Err(e) => error!("ids retention: invalid-timestamp scrub failed: {e}"),
             }
             let initial_days = retention_config.config().alert_retention_days;
             match output.purge_old(initial_days).await {
                 Ok(0) => {}
-                Ok(n) => info!(
-                    rows = n,
-                    days = initial_days,
-                    "ids retention: initial purge complete"
-                ),
+                Ok(n) => {
+                    purged_since_vacuum += n;
+                    info!(
+                        rows = n,
+                        days = initial_days,
+                        "ids retention: initial purge complete"
+                    )
+                }
                 Err(e) => error!("ids retention: initial purge failed: {e}"),
             }
+            purged_since_vacuum =
+                maybe_reclaim(&output, purged_since_vacuum, VACUUM_AFTER_PURGED_ROWS).await;
 
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
             interval.tick().await; // burn the first immediate tick
@@ -521,12 +536,18 @@ impl IdsEngine {
                 let days = retention_config.config().alert_retention_days;
                 match output.purge_old(days).await {
                     Ok(0) => {}
-                    Ok(n) => info!(rows = n, days, "ids retention: purged old alerts"),
+                    Ok(n) => {
+                        purged_since_vacuum += n;
+                        info!(rows = n, days, "ids retention: purged old alerts")
+                    }
                     Err(e) => error!("ids retention: purge failed: {e}"),
                 }
-                if let Err(e) = output.purge_invalid_timestamps().await {
-                    error!("ids retention: invalid-timestamp scrub failed: {e}");
+                match output.purge_invalid_timestamps().await {
+                    Ok(n) => purged_since_vacuum += n,
+                    Err(e) => error!("ids retention: invalid-timestamp scrub failed: {e}"),
                 }
+                purged_since_vacuum =
+                    maybe_reclaim(&output, purged_since_vacuum, VACUUM_AFTER_PURGED_ROWS).await;
             }
         });
     }
@@ -756,6 +777,29 @@ async fn detect_network_interfaces() -> Vec<String> {
 
 /// Capture worker — uses BPF on FreeBSD, pcap mock on Linux.
 /// Reads raw packets directly from the kernel with zero shell overhead.
+/// Run the space reclaim (VACUUM + WAL truncate) once `purged` crosses
+/// `threshold`; returns the new purged-since-vacuum counter. On reclaim
+/// failure the counter is kept so the next sweep retries.
+async fn maybe_reclaim(
+    output: &crate::output::sqlite::SqliteOutput,
+    purged: u64,
+    threshold: u64,
+) -> u64 {
+    if purged < threshold {
+        return purged;
+    }
+    match output.reclaim_space().await {
+        Ok(()) => {
+            info!(purged_rows = purged, "ids retention: reclaimed disk space");
+            0
+        }
+        Err(e) => {
+            warn!("ids retention: space reclaim failed (will retry next sweep): {e}");
+            purged
+        }
+    }
+}
+
 fn capture_interface_worker(
     iface: &str,
     detection: &std::sync::Arc<detect::DetectionEngine>,

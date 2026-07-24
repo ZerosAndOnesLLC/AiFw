@@ -259,6 +259,20 @@ impl SqliteOutput {
         Ok(result.rows_affected())
     }
 
+    /// Reclaim disk space after mass deletions. A bare DELETE only frees
+    /// pages to SQLite's freelist — an appliance in the field sat at a
+    /// 2.9GB DB file holding 34 alert rows (#601). VACUUM rewrites the
+    /// file; the TRUNCATE checkpoint shrinks the WAL that the rewrite
+    /// itself streams through (without it the gigabytes just move into
+    /// aifw.db-wal).
+    pub async fn reclaim_space(&self) -> Result<()> {
+        sqlx::query("VACUUM").execute(&self.pool).await?;
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Scrub rows whose `timestamp` column is implausible — system-clock skew
     /// at insert time has left rows dated year 9920 or 2012 on appliances in
     /// the field. The companion guard at insert time (`sanitize_alert_timestamp`)
