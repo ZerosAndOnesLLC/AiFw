@@ -477,6 +477,20 @@ fn parse_os_release(s: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// Running kernel release from `uname -r` ("15.1-RELEASE-p1"), or None
+/// when unavailable. Distinct from [`current_os_release`] (userland):
+/// mid-OS-upgrade the box boots the new kernel while the userland is
+/// still old — that window is exactly when the post-reboot install
+/// passes must run (#628).
+pub async fn running_kernel_release() -> Option<String> {
+    let out = Command::new("uname").arg("-r").output().await.ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
 /// Running FreeBSD userland release ("15.0-RELEASE-p11"), or None when
 /// `freebsd-version` isn't available (dev hosts, tests).
 pub async fn current_os_release() -> Option<String> {
@@ -1337,30 +1351,38 @@ pub async fn restart_services_sync() {
 /// the aifw user without a password. We deliberately don't go through
 /// `daemon(8)` here — that would need a separate sudoers entry, and
 /// shutdown is already detached from our process tree by init.
+/// shutdown(8) invocation for an operator-requested reboot. `+10s` is
+/// load-bearing (#627): the sudoers grant is `/sbin/shutdown -r +10s *`
+/// exactly — any other grace period is refused by sudo. Keep in sync with
+/// the grant in aifw-setup's sudoers content.
+pub const SHUTDOWN_REBOOT_ARGS: [&str; 4] = [
+    "/sbin/shutdown",
+    "-r",
+    "+10s",
+    "AiFw: operator-requested reboot",
+];
+
+/// Schedule a full system reboot via shutdown(8) (10-second grace).
 pub async fn schedule_reboot() -> Result<(), UpdaterError> {
-    let result = Command::new("/usr/local/bin/sudo")
-        .args([
-            "/sbin/shutdown",
-            "-r",
-            "+1",
-            "AiFw: operator-requested reboot",
-        ])
-        .spawn();
-    match result {
-        Ok(mut child) => {
-            match child.wait().await {
-                Ok(status) if !status.success() => warn!(
-                    %status,
-                    "shutdown exited non-zero — reboot may not be scheduled"
-                ),
-                Err(e) => warn!(error = %e, "failed to reap shutdown command"),
-                Ok(_) => {}
-            }
-            info!("reboot scheduled (+1 min)");
-            Ok(())
-        }
-        Err(e) => Err(UpdaterError::Install(format!("schedule reboot: {}", e))),
+    // #627: a refused shutdown must be an error, not a warning — the UI
+    // shows a "system is going down" overlay on success, and a silent
+    // failure strands the operator on it forever (live appliance, during
+    // the first guided OS upgrade).
+    let output = Command::new("/usr/local/bin/sudo")
+        .args(SHUTDOWN_REBOOT_ARGS)
+        .output()
+        .await
+        .map_err(|e| UpdaterError::Install(format!("schedule reboot: {}", e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(UpdaterError::Install(format!(
+            "shutdown was refused ({}): {}",
+            output.status,
+            stderr.trim()
+        )));
     }
+    info!("reboot scheduled (+10s)");
+    Ok(())
 }
 
 /// Restart a single service with a hard 60-second timeout. If the underlying
