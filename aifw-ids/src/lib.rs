@@ -500,6 +500,14 @@ impl IdsEngine {
             let output = crate::output::sqlite::SqliteOutput::new(retention_pool);
             let mut purged_since_vacuum: u64 = 0;
 
+            // Hold off the boot purge (#616): after an update install the
+            // whole service stack restarts together, and the first purge on
+            // a stale appliance is massive. Give a concurrently starting
+            // aifw-api a quiet window for its migrations and initial rule
+            // applies before contending for the write lock — the upgrade
+            // path must complete without operator intervention.
+            tokio::time::sleep(std::time::Duration::from_secs(180)).await;
+
             // Initial scrub on startup so a stale appliance cleans itself up
             // without waiting an hour.
             match output.purge_invalid_timestamps().await {

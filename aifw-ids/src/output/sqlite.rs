@@ -252,11 +252,39 @@ impl SqliteOutput {
     pub async fn purge_old(&self, days: u32) -> Result<u64> {
         // PERF-M2: bind the modifier so every retention tick reuses one
         // cached prepared statement instead of compiling a fresh one.
-        let result = sqlx::query("DELETE FROM ids_alerts WHERE timestamp < datetime('now', ?)")
-            .bind(format!("-{days} days"))
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected())
+        //
+        // Batched (#616/#617): a stale appliance's first purge deletes
+        // millions of rows, and a single DELETE holds the SQLite write
+        // lock for the whole transaction — minutes on a multi-GB file,
+        // which starved aifw-api's startup into a crash-loop on a live
+        // box. Small batches with a yield between let other writers
+        // interleave; the upgrade path must work without intervention.
+        self.purge_batched(
+            "DELETE FROM ids_alerts WHERE rowid IN \
+             (SELECT rowid FROM ids_alerts WHERE timestamp < datetime('now', ?1) LIMIT ?2)",
+            Some(format!("-{days} days")),
+        )
+        .await
+    }
+
+    /// Run a windowed DELETE repeatedly until it stops matching rows,
+    /// sleeping briefly between batches so concurrent writers (api
+    /// migrations, alert ingestion) are never starved for long.
+    async fn purge_batched(&self, sql: &'static str, modifier: Option<String>) -> Result<u64> {
+        const BATCH: i64 = 20_000;
+        let mut total: u64 = 0;
+        loop {
+            let mut q = sqlx::query(sql);
+            if let Some(ref m) = modifier {
+                q = q.bind(m.clone());
+            }
+            let affected = q.bind(BATCH).execute(&self.pool).await?.rows_affected();
+            total += affected;
+            if (affected as i64) < BATCH {
+                return Ok(total);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     }
 
     /// Reclaim disk space after mass deletions. A bare DELETE only frees
@@ -278,14 +306,16 @@ impl SqliteOutput {
     /// the field. The companion guard at insert time (`sanitize_alert_timestamp`)
     /// prevents new ones; this method removes the existing pollution.
     pub async fn purge_invalid_timestamps(&self) -> Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM ids_alerts \
-             WHERE timestamp < '2020-01-01' \
-                OR timestamp > datetime('now', '+1 day')",
+        // Batched for the same reason as purge_old: hundreds of thousands
+        // of clock-skew rows in one DELETE monopolize the write lock.
+        self.purge_batched(
+            "DELETE FROM ids_alerts WHERE rowid IN \
+             (SELECT rowid FROM ids_alerts \
+              WHERE timestamp < '2020-01-01' \
+                 OR timestamp > datetime('now', '+1 day') LIMIT ?1)",
+            None,
         )
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
+        .await
     }
 
     /// Get alert count by severity over the last 24 hours.
