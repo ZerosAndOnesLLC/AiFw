@@ -632,10 +632,15 @@ pub async fn resume_os_upgrade(pool: SqlitePool) {
     };
     match job.phase.as_str() {
         "reboot_required" => {
-            let Some(current) = updater::current_os_release().await else {
+            // #628: gate on the RUNNING KERNEL, not the userland. After the
+            // mid-upgrade reboot the kernel is on the target release while
+            // the userland is still old — the userland only catches up when
+            // the install passes below run, so a userland gate deadlocks
+            // the flow at "reboot required" forever.
+            let Some(kernel) = updater::running_kernel_release().await else {
                 return;
             };
-            if !updater::os_satisfies(&current, &job.target) {
+            if !updater::os_satisfies(&kernel, &job.target) {
                 // Not rebooted into the new kernel yet — nothing to do.
                 return;
             }

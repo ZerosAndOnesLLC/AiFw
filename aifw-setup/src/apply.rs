@@ -2649,6 +2649,22 @@ mod pf_conf_tests {
 mod sudoers_tests {
     use super::sudoers_content;
 
+    /// #627 guard: the reboot the updater actually runs must match a
+    /// sudoers grant EXACTLY. The grant is `/sbin/shutdown -r +10s *`;
+    /// schedule_reboot() drifting to any other form (it shipped with
+    /// `-r +1`) makes sudo refuse and the UI strand the operator on a
+    /// "system is going down" overlay for a reboot that never happens.
+    #[test]
+    fn shutdown_grant_matches_updater_invocation() {
+        let args = aifw_core::updater::SHUTDOWN_REBOOT_ARGS;
+        let grant_prefix = format!("{} {} {}", args[0], args[1], args[2]);
+        let grant = format!("aifw ALL=(root) NOPASSWD: {grant_prefix} *");
+        assert!(
+            sudoers_content().lines().any(|l| l.trim() == grant),
+            "sudoers has no grant matching the updater's reboot invocation: {grant}"
+        );
+    }
+
     /// Structural-validity check on the sudoers content. We can't run
     /// `visudo -cf` from a Linux dev box, but we can enforce that every
     /// non-empty, non-comment line is a well-formed `aifw ALL=(<runas>)
