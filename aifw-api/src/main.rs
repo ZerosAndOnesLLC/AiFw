@@ -760,99 +760,123 @@ async fn create_state_from_db(
     // SQLite serializes the actual writes (busy_timeout covers contention),
     // but statement parsing and pool round-trips overlap, cutting cold-boot
     // latency.
-    tokio::try_join!(
-        async { nat_engine.migrate().await.map_err(anyhow::Error::from) },
-        async { vpn_engine.migrate().await.map_err(anyhow::Error::from) },
-        async { ipsec_engine.migrate().await.map_err(anyhow::Error::from) },
-        async { geoip_engine.migrate().await.map_err(anyhow::Error::from) },
-        async {
-            multiwan_engine
-                .migrate()
-                .await
-                .map_err(|e| anyhow::anyhow!(e))
-        },
-        async {
-            gateway_engine
-                .migrate()
-                .await
-                .map_err(|e| anyhow::anyhow!(e))
-        },
-        async { group_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
-        async {
-            policy_engine
-                .migrate()
-                .await
-                .map_err(|e| anyhow::anyhow!(e))
-        },
-        async { leak_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
-        async { sla_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
-        async { ca::migrate(&pool).await.map_err(anyhow::Error::from) },
-        async { dhcp::migrate(&pool).await.map_err(anyhow::Error::from) },
-        async { updates::migrate(&pool).await.map_err(anyhow::Error::from) },
-        async { iface::migrate(&pool).await.map_err(anyhow::Error::from) },
-        async {
-            dns_resolver::migrate(&pool)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        async {
-            dns_blocklists::migrate(&pool)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        async {
-            aifw_core::s3_backup::migrate(&pool)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        async {
-            aifw_core::smtp_notify::migrate(&pool)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        async {
-            aifw_core::acme::migrate(&pool)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        async {
-            aifw_core::ddns::migrate(&pool)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        async {
-            reverse_proxy::migrate(&pool)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        async { system::migrate(&pool).await.map_err(anyhow::Error::from) },
-        async {
-            time_service::migrate(&pool)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        async { plugins::migrate(&pool).await.map_err(anyhow::Error::from) },
-        async {
-            aifw_core::config_manager::ConfigManager::new(pool.clone())
-                .migrate()
-                .await
-                .map_err(|e| anyhow::anyhow!(e))
-        },
-        async { alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
-        async {
-            cluster_engine
-                .migrate()
-                .await
-                .map_err(|e| anyhow::anyhow!(e))
-        },
-        async {
-            shaping_engine
-                .migrate()
-                .await
-                .map_err(|e| anyhow::anyhow!(e))
-        },
-        async { tls_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
-    )?;
+    //
+    // #616: migrations are idempotent (CREATE TABLE IF NOT EXISTS), so a
+    // "database is locked" — a WAL checkpoint or the IDS retention purge
+    // holding the write lock past busy_timeout — gets retried with backoff
+    // instead of exiting into a supervisor crash-loop, which is how a busy
+    // database kept the whole management plane down on a live appliance.
+    let mut migrate_attempt = 0u32;
+    loop {
+        let migrate_result = tokio::try_join!(
+            async { nat_engine.migrate().await.map_err(anyhow::Error::from) },
+            async { vpn_engine.migrate().await.map_err(anyhow::Error::from) },
+            async { ipsec_engine.migrate().await.map_err(anyhow::Error::from) },
+            async { geoip_engine.migrate().await.map_err(anyhow::Error::from) },
+            async {
+                multiwan_engine
+                    .migrate()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            },
+            async {
+                gateway_engine
+                    .migrate()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            },
+            async { group_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+            async {
+                policy_engine
+                    .migrate()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            },
+            async { leak_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+            async { sla_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+            async { ca::migrate(&pool).await.map_err(anyhow::Error::from) },
+            async { dhcp::migrate(&pool).await.map_err(anyhow::Error::from) },
+            async { updates::migrate(&pool).await.map_err(anyhow::Error::from) },
+            async { iface::migrate(&pool).await.map_err(anyhow::Error::from) },
+            async {
+                dns_resolver::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async {
+                dns_blocklists::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async {
+                aifw_core::s3_backup::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async {
+                aifw_core::smtp_notify::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async {
+                aifw_core::acme::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async {
+                aifw_core::ddns::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async {
+                reverse_proxy::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async { system::migrate(&pool).await.map_err(anyhow::Error::from) },
+            async {
+                time_service::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async { plugins::migrate(&pool).await.map_err(anyhow::Error::from) },
+            async {
+                aifw_core::config_manager::ConfigManager::new(pool.clone())
+                    .migrate()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            },
+            async { alias_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+            async {
+                cluster_engine
+                    .migrate()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            },
+            async {
+                shaping_engine
+                    .migrate()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            },
+            async { tls_engine.migrate().await.map_err(|e| anyhow::anyhow!(e)) },
+        );
+        match migrate_result {
+            Ok(_) => break,
+            Err(e) if migrate_attempt < 5 && e.to_string().to_lowercase().contains("locked") => {
+                migrate_attempt += 1;
+                let wait = 5u64 * (1 << migrate_attempt.min(3));
+                tracing::warn!(
+                    attempt = migrate_attempt,
+                    wait_secs = wait,
+                    error = %e,
+                    "migrations hit a locked database; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 
     // Read aifw_cluster_enabled once at startup. The flag only changes on
     // config writes, so a cached value is always correct for the process lifetime.
@@ -1594,14 +1618,54 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::warn!("Failed to collect VPN rules: {e}"),
     }
 
-    // Apply firewall filter rules (includes VPN pass rules) and NAT rules
+    // Apply firewall filter rules (includes VPN pass rules) and NAT rules.
+    //
+    // #616: a busy database (WAL checkpoint, IDS retention purge) can make
+    // these reads fail at the exact moment of a service restart. A firewall
+    // whose rule apply silently stayed at "warn once and never retry" runs
+    // with stale (or on cold boot, NO) anchor rules — so keep retrying in
+    // the background until each apply succeeds.
     if let Err(e) = state.rule_engine.apply_rules().await {
-        tracing::warn!("Failed to apply filter rules on startup: {e}");
+        tracing::warn!("Failed to apply filter rules on startup: {e} — retrying in background");
+        let rule_engine = state.rule_engine.clone();
+        tokio::spawn(async move {
+            for wait in [5u64, 10, 20, 40, 60, 60, 60, 60, 60, 60] {
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                match rule_engine.apply_rules().await {
+                    Ok(_) => {
+                        tracing::info!("Filter rules applied after startup retry");
+                        return;
+                    }
+                    Err(e) => tracing::warn!("filter rule apply retry failed: {e}"),
+                }
+            }
+            tracing::error!(
+                "filter rules never applied after startup retries — anchor may be stale; \
+                 fix the underlying error and POST /api/v1/reload"
+            );
+        });
     } else {
         tracing::info!("Filter rules applied on startup");
     }
     if let Err(e) = state.nat_engine.apply_rules().await {
-        tracing::warn!("Failed to apply NAT rules on startup: {e}");
+        tracing::warn!("Failed to apply NAT rules on startup: {e} — retrying in background");
+        let nat_engine = state.nat_engine.clone();
+        tokio::spawn(async move {
+            for wait in [5u64, 10, 20, 40, 60, 60, 60, 60, 60, 60] {
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                match nat_engine.apply_rules().await {
+                    Ok(_) => {
+                        tracing::info!("NAT rules applied after startup retry");
+                        return;
+                    }
+                    Err(e) => tracing::warn!("NAT rule apply retry failed: {e}"),
+                }
+            }
+            tracing::error!(
+                "NAT rules never applied after startup retries — anchor may be stale; \
+                 fix the underlying error and POST /api/v1/reload"
+            );
+        });
     } else {
         tracing::info!("NAT rules applied on startup");
     }
@@ -1779,9 +1843,14 @@ async fn main() -> anyhow::Result<()> {
                 // ingestion). This is a health signal — recent persistence,
                 // not lifetime total — hence the _24h field name. Refreshed
                 // every 10 minutes, cached between (#601).
+                //
+                // #619: bounded on BOTH sides. Clock-skew rows with future
+                // timestamps made an open-ended `>= now-1day` report 415k
+                // "alerts in 24h" on a box whose IDS had been silent for a
+                // month — masking the real state during an outage triage.
                 if heartbeat_ticks.is_multiple_of(10) {
                     let (count,): (i64,) = sqlx::query_as(
-                        "SELECT COUNT(*) FROM ids_alerts WHERE timestamp >= datetime('now', '-1 day')",
+                        "SELECT COUNT(*) FROM ids_alerts WHERE timestamp >= datetime('now', '-1 day') AND timestamp <= datetime('now', '+1 hour')",
                     )
                     .fetch_one(&mem_state.pool)
                     .await
