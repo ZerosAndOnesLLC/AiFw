@@ -29,6 +29,12 @@ fi
 ACTION="$1"
 shift
 
+# ISO-installed appliances lack freebsd-update's state directory — the
+# live ISO mounts /var as tmpfs, so it never reaches the installed
+# system, and freebsd-update refuses to run rather than create it
+# (#623). We run as root; make it exist before any action.
+[ -d /var/db/freebsd-update ] || install -d -o root -g wheel -m 700 /var/db/freebsd-update
+
 case "$ACTION" in
     updatesready)
         if [ $# -ne 0 ]; then
