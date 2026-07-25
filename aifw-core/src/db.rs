@@ -31,7 +31,11 @@ impl Database {
             // concurrently without blocking the dashboard / metrics loops.
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
-            .busy_timeout(std::time::Duration::from_secs(5))
+            // 30s, not the old 5s: a large WAL checkpoint or the IDS
+            // retention purge holds the write lock for tens of seconds on a
+            // multi-GB database, and 5s turned every service (re)start into
+            // a "database is locked" crash-loop (#616).
+            .busy_timeout(std::time::Duration::from_secs(30))
             // PERF-H1: default cache is 2 MB and mmap is off, so aggregate
             // queries over multi-GB tables (e.g. ids_alerts on /ids/stats)
             // fault in from disk. Run per-connection on connect.
