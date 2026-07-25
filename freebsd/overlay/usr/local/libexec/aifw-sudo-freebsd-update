@@ -7,16 +7,22 @@
 #   - updatesready             — exit code reflects whether updates pending
 #   - fetch [--not-running-from-cron]
 #   - install                  — apply downloaded updates
+#   - upgrade -r X.Y-RELEASE   — release upgrade to a NEWER official
+#                                release only (#613); runs non-interactive
+#                                (yes-piped, PAGER=cat) so config-merge
+#                                prompts can't hang the daemon
 #
-# Other subcommands (cron, IDS, rollback, upgrade) are denied so a
-# compromised daemon can't, for example, `freebsd-update rollback` to
-# uninstall security patches or `freebsd-update IDS` to spam the system
-# with checksumming load.
+# Other subcommands (cron, IDS, rollback) are denied so a compromised
+# daemon can't, for example, `freebsd-update rollback` to uninstall
+# security patches or `freebsd-update IDS` to spam the system with
+# checksumming load. `upgrade` only ever moves forward to a
+# FreeBSD-signed release, so it grants no downgrade or arbitrary-code
+# primitive.
 
 set -eu
 
 if [ $# -lt 1 ]; then
-    echo "usage: $0 <updatesready|fetch|install>" >&2
+    echo "usage: $0 <updatesready|fetch|install|upgrade>" >&2
     exit 2
 fi
 
@@ -55,6 +61,36 @@ case "$ACTION" in
             exit 1
         fi
         exec /usr/sbin/freebsd-update install
+        ;;
+    upgrade)
+        if [ $# -ne 2 ] || [ "$1" != "-r" ]; then
+            echo "aifw-sudo-freebsd-update: usage: upgrade -r <X.Y-RELEASE>" >&2
+            exit 1
+        fi
+        REL="$2"
+        case "$REL" in
+            [0-9].[0-9]-RELEASE|[0-9].[0-9][0-9]-RELEASE|[0-9][0-9].[0-9]-RELEASE|[0-9][0-9].[0-9][0-9]-RELEASE)
+                ;;
+            *)
+                echo "aifw-sudo-freebsd-update: target must match X.Y-RELEASE, got: $REL" >&2
+                exit 1
+                ;;
+        esac
+        # Refuse downgrades: the grant is forward-only. dot-versions compare
+        # numerically field by field.
+        CUR="$(/bin/freebsd-version -u | sed 's/-.*//')"
+        CUR_MAJ="${CUR%%.*}"; CUR_MIN="${CUR#*.}"
+        NEW="${REL%-RELEASE}"
+        NEW_MAJ="${NEW%%.*}"; NEW_MIN="${NEW#*.}"
+        if [ "$NEW_MAJ" -lt "$CUR_MAJ" ] || { [ "$NEW_MAJ" -eq "$CUR_MAJ" ] && [ "$NEW_MIN" -le "$CUR_MIN" ]; }; then
+            echo "aifw-sudo-freebsd-update: $REL is not newer than running $CUR" >&2
+            exit 1
+        fi
+        # Non-interactive: `yes` feeds the "Does this look reasonable?"
+        # prompt, PAGER=cat stops more(1) from blocking on the diff review,
+        # EDITOR=true auto-accepts config merges (our /etc is appliance-
+        # managed; conflicts are resolved by the next AiFw update anyway).
+        yes | env PAGER=cat EDITOR=true /usr/sbin/freebsd-update -r "$REL" upgrade
         ;;
     *)
         echo "aifw-sudo-freebsd-update: unsupported action: $ACTION" >&2

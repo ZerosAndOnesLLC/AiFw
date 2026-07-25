@@ -119,6 +119,22 @@ if [ -n "$UPDATE_TARBALL" ]; then
     echo "Verified update tarball payload is v${VERSION}"
 fi
 
+# --- OS floor for the release body (#612) ---
+# Read the required-os stamp out of the tarball so the release notes carry
+# a machine-readable `Requires-OS:` line. The updater's check endpoint
+# parses it to warn operators BEFORE they download a release their OS
+# can't run. Empty for tarballs built before stamping.
+REQUIRED_OS=""
+if [ -n "$UPDATE_TARBALL" ]; then
+    REQUIRED_OS="$(tar -xJOf "$UPDATE_TARBALL" "${INNER}/required-os" 2>/dev/null | tr -d '[:space:]')"
+fi
+if [ -n "$REQUIRED_OS" ]; then
+    REQUIRES_OS_LINE="
+Requires-OS: FreeBSD ${REQUIRED_OS}"
+else
+    REQUIRES_OS_LINE=""
+fi
+
 if [ -z "$ISO_UPLOAD" ] && [ -z "$IMG_UPLOAD" ] && [ -z "$UPDATE_TARBALL" ]; then
     die "No artifacts to release. Run build-local.sh first."
 fi
@@ -230,7 +246,8 @@ fi
 
 BODY="## AiFw v${VERSION}
 
-AI-Powered Firewall for FreeBSD 15.1
+AI-Powered Firewall for FreeBSD ${REQUIRED_OS:-15.1}
+${REQUIRES_OS_LINE}
 ${TARBALL_ONLY_NOTE}
 
 ### Downloads

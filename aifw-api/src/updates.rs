@@ -383,6 +383,339 @@ pub async fn install_updates(
     Ok(Json(MessageResponse { message: msg }))
 }
 
+// ============================================================
+// OS release upgrade (#613)
+// ============================================================
+
+/// Persistent state of an OS release upgrade, stored in `update_config`
+/// so it survives the reboot in the middle of the flow.
+///
+/// Phases: `fetching` (freebsd-update -r X upgrade) → `installing`
+/// (kernel install) → `reboot_required` → `finalizing` (post-reboot
+/// userland install passes, driven by `resume_os_upgrade`) → `done`,
+/// or `failed` with the reason in `detail`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OsUpgradeState {
+    pub target: String,
+    pub phase: String,
+    pub detail: String,
+    pub started_at: String,
+    pub updated_at: String,
+}
+
+const OS_UPGRADE_KEY: &str = "os_upgrade_state";
+
+async fn load_os_upgrade(pool: &SqlitePool) -> Option<OsUpgradeState> {
+    let row = sqlx::query_as::<_, (String,)>("SELECT value FROM update_config WHERE key = ?1")
+        .bind(OS_UPGRADE_KEY)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()?;
+    serde_json::from_str(&row.0).ok()
+}
+
+async fn store_os_upgrade(pool: &SqlitePool, state: &OsUpgradeState) {
+    if let Ok(json) = serde_json::to_string(state) {
+        save_config(pool, OS_UPGRADE_KEY, &json).await;
+    }
+}
+
+async fn set_os_upgrade_phase(
+    pool: &SqlitePool,
+    state: &mut OsUpgradeState,
+    phase: &str,
+    detail: String,
+) {
+    state.phase = phase.to_string();
+    state.detail = detail;
+    state.updated_at = Utc::now().to_rfc3339();
+    store_os_upgrade(pool, state).await;
+}
+
+/// Last chunk of a command's output, for progress/error surfacing.
+fn output_tail(out: &std::process::Output) -> String {
+    let text = if out.stderr.is_empty() {
+        String::from_utf8_lossy(&out.stdout)
+    } else {
+        String::from_utf8_lossy(&out.stderr)
+    };
+    let trimmed = text.trim();
+    match trimmed.char_indices().nth_back(499) {
+        Some((idx, _)) => trimmed[idx..].to_string(),
+        None => trimmed.to_string(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OsUpgradeRequest {
+    /// Bare target release, e.g. "15.1"
+    pub target: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OsUpgradeStatus {
+    /// FreeBSD userland release currently running, if detectable
+    pub current_os: Option<String>,
+    pub state: Option<OsUpgradeState>,
+}
+
+pub async fn os_upgrade_status(
+    State(state): State<AppState>,
+) -> Result<Json<OsUpgradeStatus>, StatusCode> {
+    Ok(Json(OsUpgradeStatus {
+        current_os: updater::current_os_release().await,
+        state: load_os_upgrade(&state.pool).await,
+    }))
+}
+
+pub async fn start_os_upgrade(
+    State(state): State<AppState>,
+    Json(req): Json<OsUpgradeRequest>,
+) -> Result<Json<MessageResponse>, (StatusCode, String)> {
+    let target = req.target.trim().to_string();
+    // Same format the sudo helper enforces; reject early with a clear 400.
+    let valid = {
+        let mut parts = target.split('.');
+        let maj = parts.next().and_then(|p| p.parse::<u32>().ok());
+        let min = parts.next().and_then(|p| p.parse::<u32>().ok());
+        maj.is_some() && min.is_some() && parts.next().is_none()
+    };
+    if !valid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("target must be a bare release like \"15.1\", got \"{target}\""),
+        ));
+    }
+    let current = updater::current_os_release().await.ok_or((
+        StatusCode::BAD_REQUEST,
+        "cannot determine the running FreeBSD release".to_string(),
+    ))?;
+    if updater::os_satisfies(&current, &target) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("already on {current}; {target} is not newer"),
+        ));
+    }
+    if let Some(existing) = load_os_upgrade(&state.pool).await
+        && matches!(
+            existing.phase.as_str(),
+            "fetching" | "installing" | "finalizing"
+        )
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "an OS upgrade to {} is already {} — wait for it to finish",
+                existing.target, existing.phase
+            ),
+        ));
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let mut job = OsUpgradeState {
+        target: target.clone(),
+        phase: "fetching".to_string(),
+        detail: format!("downloading FreeBSD {target} from {current}"),
+        started_at: now.clone(),
+        updated_at: now,
+    };
+    store_os_upgrade(&state.pool, &job).await;
+    log_update(
+        &state.pool,
+        "os_upgrade",
+        &format!("started: {current} → {target}"),
+        "running",
+    )
+    .await;
+
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        // Phase 1: fetch + stage the release (the long part, minutes).
+        match aifw_core::sudo::freebsd_update_upgrade(&job.target).await {
+            Ok(o) if o.status.success() => {
+                set_os_upgrade_phase(
+                    &pool,
+                    &mut job,
+                    "installing",
+                    "installing the new kernel".into(),
+                )
+                .await;
+            }
+            Ok(o) => {
+                let tail = output_tail(&o);
+                set_os_upgrade_phase(&pool, &mut job, "failed", format!("fetch failed: {tail}"))
+                    .await;
+                log_update(
+                    &pool,
+                    "os_upgrade",
+                    &format!("fetch failed: {tail}"),
+                    "failed",
+                )
+                .await;
+                return;
+            }
+            Err(e) => {
+                set_os_upgrade_phase(&pool, &mut job, "failed", format!("fetch failed: {e}")).await;
+                log_update(&pool, "os_upgrade", &format!("fetch failed: {e}"), "failed").await;
+                return;
+            }
+        }
+        // Phase 2: first `install` pass writes the new kernel; the rest
+        // waits for a reboot.
+        match aifw_core::sudo::freebsd_update("install", &[]).await {
+            Ok(o) if o.status.success() => {
+                let detail = format!(
+                    "kernel for {} installed — reboot to continue; the remaining install runs automatically after boot",
+                    job.target
+                );
+                set_os_upgrade_phase(&pool, &mut job, "reboot_required", detail).await;
+                log_update(
+                    &pool,
+                    "os_upgrade",
+                    "kernel installed, reboot required",
+                    "running",
+                )
+                .await;
+            }
+            Ok(o) => {
+                let tail = output_tail(&o);
+                set_os_upgrade_phase(
+                    &pool,
+                    &mut job,
+                    "failed",
+                    format!("kernel install failed: {tail}"),
+                )
+                .await;
+                log_update(
+                    &pool,
+                    "os_upgrade",
+                    &format!("kernel install failed: {tail}"),
+                    "failed",
+                )
+                .await;
+            }
+            Err(e) => {
+                set_os_upgrade_phase(
+                    &pool,
+                    &mut job,
+                    "failed",
+                    format!("kernel install failed: {e}"),
+                )
+                .await;
+                log_update(
+                    &pool,
+                    "os_upgrade",
+                    &format!("kernel install failed: {e}"),
+                    "failed",
+                )
+                .await;
+            }
+        }
+    });
+
+    Ok(Json(MessageResponse {
+        message: format!("OS upgrade to {target} started"),
+    }))
+}
+
+/// Pick up an OS upgrade across restarts. Called once at aifw-api startup.
+///
+/// - After the mid-upgrade reboot (phase `reboot_required`, now running the
+///   target release): run the remaining `freebsd-update install` passes and
+///   mark the upgrade done.
+/// - A phase of `fetching`/`installing` at startup means the process died
+///   mid-run (crash, power loss): mark failed so the operator can retry.
+pub async fn resume_os_upgrade(pool: SqlitePool) {
+    let Some(mut job) = load_os_upgrade(&pool).await else {
+        return;
+    };
+    match job.phase.as_str() {
+        "reboot_required" => {
+            let Some(current) = updater::current_os_release().await else {
+                return;
+            };
+            if !updater::os_satisfies(&current, &job.target) {
+                // Not rebooted into the new kernel yet — nothing to do.
+                return;
+            }
+            set_os_upgrade_phase(
+                &pool,
+                &mut job,
+                "finalizing",
+                "installing the new userland".into(),
+            )
+            .await;
+            tokio::spawn(async move {
+                // freebsd-update needs up to three install passes after the
+                // reboot (world, then old-library cleanup). It exits
+                // non-zero with "No updates are available" once done.
+                for pass in 1..=3u32 {
+                    match aifw_core::sudo::freebsd_update("install", &[]).await {
+                        Ok(o) if o.status.success() => {
+                            tracing::info!(pass, "os upgrade: install pass complete");
+                        }
+                        Ok(o) => {
+                            let tail = output_tail(&o);
+                            if tail.contains("No updates are available") {
+                                break;
+                            }
+                            set_os_upgrade_phase(
+                                &pool,
+                                &mut job,
+                                "failed",
+                                format!("post-reboot install failed: {tail}"),
+                            )
+                            .await;
+                            log_update(
+                                &pool,
+                                "os_upgrade",
+                                &format!("post-reboot install failed: {tail}"),
+                                "failed",
+                            )
+                            .await;
+                            return;
+                        }
+                        Err(e) => {
+                            set_os_upgrade_phase(
+                                &pool,
+                                &mut job,
+                                "failed",
+                                format!("post-reboot install failed: {e}"),
+                            )
+                            .await;
+                            log_update(
+                                &pool,
+                                "os_upgrade",
+                                &format!("post-reboot install failed: {e}"),
+                                "failed",
+                            )
+                            .await;
+                            return;
+                        }
+                    }
+                }
+                let done_detail = format!(
+                    "running FreeBSD {} — AiFw updates are unblocked",
+                    job.target
+                );
+                let done_log = format!("completed: now on {}", job.target);
+                set_os_upgrade_phase(&pool, &mut job, "done", done_detail).await;
+                log_update(&pool, "os_upgrade", &done_log, "completed").await;
+            });
+        }
+        "fetching" | "installing" | "finalizing" => {
+            let detail = format!(
+                "interrupted during {} (service restarted mid-upgrade) — start the upgrade again to retry",
+                job.phase
+            );
+            set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
+            log_update(&pool, "os_upgrade", &detail, "failed").await;
+        }
+        _ => {}
+    }
+}
+
 pub async fn reboot_system() -> Result<Json<MessageResponse>, StatusCode> {
     // Schedule reboot in 10 seconds
     let _ = Command::new("/usr/local/bin/sudo")
@@ -576,6 +909,8 @@ pub async fn aifw_update_status(
         reboot_recommended: false,
         reboot_reason: None,
         include_prereleases: prereleases_enabled(&state.pool).await,
+        required_os: None,
+        os_upgrade_required: false,
     }))
 }
 
@@ -638,6 +973,24 @@ pub async fn aifw_install_update(
             reboot_recommended: false,
             reboot_reason: None,
         }));
+    }
+
+    // OS dependency gate (#612): fail before downloading when the release
+    // says it needs a newer FreeBSD. The tarball-level gate in the updater
+    // still backstops releases without the notes stamp.
+    if info.os_upgrade_required {
+        let required = info.required_os.clone().unwrap_or_default();
+        let current = updater::current_os_release()
+            .await
+            .unwrap_or_else(|| "unknown".to_string());
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            format!(
+                "AiFw v{} requires FreeBSD {required} but this system runs {current}. \
+                 Upgrade the OS first (System → Updates → Operating system), then install the AiFw update.",
+                info.latest_version
+            ),
+        ));
     }
 
     let msg = updater::download_and_install(&info).await.map_err(|e| {

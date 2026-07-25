@@ -7,6 +7,7 @@ import { useFeedback } from "@/hooks/useFeedback";
 import {
   AifwUpdateInfo,
   MaintenanceWindow,
+  OsUpgradeStatus,
   UpdateHistoryEntry,
   UpdateStatus,
   LocalInstallResult,
@@ -14,6 +15,7 @@ import {
   checkAifwUpdate,
   checkForUpdates,
   getAifwUpdateStatus,
+  getOsUpgrade,
   getUpdateHistory,
   getUpdateSchedule,
   getUpdateStatus,
@@ -28,6 +30,7 @@ import {
   saveUpdateSchedule,
   scheduleReboot,
   setPrereleaseChannel,
+  startOsUpgrade,
 } from "@/lib/api/updates";
 
 // Restart-confirm modal state — shown after install/rollback succeeds.
@@ -71,6 +74,10 @@ export function useUpdates() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [installLocalResult, setInstallLocalResult] = useState<LocalInstallResult | null>(null);
   const [localInstalling, setLocalInstalling] = useState(false);
+
+  // OS release upgrade state (#613)
+  const [osUpgrade, setOsUpgrade] = useState<OsUpgradeStatus | null>(null);
+  const [osUpgradeStarting, setOsUpgradeStarting] = useState(false);
 
   // AiFw firmware update state
   const [aifwInfo, setAifwInfo] = useState<AifwUpdateInfo | null>(null);
@@ -125,17 +132,34 @@ export function useUpdates() {
     }
   }, []);
 
+  const fetchOsUpgrade = useCallback(async () => {
+    try {
+      setOsUpgrade(await getOsUpgrade());
+    } catch {
+      // silent on poll
+    }
+  }, []);
+
   useEffect(() => {
     queueMicrotask(() => {
       // Load fast endpoints first, then slow ones in background
       Promise.all([fetchSchedule(), fetchHistory()]).finally(() => setLoading(false));
       fetchStatus();
       fetchAifwStatus();
+      fetchOsUpgrade();
     });
-  }, [fetchStatus, fetchSchedule, fetchHistory, fetchAifwStatus]);
+  }, [fetchStatus, fetchSchedule, fetchHistory, fetchAifwStatus, fetchOsUpgrade]);
 
   // Poll status while checking or installing
   usePolling(fetchStatus, 3000, checking || installing);
+
+  // Poll the OS release upgrade while a phase is running. `fetching` can
+  // take many minutes (freebsd-update downloads a whole release), so this
+  // is the only progress channel the operator has.
+  const osUpgradeActive = ["fetching", "installing", "finalizing"].includes(
+    osUpgrade?.state?.phase ?? "",
+  );
+  usePolling(fetchOsUpgrade, 5000, osUpgradeActive);
 
   const handleCheck = async () => {
     setChecking(true);
@@ -175,6 +199,20 @@ export function useUpdates() {
       showFeedback("error", err instanceof Error ? err.message : "Failed to schedule reboot");
     } finally {
       setRebooting(false);
+    }
+  };
+
+  const handleOsUpgrade = async (target: string) => {
+    setOsUpgradeStarting(true);
+    try {
+      const data = await startOsUpgrade(target);
+      showFeedback("success", data.message || `OS upgrade to ${target} started`);
+      fetchOsUpgrade();
+      fetchHistory();
+    } catch (err) {
+      showFeedback("error", err instanceof Error ? err.message : "Failed to start OS upgrade");
+    } finally {
+      setOsUpgradeStarting(false);
     }
   };
 
@@ -412,6 +450,10 @@ export function useUpdates() {
     handleCheck,
     handleInstall,
     handleReboot,
+    // OS release upgrade
+    osUpgrade,
+    osUpgradeStarting,
+    handleOsUpgrade,
     // Maintenance window
     schedule,
     setSchedule,

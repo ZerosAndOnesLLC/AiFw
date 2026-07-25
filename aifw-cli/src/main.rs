@@ -331,6 +331,17 @@ enum UpdateAction {
     OsCheck,
     /// Install OS and package updates
     OsInstall,
+    /// Upgrade FreeBSD to a newer release (e.g. 15.1). Downloads and
+    /// stages the release, installs the new kernel, then asks for a
+    /// reboot; the remaining install finishes automatically after boot.
+    /// Required before installing an AiFw release built on a newer OS.
+    OsUpgrade {
+        /// Target release, e.g. "15.1"
+        target: String,
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1353,6 +1364,9 @@ async fn main() -> anyhow::Result<()> {
             UpdateAction::Reboot => commands::update_reboot().await?,
             UpdateAction::OsCheck => commands::update_os_check().await?,
             UpdateAction::OsInstall => commands::update_os_install().await?,
+            UpdateAction::OsUpgrade { target, yes } => {
+                commands::update_os_upgrade(&target, yes).await?
+            }
         },
         Commands::Interfaces => {
             commands::interfaces_list().await?;

@@ -251,6 +251,17 @@ pub enum UpdaterError {
     /// The release has no update tarball asset to install
     #[error("No update tarball found in release")]
     NoTarball,
+    /// The release's binaries need a newer FreeBSD than the running one.
+    /// Raised before any file is swapped, so the current install is intact.
+    #[error(
+        "this release requires FreeBSD {required} but this system runs {current} — upgrade the OS first (System → Updates), then install the AiFw update"
+    )]
+    OsUpgradeRequired {
+        /// Minimum FreeBSD release the update's binaries link against
+        required: String,
+        /// FreeBSD release currently running
+        current: String,
+    },
 }
 
 /// Update status reported to the UI/API by the GitHub release check
@@ -305,6 +316,16 @@ pub struct AifwUpdateInfo {
     /// only ever pull stable releases.
     #[serde(default)]
     pub include_prereleases: bool,
+    /// Minimum FreeBSD release the update's binaries need, parsed from the
+    /// `Requires-OS:` line in the release notes (e.g. "15.1"). None for
+    /// releases published before OS stamping.
+    #[serde(default)]
+    pub required_os: Option<String>,
+    /// True when `required_os` is newer than the running FreeBSD release.
+    /// The UI/CLI must steer the operator to the OS upgrade flow instead of
+    /// the AiFw install; the installer refuses anyway (#612).
+    #[serde(default)]
+    pub os_upgrade_required: bool,
 }
 
 /// Read the current installed AiFw version.
@@ -370,6 +391,11 @@ pub async fn check_for_update(include_prereleases: bool) -> Result<AifwUpdateInf
     let (has_backup, backup_version) = get_backup_info().await;
     let restart_pending = restart_pending().await;
     let (reboot_recommended, reboot_reason) = parse_reboot_hint(&notes);
+    let required_os = parse_required_os(&notes);
+    let os_upgrade_required = match (&required_os, current_os_release().await) {
+        (Some(req), Some(cur)) => !os_satisfies(&cur, req),
+        _ => false,
+    };
 
     Ok(AifwUpdateInfo {
         update_available: version_newer(&current, latest),
@@ -387,6 +413,8 @@ pub async fn check_for_update(include_prereleases: bool) -> Result<AifwUpdateInf
         reboot_recommended,
         reboot_reason,
         include_prereleases,
+        required_os,
+        os_upgrade_required,
     })
 }
 
@@ -410,6 +438,68 @@ fn parse_reboot_hint(notes: &str) -> (bool, Option<String>) {
         }
     }
     (false, None)
+}
+
+/// Look for a `Requires-OS:` line in release notes and extract the FreeBSD
+/// release it names (e.g. `Requires-OS: FreeBSD 15.1` → "15.1"). Written
+/// into release bodies by CI and release.sh from the version the binaries
+/// were built on; absent on older releases.
+fn parse_required_os(notes: &str) -> Option<String> {
+    const MARKER: &str = "Requires-OS:";
+    for line in notes.lines() {
+        if let Some(idx) = line.find(MARKER) {
+            let tail = &line[idx + MARKER.len()..];
+            if let Some(ver) = extract_os_version(tail) {
+                return Some(ver);
+            }
+        }
+    }
+    None
+}
+
+/// Pull the first `major.minor` token out of a string like
+/// "FreeBSD 15.1" or "15.0-RELEASE-p11".
+fn extract_os_version(s: &str) -> Option<String> {
+    for token in s.split(|c: char| !(c.is_ascii_digit() || c == '.')) {
+        if parse_os_release(token).is_some() {
+            return Some(token.to_string());
+        }
+    }
+    None
+}
+
+/// Parse "15.1" (optionally with a "-RELEASE..." suffix) into (major, minor).
+fn parse_os_release(s: &str) -> Option<(u32, u32)> {
+    let base = s.split('-').next().unwrap_or(s);
+    let mut parts = base.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    Some((major, minor))
+}
+
+/// Running FreeBSD userland release ("15.0-RELEASE-p11"), or None when
+/// `freebsd-version` isn't available (dev hosts, tests).
+pub async fn current_os_release() -> Option<String> {
+    let out = Command::new("freebsd-version")
+        .arg("-u")
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
+/// True when the running release `current` satisfies `required`
+/// (major.minor compare; unparseable inputs are treated as satisfied so a
+/// malformed stamp can never brick updates).
+pub fn os_satisfies(current: &str, required: &str) -> bool {
+    match (parse_os_release(current), parse_os_release(required)) {
+        (Some(cur), Some(req)) => cur >= req,
+        _ => true,
+    }
 }
 
 /// Install an AiFw update from a local tarball path.
@@ -528,6 +618,21 @@ pub async fn install_from_path(
             "extracted dir '{}' not found (corrupt tarball?)",
             top_name
         )));
+    }
+
+    // OS dependency gate (#612): a tarball built on a newer FreeBSD ships
+    // binaries the running libc can't load (e.g. FBSD_1.9 on a 15.0 box) —
+    // installing them takes the whole management plane down in a
+    // crash-loop. Refuse before any file is swapped. Tarballs without the
+    // stamp predate this scheme and install as before.
+    if let Ok(required) = tokio::fs::read_to_string(update_dir.join("required-os")).await {
+        let required = required.trim().to_string();
+        if !required.is_empty()
+            && let Some(current) = current_os_release().await
+            && !os_satisfies(&current, &required)
+        {
+            return Err(UpdaterError::OsUpgradeRequired { required, current });
+        }
     }
 
     // Install binaries from the tarball's bin/ directory.
@@ -1549,6 +1654,72 @@ mod tests {
     fn tar_listing_accepts_normal_release() {
         let ok = "aifw-5.97.9/\naifw-5.97.9/bin/\naifw-5.97.9/bin/aifw-api\n./aifw-5.97.9/ui/index.html\n";
         assert!(validate_tar_listing(ok).is_ok());
+    }
+
+    // #612: the OS floor stamp in release notes must parse from the shapes
+    // CI and release.sh actually write.
+    #[test]
+    fn required_os_parses_from_release_notes() {
+        assert_eq!(
+            parse_required_os("## AiFw v5.113.0\n\nRequires-OS: FreeBSD 15.1\n"),
+            Some("15.1".to_string())
+        );
+        assert_eq!(
+            parse_required_os("Requires-OS: 15.1"),
+            Some("15.1".to_string())
+        );
+        assert_eq!(
+            parse_required_os("body without a marker\nFreeBSD 15.1 mentioned casually"),
+            None
+        );
+        assert_eq!(parse_required_os("Requires-OS: soon"), None);
+    }
+
+    #[test]
+    fn os_release_parsing_handles_patch_suffixes() {
+        assert_eq!(parse_os_release("15.1"), Some((15, 1)));
+        assert_eq!(parse_os_release("15.0-RELEASE-p11"), Some((15, 0)));
+        assert_eq!(parse_os_release("16.10-RELEASE"), Some((16, 10)));
+        assert_eq!(parse_os_release("garbage"), None);
+        assert_eq!(parse_os_release("15"), None);
+    }
+
+    // #612: version compare drives both the install gate and the UI hint.
+    // Minor 10 must beat minor 9 (numeric, not lexicographic), and
+    // unparseable stamps must never block an update.
+    #[test]
+    fn os_satisfies_compares_numerically_and_fails_open() {
+        assert!(os_satisfies("15.1-RELEASE-p1", "15.1"));
+        assert!(os_satisfies("15.10-RELEASE", "15.9"));
+        assert!(os_satisfies("16.0-RELEASE", "15.1"));
+        assert!(!os_satisfies("15.0-RELEASE-p11", "15.1"));
+        assert!(!os_satisfies("14.3-RELEASE", "15.0"));
+        assert!(os_satisfies("unknowable", "15.1"));
+        assert!(os_satisfies("15.1-RELEASE", "not-a-version"));
+    }
+
+    // #612/#613: the embedded self-healing copy of the freebsd-update
+    // helper must keep the validated `upgrade` action — losing it silently
+    // breaks the OS upgrade flow on appliances (sudoers drift, #204).
+    #[test]
+    fn embedded_freebsd_update_helper_supports_upgrade() {
+        let helper = EMBEDDED_SUDO_HELPERS
+            .iter()
+            .find(|(name, _)| *name == "aifw-sudo-freebsd-update")
+            .map(|(_, body)| *body)
+            .expect("aifw-sudo-freebsd-update must be embedded for self-healing");
+        assert!(
+            helper.contains("upgrade)"),
+            "helper lost its upgrade action"
+        );
+        assert!(
+            helper.contains("-RELEASE"),
+            "helper must validate the X.Y-RELEASE target format"
+        );
+        assert!(
+            helper.contains("yes |"),
+            "upgrade must run non-interactively or merge prompts hang the daemon"
+        );
     }
 
     // SEC-H11 (#296): the install allowlist is derived from the embedded

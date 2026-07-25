@@ -251,6 +251,12 @@ chmod 755 "$TARBALL_DIR"/rc.d/* "$TARBALL_DIR"/sbin/* "$TARBALL_DIR"/libexec/* 2
 
 echo "$VERSION" > "$TARBALL_DIR/version"
 
+# Stamp the FreeBSD release these binaries link against (#612). The
+# updater refuses to install the tarball on an older OS — binaries built
+# on 15.1 need libc symbols a 15.0 box doesn't have and would crash-loop
+# every service. The build host's userland IS the compatibility floor.
+freebsd-version -u | sed 's/-.*//' > "$TARBALL_DIR/required-os"
+
 # Write a BUILD_MANIFEST so stale companion repos are visible at build time.
 {
     echo "AiFw             $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"

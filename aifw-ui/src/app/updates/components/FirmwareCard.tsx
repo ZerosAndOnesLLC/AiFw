@@ -90,7 +90,15 @@ export function FirmwareCard({
             {checking ? "Checking..." : "Check for Update"}
           </button>
 
+          {info?.update_available && info?.os_upgrade_required && (
+            <p className="max-w-56 text-xs text-yellow-400">
+              v{info.latest_version} requires FreeBSD {info.required_os}.
+              Upgrade the operating system first (card above), then install.
+            </p>
+          )}
+
           {info?.update_available &&
+            !info?.os_upgrade_required &&
             info?.tarball_url &&
             info?.checksum_url &&
             info?.checksum_signature_url && (

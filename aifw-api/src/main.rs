@@ -1579,6 +1579,11 @@ async fn main() -> anyhow::Result<()> {
     // full reasoning.
     ensure_rc_services_enabled().await;
 
+    // Continue an OS release upgrade across the mid-flow reboot (#613):
+    // after booting the new kernel this runs the remaining
+    // freebsd-update install passes in the background.
+    updates::resume_os_upgrade(state.pool.clone()).await;
+
     // Collect VPN pass rules and inject into rule engine so they appear
     // before the default block in the aifw anchor
     match state.vpn_engine.collect_vpn_rules().await {

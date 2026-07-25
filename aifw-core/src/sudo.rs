@@ -188,6 +188,21 @@ pub async fn freebsd_update(
     sudo_with_fallback(&narrow, &fallback).await
 }
 
+/// Start a FreeBSD *release* upgrade (`freebsd-update -r X.Y-RELEASE
+/// upgrade`) through the helper, which validates the target format,
+/// refuses downgrades, and runs the merge prompts non-interactively
+/// (#613). `release` must be the bare version, e.g. "15.1".
+///
+/// No direct-freebsd-update fallback here on purpose: without the
+/// helper's yes-pipe the interactive merge prompt would hang forever.
+pub async fn freebsd_update_upgrade(release: &str) -> std::io::Result<std::process::Output> {
+    let target = format!("{release}-RELEASE");
+    Command::new(SUDO)
+        .args([HELPER_FREEBSD_UPDATE, "upgrade", "-r", &target])
+        .output()
+        .await
+}
+
 /// Run `pkg <action> [args...]` as root via the `aifw-sudo-pkg` helper.
 ///
 /// The helper restricts `action` to `update` / `install` / `upgrade`

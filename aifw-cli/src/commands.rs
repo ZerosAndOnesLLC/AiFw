@@ -1864,7 +1864,16 @@ pub async fn update_check(pre: bool) -> anyhow::Result<()> {
     println!("  Latest version:  v{}", info.latest_version);
     if info.update_available {
         println!("  Update available!");
-        if info.tarball_url.is_some() {
+        if info.os_upgrade_required {
+            println!(
+                "  ⚠ Requires FreeBSD {} — upgrade the OS first:",
+                info.required_os.as_deref().unwrap_or("newer")
+            );
+            println!(
+                "    aifw update os-upgrade {}",
+                info.required_os.as_deref().unwrap_or("<version>")
+            );
+        } else if info.tarball_url.is_some() {
             println!("  Run 'aifw update install' to update.");
         } else {
             println!("  No update tarball found in the release.");
@@ -1896,6 +1905,20 @@ pub async fn update_install(auto_restart: bool, pre: bool) -> anyhow::Result<()>
             info.current_version
         );
         return Ok(());
+    }
+
+    // OS dependency gate (#612): don't download a release this OS can't
+    // run. The tarball-level gate in the updater backstops this.
+    if info.os_upgrade_required {
+        let required = info.required_os.as_deref().unwrap_or("newer");
+        anyhow::bail!(
+            "AiFw v{} requires FreeBSD {required} but this system runs {}.\n\
+             Upgrade the OS first: aifw update os-upgrade {required}",
+            info.latest_version,
+            updater::current_os_release()
+                .await
+                .unwrap_or_else(|| "unknown".to_string()),
+        );
     }
 
     println!(
@@ -2170,6 +2193,67 @@ pub async fn update_os_install() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// FreeBSD release upgrade (#613): fetch + stage the target release,
+/// install the new kernel, then hand back to the operator for the reboot.
+/// The remaining install passes run automatically when aifw-api starts on
+/// the new kernel (or manually via 'aifw update os-install').
+pub async fn update_os_upgrade(target: &str, yes: bool) -> anyhow::Result<()> {
+    use aifw_core::updater;
+
+    let current = updater::current_os_release()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("cannot determine the running FreeBSD release"))?;
+    if updater::os_satisfies(&current, target) {
+        println!("Already on FreeBSD {current}; {target} is not newer. Nothing to do.");
+        return Ok(());
+    }
+
+    println!("FreeBSD release upgrade: {current} → {target}-RELEASE");
+    println!("  1. Download and stage the release (can take a while)");
+    println!("  2. Install the new kernel");
+    println!("  3. Reboot — the remaining install finishes after boot");
+    if !yes && !prompt_yes("Proceed with the OS upgrade?")? {
+        println!("Aborted.");
+        return Ok(());
+    }
+
+    println!("Downloading FreeBSD {target}-RELEASE (this is the long part)...");
+    let fetch = aifw_core::sudo::freebsd_update_upgrade(target).await?;
+    if !fetch.status.success() {
+        anyhow::bail!(
+            "release fetch failed: {}",
+            String::from_utf8_lossy(&fetch.stderr).trim()
+        );
+    }
+    println!("Release staged. Installing the new kernel...");
+    let install = aifw_core::sudo::freebsd_update("install", &[]).await?;
+    if !install.status.success() {
+        anyhow::bail!(
+            "kernel install failed: {}",
+            String::from_utf8_lossy(&install.stderr).trim()
+        );
+    }
+
+    println!();
+    println!("Kernel for {target}-RELEASE installed.");
+    println!("Reboot now with 'aifw update reboot'. After boot, the remaining");
+    println!("userland install runs automatically; check progress on the");
+    println!("Updates page or with 'aifw update os-check'.");
+    Ok(())
+}
+
+fn prompt_yes(question: &str) -> anyhow::Result<bool> {
+    use std::io::{BufRead, Write};
+
+    print!("{question} [y/N] ");
+    // best-effort prompt flush; a broken stdout pipe is unactionable here
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(answer == "y" || answer == "yes")
 }
 
 // ============================================================
