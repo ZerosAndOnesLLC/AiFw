@@ -322,8 +322,10 @@ export default function Dashboard() {
       bpsIn: bIn,
       bpsOut: bOut,
     }].slice(-MAX_PTS));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws.status]);
+    // WsContext sets status/system/interfaces in one batched commit per
+    // status_update frame, so these deps change together and this runs
+    // exactly once per tick — safe to append a history point unguarded.
+  }, [status, system, ifaces, pickNic]);
 
   const interfaceList = useMemo(() =>
     ifaces.map(i => ({ name: i.name })),

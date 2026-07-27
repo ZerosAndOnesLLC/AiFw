@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
+import Image from "next/image";
 import { useWs } from "@/context/WsContext";
 import { fetchApi } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
@@ -575,10 +576,12 @@ export default function NatFlowsPage() {
           {/* Firewall — uses the AiFw sidebar logo so this node matches the
               brand mark shown in the top-left. */}
           <div className="w-28 h-28 rounded-2xl bg-[var(--bg-primary)] border-2 border-[var(--border)] flex flex-col items-center justify-center shadow-lg shadow-black/40 px-2">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            <Image
               src="/logo-sidebar.png"
               alt="AiFw"
+              width={220}
+              height={44}
+              unoptimized
               className="h-10 w-auto object-contain opacity-95"
             />
             <p className="text-[8px] text-gray-500 mt-1">{connections.length} states</p>
