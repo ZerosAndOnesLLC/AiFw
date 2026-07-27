@@ -271,16 +271,22 @@ pub async fn update_status(
         }
     }
 
-    let pending_os = aifw_core::sudo::freebsd_update("updatesready", &[])
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    // #633: while a release upgrade is in flight, patch-level freebsd-update
+    // calls share (and clobber) its state directory — stand down entirely.
+    let upgrade_in_flight = os_upgrade_in_flight(&state.pool).await;
 
-    let needs_reboot = std::path::Path::new("/var/run/reboot-required").exists()
-        || aifw_core::sudo::freebsd_update("updatesready", &[])
+    let pending_os = !upgrade_in_flight
+        && aifw_core::sudo::freebsd_update("updatesready", &[])
             .await
             .map(|o| o.status.success())
             .unwrap_or(false);
+
+    let needs_reboot = std::path::Path::new("/var/run/reboot-required").exists()
+        || (!upgrade_in_flight
+            && aifw_core::sudo::freebsd_update("updatesready", &[])
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false));
 
     Ok(Json(UpdateStatus {
         os_version,
@@ -320,23 +326,30 @@ pub async fn check_updates(
         Err(e) => format!("Failed to check packages: {}", e),
     };
 
-    // Check OS updates
-    let os_result = aifw_core::sudo::freebsd_update("fetch", &["--not-running-from-cron"]).await;
-    let os_msg = match os_result {
-        Ok(o) => {
-            if o.status.success() {
-                "OS update check complete.".to_string()
-            } else {
-                format!(
-                    "OS update check: {}",
-                    String::from_utf8_lossy(&o.stderr)
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                )
+    // Check OS updates. #633: a patch-level fetch REPLACES freebsd-update's
+    // staged state — running one between the kernel reboot and finalize of
+    // a release upgrade silently destroyed the staged release on a live
+    // appliance. Stand down while an upgrade is in flight.
+    let os_msg = if os_upgrade_in_flight(&state.pool).await {
+        "OS release upgrade in progress — patch-level OS checks paused until it completes."
+            .to_string()
+    } else {
+        match aifw_core::sudo::freebsd_update("fetch", &["--not-running-from-cron"]).await {
+            Ok(o) => {
+                if o.status.success() {
+                    "OS update check complete.".to_string()
+                } else {
+                    format!(
+                        "OS update check: {}",
+                        String::from_utf8_lossy(&o.stderr)
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                    )
+                }
             }
+            Err(e) => format!("OS update check failed: {}", e),
         }
-        Err(e) => format!("OS update check failed: {}", e),
     };
 
     let msg = format!("{} {}", pkg_msg.trim(), os_msg.trim());
@@ -364,7 +377,18 @@ pub async fn install_updates(
         Err(e) => results.push(format!("pkg upgrade failed: {}", e)),
     }
 
-    // Install OS updates
+    // Install OS updates. #633: stand down while a release upgrade is in
+    // flight — a patch install against the shared state dir would consume
+    // or corrupt the staged release.
+    if os_upgrade_in_flight(&state.pool).await {
+        results.push(
+            "OS release upgrade in progress — patch-level OS installs paused until it completes."
+                .to_string(),
+        );
+        let msg = results.join(". ");
+        log_update(&state.pool, "install", &msg, "completed").await;
+        return Ok(Json(MessageResponse { message: msg }));
+    }
     let os_result = aifw_core::sudo::freebsd_update("install", &[]).await;
     match os_result {
         Ok(o) => {
@@ -413,6 +437,22 @@ async fn load_os_upgrade(pool: &SqlitePool) -> Option<OsUpgradeState> {
         .ok()
         .flatten()?;
     serde_json::from_str(&row.0).ok()
+}
+
+/// True while a release upgrade owns freebsd-update's state directory —
+/// from fetch through the post-reboot finalize. Patch-level freebsd-update
+/// operations must stand down in this window (#633): they share the state
+/// dir and a routine fetch destroys the staged release.
+async fn os_upgrade_in_flight(pool: &SqlitePool) -> bool {
+    load_os_upgrade(pool)
+        .await
+        .map(|s| {
+            matches!(
+                s.phase.as_str(),
+                "fetching" | "installing" | "reboot_required" | "finalizing"
+            )
+        })
+        .unwrap_or(false)
 }
 
 async fn store_os_upgrade(pool: &SqlitePool, state: &OsUpgradeState) {
@@ -700,13 +740,32 @@ pub async fn resume_os_upgrade(pool: SqlitePool) {
                         }
                     }
                 }
-                let done_detail = format!(
-                    "running FreeBSD {} — AiFw updates are unblocked",
-                    job.target
-                );
-                let done_log = format!("completed: now on {}", job.target);
-                set_os_upgrade_phase(&pool, &mut job, "done", done_detail).await;
-                log_update(&pool, "os_upgrade", &done_log, "completed").await;
+                // #632: done is VERIFIED, never inferred. "No updates are
+                // available" with an old userland means the staged upgrade
+                // data was lost (a patch-level fetch shares freebsd-update's
+                // state dir, #633) — the appliance showed "Complete /
+                // running FreeBSD 15.1" while actually still on 15.0.
+                let userland_ok = match updater::current_os_release().await {
+                    Some(u) => updater::os_satisfies(&u, &job.target),
+                    None => false,
+                };
+                if userland_ok {
+                    let done_detail = format!(
+                        "running FreeBSD {} — AiFw updates are unblocked",
+                        job.target
+                    );
+                    let done_log = format!("completed: now on {}", job.target);
+                    set_os_upgrade_phase(&pool, &mut job, "done", done_detail).await;
+                    log_update(&pool, "os_upgrade", &done_log, "completed").await;
+                } else {
+                    let detail = format!(
+                        "install passes ran but the userland is not on {} — the staged \
+                         upgrade data was lost; run the upgrade again",
+                        job.target
+                    );
+                    set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
+                    log_update(&pool, "os_upgrade", &detail, "failed").await;
+                }
             });
         }
         "fetching" | "installing" | "finalizing" => {
@@ -716,6 +775,22 @@ pub async fn resume_os_upgrade(pool: SqlitePool) {
             );
             set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
             log_update(&pool, "os_upgrade", &detail, "failed").await;
+        }
+        "done" => {
+            // #632: demote a recorded "done" that reality contradicts. An
+            // appliance that hit the false-done bug carries phase=done with
+            // an old userland; without this it can never retry from the UI.
+            if let Some(u) = updater::current_os_release().await
+                && !updater::os_satisfies(&u, &job.target)
+            {
+                let detail = format!(
+                    "recorded as complete but the userland is {u}, not {} — the staged \
+                     upgrade data was lost; run the upgrade again",
+                    job.target
+                );
+                set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
+                log_update(&pool, "os_upgrade", &detail, "failed").await;
+            }
         }
         _ => {}
     }
