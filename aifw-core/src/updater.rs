@@ -477,6 +477,31 @@ fn parse_os_release(s: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// Essential system files that must exist and be non-empty after an OS
+/// upgrade. A corrupted freebsd-update install once deleted
+/// /bin/freebsd-version without replacing it (#636) — version checks alone
+/// can't see that class of damage.
+pub const OS_CANARY_FILES: [&str; 4] = [
+    "/bin/sh",
+    "/bin/freebsd-version",
+    "/sbin/init",
+    "/sbin/pfctl",
+];
+
+/// Return the canary files from `paths` that are missing or empty.
+/// Empty result = system passes the post-upgrade sanity check.
+pub fn missing_canaries(paths: &[&str]) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|p| {
+            std::fs::metadata(p)
+                .map(|m| !m.is_file() || m.len() == 0)
+                .unwrap_or(true)
+        })
+        .map(|p| p.to_string())
+        .collect()
+}
+
 /// Running kernel release from `uname -r` ("15.1-RELEASE-p1"), or None
 /// when unavailable. Distinct from [`current_os_release`] (userland):
 /// mid-OS-upgrade the box boots the new kernel while the userland is
@@ -1741,6 +1766,27 @@ mod tests {
         assert!(
             helper.contains("yes |"),
             "upgrade must run non-interactively or merge prompts hang the daemon"
+        );
+        // #636 hardening: retries must survive half-upgraded and
+        // corrupted states.
+        assert!(
+            helper.contains("--currently-running"),
+            "upgrade must pin the source release to the userland (#636)"
+        );
+        assert!(
+            helper.contains("reset)"),
+            "helper lost its reset action — clean retry depends on it (#636)"
+        );
+    }
+
+    // #636: the canary check must flag missing/empty essentials and pass
+    // on files that exist.
+    #[test]
+    fn canary_check_flags_missing_files() {
+        assert!(missing_canaries(&["/bin/sh"]).is_empty());
+        assert_eq!(
+            missing_canaries(&["/nonexistent/aifw-canary-test"]),
+            vec!["/nonexistent/aifw-canary-test".to_string()]
         );
     }
 

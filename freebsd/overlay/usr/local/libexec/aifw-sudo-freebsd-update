@@ -83,8 +83,11 @@ case "$ACTION" in
                 ;;
         esac
         # Refuse downgrades: the grant is forward-only. dot-versions compare
-        # numerically field by field.
-        CUR="$(/bin/freebsd-version -u | sed 's/-.*//')"
+        # numerically field by field. Falls back to the kernel when
+        # freebsd-version is unavailable (a mangled install once deleted
+        # it, #636) — a broken tool must not make upgrades unreachable.
+        CUR="$(/bin/freebsd-version -u 2>/dev/null | sed 's/-.*//')"
+        CUR="${CUR:-$(uname -r | sed 's/-.*//')}"
         CUR_MAJ="${CUR%%.*}"; CUR_MIN="${CUR#*.}"
         NEW="${REL%-RELEASE}"
         NEW_MAJ="${NEW%%.*}"; NEW_MIN="${NEW#*.}"
@@ -96,7 +99,26 @@ case "$ACTION" in
         # prompt, PAGER=cat stops more(1) from blocking on the diff review,
         # EDITOR=true auto-accepts config merges (our /etc is appliance-
         # managed; conflicts are resolved by the next AiFw update anyway).
-        yes | env PAGER=cat EDITOR=true /usr/sbin/freebsd-update -r "$REL" upgrade
+        #
+        # --currently-running pins the source release to the USERLAND
+        # (#636): freebsd-update otherwise derives it from the kernel, so a
+        # half-upgraded box (new kernel booted, userland still old) gets
+        # "Cannot upgrade from X to itself" and can never retry.
+        yes | env PAGER=cat EDITOR=true /usr/sbin/freebsd-update \
+            --currently-running "$CUR-RELEASE" -r "$REL" upgrade
+        ;;
+    reset)
+        # Clean-slate recovery (#636): freebsd-update's state directory is
+        # its only memory, and a corrupted one (interleaved operations,
+        # interrupted installs) wedges every later run. Wiping it is always
+        # safe — fetch/upgrade rebuild it from the mirrors — and turns
+        # "broken beyond retry" into "retry works".
+        if [ $# -ne 0 ]; then
+            echo "aifw-sudo-freebsd-update: 'reset' takes no extra args" >&2
+            exit 1
+        fi
+        rm -rf /var/db/freebsd-update
+        install -d -o root -g wheel -m 700 /var/db/freebsd-update
         ;;
     *)
         echo "aifw-sudo-freebsd-update: unsupported action: $ACTION" >&2

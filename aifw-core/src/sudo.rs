@@ -203,6 +203,17 @@ pub async fn freebsd_update_upgrade(release: &str) -> std::io::Result<std::proce
         .await
 }
 
+/// Wipe freebsd-update's state directory via the helper (#636). Always
+/// safe — fetch/upgrade rebuild it from the mirrors — and the universal
+/// recovery from a corrupted state (interleaved runs, interrupted
+/// installs) that otherwise wedges every subsequent attempt.
+pub async fn freebsd_update_reset() -> std::io::Result<std::process::Output> {
+    Command::new(SUDO)
+        .args([HELPER_FREEBSD_UPDATE, "reset"])
+        .output()
+        .await
+}
+
 /// Run `pkg <action> [args...]` as root via the `aifw-sudo-pkg` helper.
 ///
 /// The helper restricts `action` to `update` / `install` / `upgrade`

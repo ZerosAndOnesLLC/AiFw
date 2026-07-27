@@ -571,6 +571,19 @@ pub async fn start_os_upgrade(
 
     let pool = state.pool.clone();
     tokio::spawn(async move {
+        // #636: every upgrade run starts from a pristine state directory.
+        // freebsd-update's state is its only memory and a stale or
+        // corrupted one (a previous interrupted run, interleaved patch
+        // operations) wedges the run in ways a general user can't escape.
+        // Reset is always safe — the fetch below rebuilds everything.
+        if let Ok(o) = aifw_core::sudo::freebsd_update_reset().await
+            && !o.status.success()
+        {
+            tracing::warn!(
+                "freebsd-update state reset failed (continuing): {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+        }
         // Phase 1: fetch + stage the release (the long part, minutes).
         match aifw_core::sudo::freebsd_update_upgrade(&job.target).await {
             Ok(o) if o.status.success() => {
@@ -749,6 +762,18 @@ pub async fn resume_os_upgrade(pool: SqlitePool) {
                     Some(u) => updater::os_satisfies(&u, &job.target),
                     None => false,
                 };
+                // #636: version alone can't see a mangled install that
+                // deleted files — canary-check the essentials too.
+                let missing = updater::missing_canaries(&updater::OS_CANARY_FILES);
+                if userland_ok && !missing.is_empty() {
+                    let detail = format!(
+                        "upgrade left essential files damaged ({}) — use Retry to re-run the upgrade cleanly",
+                        missing.join(", ")
+                    );
+                    set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
+                    log_update(&pool, "os_upgrade", &detail, "failed").await;
+                    return;
+                }
                 if userland_ok {
                     let done_detail = format!(
                         "running FreeBSD {} — AiFw updates are unblocked",
