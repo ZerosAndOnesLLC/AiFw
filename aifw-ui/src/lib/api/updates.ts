@@ -58,8 +58,14 @@ export interface AifwUpdateInfo {
   // in the release notes). Null on releases published before OS stamping.
   required_os?: string | null;
   // The release needs a newer FreeBSD than this box runs — the OS upgrade
-  // flow must happen first; the installer refuses otherwise (#612).
+  // flow must happen first; the installer refuses otherwise (#612). Since
+  // #624 this only occurs when NO OS-compatible release exists.
   os_upgrade_required?: boolean;
+  // Newest published version this OS can't run yet (#624). Present while
+  // latest_version stays independently installable — both can show.
+  blocked_version?: string | null;
+  // FreeBSD release blocked_version needs.
+  blocked_requires_os?: string | null;
 }
 
 // ---- OS release upgrade (#613) ----

@@ -1881,6 +1881,16 @@ pub async fn update_check(pre: bool) -> anyhow::Result<()> {
     } else {
         println!("  Already running the latest version.");
     }
+    if let Some(blocked) = &info.blocked_version {
+        println!(
+            "  v{blocked} is also available and requires FreeBSD {} —",
+            info.blocked_requires_os.as_deref().unwrap_or("newer")
+        );
+        println!(
+            "  it unlocks after: aifw update os-upgrade {}",
+            info.blocked_requires_os.as_deref().unwrap_or("<version>")
+        );
+    }
     if info.has_backup {
         println!(
             "  Backup: v{} (run 'aifw update rollback' to restore)",
