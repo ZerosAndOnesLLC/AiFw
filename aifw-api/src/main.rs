@@ -1717,8 +1717,9 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::warn!("Failed to restart WireGuard tunnels: {e}"),
     }
 
-    // Start persistent pflog0 live capture for blocked traffic page (background, non-blocking)
-    ws::start_pflog_collector(state.plugin_manager.clone());
+    // Start persistent pflog0 live capture for blocked traffic page
+    // (background, non-blocking); also tees entries to remote syslog.
+    ws::start_pflog_collector(state.plugin_manager.clone(), state.syslog.handle());
 
     // Start plugin timer hook — fires every 60 seconds for cron-like plugins
     {
