@@ -53,12 +53,23 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&args.log_level)),
-        )
-        .init();
+    // Remote syslog manager exists before the subscriber so the forwarding
+    // layer can attach; DB config is applied below once the pool is up.
+    let syslog_mgr = aifw_common::syslog::SyslogManager::start();
+    {
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&args.log_level));
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
+            .with(aifw_common::syslog::SyslogLayer::new(
+                syslog_mgr.handle(),
+                "aifw-ids",
+            ))
+            .init();
+    }
 
     // aifw-api and aifw-ids share aifw.db. Without WAL + busy_timeout we
     // see SQLITE_BUSY drops on concurrent INSERT (alert ingestion racing
@@ -86,6 +97,14 @@ async fn main() -> anyhow::Result<()> {
     IdsEngine::migrate(&pool)
         .await
         .map_err(|e| anyhow::anyhow!("migrate: {e}"))?;
+
+    // Remote syslog: apply persisted config and refresh via the shared
+    // 60s poller (picks up API/CLI edits).
+    aifw_common::syslog::migrate(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("syslog migrate: {e}"))?;
+    syslog_mgr.apply(aifw_common::syslog::load(&pool).await);
+    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone());
 
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
 
