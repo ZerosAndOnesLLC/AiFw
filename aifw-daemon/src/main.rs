@@ -99,19 +99,30 @@ async fn main() -> anyhow::Result<()> {
     aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone());
 
     // Reconcile the pf local-log policy (pflogd on/off for disable_local):
-    // once at boot, then whenever the polled config flips the policy. This
-    // covers CLI DB edits and recovers state after crashes; the API also
-    // applies immediately on settings PUT for snappy UX.
+    // once at boot, on every polled policy change, again after a failed
+    // attempt (sudo errors don't mark the state applied), and — while the
+    // policy is "stopped" — re-enforced every tick so an externally
+    // restarted pflogd is corrected within a minute. Covers CLI DB edits
+    // and crash recovery; the API also applies immediately on settings PUT.
     {
         let pool = pool.clone();
         tokio::spawn(async move {
-            let mut last_applied: Option<bool> = None;
+            let mut last_ok: Option<bool> = None;
             loop {
-                let cfg = aifw_common::syslog::load(&pool).await;
-                let want = aifw_core::local_log::local_pf_log_disabled(&cfg);
-                if last_applied != Some(want) {
-                    aifw_core::local_log::apply_local_log_policy(&cfg).await;
-                    last_applied = Some(want);
+                // A transient DB read error must not read as "policy off" —
+                // that would start pflogd and flap the toggle (see the
+                // matching guard in the shared config poller).
+                match aifw_common::syslog::try_load(&pool).await {
+                    Ok(cfg) => {
+                        let want = aifw_core::local_log::local_pf_log_disabled(&cfg);
+                        if want || last_ok != Some(want) {
+                            let ok = aifw_core::local_log::apply_local_log_policy(&cfg).await;
+                            last_ok = if ok { Some(want) } else { None };
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "pf local-log policy poll failed; keeping current state");
+                    }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             }

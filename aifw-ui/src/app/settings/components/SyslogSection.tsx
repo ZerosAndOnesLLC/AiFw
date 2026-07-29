@@ -205,7 +205,7 @@ export function SyslogSection({
             checked={config.disable_local}
             onChange={(v) => set({ disable_local: v })}
             label="Stop storing logs locally while forwarding"
-            hint="Stops the local pf log file (Blocked-page history becomes memory-only) and, when app-log forwarding is on, the /var/log/aifw files. IDS alerts always stay in the local database for the Alerts page."
+            hint="Only applies to categories that are actually being forwarded, so logs are never lost from both destinations: with pf forwarding on, the local pf log file stops (Blocked-page history becomes memory-only); with app-log forwarding on, the /var/log/aifw files stop growing (forwarded levels only). IDS alerts always stay in the local database for the Alerts page."
           />
         </div>
 
