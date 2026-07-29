@@ -60,6 +60,8 @@ curl -X POST https://aifw.local/api/v1/ids/reload \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+> **Deprecated:** the per-IDS `syslog_target` field is a no-op. Alert forwarding to a syslog server is configured globally at `/api/v1/settings/syslog` (enable the IDS alerts category), or in the UI under *Settings → Remote Logging*.
+
 ## Rule formats
 
 **Suricata-compatible.** The native format. AiFw parses Suricata 7.x syntax &mdash; `alert`, `drop`, `pass`, plus the common `content`, `pcre`, `flow`, `threshold`, and `metadata` keywords. This is a practical **subset**, not full Suricata engine parity: most ET Open-style rules drop in unchanged, but rules relying on unsupported keywords are skipped (visible in the ruleset parse stats).

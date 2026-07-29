@@ -465,6 +465,9 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 | `POST` | `/api/v1/settings/ai/test` | Test AI provider credentials |
 | `GET`,&nbsp;`PUT` | `/api/v1/settings/dashboard-history` | Dashboard widget retention |
 | `GET`,&nbsp;`PUT` | `/api/v1/settings/ids-alerts` | IDS alert ring / retention |
+| `GET`,&nbsp;`PUT` | `/api/v1/settings/syslog` | Remote syslog forwarding (server, transport, format, categories) |
+| `POST` | `/api/v1/settings/syslog/test` | Send one test message (body = draft config, optional) |
+| `GET` | `/api/v1/settings/syslog/status` | Delivery counters for the API process |
 | `GET`,&nbsp;`PUT` | `/api/v1/settings/{section}` | Generic key/value settings store |
 | `GET`,&nbsp;`PUT` | `/api/v1/notify/smtp/config` | SMTP notification settings |
 | `POST` | `/api/v1/notify/smtp/test` | Send a test email |

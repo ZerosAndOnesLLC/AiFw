@@ -63,6 +63,7 @@ Most list commands accept `--json` for machine-readable output. Most failures ex
 | `aifw config` | Versioned config history, import / export, rollback |
 | `aifw routes` | Manage static routes |
 | `aifw dns` | Manage DNS nameservers + post-switch probe |
+| `aifw syslog` | Remote syslog forwarding (server, categories, test) |
 | `aifw dhcp` | Manage the DHCP server (rDHCP) |
 | `aifw users` | Manage local users |
 | `aifw reverse-proxy` | Control TrafficCop |
@@ -238,6 +239,24 @@ aifw dns set "1.1.1.1, 9.9.9.9"
 aifw dns probe on        # enable auto-rollback
 aifw dns probe off
 aifw dns probe status
+```
+
+## syslog
+
+Forward pf packet logs, IDS alerts, and application logs to a remote syslog server / SIEM. `set` only changes the flags you pass; all AiFw services pick up changes within 60 seconds.
+
+```bash
+aifw syslog show                 # human-readable summary (--json for JSON)
+aifw syslog set --host 192.168.1.10 --port 514 --pf true
+aifw syslog enable               # master switch (requires a host)
+aifw syslog disable
+
+aifw syslog set --transport tcp --format rfc5424 --facility local3
+aifw syslog set --app true --app-min-level warn
+aifw syslog set --disable-local true   # stop local pf/app log files while forwarding
+
+aifw syslog test                 # one test message with the saved config
+aifw syslog test --host 10.0.0.9 --port 5514
 ```
 
 ## dhcp
