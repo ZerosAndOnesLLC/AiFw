@@ -1,0 +1,73 @@
+//! Remote syslog settings API — thin shims over `aifw_common::syslog`.
+//!
+//! Routes are registered in `router::settings_read` / `router::settings_write`,
+//! which enforce `Permission::SettingsRead` / `SettingsWrite`.
+
+use aifw_common::syslog as sys;
+use axum::Json;
+use axum::extract::State;
+use axum::http::StatusCode;
+use serde::Serialize;
+
+use crate::AppState;
+
+/// `GET /api/v1/settings/syslog` — current remote syslog configuration.
+pub async fn get_syslog_config(State(state): State<AppState>) -> Json<sys::SyslogConfig> {
+    Json(sys::load(&state.pool).await)
+}
+
+/// `PUT /api/v1/settings/syslog` — validate, persist, and apply immediately
+/// in this process. aifw-daemon and aifw-ids pick the change up via their
+/// 60s config pollers.
+pub async fn put_syslog_config(
+    State(state): State<AppState>,
+    Json(cfg): Json<sys::SyslogConfig>,
+) -> Result<Json<sys::SyslogConfig>, (StatusCode, String)> {
+    cfg.validate().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    sys::save(&state.pool, &cfg)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.syslog.apply(cfg);
+    Ok(Json(sys::load(&state.pool).await))
+}
+
+/// Result of a one-shot test delivery.
+#[derive(Serialize)]
+pub struct TestResponse {
+    ok: bool,
+    message: String,
+}
+
+/// `POST /api/v1/settings/syslog/test` — send one test message. An unsaved
+/// draft config in the body wins over the stored one so the UI can test
+/// before saving; with no/empty body the saved config is used.
+pub async fn test_syslog(
+    State(state): State<AppState>,
+    Json(req): Json<Option<sys::SyslogConfig>>,
+) -> Json<TestResponse> {
+    let cfg = match req {
+        Some(c) if !c.host.trim().is_empty() => c,
+        _ => sys::load(&state.pool).await,
+    };
+    match sys::test_send(&cfg, "AiFw remote syslog test message").await {
+        Ok(()) => Json(TestResponse {
+            ok: true,
+            message: format!(
+                "test message sent to {}:{} over {}",
+                cfg.host,
+                cfg.port,
+                cfg.transport.as_str()
+            ),
+        }),
+        Err(e) => Json(TestResponse {
+            ok: false,
+            message: e,
+        }),
+    }
+}
+
+/// `GET /api/v1/settings/syslog/status` — delivery counters for the API
+/// process (pf logs and API app logs; daemon/IDS forward independently).
+pub async fn syslog_status(State(state): State<AppState>) -> Json<sys::SyslogStatsSnapshot> {
+    Json(state.syslog.stats())
+}
