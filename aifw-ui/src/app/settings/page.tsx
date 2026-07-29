@@ -14,6 +14,7 @@ import {
   usePfTuning,
   useS3Backup,
   useSmtpSettings,
+  useSyslogSettings,
   useSystemActions,
   useSystemBanner,
   useSystemConsole,
@@ -37,6 +38,7 @@ import { PfStateTableSection } from "./components/PfStateTableSection";
 import { S3BackupSection } from "./components/S3BackupSection";
 import { SmtpSection } from "./components/SmtpSection";
 import { SshSection } from "./components/SshSection";
+import { SyslogSection } from "./components/SyslogSection";
 import { SystemActionsSection } from "./components/SystemActionsSection";
 import { TlsPolicySection } from "./components/TlsPolicySection";
 import { ValkeySection } from "./components/ValkeySection";
@@ -52,6 +54,7 @@ const CATEGORIES: { key: string; label: string; sections: string[] }[] = [
   { key: "dns",     label: "DNS",             sections: ["DNS Configuration"] },
   { key: "storage", label: "Storage & Metrics", sections: ["Metrics Storage", "Dashboard History", "Metrics Persistence (Valkey)", "IDS Alert Storage"] },
   { key: "backup",  label: "Backup & History", sections: ["Config History", "S3 Backup Sync", "Email Notifications (SMTP)"] },
+  { key: "logging", label: "Logging",         sections: ["Remote Logging (Syslog)"] },
   { key: "ai",      label: "AI / LLM",        sections: ["AI / LLM Providers"] },
 ];
 
@@ -62,6 +65,7 @@ export default function SettingsPage() {
   const cfgRet = useConfigRetention();
   const s3 = useS3Backup();
   const smtp = useSmtpSettings();
+  const syslog = useSyslogSettings();
   const apiServer = useApiServerSettings();
   const tls = useTlsPolicy();
   const auth = useAuthSettings();
@@ -138,6 +142,7 @@ export default function SettingsPage() {
       <ConfigHistorySection visible={inCategory("Config History")} {...cfgRet} />
       <S3BackupSection visible={inCategory("S3 Backup Sync")} {...s3} />
       <SmtpSection visible={inCategory("Email Notifications (SMTP)")} {...smtp} />
+      <SyslogSection visible={inCategory("Remote Logging (Syslog)")} {...syslog} />
       <ApiServerSection visible={inCategory("API Server")} {...apiServer} />
       <TlsPolicySection visible={inCategory("TLS Policy")} {...tls} />
       <AuthSection visible={inCategory("Authentication")} {...auth} />

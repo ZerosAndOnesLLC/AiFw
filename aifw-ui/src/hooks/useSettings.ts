@@ -11,6 +11,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { Feedback, FeedbackType, useFeedback } from "@/hooks/useFeedback";
 import {
+  SyslogConfig,
+  SyslogStatus,
+  defaultSyslogConfig,
+  getSyslogConfig,
+  getSyslogStatus,
+  saveSyslogConfig,
+  testSyslog,
+} from "@/lib/api/syslog";
+import {
   AiProviderConfig,
   AiTestResult,
   ConsoleKind,
@@ -1111,4 +1120,84 @@ export function useSystemActions() {
   };
 
   return { confirmReboot, setConfirmReboot, rebooting, feedback, reboot };
+}
+
+// --- Remote Logging (Syslog) ---
+
+export function useSyslogSettings() {
+  const [config, setConfig] = useState<SyslogConfig>(defaultSyslogConfig);
+  const [status, setStatus] = useState<SyslogStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const { feedback, showFeedback, clearFeedback } = useFeedback(4000);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      setStatus(await getSyslogStatus());
+    } catch {
+      // endpoint may not exist yet (older API)
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setConfig(await getSyslogConfig());
+      } catch {
+        // endpoint may not exist yet
+      } finally {
+        setLoading(false);
+      }
+      refreshStatus();
+    })();
+  }, [refreshStatus]);
+
+  const save = async () => {
+    setSaving(true);
+    clearFeedback();
+    try {
+      await saveSyslogConfig(config);
+      showFeedback("success", "Syslog settings saved.");
+      refreshStatus();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      showFeedback("error", `Save failed: ${msg}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Tests with the CURRENT form values (unsaved drafts included) so the
+  // server can be verified before committing the config.
+  const test = async () => {
+    if (!config.host.trim()) {
+      showFeedback("error", "Enter a syslog server host first.");
+      return;
+    }
+    setTesting(true);
+    clearFeedback();
+    try {
+      const r = await testSyslog(config);
+      showFeedback(r.ok ? "success" : "error", r.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      showFeedback("error", `Test failed: ${msg}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return {
+    config,
+    setConfig,
+    status,
+    refreshStatus,
+    loading,
+    saving,
+    testing,
+    feedback,
+    save,
+    test,
+  };
 }
