@@ -1464,12 +1464,23 @@ async fn main() -> anyhow::Result<()> {
     // create_app_state once the pool is ready.
     let syslog_mgr = aifw_common::syslog::SyslogManager::start();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| args.log_level.parse().unwrap_or_default()),
-        )
-        .init();
+    // Registry: fmt layer (stdout, EnvFilter-scoped so console filtering
+    // never starves the forwarder) + remote-syslog forwarding layer, which
+    // self-filters on the App category toggle and app_min_level.
+    {
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| args.log_level.parse().unwrap_or_default());
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
+            .with(aifw_common::syslog::SyslogLayer::new(
+                syslog_mgr.handle(),
+                "aifw-api",
+            ))
+            .init();
+    }
 
     // Temporary AuthSettings so create_app_state has a DB pool. The real
     // JWT secret is loaded from the key file below, then swapped in.

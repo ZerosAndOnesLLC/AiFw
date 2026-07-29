@@ -1,0 +1,188 @@
+//! `tracing` layer that forwards application log events to remote syslog.
+
+use tracing::field::{Field, Visit};
+use tracing::{Event, Level, Subscriber};
+use tracing_subscriber::layer::{Context, Layer};
+
+use super::client::SyslogHandle;
+use super::config::Category;
+
+/// Forwards `tracing` events to remote syslog as the App category.
+///
+/// Attach to a `tracing_subscriber::registry()` alongside the normal fmt
+/// layer. Filtering is self-contained: the layer checks the App category
+/// toggle and `app_min_level` per event, so console filtering (EnvFilter on
+/// the fmt layer) never starves the forwarder.
+pub struct SyslogLayer {
+    handle: SyslogHandle,
+    app_name: &'static str,
+}
+
+impl SyslogLayer {
+    /// `app_name` becomes the syslog APP-NAME/TAG (e.g. `aifw-api`).
+    pub fn new(handle: SyslogHandle, app_name: &'static str) -> Self {
+        Self { handle, app_name }
+    }
+}
+
+fn level_to_severity(level: &Level) -> u8 {
+    match *level {
+        Level::ERROR => 3,
+        Level::WARN => 4,
+        Level::INFO => 6,
+        // TRACE has no syslog equivalent below debug
+        Level::DEBUG | Level::TRACE => 7,
+    }
+}
+
+impl<S: Subscriber> Layer<S> for SyslogLayer {
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let meta = event.metadata();
+        // Recursion guard: the syslog client's own diagnostics (delivery
+        // failures etc.) must never be forwarded through itself.
+        if meta.target().starts_with("aifw_common::syslog") {
+            return;
+        }
+        if !self.handle.enabled_for(Category::App) {
+            return;
+        }
+        let severity = level_to_severity(meta.level());
+        if severity > self.handle.config().app_min_severity() {
+            return;
+        }
+        let mut visitor = MsgVisitor::default();
+        event.record(&mut visitor);
+        let mut body = visitor.message;
+        if !visitor.fields.is_empty() {
+            if !body.is_empty() {
+                body.push(' ');
+            }
+            body.push_str(&visitor.fields);
+        }
+        let msg = format!("[{}] {}", meta.target(), body);
+        self.handle
+            .enqueue(Category::App, severity, self.app_name, msg);
+    }
+}
+
+/// Collects the `message` field and renders the rest as `key=value` pairs.
+#[derive(Default)]
+struct MsgVisitor {
+    message: String,
+    fields: String,
+}
+
+impl MsgVisitor {
+    fn push_field(&mut self, name: &str, value: impl std::fmt::Display) {
+        if !self.fields.is_empty() {
+            self.fields.push(' ');
+        }
+        // Infallible: fmt::Write on String never errors.
+        use std::fmt::Write;
+        let _ = write!(self.fields, "{name}={value}");
+    }
+}
+
+impl Visit for MsgVisitor {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            use std::fmt::Write;
+            let _ = write!(self.message, "{value:?}");
+        } else {
+            self.push_field(field.name(), format_args!("{value:?}"));
+        }
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            self.message.push_str(value);
+        } else {
+            self.push_field(field.name(), value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::client::SyslogManager;
+    use super::super::config::{SyslogConfig, Transport};
+    use super::*;
+    use std::time::Duration;
+    use tokio::net::UdpSocket;
+    use tokio::time::timeout;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    async fn setup(min_level: &str) -> (UdpSocket, tracing::Dispatch) {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+        let mgr = SyslogManager::start();
+        mgr.apply(SyslogConfig {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            port,
+            transport: Transport::Udp,
+            app_enabled: true,
+            app_min_level: min_level.into(),
+            ..Default::default()
+        });
+        let subscriber =
+            tracing_subscriber::registry().with(SyslogLayer::new(mgr.handle(), "aifw-test"));
+        (server, tracing::Dispatch::new(subscriber))
+    }
+
+    async fn recv_with_timeout(server: &UdpSocket, ms: u64) -> Option<String> {
+        let mut buf = [0u8; 4096];
+        match timeout(Duration::from_millis(ms), server.recv_from(&mut buf)).await {
+            Ok(Ok((n, _))) => Some(String::from_utf8_lossy(&buf[..n]).into_owned()),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn forwards_events_with_fields() {
+        let (server, dispatch) = setup("info").await;
+        // Explicit target: the test module's own path starts with
+        // aifw_common::syslog, which the recursion guard (correctly) drops.
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "test_app", user = "admin", attempts = 3, "login succeeded");
+        });
+        let got = recv_with_timeout(&server, 5000)
+            .await
+            .expect("event should be forwarded");
+        assert!(got.contains("aifw-test"), "got: {got}");
+        assert!(got.contains("login succeeded"), "got: {got}");
+        assert!(got.contains("user=admin"), "got: {got}");
+        assert!(got.contains("attempts=3"), "got: {got}");
+        assert!(got.starts_with("<134>"), "local0.info PRI, got: {got}");
+    }
+
+    #[tokio::test]
+    async fn respects_min_level() {
+        let (server, dispatch) = setup("warn").await;
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "test_app", "too quiet to forward");
+            tracing::warn!(target: "test_app", "loud enough");
+        });
+        let got = recv_with_timeout(&server, 5000)
+            .await
+            .expect("warn event should be forwarded");
+        assert!(got.contains("loud enough"), "got: {got}");
+        // The info event was filtered — nothing else arrives.
+        assert!(recv_with_timeout(&server, 200).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn recursion_guard_drops_own_events() {
+        let (server, dispatch) = setup("debug").await;
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::warn!(
+                target: "aifw_common::syslog::client",
+                "delivery failing"
+            );
+        });
+        assert!(
+            recv_with_timeout(&server, 300).await.is_none(),
+            "syslog-internal event must not be forwarded"
+        );
+    }
+}

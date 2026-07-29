@@ -14,6 +14,7 @@
 mod client;
 mod config;
 mod format;
+mod layer;
 
 pub use client::{
     SyslogHandle, SyslogManager, SyslogStats, SyslogStatsSnapshot, spawn_config_poller, test_send,
@@ -23,3 +24,4 @@ pub use config::{
     migrate, save, save_on,
 };
 pub use format::{SyslogRecord, format_message, priority};
+pub use layer::SyslogLayer;
