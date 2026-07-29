@@ -13,6 +13,7 @@
 
 mod client;
 mod config;
+mod error;
 mod format;
 mod layer;
 
@@ -21,7 +22,8 @@ pub use client::{
 };
 pub use config::{
     Category, SyslogConfig, SyslogFormat, Transport, facility_from_name, facility_name, load,
-    migrate, save, save_on,
+    migrate, save, save_on, try_load,
 };
+pub use error::SyslogError;
 pub use format::{SyslogRecord, format_message, priority};
 pub use layer::{LocalStorageGate, SyslogLayer};

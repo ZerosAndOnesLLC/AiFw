@@ -141,11 +141,30 @@ impl SyslogConfig {
         if self.host.len() > 255 {
             return Err("host must be at most 255 characters".into());
         }
+        if self
+            .host
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_ascii_control())
+        {
+            return Err("host must not contain whitespace or control characters".into());
+        }
         if self.port == 0 {
             return Err("port must be 1-65535".into());
         }
         if self.facility > 23 {
             return Err("facility must be 0-23".into());
+        }
+        if self.hostname_override.len() > 255 {
+            return Err("hostname_override must be at most 255 characters".into());
+        }
+        if self
+            .hostname_override
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_ascii_control())
+        {
+            return Err(
+                "hostname_override must not contain whitespace or control characters".into(),
+            );
         }
         if !APP_LEVELS.contains(&self.app_min_level.as_str()) {
             return Err(format!(
@@ -278,15 +297,30 @@ const LOAD_SQL: &str = r#"SELECT enabled, host, port, transport, format, facilit
         hostname_override, pf_enabled, ids_enabled, app_enabled, app_min_level, disable_local
       FROM syslog_config WHERE id = 1"#;
 
-/// Read the singleton config row; falls back to defaults if missing.
-pub async fn load(pool: &SqlitePool) -> SyslogConfig {
-    sqlx::query_as::<_, Row>(LOAD_SQL)
+/// Read the singleton config row. A missing row (fresh DB) is defaults; a
+/// query error (e.g. SQLITE_BUSY on the shared WAL database) is an `Err` so
+/// callers can distinguish "not configured" from "could not read" — the
+/// config pollers must NOT treat a transient read failure as "forwarding
+/// was disabled".
+pub async fn try_load(pool: &SqlitePool) -> Result<SyslogConfig, sqlx::Error> {
+    Ok(sqlx::query_as::<_, Row>(LOAD_SQL)
         .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
+        .await?
         .map(row_to_config)
-        .unwrap_or_default()
+        .unwrap_or_default())
+}
+
+/// Read the singleton config row; falls back to defaults if missing or on
+/// error (logged). Use [`try_load`] where a transient failure must not be
+/// mistaken for a disabled config.
+pub async fn load(pool: &SqlitePool) -> SyslogConfig {
+    match try_load(pool).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load syslog config; using defaults");
+            SyslogConfig::default()
+        }
+    }
 }
 
 const SAVE_SQL: &str = r#"UPDATE syslog_config
@@ -395,6 +429,22 @@ mod tests {
         cfg.facility = 23;
         cfg.app_min_level = "verbose".into();
         assert!(cfg.validate().is_err());
+
+        cfg.app_min_level = "info".into();
+        cfg.host = "log server".into(); // whitespace in host
+        assert!(cfg.validate().is_err());
+        cfg.host = "log\nserver".into(); // control char in host
+        assert!(cfg.validate().is_err());
+        cfg.host = "192.0.2.1".into();
+        cfg.hostname_override = "fw one".into(); // whitespace in override
+        assert!(cfg.validate().is_err());
+        cfg.hostname_override = "h".repeat(256);
+        assert!(cfg.validate().is_err());
+        cfg.hostname_override = "fw1".into();
+        assert!(cfg.validate().is_ok());
+        // Bare IPv6 literals are valid hosts (bracketed on the wire).
+        cfg.host = "2001:db8::1".into();
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

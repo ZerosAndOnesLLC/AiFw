@@ -70,9 +70,13 @@ impl<S: Subscriber> Layer<S> for SyslogLayer {
 ///
 /// The appliance's `/var/log/aifw/*.log` files are `daemon(8)` stdout
 /// redirects, so silencing stdout stops file growth with no rc.d changes or
-/// service restarts. The gate closes only while remote forwarding is on,
-/// `disable_local` is set, AND app-log forwarding is enabled — app logs are
-/// never dropped from both destinations at once.
+/// service restarts. The gate closes only for events the forwarder will
+/// actually accept: remote forwarding on, `disable_local` set, app-log
+/// forwarding enabled, AND the event at or above `app_min_level` — so at
+/// the configuration level an event is never dropped from both
+/// destinations at once. (Delivery failures while the gate is closed are
+/// still possible — that is the disk-vs-remote trade the toggle opts into —
+/// and are visible in the dropped/error counters.)
 pub struct LocalStorageGate {
     handle: SyslogHandle,
 }
@@ -85,9 +89,15 @@ impl LocalStorageGate {
 }
 
 impl<S: Subscriber> tracing_subscriber::layer::Filter<S> for LocalStorageGate {
-    fn enabled(&self, _meta: &tracing::Metadata<'_>, _cx: &Context<'_, S>) -> bool {
+    fn enabled(&self, meta: &tracing::Metadata<'_>, _cx: &Context<'_, S>) -> bool {
         let cfg = self.handle.config();
-        !(cfg.enabled && cfg.disable_local && cfg.app_enabled)
+        if !(cfg.enabled && cfg.disable_local && cfg.app_enabled) {
+            return true;
+        }
+        // Below-min-level events are NOT forwarded (SyslogLayer filters
+        // them), so they must keep going to stdout — silencing them here
+        // would drop them from both destinations.
+        level_to_severity(meta.level()) > cfg.app_min_severity()
     }
 }
 
@@ -224,6 +234,26 @@ mod tests {
             tracing::info!(target: "test_app", "must also pass");
         });
         assert_eq!(count.load(Ordering::Relaxed), 2, "no forwarding, no gate");
+
+        // Gate closed but min level warn: info is NOT forwarded, so it must
+        // keep reaching stdout; warn IS forwarded, so it is silenced.
+        mgr.apply(SyslogConfig {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            disable_local: true,
+            app_enabled: true,
+            app_min_level: "warn".into(),
+            ..Default::default()
+        });
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "test_app", "below min level, must pass");
+            tracing::warn!(target: "test_app", "forwarded, must be silenced");
+        });
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            3,
+            "info passes (not forwarded), warn silenced (forwarded)"
+        );
     }
 
     #[tokio::test]

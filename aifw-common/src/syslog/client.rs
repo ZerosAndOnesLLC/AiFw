@@ -18,7 +18,8 @@ use tokio::net::{TcpStream, UdpSocket, lookup_host};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, timeout};
 
-use super::config::{Category, SyslogConfig, Transport, load};
+use super::config::{Category, SyslogConfig, Transport, try_load};
+use super::error::SyslogError;
 use super::format::{SyslogRecord, format_message};
 
 /// Bounded queue size shared by all producers in a process.
@@ -124,8 +125,13 @@ impl SyslogManager {
     }
 
     /// Swap in a new configuration; the writer drops its connection and
-    /// re-resolves the target.
+    /// re-resolves the target. No-op when the config is unchanged, so a
+    /// no-op Save/poll never tears down a healthy TCP connection (the
+    /// writer reconnects on config *pointer* change).
     pub fn apply(&self, cfg: SyslogConfig) {
+        if *self.current() == cfg {
+            return;
+        }
         self.shared.config.store(Arc::new(cfg));
         self.reload.send_modify(|g| *g = g.wrapping_add(1));
     }
@@ -192,21 +198,25 @@ pub fn spawn_config_poller(pool: SqlitePool, mgr: Arc<SyslogManager>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
-            let cfg = load(&pool).await;
-            if *mgr.current() != cfg {
-                mgr.apply(cfg);
+            // A transient read failure (SQLITE_BUSY on the shared WAL DB)
+            // must not masquerade as "config reset to defaults" — that
+            // would flap forwarding off for a poll interval. Skip the tick.
+            match try_load(&pool).await {
+                Ok(cfg) => mgr.apply(cfg),
+                Err(e) => {
+                    tracing::warn!(error = %e, "syslog config poll failed; keeping current config");
+                }
             }
         }
     });
 }
 
 /// One-shot delivery of a test message using `cfg` (which need not be saved
-/// or enabled). Returns a human-readable error on failure. Note UDP is
-/// fire-and-forget: success means the datagram left this host, not that the
-/// server received it.
-pub async fn test_send(cfg: &SyslogConfig, msg: &str) -> Result<(), String> {
+/// or enabled). Note UDP is fire-and-forget: success means the datagram
+/// left this host, not that the server received it.
+pub async fn test_send(cfg: &SyslogConfig, msg: &str) -> Result<(), SyslogError> {
     if cfg.host.trim().is_empty() {
-        return Err("host is required".into());
+        return Err(SyslogError::HostRequired);
     }
     let hostname = detect_hostname();
     let hostname = if cfg.hostname_override.is_empty() {
@@ -248,43 +258,80 @@ enum Conn {
     Tcp(TcpStream),
 }
 
-async fn open_conn(cfg: &SyslogConfig) -> Result<Conn, String> {
-    let target = format!("{}:{}", cfg.host, cfg.port);
-    let peer = timeout(IO_TIMEOUT, lookup_host(&target))
+/// `host:port` target string, bracketing bare IPv6 literals so
+/// `lookup_host` can parse them (`2001:db8::1` -> `[2001:db8::1]:514`;
+/// already-bracketed input is passed through).
+fn target_string(host: &str, port: u16) -> String {
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+async fn open_conn(cfg: &SyslogConfig) -> Result<Conn, SyslogError> {
+    let target = target_string(&cfg.host, cfg.port);
+    let addrs: Vec<std::net::SocketAddr> = timeout(IO_TIMEOUT, lookup_host(&target))
         .await
-        .map_err(|_| format!("DNS lookup for {target} timed out"))?
-        .map_err(|e| format!("cannot resolve {target}: {e}"))?
-        .next()
-        .ok_or_else(|| format!("no addresses for {target}"))?;
+        .map_err(|_| SyslogError::ResolveTimeout {
+            target: target.clone(),
+        })?
+        .map_err(|e| SyslogError::Resolve {
+            target: target.clone(),
+            source: e,
+        })?
+        .collect();
+    if addrs.is_empty() {
+        return Err(SyslogError::NoAddresses { target });
+    }
     match cfg.transport {
         Transport::Udp => {
+            let peer = addrs[0];
             let bind = if peer.is_ipv4() {
                 "0.0.0.0:0"
             } else {
                 "[::]:0"
             };
-            let sock = UdpSocket::bind(bind)
-                .await
-                .map_err(|e| format!("cannot bind UDP socket: {e}"))?;
+            let sock = UdpSocket::bind(bind).await.map_err(SyslogError::Bind)?;
             Ok(Conn::Udp { sock, peer })
         }
         Transport::Tcp => {
-            let stream = timeout(IO_TIMEOUT, TcpStream::connect(peer))
-                .await
-                .map_err(|_| format!("connect to {target} timed out"))?
-                .map_err(|e| format!("cannot connect to {target}: {e}"))?;
-            Ok(Conn::Tcp(stream))
+            // Try every resolved address (a dual-stack hostname may
+            // resolve v6-first on a v4-only deployment); keep the last
+            // error for the report.
+            let mut last: Option<SyslogError> = None;
+            for peer in addrs {
+                match timeout(IO_TIMEOUT, TcpStream::connect(peer)).await {
+                    Ok(Ok(stream)) => return Ok(Conn::Tcp(stream)),
+                    Ok(Err(e)) => {
+                        last = Some(SyslogError::Connect {
+                            target: target.clone(),
+                            source: e,
+                        });
+                    }
+                    Err(_) => {
+                        last = Some(SyslogError::ConnectTimeout {
+                            target: target.clone(),
+                        });
+                    }
+                }
+            }
+            // Non-empty addrs guarantees at least one attempt ran.
+            Err(last.unwrap_or(SyslogError::NoAddresses { target }))
         }
     }
 }
 
-async fn send_line(conn: &mut Conn, line: &str) -> Result<(), String> {
+async fn send_line(conn: &mut Conn, line: &str) -> Result<(), SyslogError> {
     match conn {
         Conn::Udp { sock, peer } => {
             timeout(IO_TIMEOUT, sock.send_to(line.as_bytes(), *peer))
                 .await
-                .map_err(|_| "UDP send timed out".to_string())?
-                .map_err(|e| format!("UDP send failed: {e}"))?;
+                .map_err(|_| SyslogError::SendTimeout { transport: "UDP" })?
+                .map_err(|e| SyslogError::Send {
+                    transport: "UDP",
+                    source: e,
+                })?;
         }
         Conn::Tcp(stream) => {
             // RFC 6587 non-transparent framing: LF-terminated records.
@@ -293,8 +340,11 @@ async fn send_line(conn: &mut Conn, line: &str) -> Result<(), String> {
             buf.push(b'\n');
             timeout(IO_TIMEOUT, stream.write_all(&buf))
                 .await
-                .map_err(|_| "TCP write timed out".to_string())?
-                .map_err(|e| format!("TCP write failed: {e}"))?;
+                .map_err(|_| SyslogError::SendTimeout { transport: "TCP" })?
+                .map_err(|e| SyslogError::Send {
+                    transport: "TCP",
+                    source: e,
+                })?;
         }
     }
     Ok(())
@@ -389,7 +439,7 @@ async fn writer_task(
                             was_failing = true;
                             tracing::warn!(error = %e, "remote syslog delivery failing; backing off");
                         }
-                        shared.stats.record_error(e);
+                        shared.stats.record_error(e.to_string());
                         retry_at = Some(Instant::now() + backoff);
                         backoff = (backoff * 2).min(BACKOFF_MAX);
                     }
@@ -524,8 +574,22 @@ mod tests {
         drop(listener);
 
         let cfg = cfg_to(port, Transport::Tcp);
-        let err = test_send(&cfg, "test message").await.unwrap_err();
+        let err = test_send(&cfg, "test message")
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("cannot connect"), "err: {err}");
+    }
+
+    #[test]
+    fn target_string_brackets_bare_ipv6() {
+        assert_eq!(target_string("2001:db8::1", 514), "[2001:db8::1]:514");
+        assert_eq!(target_string("[2001:db8::1]", 514), "[2001:db8::1]:514");
+        assert_eq!(target_string("192.0.2.1", 514), "192.0.2.1:514");
+        assert_eq!(
+            target_string("log.example.com", 6514),
+            "log.example.com:6514"
+        );
     }
 
     #[tokio::test]

@@ -66,7 +66,7 @@ pub async fn test_syslog(
         }),
         Err(e) => Json(TestResponse {
             ok: false,
-            message: e,
+            message: e.to_string(),
         }),
     }
 }
