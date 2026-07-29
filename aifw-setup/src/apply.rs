@@ -2666,16 +2666,18 @@ mod sudoers_tests {
     }
 
     /// The remote-syslog "stop storing logs locally" toggle stops/starts
-    /// `pflogd` through `aifw-sudo-service` (aifw_core::local_log). Guard
-    /// against the helper's allowlist dropping the service — sudo would
-    /// refuse and the toggle would silently stop working.
+    /// the pflog service through `aifw-sudo-service` (aifw_core::local_log).
+    /// Guard against the helper's allowlist dropping the service — sudo
+    /// would refuse and the toggle would silently stop working. NOTE the
+    /// rc.d script is named `pflog` (the daemon binary is pflogd; verified
+    /// on FreeBSD 15.1 — /etc/rc.d/pflogd does not exist).
     #[test]
-    fn service_helper_allows_pflogd() {
+    fn service_helper_allows_pflog() {
         let script = include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-service");
         assert!(
-            script.contains("pflogd)"),
-            "aifw-sudo-service allowlist must include pflogd for the \
-             remote-syslog disable_local toggle"
+            script.lines().any(|l| l.trim() == "pflog)"),
+            "aifw-sudo-service allowlist must include the pflog service for \
+             the remote-syslog disable_local toggle"
         );
     }
 
