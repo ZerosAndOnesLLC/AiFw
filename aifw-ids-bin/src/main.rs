@@ -113,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
     // by aifw-api today (PR 5 will move config knobs out of aifw-api).
     let alert_buffer = Arc::new(aifw_ids::output::memory::AlertBuffer::new(64, 86400));
     let engine = Arc::new(
-        IdsEngine::with_alert_buffer(pool, pf, Some(alert_buffer))
+        IdsEngine::with_alert_buffer(pool, pf, Some(alert_buffer), Some(syslog_mgr.handle()))
             .await
             .map_err(|e| anyhow::anyhow!("init engine: {e}"))?,
     );

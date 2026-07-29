@@ -10,7 +10,7 @@ pub mod memory;
 pub mod pipeline;
 /// SQLite alert sink — persistent storage powering the UI alert viewer
 pub mod sqlite;
-/// Syslog alert sink — RFC 5424 messages over UDP to a remote server
+/// Syslog alert sink — adapter over the shared `aifw_common::syslog` pipeline
 pub mod syslog;
 
 pub use pipeline::*;

@@ -367,7 +367,10 @@ pub struct IdsConfig {
     pub eve_log_enabled: bool,
     /// Path for the EVE JSON log; `None` = engine default
     pub eve_log_path: Option<String>,
-    /// Syslog host:port to forward alerts to; `None` = disabled
+    /// Deprecated no-op: alert forwarding now goes through the global
+    /// remote-syslog settings (`/api/v1/settings/syslog`, `ids_enabled`
+    /// category). This field was never wired to a sender; it is kept only
+    /// so old configs keep deserializing.
     pub syslog_target: Option<String>,
     /// Number of inspection worker threads; `None` = auto-sized
     pub worker_count: Option<u32>,

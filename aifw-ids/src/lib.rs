@@ -104,14 +104,19 @@ impl IdsEngine {
     /// When mode is `Disabled`, uses minimal allocations (small flow table, no channel).
     /// Full resources are allocated only when IDS/IPS mode is active.
     pub async fn new(pool: SqlitePool, pf: Arc<dyn PfBackend>) -> Result<Self> {
-        Self::with_alert_buffer(pool, pf, None).await
+        Self::with_alert_buffer(pool, pf, None, None).await
     }
 
-    /// Create with an optional in-memory alert buffer (replaces SQLite for alert storage).
+    /// Create with an optional in-memory alert buffer (replaces SQLite for
+    /// alert storage) and an optional remote-syslog handle. When a handle is
+    /// given, a syslog alert sink is registered unconditionally — it
+    /// self-gates on the `ids_enabled` category toggle per emit, so config
+    /// changes need no pipeline rebuild.
     pub async fn with_alert_buffer(
         pool: SqlitePool,
         pf: Arc<dyn PfBackend>,
         alert_buffer: Option<Arc<crate::output::memory::AlertBuffer>>,
+        syslog: Option<aifw_common::syslog::SyslogHandle>,
     ) -> Result<Self> {
         Self::migrate(&pool).await?;
 
@@ -163,6 +168,11 @@ impl IdsEngine {
             let mut pipeline = AlertPipeline::new(pool.clone());
             if let Some(buf) = alert_buffer.clone() {
                 pipeline.add_output(Box::new(crate::output::memory::MemoryOutput::new(buf)));
+            }
+            if let Some(handle) = syslog {
+                pipeline.add_output(Box::new(crate::output::syslog::SyslogAlertOutput::new(
+                    handle,
+                )));
             }
             pipeline
         });

@@ -89,6 +89,9 @@ pub struct UpdateConfigRequest {
     pub alert_retention_days: Option<u32>,
     pub eve_log_enabled: Option<bool>,
     pub eve_log_path: Option<String>,
+    /// Deprecated no-op — use the global `/api/v1/settings/syslog` config
+    /// (`ids_enabled` category) instead. Accepted and stored for backward
+    /// compatibility but nothing reads it.
     pub syslog_target: Option<String>,
     pub worker_count: Option<u32>,
     pub flow_table_size: Option<u32>,
