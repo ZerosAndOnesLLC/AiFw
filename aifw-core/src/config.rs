@@ -74,6 +74,11 @@ pub struct FirewallConfig {
     /// it to defaults.
     #[serde(default)]
     pub dns_resolver: Option<DnsResolverSection>,
+    /// Remote syslog forwarding settings (the `syslog_config` table).
+    /// `None` means the backup predates this section — restore leaves the
+    /// box's syslog config untouched rather than resetting it to defaults.
+    #[serde(default)]
+    pub syslog: Option<aifw_common::syslog::SyslogConfig>,
 }
 
 impl Default for FirewallConfig {
@@ -95,6 +100,7 @@ impl Default for FirewallConfig {
             aliases: Vec::new(),
             static_routes: Vec::new(),
             dns_resolver: None,
+            syslog: None,
         }
     }
 }
@@ -246,6 +252,9 @@ impl FirewallConfig {
             {
                 return Err("dns_resolver list length exceeds cap".to_string());
             }
+        }
+        if let Some(s) = &self.syslog {
+            s.validate().map_err(|e| format!("syslog: {e}"))?;
         }
         Ok(())
     }

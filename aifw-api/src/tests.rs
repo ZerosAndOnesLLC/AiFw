@@ -2398,6 +2398,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_restore_round_trips_syslog_config() {
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+
+        let syslog_cfg = aifw_common::syslog::SyslogConfig {
+            enabled: true,
+            host: "192.0.2.50".into(),
+            port: 5514,
+            transport: aifw_common::syslog::Transport::Tcp,
+            pf_enabled: true,
+            ..Default::default()
+        };
+        aifw_common::syslog::save(&state.pool, &syslog_cfg)
+            .await
+            .unwrap();
+
+        let config = crate::backup::build_current_config(&state).await.unwrap();
+        let exported = config.syslog.as_ref().expect("export must include syslog");
+        assert_eq!(exported.host, "192.0.2.50");
+        assert!(exported.pf_enabled);
+
+        // Simulate drift after the backup was taken.
+        aifw_common::syslog::save(&state.pool, &Default::default())
+            .await
+            .unwrap();
+
+        crate::backup::apply_firewall_config(&state, &config, &Default::default())
+            .await
+            .expect("restore must succeed");
+
+        let restored = aifw_common::syslog::load(&state.pool).await;
+        assert_eq!(restored, syslog_cfg, "restore must reinstate syslog config");
+        // The API process applied it immediately.
+        assert_eq!(*state.syslog.current(), syslog_cfg);
+    }
+
+    #[tokio::test]
     async fn test_restore_without_resolver_section_leaves_config_untouched() {
         // A pre-#589 backup has no dns_resolver section — restoring it must
         // not reset the box's resolver config to defaults.
