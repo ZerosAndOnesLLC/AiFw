@@ -26,6 +26,11 @@ case "$SERVICE" in
         ;;
     unbound|local_unbound|sshd|strongswan)
         ;;
+    pflogd)
+        # Remote-syslog "stop storing logs locally": pflogd (the
+        # /var/log/pflog writer) is stopped/started while the pflog0
+        # interface stays up for live capture + forwarding.
+        ;;
     *)
         echo "aifw-sudo-service: service not in allowlist: $SERVICE" >&2
         exit 1

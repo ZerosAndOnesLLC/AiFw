@@ -2665,6 +2665,20 @@ mod sudoers_tests {
         );
     }
 
+    /// The remote-syslog "stop storing logs locally" toggle stops/starts
+    /// `pflogd` through `aifw-sudo-service` (aifw_core::local_log). Guard
+    /// against the helper's allowlist dropping the service — sudo would
+    /// refuse and the toggle would silently stop working.
+    #[test]
+    fn service_helper_allows_pflogd() {
+        let script = include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-service");
+        assert!(
+            script.contains("pflogd)"),
+            "aifw-sudo-service allowlist must include pflogd for the \
+             remote-syslog disable_local toggle"
+        );
+    }
+
     /// Structural-validity check on the sudoers content. We can't run
     /// `visudo -cf` from a Linux dev box, but we can enforce that every
     /// non-empty, non-comment line is a well-formed `aifw ALL=(<runas>)

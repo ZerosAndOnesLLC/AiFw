@@ -63,7 +63,13 @@ async fn main() -> anyhow::Result<()> {
         let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&args.log_level));
         tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_filter(env_filter)
+                    .with_filter(aifw_common::syslog::LocalStorageGate::new(
+                        syslog_mgr.handle(),
+                    )),
+            )
             .with(aifw_common::syslog::SyslogLayer::new(
                 syslog_mgr.handle(),
                 "aifw-ids",

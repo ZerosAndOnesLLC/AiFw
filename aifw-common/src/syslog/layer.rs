@@ -65,6 +65,32 @@ impl<S: Subscriber> Layer<S> for SyslogLayer {
     }
 }
 
+/// Per-event filter for the stdout `fmt` layer implementing the
+/// "stop storing logs locally" toggle for app logs.
+///
+/// The appliance's `/var/log/aifw/*.log` files are `daemon(8)` stdout
+/// redirects, so silencing stdout stops file growth with no rc.d changes or
+/// service restarts. The gate closes only while remote forwarding is on,
+/// `disable_local` is set, AND app-log forwarding is enabled — app logs are
+/// never dropped from both destinations at once.
+pub struct LocalStorageGate {
+    handle: SyslogHandle,
+}
+
+impl LocalStorageGate {
+    /// Wrap a handle from the process's `SyslogManager`.
+    pub fn new(handle: SyslogHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl<S: Subscriber> tracing_subscriber::layer::Filter<S> for LocalStorageGate {
+    fn enabled(&self, _meta: &tracing::Metadata<'_>, _cx: &Context<'_, S>) -> bool {
+        let cfg = self.handle.config();
+        !(cfg.enabled && cfg.disable_local && cfg.app_enabled)
+    }
+}
+
 /// Collects the `message` field and renders the rest as `key=value` pairs.
 #[derive(Default)]
 struct MsgVisitor {
@@ -140,6 +166,64 @@ mod tests {
             Ok(Ok((n, _))) => Some(String::from_utf8_lossy(&buf[..n]).into_owned()),
             _ => None,
         }
+    }
+
+    #[tokio::test]
+    async fn local_storage_gate_silences_layer_only_when_forwarding() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::Layer as _;
+
+        struct CountLayer(Arc<AtomicUsize>);
+        impl<S: Subscriber> tracing_subscriber::layer::Layer<S> for CountLayer {
+            fn on_event(&self, _e: &Event<'_>, _c: Context<'_, S>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let mgr = SyslogManager::start();
+        let count = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry()
+            .with(CountLayer(count.clone()).with_filter(LocalStorageGate::new(mgr.handle())));
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        // Gate closed: forwarding on + disable_local + app category on.
+        mgr.apply(SyslogConfig {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            disable_local: true,
+            app_enabled: true,
+            ..Default::default()
+        });
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "test_app", "must be silenced");
+        });
+        assert_eq!(count.load(Ordering::Relaxed), 0, "gate should silence");
+
+        // disable_local off → gate open again.
+        mgr.apply(SyslogConfig {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            app_enabled: true,
+            ..Default::default()
+        });
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "test_app", "must pass");
+        });
+        assert_eq!(count.load(Ordering::Relaxed), 1, "gate should open");
+
+        // app forwarding off → never silence (logs must go somewhere).
+        mgr.apply(SyslogConfig {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            disable_local: true,
+            app_enabled: false,
+            ..Default::default()
+        });
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "test_app", "must also pass");
+        });
+        assert_eq!(count.load(Ordering::Relaxed), 2, "no forwarding, no gate");
     }
 
     #[tokio::test]

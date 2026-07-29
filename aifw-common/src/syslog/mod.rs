@@ -24,4 +24,4 @@ pub use config::{
     migrate, save, save_on,
 };
 pub use format::{SyslogRecord, format_message, priority};
-pub use layer::SyslogLayer;
+pub use layer::{LocalStorageGate, SyslogLayer};

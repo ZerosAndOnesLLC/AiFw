@@ -2285,9 +2285,11 @@ pub(crate) async fn apply_firewall_config(
     // service may be absent (dev hosts); the DB rows are authoritative and
     // switch_backend probes + auto-rolls-back on a failed start.
     // Remote syslog: the rows are already committed; apply in this process
-    // immediately (daemon/IDS pick it up via their 60s pollers).
+    // immediately (daemon/IDS pick it up via their 60s pollers) and
+    // reconcile the pflogd local-storage policy.
     if let Some(syslog_cfg) = &config.syslog {
         state.syslog.apply(syslog_cfg.clone());
+        aifw_core::local_log::apply_local_log_policy(syslog_cfg).await;
     }
 
     if let Some(resolver) = &config.dns_resolver {

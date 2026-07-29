@@ -68,7 +68,13 @@ async fn main() -> anyhow::Result<()> {
         let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| args.log_level.parse().unwrap_or_default());
         tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_filter(env_filter)
+                    .with_filter(aifw_common::syslog::LocalStorageGate::new(
+                        syslog_mgr.handle(),
+                    )),
+            )
             .with(aifw_common::syslog::SyslogLayer::new(
                 syslog_mgr.handle(),
                 "aifw-daemon",
@@ -91,6 +97,26 @@ async fn main() -> anyhow::Result<()> {
     aifw_common::syslog::migrate(&pool).await?;
     syslog_mgr.apply(aifw_common::syslog::load(&pool).await);
     aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone());
+
+    // Reconcile the pf local-log policy (pflogd on/off for disable_local):
+    // once at boot, then whenever the polled config flips the policy. This
+    // covers CLI DB edits and recovers state after crashes; the API also
+    // applies immediately on settings PUT for snappy UX.
+    {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let mut last_applied: Option<bool> = None;
+            loop {
+                let cfg = aifw_common::syslog::load(&pool).await;
+                let want = aifw_core::local_log::local_pf_log_disabled(&cfg);
+                if last_applied != Some(want) {
+                    aifw_core::local_log::apply_local_log_policy(&cfg).await;
+                    last_applied = Some(want);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        });
+    }
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
     let engine =
         Arc::new(RuleEngine::new(pool.clone(), pf.clone()).with_anchor(args.anchor.clone()));
