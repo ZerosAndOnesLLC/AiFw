@@ -303,20 +303,35 @@ async fn send_line(conn: &mut Conn, line: &str) -> Result<(), String> {
 async fn writer_task(
     shared: Arc<Shared>,
     mut rx: mpsc::Receiver<SyslogRecord>,
-    mut reload: watch::Receiver<u64>,
+    reload: watch::Receiver<u64>,
 ) {
-    let mut conn: Option<Conn> = None;
+    // The connection is tagged with the config Arc it was opened for; a
+    // pointer comparison per message replaces "drop the connection on every
+    // reload notification", which tore down healthy connections when the
+    // notification raced with already-processed messages.
+    let mut conn: Option<(Conn, Arc<SyslogConfig>)> = None;
     let mut backoff = BACKOFF_MIN;
     let mut retry_at: Option<Instant> = None;
     let mut was_failing = false;
+    // None once the manager is dropped: keep draining messages from
+    // still-live handles instead of exiting with queued records unsent.
+    let mut reload = Some(reload);
 
     loop {
         tokio::select! {
-            changed = reload.changed() => {
-                if changed.is_err() {
-                    return; // manager dropped
+            changed = async {
+                match reload.as_mut() {
+                    Some(r) => r.changed().await,
+                    None => std::future::pending().await,
                 }
-                conn = None;
+            } => {
+                if changed.is_err() {
+                    reload = None; // manager dropped; drain remaining messages
+                    continue;
+                }
+                // A config change ends any backoff immediately; the stale
+                // connection (if the config really changed) is detected by
+                // the per-message pointer check below.
                 backoff = BACKOFF_MIN;
                 retry_at = None;
             }
@@ -334,14 +349,21 @@ async fn writer_task(
                     shared.stats.dropped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
+                // Reconnect when the config this connection was opened for
+                // is no longer current.
+                if let Some((_, conn_cfg)) = &conn
+                    && !Arc::ptr_eq(conn_cfg, &cfg)
+                {
+                    conn = None;
+                }
                 let line = format_message(&cfg, shared.hostname_for(&cfg), &rec);
                 let result = match &mut conn {
-                    Some(c) => send_line(c, &line).await,
+                    Some((c, _)) => send_line(c, &line).await,
                     None => match open_conn(&cfg).await {
                         Ok(mut c) => {
                             let r = send_line(&mut c, &line).await;
                             if r.is_ok() {
-                                conn = Some(c);
+                                conn = Some((c, cfg.clone()));
                             }
                             r
                         }

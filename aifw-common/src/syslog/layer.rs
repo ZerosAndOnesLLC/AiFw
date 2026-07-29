@@ -112,6 +112,10 @@ mod tests {
     use tokio::time::timeout;
     use tracing_subscriber::layer::SubscriberExt;
 
+    // Note: the SyslogManager is dropped inside setup(); only the handle
+    // embedded in the layer keeps the pipeline alive. This doubles as a
+    // regression test for the writer task surviving a manager drop with
+    // queued messages still to deliver.
     async fn setup(min_level: &str) -> (UdpSocket, tracing::Dispatch) {
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = server.local_addr().unwrap().port();
