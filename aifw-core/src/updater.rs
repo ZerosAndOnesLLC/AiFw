@@ -1777,6 +1777,10 @@ mod tests {
             helper.contains("reset)"),
             "helper lost its reset action — clean retry depends on it (#636)"
         );
+        assert!(
+            helper.contains("repair-base)"),
+            "helper lost its repair-base action — stripped appliances can't upgrade without it (#641)"
+        );
     }
 
     // #636: the canary check must flag missing/empty essentials and pass

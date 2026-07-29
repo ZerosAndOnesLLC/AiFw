@@ -107,6 +107,36 @@ case "$ACTION" in
         yes | env PAGER=cat EDITOR=true /usr/sbin/freebsd-update \
             --currently-running "$CUR-RELEASE" -r "$REL" upgrade
         ;;
+    repair-base)
+        # Restore base files that stripped ISO installs are missing (#641).
+        # freebsd-update's component detection samples those files; without
+        # them it decides world/base isn't installed and release upgrades
+        # silently touch only the kernel. Files come from the RUNNING
+        # userland release's own base.txz on FreeBSD's mirror — nothing of
+        # ours. Idempotent; extraction of paths absent from an archive is
+        # tolerated (base contents drift between releases).
+        if [ $# -ne 0 ]; then
+            echo "aifw-sudo-freebsd-update: 'repair-base' takes no extra args" >&2
+            exit 1
+        fi
+        REL="$(/bin/freebsd-version -u 2>/dev/null | sed 's/-.*//')"
+        REL="${REL:-$(uname -r | sed 's/-.*//')}"
+        case "$REL" in
+            [0-9].[0-9]|[0-9].[0-9][0-9]|[0-9][0-9].[0-9]|[0-9][0-9].[0-9][0-9]) ;;
+            *) echo "aifw-sudo-freebsd-update: cannot determine release" >&2; exit 1 ;;
+        esac
+        ARCH="$(uname -m)"
+        TARBALL="/tmp/aifw-base-repair.txz"
+        fetch -o "$TARBALL" "https://download.freebsd.org/releases/${ARCH}/${REL}-RELEASE/base.txz"
+        for p in rescue usr/share/man usr/share/doc usr/share/examples \
+                 usr/share/games usr/share/calendar usr/share/dict \
+                 usr/share/openssl var/db/etcupdate; do
+            tar -xf "$TARBALL" -C / "$p" 2>/dev/null || \
+                tar -xf "$TARBALL" -C / "./$p" 2>/dev/null || true
+        done
+        rm -f "$TARBALL"
+        echo "base repair complete for ${REL}-RELEASE"
+        ;;
     reset)
         # Clean-slate recovery (#636): freebsd-update's state directory is
         # its only memory, and a corrupted one (interleaved operations,

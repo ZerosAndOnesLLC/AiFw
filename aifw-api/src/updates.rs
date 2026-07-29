@@ -571,6 +571,63 @@ pub async fn start_os_upgrade(
 
     let pool = state.pool.clone();
     tokio::spawn(async move {
+        // #641 pre-flight: stripped ISO installs are missing base files
+        // that freebsd-update's component detection samples — without
+        // them it decides world/base isn't installed and upgrades ONLY
+        // the kernel, silently. Restore them from the running release's
+        // own base.txz first. Markers cover the two biggest stripped
+        // trees; the repair itself is idempotent.
+        let base_stripped =
+            !updater::missing_canaries(&["/rescue/sh", "/usr/share/man/man1/ls.1.gz"]).is_empty();
+        if base_stripped {
+            set_os_upgrade_phase(
+                &pool,
+                &mut job,
+                "fetching",
+                "restoring base system files stripped by the installer (one-time, ~160 MB)".into(),
+            )
+            .await;
+            match aifw_core::sudo::freebsd_update_repair_base().await {
+                Ok(o) if o.status.success() => {
+                    log_update(&pool, "os_upgrade", "base repair complete", "running").await;
+                }
+                Ok(o) => {
+                    let tail = output_tail(&o);
+                    set_os_upgrade_phase(
+                        &pool,
+                        &mut job,
+                        "failed",
+                        format!("base repair failed: {tail}"),
+                    )
+                    .await;
+                    log_update(
+                        &pool,
+                        "os_upgrade",
+                        &format!("base repair failed: {tail}"),
+                        "failed",
+                    )
+                    .await;
+                    return;
+                }
+                Err(e) => {
+                    set_os_upgrade_phase(
+                        &pool,
+                        &mut job,
+                        "failed",
+                        format!("base repair failed: {e}"),
+                    )
+                    .await;
+                    log_update(
+                        &pool,
+                        "os_upgrade",
+                        &format!("base repair failed: {e}"),
+                        "failed",
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
         // #636: every upgrade run starts from a pristine state directory.
         // freebsd-update's state is its only memory and a stale or
         // corrupted one (a previous interrupted run, interleaved patch
