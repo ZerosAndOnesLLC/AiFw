@@ -21,13 +21,15 @@ export interface SyslogConfig {
   disable_local: boolean;
 }
 
-/** Delivery counters for the API process. */
-export interface SyslogStatus {
+/** Delivery counters for one AiFw process (aifw-api / aifw-daemon / aifw-ids). */
+export interface SyslogProcessStatus {
+  process: string;
   sent: number;
   dropped: number;
   errors: number;
   connected: boolean;
   last_error: string | null;
+  updated_at: string;
 }
 
 export interface SyslogTestResult {
@@ -74,6 +76,6 @@ export function testSyslog(cfg: SyslogConfig): Promise<SyslogTestResult> {
   return api.post<SyslogTestResult>("/api/v1/settings/syslog/test", cfg);
 }
 
-export function getSyslogStatus(): Promise<SyslogStatus> {
-  return api.get<SyslogStatus>("/api/v1/settings/syslog/status");
+export function getSyslogStatus(): Promise<SyslogProcessStatus[]> {
+  return api.get<SyslogProcessStatus[]>("/api/v1/settings/syslog/status");
 }

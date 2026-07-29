@@ -3340,14 +3340,30 @@ mod tests {
             "got: {text}"
         );
 
-        // Status endpoint responds with counters
+        // Status endpoint responds with per-process counters; the API
+        // process's live row is always present.
         let resp = server
             .get("/api/v1/settings/syslog/status")
             .authorization_bearer(&token)
             .await;
         resp.assert_status_ok();
         let body: Value = resp.json();
-        assert!(body["sent"].is_u64());
-        assert!(body["dropped"].is_u64());
+        let rows = body.as_array().expect("status is a per-process array");
+        let api_row = rows
+            .iter()
+            .find(|r| r["process"] == "aifw-api")
+            .expect("aifw-api row present");
+        assert!(api_row["sent"].is_u64());
+        assert!(api_row["dropped"].is_u64());
+
+        // Test endpoint without a body falls back to the saved config —
+        // nothing saved yet, so it reports a clean failure, not a 4xx.
+        let resp = server
+            .post("/api/v1/settings/syslog/test")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["ok"], false);
     }
 }

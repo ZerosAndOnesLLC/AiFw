@@ -899,7 +899,7 @@ async fn create_state_from_db(
     // Apply persisted remote-syslog settings and watch for out-of-process
     // edits (the CLI writes SQLite directly).
     syslog_mgr.apply(aifw_common::syslog::load(&pool).await);
-    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone());
+    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone(), "aifw-api");
 
     // Read aifw_cluster_enabled once at startup. The flag only changes on
     // config writes, so a cached value is always correct for the process lifetime.

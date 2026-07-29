@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("syslog migrate: {e}"))?;
     syslog_mgr.apply(aifw_common::syslog::load(&pool).await);
-    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone());
+    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone(), "aifw-ids");
 
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
 

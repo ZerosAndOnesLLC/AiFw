@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     // migrate is idempotent. Config refreshes via the shared 60s poller.
     aifw_common::syslog::migrate(&pool).await?;
     syslog_mgr.apply(aifw_common::syslog::load(&pool).await);
-    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone());
+    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone(), "aifw-daemon");
 
     // Reconcile the pf local-log policy (pflogd on/off for disable_local):
     // once at boot, on every polled policy change, again after a failed

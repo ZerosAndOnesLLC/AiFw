@@ -192,9 +192,97 @@ impl SyslogHandle {
     }
 }
 
+/// One process's persisted delivery counters (`syslog_stats` row).
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessSyslogStats {
+    /// Reporting process (`aifw-api` / `aifw-daemon` / `aifw-ids`)
+    pub process: String,
+    /// Messages successfully handed to the transport
+    pub sent: u64,
+    /// Messages dropped (queue full or target in backoff)
+    pub dropped: u64,
+    /// Send/connect failures
+    pub errors: u64,
+    /// Whether the last send succeeded / stream is up
+    pub connected: bool,
+    /// Most recent transport error, if any
+    pub last_error: Option<String>,
+    /// UTC `datetime('now')` of the last refresh
+    pub updated_at: String,
+}
+
+impl ProcessSyslogStats {
+    /// Build a row from a live snapshot (used for the calling process,
+    /// which is fresher than its persisted row).
+    pub fn from_snapshot(process: &str, snap: &SyslogStatsSnapshot) -> Self {
+        Self {
+            process: process.to_string(),
+            sent: snap.sent,
+            dropped: snap.dropped,
+            errors: snap.errors,
+            connected: snap.connected,
+            last_error: snap.last_error.clone(),
+            updated_at: Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        }
+    }
+}
+
+/// Persist a process's delivery counters for cross-process status views.
+pub async fn write_stats(
+    pool: &SqlitePool,
+    process: &str,
+    snap: &SyslogStatsSnapshot,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"INSERT INTO syslog_stats (process, sent, dropped, errors, connected, last_error, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+           ON CONFLICT(process) DO UPDATE SET
+             sent = excluded.sent, dropped = excluded.dropped,
+             errors = excluded.errors, connected = excluded.connected,
+             last_error = excluded.last_error, updated_at = excluded.updated_at"#,
+    )
+    .bind(process)
+    .bind(snap.sent as i64)
+    .bind(snap.dropped as i64)
+    .bind(snap.errors as i64)
+    .bind(snap.connected as i64)
+    .bind(&snap.last_error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Read every process's persisted delivery counters.
+pub async fn read_stats(pool: &SqlitePool) -> Result<Vec<ProcessSyslogStats>, sqlx::Error> {
+    type Row = (String, i64, i64, i64, i64, Option<String>, String);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT process, sent, dropped, errors, connected, last_error, updated_at
+           FROM syslog_stats ORDER BY process",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(process, sent, dropped, errors, connected, last_error, updated_at)| {
+                ProcessSyslogStats {
+                    process,
+                    sent: sent as u64,
+                    dropped: dropped as u64,
+                    errors: errors as u64,
+                    connected: connected != 0,
+                    last_error,
+                    updated_at,
+                }
+            },
+        )
+        .collect())
+}
+
 /// Re-read the config from the DB every 60s and apply changes (covers edits
-/// made by other processes, e.g. the CLI writing SQLite directly).
-pub fn spawn_config_poller(pool: SqlitePool, mgr: Arc<SyslogManager>) {
+/// made by other processes, e.g. the CLI writing SQLite directly), and
+/// persist this process's delivery counters for cross-process status.
+pub fn spawn_config_poller(pool: SqlitePool, mgr: Arc<SyslogManager>, process: &'static str) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
@@ -206,6 +294,9 @@ pub fn spawn_config_poller(pool: SqlitePool, mgr: Arc<SyslogManager>) {
                 Err(e) => {
                     tracing::warn!(error = %e, "syslog config poll failed; keeping current config");
                 }
+            }
+            if let Err(e) = write_stats(&pool, process, &mgr.stats()).await {
+                tracing::debug!(error = %e, "failed to persist syslog delivery stats");
             }
         }
     });

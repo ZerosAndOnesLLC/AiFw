@@ -18,7 +18,8 @@ mod format;
 mod layer;
 
 pub use client::{
-    SyslogHandle, SyslogManager, SyslogStats, SyslogStatsSnapshot, spawn_config_poller, test_send,
+    ProcessSyslogStats, SyslogHandle, SyslogManager, SyslogStats, SyslogStatsSnapshot, read_stats,
+    spawn_config_poller, test_send, write_stats,
 };
 pub use config::{
     Category, SyslogConfig, SyslogFormat, Transport, facility_from_name, facility_name, load,

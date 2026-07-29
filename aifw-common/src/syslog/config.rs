@@ -244,6 +244,22 @@ pub async fn migrate(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query("INSERT OR IGNORE INTO syslog_config (id) VALUES (1)")
         .execute(pool)
         .await?;
+    // Per-process delivery counters, refreshed by each process's config
+    // poller so the UI can show daemon/IDS delivery health, not just the
+    // API process's.
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS syslog_stats (
+            process    TEXT PRIMARY KEY,
+            sent       INTEGER NOT NULL DEFAULT 0,
+            dropped    INTEGER NOT NULL DEFAULT 0,
+            errors     INTEGER NOT NULL DEFAULT 0,
+            connected  INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )"#,
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

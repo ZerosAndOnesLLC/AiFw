@@ -45,12 +45,13 @@ pub struct TestResponse {
 
 /// `POST /api/v1/settings/syslog/test` — send one test message. An unsaved
 /// draft config in the body wins over the stored one so the UI can test
-/// before saving; with no/empty body the saved config is used.
+/// before saving; with no body, an empty body, or JSON `null` the saved
+/// config is used (the outer `Option` absorbs the missing-body rejection).
 pub async fn test_syslog(
     State(state): State<AppState>,
-    Json(req): Json<Option<sys::SyslogConfig>>,
+    body: Option<Json<Option<sys::SyslogConfig>>>,
 ) -> Json<TestResponse> {
-    let cfg = match req {
+    let cfg = match body.and_then(|Json(b)| b) {
         Some(c) if !c.host.trim().is_empty() => c,
         _ => sys::load(&state.pool).await,
     };
@@ -71,8 +72,20 @@ pub async fn test_syslog(
     }
 }
 
-/// `GET /api/v1/settings/syslog/status` — delivery counters for the API
-/// process (pf logs and API app logs; daemon/IDS forward independently).
-pub async fn syslog_status(State(state): State<AppState>) -> Json<sys::SyslogStatsSnapshot> {
-    Json(state.syslog.stats())
+/// `GET /api/v1/settings/syslog/status` — delivery counters per AiFw
+/// process. Rows for aifw-daemon / aifw-ids come from the `syslog_stats`
+/// table (refreshed by their 60s pollers); the API process's row is its
+/// live in-memory snapshot.
+pub async fn syslog_status(State(state): State<AppState>) -> Json<Vec<sys::ProcessSyslogStats>> {
+    let mut rows = sys::read_stats(&state.pool).await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to read persisted syslog stats");
+        Vec::new()
+    });
+    rows.retain(|r| r.process != "aifw-api");
+    rows.push(sys::ProcessSyslogStats::from_snapshot(
+        "aifw-api",
+        &state.syslog.stats(),
+    ));
+    rows.sort_by(|a, b| a.process.cmp(&b.process));
+    Json(rows)
 }

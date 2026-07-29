@@ -7,7 +7,7 @@ import {
   SyslogAppLevel,
   SyslogConfig,
   SyslogFormat,
-  SyslogStatus,
+  SyslogProcessStatus,
   SyslogTransport,
 } from "@/lib/api/syslog";
 import { FeedbackBanner } from "./FeedbackBanner";
@@ -17,7 +17,7 @@ export interface SyslogSectionProps {
   visible: boolean;
   config: SyslogConfig;
   setConfig: Dispatch<SetStateAction<SyslogConfig>>;
-  status: SyslogStatus | null;
+  status: SyslogProcessStatus[] | null;
   refreshStatus: () => void;
   loading: boolean;
   saving: boolean;
@@ -109,8 +109,10 @@ export function SyslogSection({
               type="number"
               min={1}
               max={65535}
-              value={config.port}
-              onChange={(e) => set({ port: Number(e.target.value) || 514 })}
+              value={config.port === 0 ? "" : config.port}
+              onChange={(e) =>
+                set({ port: e.target.value === "" ? 0 : Number(e.target.value) || 0 })
+              }
               className={inputCls}
               disabled={loading}
             />
@@ -209,26 +211,36 @@ export function SyslogSection({
           />
         </div>
 
-        {status && (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--text-muted)] bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2">
-            <span className="font-medium text-[var(--text-primary)]">Delivery (API process):</span>
-            <span>sent {status.sent}</span>
-            <span>dropped {status.dropped}</span>
-            <span>errors {status.errors}</span>
-            <span className={status.connected ? "text-green-400" : "text-[var(--text-muted)]"}>
-              {status.connected ? "connected" : "not connected"}
-            </span>
-            {status.last_error && (
-              <span className="text-red-400 truncate max-w-full" title={status.last_error}>
-                last error: {status.last_error}
-              </span>
-            )}
-            <button
-              onClick={refreshStatus}
-              className="ml-auto text-[var(--accent)] hover:underline"
-            >
-              Refresh
-            </button>
+        {status && status.length > 0 && (
+          <div className="space-y-1 text-xs text-[var(--text-muted)] bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2">
+            <div className="flex items-center">
+              <span className="font-medium text-[var(--text-primary)]">Delivery by process</span>
+              <button
+                onClick={refreshStatus}
+                className="ml-auto text-[var(--accent)] hover:underline"
+              >
+                Refresh
+              </button>
+            </div>
+            {status.map((p) => (
+              <div key={p.process} className="flex flex-wrap items-center gap-x-4 gap-y-0.5">
+                <span className="w-28 font-mono text-[var(--text-primary)]">{p.process}</span>
+                <span>sent {p.sent}</span>
+                <span>dropped {p.dropped}</span>
+                <span>errors {p.errors}</span>
+                <span className={p.connected ? "text-green-400" : "text-[var(--text-muted)]"}>
+                  {p.connected ? "connected" : "not connected"}
+                </span>
+                {p.last_error && (
+                  <span className="text-red-400 truncate max-w-full" title={p.last_error}>
+                    last error: {p.last_error}
+                  </span>
+                )}
+              </div>
+            ))}
+            <p className="text-[10px] text-[var(--text-muted)]">
+              Daemon/IDS rows refresh on their 60s poll; the API row is live.
+            </p>
           </div>
         )}
 

@@ -12,7 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Feedback, FeedbackType, useFeedback } from "@/hooks/useFeedback";
 import {
   SyslogConfig,
-  SyslogStatus,
+  SyslogProcessStatus,
   defaultSyslogConfig,
   getSyslogConfig,
   getSyslogStatus,
@@ -1126,7 +1126,7 @@ export function useSystemActions() {
 
 export function useSyslogSettings() {
   const [config, setConfig] = useState<SyslogConfig>(defaultSyslogConfig);
-  const [status, setStatus] = useState<SyslogStatus | null>(null);
+  const [status, setStatus] = useState<SyslogProcessStatus[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);

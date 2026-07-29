@@ -467,7 +467,7 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 | `GET`,&nbsp;`PUT` | `/api/v1/settings/ids-alerts` | IDS alert ring / retention |
 | `GET`,&nbsp;`PUT` | `/api/v1/settings/syslog` | Remote syslog forwarding (server, transport, format, categories) |
 | `POST` | `/api/v1/settings/syslog/test` | Send one test message (body = draft config, optional) |
-| `GET` | `/api/v1/settings/syslog/status` | Delivery counters for the API process |
+| `GET` | `/api/v1/settings/syslog/status` | Delivery counters per AiFw process (API row live, daemon/IDS refreshed on their 60s poll) |
 | `GET`,&nbsp;`PUT` | `/api/v1/settings/{section}` | Generic key/value settings store |
 | `GET`,&nbsp;`PUT` | `/api/v1/notify/smtp/config` | SMTP notification settings |
 | `POST` | `/api/v1/notify/smtp/test` | Send a test email |
