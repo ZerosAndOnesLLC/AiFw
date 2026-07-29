@@ -28,7 +28,7 @@ pub async fn put_syslog_config(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.syslog.apply(cfg.clone());
-    // Reconcile pflogd with disable_local right away (best-effort; the
+    // Reconcile the pflog service with disable_local right away (best-effort; the
     // daemon also reconciles on its 60s poll). Off the request path.
     tokio::spawn(async move {
         aifw_core::local_log::apply_local_log_policy(&cfg).await;

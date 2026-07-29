@@ -1,7 +1,8 @@
 //! Local log storage policy for the remote-syslog `disable_local` toggle.
 //!
 //! When "stop storing logs locally" is active alongside remote forwarding,
-//! the pf packet-log file writer (`pflogd`) is stopped while the `pflog0`
+//! the pf packet-log file writer (`pflogd`, rc service name `pflog`) is
+//! stopped while the `pflog0`
 //! interface is kept up, so live capture (Blocked page) and remote
 //! forwarding keep working. Re-enabling local storage restarts `pflogd`.
 //!
@@ -40,7 +41,7 @@ pub async fn apply_local_log_policy(cfg: &SyslogConfig) -> bool {
     if local_pf_log_disabled(cfg) {
         // Stop the file writer. "not running" is a normal outcome for an
         // idempotent reconcile, so only log other failures.
-        match sudo::service("pflogd", "onestop").await {
+        match sudo::service("pflog", "onestop").await {
             Ok(out) if !out.status.success() => {
                 let err = String::from_utf8_lossy(&out.stderr);
                 if !err.contains("not running") {
@@ -49,7 +50,7 @@ pub async fn apply_local_log_policy(cfg: &SyslogConfig) -> bool {
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "failed to run service pflogd onestop");
+                tracing::warn!(error = %e, "failed to run service pflog onestop");
                 ok = false;
             }
             _ => tracing::info!("pflogd stopped (local pf log storage disabled)"),
@@ -87,7 +88,7 @@ pub async fn apply_local_log_policy(cfg: &SyslogConfig) -> bool {
     } else {
         // Restore the normal file writer. "already running" is the normal
         // idempotent outcome.
-        match sudo::service("pflogd", "onestart").await {
+        match sudo::service("pflog", "onestart").await {
             Ok(out) if !out.status.success() => {
                 let err = String::from_utf8_lossy(&out.stderr);
                 if !err.contains("already running") {
@@ -96,7 +97,7 @@ pub async fn apply_local_log_policy(cfg: &SyslogConfig) -> bool {
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "failed to run service pflogd onestart");
+                tracing::warn!(error = %e, "failed to run service pflog onestart");
                 ok = false;
             }
             _ => {}
