@@ -80,26 +80,15 @@ echo "[3/9] Extracting base system..."
 tar -xf "${DISTDIR}/base.txz" -C "$STAGEDIR"
 tar -xf "${DISTDIR}/kernel.txz" -C "$STAGEDIR"
 
-# --- Strip unnecessary components (file deletions only, no binary stripping) ---
-echo "[4/9] Stripping unnecessary components..."
-rm -rf "$STAGEDIR/usr/share/doc"
-rm -rf "$STAGEDIR/usr/share/examples"
-rm -rf "$STAGEDIR/usr/share/games"
-rm -rf "$STAGEDIR/usr/share/man"
-rm -rf "$STAGEDIR/usr/share/info"
-rm -rf "$STAGEDIR/usr/lib/debug"
-rm -rf "$STAGEDIR/usr/tests"
-rm -rf "$STAGEDIR/usr/share/calendar"
-rm -rf "$STAGEDIR/usr/share/dict"
-rm -rf "$STAGEDIR/usr/share/groff_font"
-rm -rf "$STAGEDIR/usr/share/me"
-rm -rf "$STAGEDIR/usr/share/openssl"
-rm -rf "$STAGEDIR/rescue"
-rm -rf "$STAGEDIR/usr/lib32"
-rm -rf "$STAGEDIR/var/db/etcupdate"
-echo "  Stripped size: $(du -sm "$STAGEDIR" | awk '{print $1}')MB"
-
-echo "  Stripped size: $(du -sh "$STAGEDIR" | awk '{print $1}')"
+# --- Base system ships COMPLETE (#641) ---
+# We used to strip ~43MB of base files (man pages, /rescue, docs) here.
+# freebsd-update's component detection samples exactly those files, so
+# every stripped appliance was silently judged to have no world/base
+# installed and release upgrades only ever touched the kernel. The
+# savings were ~15MB of compressed ISO; the cost was a broken OS upgrade
+# path on every deployed box. Never strip base files again.
+echo "[4/9] Base system kept complete (freebsd-update needs it, #641)"
+echo "  Base size: $(du -sh "$STAGEDIR" | awk '{print $1}')"
 
 # --- Install packages into staging via chroot ---
 echo "[5/9] Installing packages..."

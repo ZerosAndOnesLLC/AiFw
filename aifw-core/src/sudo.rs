@@ -203,6 +203,17 @@ pub async fn freebsd_update_upgrade(release: &str) -> std::io::Result<std::proce
         .await
 }
 
+/// Restore base files a stripped ISO install is missing, from the running
+/// release's own base.txz on FreeBSD's mirror (#641). Without them,
+/// freebsd-update's component detection judges world/base "not installed"
+/// and release upgrades silently touch only the kernel.
+pub async fn freebsd_update_repair_base() -> std::io::Result<std::process::Output> {
+    Command::new(SUDO)
+        .args([HELPER_FREEBSD_UPDATE, "repair-base"])
+        .output()
+        .await
+}
+
 /// Wipe freebsd-update's state directory via the helper (#636). Always
 /// safe — fetch/upgrade rebuild it from the mirrors — and the universal
 /// recovery from a corrupted state (interleaved runs, interrupted
