@@ -11,7 +11,6 @@ interface IdsConfig {
   alert_retention_days: number;
   eve_log_enabled: boolean;
   eve_log_path: string;
-  syslog_target: string;
   worker_count: number | null;
   flow_table_size: number | null;
   stream_depth: number | null;
@@ -53,7 +52,6 @@ export default function IdsSettingsPage() {
     alert_retention_days: 7,
     eve_log_enabled: false,
     eve_log_path: "/var/log/aifw/eve.json",
-    syslog_target: "",
     worker_count: null,
     flow_table_size: null,
     stream_depth: null,
@@ -86,7 +84,6 @@ export default function IdsSettingsPage() {
         alert_retention_days: d.alert_retention_days ?? 7,
         eve_log_enabled: d.eve_log_enabled ?? false,
         eve_log_path: d.eve_log_path || "/var/log/aifw/eve.json",
-        syslog_target: d.syslog_target || "",
         worker_count: d.worker_count ?? null,
         flow_table_size: d.flow_table_size ?? null,
         stream_depth: d.stream_depth ?? null,
@@ -358,20 +355,18 @@ export default function IdsSettingsPage() {
             </p>
           </div>
 
-          {/* Syslog Target */}
+          {/* Syslog forwarding moved to the global Remote Logging settings */}
           <div>
             <label className="block text-xs text-[var(--text-muted)] mb-1">
-              Syslog Target
+              Syslog Forwarding
             </label>
-            <input
-              type="text"
-              value={config.syslog_target}
-              onChange={(e) =>
-                setConfig({ ...config, syslog_target: e.target.value })
-              }
-              placeholder="e.g. 192.168.1.10:514"
-              className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] transition-colors"
-            />
+            <p className="text-sm text-[var(--text-muted)] px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-md">
+              IDS alerts are forwarded via{" "}
+              <a href="/settings?cat=logging" className="text-[var(--accent)] hover:underline">
+                Settings → Remote Logging
+              </a>{" "}
+              (enable the IDS alerts category).
+            </p>
           </div>
 
           {/* EVE Log */}

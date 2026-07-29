@@ -58,12 +58,29 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| args.log_level.parse().unwrap_or_default()),
-        )
-        .init();
+    // Remote syslog manager exists before the subscriber so the forwarding
+    // layer can attach; DB config is applied below once the pool is up.
+    let syslog_mgr = aifw_common::syslog::SyslogManager::start();
+    {
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| args.log_level.parse().unwrap_or_default());
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_filter(env_filter)
+                    .with_filter(aifw_common::syslog::LocalStorageGate::new(
+                        syslog_mgr.handle(),
+                    )),
+            )
+            .with(aifw_common::syslog::SyslogLayer::new(
+                syslog_mgr.handle(),
+                "aifw-daemon",
+            ))
+            .init();
+    }
 
     info!("AiFw daemon starting");
 
@@ -74,6 +91,43 @@ async fn main() -> anyhow::Result<()> {
 
     let db = Database::new(&args.db).await?;
     let pool = db.pool().clone();
+
+    // Remote syslog: table may not exist yet if aifw-api never ran; the
+    // migrate is idempotent. Config refreshes via the shared 60s poller.
+    aifw_common::syslog::migrate(&pool).await?;
+    syslog_mgr.apply(aifw_common::syslog::load(&pool).await);
+    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone(), "aifw-daemon");
+
+    // Reconcile the pf local-log policy (pflogd on/off for disable_local):
+    // once at boot, on every polled policy change, again after a failed
+    // attempt (sudo errors don't mark the state applied), and — while the
+    // policy is "stopped" — re-enforced every tick so an externally
+    // restarted pflogd is corrected within a minute. Covers CLI DB edits
+    // and crash recovery; the API also applies immediately on settings PUT.
+    {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let mut last_ok: Option<bool> = None;
+            loop {
+                // A transient DB read error must not read as "policy off" —
+                // that would start pflogd and flap the toggle (see the
+                // matching guard in the shared config poller).
+                match aifw_common::syslog::try_load(&pool).await {
+                    Ok(cfg) => {
+                        let want = aifw_core::local_log::local_pf_log_disabled(&cfg);
+                        if want || last_ok != Some(want) {
+                            let ok = aifw_core::local_log::apply_local_log_policy(&cfg).await;
+                            last_ok = if ok { Some(want) } else { None };
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "pf local-log policy poll failed; keeping current state");
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        });
+    }
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
     let engine =
         Arc::new(RuleEngine::new(pool.clone(), pf.clone()).with_anchor(args.anchor.clone()));

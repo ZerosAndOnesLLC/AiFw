@@ -3619,3 +3619,278 @@ pub async fn ids_retention(db_path: &Path, days: Option<u32>) -> anyhow::Result<
     }
     Ok(())
 }
+
+// ============================================================================
+// Remote syslog forwarding (aifw syslog ...)
+// ============================================================================
+
+/// Optional field updates for `aifw syslog set`; `None` = keep current value.
+pub struct SyslogSetOpts {
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub transport: Option<String>,
+    pub format: Option<String>,
+    pub facility: Option<String>,
+    pub hostname: Option<String>,
+    pub pf: Option<bool>,
+    pub ids: Option<bool>,
+    pub app: Option<bool>,
+    pub app_min_level: Option<String>,
+    pub disable_local: Option<bool>,
+}
+
+async fn syslog_load(
+    db_path: &Path,
+) -> anyhow::Result<(Database, aifw_common::syslog::SyslogConfig)> {
+    let db = Database::new(db_path).await?;
+    aifw_common::syslog::migrate(db.pool()).await?;
+    let cfg = aifw_common::syslog::load(db.pool()).await;
+    Ok((db, cfg))
+}
+
+fn syslog_print_effect() {
+    println!("Change takes effect within 60 seconds (all AiFw services poll for syslog config).");
+}
+
+pub async fn syslog_show(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    let (_db, cfg) = syslog_load(db_path).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&cfg)?);
+        return Ok(());
+    }
+    let facility_label = aifw_common::syslog::facility_name(cfg.facility)
+        .map(|n| format!("{} ({n})", cfg.facility))
+        .unwrap_or_else(|| cfg.facility.to_string());
+    println!("Remote syslog forwarding");
+    println!(
+        "  Enabled:        {}",
+        if cfg.enabled { "yes" } else { "no" }
+    );
+    println!(
+        "  Server:         {}",
+        if cfg.host.is_empty() {
+            "(not configured)".to_string()
+        } else {
+            format!("{}:{}", cfg.host, cfg.port)
+        }
+    );
+    println!("  Transport:      {}", cfg.transport.as_str());
+    println!("  Format:         {}", cfg.format.as_str());
+    println!("  Facility:       {facility_label}");
+    println!(
+        "  Hostname:       {}",
+        if cfg.hostname_override.is_empty() {
+            "(system hostname)"
+        } else {
+            &cfg.hostname_override
+        }
+    );
+    println!("  Categories:");
+    println!(
+        "    pf logs:      {}",
+        if cfg.pf_enabled { "on" } else { "off" }
+    );
+    println!(
+        "    IDS alerts:   {}",
+        if cfg.ids_enabled { "on" } else { "off" }
+    );
+    println!(
+        "    app logs:     {}{}",
+        if cfg.app_enabled { "on" } else { "off" },
+        if cfg.app_enabled {
+            format!(" (min level {})", cfg.app_min_level)
+        } else {
+            String::new()
+        }
+    );
+    println!(
+        "  Local storage:  {}",
+        if cfg.disable_local {
+            "disabled while forwarding"
+        } else {
+            "kept"
+        }
+    );
+    Ok(())
+}
+
+pub async fn syslog_enable(db_path: &Path, enabled: bool) -> anyhow::Result<()> {
+    let (db, mut cfg) = syslog_load(db_path).await?;
+    cfg.enabled = enabled;
+    if let Err(e) = cfg.validate() {
+        anyhow::bail!("{e} — set one with: aifw syslog set --host <server>");
+    }
+    aifw_common::syslog::save(db.pool(), &cfg).await?;
+    if enabled {
+        println!(
+            "Remote syslog forwarding enabled ({}:{} over {}).",
+            cfg.host,
+            cfg.port,
+            cfg.transport.as_str()
+        );
+        if !cfg.pf_enabled && !cfg.ids_enabled && !cfg.app_enabled {
+            println!(
+                "  Note: no categories are on yet — enable some with e.g. 'aifw syslog set --pf true'."
+            );
+        }
+    } else {
+        println!("Remote syslog forwarding disabled.");
+    }
+    syslog_print_effect();
+    Ok(())
+}
+
+pub async fn syslog_set(db_path: &Path, opts: SyslogSetOpts) -> anyhow::Result<()> {
+    let (db, mut cfg) = syslog_load(db_path).await?;
+    if let Some(h) = opts.host {
+        cfg.host = h;
+    }
+    if let Some(p) = opts.port {
+        cfg.port = p;
+    }
+    if let Some(t) = opts.transport {
+        cfg.transport = match t.to_ascii_lowercase().as_str() {
+            "udp" => aifw_common::syslog::Transport::Udp,
+            "tcp" => aifw_common::syslog::Transport::Tcp,
+            other => anyhow::bail!("transport must be udp or tcp (got '{other}')"),
+        };
+    }
+    if let Some(f) = opts.format {
+        cfg.format = match f.to_ascii_lowercase().as_str() {
+            "rfc3164" | "bsd" => aifw_common::syslog::SyslogFormat::Rfc3164,
+            "rfc5424" => aifw_common::syslog::SyslogFormat::Rfc5424,
+            other => anyhow::bail!("format must be rfc3164 (bsd) or rfc5424 (got '{other}')"),
+        };
+    }
+    if let Some(f) = opts.facility {
+        cfg.facility = aifw_common::syslog::facility_from_name(&f).ok_or_else(|| {
+            anyhow::anyhow!("unknown facility '{f}' (use a name like local0 or a number 0-23)")
+        })?;
+    }
+    if let Some(h) = opts.hostname {
+        cfg.hostname_override = h;
+    }
+    if let Some(v) = opts.pf {
+        cfg.pf_enabled = v;
+    }
+    if let Some(v) = opts.ids {
+        cfg.ids_enabled = v;
+    }
+    if let Some(v) = opts.app {
+        cfg.app_enabled = v;
+    }
+    if let Some(l) = opts.app_min_level {
+        cfg.app_min_level = l.to_ascii_lowercase();
+    }
+    if let Some(v) = opts.disable_local {
+        cfg.disable_local = v;
+    }
+    cfg.validate().map_err(|e| anyhow::anyhow!(e))?;
+    aifw_common::syslog::save(db.pool(), &cfg).await?;
+    println!("Syslog settings updated.");
+    if !cfg.enabled {
+        println!("  Forwarding is currently disabled — turn it on with 'aifw syslog enable'.");
+    }
+    syslog_print_effect();
+    Ok(())
+}
+
+pub async fn syslog_test(
+    db_path: &Path,
+    host: Option<String>,
+    port: Option<u16>,
+) -> anyhow::Result<()> {
+    let (_db, mut cfg) = syslog_load(db_path).await?;
+    if let Some(h) = host {
+        cfg.host = h;
+    }
+    if let Some(p) = port {
+        cfg.port = p;
+    }
+    anyhow::ensure!(
+        !cfg.host.trim().is_empty(),
+        "no syslog server configured — set one with 'aifw syslog set --host <server>' or pass --host"
+    );
+    match aifw_common::syslog::test_send(&cfg, "AiFw remote syslog test message (CLI)").await {
+        Ok(()) => {
+            println!(
+                "Test message sent to {}:{} over {} ({}).",
+                cfg.host,
+                cfg.port,
+                cfg.transport.as_str(),
+                cfg.format.as_str()
+            );
+            if cfg.transport == aifw_common::syslog::Transport::Udp {
+                println!("  UDP is fire-and-forget — check the server received it.");
+            }
+        }
+        Err(e) => anyhow::bail!("test send failed: {e}"),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod syslog_cli_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn set_and_show_round_trip() {
+        let dir = std::env::temp_dir().join(format!("aifw-cli-syslog-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("test.db");
+
+        syslog_set(
+            &db_path,
+            SyslogSetOpts {
+                host: Some("192.0.2.20".into()),
+                port: Some(1514),
+                transport: Some("tcp".into()),
+                format: Some("rfc5424".into()),
+                facility: Some("local3".into()),
+                hostname: None,
+                pf: Some(true),
+                ids: None,
+                app: None,
+                app_min_level: None,
+                disable_local: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let (_db, cfg) = syslog_load(&db_path).await.unwrap();
+        assert_eq!(cfg.host, "192.0.2.20");
+        assert_eq!(cfg.port, 1514);
+        assert_eq!(cfg.transport, aifw_common::syslog::Transport::Tcp);
+        assert_eq!(cfg.format, aifw_common::syslog::SyslogFormat::Rfc5424);
+        assert_eq!(cfg.facility, 19);
+        assert!(cfg.pf_enabled);
+        assert!(!cfg.enabled);
+
+        syslog_enable(&db_path, true).await.unwrap();
+        let (_db, cfg) = syslog_load(&db_path).await.unwrap();
+        assert!(cfg.enabled);
+
+        // Invalid facility is rejected before anything is saved.
+        let bad = syslog_set(
+            &db_path,
+            SyslogSetOpts {
+                host: None,
+                port: None,
+                transport: None,
+                format: None,
+                facility: Some("nope".into()),
+                hostname: None,
+                pf: None,
+                ids: None,
+                app: None,
+                app_min_level: None,
+                disable_local: None,
+            },
+        )
+        .await;
+        assert!(bad.is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

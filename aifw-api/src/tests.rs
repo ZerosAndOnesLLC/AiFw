@@ -2398,6 +2398,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_restore_round_trips_syslog_config() {
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+
+        let syslog_cfg = aifw_common::syslog::SyslogConfig {
+            enabled: true,
+            host: "192.0.2.50".into(),
+            port: 5514,
+            transport: aifw_common::syslog::Transport::Tcp,
+            pf_enabled: true,
+            ..Default::default()
+        };
+        aifw_common::syslog::save(&state.pool, &syslog_cfg)
+            .await
+            .unwrap();
+
+        let config = crate::backup::build_current_config(&state).await.unwrap();
+        let exported = config.syslog.as_ref().expect("export must include syslog");
+        assert_eq!(exported.host, "192.0.2.50");
+        assert!(exported.pf_enabled);
+
+        // Simulate drift after the backup was taken.
+        aifw_common::syslog::save(&state.pool, &Default::default())
+            .await
+            .unwrap();
+
+        crate::backup::apply_firewall_config(&state, &config, &Default::default())
+            .await
+            .expect("restore must succeed");
+
+        let restored = aifw_common::syslog::load(&state.pool).await;
+        assert_eq!(restored, syslog_cfg, "restore must reinstate syslog config");
+        // The API process applied it immediately.
+        assert_eq!(*state.syslog.current(), syslog_cfg);
+    }
+
+    #[tokio::test]
     async fn test_restore_without_resolver_section_leaves_config_untouched() {
         // A pre-#589 backup has no dns_resolver section — restoring it must
         // not reset the box's resolver config to defaults.
@@ -3187,5 +3225,145 @@ mod tests {
         let body: Value = resp.json();
         assert_eq!(body["totp_required"], true);
         assert!(set_cookies(&resp).is_empty(), "no cookies before 2FA");
+    }
+
+    #[tokio::test]
+    async fn test_syslog_settings_defaults_and_roundtrip() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Defaults
+        let resp = server
+            .get("/api/v1/settings/syslog")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["port"], 514);
+        assert_eq!(body["transport"], "udp");
+        assert_eq!(body["format"], "rfc3164");
+        assert_eq!(body["facility"], 16);
+
+        // Save a full config and read it back
+        let cfg = json!({
+            "enabled": true,
+            "host": "192.0.2.99",
+            "port": 5514,
+            "transport": "tcp",
+            "format": "rfc5424",
+            "facility": 17,
+            "hostname_override": "fw-test",
+            "pf_enabled": true,
+            "ids_enabled": false,
+            "app_enabled": true,
+            "app_min_level": "warn",
+            "disable_local": false
+        });
+        let resp = server
+            .put("/api/v1/settings/syslog")
+            .authorization_bearer(&token)
+            .json(&cfg)
+            .await;
+        resp.assert_status_ok();
+
+        let resp = server
+            .get("/api/v1/settings/syslog")
+            .authorization_bearer(&token)
+            .await;
+        let body: Value = resp.json();
+        assert_eq!(body["host"], "192.0.2.99");
+        assert_eq!(body["transport"], "tcp");
+        assert_eq!(body["format"], "rfc5424");
+        assert_eq!(body["pf_enabled"], true);
+        assert_eq!(body["app_min_level"], "warn");
+
+        // Invalid facility is rejected
+        let mut bad = cfg.clone();
+        bad["facility"] = json!(42);
+        let resp = server
+            .put("/api/v1/settings/syslog")
+            .authorization_bearer(&token)
+            .json(&bad)
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+
+        // Enabled without a host is rejected
+        let mut no_host = cfg.clone();
+        no_host["host"] = json!("");
+        let resp = server
+            .put("/api/v1/settings/syslog")
+            .authorization_bearer(&token)
+            .json(&no_host)
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+
+        // Unauthenticated read is rejected
+        let resp = server.get("/api/v1/settings/syslog").await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_syslog_test_endpoint_delivers_udp() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+
+        // Draft config in the body — nothing saved, forwarding disabled.
+        let resp = server
+            .post("/api/v1/settings/syslog/test")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "enabled": false,
+                "host": "127.0.0.1",
+                "port": port,
+                "transport": "udp",
+                "format": "rfc3164",
+                "facility": 16
+            }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["ok"], true, "body: {body}");
+
+        let mut buf = [0u8; 1024];
+        let (n, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), sock.recv_from(&mut buf))
+                .await
+                .expect("test datagram should arrive")
+                .unwrap();
+        let text = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(
+            text.contains("AiFw remote syslog test message"),
+            "got: {text}"
+        );
+
+        // Status endpoint responds with per-process counters; the API
+        // process's live row is always present.
+        let resp = server
+            .get("/api/v1/settings/syslog/status")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let rows = body.as_array().expect("status is a per-process array");
+        let api_row = rows
+            .iter()
+            .find(|r| r["process"] == "aifw-api")
+            .expect("aifw-api row present");
+        assert!(api_row["sent"].is_u64());
+        assert!(api_row["dropped"].is_u64());
+
+        // Test endpoint without a body falls back to the saved config —
+        // nothing saved yet, so it reports a clean failure, not a 4xx.
+        let resp = server
+            .post("/api/v1/settings/syslog/test")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["ok"], false);
     }
 }

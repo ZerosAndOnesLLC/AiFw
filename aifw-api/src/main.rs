@@ -20,6 +20,7 @@ mod plugins;
 mod reverse_proxy;
 mod router;
 mod routes;
+mod syslog;
 mod system;
 mod time_service;
 mod updates;
@@ -169,6 +170,10 @@ pub struct AppState {
     pub alias_engine: Arc<AliasEngine>,
     pub conntrack: Arc<ConnectionTracker>,
     pub ids_client: Arc<aifw_ids_ipc::IdsClient>,
+    /// Remote syslog forwarding for this process (pf logs + API app logs).
+    /// Created in `main` before the tracing subscriber so the forwarding
+    /// layer can attach; config is applied once the DB pool is ready.
+    pub syslog: Arc<aifw_common::syslog::SyslogManager>,
     pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
     pub metrics_store: Arc<aifw_metrics::MetricsStore>,
     pub auth_settings: auth::AuthSettings,
@@ -677,13 +682,14 @@ pub async fn create_app_state(
     db_path: &std::path::Path,
     auth_settings: auth::AuthSettings,
     ids_socket: PathBuf,
+    syslog_mgr: Arc<aifw_common::syslog::SyslogManager>,
 ) -> anyhow::Result<AppState> {
     if let Some(parent) = db_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
     let db = Database::new(db_path).await?;
-    create_state_from_db(db, auth_settings, ids_socket).await
+    create_state_from_db(db, auth_settings, ids_socket, syslog_mgr).await
 }
 
 #[cfg(test)]
@@ -700,13 +706,20 @@ pub async fn create_app_state_in_memory(
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    create_state_from_db(db, auth_settings, ids_socket).await
+    create_state_from_db(
+        db,
+        auth_settings,
+        ids_socket,
+        aifw_common::syslog::SyslogManager::start(),
+    )
+    .await
 }
 
 async fn create_state_from_db(
     db: Database,
     auth_settings: auth::AuthSettings,
     ids_socket: PathBuf,
+    syslog_mgr: Arc<aifw_common::syslog::SyslogManager>,
 ) -> anyhow::Result<AppState> {
     let pool = db.pool().clone();
     let pf: Arc<dyn PfBackend> = Arc::from(aifw_pf::create_backend());
@@ -835,6 +848,11 @@ async fn create_state_from_db(
             },
             async { system::migrate(&pool).await.map_err(anyhow::Error::from) },
             async {
+                aifw_common::syslog::migrate(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            async {
                 time_service::migrate(&pool)
                     .await
                     .map_err(anyhow::Error::from)
@@ -877,6 +895,11 @@ async fn create_state_from_db(
             Err(e) => return Err(e),
         }
     }
+
+    // Apply persisted remote-syslog settings and watch for out-of-process
+    // edits (the CLI writes SQLite directly).
+    syslog_mgr.apply(aifw_common::syslog::load(&pool).await);
+    aifw_common::syslog::spawn_config_poller(pool.clone(), syslog_mgr.clone(), "aifw-api");
 
     // Read aifw_cluster_enabled once at startup. The flag only changes on
     // config writes, so a cached value is always correct for the process lifetime.
@@ -1058,6 +1081,7 @@ async fn create_state_from_db(
         alias_engine,
         conntrack,
         ids_client,
+        syslog: syslog_mgr,
         plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
         metrics_store: metrics_store.clone(),
         auth_settings,
@@ -1435,18 +1459,46 @@ async fn main() -> anyhow::Result<()> {
     // it; doing this before any TLS is used.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| args.log_level.parse().unwrap_or_default()),
-        )
-        .init();
+    // Remote syslog manager exists before the tracing subscriber so the
+    // forwarding layer can attach to it; the DB config is applied inside
+    // create_app_state once the pool is ready.
+    let syslog_mgr = aifw_common::syslog::SyslogManager::start();
+
+    // Registry: fmt layer (stdout, EnvFilter-scoped so console filtering
+    // never starves the forwarder) + remote-syslog forwarding layer, which
+    // self-filters on the App category toggle and app_min_level.
+    {
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| args.log_level.parse().unwrap_or_default());
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_filter(env_filter)
+                    .with_filter(aifw_common::syslog::LocalStorageGate::new(
+                        syslog_mgr.handle(),
+                    )),
+            )
+            .with(aifw_common::syslog::SyslogLayer::new(
+                syslog_mgr.handle(),
+                "aifw-api",
+            ))
+            .init();
+    }
 
     // Temporary AuthSettings so create_app_state has a DB pool. The real
     // JWT secret is loaded from the key file below, then swapped in.
     let auth_settings = auth::AuthSettings::default();
 
-    let mut state = create_app_state(&args.db, auth_settings, args.ids_socket.clone()).await?;
+    let mut state = create_app_state(
+        &args.db,
+        auth_settings,
+        args.ids_socket.clone(),
+        syslog_mgr.clone(),
+    )
+    .await?;
 
     // Resolve the JWT secret: explicit override > key file (migrating any
     // legacy DB-stored secret on first run) > freshly generated in file.
@@ -1682,8 +1734,9 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::warn!("Failed to restart WireGuard tunnels: {e}"),
     }
 
-    // Start persistent pflog0 live capture for blocked traffic page (background, non-blocking)
-    ws::start_pflog_collector(state.plugin_manager.clone());
+    // Start persistent pflog0 live capture for blocked traffic page
+    // (background, non-blocking); also tees entries to remote syslog.
+    ws::start_pflog_collector(state.plugin_manager.clone(), state.syslog.handle());
 
     // Start plugin timer hook — fires every 60 seconds for cron-like plugins
     {

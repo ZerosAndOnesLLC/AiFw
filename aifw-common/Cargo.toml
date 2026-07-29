@@ -11,7 +11,10 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 sqlx = { workspace = true }
-tokio = { workspace = true, features = ["sync", "net", "rt", "macros"] }
+tokio = { workspace = true, features = ["sync", "net", "rt", "macros", "time", "io-util"] }
+arc-swap = "1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 url = { workspace = true }
 x25519-dalek = { workspace = true }
 getrandom = { workspace = true }

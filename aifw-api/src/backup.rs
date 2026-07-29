@@ -859,6 +859,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         aliases: build_aliases_section(state).await,
         static_routes: build_static_routes_section(&state.pool).await,
         dns_resolver: Some(crate::dns_resolver::load_config(&state.pool).await),
+        syslog: Some(aifw_common::syslog::load(&state.pool).await),
     };
 
     Ok(config)
@@ -2139,6 +2140,14 @@ pub(crate) async fn apply_firewall_config(
             .map_err(|e| apply_fail("dns resolver config restore", e))?;
     }
 
+    // Remote syslog settings. `None` = backup predates the section; leave
+    // the box's config untouched. Applied in-process after commit.
+    if let Some(syslog_cfg) = &config.syslog {
+        aifw_common::syslog::save_on(&mut tx, syslog_cfg)
+            .await
+            .map_err(|e| apply_fail("syslog config restore", e))?;
+    }
+
     // One audit row for the whole restore, committed atomically with it.
     // (Pre-#158 each engine `add` wrote a per-row audit entry; a restore is
     // one operator action, not N rule additions.)
@@ -2275,6 +2284,14 @@ pub(crate) async fn apply_firewall_config(
     // settings take effect (#589). Best-effort like rDHCP above: the backend
     // service may be absent (dev hosts); the DB rows are authoritative and
     // switch_backend probes + auto-rolls-back on a failed start.
+    // Remote syslog: the rows are already committed; apply in this process
+    // immediately (daemon/IDS pick it up via their 60s pollers) and
+    // reconcile the pflogd local-storage policy.
+    if let Some(syslog_cfg) = &config.syslog {
+        state.syslog.apply(syslog_cfg.clone());
+        aifw_core::local_log::apply_local_log_policy(syslog_cfg).await;
+    }
+
     if let Some(resolver) = &config.dns_resolver {
         let report = crate::dns_resolver::switch_backend(state, &resolver.backend, resolver).await;
         if report.rolled_back || (resolver.enabled && !report.probe_udp) {

@@ -1165,6 +1165,21 @@ fn parse_pflog_line(line: &str) -> Option<BlockedPayload> {
     })
 }
 
+/// Render one pf log entry as a compact key=value syslog message body.
+fn format_pf_msg(e: &BlockedPayload) -> String {
+    format!(
+        "action={} dir={} if={} proto={} src={}:{} dst={}:{}",
+        e.action,
+        e.direction,
+        e.interface,
+        e.protocol,
+        e.src_addr,
+        e.src_port,
+        e.dst_addr,
+        e.dst_port
+    )
+}
+
 // VecDeque keeps push (push_back) and trim (pop_front) both O(1) even under
 // high block rates (DDoS). Vec::drain(..N) on a 10k buffer was O(N) per
 // insert → O(N²) under sustained traffic above the cap.
@@ -1181,8 +1196,11 @@ fn blocked_buffer() -> &'static BlockedBuffer {
 
 /// Call once on API startup to bootstrap from pflog file and start live capture.
 /// Both bootstrap and live capture run in a background task so the API starts immediately.
+/// Live entries (not the bootstrap replay) are also forwarded to remote
+/// syslog when the pf category is enabled.
 pub fn start_pflog_collector(
     plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw_plugins::PluginManager>>,
+    syslog: aifw_common::syslog::SyslogHandle,
 ) {
     let buf = blocked_buffer().clone();
     let buf2 = buf.clone();
@@ -1253,6 +1271,18 @@ pub fn start_pflog_collector(
                                     };
                                     let _ = plugins.dispatch(&event).await;
                                 }
+                            }
+                            // Tee to remote syslog. enabled_for is an O(1)
+                            // atomic load, so the format! only runs when the
+                            // pf category is actually on; enqueue never blocks.
+                            if syslog.enabled_for(aifw_common::syslog::Category::Pf) {
+                                let severity = if entry.action == "block" { 5 } else { 6 };
+                                syslog.enqueue(
+                                    aifw_common::syslog::Category::Pf,
+                                    severity,
+                                    "aifw-pf",
+                                    format_pf_msg(&entry),
+                                );
                             }
                             let mut buf = buf2.write().await;
                             if buf.len() == PFLOG_MAX_ENTRIES {
@@ -1363,6 +1393,17 @@ mod tests {
         assert_eq!(e.src_port, 51234);
         assert_eq!(e.dst_addr, "10.0.0.2");
         assert_eq!(e.dst_port, 443);
+    }
+
+    #[test]
+    fn formats_pf_syslog_msg() {
+        let line = "2026-04-01 13:09:28.475326 rule 5/0(match): block in on igb0: \
+                    203.0.113.5.51234 > 10.0.0.2.443: Flags [S], seq 12345, win 65535, length 0";
+        let e = parse_pflog_line(line).expect("line should parse");
+        assert_eq!(
+            format_pf_msg(&e),
+            "action=block dir=in if=igb0 proto=tcp src=203.0.113.5:51234 dst=10.0.0.2:443"
+        );
     }
 
     #[test]

@@ -1,39 +1,27 @@
-use std::net::UdpSocket;
+//! Syslog alert sink — forwards IDS alerts through the process-wide
+//! remote-syslog pipeline (`aifw_common::syslog`).
+//!
+//! The sink is a thin adapter over a [`SyslogHandle`]: transport, format,
+//! target, and reconnect handling all live in the shared client. It is
+//! registered unconditionally at engine construction and self-gates on the
+//! `ids_enabled` category toggle per emit, so config changes take effect
+//! without rebuilding the pipeline.
 
 use aifw_common::ids::IdsAlert;
+use aifw_common::syslog::{Category, SyslogHandle};
 
 use super::AlertOutput;
 use crate::Result;
 
-/// Syslog alert output — sends alerts to a remote syslog server via UDP.
-pub struct SyslogOutput {
-    target: String,
-    socket: UdpSocket,
-    facility: u8,
+/// Forwards IDS alerts to the configured remote syslog server.
+pub struct SyslogAlertOutput {
+    handle: SyslogHandle,
 }
 
-impl SyslogOutput {
-    /// Construct a syslog sink bound to an ephemeral local UDP port.
-    ///
-    /// Returns an error (rather than silently dropping every alert) if the
-    /// local socket cannot be bound, so the caller can refuse to register a
-    /// sink that would never emit.
-    pub fn new(target: String) -> Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| {
-            tracing::error!(error = %e, "failed to bind local UDP socket for syslog output");
-            e
-        })?;
-        Ok(Self {
-            target,
-            socket,
-            facility: 4, // LOG_AUTH
-        })
-    }
-
-    /// Builder: set the syslog facility number (default 4 = LOG_AUTH)
-    pub fn with_facility(mut self, facility: u8) -> Self {
-        self.facility = facility;
-        self
+impl SyslogAlertOutput {
+    /// Wrap a handle from the process's `SyslogManager`.
+    pub fn new(handle: SyslogHandle) -> Self {
+        Self { handle }
     }
 
     fn severity_to_syslog(severity: u8) -> u8 {
@@ -44,21 +32,10 @@ impl SyslogOutput {
             _ => 6, // Info → Informational
         }
     }
-}
 
-#[async_trait::async_trait]
-impl AlertOutput for SyslogOutput {
-    async fn emit(&self, alert: &IdsAlert) -> Result<()> {
-        let socket = &self.socket;
-
-        let syslog_severity = Self::severity_to_syslog(alert.severity.0);
-        let priority = (self.facility as u16) * 8 + syslog_severity as u16;
-
-        // RFC 5424 format
-        let msg = format!(
-            "<{priority}>1 {timestamp} aifw aifw-ids - - - IDS Alert: [{action}] {sig} src={src}:{sport} dst={dst}:{dport} proto={proto} severity={sev}",
-            priority = priority,
-            timestamp = alert.timestamp.to_rfc3339(),
+    fn format_alert(alert: &IdsAlert) -> String {
+        format!(
+            "IDS Alert: [{action}] {sig} src={src}:{sport} dst={dst}:{dport} proto={proto} severity={sev}",
             action = alert.action,
             sig = alert.signature_msg,
             src = alert.src_ip,
@@ -67,15 +44,28 @@ impl AlertOutput for SyslogOutput {
             dport = alert.dst_port.unwrap_or(0),
             proto = alert.protocol,
             sev = alert.severity.label(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl AlertOutput for SyslogAlertOutput {
+    async fn emit(&self, alert: &IdsAlert) -> Result<()> {
+        // O(1) gate; the message is only built when forwarding is on.
+        if !self.handle.enabled_for(Category::Ids) {
+            return Ok(());
+        }
+        self.handle.enqueue(
+            Category::Ids,
+            Self::severity_to_syslog(alert.severity.0),
+            "aifw-ids",
+            Self::format_alert(alert),
         );
-
-        let _ = socket.send_to(msg.as_bytes(), &self.target);
-
         Ok(())
     }
 
     async fn flush(&self) -> Result<()> {
-        Ok(()) // UDP is fire-and-forget
+        Ok(()) // delivery is owned by the shared writer task
     }
 
     fn name(&self) -> &str {
@@ -86,12 +76,83 @@ impl AlertOutput for SyslogOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aifw_common::ids::{IdsAction, IdsSeverity, RuleSource};
+    use aifw_common::syslog::{SyslogConfig, SyslogManager, Transport};
+    use std::time::Duration;
+
+    fn alert() -> IdsAlert {
+        let mut a = IdsAlert::new(
+            "ET SCAN test signature".into(),
+            IdsSeverity(2),
+            "203.0.113.7".parse().expect("valid test IP"),
+            "10.0.0.5".parse().expect("valid test IP"),
+            "tcp",
+            IdsAction::Alert,
+            RuleSource::Custom,
+        );
+        a.src_port = Some(4444);
+        a.dst_port = Some(22);
+        a
+    }
 
     #[test]
     fn test_severity_mapping() {
-        assert_eq!(SyslogOutput::severity_to_syslog(1), 1);
-        assert_eq!(SyslogOutput::severity_to_syslog(2), 2);
-        assert_eq!(SyslogOutput::severity_to_syslog(3), 4);
-        assert_eq!(SyslogOutput::severity_to_syslog(4), 6);
+        assert_eq!(SyslogAlertOutput::severity_to_syslog(1), 1);
+        assert_eq!(SyslogAlertOutput::severity_to_syslog(2), 2);
+        assert_eq!(SyslogAlertOutput::severity_to_syslog(3), 4);
+        assert_eq!(SyslogAlertOutput::severity_to_syslog(4), 6);
+    }
+
+    #[tokio::test]
+    async fn emits_alert_to_udp_server() {
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+
+        let mgr = SyslogManager::start();
+        mgr.apply(SyslogConfig {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            port,
+            transport: Transport::Udp,
+            ids_enabled: true,
+            ..Default::default()
+        });
+
+        let out = SyslogAlertOutput::new(mgr.handle());
+        out.emit(&alert()).await.unwrap();
+
+        let mut buf = [0u8; 2048];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(5), server.recv_from(&mut buf))
+            .await
+            .expect("alert should be forwarded")
+            .unwrap();
+        let got = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(got.contains("aifw-ids"), "got: {got}");
+        assert!(got.contains("ET SCAN test signature"), "got: {got}");
+        assert!(got.contains("src=203.0.113.7:4444"), "got: {got}");
+        assert!(got.contains("dst=10.0.0.5:22"), "got: {got}");
+    }
+
+    #[tokio::test]
+    async fn disabled_category_sends_nothing() {
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = server.local_addr().unwrap().port();
+
+        let mgr = SyslogManager::start();
+        mgr.apply(SyslogConfig {
+            enabled: true,
+            host: "127.0.0.1".into(),
+            port,
+            transport: Transport::Udp,
+            ids_enabled: false, // category off
+            ..Default::default()
+        });
+
+        let out = SyslogAlertOutput::new(mgr.handle());
+        out.emit(&alert()).await.unwrap();
+
+        let mut buf = [0u8; 256];
+        let r = tokio::time::timeout(Duration::from_millis(300), server.recv_from(&mut buf)).await;
+        assert!(r.is_err(), "gated alert must not be forwarded");
     }
 }

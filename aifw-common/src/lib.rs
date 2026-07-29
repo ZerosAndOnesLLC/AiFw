@@ -42,6 +42,8 @@ pub mod schedule;
 pub mod schemas;
 #[cfg(unix)]
 pub mod single_instance;
+/// Remote syslog forwarding: config, RFC 3164/5424 formatting, async client
+pub mod syslog;
 #[cfg(test)]
 mod tests;
 /// TLS inspection types: versions, JA3/JA3S fingerprints, SNI rules, cert policy, MITM proxy config

@@ -145,6 +145,7 @@ const navItems: NavItem[] = [
       { href: "/settings?cat=dns",     label: "  DNS",               permission: "settings:read" },
       { href: "/settings?cat=storage", label: "  Storage & Metrics", permission: "settings:read" },
       { href: "/settings?cat=backup",  label: "  Backup & History",  permission: "settings:read" },
+      { href: "/settings?cat=logging", label: "  Remote Logging",    permission: "settings:read" },
       { href: "/settings?cat=ai",      label: "  AI / LLM",          permission: "settings:read" },
       { href: "/reboot", label: "Power", permission: "system:reboot" },
     ],
