@@ -40,10 +40,15 @@ export function OsUpgradeCard({
 
   const state = osUpgrade?.state ?? null;
   const currentOs = osUpgrade?.current_os ?? null;
-  // Target preference: what the newest AiFw release demands; fall back to
-  // the target of the job already on record (retry-after-failure case).
+  // Target preference: what the newest blocked release demands (#624 —
+  // present even while an older compatible release stays installable),
+  // the legacy no-compatible-release fields, then the target of the job
+  // already on record (retry-after-failure case).
   const neededTarget =
-    (aifwInfo?.os_upgrade_required && aifwInfo?.required_os) || null;
+    aifwInfo?.blocked_requires_os ||
+    (aifwInfo?.os_upgrade_required && aifwInfo?.required_os) ||
+    null;
+  const blockedVersion = aifwInfo?.blocked_version ?? aifwInfo?.latest_version;
   const retryTarget = state?.phase === "failed" ? state.target : null;
   const startTarget = neededTarget ?? retryTarget;
 
@@ -75,7 +80,7 @@ export function OsUpgradeCard({
 
           {neededTarget && !state && (
             <p className="text-sm text-[var(--text-secondary)] max-w-xl">
-              AiFw v{aifwInfo?.latest_version} requires FreeBSD {neededTarget}.
+              AiFw v{blockedVersion} requires FreeBSD {neededTarget}.
               Upgrade the operating system first; the AiFw update unlocks
               afterwards.
             </p>

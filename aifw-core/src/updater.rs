@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-const GITHUB_API_URL: &str = "https://api.github.com/repos/ZerosAndOnesLLC/AiFw/releases/latest";
 // Lists releases newest-first INCLUDING pre-releases (and drafts), unlike
 // /releases/latest which silently skips them. Used only when the operator
 // opts into the pre-release channel.
@@ -323,9 +322,18 @@ pub struct AifwUpdateInfo {
     pub required_os: Option<String>,
     /// True when `required_os` is newer than the running FreeBSD release.
     /// The UI/CLI must steer the operator to the OS upgrade flow instead of
-    /// the AiFw install; the installer refuses anyway (#612).
+    /// the AiFw install; the installer refuses anyway (#612). Since #624
+    /// this only occurs when NO OS-compatible release exists at all.
     #[serde(default)]
     pub os_upgrade_required: bool,
+    /// Newest published version the running OS can NOT execute (#624),
+    /// when one exists above `latest_version`. Drives the OS-upgrade card
+    /// while `latest_version` stays independently installable.
+    #[serde(default)]
+    pub blocked_version: Option<String>,
+    /// FreeBSD release `blocked_version` needs, from its Requires-OS stamp.
+    #[serde(default)]
+    pub blocked_requires_os: Option<String>,
 }
 
 /// Read the current installed AiFw version.
@@ -357,45 +365,47 @@ pub async fn restart_pending() -> bool {
 
 /// Check GitHub Releases for a newer AiFw version.
 ///
-/// When `include_prereleases` is false (field default) this consults
-/// `/releases/latest`, which only ever returns the newest *stable* release.
-/// When true (operator opted into the pre-release channel on a test box) it
-/// lists `/releases` and takes the newest non-draft entry, which may be a
-/// pre-release.
+/// Consults the release LIST (#624) and offers for install the newest
+/// release the running OS can execute, while separately surfacing the
+/// absolute newest when it needs a newer OS (drives the guided OS-upgrade
+/// card). Both can exist at once: a FreeBSD 15.0 box mid-transition sees
+/// "vNew requires 15.1" AND installs the newest 15.0-compatible release —
+/// no publish-ordering gymnastics required.
+///
+/// When `include_prereleases` is false (field default), pre-releases are
+/// skipped; when true (operator opted the box into the test channel),
+/// they're eligible.
 pub async fn check_for_update(include_prereleases: bool) -> Result<AifwUpdateInfo, UpdaterError> {
     let current = get_current_version().await;
-    let release: serde_json::Value = if include_prereleases {
-        let json = http_get(GITHUB_RELEASES_URL).await?;
-        let releases: serde_json::Value =
-            serde_json::from_str(&json).map_err(|e| UpdaterError::Json(e.to_string()))?;
-        releases
-            .as_array()
-            .and_then(|rs| {
-                rs.iter()
-                    .find(|r| !r["draft"].as_bool().unwrap_or(false))
-                    .cloned()
-            })
-            .ok_or_else(|| UpdaterError::Json("no releases found".to_string()))?
-    } else {
-        let json = http_get(GITHUB_API_URL).await?;
-        serde_json::from_str(&json).map_err(|e| UpdaterError::Json(e.to_string()))?
-    };
+    let json = http_get(GITHUB_RELEASES_URL).await?;
+    let releases: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| UpdaterError::Json(e.to_string()))?;
+    let list = releases
+        .as_array()
+        .ok_or_else(|| UpdaterError::Json("release list is not an array".to_string()))?;
+
+    let os = current_os_release().await;
+    let (release, blocked) = select_release(list, include_prereleases, os.as_deref())
+        .ok_or_else(|| UpdaterError::Json("no releases found".to_string()))?;
 
     let tag = release["tag_name"].as_str().unwrap_or("v0.0.0");
     let latest = tag.strip_prefix('v').unwrap_or(tag);
     let notes = release["body"].as_str().unwrap_or("").to_string();
     let published = release["published_at"].as_str().unwrap_or("").to_string();
 
-    let (tarball_url, checksum_url, checksum_signature_url) = release_asset_urls(&release);
+    let (tarball_url, checksum_url, checksum_signature_url) = release_asset_urls(release);
 
     let (has_backup, backup_version) = get_backup_info().await;
     let restart_pending = restart_pending().await;
     let (reboot_recommended, reboot_reason) = parse_reboot_hint(&notes);
+    // Set only in the no-compatible-release fallback: the offered release
+    // itself needs a newer OS, and the pre-#624 gate semantics apply.
     let required_os = parse_required_os(&notes);
-    let os_upgrade_required = match (&required_os, current_os_release().await) {
-        (Some(req), Some(cur)) => !os_satisfies(&cur, req),
+    let os_upgrade_required = match (&required_os, &os) {
+        (Some(req), Some(cur)) => !os_satisfies(cur, req),
         _ => false,
     };
+    let (blocked_version, blocked_requires_os) = blocked.unzip();
 
     Ok(AifwUpdateInfo {
         update_available: version_newer(&current, latest),
@@ -415,7 +425,60 @@ pub async fn check_for_update(include_prereleases: bool) -> Result<AifwUpdateInf
         include_prereleases,
         required_os,
         os_upgrade_required,
+        blocked_version,
+        blocked_requires_os,
     })
+}
+
+/// Pick the release to offer for install and, separately, the newest
+/// release the OS can't run yet (#624).
+///
+/// Returns `(install_candidate, Some((version, required_os)))` when a
+/// newer-but-OS-blocked release exists above the candidate. When NO
+/// visible release is compatible, falls back to the newest visible one —
+/// the install-side gates (#612) still refuse it, and the pre-#624
+/// `required_os`/`os_upgrade_required` fields describe it.
+fn select_release<'a>(
+    list: &'a [serde_json::Value],
+    include_prereleases: bool,
+    current_os: Option<&str>,
+) -> Option<(&'a serde_json::Value, Option<(String, String)>)> {
+    let visible: Vec<&serde_json::Value> = list
+        .iter()
+        .filter(|r| {
+            !r["draft"].as_bool().unwrap_or(false)
+                && (include_prereleases || !r["prerelease"].as_bool().unwrap_or(false))
+        })
+        .collect();
+    let newest = *visible.first()?;
+
+    let compatible = visible.iter().copied().find(|r| {
+        match parse_required_os(r["body"].as_str().unwrap_or("")) {
+            // Unstamped releases predate the gate; treat as installable —
+            // the tarball-level required-os check still backstops.
+            None => true,
+            Some(req) => current_os
+                .map(|cur| os_satisfies(cur, &req))
+                .unwrap_or(true),
+        }
+    });
+
+    match compatible {
+        Some(c) => {
+            let blocked = if !std::ptr::eq(c, newest) {
+                let ver = newest["tag_name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim_start_matches('v')
+                    .to_string();
+                parse_required_os(newest["body"].as_str().unwrap_or("")).map(|req| (ver, req))
+            } else {
+                None
+            };
+            Some((c, blocked))
+        }
+        None => Some((newest, None)),
+    }
 }
 
 /// Look for `[reboot-recommended]` in release notes. If present, the
@@ -1701,6 +1764,50 @@ mod tests {
     fn tar_listing_accepts_normal_release() {
         let ok = "aifw-5.97.9/\naifw-5.97.9/bin/\naifw-5.97.9/bin/aifw-api\n./aifw-5.97.9/ui/index.html\n";
         assert!(validate_tar_listing(ok).is_ok());
+    }
+
+    // #624: install candidate = newest OS-compatible release; the newest
+    // OS-blocked one is surfaced separately. Both may exist at once.
+    #[test]
+    fn release_selection_offers_newest_compatible_and_surfaces_blocked() {
+        let rel = |tag: &str, body: &str, pre: bool| {
+            serde_json::json!({
+                "tag_name": tag, "body": body,
+                "prerelease": pre, "draft": false,
+            })
+        };
+        let list = vec![
+            rel("v5.113.1", "Requires-OS: FreeBSD 15.1", true),
+            rel("v5.112.6", "Requires-OS: FreeBSD 15.0", true),
+            rel("v5.109.2", "old release, no stamp", false),
+        ];
+
+        // 15.0 box, pre-release channel: installs v5.112.6, sees v5.113.1
+        // blocked behind the 15.1 floor.
+        let (chosen, blocked) = select_release(&list, true, Some("15.0-RELEASE-p11")).unwrap();
+        assert_eq!(chosen["tag_name"], "v5.112.6");
+        assert_eq!(blocked, Some(("5.113.1".to_string(), "15.1".to_string())));
+
+        // 15.1 box: newest is compatible; nothing blocked.
+        let (chosen, blocked) = select_release(&list, true, Some("15.1-RELEASE")).unwrap();
+        assert_eq!(chosen["tag_name"], "v5.113.1");
+        assert_eq!(blocked, None);
+
+        // Stable channel skips pre-releases entirely: unstamped v5.109.2.
+        let (chosen, blocked) = select_release(&list, false, Some("15.0-RELEASE")).unwrap();
+        assert_eq!(chosen["tag_name"], "v5.109.2");
+        assert_eq!(blocked, None);
+
+        // No compatible release at all: fall back to the newest (the
+        // install-side gate still refuses it), nothing separately blocked.
+        let only_new = vec![rel("v6.0.0", "Requires-OS: FreeBSD 16.0", false)];
+        let (chosen, blocked) = select_release(&only_new, false, Some("15.1-RELEASE")).unwrap();
+        assert_eq!(chosen["tag_name"], "v6.0.0");
+        assert_eq!(blocked, None);
+
+        // Unknown OS (dev box): everything is treated as compatible.
+        let (chosen, _) = select_release(&list, true, None).unwrap();
+        assert_eq!(chosen["tag_name"], "v5.113.1");
     }
 
     // #612: the OS floor stamp in release notes must parse from the shapes

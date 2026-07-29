@@ -97,6 +97,16 @@ export function FirmwareCard({
             </p>
           )}
 
+          {/* #624: a newer release exists beyond the OS floor while this
+              one stays installable — say so without blocking anything. */}
+          {info?.blocked_version && !info?.os_upgrade_required && (
+            <p className="max-w-56 text-xs text-[var(--text-muted)]">
+              v{info.blocked_version} is also available and requires FreeBSD{" "}
+              {info.blocked_requires_os} — it unlocks after the OS upgrade
+              (card above).
+            </p>
+          )}
+
           {info?.update_available &&
             !info?.os_upgrade_required &&
             info?.tarball_url &&

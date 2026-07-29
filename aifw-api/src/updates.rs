@@ -782,6 +782,11 @@ pub async fn resume_os_upgrade(pool: SqlitePool) {
                     let done_log = format!("completed: now on {}", job.target);
                     set_os_upgrade_phase(&pool, &mut job, "done", done_detail).await;
                     log_update(&pool, "os_upgrade", &done_log, "completed").await;
+                    // #624: drop the cached update info — the release that
+                    // was OS-blocked before the upgrade is installable now,
+                    // and the next page load should say so without the
+                    // operator remembering to re-check.
+                    save_config(&pool, "aifw_cached_info", "").await;
                 } else {
                     let detail = format!(
                         "install passes ran but the userland is not on {} — the staged \
@@ -1016,6 +1021,8 @@ pub async fn aifw_update_status(
         include_prereleases: prereleases_enabled(&state.pool).await,
         required_os: None,
         os_upgrade_required: false,
+        blocked_version: None,
+        blocked_requires_os: None,
     }))
 }
 
