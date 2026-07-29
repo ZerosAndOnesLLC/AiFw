@@ -41,6 +41,11 @@ enum Commands {
         #[command(subcommand)]
         action: IdsAction,
     },
+    /// Manage remote syslog forwarding
+    Syslog {
+        #[command(subcommand)]
+        action: SyslogAction,
+    },
     /// Manage traffic queues
     Queue {
         #[command(subcommand)]
@@ -788,6 +793,80 @@ EXAMPLES:
 }
 
 #[derive(Subcommand)]
+enum SyslogAction {
+    /// Show the current remote syslog configuration
+    Show {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable remote syslog forwarding (requires a host to be set)
+    Enable,
+    /// Disable remote syslog forwarding
+    Disable,
+    /// Update settings — only the flags you pass change
+    #[command(after_help = "\
+EXAMPLES:
+    # Point at a syslog server and enable pf log forwarding
+    aifw syslog set --host 192.168.1.10 --port 514 --pf true
+    aifw syslog enable
+
+    # Switch to TCP with RFC 5424 framing on facility local3
+    aifw syslog set --transport tcp --format rfc5424 --facility local3
+
+    # Forward everything, app logs at warn and above
+    aifw syslog set --pf true --ids true --app true --app-min-level warn")]
+    Set {
+        /// Syslog server hostname or IP
+        #[arg(long)]
+        host: Option<String>,
+        /// Syslog server port (default 514)
+        #[arg(long)]
+        port: Option<u16>,
+        /// Transport: udp or tcp
+        #[arg(long)]
+        transport: Option<String>,
+        /// Message format: rfc3164 (BSD) or rfc5424
+        #[arg(long)]
+        format: Option<String>,
+        /// Facility name (kern, daemon, auth, local0-local7, ...) or number 0-23
+        #[arg(long)]
+        facility: Option<String>,
+        /// HOSTNAME field override; pass an empty string for the system hostname
+        #[arg(long)]
+        hostname: Option<String>,
+        /// Forward pf packet logs (true/false)
+        #[arg(long)]
+        pf: Option<bool>,
+        /// Forward IDS alerts (true/false)
+        #[arg(long)]
+        ids: Option<bool>,
+        /// Forward application logs (true/false)
+        #[arg(long)]
+        app: Option<bool>,
+        /// Minimum app-log level to forward: error, warn, info, or debug
+        #[arg(long)]
+        app_min_level: Option<String>,
+        /// Stop writing local log files while forwarding is active (true/false)
+        #[arg(long)]
+        disable_local: Option<bool>,
+    },
+    /// Send a test message using the saved config (or --host/--port overrides)
+    #[command(after_help = "\
+EXAMPLES:
+    aifw syslog test                          # use the saved configuration
+    aifw syslog test --host 10.0.0.9 --port 5514")]
+    Test {
+        /// Override the target host for this test only
+        #[arg(long)]
+        host: Option<String>,
+        /// Override the target port for this test only
+        #[arg(long)]
+        port: Option<u16>,
+    },
+}
+
+#[derive(Subcommand)]
 enum NatAction {
     /// Add a NAT rule
     #[command(after_help = "\
@@ -994,6 +1073,51 @@ async fn main() -> anyhow::Result<()> {
             }
             IdsAction::Retention { days } => {
                 commands::ids_retention(&cli.db, days).await?;
+            }
+        },
+        Commands::Syslog { action } => match action {
+            SyslogAction::Show { json } => {
+                commands::syslog_show(&cli.db, json).await?;
+            }
+            SyslogAction::Enable => {
+                commands::syslog_enable(&cli.db, true).await?;
+            }
+            SyslogAction::Disable => {
+                commands::syslog_enable(&cli.db, false).await?;
+            }
+            SyslogAction::Set {
+                host,
+                port,
+                transport,
+                format,
+                facility,
+                hostname,
+                pf,
+                ids,
+                app,
+                app_min_level,
+                disable_local,
+            } => {
+                commands::syslog_set(
+                    &cli.db,
+                    commands::SyslogSetOpts {
+                        host,
+                        port,
+                        transport,
+                        format,
+                        facility,
+                        hostname,
+                        pf,
+                        ids,
+                        app,
+                        app_min_level,
+                        disable_local,
+                    },
+                )
+                .await?;
+            }
+            SyslogAction::Test { host, port } => {
+                commands::syslog_test(&cli.db, host, port).await?;
             }
         },
         Commands::Nat { action } => match action {
