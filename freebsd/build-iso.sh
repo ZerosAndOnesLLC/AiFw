@@ -296,13 +296,20 @@ ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
 echo "[9/9] Building USB image..."
 
 IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
-# UFS overhead scales with payload size — SU+J journal, inode/cylinder-group
-# metadata, and the 8% minfree reserve together eat well over a flat 512 MB
-# once the staged system grows (v5.114.0 hit ENOSPC mid-copy with the old
-# `du + 512` formula). 20% proportional headroom plus a 512 MB floor; the
-# free space is zeros and costs nothing after xz.
+# Image sizing. Two hard-won lessons baked in (both bit v5.114.0):
+#   1. `du` of the stage is only a valid payload estimate if the copy
+#      below preserves hardlinks — /rescue alone is one ~20 MB crunched
+#      binary linked ~150 times, so a link-expanding copy (`cp -a`)
+#      needs gigabytes more than du reports and overflows any du-derived
+#      size. The tar pipe below preserves hardlinks, keeping du honest.
+#   2. People BOOT AND RUN the appliance from this image — it needs real
+#      runtime headroom (logs, aifw.db, pkg operations), not just room
+#      for the payload plus filesystem overhead. Bake in 4 GB of free
+#      space (plus 20% for UFS metadata/minfree); the free space is
+#      zeros and costs nothing after xz. growfs_enable below additionally
+#      expands the filesystem to fill the whole stick on first boot.
 STAGE_MB=$(du -sm "$STAGEDIR" | awk '{print $1}')
-IMG_SIZE=$((STAGE_MB + STAGE_MB / 5 + 512))
+IMG_SIZE=$((STAGE_MB + STAGE_MB / 5 + 4096))
 
 # Clean up any stale md devices from previous failed runs
 for stale_md in $(mdconfig -l 2>/dev/null); do
@@ -310,6 +317,18 @@ for stale_md in $(mdconfig -l 2>/dev/null); do
     umount -f "/dev/${stale_md}p1" 2>/dev/null || true
     mdconfig -d -u "$stale_md" 2>/dev/null || true
 done
+
+# A partially-built image must never survive: release.sh publishes
+# whatever sits in OUTPUTDIR, and v5.114.0's first cut compressed and
+# signed an image whose copy had died on ENOSPC. Any failure from here
+# until the image is finished removes it on the way out.
+img_build_failed() {
+    echo "ERROR: USB image build failed — removing partial ${IMG}" >&2
+    umount /mnt 2>/dev/null || true
+    [ -n "${MD:-}" ] && mdconfig -d -u "$MD" 2>/dev/null || true
+    rm -f "$IMG"
+}
+trap img_build_failed EXIT
 
 # Create raw image
 truncate -s "${IMG_SIZE}m" "$IMG"
@@ -340,9 +359,12 @@ gpart bootcode -b "$STAGEDIR/boot/pmbr" -p "$STAGEDIR/boot/gptboot" -i 2 "$MD"
 newfs -U -j -L aifw "/dev/${MD}p3"
 mount "/dev/${MD}p3" /mnt
 
-# Clone staged system into USB image
+# Clone staged system into USB image. tar, not cp -a: cp expands every
+# hardlink into a separate copy (see the sizing comment above), tar
+# preserves them so the image's disk usage matches the stage's.
+( set -o pipefail; tar -cf - -C "$STAGEDIR" . | tar -xpf - -C /mnt )
+
 # Update fstab for USB boot
-cp -a "$STAGEDIR/"* /mnt/
 cat > /mnt/etc/fstab <<USBFSTAB
 /dev/ufs/aifw  /       ufs     rw  1  1
 tmpfs          /tmp    tmpfs   rw,mode=01777  0  0
@@ -352,11 +374,28 @@ USBFSTAB
 sed -i '' '/vfs.root.mountfrom/d' /mnt/boot/loader.conf
 echo 'vfs.root.mountfrom="ufs:/dev/ufs/aifw"' >> /mnt/boot/loader.conf
 
+# Expand the root partition + filesystem to the full USB stick on first
+# boot (stock rc.d/growfs, KEYWORD: firstboot — the /firstboot flag is
+# already staged). A 16 GB stick gives the running appliance 16 GB, not
+# the baked image size.
+echo 'growfs_enable="YES"' >> /mnt/etc/rc.conf
+
 # Restore writable root shell for installed system
 chroot /mnt /usr/sbin/pw usermod root -s /usr/local/sbin/aifw-console 2>/dev/null || true
 
+# Sanity: the copy must have left real free space behind. A full or
+# nearly-full image means the sizing math regressed — fail (and clean
+# up via the trap) rather than ship an appliance with no disk.
+FREE_MB=$(df -m /mnt | awk 'NR==2 {print $4}')
+if [ "$FREE_MB" -lt 2048 ]; then
+    echo "ERROR: USB image has only ${FREE_MB} MB free after populate (want >=2048)" >&2
+    exit 1
+fi
+echo "  IMG free space after populate: ${FREE_MB} MB"
+
 umount /mnt
 mdconfig -d -u "$MD"
+trap - EXIT
 
 echo "  IMG: ${IMG}"
 ls -lh "$IMG"
