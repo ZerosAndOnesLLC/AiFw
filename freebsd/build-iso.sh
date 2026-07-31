@@ -296,7 +296,13 @@ ls -lh "${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.iso"
 echo "[9/9] Building USB image..."
 
 IMG="${OUTPUTDIR}/aifw-${VERSION}-${ARCH}.img"
-IMG_SIZE=$(du -sm "$STAGEDIR" | awk '{print $1 + 512}')
+# UFS overhead scales with payload size — SU+J journal, inode/cylinder-group
+# metadata, and the 8% minfree reserve together eat well over a flat 512 MB
+# once the staged system grows (v5.114.0 hit ENOSPC mid-copy with the old
+# `du + 512` formula). 20% proportional headroom plus a 512 MB floor; the
+# free space is zeros and costs nothing after xz.
+STAGE_MB=$(du -sm "$STAGEDIR" | awk '{print $1}')
+IMG_SIZE=$((STAGE_MB + STAGE_MB / 5 + 512))
 
 # Clean up any stale md devices from previous failed runs
 for stale_md in $(mdconfig -l 2>/dev/null); do
