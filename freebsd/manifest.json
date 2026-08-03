@@ -9,30 +9,34 @@
   "packages": ["curl", "minisign", "strongswan", "sudo", "unbound", "wireguard-tools"],
   "_packages_comment": "OS packages required at runtime. build-iso.sh installs them into the image; deploy.sh ensures them on the dev VM; the in-app updater installs any that are missing during upgrade. A workspace test (aifw-core packaging_tests) asserts the build scripts stay in sync with this list.",
 
+  "_external_repos_comment": "version pins the exact crates.io release built into appliance artifacts (#651, replacing the #538 git SHA pins). CI, build-local.sh and build-update.sh cargo-install crate@version and fail if the pin is missing or unpublished. To take a companion update: publish the new crate version, bump the pin here, and land it through a PR. deploy.sh (dev flow) still builds sibling checkouts.",
   "external_repos": [
     {
-      "_comment": "commit pins the exact revision built into appliance artifacts (#538). CI and build-local.sh check out and verify this SHA and fail if it is missing. To take a companion update: review the upstream diff, bump the SHA here, and land it through a PR.",
       "name": "TrafficCop",
       "repo": "ZerosAndOnesLLC/TrafficCop",
-      "commit": "3d4d96595bea1d4f29b8729a452c95dd1be0ed25",
+      "crate": "trafficcop",
+      "version": "1.4.11",
       "binaries": ["trafficcop"]
     },
     {
       "name": "rDHCP",
       "repo": "ZerosAndOnesLLC/rDHCP",
-      "commit": "bddd4868df6f5931b614f8412071daf31af7d0dd",
+      "crate": "rdhcpd",
+      "version": "0.16.0",
       "binaries": ["rdhcpd"]
     },
     {
       "name": "rDNS",
       "repo": "ZerosAndOnesLLC/rDNS",
-      "commit": "04d5975f2386f883db9b357424ca550a1bf72bce",
+      "crate": "rdns-server",
+      "version": "1.17.21",
       "binaries": ["rdns", "rdns-control"]
     },
     {
       "name": "rTIME",
       "repo": "ZerosAndOnesLLC/rTIME",
-      "commit": "444e104db55fa33f6aded7a6b0b7752509bc0a6f",
+      "crate": "rtimed",
+      "version": "0.14.1",
       "binaries": ["rtime"]
     }
   ],

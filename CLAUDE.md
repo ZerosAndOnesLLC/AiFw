@@ -141,7 +141,7 @@ Pages stay presentational; an ESLint `max-lines` guard caps `src/app/**/page.tsx
 - **rDNS** — DNS resolver
 - **rTIME** — NTP/PTP time sync
 
-The deploy script and CI pipeline build these from sibling directories or clone from GitHub.
+Release builds (CI, `build-local.sh`, `build-update.sh`) install them from crates.io (`trafficcop`, `rdhcpd`, `rdns-server`, `rtimed`) at the exact versions pinned in the manifest (#651). `deploy.sh` (dev flow) still builds sibling checkouts.
 
 ## FreeBSD Deployment
 

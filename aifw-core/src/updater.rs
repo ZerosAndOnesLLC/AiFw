@@ -152,6 +152,13 @@ struct ExternalRepo {
     name: String,
     #[allow(dead_code)]
     repo: String,
+    /// crates.io package the build installs (#651, replaced the git SHA pins).
+    #[serde(rename = "crate")]
+    #[allow(dead_code)]
+    crate_name: String,
+    /// Exact published version pinned for appliance artifacts.
+    #[allow(dead_code)]
+    version: String,
 }
 
 /// OS packages this build requires, from the embedded manifest. Exposed
@@ -2138,6 +2145,66 @@ mod tests {
                     .split_whitespace()
                     .any(|w| w.trim_end_matches(';') == pkg),
                 "package {pkg:?} from manifest.json missing from deploy.sh dependency loop: {deploy_line}"
+            );
+        }
+    }
+
+    // Companion components are installed from crates.io at the versions
+    // pinned in manifest.json (#651, replacing the #538 git SHA pins).
+    // Every entry must carry a crate name and an exact published version,
+    // and the release build paths must consume those pins — a `.commit`
+    // reference reappearing means someone resurrected the retired
+    // clone-and-checkout scheme.
+    #[test]
+    fn test_external_repos_pin_crates_io_versions() {
+        let manifest = load_manifest();
+        assert!(
+            !manifest.external_repos.is_empty(),
+            "manifest.json external_repos list is empty"
+        );
+        for repo in &manifest.external_repos {
+            assert!(
+                !repo.crate_name.is_empty(),
+                "external repo {} has no crate name",
+                repo.name
+            );
+            assert!(
+                repo.version.split('.').count() == 3
+                    && repo
+                        .version
+                        .split('.')
+                        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
+                "external repo {} version {:?} is not a plain x.y.z crates.io version",
+                repo.name,
+                repo.version
+            );
+            assert!(
+                !repo.binaries.is_empty(),
+                "external repo {} lists no binaries",
+                repo.name
+            );
+        }
+        for (path, content) in [
+            (
+                "freebsd/build-local.sh",
+                include_str!("../../freebsd/build-local.sh"),
+            ),
+            (
+                "freebsd/build-update.sh",
+                include_str!("../../freebsd/build-update.sh"),
+            ),
+            (
+                ".github/workflows/build-iso.yml",
+                include_str!("../../.github/workflows/build-iso.yml"),
+            ),
+        ] {
+            assert!(
+                content.contains("cargo install --locked --version"),
+                "{path} no longer installs companions from crates.io at the manifest pin"
+            );
+            assert!(
+                !content.contains(".commit"),
+                "{path} references the retired git SHA-pin field (.commit)"
             );
         }
     }

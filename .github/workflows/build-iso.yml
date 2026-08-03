@@ -82,7 +82,7 @@ jobs:
           copyback: true
           prepare: |
             # Install build tools
-            pkg install -y curl gmake
+            pkg install -y curl gmake jq
 
             # Install Rust via rustup
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -105,32 +105,22 @@ jobs:
             visudo -cf /tmp/aifw-sudoers
             echo "sudoers OK"
 
-            # Build external repos from manifest, pinned to the reviewed
-            # commit recorded there (#538). An unpinned or unresolvable
-            # revision fails the build — never fall back to branch HEAD.
+            # Install companion services from crates.io at the versions
+            # pinned in the manifest (#651, replacing the #538 git SHA
+            # pins). A missing pin or an unpublished version fails the
+            # build — never fall back to branch HEAD.
             MANIFEST="freebsd/manifest.json"
-            for row in $(jq -c '.external_repos[]' "$MANIFEST"); do
-              NAME=$(echo "$row" | jq -r '.name')
-              REPO=$(echo "$row" | jq -r '.repo')
-              COMMIT=$(echo "$row" | jq -r '.commit // empty')
-              if [ -z "$COMMIT" ]; then
-                echo "ERROR: ${NAME} has no pinned commit in ${MANIFEST} (#538)" >&2
+            COMPANIONS_ROOT="/tmp/companions"
+            COMPANIONS_BIN="$COMPANIONS_ROOT/bin"
+            for NAME in $(jq -r '.external_repos[].name' "$MANIFEST"); do
+              CRATE=$(jq -r --arg n "$NAME" '.external_repos[] | select(.name == $n) | .crate // empty' "$MANIFEST")
+              VER=$(jq -r --arg n "$NAME" '.external_repos[] | select(.name == $n) | .version // empty' "$MANIFEST")
+              if [ -z "$CRATE" ] || [ -z "$VER" ]; then
+                echo "ERROR: ${NAME} has no crate/version pin in ${MANIFEST} (#651)" >&2
                 exit 1
               fi
-              echo "=== Building $NAME @ $COMMIT ==="
-              git clone "https://github.com/${REPO}.git" "/tmp/${NAME}"
-              git -C "/tmp/${NAME}" checkout --detach "$COMMIT" || {
-                echo "ERROR: pinned commit ${COMMIT} not found in ${REPO}" >&2
-                exit 1
-              }
-              ACTUAL=$(git -C "/tmp/${NAME}" rev-parse HEAD)
-              if [ "$ACTUAL" != "$COMMIT" ]; then
-                echo "ERROR: ${NAME} checked out ${ACTUAL}, expected ${COMMIT}" >&2
-                exit 1
-              fi
-              cd "/tmp/${NAME}"
-              cargo build --release
-              cd /home/runner/work/AiFw/AiFw
+              echo "=== Installing $NAME ($CRATE $VER from crates.io) ==="
+              cargo install --locked --version "$VER" --root "$COMPANIONS_ROOT" "$CRATE"
             done
 
             echo "=== Preparing build inputs ==="
@@ -139,17 +129,19 @@ jobs:
             for bin in $(jq -r '.binaries.local[]' "$MANIFEST"); do
               cp "target/release/${bin}" "freebsd/release/${bin}"
             done
-            # Copy external binaries
-            for row in $(jq -c '.external_repos[]' "$MANIFEST"); do
-              NAME=$(echo "$row" | jq -r '.name')
-              for bin in $(echo "$row" | jq -r '.binaries[]'); do
-                [ -f "/tmp/${NAME}/target/release/${bin}" ] && cp "/tmp/${NAME}/target/release/${bin}" "freebsd/release/${bin}"
-              done
+            # Copy companion binaries — installed from crates.io above, so
+            # a missing one is a bug; refuse to ship a partial artifact set.
+            for bin in $(jq -r '.external_repos[].binaries[]' "$MANIFEST"); do
+              if [ ! -f "$COMPANIONS_BIN/$bin" ]; then
+                echo "ERROR: companion binary $bin missing from $COMPANIONS_BIN" >&2
+                exit 1
+              fi
+              cp "$COMPANIONS_BIN/$bin" "freebsd/release/$bin"
             done
 
-            echo "=== Recording component revisions (#538) ==="
+            echo "=== Recording component versions (#538/#651) ==="
             # Machine-readable record of the exact source that produced this
-            # artifact set: AiFw commit + every pinned companion commit.
+            # artifact set: AiFw commit + every pinned companion crate version.
             # Ships as a release asset and inside the update tarball.
             VERSION="${{ steps.version.outputs.version }}"
             jq -n \
@@ -157,7 +149,7 @@ jobs:
               --arg aifw_commit "${{ github.sha }}" \
               --slurpfile manifest "$MANIFEST" \
               '{version: $version, aifw_commit: $aifw_commit,
-                components: [$manifest[0].external_repos[] | {name, repo, commit}]}' \
+                components: [$manifest[0].external_repos[] | {name, repo, crate, version}]}' \
               > /tmp/aifw-components.json
             cat /tmp/aifw-components.json
             mkdir -p /usr/obj/aifw-iso/output
