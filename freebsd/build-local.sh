@@ -115,70 +115,32 @@ BIN_VER="$("$PROJECT_ROOT/target/release/aifw" --version 2>/dev/null | grep -oE 
 [ "$BIN_VER" = "$VERSION" ] || die "version mismatch: building v${VERSION} but target/release/aifw reports v${BIN_VER:-unknown}. Bump Cargo.toml and rebuild (try 'cargo clean -p aifw') before releasing."
 echo "--- Verified compiled aifw binary is v${VERSION} ---"
 
-# Helper: clone-or-update a companion repo and FAIL LOUDLY on errors.
-# Builds the exact commit pinned in manifest.json (#538) — never branch
-# HEAD, so a rebuild of the same AiFw commit always bundles the same
-# companion source. (The pre-#538 version reset to origin/main; before
-# that, `git pull 2>/dev/null || true` silently shipped stale binaries.)
-build_companion() {
-    local name="$1" dir="$2" url="$3"
-    local pin
-    pin=$(jq -r --arg n "$name" \
-        '.external_repos[] | select(.name == $n) | .commit // empty' \
+# Install companion services (reverse proxy, DHCP, DNS, NTP) from
+# crates.io at the versions pinned in manifest.json (#651, replacing the
+# #538 git SHA pins — the published crates track the companion repo
+# releases, so there are no sibling checkouts to clone or branch-juggle).
+# cargo install is a no-op when the pinned version is already in
+# COMPANIONS_ROOT and fails loudly on a missing or unpublished pin.
+COMPANIONS_ROOT="$PROJECT_ROOT/target/companions"
+COMPANIONS_BIN="$COMPANIONS_ROOT/bin"
+for name in $(jq -r '.external_repos[].name' "$PROJECT_ROOT/freebsd/manifest.json"); do
+    crate=$(jq -r --arg n "$name" \
+        '.external_repos[] | select(.name == $n) | .crate // empty' \
         "$PROJECT_ROOT/freebsd/manifest.json")
-    [ -n "$pin" ] || die "no pinned commit for $name in manifest.json (#538)"
-    if [ ! -d "$dir" ]; then
-        echo "Cloning $name from $url ..."
-        git clone "$url" "$dir" || {
-            echo "ERROR: clone of $name failed" >&2
-            exit 1
-        }
-    fi
-    # Remember the operator's checkout so we can put it back: these are the
-    # same working repos they develop in, and leaving them detached at the
-    # pin meant manually switching back to main after every build.
-    local prev
-    prev=$(git -C "$dir" symbolic-ref --quiet --short HEAD || git -C "$dir" rev-parse HEAD)
-    echo "--- Checking out $name @ $pin (will restore '$prev' after build) ---"
-    ( cd "$dir" && \
-        git fetch --tags origin && \
-        git checkout --quiet --detach "$pin" ) || {
-        echo "ERROR: pinned commit $pin not found in $name ($dir), or the" >&2
-        echo "       working tree has uncommitted changes — commit/stash first" >&2
-        exit 1
-    }
-    local actual
-    actual=$(git -C "$dir" rev-parse HEAD)
-    [ "$actual" = "$pin" ] || die "$name checked out $actual, expected pinned $pin"
-    echo "--- $name commit: $actual ---"
-    local rc=0
-    ( cd "$dir" && cargo build --release ) || rc=1
-    # Restore the original ref even when the build fails.
-    git -C "$dir" checkout --quiet "$prev" || \
-        echo "WARN: could not restore $name to '$prev' — left detached at $pin" >&2
-    # Root-run builds litter the operator's repo with root-owned .git
-    # objects and target/ artifacts, breaking their later git/cargo use
-    # (seen live: 'insufficient permission for adding an object'). Hand
-    # the repo back to the invoking user.
-    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-        chown -R "$SUDO_USER" "$dir" 2>/dev/null || true
-    fi
-    if [ "$rc" -ne 0 ]; then
-        echo "ERROR: cargo build of $name failed" >&2
-        exit 1
-    fi
-}
-
-# Build companion services (reverse proxy, DHCP, DNS, NTP).
-TRAFFICCOP_DIR="$PROJECT_ROOT/../trafficcop"
-RDHCP_DIR="$PROJECT_ROOT/../rDHCP"
-RDNS_DIR="$PROJECT_ROOT/../rDNS"
-RTIME_DIR="$PROJECT_ROOT/../rTIME"
-
-build_companion TrafficCop "$TRAFFICCOP_DIR" https://github.com/ZerosAndOnesLLC/TrafficCop.git
-build_companion rDHCP      "$RDHCP_DIR"      https://github.com/ZerosAndOnesLLC/rDHCP.git
-build_companion rDNS       "$RDNS_DIR"       https://github.com/ZerosAndOnesLLC/rDNS.git
-build_companion rTIME      "$RTIME_DIR"      https://github.com/ZerosAndOnesLLC/rTIME.git
+    ver=$(jq -r --arg n "$name" \
+        '.external_repos[] | select(.name == $n) | .version // empty' \
+        "$PROJECT_ROOT/freebsd/manifest.json")
+    [ -n "$crate" ] || die "no crate name for $name in manifest.json (#651)"
+    [ -n "$ver" ] || die "no pinned version for $name in manifest.json (#651)"
+    echo "--- Installing $name ($crate $ver from crates.io) ---"
+    cargo install --locked --version "$ver" --root "$COMPANIONS_ROOT" "$crate" \
+        || die "cargo install of $crate $ver failed"
+    for bin in $(jq -r --arg n "$name" \
+        '.external_repos[] | select(.name == $n) | .binaries[]' \
+        "$PROJECT_ROOT/freebsd/manifest.json"); do
+        [ -f "$COMPANIONS_BIN/$bin" ] || die "$crate $ver did not produce binary $bin"
+    done
+done
 cd "$PROJECT_ROOT"
 
 # --- Stage build inputs ---
@@ -198,25 +160,13 @@ for bin in $LOCAL_BINS; do
     fi
     cp "$PROJECT_ROOT/target/release/${bin}" "$SCRIPT_DIR/release/${bin}"
 done
-# Stage TrafficCop binary if built
-if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
-    cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$SCRIPT_DIR/release/trafficcop"
-fi
-# Stage rDHCP binary if built
-if [ -f "$RDHCP_DIR/target/release/rdhcpd" ]; then
-    cp "$RDHCP_DIR/target/release/rdhcpd" "$SCRIPT_DIR/release/rdhcpd"
-fi
-# Stage rDNS binaries if built
-if [ -f "$RDNS_DIR/target/release/rdns" ]; then
-    cp "$RDNS_DIR/target/release/rdns" "$SCRIPT_DIR/release/rdns"
-fi
-# Stage rTIME binary if built
-if [ -f "$RTIME_DIR/target/release/rtime" ]; then
-    cp "$RTIME_DIR/target/release/rtime" "$SCRIPT_DIR/release/rtime"
-fi
-if [ -f "$RDNS_DIR/target/release/rdns-control" ]; then
-    cp "$RDNS_DIR/target/release/rdns-control" "$SCRIPT_DIR/release/rdns-control"
-fi
+# Stage companion binaries — installed from crates.io above, so a missing
+# one is a bug; refuse to ship a partial artifact set.
+EXT_BINS=$(jq -r '.external_repos[].binaries[]' "$PROJECT_ROOT/freebsd/manifest.json" | tr '\n' ' ')
+for bin in $EXT_BINS; do
+    [ -f "$COMPANIONS_BIN/$bin" ] || die "companion binary $bin missing from $COMPANIONS_BIN"
+    cp "$COMPANIONS_BIN/$bin" "$SCRIPT_DIR/release/$bin"
+done
 
 rm -rf "$SCRIPT_DIR/ui-export"
 cp -a "$PROJECT_ROOT/aifw-ui/out" "$SCRIPT_DIR/ui-export"
@@ -237,25 +187,12 @@ mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui"
 for bin in $LOCAL_BINS; do
     cp "$PROJECT_ROOT/target/release/${bin}" "$TARBALL_DIR/bin/"
 done
-# Include TrafficCop in update tarball
-if [ -f "$TRAFFICCOP_DIR/target/release/trafficcop" ]; then
-    cp "$TRAFFICCOP_DIR/target/release/trafficcop" "$TARBALL_DIR/bin/"
-fi
-# Include rDHCP in update tarball
-if [ -f "$RDHCP_DIR/target/release/rdhcpd" ]; then
-    cp "$RDHCP_DIR/target/release/rdhcpd" "$TARBALL_DIR/bin/"
-fi
-# Include rDNS in update tarball
-if [ -f "$RDNS_DIR/target/release/rdns" ]; then
-    cp "$RDNS_DIR/target/release/rdns" "$TARBALL_DIR/bin/"
-fi
-if [ -f "$RDNS_DIR/target/release/rdns-control" ]; then
-    cp "$RDNS_DIR/target/release/rdns-control" "$TARBALL_DIR/bin/"
-fi
-# Include rTIME in update tarball
-if [ -f "$RTIME_DIR/target/release/rtime" ]; then
-    cp "$RTIME_DIR/target/release/rtime" "$TARBALL_DIR/bin/"
-fi
+# Companion binaries from the crates.io install — same missing-binary
+# refusal as the staging step above.
+for bin in $EXT_BINS; do
+    [ -f "$COMPANIONS_BIN/$bin" ] || die "companion binary $bin missing from $COMPANIONS_BIN"
+    cp "$COMPANIONS_BIN/$bin" "$TARBALL_DIR/bin/"
+done
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
 
 # rc.d service scripts — the updater (aifw-core/src/updater.rs) iterates
@@ -291,19 +228,18 @@ echo "$VERSION" > "$TARBALL_DIR/version"
 # older than the build host — its binaries wouldn't link.
 freebsd-version -u | sed 's/-.*//' > "$TARBALL_DIR/required-os"
 
-# Write a manifest of what made it into the tarball — commit SHAs for every
-# component plus a quick sanity check on rDNS features. Makes stale companion
-# repos (which have burned us before — rdns 1.5.1 shipping in a v5.45.0
-# tarball) visible at build time.
+# Write a manifest of what made it into the tarball — the crates.io
+# version of every component plus a quick sanity check on rDNS features.
+# Makes a stale or mispinned companion (which has burned us before —
+# rdns 1.5.1 shipping in a v5.45.0 tarball) visible at build time.
 {
     echo "AiFw             $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    # Companion SHAs come from the manifest pins — build_companion verified
-    # each checkout matched its pin and then RESTORED the operator's branch,
-    # so the repos' HEADs no longer reflect what was built.
-    for n in TrafficCop rDHCP rDNS rTIME; do
-        p=$(jq -r --arg n "$n" '.external_repos[] | select(.name == $n) | .commit // empty' \
-            "$PROJECT_ROOT/freebsd/manifest.json")
-        [ -n "$p" ] && printf '%-16s %.12s (manifest pin)\n' "$n" "$p"
+    # Companion versions come from the manifest crates.io pins — the
+    # install step verified each pinned version produced its binaries.
+    jq -r '.external_repos[] | "\(.name) \(.version) \(.crate)"' \
+        "$PROJECT_ROOT/freebsd/manifest.json" | \
+    while read -r n v c; do
+        printf '%-16s %s (crates.io %s)\n' "$n" "$v" "$c"
     done
     if [ -f "$TARBALL_DIR/bin/rdns" ]; then
         rver=$(grep -ao 'rDNS [0-9][0-9.]*' "$TARBALL_DIR/bin/rdns" | head -1 || true)
@@ -317,7 +253,7 @@ freebsd-version -u | sed 's/-.*//' > "$TARBALL_DIR/required-os"
 if [ -f "$TARBALL_DIR/bin/rdns" ]; then
     if ! grep -q 'stats-json' "$TARBALL_DIR/bin/rdns"; then
         echo "ERROR: rDNS binary does not contain 'stats-json' — this is a stale build (pre-v1.10)." >&2
-        echo "       Check that $RDNS_DIR is on origin/main before re-running." >&2
+        echo "       Check the rdns-server version pin in freebsd/manifest.json." >&2
         exit 1
     fi
 fi
