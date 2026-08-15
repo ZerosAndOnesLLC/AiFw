@@ -47,16 +47,22 @@ pub fn dummy_hash() -> &'static str {
 mod tests {
     use super::*;
 
+    /// Random per-test secret so no credential literal lives in the tree.
+    fn random_secret() -> String {
+        Uuid::new_v4().simple().to_string()
+    }
+
     #[test]
     fn hash_verifies() {
-        let h = hash_password("hunter2").unwrap();
-        assert!(verify_password("hunter2", &h));
-        assert!(!verify_password("hunter3", &h));
+        let pw = random_secret();
+        let h = hash_password(&pw).unwrap();
+        assert!(verify_password(&pw, &h));
+        assert!(!verify_password(&random_secret(), &h));
     }
 
     #[test]
     fn hash_uses_argon2id_with_pinned_params() {
-        let h = hash_password("x").unwrap();
+        let h = hash_password(&random_secret()).unwrap();
         assert!(
             h.starts_with(aifw_common::password::ARGON2_PHC_PREFIX),
             "got: {h}"
@@ -68,7 +74,7 @@ mod tests {
         let a = dummy_hash();
         let b = dummy_hash();
         assert_eq!(a, b);
-        assert!(!verify_password("password", a));
+        assert!(!verify_password(&random_secret(), a));
         assert!(!verify_password("", a));
     }
 }

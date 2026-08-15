@@ -68,23 +68,30 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Random per-test secret so no credential literal lives in the tree.
+    fn random_secret() -> String {
+        SaltString::generate(&mut OsRng).as_str().to_string()
+    }
+
     #[test]
     fn hash_round_trips() {
-        let h = hash_password("hunter2").unwrap();
-        assert!(verify_password("hunter2", &h));
-        assert!(!verify_password("hunter3", &h));
+        let pw = random_secret();
+        let h = hash_password(&pw).unwrap();
+        assert!(verify_password(&pw, &h));
+        assert!(!verify_password(&random_secret(), &h));
     }
 
     #[test]
     fn hash_uses_pinned_argon2id_params() {
-        let h = hash_password("x").unwrap();
+        let h = hash_password(&random_secret()).unwrap();
         assert!(h.starts_with(ARGON2_PHC_PREFIX), "got: {h}");
     }
 
     #[test]
     fn malformed_hash_never_verifies() {
-        assert!(!verify_password("x", ""));
-        assert!(!verify_password("x", "not-a-phc-string"));
+        let pw = random_secret();
+        assert!(!verify_password(&pw, ""));
+        assert!(!verify_password(&pw, "not-a-phc-string"));
     }
 
     #[test]
@@ -92,17 +99,18 @@ mod tests {
         // A hash written by an older build with different parameters must
         // keep working so existing accounts survive the upgrade — the
         // params come from the PHC string, not from `hasher()`.
+        let pw = random_secret();
         let salt = SaltString::generate(&mut OsRng);
         let other = Argon2::new(
             Algorithm::Argon2id,
             Version::V0x13,
             Params::new(4096, 3, 1, None).unwrap(),
         )
-        .hash_password(b"legacy-pw", &salt)
+        .hash_password(pw.as_bytes(), &salt)
         .unwrap()
         .to_string();
         assert!(!other.starts_with(ARGON2_PHC_PREFIX), "got: {other}");
-        assert!(verify_password("legacy-pw", &other));
-        assert!(!verify_password("wrong", &other));
+        assert!(verify_password(&pw, &other));
+        assert!(!verify_password(&random_secret(), &other));
     }
 }
