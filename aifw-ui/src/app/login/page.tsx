@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Image from "next/image";
 import { api, setAuthed } from "@/lib/api";
+import { hardNavigate } from "@/lib/navigation";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -30,7 +31,7 @@ export default function LoginPage() {
       );
       if (data.tokens?.access_token) {
         setAuthed(true);
-        window.location.href = "/";
+        hardNavigate("/");
       } else if (data.totp_required) {
         setTotpRequired(true);
       }
@@ -53,7 +54,7 @@ export default function LoginPage() {
       );
       if (data.access_token) {
         setAuthed(true);
-        window.location.href = "/";
+        hardNavigate("/");
       }
     } catch {
       setError("Invalid TOTP code or recovery code");
