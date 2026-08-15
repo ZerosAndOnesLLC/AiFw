@@ -32,6 +32,7 @@ pub mod multiwan;
 /// NAT types: SNAT/DNAT/masquerade/binat/NAT64/NAT46 rules and pf rendering
 pub mod nat;
 pub mod net_safety;
+pub mod password;
 /// Granular permission bitmask model shared by JWT claims and role definitions
 pub mod permission;
 /// Traffic shaping (pf queues) and per-IP rate limiting / SYN flood protection

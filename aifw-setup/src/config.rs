@@ -76,10 +76,8 @@ impl SetupConfig {
         if self.admin_password_hash.is_empty() {
             match self.admin_password.take() {
                 Some(p) if p.len() >= 8 => {
-                    self.admin_password_hash = hash_password(&p);
-                    if self.admin_password_hash.is_empty() {
-                        return Err("failed to hash admin_password".to_string());
-                    }
+                    self.admin_password_hash = hash_password(&p)
+                        .map_err(|e| format!("failed to hash admin_password: {e}"))?;
                 }
                 Some(_) => {
                     return Err("admin_password must be at least 8 characters".to_string());
@@ -157,18 +155,12 @@ impl SetupConfig {
     }
 }
 
-/// Argon2id password hashing — same algorithm and parameters as
-/// `aifw-api/src/auth/password.rs`. Shared by the wizard and the
-/// unattended seed loader.
-pub fn hash_password(password: &str) -> String {
-    use argon2::{
-        Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng,
-    };
-    let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .unwrap_or_default()
+/// Argon2id password hashing — delegates to the workspace-wide pinned
+/// parameters in `aifw_common::password` so the first admin's hash is
+/// identical in shape to every hash the API writes later (SEC-M4 #301).
+/// Shared by the wizard and the unattended seed loader.
+pub fn hash_password(password: &str) -> Result<String, String> {
+    aifw_common::password::hash_password(password).map_err(|e| e.to_string())
 }
 
 fn default_ram_mb() -> u64 {

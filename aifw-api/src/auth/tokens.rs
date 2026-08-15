@@ -1,5 +1,7 @@
 use chrono::{Duration, Utc};
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, TokenData, Validation, decode, encode};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, EncodingKey, Header, TokenData, Validation, decode, encode,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
 use uuid::Uuid;
@@ -11,6 +13,14 @@ use super::password::hash_password;
 // JWT Access Tokens
 // ============================================================
 
+/// `iss` claim stamped on every access token and required on verify.
+/// Together with [`JWT_AUDIENCE`] this scopes tokens to the AiFw API so a
+/// token minted by any other HS256 user of the same secret material (or a
+/// future second issuer sharing a key store) is rejected (SEC-M2 #299).
+pub const JWT_ISSUER: &str = "aifw-api";
+/// `aud` claim stamped on every access token and required on verify.
+pub const JWT_AUDIENCE: &str = "aifw";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
@@ -18,6 +28,14 @@ pub struct Claims {
     pub exp: i64,
     pub iat: i64,
     pub jti: String, // unique token ID
+    /// Issuer — always [`JWT_ISSUER`]. Optional on the struct only so the
+    /// claims type can still describe pre-#299 tokens; validation rejects
+    /// tokens where it is missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+    /// Audience — always [`JWT_AUDIENCE`]. See `iss`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perm: Option<u64>, // permission bitmask
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,18 +68,30 @@ pub fn create_access_token(
         exp: exp.timestamp(),
         iat: now.timestamp(),
         jti: jti.clone(),
+        iss: Some(JWT_ISSUER.to_string()),
+        aud: Some(JWT_AUDIENCE.to_string()),
         perm: Some(permissions),
         role: Some(role_name.to_string()),
     };
 
     let token = encode(
-        &Header::default(),
+        &Header::new(Algorithm::HS256),
         &claims,
         &EncodingKey::from_secret(settings.jwt_secret.as_bytes()),
     )
     .map_err(|e| format!("token encode error: {e}"))?;
 
     Ok((token, exp.to_rfc3339()))
+}
+
+/// Validation rules for access tokens: HS256 only (no `alg` negotiation),
+/// `exp` enforced, and `iss`/`aud` must match this API's constants.
+fn access_token_validation() -> Validation {
+    let mut v = Validation::new(Algorithm::HS256);
+    v.set_issuer(&[JWT_ISSUER]);
+    v.set_audience(&[JWT_AUDIENCE]);
+    v.set_required_spec_claims(&["exp", "iss", "aud"]);
+    v
 }
 
 pub fn verify_access_token(
@@ -71,7 +101,7 @@ pub fn verify_access_token(
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(settings.jwt_secret.as_bytes()),
-        &Validation::default(),
+        &access_token_validation(),
     )
     .map_err(|e| format!("token verify error: {e}"))
 }
@@ -218,20 +248,44 @@ pub async fn rotate_refresh_token(
         return Err("refresh token expired".to_string());
     }
 
-    // Revoke the old token
-    sqlx::query("UPDATE refresh_tokens SET revoked = 1 WHERE id = ?1")
-        .bind(&token_id)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("db error: {e}"))?;
-
-    // Issue new refresh token in the same family
+    // Revoke the old token and insert its successor atomically (SEC-M15
+    // #312). Without the transaction a crash between the two writes leaves
+    // the family with either no live token (user logged out) or, worse, the
+    // old one still valid alongside a new one — which would let a stolen
+    // token be replayed without tripping reuse detection.
     let new_raw = format!("rfx_{}", Uuid::new_v4().to_string().replace('-', ""));
     let new_hash = hash_password(&new_raw).map_err(|_| "hash error".to_string())?;
     let new_prefix = refresh_prefix(&new_raw).to_string();
     let new_expires = Utc::now() + Duration::days(settings.refresh_token_expiry_days);
     let new_id = Uuid::new_v4().to_string();
 
+    let mut tx = pool.begin().await.map_err(|e| format!("db error: {e}"))?;
+
+    // Guard against a concurrent rotate of the same token: only proceed if
+    // *this* statement flipped the row. If another request got there first
+    // the row is already revoked and we must not mint a second successor.
+    let revoked_now =
+        sqlx::query("UPDATE refresh_tokens SET revoked = 1 WHERE id = ?1 AND revoked = 0")
+            .bind(&token_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("db error: {e}"))?
+            .rows_affected();
+    if revoked_now == 0 {
+        // Lost the race — the other rotate owns the family now. Treat this
+        // exactly like a reuse attempt: revoke the family so neither the
+        // racing client nor a thief keeps a live token.
+        sqlx::query("UPDATE refresh_tokens SET revoked = 1 WHERE family_id = ?1")
+            .bind(&family_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("db error: {e}"))?;
+        tx.commit().await.map_err(|e| format!("db error: {e}"))?;
+        tracing::warn!(family_id = %family_id, "concurrent refresh token rotate — family revoked");
+        return Err("token reuse detected — all sessions revoked".to_string());
+    }
+
+    // Issue new refresh token in the same family
     sqlx::query(
         r#"INSERT INTO refresh_tokens (id, user_id, token_hash, token_prefix, family_id, expires_at, revoked, created_at)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)"#,
@@ -243,9 +297,11 @@ pub async fn rotate_refresh_token(
     .bind(&family_id) // same family
     .bind(new_expires.to_rfc3339())
     .bind(Utc::now().to_rfc3339())
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("db error: {e}"))?;
+
+    tx.commit().await.map_err(|e| format!("db error: {e}"))?;
 
     // Opportunistic cleanup of revoked/expired rows keeps the table bounded.
     prune_refresh_tokens(pool).await;
@@ -349,4 +405,98 @@ pub struct RefreshRequest {
 #[derive(Debug, Deserialize)]
 pub struct LogoutRequest {
     pub refresh_token: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> AuthSettings {
+        AuthSettings {
+            jwt_secret: "unit-test-secret".to_string(),
+            access_token_expiry_mins: 5,
+            refresh_token_expiry_days: 1,
+            require_totp: false,
+            require_totp_for_oauth: false,
+            auto_create_oauth_users: false,
+            max_login_attempts: 5,
+            lockout_duration_secs: 60,
+            allow_registration: false,
+            password_min_length: 8,
+        }
+    }
+
+    #[test]
+    fn access_token_carries_iss_and_aud_and_verifies() {
+        let s = settings();
+        let (tok, _) = create_access_token("u1", "alice", 0, "viewer", &s).unwrap();
+        let data = verify_access_token(&tok, &s).expect("freshly minted token verifies");
+        assert_eq!(data.claims.iss.as_deref(), Some(JWT_ISSUER));
+        assert_eq!(data.claims.aud.as_deref(), Some(JWT_AUDIENCE));
+        assert_eq!(data.header.alg, Algorithm::HS256);
+    }
+
+    /// SEC-M2 #299: a token signed with the right secret but lacking (or
+    /// carrying the wrong) iss/aud must be rejected — otherwise anything
+    /// else that ever shares the secret could mint API sessions.
+    #[test]
+    fn token_without_iss_aud_is_rejected() {
+        let s = settings();
+        let now = Utc::now();
+        let mut claims = Claims {
+            sub: "u1".into(),
+            username: "alice".into(),
+            exp: (now + Duration::minutes(5)).timestamp(),
+            iat: now.timestamp(),
+            jti: "x".into(),
+            iss: None,
+            aud: None,
+            perm: None,
+            role: None,
+        };
+        let key = EncodingKey::from_secret(s.jwt_secret.as_bytes());
+        let legacy = encode(&Header::new(Algorithm::HS256), &claims, &key).unwrap();
+        assert!(
+            verify_access_token(&legacy, &s).is_err(),
+            "no iss/aud must fail"
+        );
+
+        claims.iss = Some("someone-else".into());
+        claims.aud = Some(JWT_AUDIENCE.into());
+        let wrong_iss = encode(&Header::new(Algorithm::HS256), &claims, &key).unwrap();
+        assert!(
+            verify_access_token(&wrong_iss, &s).is_err(),
+            "wrong iss must fail"
+        );
+
+        claims.iss = Some(JWT_ISSUER.into());
+        claims.aud = Some("other-app".into());
+        let wrong_aud = encode(&Header::new(Algorithm::HS256), &claims, &key).unwrap();
+        assert!(
+            verify_access_token(&wrong_aud, &s).is_err(),
+            "wrong aud must fail"
+        );
+    }
+
+    /// The validator pins HS256; a token that names another HMAC alg in its
+    /// header must not be accepted even with the correct secret.
+    #[test]
+    fn token_with_other_alg_is_rejected() {
+        let s = settings();
+        let now = Utc::now();
+        let claims = Claims {
+            sub: "u1".into(),
+            username: "alice".into(),
+            exp: (now + Duration::minutes(5)).timestamp(),
+            iat: now.timestamp(),
+            jti: "x".into(),
+            iss: Some(JWT_ISSUER.into()),
+            aud: Some(JWT_AUDIENCE.into()),
+            perm: None,
+            role: None,
+        };
+        let key = EncodingKey::from_secret(s.jwt_secret.as_bytes());
+        let hs512 = encode(&Header::new(Algorithm::HS512), &claims, &key).unwrap();
+        assert!(verify_access_token(&hs512, &s).is_err());
+    }
 }
