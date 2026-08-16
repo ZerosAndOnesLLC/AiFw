@@ -1509,13 +1509,8 @@ pub async fn users_add(
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
-    use argon2::{
-        Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng,
-    };
-    let salt = SaltString::generate(&mut OsRng);
-    let pw_hash = Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
+    // Same pinned Argon2id parameters as the API and setup wizard (SEC-M4 #301).
+    let pw_hash = aifw_common::password::hash_password(password)
         .map_err(|e| anyhow::anyhow!("hash error: {e}"))?;
 
     sqlx::query("INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, role, enabled, created_at) VALUES (?1, ?2, ?3, 0, 'local', ?4, 1, ?5)")

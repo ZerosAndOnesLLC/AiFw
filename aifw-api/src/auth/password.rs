@@ -1,55 +1,31 @@
-//! Password hashing with explicitly-pinned Argon2id parameters.
+//! Password hashing for the API — a thin adapter over the workspace-wide
+//! [`aifw_common::password`] module so every binary (API, setup wizard,
+//! seed loader, CLI) writes identical Argon2id hashes (SEC-M4 #301).
 //!
-//! Using `Argon2::default()` was portable but exposed us to silent
-//! strengthening/weakening whenever the `argon2` crate bumped its
-//! defaults. We now pin the OWASP 2023 parameters: Argon2id, 19 MiB
-//! memory, 2 passes, 1 lane.
+//! The pinned parameters (OWASP 2023: Argon2id, 19 MiB, t=2, p=1) live in
+//! `aifw-common`; this file only maps errors to `StatusCode` for handler
+//! ergonomics and owns the login-timing [`dummy_hash`].
 //!
 //! [`dummy_hash`] returns a process-wide dummy hash used by the login
 //! handler to keep verification time constant when the supplied
-//! username does not exist. Unlike the previous hardcoded constant,
-//! this one is produced from a real random password using the same
-//! parameters as real users, so the attacker can't fingerprint the
-//! nonexistent-user path from hash parameters or verification time.
+//! username does not exist. It is produced from a real random password
+//! using the same parameters as real users, so the attacker can't
+//! fingerprint the nonexistent-user path from hash parameters or
+//! verification time.
 
-use argon2::{
-    Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version,
-    password_hash::{SaltString, rand_core::OsRng},
-};
 use axum::http::StatusCode;
 use std::sync::OnceLock;
 use uuid::Uuid;
 
-/// OWASP 2023 Argon2id parameters:
-///   m = 19 456 KiB (≈ 19 MiB)
-///   t = 2
-///   p = 1
-fn params() -> Params {
-    Params::new(19_456, 2, 1, None).expect("argon2 params are valid")
-}
-
-fn hasher() -> Argon2<'static> {
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params())
-}
-
 pub fn hash_password(password: &str) -> Result<String, StatusCode> {
-    let salt = SaltString::generate(&mut OsRng);
-    hasher()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| {
-            tracing::error!(error = %e, "auth: password hashing failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+    aifw_common::password::hash_password(password).map_err(|e| {
+        tracing::error!(error = %e, "auth: password hashing failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
-    let Ok(parsed) = PasswordHash::new(hash) else {
-        return false;
-    };
-    hasher()
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok()
+    aifw_common::password::verify_password(password, hash)
 }
 
 /// Dummy hash used by the login handler to keep nonexistent-user timing
@@ -71,18 +47,26 @@ pub fn dummy_hash() -> &'static str {
 mod tests {
     use super::*;
 
+    /// Random per-test secret so no credential literal lives in the tree.
+    fn random_secret() -> String {
+        Uuid::new_v4().simple().to_string()
+    }
+
     #[test]
     fn hash_verifies() {
-        let h = hash_password("hunter2").unwrap();
-        assert!(verify_password("hunter2", &h));
-        assert!(!verify_password("hunter3", &h));
+        let pw = random_secret();
+        let h = hash_password(&pw).unwrap();
+        assert!(verify_password(&pw, &h));
+        assert!(!verify_password(&random_secret(), &h));
     }
 
     #[test]
     fn hash_uses_argon2id_with_pinned_params() {
-        let h = hash_password("x").unwrap();
-        // Encoded hash starts with the algorithm + version + params.
-        assert!(h.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"), "got: {h}");
+        let h = hash_password(&random_secret()).unwrap();
+        assert!(
+            h.starts_with(aifw_common::password::ARGON2_PHC_PREFIX),
+            "got: {h}"
+        );
     }
 
     #[test]
@@ -90,8 +74,7 @@ mod tests {
         let a = dummy_hash();
         let b = dummy_hash();
         assert_eq!(a, b);
-        // A guessed password shouldn't verify.
-        assert!(!verify_password("password", a));
+        assert!(!verify_password(&random_secret(), a));
         assert!(!verify_password("", a));
     }
 }

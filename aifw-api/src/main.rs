@@ -375,6 +375,43 @@ struct Args {
 /// Native clients (curl, native WS libraries) send no `Origin` and are allowed.
 /// A `None` policy means CORS is `*` (no meaningful allow-list) so any Origin
 /// passes; otherwise the Origin must be in the operator's configured list.
+/// Content-Security-Policy applied to every response. See the comment at
+/// the layer site in [`build_router`] for the reasoning behind each source.
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+script-src 'self' 'unsafe-inline'; \
+style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; \
+font-src 'self' data:; \
+connect-src 'self'; \
+object-src 'none'; \
+base-uri 'self'; \
+form-action 'self'; \
+frame-ancestors 'none'";
+
+/// Static browser-hardening headers set on every response (SEC-M3 #300).
+pub fn security_headers() -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    use axum::http::{HeaderName, HeaderValue, header};
+    vec![
+        (
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+        ),
+        (
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ),
+        (header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY")),
+        (
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ),
+        (
+            HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+        ),
+    ]
+}
+
 pub fn origin_allowed(origin: Option<&str>, allowed: &Option<Vec<String>>) -> bool {
     match origin {
         None => true,
@@ -595,16 +632,6 @@ pub fn build_router(
         )
         .with_state(state);
 
-    // HSTS: when TLS is on, tell browsers to refuse plaintext for this
-    // host for a year (and preload eligible). Skipped under --no-tls
-    // because HSTS over HTTP would pin the user to a broken origin.
-    if tls_enabled {
-        app = app.layer(SetResponseHeaderLayer::if_not_present(
-            axum::http::header::STRICT_TRANSPORT_SECURITY,
-            axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        ));
-    }
-
     // Serve static UI if directory is provided.
     //
     // - `precompressed_br` / `precompressed_gzip`: ServeDir auto-serves
@@ -636,6 +663,33 @@ pub fn build_router(
             "Serving web UI from {} (precompressed + cache headers enabled)",
             dir.display()
         );
+    }
+
+    // Browser hardening headers on every response (SEC-M3 #300). The UI is
+    // a static Next.js export served by this process, so all of these apply
+    // to it as well as to the JSON API. Layered outermost so they also
+    // cover 4xx/5xx and static-file responses.
+    //
+    // CSP notes: the static export inlines its hydration/RSC bootstrap
+    // scripts and Tailwind emits some inline styles, and a static export
+    // cannot carry per-response nonces, so `'unsafe-inline'` stays for
+    // script-src/style-src. Everything else is locked to the origin;
+    // `frame-ancestors 'none'` (plus X-Frame-Options) blocks clickjacking,
+    // `object-src 'none'` and `base-uri 'self'` close the plugin / <base>
+    // injection vectors. `connect-src 'self'` covers same-origin ws:/wss:
+    // under CSP3.
+    for (name, value) in security_headers() {
+        app = app.layer(SetResponseHeaderLayer::if_not_present(name, value));
+    }
+
+    // HSTS: when TLS is on, tell browsers to refuse plaintext for this
+    // host for a year (and preload eligible). Skipped under --no-tls
+    // because HSTS over HTTP would pin the user to a broken origin.
+    if tls_enabled {
+        app = app.layer(SetResponseHeaderLayer::if_not_present(
+            axum::http::header::STRICT_TRANSPORT_SECURITY,
+            axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ));
     }
 
     app

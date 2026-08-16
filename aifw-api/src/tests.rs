@@ -1143,6 +1143,37 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
     }
 
+    /// SEC-M3 #300: browser-hardening headers are present on every
+    /// response — API JSON, errors, and (when served) the static UI.
+    #[tokio::test]
+    async fn test_security_headers_on_every_response() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        for resp in [
+            server
+                .get("/api/v1/status")
+                .authorization_bearer(&token)
+                .await,
+            server.get("/api/v1/rules").await,           // 401 path
+            server.get("/definitely/not/a/route").await, // 404 path
+        ] {
+            let h = resp.headers();
+            let csp = h
+                .get("content-security-policy")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            assert!(csp.contains("default-src 'self'"), "csp: {csp}");
+            assert!(csp.contains("frame-ancestors 'none'"), "csp: {csp}");
+            assert!(csp.contains("object-src 'none'"), "csp: {csp}");
+            assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff");
+            assert_eq!(h.get("x-frame-options").unwrap(), "DENY");
+            assert_eq!(h.get("referrer-policy").unwrap(), "no-referrer");
+            // HSTS only when TLS is on; test_app builds with tls_enabled=false.
+            assert!(h.get("strict-transport-security").is_none());
+        }
+    }
+
     #[tokio::test]
     async fn test_invalid_token_returns_401() {
         let (server, _) = test_app().await;

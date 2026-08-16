@@ -797,7 +797,7 @@ async fn init_database(config: &SetupConfig) -> Result<(), String> {
 
     // Save recovery codes (hashed)
     for code in &config.recovery_codes {
-        let code_hash = hash_for_db(code);
+        let code_hash = hash_for_db(code).map_err(|e| format!("recovery code hash: {e}"))?;
         sqlx::query(
             "INSERT INTO recovery_codes (id, user_id, code_hash, used) VALUES (?1, ?2, ?3, 0)",
         )
@@ -1053,7 +1053,8 @@ rate_limit = 1000
         // prefix: first 12 chars — matches the fast-lookup path in verify_api_key.
         let loopback_prefix = loopback_key[..12].to_string();
         // Hash with Argon2id (same algorithm as hash_password in aifw-api/src/auth/password.rs).
-        let loopback_key_hash = hash_for_db(&loopback_key);
+        let loopback_key_hash =
+            hash_for_db(&loopback_key).map_err(|e| format!("loopback key hash: {e}"))?;
 
         // Delete any pre-existing loopback key so re-running setup always yields
         // a fresh credential. The daemon must be restarted after re-running setup
@@ -1724,15 +1725,11 @@ async fn seed_default_rules(pool: &sqlx::SqlitePool, config: &SetupConfig) -> Re
     Ok(())
 }
 
-fn hash_for_db(password: &str) -> String {
-    use argon2::{
-        Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng,
-    };
-    let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .unwrap_or_default()
+/// Hash a secret for storage in `aifw.db` using the workspace-pinned
+/// Argon2id parameters (SEC-M4 #301). Errors surface to the caller instead
+/// of silently storing an empty hash that can never verify.
+fn hash_for_db(secret: &str) -> Result<String, String> {
+    aifw_common::password::hash_password(secret).map_err(|e| e.to_string())
 }
 
 /// Generate a pf.conf based on the setup configuration

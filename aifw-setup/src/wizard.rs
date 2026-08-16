@@ -420,10 +420,12 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         let password = console::prompt_password_confirm("Password");
         match console::validate_password(&password) {
             Ok(()) => {
-                config.admin_password_hash = hash_password(&password);
-                if config.admin_password_hash.is_empty() {
-                    console::error("Password hashing failed. Try again.");
-                    continue;
+                match hash_password(&password) {
+                    Ok(h) => config.admin_password_hash = h,
+                    Err(e) => {
+                        console::error(&format!("Password hashing failed: {e}. Try again."));
+                        continue;
+                    }
                 }
                 console::success("Password set.");
                 break;
