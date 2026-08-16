@@ -562,7 +562,10 @@ impl VpnEngine {
         // Write private key to temp file (wg set reads from file, not stdin)
         // SEC-L5 #320: create-new + 0600 in one step so a pre-planted
         // symlink is never followed and the key is never world-readable.
-        let key_path = format!("/tmp/wg-{}.key", tunnel.id);
+        // The name carries a fresh random component: the tunnel id alone is
+        // visible via the API (guessable), and a stale file from a crashed
+        // earlier start must never collide with — and block — this one.
+        let key_path = format!("/tmp/wg-{}-{}.key", tunnel.id, Uuid::new_v4().simple());
         aifw_common::secure_fs::write_private_new(&key_path, tunnel.private_key.as_bytes())
             .await
             .map_err(|e| AifwError::Pf(format!("Failed to write key file: {e}")))?;
@@ -623,9 +626,11 @@ impl VpnEngine {
             iface,
             &["private-key", &key_path, "listen-port", &listen_port_s],
         )
-        .await
-        .map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
+        .await;
+        // Remove the key file on every path — including a spawn error —
+        // so a secret never lingers in /tmp.
         let _ = tokio::fs::remove_file(&key_path).await;
+        let output = output.map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
         if !output.status.success() {
             let _ = crate::sudo::ifconfig(iface, "destroy", &[]).await;
             return Err(AifwError::Pf(format!(
@@ -722,8 +727,9 @@ impl VpnEngine {
         }
         // PSK requires a temp file
         let psk_path = if let Some(ref psk) = peer.preshared_key {
-            let path = format!("/tmp/wg-psk-{}.key", peer.id);
-            // SEC-L5 #320: create-new + 0600, see start_tunnel.
+            // SEC-L5 #320: create-new + 0600 with a random suffix, see
+            // start_tunnel.
+            let path = format!("/tmp/wg-psk-{}-{}.key", peer.id, Uuid::new_v4().simple());
             aifw_common::secure_fs::write_private_new(&path, psk.as_bytes())
                 .await
                 .map_err(|e| AifwError::Pf(format!("Failed to write PSK: {e}")))?;
@@ -735,13 +741,12 @@ impl VpnEngine {
         };
 
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let output = crate::sudo::wg("set", iface, &arg_refs)
-            .await
-            .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
-
+        let output = crate::sudo::wg("set", iface, &arg_refs).await;
+        // Remove the PSK file on every path, including a spawn error.
         if let Some(ref path) = psk_path {
             let _ = tokio::fs::remove_file(path).await;
         }
+        let output = output.map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
 
         if !output.status.success() {
             return Err(AifwError::Pf(format!(
