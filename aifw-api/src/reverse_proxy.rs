@@ -1314,10 +1314,16 @@ pub async fn validate_config(
         .await
         .map_err(|_| internal())?;
 
+    // #67: create-new + 0600 so a pre-planted path/symlink is refused
+    // rather than followed, and the config (which can carry TLS material)
+    // is never world-readable.
     let tmp_path = format!("/tmp/trafficcop-validate-{}.yaml", uuid::Uuid::new_v4());
-    tokio::fs::write(&tmp_path, &yaml)
+    aifw_common::secure_fs::write_private_new(&tmp_path, yaml.as_bytes())
         .await
-        .map_err(|_| internal())?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "reverse-proxy validate: temp config write failed");
+            internal()
+        })?;
 
     let output = Command::new("trafficcop")
         .args(["--validate", "--configFile", &tmp_path])

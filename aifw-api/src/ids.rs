@@ -437,9 +437,8 @@ pub async fn delete_ruleset(
 pub struct RulesQuery {
     pub ruleset_id: Option<String>,
     pub enabled: Option<bool>,
-    /// Free-text search — accepted but not yet applied in `list_rules`; see #490.
+    /// Free-text search over msg / rule_text / SID (#490).
     #[serde(default)]
-    #[allow(dead_code)]
     pub q: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -458,6 +457,7 @@ pub async fn list_rules(
         .list_rules(
             ruleset_id,
             q.enabled.unwrap_or(false),
+            q.q.as_deref(),
             q.limit.unwrap_or(50),
             q.offset.unwrap_or(0),
         )
@@ -546,7 +546,7 @@ pub async fn search_rules(
     State(state): State<AppState>,
     Query(q): Query<RulesQuery>,
 ) -> Result<Json<ApiResponse<Vec<IdsRule>>>, StatusCode> {
-    // For now, search is the same as list with filtering
+    // Same handler: `q` drives the free-text filter in `list_rules`.
     list_rules(State(state), Query(q)).await
 }
 

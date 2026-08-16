@@ -6,7 +6,6 @@ use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use std::sync::Arc;
-use tokio::process::Command;
 use uuid::Uuid;
 
 /// VPN engine: WireGuard tunnels and peers (`wg_tunnels`, `wg_peers`
@@ -561,15 +560,12 @@ impl VpnEngine {
         let iface = &tunnel.interface.0;
 
         // Write private key to temp file (wg set reads from file, not stdin)
+        // SEC-L5 #320: create-new + 0600 in one step so a pre-planted
+        // symlink is never followed and the key is never world-readable.
         let key_path = format!("/tmp/wg-{}.key", tunnel.id);
-        tokio::fs::write(&key_path, &tunnel.private_key)
+        aifw_common::secure_fs::write_private_new(&key_path, tunnel.private_key.as_bytes())
             .await
             .map_err(|e| AifwError::Pf(format!("Failed to write key file: {e}")))?;
-        // Restrict permissions
-        let _ = Command::new("chmod")
-            .args(["600", &key_path])
-            .output()
-            .await;
 
         // Create the WireGuard interface
         let _ = crate::sudo::ifconfig(iface, "destroy", &[]).await; // clean up if exists
@@ -727,10 +723,10 @@ impl VpnEngine {
         // PSK requires a temp file
         let psk_path = if let Some(ref psk) = peer.preshared_key {
             let path = format!("/tmp/wg-psk-{}.key", peer.id);
-            tokio::fs::write(&path, psk)
+            // SEC-L5 #320: create-new + 0600, see start_tunnel.
+            aifw_common::secure_fs::write_private_new(&path, psk.as_bytes())
                 .await
                 .map_err(|e| AifwError::Pf(format!("Failed to write PSK: {e}")))?;
-            let _ = Command::new("chmod").args(["600", &path]).output().await;
             args.push("preshared-key".to_string());
             args.push(path.clone());
             Some(path)

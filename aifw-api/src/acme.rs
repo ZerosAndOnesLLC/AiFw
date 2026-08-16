@@ -68,6 +68,10 @@ pub async fn put_account(
     if !req.contact_email.contains('@') {
         return Err(bad("contact_email must be a valid email address"));
     }
+    // SEC-M13 #310: fail fast here as well as at registration time.
+    aifw_common::net_safety::validate_outbound_url(&dir)
+        .await
+        .map_err(|e| bad(format!("directory_url rejected: {e}")))?;
     // Save row WITHOUT ACME-side registration — that happens lazily on
     // the first cert issue. Lets the operator configure the account
     // before they know which cert they want.
@@ -265,11 +269,9 @@ pub async fn download_cert_pem(
             .parse()
             .expect("static MIME type is a valid header value"),
     );
-    h.insert(
-        header::CONTENT_DISPOSITION,
-        disp.parse()
-            .expect("Content-Disposition built from validated common_name"),
-    );
+    // SEC-L7 #322: common_name is validated as a DNS name so this cannot
+    // fail in practice, but a handler must not panic on it — surface 500.
+    h.insert(header::CONTENT_DISPOSITION, disp.parse().map_err(server)?);
     Ok(resp)
 }
 
@@ -290,11 +292,9 @@ pub async fn download_key_pem(
             .parse()
             .expect("static MIME type is a valid header value"),
     );
-    h.insert(
-        header::CONTENT_DISPOSITION,
-        disp.parse()
-            .expect("Content-Disposition built from validated common_name"),
-    );
+    // SEC-L7 #322: common_name is validated as a DNS name so this cannot
+    // fail in practice, but a handler must not panic on it — surface 500.
+    h.insert(header::CONTENT_DISPOSITION, disp.parse().map_err(server)?);
     Ok(resp)
 }
 
@@ -536,12 +536,46 @@ pub struct PutTargetRequest {
     pub config: serde_json::Value,
 }
 
+/// Validate an export target's config at write time (SEC-M14 #311) so a
+/// misconfiguration is rejected with a 400 instead of failing silently at
+/// the next renewal. Webhook: `url` must pass the outbound allow-list and
+/// `auth_header`, if present, must be a legal single-line HTTP header value
+/// (no CR/LF or other control bytes — the same check reqwest applies at
+/// send time).
+async fn validate_target_config(
+    kind: ExportTargetKind,
+    cfg: &serde_json::Value,
+) -> Result<(), (StatusCode, String)> {
+    if kind != ExportTargetKind::Webhook {
+        return Ok(());
+    }
+    let url = cfg
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| bad("webhook target requires url"))?;
+    aifw_common::net_safety::validate_outbound_url(url)
+        .await
+        .map_err(|e| bad(format!("webhook url rejected: {e}")))?;
+    if let Some(auth) = cfg.get("auth_header") {
+        let auth = auth
+            .as_str()
+            .ok_or_else(|| bad("auth_header must be a string"))?;
+        if !auth.is_empty() && header::HeaderValue::from_str(auth).is_err() {
+            return Err(bad(
+                "auth_header contains characters not allowed in an HTTP header value",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub async fn create_target(
     State(state): State<AppState>,
     Path(cert_id): Path<i64>,
     Json(req): Json<PutTargetRequest>,
 ) -> Result<Json<ExportTargetResponse>, (StatusCode, String)> {
-    ExportTargetKind::from_str(&req.kind).ok_or_else(|| bad("invalid kind"))?;
+    let kind = ExportTargetKind::from_str(&req.kind).ok_or_else(|| bad("invalid kind"))?;
+    validate_target_config(kind, &req.config).await?;
     let cfg_str = serde_json::to_string(&req.config).map_err(server)?;
     let res = sqlx::query(
         r#"
