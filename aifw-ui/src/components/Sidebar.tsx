@@ -6,6 +6,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { api, isAuthed, setAuthed } from "@/lib/api";
+import { hardNavigate } from "@/lib/navigation";
 
 interface NavChild { href: string; label: string; permission?: string; }
 interface NavItem {
@@ -366,7 +367,7 @@ export default function Sidebar({ onClose, width }: { onClose?: () => void; widt
             // best-effort — always fall through to the login page.
             try { await api.post("/api/v1/auth/logout", undefined, { noAuthRedirect: true }); } catch { /* ignore */ }
             setAuthed(false);
-            window.location.href = "/login";
+            hardNavigate("/login");
           }}
           className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 transition-colors w-full">
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>

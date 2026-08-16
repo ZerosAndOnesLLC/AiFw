@@ -1,3 +1,5 @@
+import { hardNavigate } from "@/lib/navigation";
+
 const API_BASE = "";
 /// Non-sensitive "logged in" marker (SEC-M7 #304). The real credential is an
 /// HttpOnly session cookie the page can't read; this flag only gates eager
@@ -128,7 +130,7 @@ async function request(
     }
     if (res.status === 401) {
       setAuthed(false);
-      window.location.href = "/login";
+      hardNavigate("/login");
     }
   }
 

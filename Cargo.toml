@@ -40,7 +40,7 @@ axum = { version = "0.8", features = ["ws", "multipart"] }
 # so nothing broader is needed here (SEC-L6 #321).
 tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "set-header", "compression-gzip", "compression-br"] }
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 argon2 = { version = "0.5", features = ["std"] }
 # tokio base carries no runtime features (PERF-H3 #347). Every crate — library
 # and binary alike — opts into exactly the features it uses (no crate uses
@@ -72,8 +72,8 @@ tokio-rustls = "0.26"
 rustls-pemfile = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 url = "2"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-getrandom = "0.3"
+x25519-dalek = { version = "3", features = ["static_secrets"] }
+getrandom = "0.4"
 
 # Workspace-wide clippy lint posture. Stylistic-only lints are allowed —
 # documented engine constructors legitimately have many parameters, the
