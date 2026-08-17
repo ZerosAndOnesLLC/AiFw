@@ -5,12 +5,14 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
-use aifw_common::ids::IdsAlert;
+use aifw_common::ids::{IdsAlert, IdsConfig};
 
 use super::matching::{content_match, ip_in_cidr};
 use super::threshold::ThresholdTracker;
+use super::vars::{self, AddressVar, MAX_VAR_DEPTH};
+use crate::config::RuntimeConfig;
 use crate::decode::DecodedPacket;
 use crate::flow::{Flow, FlowDirection, FlowTable};
 use crate::protocol::{ProtocolRegistry, StickyBuffers};
@@ -22,7 +24,13 @@ pub struct DetectionEngine {
     flow_table: Arc<FlowTable>,
     protocol_registry: ProtocolRegistry,
     threshold_tracker: ThresholdTracker,
+    /// Live IDS config for `$HOME_NET` / `$EXTERNAL_NET` expansion (#485).
+    /// `None` (tests, standalone use) falls back to `IdsConfig::default()`.
+    config: Option<Arc<RuntimeConfig>>,
 }
+
+/// Defaults used when the engine has no live config attached.
+static DEFAULT_CONFIG: LazyLock<Arc<IdsConfig>> = LazyLock::new(|| Arc::new(IdsConfig::default()));
 
 impl DetectionEngine {
     /// Create a detection engine over the shared rule database and flow
@@ -33,6 +41,23 @@ impl DetectionEngine {
             flow_table,
             protocol_registry: ProtocolRegistry::new(),
             threshold_tracker: ThresholdTracker::new(),
+            config: None,
+        }
+    }
+
+    /// Attach the live IDS config so rule-header variables resolve against
+    /// the operator's `home_net` / `external_net` (hot-reload aware).
+    pub fn with_config(mut self, config: Arc<RuntimeConfig>) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Current config snapshot for variable expansion — an atomic load,
+    /// no clone of the address lists.
+    fn config_snapshot(&self) -> Arc<IdsConfig> {
+        match &self.config {
+            Some(c) => c.config(),
+            None => DEFAULT_CONFIG.clone(),
         }
     }
 
@@ -365,27 +390,56 @@ impl DetectionEngine {
     }
 
     fn match_address(&self, constraint: &str, ip: Option<IpAddr>) -> bool {
-        let ip = match ip {
-            Some(ip) => ip,
-            None => return false,
+        let Some(ip) = ip else {
+            return false;
         };
+        let cfg = self.config_snapshot();
+        self.match_address_inner(&cfg, constraint, ip, 0)
+    }
 
-        // Variable references (not expanded here — would need config)
+    fn match_address_inner(
+        &self,
+        cfg: &IdsConfig,
+        constraint: &str,
+        ip: IpAddr,
+        depth: u8,
+    ) -> bool {
+        let constraint = constraint.trim();
+        if depth > MAX_VAR_DEPTH {
+            tracing::warn!(
+                constraint,
+                "IDS address variable nesting too deep — treating as no match"
+            );
+            return false;
+        }
+
+        if constraint == "any" {
+            return true;
+        }
+
+        // Variable reference (#485): expand against the live config;
+        // unknown variables never match (fail closed).
         if constraint.starts_with('$') {
-            return true; // TODO(#485): expand variables
+            return match vars::resolve_address_var(cfg, constraint) {
+                AddressVar::Group(entries) => {
+                    self.match_address_list(cfg, entries.iter().map(String::as_str), ip, depth + 1)
+                }
+                AddressVar::Unknown => {
+                    vars::warn_unknown_once("address", constraint);
+                    false
+                }
+            };
         }
 
         // Negation
         if let Some(inner) = constraint.strip_prefix('!') {
-            return !self.match_address(inner, Some(ip));
+            return !self.match_address_inner(cfg, inner, ip, depth);
         }
 
-        // Group [addr1,addr2]
+        // Group [addr1,addr2,!addr3]
         if constraint.starts_with('[') && constraint.ends_with(']') {
             let inner = &constraint[1..constraint.len() - 1];
-            return inner
-                .split(',')
-                .any(|a| self.match_address(a.trim(), Some(ip)));
+            return self.match_address_list(cfg, split_group(inner), ip, depth + 1);
         }
 
         // CIDR match
@@ -403,26 +457,93 @@ impl DetectionEngine {
         true // If we can't parse, don't block
     }
 
-    fn match_port(&self, constraint: &str, port: Option<u16>) -> bool {
-        let port = match port {
-            Some(p) => p,
-            None => return false,
-        };
+    /// Suricata group semantics: the IP must not be in any negated entry,
+    /// and — if there are any positive entries — must be in at least one.
+    /// (`[!10.0.0.0/8,!192.168.0.0/16]` means "outside both", not "outside
+    /// either", which is what a plain `any()` over the entries would give.)
+    fn match_address_list<'a>(
+        &self,
+        cfg: &IdsConfig,
+        entries: impl Iterator<Item = &'a str>,
+        ip: IpAddr,
+        depth: u8,
+    ) -> bool {
+        let mut has_positive = false;
+        let mut positive_hit = false;
+        for entry in entries {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if let Some(inner) = entry.strip_prefix('!') {
+                if self.match_address_inner(cfg, inner, ip, depth) {
+                    return false;
+                }
+            } else {
+                has_positive = true;
+                if !positive_hit && self.match_address_inner(cfg, entry, ip, depth) {
+                    positive_hit = true;
+                }
+            }
+        }
+        !has_positive || positive_hit
+    }
 
+    fn match_port(&self, constraint: &str, port: Option<u16>) -> bool {
+        let Some(port) = port else {
+            return false;
+        };
+        self.match_port_inner(constraint, port, 0)
+    }
+
+    fn match_port_inner(&self, constraint: &str, port: u16, depth: u8) -> bool {
+        let constraint = constraint.trim();
+        if depth > MAX_VAR_DEPTH {
+            return false;
+        }
+
+        if constraint == "any" {
+            return true;
+        }
+
+        // Variable reference (#485): stock Suricata port groups; unknown
+        // variables never match.
         if constraint.starts_with('$') {
-            return true; // Variable reference
+            return match vars::resolve_port_var(constraint) {
+                Some(expansion) => self.match_port_inner(expansion, port, depth + 1),
+                None => {
+                    vars::warn_unknown_once("port", constraint);
+                    false
+                }
+            };
         }
 
         if let Some(inner) = constraint.strip_prefix('!') {
-            return !self.match_port(inner, Some(port));
+            return !self.match_port_inner(inner, port, depth);
         }
 
-        // Group [port1,port2]
+        // Group [port1,port2,!port3] — same semantics as address groups.
         if constraint.starts_with('[') && constraint.ends_with(']') {
             let inner = &constraint[1..constraint.len() - 1];
-            return inner
-                .split(',')
-                .any(|p| self.match_port(p.trim(), Some(port)));
+            let mut has_positive = false;
+            let mut positive_hit = false;
+            for entry in split_group(inner) {
+                let entry = entry.trim();
+                if entry.is_empty() {
+                    continue;
+                }
+                if let Some(neg) = entry.strip_prefix('!') {
+                    if self.match_port_inner(neg, port, depth + 1) {
+                        return false;
+                    }
+                } else {
+                    has_positive = true;
+                    if !positive_hit && self.match_port_inner(entry, port, depth + 1) {
+                        positive_hit = true;
+                    }
+                }
+            }
+            return !has_positive || positive_hit;
         }
 
         // Range
@@ -460,6 +581,27 @@ impl DetectionEngine {
             }
         }
     }
+}
+
+/// Split a group body on top-level commas, leaving nested `[...]` groups
+/// intact (`"a,[b,c],d"` → `["a", "[b,c]", "d"]`).
+fn split_group(inner: &str) -> impl Iterator<Item = &str> {
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut out = Vec::new();
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&inner[start..]);
+    out.into_iter()
 }
 
 impl std::fmt::Debug for DetectionEngine {
@@ -614,5 +756,95 @@ alert tcp any any -> any any (msg:"Rule 2"; content:"bad"; sid:2;)
 
         assert!(content_match(&content, b"this is a test"));
         assert!(!content_match(&content, b"no match here"));
+    }
+
+    // ---- #485: rule-header variable expansion ----
+
+    fn engine_with_home_net(rules_text: &str, home_net: &[&str]) -> DetectionEngine {
+        let cfg = IdsConfig {
+            home_net: home_net.iter().map(|s| s.to_string()).collect(),
+            ..IdsConfig::default()
+        };
+        setup_engine(rules_text).with_config(Arc::new(RuntimeConfig::from_config(cfg)))
+    }
+
+    #[test]
+    fn home_net_to_external_net_is_directional() {
+        let engine = engine_with_home_net(
+            r#"alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"outbound"; content:"beacon"; sid:10;)"#,
+            &["192.168.1.0/24"],
+        );
+        // inside -> outside: fires
+        let pkt = tcp_packet("192.168.1.10", "203.0.113.5", 40000, 443, b"beacon");
+        assert_eq!(engine.detect(&pkt).len(), 1);
+        // outside -> inside: must NOT fire (was a false positive before #485)
+        let pkt = tcp_packet("203.0.113.5", "192.168.1.10", 443, 40000, b"beacon");
+        assert!(engine.detect(&pkt).is_empty());
+        // inside -> inside: dst is not EXTERNAL_NET
+        let pkt = tcp_packet("192.168.1.10", "192.168.1.20", 40000, 443, b"beacon");
+        assert!(engine.detect(&pkt).is_empty());
+    }
+
+    #[test]
+    fn server_group_aliases_follow_home_net() {
+        let engine = engine_with_home_net(
+            r#"alert tcp $EXTERNAL_NET any -> $HTTP_SERVERS $HTTP_PORTS (msg:"inbound http"; content:"evil"; sid:11;)"#,
+            &["10.0.0.0/8"],
+        );
+        let pkt = tcp_packet("198.51.100.7", "10.1.2.3", 51000, 8080, b"evil");
+        assert_eq!(engine.detect(&pkt).len(), 1);
+        // wrong port for $HTTP_PORTS
+        let pkt = tcp_packet("198.51.100.7", "10.1.2.3", 51000, 2222, b"evil");
+        assert!(engine.detect(&pkt).is_empty());
+        // dst not in HOME_NET
+        let pkt = tcp_packet("198.51.100.7", "198.51.100.8", 51000, 8080, b"evil");
+        assert!(engine.detect(&pkt).is_empty());
+    }
+
+    #[test]
+    fn unknown_variables_never_match() {
+        let engine = engine_with_home_net(
+            r#"alert tcp $MYSTERY_NET any -> any any (msg:"unknown var"; content:"x"; sid:12;)"#,
+            &["10.0.0.0/8"],
+        );
+        let pkt = tcp_packet("10.0.0.1", "10.0.0.2", 1, 2, b"x");
+        assert!(engine.detect(&pkt).is_empty());
+        let engine = engine_with_home_net(
+            r#"alert tcp any any -> any $MYSTERY_PORTS (msg:"unknown port var"; content:"x"; sid:13;)"#,
+            &["10.0.0.0/8"],
+        );
+        assert!(engine.detect(&pkt).is_empty());
+    }
+
+    #[test]
+    fn negated_group_means_outside_all_entries() {
+        let engine = engine_with_home_net(
+            r#"alert tcp [!10.0.0.0/8,!192.168.0.0/16] any -> any any (msg:"from outside"; content:"x"; sid:14;)"#,
+            &["10.0.0.0/8"],
+        );
+        // 10.x is inside one negated entry → no match (plain any() would have matched)
+        let pkt = tcp_packet("10.9.9.9", "1.1.1.1", 1, 2, b"x");
+        assert!(engine.detect(&pkt).is_empty());
+        let pkt = tcp_packet("192.168.5.5", "1.1.1.1", 1, 2, b"x");
+        assert!(engine.detect(&pkt).is_empty());
+        let pkt = tcp_packet("8.8.8.8", "1.1.1.1", 1, 2, b"x");
+        assert_eq!(engine.detect(&pkt).len(), 1);
+    }
+
+    #[test]
+    fn engine_without_config_uses_rfc1918_defaults() {
+        let engine = setup_engine(
+            r#"alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"default home"; content:"x"; sid:15;)"#,
+        );
+        let pkt = tcp_packet("172.16.0.9", "8.8.8.8", 1, 2, b"x");
+        assert_eq!(engine.detect(&pkt).len(), 1);
+        let pkt = tcp_packet("8.8.8.8", "172.16.0.9", 1, 2, b"x");
+        assert!(engine.detect(&pkt).is_empty());
+    }
+
+    #[test]
+    fn split_group_keeps_nested_brackets() {
+        let parts: Vec<&str> = split_group("a,[b,c],d").collect();
+        assert_eq!(parts, vec!["a", "[b,c]", "d"]);
     }
 }

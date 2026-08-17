@@ -158,7 +158,9 @@ impl IdsEngine {
                 .with_stream_depth(stream_depth_bytes)
                 .with_reassembly_budget(reassembly_budget_bytes),
         );
-        let detection = Arc::new(DetectionEngine::new(rule_db.clone(), flow_table.clone()));
+        let detection = Arc::new(
+            DetectionEngine::new(rule_db.clone(), flow_table.clone()).with_config(config.clone()),
+        );
         let action = Arc::new(ActionEngine::new(pf.clone(), config.clone()));
         // SQLite is the durable alert store (queried by /api/v1/ids/alerts,
         // AI analysis, suppression matching). When a memory buffer is also
