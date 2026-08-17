@@ -102,17 +102,11 @@ IKEv2 **site-to-site** tunnels (tunnel mode) powered by strongSwan: charon negot
 - **Payload inspection** with multi-pattern detection
 - **Threshold-based detection**
 
-## AI threat detection
+## AI-assisted alert triage
 
-Five behavioural detectors run alongside signature-based IDS, implemented in `aifw-ai/src/detectors/`:
+Configure an LLM provider under **Settings → AI** (OpenAI, Anthropic, Ollama or any compatible endpoint; the key is sealed at rest) and AiFw periodically sends unreviewed critical/high IDS alerts for review. Each verdict — true positive, false positive, needs attention — lands on the **Threats** page with the model's reasoning, and every call is written to an audit log. Nothing leaves the box unless a provider is set.
 
-1. **Port scan** — flags sources with >15 unique ports hit and >60% failed-connection ratio
-2. **DDoS** — detects SYN floods and high connection rates (>50 conn/sec)
-3. **Brute force** — concentrated auth attacks: 10+ connections across 1–5 ports with >70% failure rate
-4. **C2 beacon** — low-variance periodic connections to single or few hosts
-5. **DNS tunneling** — anomalous DNS traffic patterns consistent with tunneled data
-
-Each detector produces a threat score (0.0–1.0 confidence) and severity classification. Auto-response actions include temporary IP blocks with configurable TTL, alert generation, and full audit trail of every decision.
+Behavioural ML detectors (port scan, DDoS, brute force, C2 beacon, DNS tunnelling) exist only as heuristic **prototypes** in the `aifw-ai` crate. They are not wired into the daemon or API, nothing on the appliance runs them, and there is no setting that enables them ([#171](https://github.com/ZerosAndOnesLLC/AiFw/issues/171)).
 
 ## DNS
 

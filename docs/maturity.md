@@ -46,7 +46,8 @@ AiFw is in **active development (beta)**. This matrix is the honest, per-feature
 <tr><td>Backup / restore / OPNsense import</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">⏳</td><td class="partial">⏳</td><td>Beta — pre-validated apply, single DB transaction, post-apply pf verification, snapshot rollback for kernel state (since v5.99.7; hardened for #535); kernel applies are still not transactional</td></tr>
 <tr><td>DHCP / DNS / NTP (companions)</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">⏳</td><td class="partial">⏳</td><td>Beta — builds pinned to reviewed revisions since v5.99.8</td></tr>
 <tr><td>Reverse proxy + ACME (TrafficCop)</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">⏳</td><td class="partial">⏳</td><td>Beta</td></tr>
-<tr><td>AI/ML threat detection</td><td class="yes">✓</td><td class="partial">⏳</td><td class="no">✗</td><td class="no">✗</td><td>Experimental, opt-in, disabled by default</td></tr>
+<tr><td>AI-assisted alert triage (LLM)</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">⏳</td><td class="no">✗</td><td>Off unless a provider is configured</td></tr>
+<tr><td>Behavioural ML threat detection</td><td class="partial">⏳</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td>Prototype crate only — not wired into daemon/API (#171)</td></tr>
 <tr><td>Plugin system</td><td class="yes">✓</td><td class="partial">⏳</td><td class="no">✗</td><td class="no">✗</td><td>Beta — WASM planned</td></tr>
 </tbody>
 </table>

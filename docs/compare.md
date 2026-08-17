@@ -81,7 +81,8 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 <tr><td>YARA rules</td><td class="partial">subset</td><td class="no">—</td><td class="no">—</td></tr>
 <tr><td>Inline IPS (drops the triggering packet)</td><td class="partial">planned</td><td class="yes">✓</td><td class="yes">✓</td></tr>
 <tr><td>Reactive source blocking after detection</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>AI/ML threat detection</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>AI-assisted alert triage (LLM)</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+<tr><td>Behavioural ML threat detection</td><td class="partial">prototype, not wired in</td><td class="no">—</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">DNS</td></tr>
 <tr><td>DNS resolver</td><td class="yes">rDNS</td><td class="yes">Unbound</td><td class="yes">Unbound</td></tr>
@@ -153,7 +154,7 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 - **Multi-WAN with FIB isolation** — each WAN lives in its own FreeBSD FIB (just like a Juniper routing-instance). Gateway groups with failover, weighted load-balance, and MOS-weighted adaptive policies. Blast-radius preview shows which existing flows would migrate before you apply. No other open-source FreeBSD firewall does this.
 - **OPNsense config import** — drop-in migration. Parse the XML, preview the diff, apply atomically with rollback. Recently rewritten end-to-end (#230, #248–#252).
 - **Built-in reverse proxy + ACME** — TrafficCop runs HTTP, TCP, and UDP. ACME issuance pushes certs straight to the TLS store, file, or webhook. No HAProxy plugin install dance.
-- **AI/ML threat detection** — 5 built-in behavioural detectors (port scan, DDoS, brute force, C2 beacon, DNS tunneling) with auto-response and TTL blocks. Implemented in `aifw-ai/src/detectors/`.
+- **AI-assisted alert triage** — an LLM provider you configure reviews critical/high IDS alerts and classifies them with reasoning and an audit log. (Behavioural ML detectors are prototypes only — not wired in.)
 - **Sigma + YARA rule support** — modern rule formats neither OPNsense nor pfSense support (practical subsets mapped to network flows, not full engine parity). Parsers in `aifw-ids/src/rules/`.
 - **Commit confirm** — auto-rollback if you lock yourself out. Default 300-second timeout, cancellable via oneshot channel. Both competitors have this as a years-open feature request.
 - **Modern React/Next.js UI** — static export, no Node.js runtime on the appliance. Not PHP.
