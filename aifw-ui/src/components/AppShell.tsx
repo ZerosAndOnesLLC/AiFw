@@ -8,6 +8,7 @@ import Sidebar from "./Sidebar";
 import PendingBanner from "./PendingBanner";
 import { WsProvider } from "@/context/WsContext";
 import { AuthProvider } from "@/context/AuthContext";
+import { ErrorBoundary } from "@/components/feedback/ErrorBoundary";
 
 const PUBLIC_PATHS = ["/login", "/login/"];
 const MIN_WIDTH = 180;
@@ -102,7 +103,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               `}
               style={{ width: sidebarWidth }}
             >
-              <Sidebar onClose={() => setSidebarOpen(false)} width={sidebarWidth} />
+              {/* #452: a sidebar crash must not take the whole shell down. */}
+              <ErrorBoundary scope="Sidebar" compact resetKey={pathname}>
+                <Sidebar onClose={() => setSidebarOpen(false)} width={sidebarWidth} />
+              </ErrorBoundary>
 
               {/* Resize handle — desktop only */}
               <div
@@ -127,7 +131,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 </button>
                 <Image src="/logo-sidebar.png" alt="AiFw" width={120} height={24} className="h-6 w-auto" unoptimized />
               </div>
-              <PendingBanner />
+              <ErrorBoundary scope="Pending-changes banner" compact resetKey={pathname}>
+                <PendingBanner />
+              </ErrorBoundary>
               <div className="p-4 lg:p-6 overflow-auto">
                 {children}
               </div>
