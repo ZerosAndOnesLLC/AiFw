@@ -103,7 +103,11 @@ pub async fn save_provider(pool: &SqlitePool, provider: &OAuthProvider) -> Resul
     .bind(&provider.name)
     .bind(provider.provider_type.to_string())
     .bind(&provider.client_id)
-    .bind(&provider.client_secret)
+    // #298: sealed at rest
+    .bind(
+        aifw_core::secrets::seal(&provider.client_secret)
+            .map_err(|e| format!("seal client_secret: {e}"))?,
+    )
     .bind(&provider.auth_url)
     .bind(&provider.token_url)
     .bind(&provider.userinfo_url)
@@ -136,7 +140,7 @@ pub async fn list_providers(pool: &SqlitePool) -> Result<Vec<OAuthProvider>, Str
                     _ => OAuthProviderType::Oidc,
                 },
                 client_id: ci,
-                client_secret: cs,
+                client_secret: aifw_core::secrets::open_lossy(&cs),
                 auth_url: au,
                 token_url: tu,
                 userinfo_url: uu,

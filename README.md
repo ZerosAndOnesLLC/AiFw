@@ -84,6 +84,7 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI/ML
 - **Plugin system** — native Rust + WASM sandboxed plugins with 7 hook points
 - **High availability (active-passive pair)** — Two AiFw nodes share a CARP virtual IP and pfsync state. Reboot the master and TCP sessions survive on the standby with no operator intervention. Setup via the UI in <15 minutes. See [docs/ha.md](docs/ha.md) for setup, ops, and failure modes.
 - **Remote syslog** — forward pf packet logs, IDS alerts, and app logs to a syslog server/SIEM (UDP/TCP, BSD or RFC 5424, per-category toggles, optional local-storage off)
+- **Secrets sealed at rest** — WireGuard/IPsec keys, CARP and integration credentials, TOTP seeds and cluster keys are AES-256-GCM encrypted in the database under a master key kept outside it (`/var/db/aifw/secrets.key`); legacy plaintext rows are sealed automatically on the first start after upgrade
 - **Log rotation** — one size-based newsyslog policy (cap, generations, compression) for every AiFw service log, with per-log sizes and rotate-now in Settings → Logging and `aifw logrotate`
 - **Metrics engine** — RRD-style ring buffers (1s/1m/1h/1d tiers), optional PostgreSQL backend
 - **REST API** — Axum with JWT auth, API keys, full CRUD for all resources

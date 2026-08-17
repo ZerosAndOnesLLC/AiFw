@@ -1026,7 +1026,7 @@ async fn build_dhcp_section(pool: &sqlx::SqlitePool) -> aifw_core::config::DhcpS
             "dns_server" => ddns.dns_server = value,
             "tsig_key" => ddns.tsig_key = value,
             "tsig_algorithm" => ddns.tsig_algorithm = value,
-            "tsig_secret" => ddns.tsig_secret = value,
+            "tsig_secret" => ddns.tsig_secret = aifw_core::secrets::open_lossy(&value),
             "ttl" => ddns.ttl = value.parse().unwrap_or(300),
             _ => {}
         }
@@ -2581,7 +2581,11 @@ async fn apply_dhcp_section_db(
         ("dns_server", d.dns_server.clone()),
         ("tsig_key", d.tsig_key.clone()),
         ("tsig_algorithm", d.tsig_algorithm.clone()),
-        ("tsig_secret", d.tsig_secret.clone()),
+        (
+            "tsig_secret",
+            aifw_core::secrets::seal(&d.tsig_secret)
+                .map_err(|e| apply_fail("seal tsig_secret", e))?,
+        ),
         ("ttl", d.ttl.to_string()),
     ] {
         sqlx::query("INSERT OR REPLACE INTO dhcp_ddns_config (key, value) VALUES (?1, ?2)")

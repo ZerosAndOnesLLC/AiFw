@@ -543,14 +543,16 @@ impl IpsecTunnelRow {
             local_id: self.local_id,
             remote_id: self.remote_id,
             auth_method: IpsecAuthMethod::parse(&self.auth_method)?,
-            psk: self.psk,
+            // #298: sealed at rest; legacy plaintext passes through.
+            psk: crate::secrets::open(&self.psk).map_err(crate::secrets::to_common)?,
             cert_source: match self.cert_source.as_deref() {
                 None | Some("") => None,
                 Some(s) => Some(IpsecCertSource::parse(s)?),
             },
             acme_cert_id: self.acme_cert_id,
             local_cert_pem: self.local_cert_pem,
-            local_key_pem: self.local_key_pem,
+            local_key_pem: crate::secrets::open(&self.local_key_pem)
+                .map_err(crate::secrets::to_common)?,
             ca_cert_pem: self.ca_cert_pem,
             ike_proposal: self.ike_proposal,
             esp_proposal: self.esp_proposal,
@@ -659,11 +661,11 @@ impl IpsecEngine {
         .bind(&tunnel.local_id)
         .bind(&tunnel.remote_id)
         .bind(tunnel.auth_method.to_string())
-        .bind(&tunnel.psk)
+        .bind(crate::secrets::seal(&tunnel.psk).map_err(crate::secrets::to_common)?)
         .bind(tunnel.cert_source.map(|s| s.to_string()))
         .bind(tunnel.acme_cert_id)
         .bind(&tunnel.local_cert_pem)
-        .bind(&tunnel.local_key_pem)
+        .bind(crate::secrets::seal(&tunnel.local_key_pem).map_err(crate::secrets::to_common)?)
         .bind(&tunnel.ca_cert_pem)
         .bind(&tunnel.ike_proposal)
         .bind(&tunnel.esp_proposal)
@@ -728,11 +730,11 @@ impl IpsecEngine {
         .bind(&tunnel.local_id)
         .bind(&tunnel.remote_id)
         .bind(tunnel.auth_method.to_string())
-        .bind(&tunnel.psk)
+        .bind(crate::secrets::seal(&tunnel.psk).map_err(crate::secrets::to_common)?)
         .bind(tunnel.cert_source.map(|s| s.to_string()))
         .bind(tunnel.acme_cert_id)
         .bind(&tunnel.local_cert_pem)
-        .bind(&tunnel.local_key_pem)
+        .bind(crate::secrets::seal(&tunnel.local_key_pem).map_err(crate::secrets::to_common)?)
         .bind(&tunnel.ca_cert_pem)
         .bind(&tunnel.ike_proposal)
         .bind(&tunnel.esp_proposal)

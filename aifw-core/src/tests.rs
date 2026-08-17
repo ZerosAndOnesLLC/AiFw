@@ -1059,6 +1059,57 @@ mod tests {
         assert!(engine.list_wg_tunnels().await.unwrap().is_empty());
     }
 
+    /// #298: WireGuard private keys are sealed in the DB but the engine
+    /// hands back plaintext.
+    #[tokio::test]
+    async fn test_wg_private_key_sealed_at_rest() {
+        let db = Database::new_in_memory().await.unwrap();
+        let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
+        let engine = crate::vpn::VpnEngine::new(db.pool().clone(), pf);
+        engine.migrate().await.unwrap();
+        let tunnel = WgTunnel::new(
+            "sealed".to_string(),
+            Interface("wg7".to_string()),
+            51877,
+            Address::Network(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 77, 0, 1)),
+                24,
+            ),
+        )
+        .unwrap();
+        let id = tunnel.id;
+        let plain_key = tunnel.private_key.clone();
+        engine.add_wg_tunnel(tunnel).await.unwrap();
+
+        let (stored,): (String,) =
+            sqlx::query_as("SELECT private_key FROM wg_tunnels WHERE id = ?1")
+                .bind(id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert!(
+            crate::secrets::is_sealed(&stored),
+            "private_key must be sealed in the DB"
+        );
+        assert_ne!(stored, plain_key);
+        assert_eq!(
+            engine.get_wg_tunnel(id).await.unwrap().private_key,
+            plain_key
+        );
+
+        // A legacy plaintext row (pre-#298 DB) still reads back unchanged.
+        sqlx::query("UPDATE wg_tunnels SET private_key = ?1 WHERE id = ?2")
+            .bind(&plain_key)
+            .bind(id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.get_wg_tunnel(id).await.unwrap().private_key,
+            plain_key
+        );
+    }
+
     #[tokio::test]
     async fn test_wg_tunnel_db_roundtrip() {
         let engine = create_vpn_engine().await;

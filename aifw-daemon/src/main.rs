@@ -89,6 +89,8 @@ async fn main() -> anyhow::Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
 
+    // #298: secrets master key beside the database (shared with aifw-api).
+    aifw_core::secrets::configure_from_db_path(&args.db);
     let db = Database::new(&args.db).await?;
     let pool = db.pool().clone();
 

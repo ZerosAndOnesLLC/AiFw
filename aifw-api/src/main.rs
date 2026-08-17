@@ -1564,6 +1564,17 @@ async fn main() -> anyhow::Result<()> {
     // JWT secret is loaded from the key file below, then swapped in.
     let auth_settings = auth::AuthSettings::default();
 
+    // #298: the secrets master key lives beside the JWT key
+    // (/var/db/aifw/secrets.key on an appliance; a dev run with a scratch
+    // --jwt-key-file gets a persistent key in the same scratch dir).
+    if let Some(dir) = args.jwt_key_file.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        aifw_core::secrets::set_key_path(dir.join("secrets.key"));
+    } else {
+        aifw_core::secrets::configure_from_db_path(&args.db);
+    }
+
     let mut state = create_app_state(
         &args.db,
         auth_settings,
@@ -1571,6 +1582,10 @@ async fn main() -> anyhow::Result<()> {
         syslog_mgr.clone(),
     )
     .await?;
+
+    // #298: seal any secrets still stored in plaintext by an older
+    // release. One-shot per row; a no-op on every later start.
+    aifw_core::secrets::seal_legacy_rows(&state.pool).await;
 
     // Resolve the JWT secret: explicit override > key file (migrating any
     // legacy DB-stored secret on first run) > freshly generated in file.

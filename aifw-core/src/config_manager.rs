@@ -144,12 +144,15 @@ impl ConfigManager {
         let json = config.to_json();
         let hash = config.hash();
         let now = Utc::now().to_rfc3339();
+        // #298: the snapshot carries every secret in the config (WG keys,
+        // PSKs, credentials) — seal the whole blob at rest.
+        let sealed = crate::secrets::seal(&json).map_err(|e| format!("seal snapshot: {e}"))?;
 
         let result = sqlx::query(
             r#"INSERT INTO config_versions (config_json, hash, applied, created_by, created_at, comment)
                VALUES (?1, ?2, 0, ?3, ?4, ?5)"#,
         )
-        .bind(&json)
+        .bind(&sealed)
         .bind(&hash)
         .bind(created_by)
         .bind(&now)
@@ -258,6 +261,7 @@ impl ConfigManager {
 
         match row {
             Some((version, json)) => {
+                let json = crate::secrets::open(&json).map_err(|e| e.to_string())?;
                 let config = FirewallConfig::from_json(&json)?;
                 Ok(Some((version, config)))
             }
@@ -275,6 +279,7 @@ impl ConfigManager {
         .await
         .map_err(|e| format!("version {version} not found: {e}"))?;
 
+        let json = crate::secrets::open(&json).map_err(|e| e.to_string())?;
         FirewallConfig::from_json(&json)
     }
 
@@ -324,7 +329,8 @@ impl ConfigManager {
             .fetch_one(&self.pool)
             .await
             .ok()
-            .and_then(|(json,)| FirewallConfig::from_json(&json).ok())
+            .and_then(|(json,)| crate::secrets::open(&json).ok())
+            .and_then(|json| FirewallConfig::from_json(&json).ok())
             .map(|c| c.resource_count())
             .unwrap_or(0);
 

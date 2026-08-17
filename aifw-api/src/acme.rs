@@ -25,6 +25,12 @@ fn server(e: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
+/// #298: seal an optional credential column for storage.
+fn seal_opt(v: Option<&str>) -> Result<Option<String>, (StatusCode, String)> {
+    v.map(|s| aifw_core::secrets::seal(s).map_err(server))
+        .transpose()
+}
+
 // =============================================================================
 // Account
 // =============================================================================
@@ -365,8 +371,8 @@ pub async fn create_provider(
     )
     .bind(&req.name)
     .bind(&req.kind)
-    .bind(&req.api_token)
-    .bind(&req.aws_secret_key)
+    .bind(seal_opt(req.api_token.as_deref())?)
+    .bind(seal_opt(req.aws_secret_key.as_deref())?)
     .bind(&req.zone)
     .bind(&extra_str)
     .execute(&state.pool)
@@ -412,8 +418,8 @@ pub async fn update_provider(
     )
     .bind(&req.name)
     .bind(&req.kind)
-    .bind(&api_token)
-    .bind(&aws_secret)
+    .bind(seal_opt(api_token.as_deref())?)
+    .bind(seal_opt(aws_secret.as_deref())?)
     .bind(&req.zone)
     .bind(&extra_str)
     .bind(id)
