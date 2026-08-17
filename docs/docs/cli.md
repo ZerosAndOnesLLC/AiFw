@@ -64,6 +64,7 @@ Most list commands accept `--json` for machine-readable output. Most failures ex
 | `aifw routes` | Manage static routes |
 | `aifw dns` | Manage DNS nameservers + post-switch probe |
 | `aifw syslog` | Remote syslog forwarding (server, categories, test) |
+| `aifw logrotate` | Rotation policy for AiFw service logs |
 | `aifw dhcp` | Manage the DHCP server (rDHCP) |
 | `aifw users` | Manage local users |
 | `aifw reverse-proxy` | Control TrafficCop |
@@ -258,6 +259,20 @@ aifw syslog set --disable-local true   # stop local pf/app log files while forwa
 aifw syslog test                 # one test message with the saved config
 aifw syslog test --host 10.0.0.9 --port 5514
 ```
+
+## logrotate
+
+One size-based rotation policy for every AiFw-managed service log (API, daemon, IDS, watchdog, rDNS, rDHCP, rTIME, TrafficCop). AiFw renders it into `/usr/local/etc/newsyslog.conf.d/aifw.conf`; FreeBSD's hourly `newsyslog` cron job does the rotating, and the rc.d scripts run daemon(8) with `-H` so the log is reopened after each rotation.
+
+```bash
+aifw logrotate show              # policy + current size of every managed log (--json for JSON)
+aifw logrotate set --max-size 20 --keep 5      # rotate above 20 MB, keep 5 generations
+aifw logrotate set --compression zstd          # gzip (default), bzip2, xz, zstd, none
+aifw logrotate rotate            # rotate anything currently over its limit
+aifw logrotate rotate --path /var/log/rtime/rtime.log   # force-rotate one log now
+```
+
+Defaults: rotate above 5 MB, keep 7 generations, gzip.
 
 ## dhcp
 

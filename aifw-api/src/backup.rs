@@ -862,6 +862,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         static_routes: build_static_routes_section(&state.pool).await,
         dns_resolver: Some(crate::dns_resolver::load_config(&state.pool).await),
         syslog: Some(aifw_common::syslog::load(&state.pool).await),
+        log_rotation: Some(aifw_core::log_rotation::load(&state.pool).await),
     };
 
     Ok(config)
@@ -2150,6 +2151,14 @@ pub(crate) async fn apply_firewall_config(
             .map_err(|e| apply_fail("syslog config restore", e))?;
     }
 
+    // Log-rotation policy (#205). Same `None` semantics; the newsyslog
+    // fragment is regenerated after commit.
+    if let Some(lr_cfg) = &config.log_rotation {
+        aifw_core::log_rotation::save_on(&mut tx, lr_cfg)
+            .await
+            .map_err(|e| apply_fail("log rotation config restore", e))?;
+    }
+
     // One audit row for the whole restore, committed atomically with it.
     // (Pre-#158 each engine `add` wrote a per-row audit entry; a restore is
     // one operator action, not N rule additions.)
@@ -2292,6 +2301,9 @@ pub(crate) async fn apply_firewall_config(
     if let Some(syslog_cfg) = &config.syslog {
         state.syslog.apply(syslog_cfg.clone());
         aifw_core::local_log::apply_local_log_policy(syslog_cfg).await;
+    }
+    if config.log_rotation.is_some() {
+        aifw_core::log_rotation::ensure_applied(&state.pool).await;
     }
 
     if let Some(resolver) = &config.dns_resolver {

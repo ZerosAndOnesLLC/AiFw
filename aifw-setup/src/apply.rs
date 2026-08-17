@@ -2566,6 +2566,7 @@ aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-tar *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-tcpdump *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-swanctl *
 aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-dummynet
+aifw ALL=(root) NOPASSWD: /usr/local/libexec/aifw-sudo-newsyslog *
 
 # --- Broad compat grants ---
 # Kept alongside the narrow helpers above for upgrade compat: in-place
@@ -2851,6 +2852,7 @@ mod sudoers_tests {
             "/usr/local/libexec/aifw-sudo-tcpdump",
             "/usr/local/libexec/aifw-sudo-swanctl",
             "/usr/local/libexec/aifw-sudo-dummynet",
+            "/usr/local/libexec/aifw-sudo-newsyslog",
         ] {
             assert!(
                 content.contains(helper),
@@ -2994,6 +2996,10 @@ mod sudoers_tests {
                 "aifw-core ipsec.rs ca cert",
                 format!("{SWANCTL_X509CA_DIR}/{example_id}.pem"),
             ),
+            (
+                "aifw-core log_rotation.rs newsyslog fragment (#205)",
+                aifw_core::log_rotation::CONF_PATH.into(),
+            ),
         ];
         for (site, path) in &targets {
             assert!(
@@ -3025,6 +3031,7 @@ mod sudoers_tests {
             ("aifw-cli/src/commands.rs", 1),
             ("aifw-core/src/pf_tuning.rs", 1),
             ("aifw-core/src/ipsec.rs", 1),
+            ("aifw-core/src/log_rotation.rs", 1),
             // the definition itself
             ("aifw-core/src/sudo.rs", 0),
         ];

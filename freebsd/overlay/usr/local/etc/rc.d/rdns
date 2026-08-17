@@ -29,7 +29,7 @@ pidfile="${rdns_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
 rdns_binary="/usr/local/sbin/rdns"
 command="/usr/sbin/daemon"
-command_args="-f -p ${rdns_pidfile} -P ${rdns_supervisor_pidfile} -R 5 -S -T rdns -o /var/log/rdns/rdns.log ${rdns_binary} -c ${rdns_config}"
+command_args="-f -H -p ${rdns_pidfile} -P ${rdns_supervisor_pidfile} -R 5 -S -T rdns -o /var/log/rdns/rdns.log ${rdns_binary} -c ${rdns_config}"
 
 start_cmd="rdns_start"
 stop_postcmd="rdns_poststop"

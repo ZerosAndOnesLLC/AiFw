@@ -21,7 +21,7 @@ pidfile="${aifw_daemon_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
 aifw_daemon_binary="/usr/local/sbin/aifw-daemon"
 command="/usr/sbin/daemon"
-command_args="-f -p ${aifw_daemon_pidfile} -P ${aifw_daemon_supervisor_pidfile} -R 5 -S -T aifw_daemon -o /var/log/aifw/daemon.log -u aifw ${aifw_daemon_binary} --db ${aifw_daemon_db} --log-level info"
+command_args="-f -H -p ${aifw_daemon_pidfile} -P ${aifw_daemon_supervisor_pidfile} -R 5 -S -T aifw_daemon -o /var/log/aifw/daemon.log -u aifw ${aifw_daemon_binary} --db ${aifw_daemon_db} --log-level info"
 
 start_precmd="aifw_daemon_precmd"
 stop_cmd="aifw_daemon_stop"

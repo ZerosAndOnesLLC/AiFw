@@ -1,0 +1,59 @@
+#!/bin/sh
+# /usr/local/libexec/aifw-sudo-newsyslog <run|rotate <logfile>|status>
+#
+# Narrow-grant wrapper around /usr/sbin/newsyslog for AiFw-managed service
+# logs (#205). Always pins -f to AiFw's own newsyslog fragment so the
+# `aifw` user can only ever act on the logs that fragment lists — never on
+# the system-wide /etc/newsyslog.conf entries.
+#
+#   run              — apply the AiFw rules once (rotate anything over its
+#                      size limit); same thing cron's hourly newsyslog does
+#   rotate <logfile> — force-rotate one managed log now, regardless of size
+#   status           — dry run (-n) showing what a rotation pass would do
+#
+# <logfile> must be one of the paths AiFw's rc.d scripts write via
+# daemon(8) -o. Keep in sync with aifw_core::log_rotation::MANAGED_LOGS.
+
+set -eu
+
+CONF="/usr/local/etc/newsyslog.conf.d/aifw.conf"
+
+fail() {
+    echo "aifw-sudo-newsyslog: $1" >&2
+    exit 1
+}
+
+[ $# -ge 1 ] || { echo "usage: $0 <run|rotate <logfile>|status>" >&2; exit 2; }
+[ -f "$CONF" ] || fail "no AiFw newsyslog fragment at $CONF"
+
+VERB="$1"
+shift
+
+case "$VERB" in
+    run)
+        [ $# -eq 0 ] || fail "run takes no arguments"
+        exec /usr/sbin/newsyslog -f "$CONF"
+        ;;
+    status)
+        [ $# -eq 0 ] || fail "status takes no arguments"
+        exec /usr/sbin/newsyslog -n -f "$CONF"
+        ;;
+    rotate)
+        [ $# -eq 1 ] || fail "rotate takes exactly one logfile"
+        case "$1" in
+            /var/log/aifw/api.log|\
+            /var/log/aifw/daemon.log|\
+            /var/log/aifw/ids.log|\
+            /var/log/aifw/watchdog.log|\
+            /var/log/rdns/rdns.log|\
+            /var/log/rdhcpd/rdhcpd.log|\
+            /var/log/rtime/rtime.log|\
+            /var/log/trafficcop/trafficcop.log) ;;
+            *) fail "not an AiFw-managed log: $1" ;;
+        esac
+        exec /usr/sbin/newsyslog -F -f "$CONF" "$1"
+        ;;
+    *)
+        fail "unsupported verb: $VERB"
+        ;;
+esac

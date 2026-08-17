@@ -468,6 +468,8 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 | `GET`,&nbsp;`PUT` | `/api/v1/settings/syslog` | Remote syslog forwarding (server, transport, format, categories) |
 | `POST` | `/api/v1/settings/syslog/test` | Send one test message (body = draft config, optional) |
 | `GET` | `/api/v1/settings/syslog/status` | Delivery counters per AiFw process (API row live, daemon/IDS refreshed on their 60s poll) |
+| `GET`,&nbsp;`PUT` | `/api/v1/settings/log-rotation` | Rotation policy for AiFw service logs (size cap, generations kept, compression) plus per-log sizes; `PUT` regenerates `/usr/local/etc/newsyslog.conf.d/aifw.conf` and runs one pass |
+| `POST` | `/api/v1/settings/log-rotation/rotate` | Rotate now — `{"path": …}` force-rotates one managed log, empty body runs a normal pass |
 | `GET`,&nbsp;`PUT` | `/api/v1/settings/{section}` | Generic key/value settings store |
 | `GET`,&nbsp;`PUT` | `/api/v1/notify/smtp/config` | SMTP notification settings |
 | `POST` | `/api/v1/notify/smtp/test` | Send a test email |

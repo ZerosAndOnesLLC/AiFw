@@ -20,7 +20,7 @@ pidfile="${rdhcpd_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
 rdhcpd_binary="/usr/local/sbin/rdhcpd"
 command="/usr/sbin/daemon"
-command_args="-f -p ${rdhcpd_pidfile} -P ${rdhcpd_supervisor_pidfile} -R 5 -S -T rdhcpd -o /var/log/rdhcpd/rdhcpd.log ${rdhcpd_binary} ${rdhcpd_config}"
+command_args="-f -H -p ${rdhcpd_pidfile} -P ${rdhcpd_supervisor_pidfile} -R 5 -S -T rdhcpd -o /var/log/rdhcpd/rdhcpd.log ${rdhcpd_binary} ${rdhcpd_config}"
 
 start_precmd="rdhcpd_precmd"
 stop_cmd="rdhcpd_stop"

@@ -81,6 +81,7 @@ const HELPER_TAR: &str = "/usr/local/libexec/aifw-sudo-tar";
 const HELPER_TCPDUMP: &str = "/usr/local/libexec/aifw-sudo-tcpdump";
 const HELPER_SWANCTL: &str = "/usr/local/libexec/aifw-sudo-swanctl";
 const HELPER_DUMMYNET: &str = "/usr/local/libexec/aifw-sudo-dummynet";
+const HELPER_NEWSYSLOG: &str = "/usr/local/libexec/aifw-sudo-newsyslog";
 /// Apply dummynet/FQ-CoDel commands through the closed helper.
 pub async fn dummynet_apply(commands: &[String]) -> std::io::Result<()> {
     let payload = commands.join("\n");
@@ -450,6 +451,17 @@ pub async fn tcpdump(args: &[&str]) -> std::io::Result<std::process::Output> {
     sudo_with_fallback(&narrow, &fallback).await
 }
 
+/// Run newsyslog on AiFw's own fragment via `aifw-sudo-newsyslog` (#205).
+/// `verb` is `run` (apply once), `status` (dry run) or `rotate` with the
+/// managed log path as the second arg; the helper pins `-f` to the AiFw
+/// fragment so nothing outside it can be touched. No broad fallback —
+/// there was never a `newsyslog` grant before this helper.
+pub async fn newsyslog(args: &[&str]) -> std::io::Result<std::process::Output> {
+    let mut argv: Vec<&str> = vec![HELPER_NEWSYSLOG];
+    argv.extend_from_slice(args);
+    Command::new(SUDO).args(&argv).output().await
+}
+
 #[cfg(test)]
 mod allowlist_tests {
     /// Guard (#601): every path the code writes through `aifw-sudo-write`
@@ -468,6 +480,7 @@ mod allowlist_tests {
             "/usr/local/etc/swanctl/private/aifw-*.pem",
             "/usr/local/etc/swanctl/x509/aifw-*.pem",
             "/usr/local/etc/swanctl/x509ca/aifw-*.pem",
+            "/usr/local/etc/newsyslog.conf.d/aifw.conf",
         ] {
             assert!(
                 helper.contains(path),

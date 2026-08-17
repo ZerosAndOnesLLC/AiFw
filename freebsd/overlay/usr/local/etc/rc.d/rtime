@@ -20,7 +20,7 @@ pidfile="${rtime_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
 rtime_binary="/usr/local/sbin/rtime"
 command="/usr/sbin/daemon"
-command_args="-f -p ${rtime_pidfile} -P ${rtime_supervisor_pidfile} -R 5 -S -T rtime -o /var/log/rtime/rtime.log ${rtime_binary} --config ${rtime_config}"
+command_args="-f -H -p ${rtime_pidfile} -P ${rtime_supervisor_pidfile} -R 5 -S -T rtime -o /var/log/rtime/rtime.log ${rtime_binary} --config ${rtime_config}"
 
 start_precmd="rtime_precmd"
 stop_cmd="rtime_stop"
@@ -32,6 +32,12 @@ rtime_precmd()
     /usr/bin/pkill -f "daemon:.*rtime" 2>/dev/null
     /usr/bin/pkill -x rtime 2>/dev/null
     /bin/rm -f ${rtime_pidfile} ${rtime_supervisor_pidfile}
+    # Pre-create the log with group-read perms (same as rdns): daemon(8)
+    # opens -o with umask 077, which left rtime.log 0600 and locked
+    # aifw-api out of /api/v1/time/logs (#205).
+    /usr/bin/touch /var/log/rtime/rtime.log
+    /usr/sbin/chown root:aifw /var/log/rtime/rtime.log
+    /bin/chmod 640 /var/log/rtime/rtime.log
 }
 
 rtime_stop()

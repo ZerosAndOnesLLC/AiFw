@@ -11,6 +11,7 @@ mod dns_blocklists;
 mod dns_resolver;
 mod ids;
 mod iface;
+mod log_rotation;
 mod log_tail;
 mod metrics_series;
 mod multiwan;
@@ -1708,6 +1709,8 @@ async fn main() -> anyhow::Result<()> {
     // wasn't already running. See `ensure_rc_services_enabled` for the
     // full reasoning.
     ensure_rc_services_enabled().await;
+    // #205: keep the newsyslog fragment in step with the stored policy.
+    aifw_core::log_rotation::ensure_applied(&state.pool).await;
 
     // Continue an OS release upgrade across the mid-flow reboot (#613):
     // after booting the new kernel this runs the remaining
