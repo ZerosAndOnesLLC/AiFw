@@ -1585,7 +1585,7 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
             Ok(())
         }
         "rdns" => {
-            let _ = Command::new("/usr/local/bin/sudo")
+            let res = Command::new("/usr/local/bin/sudo")
                 .args([
                     "mkdir",
                     "-p",
@@ -1596,6 +1596,7 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
                 ])
                 .output()
                 .await;
+            aifw_core::sudo::warn_on_fail("rdns: create config directories", &res);
 
             let conf = generate_rdns_conf(&state.pool).await;
             let tmp = "/tmp/aifw_rdns.toml";
@@ -1604,7 +1605,7 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
             let _ = tokio::fs::remove_file(tmp).await;
 
             let zones = generate_rdns_zones(&state.pool).await;
-            let _ = Command::new("/usr/local/bin/sudo")
+            let res = Command::new("/usr/local/bin/sudo")
                 .args([
                     "/usr/bin/find",
                     "/usr/local/etc/rdns/zones",
@@ -1614,6 +1615,7 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
                 ])
                 .output()
                 .await;
+            aifw_core::sudo::warn_on_fail("rdns: clear stale zone files", &res);
             for (filename, content) in &zones {
                 let safe_name = sanitize_zone_filename(filename);
                 if safe_name.is_empty() {
@@ -1637,10 +1639,11 @@ async fn write_backend_config_files(state: &AppState, backend: &str) -> Result<(
                 sudo_copy(tmp_rpz, hosts_rpz_path).await;
                 let _ = tokio::fs::remove_file(tmp_rpz).await;
             } else {
-                let _ = Command::new("/usr/local/bin/sudo")
+                let res = Command::new("/usr/local/bin/sudo")
                     .args(["/bin/rm", "-f", hosts_rpz_path])
                     .output()
                     .await;
+                aifw_core::sudo::warn_on_fail("rdns: remove hosts RPZ", &res);
             }
 
             if let Some(rpz_content) = generate_rdns_rpz(&state.pool).await {

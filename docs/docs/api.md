@@ -132,7 +132,7 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 | `POST` | `/api/v1/auth/totp/disable` | Disable TOTP for the current user |
 | `POST` | `/api/v1/auth/refresh` | Exchange refresh token for a new JWT |
 | `POST` | `/api/v1/auth/logout` | Revoke the current session |
-| `POST` | `/api/v1/auth/register` | Self-service registration (if enabled) |
+| `POST` | `/api/v1/auth/register` | Bootstrap the first admin — unauthenticated, only succeeds while no user account exists |
 | `GET` | `/api/v1/auth/me` | Current user identity, role, perms |
 | `POST` | `/api/v1/auth/ws-ticket` | Mint a 30-second WebSocket ticket |
 | `GET`,&nbsp;`POST` | `/api/v1/auth/users` | List / create users |

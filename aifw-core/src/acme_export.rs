@@ -128,10 +128,12 @@ async fn sudo_install_string(
     let tmp = format!("/tmp/aifw_acme_export_{basename}.tmp");
 
     if let Some(parent) = std::path::Path::new(dest).parent() {
-        let _ = Command::new(SUDO)
+        let res = Command::new(SUDO)
             .args(["/bin/mkdir", "-p", parent.to_str().unwrap_or("")])
             .output()
             .await;
+        // Non-fatal: the install below fails loudly if the dir is missing.
+        crate::sudo::warn_on_fail("acme export: create destination directory", &res);
     }
 
     tokio::fs::write(&tmp, body)

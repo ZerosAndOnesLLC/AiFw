@@ -1494,11 +1494,17 @@ async fn ensure_rdr_anchor() {
         .await
         .is_ok()
     {
-        let _ = tokio::process::Command::new("/usr/local/bin/sudo")
+        let res = tokio::process::Command::new("/usr/local/bin/sudo")
             .args(["/sbin/pfctl", "-f", pf_path])
             .output()
             .await;
-        info!("Patched pf.conf with missing AiFw anchors and reloaded");
+        if aifw_core::sudo::warn_on_fail("pfctl -f after anchor patch", &res) {
+            info!("Patched pf.conf with missing AiFw anchors and reloaded");
+        } else {
+            tracing::warn!(
+                "Patched pf.conf with missing AiFw anchors but reload failed — anchors take effect at next pf reload"
+            );
+        }
     } else {
         tracing::warn!("aifw-sudo-write failed to commit patched pf.conf");
     }

@@ -344,7 +344,7 @@ pub async fn enable_fibs(
     let already_enabled = false;
 
     let reboot_scheduled = if req.reboot && !already_enabled {
-        let _ = tokio::process::Command::new("/usr/local/bin/sudo")
+        let res = tokio::process::Command::new("/usr/local/bin/sudo")
             .args([
                 "/sbin/shutdown",
                 "-r",
@@ -353,7 +353,8 @@ pub async fn enable_fibs(
             ])
             .output()
             .await;
-        true
+        // #325: report what actually happened rather than assuming.
+        aifw_core::sudo::warn_on_fail("multiwan: schedule reboot", &res)
     } else {
         false
     };

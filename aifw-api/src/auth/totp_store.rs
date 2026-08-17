@@ -97,6 +97,7 @@ pub async fn save_recovery_codes(
 
 /// Try to use a recovery code. Returns true if valid and unused.
 pub async fn use_recovery_code(pool: &SqlitePool, user_id: &str, code: &str) -> bool {
+    let code = super::totp::normalize_recovery_code(code);
     let rows = sqlx::query_as::<_, (String, String)>(
         "SELECT id, code_hash FROM recovery_codes WHERE user_id = ?1 AND used = 0",
     )
@@ -106,7 +107,7 @@ pub async fn use_recovery_code(pool: &SqlitePool, user_id: &str, code: &str) -> 
     .unwrap_or_default();
 
     for (id, code_hash) in rows {
-        if verify_password(code, &code_hash) {
+        if verify_password(&code, &code_hash) {
             let _ = sqlx::query("UPDATE recovery_codes SET used = 1 WHERE id = ?1")
                 .bind(&id)
                 .execute(pool)

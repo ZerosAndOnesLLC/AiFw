@@ -45,6 +45,8 @@ curl -X POST https://aifw.local/api/v1/auth/users \
   }'
 ```
 
+The very first account is created by the setup wizard, or by an unauthenticated `POST /api/v1/auth/register` &mdash; that endpoint only succeeds while **no** user account exists (the `aifw-daemon` service account doesn't count) and always creates an admin; every later call gets `403`. That is also the recovery story if the last admin is ever deleted: with no accounts left, the next `register` re-creates one, so treat the box as open until it is called (do it immediately, from the console). Deleting yourself as the only admin therefore doesn't lock you out; it just returns the box to first-boot state for whoever reaches the API next.
+
 Login returns a JWT plus a refresh token:
 
 ```bash
@@ -252,7 +254,7 @@ The canonical list lives in [`aifw-common/src/permission.rs`](https://github.com
 | `POST` | `/api/v1/auth/totp/login` | Submit TOTP code after `/login` |
 | `POST` | `/api/v1/auth/refresh` | Exchange a refresh token for a new JWT |
 | `POST` | `/api/v1/auth/logout` | Revoke the current session |
-| `POST` | `/api/v1/auth/register` | Self-service registration (if enabled) |
+| `POST` | `/api/v1/auth/register` | Bootstrap the first admin — unauthenticated, only succeeds while no user account exists |
 | `GET` | `/api/v1/auth/me` | Current user identity, role, perms |
 | `POST` | `/api/v1/auth/totp/setup` | Begin TOTP enrolment |
 | `POST` | `/api/v1/auth/totp/verify` | Verify and activate TOTP |

@@ -82,6 +82,28 @@ const HELPER_TCPDUMP: &str = "/usr/local/libexec/aifw-sudo-tcpdump";
 const HELPER_SWANCTL: &str = "/usr/local/libexec/aifw-sudo-swanctl";
 const HELPER_DUMMYNET: &str = "/usr/local/libexec/aifw-sudo-dummynet";
 const HELPER_NEWSYSLOG: &str = "/usr/local/libexec/aifw-sudo-newsyslog";
+/// Log (at warn) when a privileged command failed to spawn or exited
+/// non-zero, with its stderr. For best-effort steps whose failure must be
+/// visible in the logs but is not fatal to the caller (#325 / SEC-I3).
+/// Returns `true` when the command succeeded.
+pub fn warn_on_fail(what: &str, res: &std::io::Result<std::process::Output>) -> bool {
+    match res {
+        Ok(o) if o.status.success() => true,
+        Ok(o) => {
+            tracing::warn!(
+                status = %o.status,
+                stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                "{what} failed"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "{what} failed to run");
+            false
+        }
+    }
+}
+
 /// Apply dummynet/FQ-CoDel commands through the closed helper.
 pub async fn dummynet_apply(commands: &[String]) -> std::io::Result<()> {
     let payload = commands.join("\n");
