@@ -1,3 +1,4 @@
+use aifw_core::os_upgrade_state::{self, OsUpgradeState};
 use aifw_core::updater::{self, AifwUpdateInfo};
 use axum::{Json, extract::State, http::StatusCode};
 use chrono::Utc;
@@ -411,53 +412,20 @@ pub async fn install_updates(
 // OS release upgrade (#613)
 // ============================================================
 
-/// Persistent state of an OS release upgrade, stored in `update_config`
-/// so it survives the reboot in the middle of the flow.
-///
-/// Phases: `fetching` (freebsd-update -r X upgrade) → `installing`
-/// (kernel install) → `reboot_required` → `finalizing` (post-reboot
-/// userland install passes, driven by `resume_os_upgrade`) → `done`,
-/// or `failed` with the reason in `detail`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OsUpgradeState {
-    pub target: String,
-    pub phase: String,
-    pub detail: String,
-    pub started_at: String,
-    pub updated_at: String,
+/// True while a release upgrade owns freebsd-update's state directory —
+/// see [`os_upgrade_state::in_flight`]. Patch-level freebsd-update
+/// operations (#633) and AiFw installs (#646) stand down in this window.
+async fn os_upgrade_in_flight(pool: &SqlitePool) -> bool {
+    os_upgrade_state::in_flight(pool).await
 }
-
-const OS_UPGRADE_KEY: &str = "os_upgrade_state";
 
 async fn load_os_upgrade(pool: &SqlitePool) -> Option<OsUpgradeState> {
-    let row = sqlx::query_as::<_, (String,)>("SELECT value FROM update_config WHERE key = ?1")
-        .bind(OS_UPGRADE_KEY)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()?;
-    serde_json::from_str(&row.0).ok()
-}
-
-/// True while a release upgrade owns freebsd-update's state directory —
-/// from fetch through the post-reboot finalize. Patch-level freebsd-update
-/// operations must stand down in this window (#633): they share the state
-/// dir and a routine fetch destroys the staged release.
-async fn os_upgrade_in_flight(pool: &SqlitePool) -> bool {
-    load_os_upgrade(pool)
-        .await
-        .map(|s| {
-            matches!(
-                s.phase.as_str(),
-                "fetching" | "installing" | "reboot_required" | "finalizing"
-            )
-        })
-        .unwrap_or(false)
+    os_upgrade_state::load(pool).await
 }
 
 async fn store_os_upgrade(pool: &SqlitePool, state: &OsUpgradeState) {
     if let Ok(json) = serde_json::to_string(state) {
-        save_config(pool, OS_UPGRADE_KEY, &json).await;
+        save_config(pool, os_upgrade_state::OS_UPGRADE_KEY, &json).await;
     }
 }
 
@@ -729,31 +697,134 @@ pub async fn start_os_upgrade(
     }))
 }
 
+/// What startup recovery should do with a persisted OS-upgrade record,
+/// given what the machine actually looks like now. Pure so it can be
+/// tested without a box to reboot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeAction {
+    /// Nothing to do (no record, terminal phase that reality agrees with,
+    /// or `reboot_required` before the reboot has happened).
+    Nothing,
+    /// Run the post-reboot `freebsd-update install` passes.
+    Finalize,
+    /// Reality already satisfies the target: record `done` (#645).
+    Heal,
+    /// Mark the record `failed` with this detail.
+    Fail(String),
+}
+
+/// Observed facts about the running system, gathered once at startup.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OsReality {
+    /// Running kernel satisfies the target release.
+    pub kernel_ok: bool,
+    /// Installed userland satisfies the target release.
+    pub userland_ok: bool,
+    /// All [`updater::OS_CANARY_FILES`] present and non-empty.
+    pub canaries_ok: bool,
+}
+
+/// Decide how to resume from `phase` (see [`resume_os_upgrade`] for the
+/// rationale behind each arm).
+pub fn resume_decision(
+    phase: &str,
+    target: &str,
+    userland: Option<&str>,
+    r: OsReality,
+) -> ResumeAction {
+    let healed = r.userland_ok && r.canaries_ok;
+    match phase {
+        // #628: gate on the RUNNING KERNEL, not the userland. After the
+        // mid-upgrade reboot the kernel is on the target release while the
+        // userland is still old — a userland gate deadlocks here forever.
+        "reboot_required" if r.kernel_ok => ResumeAction::Finalize,
+        "reboot_required" => ResumeAction::Nothing,
+        // #645: a finalize that was interrupted (service restart mid-pass)
+        // is safe to re-run — the install passes are idempotent and end
+        // with "No updates are available". Only fail if we somehow aren't
+        // even on the new kernel.
+        "finalizing" if r.kernel_ok => ResumeAction::Finalize,
+        // #645: the process died mid-run, but if the box already satisfies
+        // the target the upgrade in fact landed — heal instead of stranding
+        // the card on "Failed". Mirror of the #632 done-demotion below.
+        "fetching" | "installing" | "finalizing" if healed => ResumeAction::Heal,
+        "fetching" | "installing" | "finalizing" => ResumeAction::Fail(format!(
+            "interrupted during {phase} (service restarted mid-upgrade) — start the upgrade again to retry"
+        )),
+        // #645: an appliance already stranded on "failed" by the race this
+        // fixes carries a verified target userland; let it recover on its
+        // own. A genuine failure (userland still old, or canaries missing)
+        // stays failed.
+        "failed" if healed => ResumeAction::Heal,
+        // #632: demote a recorded "done" that reality contradicts — an
+        // old userland means the staged upgrade data was lost; without this
+        // the operator can never retry from the UI.
+        "done" if userland.is_some() && !r.userland_ok => ResumeAction::Fail(format!(
+            "recorded as complete but the userland is {}, not {target} — the staged \
+             upgrade data was lost; run the upgrade again",
+            userland.unwrap_or_default()
+        )),
+        _ => ResumeAction::Nothing,
+    }
+}
+
+async fn observe_os_reality(target: &str) -> (OsReality, Option<String>) {
+    let kernel = updater::running_kernel_release().await;
+    let userland = updater::current_os_release().await;
+    let reality = OsReality {
+        kernel_ok: kernel
+            .as_deref()
+            .is_some_and(|k| updater::os_satisfies(k, target)),
+        userland_ok: userland
+            .as_deref()
+            .is_some_and(|u| updater::os_satisfies(u, target)),
+        canaries_ok: updater::missing_canaries(&updater::OS_CANARY_FILES).is_empty(),
+    };
+    (reality, userland)
+}
+
+async fn mark_os_upgrade_done(pool: &SqlitePool, job: &mut OsUpgradeState, how: &str) {
+    let done_detail = format!(
+        "running FreeBSD {} — AiFw updates are unblocked",
+        job.target
+    );
+    let done_log = format!("{how}: now on {}", job.target);
+    set_os_upgrade_phase(pool, job, "done", done_detail).await;
+    log_update(pool, "os_upgrade", &done_log, "completed").await;
+    // #624: drop the cached update info — the release that was OS-blocked
+    // before the upgrade is installable now, and the next page load should
+    // say so without the operator remembering to re-check.
+    save_config(pool, "aifw_cached_info", "").await;
+}
+
 /// Pick up an OS upgrade across restarts. Called once at aifw-api startup.
 ///
 /// - After the mid-upgrade reboot (phase `reboot_required`, now running the
-///   target release): run the remaining `freebsd-update install` passes and
+///   target kernel): run the remaining `freebsd-update install` passes and
 ///   mark the upgrade done.
-/// - A phase of `fetching`/`installing` at startup means the process died
-///   mid-run (crash, power loss): mark failed so the operator can retry.
+/// - `finalizing` at startup means the finalize was interrupted (#646 —
+///   an AiFw install restarted the service mid-pass): re-run the passes.
+/// - `fetching`/`installing` at startup means the process died mid-run
+///   (crash, power loss): mark failed so the operator can retry — unless
+///   the box already runs the target, in which case heal to done (#645).
+/// - `failed`/`done` are re-checked against reality: a false failed heals,
+///   a false done demotes (#632).
 pub async fn resume_os_upgrade(pool: SqlitePool) {
     let Some(mut job) = load_os_upgrade(&pool).await else {
         return;
     };
-    match job.phase.as_str() {
-        "reboot_required" => {
-            // #628: gate on the RUNNING KERNEL, not the userland. After the
-            // mid-upgrade reboot the kernel is on the target release while
-            // the userland is still old — the userland only catches up when
-            // the install passes below run, so a userland gate deadlocks
-            // the flow at "reboot required" forever.
-            let Some(kernel) = updater::running_kernel_release().await else {
-                return;
-            };
-            if !updater::os_satisfies(&kernel, &job.target) {
-                // Not rebooted into the new kernel yet — nothing to do.
-                return;
-            }
+    let (reality, userland) = observe_os_reality(&job.target).await;
+    match resume_decision(&job.phase, &job.target, userland.as_deref(), reality) {
+        ResumeAction::Nothing => {}
+        ResumeAction::Heal => {
+            tracing::info!(target = %job.target, phase = %job.phase, "os upgrade: record disagrees with a verified target userland — healing to done");
+            mark_os_upgrade_done(&pool, &mut job, "healed").await;
+        }
+        ResumeAction::Fail(detail) => {
+            set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
+            log_update(&pool, "os_upgrade", &detail, "failed").await;
+        }
+        ResumeAction::Finalize => {
             set_os_upgrade_phase(
                 &pool,
                 &mut job,
@@ -761,125 +832,67 @@ pub async fn resume_os_upgrade(pool: SqlitePool) {
                 "installing the new userland".into(),
             )
             .await;
-            tokio::spawn(async move {
-                // freebsd-update needs up to three install passes after the
-                // reboot (world, then old-library cleanup). It exits
-                // non-zero with "No updates are available" once done.
-                for pass in 1..=3u32 {
-                    match aifw_core::sudo::freebsd_update("install", &[]).await {
-                        Ok(o) if o.status.success() => {
-                            tracing::info!(pass, "os upgrade: install pass complete");
-                        }
-                        Ok(o) => {
-                            let tail = output_tail(&o);
-                            if tail.contains("No updates are available") {
-                                break;
-                            }
-                            set_os_upgrade_phase(
-                                &pool,
-                                &mut job,
-                                "failed",
-                                format!("post-reboot install failed: {tail}"),
-                            )
-                            .await;
-                            log_update(
-                                &pool,
-                                "os_upgrade",
-                                &format!("post-reboot install failed: {tail}"),
-                                "failed",
-                            )
-                            .await;
-                            return;
-                        }
-                        Err(e) => {
-                            set_os_upgrade_phase(
-                                &pool,
-                                &mut job,
-                                "failed",
-                                format!("post-reboot install failed: {e}"),
-                            )
-                            .await;
-                            log_update(
-                                &pool,
-                                "os_upgrade",
-                                &format!("post-reboot install failed: {e}"),
-                                "failed",
-                            )
-                            .await;
-                            return;
-                        }
-                    }
-                }
-                // #632: done is VERIFIED, never inferred. "No updates are
-                // available" with an old userland means the staged upgrade
-                // data was lost (a patch-level fetch shares freebsd-update's
-                // state dir, #633) — the appliance showed "Complete /
-                // running FreeBSD 15.1" while actually still on 15.0.
-                let userland_ok = match updater::current_os_release().await {
-                    Some(u) => updater::os_satisfies(&u, &job.target),
-                    None => false,
-                };
-                // #636: version alone can't see a mangled install that
-                // deleted files — canary-check the essentials too.
-                let missing = updater::missing_canaries(&updater::OS_CANARY_FILES);
-                if userland_ok && !missing.is_empty() {
-                    let detail = format!(
-                        "upgrade left essential files damaged ({}) — use Retry to re-run the upgrade cleanly",
-                        missing.join(", ")
-                    );
-                    set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
-                    log_update(&pool, "os_upgrade", &detail, "failed").await;
-                    return;
-                }
-                if userland_ok {
-                    let done_detail = format!(
-                        "running FreeBSD {} — AiFw updates are unblocked",
-                        job.target
-                    );
-                    let done_log = format!("completed: now on {}", job.target);
-                    set_os_upgrade_phase(&pool, &mut job, "done", done_detail).await;
-                    log_update(&pool, "os_upgrade", &done_log, "completed").await;
-                    // #624: drop the cached update info — the release that
-                    // was OS-blocked before the upgrade is installable now,
-                    // and the next page load should say so without the
-                    // operator remembering to re-check.
-                    save_config(&pool, "aifw_cached_info", "").await;
-                } else {
-                    let detail = format!(
-                        "install passes ran but the userland is not on {} — the staged \
-                         upgrade data was lost; run the upgrade again",
-                        job.target
-                    );
-                    set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
-                    log_update(&pool, "os_upgrade", &detail, "failed").await;
-                }
-            });
+            tokio::spawn(finalize_os_upgrade(pool, job));
         }
-        "fetching" | "installing" | "finalizing" => {
-            let detail = format!(
-                "interrupted during {} (service restarted mid-upgrade) — start the upgrade again to retry",
-                job.phase
-            );
-            set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
-            log_update(&pool, "os_upgrade", &detail, "failed").await;
-        }
-        "done" => {
-            // #632: demote a recorded "done" that reality contradicts. An
-            // appliance that hit the false-done bug carries phase=done with
-            // an old userland; without this it can never retry from the UI.
-            if let Some(u) = updater::current_os_release().await
-                && !updater::os_satisfies(&u, &job.target)
-            {
-                let detail = format!(
-                    "recorded as complete but the userland is {u}, not {} — the staged \
-                     upgrade data was lost; run the upgrade again",
-                    job.target
-                );
+    }
+}
+
+/// The post-reboot half of a release upgrade: up to three
+/// `freebsd-update install` passes (world, then old-library cleanup),
+/// then verify the result before recording done.
+async fn finalize_os_upgrade(pool: SqlitePool, mut job: OsUpgradeState) {
+    for pass in 1..=3u32 {
+        match aifw_core::sudo::freebsd_update("install", &[]).await {
+            Ok(o) if o.status.success() => {
+                tracing::info!(pass, "os upgrade: install pass complete");
+            }
+            Ok(o) => {
+                let tail = output_tail(&o);
+                // freebsd-update exits non-zero with this once done.
+                if tail.contains("No updates are available") {
+                    break;
+                }
+                let detail = format!("post-reboot install failed: {tail}");
                 set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
                 log_update(&pool, "os_upgrade", &detail, "failed").await;
+                return;
+            }
+            Err(e) => {
+                let detail = format!("post-reboot install failed: {e}");
+                set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
+                log_update(&pool, "os_upgrade", &detail, "failed").await;
+                return;
             }
         }
-        _ => {}
+    }
+    // #632: done is VERIFIED, never inferred. "No updates are available"
+    // with an old userland means the staged upgrade data was lost (a
+    // patch-level fetch shares freebsd-update's state dir, #633) — the
+    // appliance showed "Complete / running FreeBSD 15.1" while actually
+    // still on 15.0.
+    let (reality, _) = observe_os_reality(&job.target).await;
+    // #636: version alone can't see a mangled install that deleted files —
+    // canary-check the essentials too.
+    if reality.userland_ok && !reality.canaries_ok {
+        let missing = updater::missing_canaries(&updater::OS_CANARY_FILES);
+        let detail = format!(
+            "upgrade left essential files damaged ({}) — use Retry to re-run the upgrade cleanly",
+            missing.join(", ")
+        );
+        set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
+        log_update(&pool, "os_upgrade", &detail, "failed").await;
+        return;
+    }
+    if reality.userland_ok {
+        mark_os_upgrade_done(&pool, &mut job, "completed").await;
+    } else {
+        let detail = format!(
+            "install passes ran but the userland is not on {} — the staged \
+             upgrade data was lost; run the upgrade again",
+            job.target
+        );
+        set_os_upgrade_phase(&pool, &mut job, "failed", detail.clone()).await;
+        log_update(&pool, "os_upgrade", &detail, "failed").await;
     }
 }
 
@@ -1142,6 +1155,19 @@ pub async fn aifw_install_update(
             reboot_recommended: false,
             reboot_reason: None,
         }));
+    }
+
+    // #646: never install (and restart services) while a release upgrade
+    // is in flight — the restart interrupts the post-reboot finalize
+    // passes and its bookkeeping. Same stand-down as patch-level
+    // freebsd-update (#633).
+    if let Some(job) = load_os_upgrade(&state.pool).await
+        && job.is_in_flight()
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            os_upgrade_state::blocked_message(&job),
+        ));
     }
 
     // OS dependency gate (#612): fail before downloading when the release
@@ -1420,5 +1446,122 @@ mod install_error_tests {
         let (_, body) = install_error("update check failed", "connection reset");
         assert!(body.contains("connection reset"));
         assert!(!body.contains("console as root"));
+    }
+}
+
+#[cfg(test)]
+mod resume_decision_tests {
+    use super::{OsReality, ResumeAction, resume_decision};
+
+    const T: &str = "15.1";
+    const OLD: Option<&str> = Some("15.0-RELEASE-p11");
+    const NEW: Option<&str> = Some("15.1-RELEASE");
+
+    fn r(kernel_ok: bool, userland_ok: bool, canaries_ok: bool) -> OsReality {
+        OsReality {
+            kernel_ok,
+            userland_ok,
+            canaries_ok,
+        }
+    }
+
+    fn is_fail(a: &ResumeAction, needle: &str) -> bool {
+        matches!(a, ResumeAction::Fail(d) if d.contains(needle))
+    }
+
+    #[test]
+    fn reboot_required_waits_for_new_kernel_then_finalizes() {
+        // #628: gate on the kernel, not the userland.
+        assert_eq!(
+            resume_decision("reboot_required", T, OLD, r(false, false, true)),
+            ResumeAction::Nothing
+        );
+        assert_eq!(
+            resume_decision("reboot_required", T, OLD, r(true, false, true)),
+            ResumeAction::Finalize
+        );
+    }
+
+    #[test]
+    fn interrupted_finalize_resumes_instead_of_failing() {
+        // #646/#645: an AiFw install restarted the service mid-finalize.
+        assert_eq!(
+            resume_decision("finalizing", T, OLD, r(true, false, true)),
+            ResumeAction::Finalize
+        );
+        // Already fully on target (state write was the only thing lost).
+        assert_eq!(
+            resume_decision("finalizing", T, NEW, r(true, true, true)),
+            ResumeAction::Finalize
+        );
+        // Not even on the new kernel: something is badly wrong — fail.
+        assert!(is_fail(
+            &resume_decision("finalizing", T, OLD, r(false, false, true)),
+            "interrupted during finalizing"
+        ));
+    }
+
+    #[test]
+    fn interrupted_fetch_or_install_fails_unless_target_already_reached() {
+        for phase in ["fetching", "installing"] {
+            assert!(is_fail(
+                &resume_decision(phase, T, OLD, r(false, false, true)),
+                &format!("interrupted during {phase}")
+            ));
+            // #645: heal when reality already satisfies the target …
+            assert_eq!(
+                resume_decision(phase, T, NEW, r(true, true, true)),
+                ResumeAction::Heal
+            );
+            // … but not when the userland is on target with damaged files (#636).
+            assert!(is_fail(
+                &resume_decision(phase, T, NEW, r(true, true, false)),
+                "interrupted"
+            ));
+        }
+    }
+
+    #[test]
+    fn stranded_failed_record_heals_only_when_verified() {
+        // #645: box already on the bad-state path from the race.
+        assert_eq!(
+            resume_decision("failed", T, NEW, r(true, true, true)),
+            ResumeAction::Heal
+        );
+        // Genuine failures stay failed.
+        assert_eq!(
+            resume_decision("failed", T, OLD, r(true, false, true)),
+            ResumeAction::Nothing
+        );
+        assert_eq!(
+            resume_decision("failed", T, NEW, r(true, true, false)),
+            ResumeAction::Nothing
+        );
+    }
+
+    #[test]
+    fn false_done_is_demoted_only_when_userland_is_known() {
+        // #632
+        assert!(is_fail(
+            &resume_decision("done", T, OLD, r(true, false, true)),
+            "recorded as complete but the userland is 15.0-RELEASE-p11"
+        ));
+        assert_eq!(
+            resume_decision("done", T, NEW, r(true, true, true)),
+            ResumeAction::Nothing
+        );
+        // Dev host / no freebsd-version: never demote on a blank picture.
+        assert_eq!(
+            resume_decision("done", T, None, r(false, false, true)),
+            ResumeAction::Nothing
+        );
+    }
+
+    #[test]
+    fn unknown_phase_is_left_alone() {
+        assert_eq!(
+            resume_decision("bogus", T, NEW, r(true, true, true)),
+            ResumeAction::Nothing
+        );
     }
 }

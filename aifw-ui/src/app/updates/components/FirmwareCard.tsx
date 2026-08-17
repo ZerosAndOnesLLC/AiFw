@@ -7,6 +7,8 @@ interface FirmwareCardProps {
   checking: boolean;
   installing: boolean;
   rollingBack: boolean;
+  /** #646: a FreeBSD release upgrade owns the box; installs are paused. */
+  osUpgradeInFlight?: boolean;
   onCheck: () => void;
   onInstall: () => void;
   onRollback: () => void;
@@ -18,6 +20,7 @@ export function FirmwareCard({
   checking,
   installing,
   rollingBack,
+  osUpgradeInFlight = false,
   onCheck,
   onInstall,
   onRollback,
@@ -109,12 +112,21 @@ export function FirmwareCard({
 
           {info?.update_available &&
             !info?.os_upgrade_required &&
+            osUpgradeInFlight && (
+            <p className="max-w-56 text-xs text-yellow-400">
+              An operating system upgrade is in progress. AiFw updates are
+              paused until it completes (card above).
+            </p>
+          )}
+
+          {info?.update_available &&
+            !info?.os_upgrade_required &&
             info?.tarball_url &&
             info?.checksum_url &&
             info?.checksum_signature_url && (
             <button
               onClick={onInstall}
-              disabled={installing}
+              disabled={installing || osUpgradeInFlight}
               className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md disabled:opacity-50 flex items-center gap-2 transition-colors"
             >
               {installing && (

@@ -38,6 +38,7 @@ pub mod migrations;
 pub mod multiwan;
 /// [`NatEngine`] — SNAT/DNAT/masquerade rule CRUD and application to pf
 pub mod nat;
+pub mod os_upgrade_state;
 /// SSRF guard for operator-configurable outbound HTTP. Relocated to
 /// `aifw-common` so downloaders in sibling crates (aifw-ids) can share it;
 /// re-exported here so existing `crate::net_safety::…` call sites keep working.

@@ -160,6 +160,10 @@ export function useUpdates() {
     osUpgrade?.state?.phase ?? "",
   );
   usePolling(fetchOsUpgrade, 5000, osUpgradeActive);
+  // #646: the API refuses AiFw installs (409) for the whole in-flight
+  // window, including `reboot_required`; mirror that in the UI.
+  const osUpgradeInFlight =
+    osUpgradeActive || osUpgrade?.state?.phase === "reboot_required";
 
   const handleCheck = async () => {
     setChecking(true);
@@ -453,6 +457,7 @@ export function useUpdates() {
     // OS release upgrade
     osUpgrade,
     osUpgradeStarting,
+    osUpgradeInFlight,
     handleOsUpgrade,
     // Maintenance window
     schedule,

@@ -1508,7 +1508,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(path) = from {
                     commands::update_install_local(path, skip_checksum, restart || yes).await?
                 } else {
-                    commands::update_install(restart || yes, pre).await?
+                    commands::update_install(&cli.db, restart || yes, pre).await?
                 }
             }
             UpdateAction::Rollback { restart, yes } => {
