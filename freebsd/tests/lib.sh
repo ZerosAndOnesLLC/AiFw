@@ -149,6 +149,22 @@ client_send_udp() { # $1 = host, $2 = port
     printf 'aifw-functional-udp\n' | jx_client nc -u -w 2 "$1" "$2" >/dev/null 2>&1
 }
 
+# Wait until something in the server jail is listening on a TCP port. The
+# one-shot `nc -l` listeners above start in the background; connecting
+# before they bind gets an RST and a spurious "cannot reach" (seen on the
+# nat46 leg of t09).
+wait_for_listener() { # $1 = port, $2 = seconds
+    _i=0
+    while [ "$_i" -lt "$(( $2 * 5 ))" ]; do
+        # LOCAL ADDRESS column reads `*:8093` / `[::1]:8093`, followed by
+        # the FOREIGN ADDRESS column.
+        jx_server sockstat -l -P tcp 2>/dev/null | grep -qE ":$1[[:space:]]" && return 0
+        sleep 0.2
+        _i=$((_i + 1))
+    done
+    return 1
+}
+
 wait_for_file() { # $1 = jail (client|server), $2 = file, $3 = seconds
     _i=0
     while [ "$_i" -lt "$3" ]; do

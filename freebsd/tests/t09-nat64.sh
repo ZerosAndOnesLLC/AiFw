@@ -24,6 +24,7 @@ jx_client route -q add -inet6 "$NAT64_PREFIX" "$CLIENT6_NET_HOST" >/dev/null 2>&
 PORT=8091
 MARKER=/tmp/aifwfx-t09-tcp-marker
 server_listen_once $PORT $MARKER
+wait_for_listener $PORT 5 || fail "nat64 tcp: server listener on :$PORT never came up"
 if client_can_reach "$SERVER_IP_EMBEDDED" $PORT; then
     wait_for_file server $MARKER 5 || fail "nat64 tcp: connected but server never saw it"
 else
@@ -67,6 +68,7 @@ MARKER46=/tmp/aifwfx-t09-nat46-marker
 # Explicit -6: plain `nc -l` binds the IPv4 wildcard only, so the translated
 # IPv6 SYN would be RST'd and the test would fail with no listener at fault.
 jx_server sh -c "rm -f '$MARKER46'; (nc -6 -l '$PORT46' >/dev/null 2>&1 && touch '$MARKER46') &"
+wait_for_listener $PORT46 5 || fail "nat46 tcp: server listener on :$PORT46 never came up"
 if client_can_reach "$NAT46_V4" $PORT46; then
     wait_for_file server $MARKER46 5 || fail "nat46 tcp: connected but server never saw it"
 else
