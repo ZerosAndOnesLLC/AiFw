@@ -77,6 +77,7 @@ export default function UpdatesPage() {
         checking={updates.aifwChecking}
         installing={updates.aifwInstalling}
         rollingBack={updates.aifwRollingBack}
+        osUpgradeInFlight={updates.osUpgradeInFlight}
         onCheck={updates.handleAifwCheck}
         onInstall={updates.handleAifwInstall}
         onRollback={updates.handleAifwRollback}

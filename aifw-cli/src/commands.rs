@@ -1908,8 +1908,20 @@ pub async fn update_check(pre: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn update_install(auto_restart: bool, pre: bool) -> anyhow::Result<()> {
+pub async fn update_install(db_path: &Path, auto_restart: bool, pre: bool) -> anyhow::Result<()> {
     use aifw_core::updater;
+
+    // #646: stand down while a FreeBSD release upgrade is in flight — the
+    // install's service restart would interrupt the post-reboot finalize.
+    // A missing/unreadable DB reads as "no upgrade recorded" (dev hosts) —
+    // and is never created as a side effect of an update.
+    if db_path.exists()
+        && let Ok(db) = Database::new(db_path).await
+        && let Some(job) = aifw_core::os_upgrade_state::load(db.pool()).await
+        && job.is_in_flight()
+    {
+        anyhow::bail!("{}", aifw_core::os_upgrade_state::blocked_message(&job));
+    }
 
     println!(
         "Checking for AiFw updates{}...",
