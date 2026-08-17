@@ -5,15 +5,16 @@
 # `aifw` user to:
 #
 #   - update                    — refresh package catalog
-#   - install -y <pkg> [<pkg>...]  — install packages (no scripts/repos)
+#   - install -y <pkg> [<pkg>...]  — install packages from the closed
+#                                    allowlist below (no scripts/repos)
 #   - upgrade -y                — apply all pending upgrades
 #   - upgrade -n                — dry-run pending upgrades
 #
 # Other subcommands (delete, set, lock, unlock, autoremove, audit
 # fetch-from-arbitrary-URL, install with `-r reponame`, install of
-# absolute paths, etc.) are denied. Package names are validated
-# character-class-wise so a compromised daemon can't smuggle shell
-# metacharacters or `-r` flags through.
+# absolute paths, etc.) are denied, and only allowlisted package names
+# may be installed, so a compromised daemon can't pull arbitrary
+# root-installed code from a misconfigured or poisoned repo.
 
 set -eu
 
@@ -25,18 +26,18 @@ fi
 ACTION="$1"
 shift
 
-# Validate a single package name: alnum, dot, underscore, plus, hyphen.
-# Reject empty and anything starting with `-` (which would smuggle a flag).
+# Installable package allowlist (SEC-M12 #309). `pkg install` as root
+# from whatever repo is configured is only as safe as that repo, so the
+# set of names is closed: exactly the runtime dependencies listed in
+# freebsd/manifest.json "packages" (the in-app updater installs any that
+# are missing during an upgrade — see aifw-core/src/updater.rs). A
+# workspace test (aifw-setup sudoers_tests) asserts this list and the
+# manifest stay in sync; add new deps in BOTH places.
 valid_pkg_name() {
     case "$1" in
-        ""|-*)
-            return 1
-            ;;
-        *[^A-Za-z0-9._+-]*)
-            return 1
-            ;;
+        curl|minisign|strongswan|sudo|unbound|wireguard-tools) return 0 ;;
+        *) return 1 ;;
     esac
-    return 0
 }
 
 case "$ACTION" in
@@ -55,7 +56,7 @@ case "$ACTION" in
         shift  # drop -y
         for p; do
             if ! valid_pkg_name "$p"; then
-                echo "aifw-sudo-pkg: invalid package name: $p" >&2
+                echo "aifw-sudo-pkg: package not in allowlist: $p" >&2
                 exit 1
             fi
         done

@@ -83,6 +83,63 @@ case "$KEY" in
         exit 1 ;;
 esac
 
+# Value validation (SEC-L1 #316). rc.conf is *sourced by sh* at boot, so
+# a value containing `$(...)`, backticks, or a quote that closes sysrc's
+# quoting is root code execution on the next boot. Two layers:
+#   1. every value: no shell metacharacters at all;
+#   2. ifconfig_* / vlans_* values must match the small template grammar
+#      AiFw actually writes (aifw-api/src/iface.rs) — not free text.
+if [ -z "$FLAG" ]; then
+    VALUE="${ARG#*=}"
+    if [ "$VALUE" = "$ARG" ]; then
+        echo "aifw-sudo-sysrc: set form requires key=value: $ARG" >&2
+        exit 1
+    fi
+    # Positive character allowlist: letters, digits, space, and . _ : / @ + , -
+    # cover every value AiFw writes (YES/NO, hostnames, IPv4/IPv6 with
+    # prefix, "inet a.b.c.d/N"). Everything else — quotes, $, backtick,
+    # ; | & < > ( ) { } * ? ! ~ # \ = and any control character — is refused.
+    case "$VALUE" in
+        ''|*[!A-Za-z0-9\ ._:/@+,-]*)
+            echo "aifw-sudo-sysrc: value contains disallowed characters: $KEY" >&2
+            exit 1 ;;
+    esac
+    case "$KEY" in
+        ifconfig_*)
+            # Accepted templates (exactly what aifw-api/src/iface.rs writes):
+            #   DHCP | SYNCDHCP | up | down
+            #   inet a.b.c.d[/N]
+            #   inet6 <addr>[/N]
+            case "$VALUE" in
+                DHCP|SYNCDHCP|up|down) ;;
+                "inet "*|"inet6 "*)
+                    rest="${VALUE#* }"
+                    # Single address token: address characters only, no
+                    # leading dash (ifconfig flag), no further words.
+                    case "$rest" in
+                        ''|-*|*\ *|*[!0-9a-fA-F.:/]*)
+                            echo "aifw-sudo-sysrc: ifconfig_* value must be 'inet <addr>[/N]' or 'inet6 <addr>[/N]': $VALUE" >&2
+                            exit 1 ;;
+                    esac
+                    ;;
+                *)
+                    echo "aifw-sudo-sysrc: ifconfig_* value must be DHCP|SYNCDHCP|up|down|inet <addr>|inet6 <addr>: $VALUE" >&2
+                    exit 1 ;;
+            esac
+            ;;
+        vlans_*)
+            # Space-separated VLAN ids / vlan<N> child names.
+            for w in $VALUE; do
+                case "$w" in
+                    ''|*[!A-Za-z0-9]*)
+                        echo "aifw-sudo-sysrc: vlans_* value must be ids or names: $VALUE" >&2
+                        exit 1 ;;
+                esac
+            done
+            ;;
+    esac
+fi
+
 if [ -n "$FLAG" ]; then
     exec /usr/sbin/sysrc "$FLAG" "$KEY"
 else
