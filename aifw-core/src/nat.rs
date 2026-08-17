@@ -90,6 +90,18 @@ impl NatEngine {
                 .execute(&self.pool)
                 .await?;
         }
+        // #596: explicit af-to translated destination (NAT46/NAT64).
+        let has_af_to_dst: bool = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('nat_rules') WHERE name = 'af_to_dst'",
+        )
+        .fetch_one(&self.pool)
+        .await?
+            > 0;
+        if !has_af_to_dst {
+            sqlx::query("ALTER TABLE nat_rules ADD COLUMN af_to_dst TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
 
         Ok(())
     }
@@ -168,7 +180,8 @@ impl NatEngine {
                 src_addr = ?5, src_port_start = ?6, src_port_end = ?7,
                 dst_addr = ?8, dst_port_start = ?9, dst_port_end = ?10,
                 redirect_addr = ?11, redirect_port_start = ?12, redirect_port_end = ?13,
-                label = ?14, status = ?15, updated_at = ?16, static_port = ?17
+                label = ?14, status = ?15, updated_at = ?16, static_port = ?17,
+                af_to_dst = ?18
             WHERE id = ?1
             "#,
         )
@@ -192,6 +205,7 @@ impl NatEngine {
         })
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(rule.static_port as i64)
+        .bind(rule.af_to_dst.as_ref().map(|a| a.to_string()))
         .execute(&mut *tx)
         .await?;
 
@@ -391,8 +405,8 @@ impl NatEngine {
             INSERT INTO nat_rules (id, nat_type, interface, protocol, src_addr,
                 src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end,
                 redirect_addr, redirect_port_start, redirect_port_end,
-                label, status, created_at, updated_at, static_port)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                label, status, created_at, updated_at, static_port, af_to_dst)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             "#,
         )
         .bind(rule.id.to_string())
@@ -416,6 +430,7 @@ impl NatEngine {
         .bind(rule.created_at.to_rfc3339())
         .bind(rule.updated_at.to_rfc3339())
         .bind(rule.static_port as i64)
+        .bind(rule.af_to_dst.as_ref().map(|a| a.to_string()))
         .execute(exec)
         .await?;
 
@@ -467,6 +482,12 @@ pub fn validate_nat_rule(rule: &NatRule) -> Result<()> {
     if rule.static_port && !matches!(rule.nat_type, NatType::Snat | NatType::Masquerade) {
         return Err(AifwError::Validation(
             "static_port is only valid for SNAT and masquerade rules".to_string(),
+        ));
+    }
+    if rule.af_to_dst.is_some() && !matches!(rule.nat_type, NatType::Nat46 | NatType::Nat64) {
+        return Err(AifwError::Validation(
+            "af_to_dst (translated destination) is only valid for nat46 and nat64 rules"
+                .to_string(),
         ));
     }
     // #253: `no nat` has no translation target.
@@ -548,6 +569,19 @@ fn validate_af_to(rule: &NatRule, inet6_match: bool) -> Result<()> {
         }
     }
 
+    // Optional explicit translated destination (#596): a single concrete
+    // host in the translated family (pf: `af-to <af> from <src> to <dst>`).
+    if let Some(dst) = &rule.af_to_dst {
+        match (dst, dst.is_ipv6()) {
+            (Address::Single(_), Some(v6)) if v6 != inet6_match => {}
+            _ => {
+                return Err(AifwError::Validation(format!(
+                    "{kind} translated destination must be a single {translated} address (or empty for RFC 6052 embedding)"
+                )));
+            }
+        }
+    }
+
     // af-to has no port-rewrite syntax.
     if rule.redirect.port.is_some() {
         return Err(AifwError::Validation(format!(
@@ -564,7 +598,7 @@ fn validate_af_to(rule: &NatRule, inet6_match: bool) -> Result<()> {
 const NAT_RULE_COLUMNS: &str = "id, nat_type, interface, protocol, src_addr, \
     src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
     redirect_addr, redirect_port_start, redirect_port_end, label, status, \
-    created_at, updated_at, static_port";
+    created_at, updated_at, static_port, af_to_dst";
 
 #[derive(sqlx::FromRow)]
 struct NatRuleRow {
@@ -586,6 +620,7 @@ struct NatRuleRow {
     created_at: String,
     updated_at: String,
     static_port: i64,
+    af_to_dst: Option<String>,
 }
 
 impl NatRuleRow {
@@ -620,6 +655,12 @@ impl NatRuleRow {
                 _ => NatStatus::Disabled,
             },
             static_port: self.static_port != 0,
+            af_to_dst: self
+                .af_to_dst
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(Address::parse)
+                .transpose()?,
             created_at: DateTime::parse_from_rfc3339(&self.created_at)
                 .map_err(|e| AifwError::Database(format!("invalid date: {e}")))?
                 .with_timezone(&Utc),

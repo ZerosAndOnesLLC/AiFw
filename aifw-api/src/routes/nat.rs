@@ -27,6 +27,10 @@ pub struct CreateNatRuleRequest {
     /// only; #253). Defaults false.
     #[serde(default)]
     pub static_port: bool,
+    /// Explicit translated destination for nat46/nat64 (`af-to … to
+    /// <dst>`, #596). Empty/omitted keeps RFC 6052 embedding.
+    #[serde(default)]
+    pub af_to_dst: Option<String>,
 }
 
 pub async fn list_nat_rules(
@@ -119,6 +123,13 @@ pub async fn create_nat_rule(
     rule.dst_port = port_range(req.dst_port_start, req.dst_port_end);
     rule.label = req.label;
     rule.static_port = req.static_port;
+    rule.af_to_dst = match req.af_to_dst.as_deref().map(str::trim) {
+        Some(a) if !a.is_empty() => Some(
+            Address::parse(a)
+                .map_err(|e| nat_bad_request(format!("invalid translated destination: {e}")))?,
+        ),
+        _ => None,
+    };
 
     let rule = state
         .nat_engine
@@ -176,6 +187,13 @@ pub async fn update_nat_rule(
     };
     rule.label = req.label;
     rule.static_port = req.static_port;
+    rule.af_to_dst = match req.af_to_dst.as_deref().map(str::trim) {
+        Some(a) if !a.is_empty() => Some(
+            Address::parse(a)
+                .map_err(|e| nat_bad_request(format!("invalid translated destination: {e}")))?,
+        ),
+        _ => None,
+    };
     if let Some(ref s) = req.status {
         rule.status = match s.as_str() {
             "active" => NatStatus::Active,

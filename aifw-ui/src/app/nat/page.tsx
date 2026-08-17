@@ -27,6 +27,7 @@ const defaultForm = {
   label: "",
   status: "active",
   static_port: false,
+  af_to_dst: "",
 };
 
 type FormState = typeof defaultForm;
@@ -117,6 +118,7 @@ export default function NatPage() {
       label: rule.label || "",
       status: rule.status,
       static_port: Boolean(rule.static_port),
+      af_to_dst: rule.af_to_dst || "",
     });
     setEditingId(rule.id);
     setShowForm(true);
@@ -132,6 +134,7 @@ export default function NatPage() {
       redirect_addr: NO_TARGET_TYPES.has(form.nat_type) ? "any" : form.redirect_addr,
       static_port: STATIC_PORT_TYPES.has(form.nat_type) && form.static_port,
     };
+    if (isCrossFamily(form.nat_type) && form.af_to_dst.trim()) body.af_to_dst = form.af_to_dst.trim();
 
     if (form.src_port_start) body.src_port_start = parseInt(form.src_port_start, 10);
     if (form.dst_port_start) body.dst_port_start = parseInt(form.dst_port_start, 10);
@@ -185,6 +188,7 @@ export default function NatPage() {
         redirect_port_start: rule.redirect?.port?.start,
         label: rule.label || undefined,
         static_port: rule.static_port,
+        af_to_dst: rule.af_to_dst || undefined,
         status: newStatus,
       } as UpdateNatRequest);
       setNatRules((prev) =>
@@ -391,6 +395,26 @@ export default function NatPage() {
                 {!fieldErrors.redirect && meta.redirectHelp && (
                   <p className="mt-1 text-[11px] text-gray-500">{meta.redirectHelp}</p>
                 )}
+                {/* Explicit translated destination — af-to "to <dst>" (#596) */}
+                {isCrossFamily(form.nat_type) && (
+                  <div className="mt-3">
+                    <label className={labelCls}>
+                      Translated destination <span className="text-gray-500 font-normal">(optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={form.af_to_dst}
+                      onChange={(e) => updateField("af_to_dst", e.target.value)}
+                      placeholder={form.nat_type === "nat46" ? "e.g. 2001:db8:2::80" : "e.g. 192.0.2.80"}
+                      className={inputCls}
+                    />
+                    <p className="mt-1 text-[11px] text-gray-500">
+                      {form.nat_type === "nat46"
+                        ? "IPv6 host the IPv4 destination is rewritten to. Leave empty to embed the IPv4 destination in the translation source's /96 (RFC 6052) — the server must then answer on that embedded address."
+                        : "IPv4 host to send to instead of the address embedded in the matched /96 prefix. Leave empty for RFC 6052 embedding."}
+                    </p>
+                  </div>
+                )}
               </div>
             ) : (
               <div>
@@ -533,6 +557,12 @@ export default function NatPage() {
                             {directionSummary(rule.nat_type)}{" "}
                             <span className="text-gray-500">via</span>{" "}
                             <span className="text-green-400">{rule.redirect?.address || "-"}</span>
+                            {rule.af_to_dst && (
+                              <>
+                                {" "}<span className="text-gray-500">to</span>{" "}
+                                <span className="text-green-400">{rule.af_to_dst}</span>
+                              </>
+                            )}
                           </span>
                         ) : rule.nat_type === "nonat" ? (
                           <span className="font-mono text-xs text-gray-400 italic">no NAT (bypass)</span>

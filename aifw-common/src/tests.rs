@@ -501,6 +501,20 @@ mod tests {
             rule.to_pf_rule(),
             "pass in quick on em1 inet from any to 10.99.1.1 af-to inet6 from 2001:db8:2::1"
         );
+        // #596: explicit translated destination renders as `to <v6>`
+        rule.af_to_dst = Some(Address::Single(IpAddr::V6(
+            "2001:db8:2::80".parse().unwrap(),
+        )));
+        assert_eq!(
+            rule.to_pf_rule(),
+            "pass in quick on em1 inet from any to 10.99.1.1 af-to inet6 from 2001:db8:2::1 to 2001:db8:2::80"
+        );
+        rule.label = Some("v4-to-v6-web".into());
+        assert!(
+            rule.to_pf_rule().ends_with(
+                "af-to inet6 from 2001:db8:2::1 to 2001:db8:2::80 label \"v4-to-v6-web\""
+            )
+        );
     }
 
     #[test]

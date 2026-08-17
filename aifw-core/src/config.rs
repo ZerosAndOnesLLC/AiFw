@@ -522,6 +522,10 @@ pub struct NatRuleConfig {
     /// snapshots taken before the field existed still load.
     #[serde(default)]
     pub static_port: bool,
+    /// Explicit `af-to … to <dst>` translated destination on nat46/nat64
+    /// rules (#596); `None` = RFC 6052 embedding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub af_to_dst: Option<String>,
 }
 
 /// A traffic-shaping queue as stored in a config snapshot

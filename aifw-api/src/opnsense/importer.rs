@@ -1290,6 +1290,7 @@ fn build_port_forward(
             label: n.descr.clone(),
             status: NatStatus::Active,
             static_port: false,
+            af_to_dst: None,
             created_at: now,
             updated_at: now,
         },
@@ -1348,6 +1349,7 @@ fn build_outbound(
         label: n.descr.clone(),
         status: NatStatus::Active,
         static_port,
+        af_to_dst: None,
         created_at: now,
         updated_at: now,
     })
@@ -1382,6 +1384,7 @@ fn build_one_to_one(
         label: n.descr.clone(),
         status: NatStatus::Active,
         static_port: false,
+        af_to_dst: None,
         created_at: now,
         updated_at: now,
     })

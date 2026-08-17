@@ -819,6 +819,62 @@ mod tests {
             203, 0, 113, 1,
         )));
         assert!(engine.add_rule(rule).await.is_err());
+
+        // #596: explicit translated destination must be a single IPv6 host
+        let mut rule = make();
+        rule.af_to_dst = Some(Address::Single(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::new(192, 0, 2, 80),
+        )));
+        assert!(engine.add_rule(rule).await.is_err());
+        let mut rule = make();
+        rule.af_to_dst = Some(Address::Network(
+            std::net::IpAddr::V6("2001:db8:2::".parse().unwrap()),
+            64,
+        ));
+        assert!(engine.add_rule(rule).await.is_err());
+        let mut rule = make();
+        rule.af_to_dst = Some(Address::Single(std::net::IpAddr::V6(
+            "2001:db8:2::80".parse().unwrap(),
+        )));
+        let added = engine.add_rule(rule).await.unwrap();
+        // round-trips through SQLite
+        let stored = engine
+            .list_rules()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == added.id)
+            .unwrap();
+        assert_eq!(
+            stored.af_to_dst,
+            Some(Address::Single(std::net::IpAddr::V6(
+                "2001:db8:2::80".parse().unwrap()
+            )))
+        );
+        assert!(
+            stored
+                .to_pf_rule()
+                .ends_with("af-to inet6 from 2001:db8:2::1 to 2001:db8:2::80")
+        );
+
+        // af_to_dst is meaningless on other NAT types
+        let mut snat = NatRule::new(
+            NatType::Snat,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Any,
+            Address::Any,
+            NatRedirect {
+                address: Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                    203, 0, 113, 1,
+                ))),
+                port: None,
+            },
+        );
+        snat.af_to_dst = Some(Address::Single(std::net::IpAddr::V6(
+            "2001:db8:2::80".parse().unwrap(),
+        )));
+        assert!(engine.add_rule(snat).await.is_err());
     }
 
     // --- Shaping engine tests ---

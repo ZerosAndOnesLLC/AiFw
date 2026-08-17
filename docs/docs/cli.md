@@ -133,6 +133,11 @@ aifw nat add \
 # NAT64 — IPv6-only clients reach IPv4 hosts (dst defaults to 64:ff9b::/96)
 aifw nat add --nat-type nat64 --interface em1 --redirect 203.0.113.1
 
+# NAT46 — IPv4 clients reach an IPv6 server on the address it already has
+# (omit --af-to-dst to use the RFC 6052 embedded address instead)
+aifw nat add --nat-type nat46 --interface em0 --dst 192.0.2.80 \
+  --redirect 2001:db8:2::1 --af-to-dst 2001:db8:2::80
+
 # Print the RFC 6052 embedded address clients use for an IPv4 host
 aifw nat embed 64:ff9b::/96 10.1.2.3     # -> 64:ff9b::a01:203
 ```

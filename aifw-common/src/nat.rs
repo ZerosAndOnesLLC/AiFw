@@ -120,6 +120,14 @@ pub struct NatRule {
     /// the source port is rewritten. Ignored for other NAT types (#253).
     #[serde(default)]
     pub static_port: bool,
+    /// Explicit translated destination for cross-family rules (pf `af-to
+    /// <af> from <src> to <dst>`). NAT46: the IPv6 host the IPv4 destination
+    /// is rewritten to, so a rule can reach a server that does not hold the
+    /// RFC 6052 embedded address; NAT64: the IPv4 host instead of the one
+    /// embedded in the matched /96. `None` keeps pf's default embedding.
+    /// Ignored for other NAT types (#596).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub af_to_dst: Option<Address>,
     /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
     /// Last modification timestamp (UTC)
@@ -151,6 +159,7 @@ impl NatRule {
             label: None,
             status: NatStatus::Active,
             static_port: false,
+            af_to_dst: None,
             created_at: now,
             updated_at: now,
         }
@@ -264,12 +273,13 @@ impl NatRule {
     /// is required because the main ruleset's default policy follows the
     /// anchor hooks and would otherwise override the pass (last-match wins).
     /// The translated destination is the IPv4 embedded in the low 32 bits of
-    /// the matched /96 prefix (RFC 6052).
+    /// the matched /96 prefix (RFC 6052), or [`Self::af_to_dst`] when set.
     fn to_pf_nat64(&self) -> String {
         let mut parts = vec![format!("pass in quick on {} inet6", self.interface)];
         self.push_af_proto(&mut parts, true);
         self.push_from_to(&mut parts);
         parts.push(format!("af-to inet from {}", self.redirect.address));
+        self.push_af_to_dst(&mut parts);
         self.push_filter_label(&mut parts);
         parts.join(" ")
     }
@@ -278,14 +288,24 @@ impl NatRule {
     /// `pass in quick on <iface> inet [proto <p>] from <src> to <v4-dst> af-to inet6 from <v6-src> [label "..."]`
     ///
     /// The translated destination defaults to the RFC 6052 embedding of the
-    /// original IPv4 destination in the /96 subnet of the new IPv6 source.
+    /// original IPv4 destination in the /96 subnet of the new IPv6 source;
+    /// [`Self::af_to_dst`] overrides it with an explicit `to <v6-dst>` (#596).
     fn to_pf_nat46(&self) -> String {
         let mut parts = vec![format!("pass in quick on {} inet", self.interface)];
         self.push_af_proto(&mut parts, false);
         self.push_from_to(&mut parts);
         parts.push(format!("af-to inet6 from {}", self.redirect.address));
+        self.push_af_to_dst(&mut parts);
         self.push_filter_label(&mut parts);
         parts.join(" ")
+    }
+
+    /// `to <dst>` clause of an `af-to` translation when an explicit
+    /// translated destination is set.
+    fn push_af_to_dst(&self, parts: &mut Vec<String>) {
+        if let Some(dst) = &self.af_to_dst {
+            parts.push(format!("to {dst}"));
+        }
     }
 
     fn push_proto(&self, parts: &mut Vec<String>) {

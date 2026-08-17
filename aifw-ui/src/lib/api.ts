@@ -348,6 +348,8 @@ export interface NatRule {
   status: string;
   /** pf static-port: keep the original source port (snat/masquerade only). */
   static_port: boolean;
+  /** nat46/nat64: explicit `af-to … to <dst>` translated destination; absent = RFC 6052 embedding. */
+  af_to_dst?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -369,6 +371,8 @@ export interface CreateNatRequest {
   label?: string;
   status?: string;
   static_port?: boolean;
+  /** nat46/nat64 only: explicit translated destination. */
+  af_to_dst?: string;
 }
 
 export interface UpdateNatRequest extends CreateNatRequest {
