@@ -26,9 +26,15 @@ const defaultForm = {
   redirect_port_end: "",
   label: "",
   status: "active",
+  static_port: false,
 };
 
 type FormState = typeof defaultForm;
+
+/** Types with no translation target (redirect address not required). */
+const NO_TARGET_TYPES = new Set(["masquerade", "nonat"]);
+/** Types where pf `static-port` applies. */
+const STATIC_PORT_TYPES = new Set(["snat", "masquerade"]);
 
 function natTypeBadge(natType: string) {
   const colors: Record<string, string> = {
@@ -40,6 +46,7 @@ function natTypeBadge(natType: string) {
     binat: "bg-purple-500/20 text-purple-400 border-purple-500/30",
     nat64: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
     nat46: "bg-orange-500/20 text-orange-400 border-orange-500/30",
+    nonat: "bg-gray-500/20 text-gray-300 border-gray-500/30",
   };
   const cls = colors[natType.toLowerCase()] || "bg-gray-500/20 text-gray-400 border-gray-500/30";
   return (
@@ -109,6 +116,7 @@ export default function NatPage() {
       redirect_port_end: rule.redirect?.port?.end?.toString() || "",
       label: rule.label || "",
       status: rule.status,
+      static_port: Boolean(rule.static_port),
     });
     setEditingId(rule.id);
     setShowForm(true);
@@ -121,7 +129,8 @@ export default function NatPage() {
       protocol: form.protocol,
       src_addr: form.src_addr || "any",
       dst_addr: form.dst_addr || "any",
-      redirect_addr: form.redirect_addr,
+      redirect_addr: NO_TARGET_TYPES.has(form.nat_type) ? "any" : form.redirect_addr,
+      static_port: STATIC_PORT_TYPES.has(form.nat_type) && form.static_port,
     };
 
     if (form.src_port_start) body.src_port_start = parseInt(form.src_port_start, 10);
@@ -133,8 +142,10 @@ export default function NatPage() {
     return body as unknown as CreateNatRequest | UpdateNatRequest;
   };
 
+  const redirectRequired = !NO_TARGET_TYPES.has(form.nat_type);
+
   const handleSubmit = async () => {
-    if (!form.redirect_addr.trim()) return;
+    if (redirectRequired && !form.redirect_addr.trim()) return;
     setSubmitting(true);
     try {
       if (editingId) {
@@ -170,9 +181,10 @@ export default function NatPage() {
         protocol: rule.protocol,
         src_addr: rule.src_addr,
         dst_addr: rule.dst_addr,
-        redirect_addr: rule.redirect?.address || "",
+        redirect_addr: rule.redirect?.address || "any",
         redirect_port_start: rule.redirect?.port?.start,
         label: rule.label || undefined,
+        static_port: rule.static_port,
         status: newStatus,
       } as UpdateNatRequest);
       setNatRules((prev) =>
@@ -185,7 +197,7 @@ export default function NatPage() {
     }
   };
 
-  const updateField = (field: keyof FormState, value: string) => {
+  const updateField = <K extends keyof FormState>(field: K, value: FormState[K]) => {
     setForm((f) => ({ ...f, [field]: value }));
   };
 
@@ -284,6 +296,7 @@ export default function NatPage() {
                 <option value="binat">binat (Bidirectional)</option>
                 <option value="nat64">nat64 (IPv6 → IPv4)</option>
                 <option value="nat46">nat46 (IPv4 → IPv6)</option>
+                <option value="nonat">nonat (NAT bypass)</option>
               </select>
             </div>
             {/* Interface */}
@@ -363,21 +376,49 @@ export default function NatPage() {
                 className={inputCls}
               />
             </div>
-            {/* Redirect Address */}
-            <div className={isCrossFamily(form.nat_type) ? "md:col-span-2" : ""}>
-              <label className={labelCls}>{meta.redirectLabel}</label>
-              <input
-                type="text"
-                value={form.redirect_addr}
-                onChange={(e) => updateField("redirect_addr", e.target.value)}
-                placeholder={meta.redirectPlaceholder}
-                className={inputCls}
-              />
-              {fieldErrors.redirect && <p className={fieldErrCls}>{fieldErrors.redirect}</p>}
-              {!fieldErrors.redirect && meta.redirectHelp && (
-                <p className="mt-1 text-[11px] text-gray-500">{meta.redirectHelp}</p>
-              )}
-            </div>
+            {/* Redirect Address — masquerade / nonat have no target */}
+            {redirectRequired ? (
+              <div className={isCrossFamily(form.nat_type) ? "md:col-span-2" : ""}>
+                <label className={labelCls}>{meta.redirectLabel}</label>
+                <input
+                  type="text"
+                  value={form.redirect_addr}
+                  onChange={(e) => updateField("redirect_addr", e.target.value)}
+                  placeholder={meta.redirectPlaceholder}
+                  className={inputCls}
+                />
+                {fieldErrors.redirect && <p className={fieldErrCls}>{fieldErrors.redirect}</p>}
+                {!fieldErrors.redirect && meta.redirectHelp && (
+                  <p className="mt-1 text-[11px] text-gray-500">{meta.redirectHelp}</p>
+                )}
+              </div>
+            ) : (
+              <div>
+                <label className={labelCls}>Translation</label>
+                <div className={`${inputCls} !text-gray-500 !cursor-default`}>
+                  {form.nat_type === "nonat" ? "None — traffic bypasses NAT" : "Outgoing interface address"}
+                </div>
+                {form.nat_type === "nonat" && (
+                  <p className="mt-1 text-[11px] text-gray-500">Order this rule above the NAT rule it should exempt.</p>
+                )}
+              </div>
+            )}
+            {/* Static port — pf static-port, snat / masquerade only */}
+            {STATIC_PORT_TYPES.has(form.nat_type) && (
+              <div className="flex flex-col justify-end pb-0.5">
+                <label className="flex items-center gap-2 cursor-pointer select-none"
+                  title="Keep the original source port (pf static-port). Needed by SIP, some VPNs and games that break when the port is rewritten.">
+                  <input
+                    type="checkbox"
+                    checked={form.static_port}
+                    onChange={(e) => updateField("static_port", e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                  />
+                  <span className="text-sm text-gray-300">Static port</span>
+                </label>
+                <span className="text-[10px] text-gray-500 mt-0.5">Keep original source port</span>
+              </div>
+            )}
             {/* Redirect Port — af-to translates addresses, not ports */}
             {meta.showRedirectPort && (
               <div>
@@ -411,7 +452,7 @@ export default function NatPage() {
           <div className="flex gap-2 mt-3">
             <button
               onClick={handleSubmit}
-              disabled={submitting || !form.redirect_addr.trim() || hasFieldErrors}
+              disabled={submitting || (redirectRequired && !form.redirect_addr.trim()) || hasFieldErrors}
               className="px-4 py-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
             >
               {submitting ? "Saving..." : editingId ? "Update" : "Add"}
@@ -493,11 +534,23 @@ export default function NatPage() {
                             <span className="text-gray-500">via</span>{" "}
                             <span className="text-green-400">{rule.redirect?.address || "-"}</span>
                           </span>
+                        ) : rule.nat_type === "nonat" ? (
+                          <span className="font-mono text-xs text-gray-400 italic">no NAT (bypass)</span>
                         ) : (
                           <span className="font-mono text-xs text-green-400">
-                            {rule.redirect
-                              ? formatAddrPort(rule.redirect.address, rule.redirect.port)
-                              : "-"}
+                            {rule.nat_type === "masquerade"
+                              ? `(${rule.interface})`
+                              : rule.redirect
+                                ? formatAddrPort(rule.redirect.address, rule.redirect.port)
+                                : "-"}
+                            {rule.static_port && (
+                              <span
+                                className="ml-1.5 inline-flex items-center rounded border border-gray-600 px-1 py-px text-[9px] uppercase tracking-wider text-gray-300 not-italic"
+                                title="pf static-port: original source port is preserved"
+                              >
+                                static port
+                              </span>
+                            )}
                           </span>
                         )}
                       </td>

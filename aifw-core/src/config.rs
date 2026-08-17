@@ -510,6 +510,10 @@ pub struct NatRuleConfig {
     pub label: Option<String>,
     /// Whether the rule is loaded into pf
     pub status: NatStatus,
+    /// pf `static-port` on SNAT/masquerade (#253). Defaults false so
+    /// snapshots taken before the field existed still load.
+    #[serde(default)]
+    pub static_port: bool,
 }
 
 /// A traffic-shaping queue as stored in a config snapshot

@@ -16,11 +16,17 @@ pub struct CreateNatRuleRequest {
     pub dst_addr: Option<String>,
     pub dst_port_start: Option<u16>,
     pub dst_port_end: Option<u16>,
-    pub redirect_addr: String,
+    /// Translation target. Optional: masquerade / nonat have none
+    /// (defaults to `any`).
+    pub redirect_addr: Option<String>,
     pub redirect_port_start: Option<u16>,
     pub redirect_port_end: Option<u16>,
     pub label: Option<String>,
     pub status: Option<String>,
+    /// pf `static-port` — keep the original source port (SNAT/masquerade
+    /// only; #253). Defaults false.
+    #[serde(default)]
+    pub static_port: bool,
 }
 
 pub async fn list_nat_rules(
@@ -88,7 +94,7 @@ pub async fn create_nat_rule(
         .map_err(|e| nat_bad_request(format!("invalid destination address: {e}")))?
         .unwrap_or(Address::Any);
 
-    let redirect_addr = Address::parse(&req.redirect_addr)
+    let redirect_addr = Address::parse(req.redirect_addr.as_deref().unwrap_or("any"))
         .map_err(|e| nat_bad_request(format!("invalid redirect address: {e}")))?;
 
     // Validate interface and label to prevent pf rule injection
@@ -112,6 +118,7 @@ pub async fn create_nat_rule(
     rule.src_port = port_range(req.src_port_start, req.src_port_end);
     rule.dst_port = port_range(req.dst_port_start, req.dst_port_end);
     rule.label = req.label;
+    rule.static_port = req.static_port;
 
     let rule = state
         .nat_engine
@@ -163,11 +170,12 @@ pub async fn update_nat_rule(
         .unwrap_or(Address::Any);
     rule.dst_port = port_range(req.dst_port_start, req.dst_port_end);
     rule.redirect = NatRedirect {
-        address: Address::parse(&req.redirect_addr)
+        address: Address::parse(req.redirect_addr.as_deref().unwrap_or("any"))
             .map_err(|e| nat_bad_request(format!("invalid redirect address: {e}")))?,
         port: port_range(req.redirect_port_start, req.redirect_port_end),
     };
     rule.label = req.label;
+    rule.static_port = req.static_port;
     if let Some(ref s) = req.status {
         rule.status = match s.as_str() {
             "active" => NatStatus::Active,

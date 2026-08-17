@@ -19,6 +19,12 @@ pub enum NatType {
     Nat64,
     /// NAT46 — translate IPv4 to IPv6
     Nat46,
+    /// NAT bypass — pf `no nat`: matching traffic is exempted from any
+    /// later `nat` rule (e.g. keep site-to-site VPN traffic un-NATed).
+    /// Has no translation target. Order matters: place before the SNAT /
+    /// masquerade rule it should exempt (#253).
+    #[serde(rename = "nonat")]
+    NoNat,
 }
 
 impl std::fmt::Display for NatType {
@@ -30,6 +36,7 @@ impl std::fmt::Display for NatType {
             NatType::Binat => write!(f, "binat"),
             NatType::Nat64 => write!(f, "nat64"),
             NatType::Nat46 => write!(f, "nat46"),
+            NatType::NoNat => write!(f, "nonat"),
         }
     }
 }
@@ -46,6 +53,7 @@ impl NatType {
             "binat" => Ok(NatType::Binat),
             "nat64" => Ok(NatType::Nat64),
             "nat46" => Ok(NatType::Nat46),
+            "nonat" | "no-nat" | "no_nat" => Ok(NatType::NoNat),
             _ => Err(crate::AifwError::Validation(format!(
                 "unknown NAT type: {s}"
             ))),
@@ -107,6 +115,11 @@ pub struct NatRule {
     pub label: Option<String>,
     /// Whether the rule is active or disabled
     pub status: NatStatus,
+    /// Preserve the original source port on SNAT / masquerade (pf
+    /// `static-port`). Some protocols (SIP, some VPNs, games) break when
+    /// the source port is rewritten. Ignored for other NAT types (#253).
+    #[serde(default)]
+    pub static_port: bool,
     /// Creation timestamp (UTC)
     pub created_at: DateTime<Utc>,
     /// Last modification timestamp (UTC)
@@ -137,6 +150,7 @@ impl NatRule {
             redirect,
             label: None,
             status: NatStatus::Active,
+            static_port: false,
             created_at: now,
             updated_at: now,
         }
@@ -158,6 +172,7 @@ impl NatRule {
             NatType::Binat => vec![self.to_pf_binat()],
             NatType::Nat64 => vec![self.to_pf_nat64()],
             NatType::Nat46 => vec![self.to_pf_nat46()],
+            NatType::NoNat => vec![self.to_pf_no_nat()],
         }
     }
 
@@ -177,13 +192,23 @@ impl NatRule {
         parts.join(" ")
     }
 
-    /// `nat on <iface> [proto <proto>] from <src> to <dst> -> <redirect>`
+    /// `nat on <iface> [proto <proto>] from <src> to <dst> -> <redirect> [static-port]`
     fn to_pf_nat(&self) -> String {
         let mut parts = vec![format!("nat on {}", self.interface)];
         self.push_proto(&mut parts);
         self.push_from_to(&mut parts);
         parts.push(format!("-> {}", self.redirect));
+        self.push_static_port(&mut parts);
         self.push_label(&mut parts);
+        parts.join(" ")
+    }
+
+    /// `no nat on <iface> [proto <proto>] from <src> to <dst>` — exempts
+    /// matching traffic from later `nat` rules. No translation target.
+    fn to_pf_no_nat(&self) -> String {
+        let mut parts = vec![format!("no nat on {}", self.interface)];
+        self.push_proto(&mut parts);
+        self.push_from_to(&mut parts);
         parts.join(" ")
     }
 
@@ -211,12 +236,13 @@ impl NatRule {
         parts.join(" ")
     }
 
-    /// `nat on <iface> [proto <proto>] from <src> to <dst> -> (<iface>)`
+    /// `nat on <iface> [proto <proto>] from <src> to <dst> -> (<iface>) [static-port]`
     fn to_pf_masquerade(&self) -> String {
         let mut parts = vec![format!("nat on {}", self.interface)];
         self.push_proto(&mut parts);
         self.push_from_to(&mut parts);
         parts.push(format!("-> ({})", self.interface));
+        self.push_static_port(&mut parts);
         self.push_label(&mut parts);
         parts.join(" ")
     }
@@ -303,6 +329,13 @@ impl NatRule {
             to.push_str(&format!(" port {port}"));
         }
         parts.push(to);
+    }
+
+    /// pf `static-port` pool option (SNAT / masquerade only).
+    fn push_static_port(&self, parts: &mut Vec<String>) {
+        if self.static_port {
+            parts.push("static-port".to_string());
+        }
     }
 
     fn push_label(&self, _parts: &mut Vec<String>) {

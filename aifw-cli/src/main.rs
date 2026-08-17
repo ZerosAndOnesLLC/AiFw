@@ -885,9 +885,17 @@ EXAMPLES:
     # NAT46: IPv4-only clients reach an IPv6 service. The v6 server must
     # hold the RFC 6052 embedding of --dst in --redirect's /96 subnet
     # (print it with: aifw nat embed <redirect> <dst>).
-    aifw nat add --nat-type nat46 --interface em1 --dst 10.99.1.1 --redirect 2001:db8:2::1")]
+    aifw nat add --nat-type nat46 --interface em1 --dst 10.99.1.1 --redirect 2001:db8:2::1
+
+    # Masquerade keeping the source port (SIP/VPN friendly)
+    aifw nat add --nat-type masquerade --interface em0 --src 192.168.1.0/24 --static-port
+
+    # NAT bypass: don't NAT LAN → site-to-site VPN subnet (order before the masquerade rule)
+    aifw nat add --nat-type nonat --interface em0 --src 192.168.1.0/24 --dst 10.50.0.0/16")]
     Add {
-        /// NAT type: snat, dnat, masquerade, binat, nat64 (IPv6→IPv4 af-to), nat46 (IPv4→IPv6 af-to)
+        /// NAT type: snat, dnat, masquerade, binat, nat64 (IPv6→IPv4 af-to),
+        /// nat46 (IPv4→IPv6 af-to), nonat (bypass — exempt matching traffic
+        /// from later NAT rules; no --redirect)
         #[arg(long, name = "type")]
         nat_type: String,
 
@@ -917,9 +925,10 @@ EXAMPLES:
         dst_port: Option<String>,
 
         /// Redirect target. nat64/nat46: the translation source address the
-        /// firewall owns in the translated family (IPv4 for nat64, IPv6 for nat46)
+        /// firewall owns in the translated family (IPv4 for nat64, IPv6 for
+        /// nat46). Not used for masquerade / nonat (defaults to any).
         #[arg(long)]
-        redirect: String,
+        redirect: Option<String>,
 
         /// Redirect target port (not valid for nat64/nat46)
         #[arg(long)]
@@ -928,6 +937,12 @@ EXAMPLES:
         /// Rule label
         #[arg(long)]
         label: Option<String>,
+
+        /// Keep the original source port (pf static-port). snat/masquerade
+        /// only — needed by SIP, some VPNs and games that break when the
+        /// source port is rewritten.
+        #[arg(long)]
+        static_port: bool,
     },
     /// Remove a NAT rule by ID
     Remove {
@@ -1132,6 +1147,7 @@ async fn main() -> anyhow::Result<()> {
                 redirect,
                 redirect_port,
                 label,
+                static_port,
             } => {
                 // Smart default: nat64 practically always matches the
                 // well-known prefix; every other type keeps "any".
@@ -1142,6 +1158,19 @@ async fn main() -> anyhow::Result<()> {
                         "any".to_string()
                     }
                 });
+                // masquerade / nonat have no translation target; everything
+                // else needs one.
+                let redirect = match redirect {
+                    Some(r) => r,
+                    None if matches!(
+                        nat_type.as_str(),
+                        "masquerade" | "masq" | "nonat" | "no-nat"
+                    ) =>
+                    {
+                        "any".to_string()
+                    }
+                    None => anyhow::bail!("--redirect is required for --type {nat_type}"),
+                };
                 commands::nat_add(
                     &cli.db,
                     &nat_type,
@@ -1154,6 +1183,7 @@ async fn main() -> anyhow::Result<()> {
                     &redirect,
                     redirect_port.as_deref(),
                     label.as_deref(),
+                    static_port,
                 )
                 .await?;
             }

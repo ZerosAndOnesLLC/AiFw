@@ -6,7 +6,7 @@ import { parsePortField } from "@/lib/ports";
 import { validateAddress, validatePort, validateIP } from "@/lib/validate";
 
 type AddrMode = "any" | "network";
-type TransMode = "interface" | "address";
+type TransMode = "interface" | "address" | "nonat";
 
 const defaultForm = {
   interface: "",
@@ -68,7 +68,9 @@ export default function OutboundNatPage() {
     try {
       setError(null);
       const res = await api.listNat();
-      setRules(res.data.filter((r) => r.nat_type === "snat" || r.nat_type === "masquerade"));
+      setRules(
+        res.data.filter((r) => r.nat_type === "snat" || r.nat_type === "masquerade" || r.nat_type === "nonat"),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load outbound NAT rules");
     } finally {
@@ -122,9 +124,9 @@ export default function OutboundNatPage() {
       dst_mode: dstIsAny ? "any" : "network",
       dst_addr: dstIsAny ? "" : rule.dst_addr || "",
       dst_port: formatPort(rule.dst_port),
-      trans_mode: isInterfaceAddr ? "interface" : "address",
-      translation_addr: isInterfaceAddr ? "" : rule.redirect?.address || "",
-      static_port: false,
+      trans_mode: rule.nat_type === "nonat" ? "nonat" : isInterfaceAddr ? "interface" : "address",
+      translation_addr: isInterfaceAddr || rule.nat_type === "nonat" ? "" : rule.redirect?.address || "",
+      static_port: Boolean(rule.static_port),
       label: rule.label || "",
       enabled: rule.status === "active",
     });
@@ -155,7 +157,8 @@ export default function OutboundNatPage() {
     setError(null);
     try {
       const isInterface = form.trans_mode === "interface";
-      const natType = isInterface ? "masquerade" : "snat";
+      const isNoNat = form.trans_mode === "nonat";
+      const natType = isNoNat ? "nonat" : isInterface ? "masquerade" : "snat";
 
       const body: Record<string, unknown> = {
         nat_type: natType,
@@ -163,7 +166,10 @@ export default function OutboundNatPage() {
         protocol: form.protocol,
         src_addr: form.src_mode === "any" ? "any" : form.src_addr,
         dst_addr: form.dst_mode === "any" ? "any" : form.dst_addr,
-        redirect_addr: isInterface ? "interface" : form.translation_addr,
+        // masquerade / nonat have no translation target
+        redirect_addr: isInterface || isNoNat ? "any" : form.translation_addr,
+        // static-port only means something on snat / masquerade
+        static_port: !isNoNat && form.static_port,
         status: form.enabled ? "active" : "disabled",
       };
 
@@ -210,9 +216,10 @@ export default function OutboundNatPage() {
         protocol: rule.protocol,
         src_addr: rule.src_addr,
         dst_addr: rule.dst_addr,
-        redirect_addr: rule.redirect?.address || "interface",
+        redirect_addr: rule.redirect?.address || "any",
         redirect_port_start: rule.redirect?.port?.start,
         label: rule.label || undefined,
+        static_port: rule.static_port,
         status: newStatus,
       } as UpdateNatRequest);
       setRules((prev) =>
@@ -237,9 +244,14 @@ export default function OutboundNatPage() {
   const hintCls = "text-[10px] text-gray-500 mt-0.5";
 
   const formatTranslation = (rule: NatRule): string => {
-    if (rule.nat_type === "masquerade") return "Interface address";
-    if (!rule.redirect) return "-";
-    return formatAddrPort(rule.redirect.address, rule.redirect.port);
+    if (rule.nat_type === "nonat") return "No NAT (bypass)";
+    const base =
+      rule.nat_type === "masquerade"
+        ? "Interface address"
+        : rule.redirect
+          ? formatAddrPort(rule.redirect.address, rule.redirect.port)
+          : "-";
+    return rule.static_port ? `${base} · static port` : base;
   };
 
   const canSubmit =
@@ -303,12 +315,15 @@ export default function OutboundNatPage() {
             <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
             <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-300 font-medium">{form.interface || "Interface"}</span>
             <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
-            <span className="px-2 py-0.5 rounded bg-green-500/15 text-green-400 font-medium">
-              {form.trans_mode === "interface" ? "Interface IP" : form.translation_addr || "NAT IP"}
+            <span className={`px-2 py-0.5 rounded font-medium ${form.trans_mode === "nonat" ? "bg-gray-700 text-gray-300 line-through" : "bg-green-500/15 text-green-400"}`}>
+              {form.trans_mode === "nonat" ? "No NAT" : form.trans_mode === "interface" ? "Interface IP" : form.translation_addr || "NAT IP"}
+              {form.trans_mode !== "nonat" && form.static_port ? " (static port)" : ""}
             </span>
             <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
             <span className="px-2 py-0.5 rounded bg-orange-500/15 text-orange-400 font-medium">Destination</span>
-            <span className="ml-auto text-[10px] text-gray-500 italic">Source address is rewritten to translation address</span>
+            <span className="ml-auto text-[10px] text-gray-500 italic">
+              {form.trans_mode === "nonat" ? "Source address is left untouched (bypasses later NAT rules)" : "Source address is rewritten to translation address"}
+            </span>
           </div>
 
           {/* Row 1: Interface, Protocol, Enabled */}
@@ -407,11 +422,16 @@ export default function OutboundNatPage() {
                 className={`${selectCls} !w-52`}>
                 <option value="interface">Interface Address (masquerade)</option>
                 <option value="address">Specific IP Address</option>
+                <option value="nonat">Do not NAT (bypass)</option>
               </select>
               <div>
                 {form.trans_mode === "address" ? (
                   <input type="text" value={form.translation_addr} onChange={(e) => updateField("translation_addr", e.target.value)}
                     placeholder="203.0.113.1" className={inputCls} />
+                ) : form.trans_mode === "nonat" ? (
+                  <div className={`${inputCls} !text-gray-500 !cursor-default`}>
+                    Matching traffic is exempted from NAT — place this rule above the masquerade rule it should bypass
+                  </div>
                 ) : (
                   <div className={`${inputCls} !text-gray-500 !cursor-default`}>Uses the outgoing interface IP</div>
                 )}
@@ -426,12 +446,15 @@ export default function OutboundNatPage() {
               <input type="text" value={form.label} onChange={(e) => updateField("label", e.target.value)}
                 placeholder="e.g. Default LAN outbound" className={inputCls} />
             </div>
-            <div className="flex items-end pb-0.5">
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={form.static_port} onChange={(e) => updateField("static_port", e.target.checked)}
+            <div className="flex flex-col justify-end pb-0.5">
+              <label className={`flex items-center gap-2 select-none ${form.trans_mode === "nonat" ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                title="Keep the original source port (pf static-port). Needed by SIP, some VPNs and games that break when the port is rewritten.">
+                <input type="checkbox" checked={form.static_port} disabled={form.trans_mode === "nonat"}
+                  onChange={(e) => updateField("static_port", e.target.checked)}
                   className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0" />
                 <span className="text-sm text-gray-300">Static port</span>
               </label>
+              <span className={hintCls}>Keep original source port (SIP / VPN friendly)</span>
             </div>
           </div>
 
