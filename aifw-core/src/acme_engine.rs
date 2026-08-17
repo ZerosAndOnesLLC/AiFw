@@ -201,12 +201,6 @@ async fn push_cert_to_peers(
         return Ok(());
     }
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| aifw_common::AifwError::Other(format!("acme: reqwest build: {e}")))?;
-
     for n in nodes
         .iter()
         .filter(|n| matches!(n.role, ClusterRole::Secondary))
@@ -218,6 +212,8 @@ async fn push_cert_to_peers(
                 continue;
             }
         };
+        // Pinned to the peer's current certificate (#317).
+        let client = cluster_engine.peer_client(n, std::time::Duration::from_secs(30))?;
         let url = format!(
             "https://{}:{}/api/v1/cluster/cert-push",
             n.address,
@@ -243,6 +239,13 @@ async fn push_cert_to_peers(
                         .bind(n.id.to_string())
                         .execute(pool)
                         .await;
+                // #317: the peer's API certificate is likely about to change
+                // (it may export the pushed chain to its own TLS store) —
+                // clear our pin so the next contact re-learns it instead of
+                // failing on a stale fingerprint.
+                if let Err(e) = cluster_engine.set_peer_cert_fingerprint(n.id, None).await {
+                    tracing::warn!(peer = %n.address, error = %e, "acme: could not clear peer pin");
+                }
             }
             Ok(r) => tracing::warn!(
                 cert_id,

@@ -45,6 +45,7 @@ pub mod os_upgrade_state;
 /// re-exported here so existing `crate::net_safety::…` call sites keep working.
 pub use aifw_common::net_safety;
 pub mod path_safety;
+pub mod peer_tls;
 pub mod pf_tuning;
 pub mod s3_backup;
 pub mod secrets;

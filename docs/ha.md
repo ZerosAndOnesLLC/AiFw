@@ -52,11 +52,12 @@ of any failure on the master.
 The replication channel between cluster nodes is treated as TRUSTED. Specifically:
 
 - **Snapshot pushes carry secrets in plaintext.** The full firewall config is replicated across nodes, including VPN (WireGuard) private keys, preshared keys, DDNS TSIG keys, rDHCP HA TLS material, and the CARP shared password.
-- **TLS verification is disabled on inter-node calls.** Each node accepts self-signed certificates from peers. Anyone with network-layer access to the pfsync segment can MITM these calls and recover the secrets above.
-- **Mitigation: use a dedicated, physically-secured pfsync NIC.** A back-to-back cable between the two nodes, or a VLAN that no other host can reach, is the recommended configuration.
-- **Per-peer API keys.** Each node holds an API key for the peer it pushes to. These are stored in plaintext in the local SQLite DB; treat the DB file as a credential store.
+- **Inter-node calls are pinned to the peer's certificate** (SHA-256 of the API certificate, stored per node in `cluster_nodes.cert_fingerprint`; #317). The pin is learned on the first successful contact — trust-on-first-use, like an SSH `known_hosts` entry — and enforced from then on; a changed certificate fails the handshake and logs `TLS pin mismatch`. Daemon → local API loopback calls are pinned to `/usr/local/etc/aifw/tls/cert.pem` and follow that file when it changes.
+  - Cert pushes (`cluster/cert-push`) clear the affected pins on both sides so the next contact re-learns them; a manual certificate change on a peer (self-signed regeneration, hand import) needs an operator re-pin: `aifw cluster nodes repin <id>` (optionally `--fingerprint <sha256>`), `POST /api/v1/cluster/nodes/{id}/repin`, or the **Re-pin** action on the HA → Nodes table.
+  - The first contact and any re-pin are the residual MITM windows. Register nodes over a segment you trust, or pass the peer's fingerprint explicitly (`--fingerprint`, or the request body) instead of learning it.
+- **Mitigation: use a dedicated, physically-secured pfsync NIC.** A back-to-back cable between the two nodes, or a VLAN that no other host can reach, is still the recommended configuration.
+- **Per-peer API keys.** Each node holds an API key for the peer it pushes to (sealed at rest since #298); treat the DB file plus `secrets.key` as a credential store.
 - **`/usr/local/etc/aifw/daemon.key`** holds the loopback API key used by daemon background tasks. File mode `640`, owned `root:aifw`. The aifw user must have read access; no other local user should.
-- **Future cert pinning** would close the MITM gap. If a follow-up issue has not yet been filed, open one to track this work.
 
 If your network does not satisfy "trusted pfsync segment," do not enable HA replication.
 

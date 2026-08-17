@@ -36,28 +36,16 @@ impl ClusterReplicator {
     }
 
     pub async fn run(self) {
-        // Build the client once — TLS context and connection pool are reused
-        // across all peer pushes and across all ticks.
-        let client = match reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(15))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "ha: replicator failed to build http client; aborting"
-                );
-                return;
-            }
-        };
+        // #317: loopback calls are pinned to the local API certificate;
+        // per-peer clients are pinned to each peer's stored fingerprint and
+        // built per tick (they are cheap, and a peer's pin can change).
+        let loopback = aifw_core::peer_tls::LocalApiClient::new(Duration::from_secs(15));
 
         let mut tick = interval(Duration::from_secs(10));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            if let Err(e) = self.tick_once(&client).await {
+            if let Err(e) = self.tick_once(&loopback).await {
                 // Warn ONCE on the first 401 so a missing/unregistered
                 // AIFW_LOOPBACK_API_KEY is visible without flooding logs.
                 let status = e
@@ -79,7 +67,10 @@ impl ClusterReplicator {
         }
     }
 
-    async fn tick_once(&self, client: &reqwest::Client) -> anyhow::Result<()> {
+    async fn tick_once(
+        &self,
+        loopback: &aifw_core::peer_tls::LocalApiClient,
+    ) -> anyhow::Result<()> {
         let role = aifw_core::current_local_role().await;
         if !matches!(role, ClusterRole::Primary) {
             return Ok(());
@@ -87,7 +78,8 @@ impl ClusterReplicator {
 
         // Pull our snapshot ONCE — body and hash are both derived from this
         // single read, so they are always consistent with each other.
-        let local_data = client
+        let local_data = loopback
+            .get()?
             .get(format!("{}/api/v1/cluster/snapshot", self.api_base))
             .header("Authorization", format!("ApiKey {}", self.self_api_key))
             .send()
@@ -106,6 +98,8 @@ impl ClusterReplicator {
                 Some(k) => k,
                 None => continue,
             };
+            // Pinned to this peer's certificate (#317).
+            let client = self.engine.peer_client(peer, Duration::from_secs(15))?;
 
             // Cheap hash probe — we don't need the full snapshot from the peer,
             // only whether it matches what we already have.
@@ -120,7 +114,10 @@ impl ClusterReplicator {
                 .send()
                 .await
             {
-                Ok(r) => r.text().await.unwrap_or_default().trim().to_string(),
+                Ok(r) => {
+                    self.engine.learn_peer_cert(peer, &r).await;
+                    r.text().await.unwrap_or_default().trim().to_string()
+                }
                 Err(e) => {
                     tracing::debug!(
                         error = %e,

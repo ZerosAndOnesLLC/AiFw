@@ -34,6 +34,7 @@ export default function ClusterPage() {
     promote,
     demote,
     generatePeerKey,
+    repinPeer,
     generateLoopbackKey,
     registerPeerKey,
     saveVip,
@@ -180,6 +181,7 @@ export default function ClusterPage() {
         onSave={saveNode}
         onDelete={deleteNode}
         onGeneratePeerKey={generatePeerKey}
+        onRepin={repinPeer}
       />
     </div>
   );

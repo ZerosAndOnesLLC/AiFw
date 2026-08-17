@@ -25,17 +25,8 @@ impl RoleWatcher {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let client = match reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(5))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "ha: role_watcher failed to build http client; aborting");
-                return;
-            }
-        };
+        // #317: loopback calls are pinned to the local API certificate.
+        let loopback = aifw_core::peer_tls::LocalApiClient::new(Duration::from_secs(5));
 
         loop {
             tick.tick().await;
@@ -53,6 +44,13 @@ impl RoleWatcher {
                         .unwrap_or_else(|_| role.clone());
                     let body = serde_json::json!({"from": from_canon, "to": to_canon, "vhid": 0u8});
                     let url = format!("{}/api/v1/cluster/internal/role-changed", self.api_base);
+                    let client = match loopback.get() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "ha: role_watcher http client");
+                            continue;
+                        }
+                    };
                     match client
                         .post(&url)
                         .header("Authorization", format!("ApiKey {}", self.api_key))
