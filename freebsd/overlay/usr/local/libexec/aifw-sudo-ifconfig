@@ -5,7 +5,9 @@
 # `aifw` user to the small set of subcommands AiFw legitimately needs
 # (bring an interface up/down, set address, set MTU, create/destroy a
 # cloned interface, set FIB, configure a VLAN child), with iface name
-# validation that rejects shell metacharacters and flag-shaped values.
+# validation that rejects shell metacharacters and flag-shaped values,
+# and address operands that must parse as IPv4/IPv6[/prefix] (SEC-M6
+# #303 — ifconfig would otherwise read `-alias`/`-lladdr` as a flag).
 #
 # Read-only `ifconfig` invocations (status/info, listing) don't need
 # root and don't go through this wrapper — call ifconfig directly.
@@ -43,6 +45,55 @@ is_numeric() {
     esac
 }
 
+# Helper: validate an IPv4 address with optional /prefix (SEC-M6 #303).
+# ifconfig treats leading-dash operands as flags (`-alias`, `-lladdr`,
+# ...), so an address operand must be structurally an address, never a
+# flag-shaped string.
+is_ipv4_cidr() {
+    addr="$1"
+    case "$addr" in
+        */*)
+            prefix="${addr#*/}"
+            addr="${addr%%/*}"
+            is_numeric "$prefix" || return 1
+            [ "$prefix" -le 32 ] || return 1
+            ;;
+    esac
+    case "$addr" in
+        ''|-*|*[!0-9.]*) return 1 ;;
+    esac
+    # Exactly four dotted octets, each 0-255.
+    oldifs="$IFS"; IFS=.
+    set -- $addr
+    IFS="$oldifs"
+    [ $# -eq 4 ] || return 1
+    for o; do
+        is_numeric "$o" || return 1
+        [ "$o" -le 255 ] || return 1
+    done
+    return 0
+}
+
+# Helper: validate an IPv6 address with optional /prefix. Character-class
+# plus structural check (must contain a colon, no leading dash); the
+# kernel rejects anything malformed beyond that.
+is_ipv6_cidr() {
+    addr="$1"
+    case "$addr" in
+        */*)
+            prefix="${addr#*/}"
+            addr="${addr%%/*}"
+            is_numeric "$prefix" || return 1
+            [ "$prefix" -le 128 ] || return 1
+            ;;
+    esac
+    case "$addr" in
+        ''|-*|*[!0-9a-fA-F:.]*) return 1 ;;
+        *:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Helper: validate a parent iface name (same rules as the top-level
 # IFACE arg).
 is_valid_iface_name() {
@@ -77,25 +128,32 @@ case "$ACTION" in
         # inet <addr> -alias    — remove IPv4 alias
         # inet <addr> up        — set + bring up
         case $# in
-            1)
-                exec /sbin/ifconfig "$IFACE" inet "$1"
-                ;;
-            2)
-                if [ "$2" = "-alias" ] || [ "$2" = "up" ]; then
-                    exec /sbin/ifconfig "$IFACE" inet "$1" "$2"
-                fi
-                echo "aifw-sudo-ifconfig: inet second arg must be -alias or up" >&2
-                exit 1
-                ;;
+            1|2) ;;
             *)
                 echo "aifw-sudo-ifconfig: inet takes 1 or 2 args" >&2
                 exit 1
                 ;;
         esac
+        if ! is_ipv4_cidr "$1"; then
+            echo "aifw-sudo-ifconfig: inet address must be a.b.c.d[/N]: $1" >&2
+            exit 1
+        fi
+        if [ $# -eq 1 ]; then
+            exec /sbin/ifconfig "$IFACE" inet "$1"
+        fi
+        if [ "$2" = "-alias" ] || [ "$2" = "up" ]; then
+            exec /sbin/ifconfig "$IFACE" inet "$1" "$2"
+        fi
+        echo "aifw-sudo-ifconfig: inet second arg must be -alias or up" >&2
+        exit 1
         ;;
     inet6)
         if [ $# -ne 1 ]; then
             echo "aifw-sudo-ifconfig: inet6 takes one address arg" >&2
+            exit 1
+        fi
+        if ! is_ipv6_cidr "$1"; then
+            echo "aifw-sudo-ifconfig: inet6 address malformed: $1" >&2
             exit 1
         fi
         exec /sbin/ifconfig "$IFACE" inet6 "$1"

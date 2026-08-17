@@ -6,9 +6,20 @@
 #
 #   - subcommands `set` and `show` (no `setconf`, `pubkey`, `genkey`, etc.)
 #   - interface names matching wg<N> (no `lo0`, no arbitrary system iface)
-#
-# Remaining args (peer pubkey, allowed-ips, key-file paths, etc.) are
-# passed through. wg's own argument validator catches malformed forms.
+#   - for `set`, a closed grammar of option/value pairs (SEC-M5 #302):
+#       private-key <path>       path must be an AiFw staging file
+#       preshared-key <path>     (see is_staging_key_path below)
+#       listen-port <n>
+#       peer <base64-key>
+#       allowed-ips <cidr[,cidr...]>
+#       endpoint <host:port>
+#       persistent-keepalive <n>
+#       remove
+#     Anything else — unknown options, flag-shaped values, key paths
+#     outside /tmp/wg-*.key — is refused before wg ever runs. Without
+#     this, `wg set wg0 private-key /etc/master.passwd` would read a
+#     root-only file as root.
+#   - for `show`, no args or `dump`.
 
 set -eu
 
@@ -21,22 +32,134 @@ SUBCMD="$1"
 IFACE="$2"
 shift 2
 
+die() {
+    echo "aifw-sudo-wg: $*" >&2
+    exit 1
+}
+
 case "$SUBCMD" in
     set|show) ;;
-    *)
-        echo "aifw-sudo-wg: unsupported subcommand: $SUBCMD" >&2
-        exit 1
-        ;;
+    *) die "unsupported subcommand: $SUBCMD" ;;
 esac
 
 # Whitelist iface names — wg<N> with up to 3 digits. AiFw's tunnel
 # allocator uses wg0, wg1, ... so 3 digits gives plenty of headroom.
 case "$IFACE" in
     wg[0-9]|wg[0-9][0-9]|wg[0-9][0-9][0-9]) ;;
-    *)
-        echo "aifw-sudo-wg: invalid iface (expected wg<N>): $IFACE" >&2
-        exit 1
-        ;;
+    *) die "invalid iface (expected wg<N>): $IFACE" ;;
 esac
 
-exec /usr/bin/wg "$SUBCMD" "$IFACE" "$@"
+is_numeric() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Key material is staged by aifw-core (vpn.rs) as
+#   /tmp/wg-<uuid>-<rand>.key      (tunnel private key)
+#   /tmp/wg-psk-<uuid>-<rand>.key  (peer preshared key)
+# created O_EXCL mode 0600 by the aifw user. Accept only that shape, and
+# only if it is a regular file (not a symlink) owned by the invoking user,
+# so a pre-planted link to a root-only file is refused.
+is_staging_key_path() {
+    case "$1" in
+        /tmp/wg-*.key) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *..*|*//*|*/./*|*[!A-Za-z0-9._/-]*) return 1 ;;
+    esac
+    [ -f "$1" ] || return 1
+    [ -L "$1" ] && return 1
+    # An EMPTY key file makes `wg set private-key` *clear* the interface
+    # key (same as /dev/null) — refuse it so a truncated/planted empty
+    # file can't silently disable a tunnel.
+    [ -s "$1" ] || return 1
+    # SUDO_UID is set by sudo; fall back to refusing if we can't tell.
+    [ -n "${SUDO_UID:-}" ] || return 1
+    [ "$(stat -f %u "$1")" = "$SUDO_UID" ] || return 1
+    return 0
+}
+
+# WireGuard keys on the wire are 44-char base64 (32 bytes + "=").
+is_wg_key() {
+    [ ${#1} -eq 44 ] || return 1
+    case "$1" in
+        *[!A-Za-z0-9+/=]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# allowed-ips: comma-separated IPv4/IPv6 CIDRs. Character-class check —
+# wg itself parses the addresses strictly; we only need to keep flags and
+# metacharacters out.
+is_cidr_list() {
+    [ -n "$1" ] || return 1
+    case "$1" in
+        -*|*[!0-9a-fA-F.:/,]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# endpoint: host:port, [v6]:port, or name:port. No flags/metachars.
+is_endpoint() {
+    [ -n "$1" ] || return 1
+    case "$1" in
+        -*|*[!A-Za-z0-9.:\[\]_-]*) return 1 ;;
+        *:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Validate the `set` option grammar. Runs on a copy of the argument list
+# (a function's own "$@"), so the caller's arguments are untouched for
+# the final exec. Every option consumes exactly its declared operands;
+# the first unrecognised token aborts.
+validate_set_args() {
+    [ $# -ge 1 ] || die "set requires at least one option"
+    while [ $# -gt 0 ]; do
+        opt="$1"; shift
+        case "$opt" in
+            private-key|preshared-key)
+                [ $# -ge 1 ] || die "$opt requires a path"
+                is_staging_key_path "$1" || die "$opt path refused: $1"
+                shift ;;
+            listen-port|persistent-keepalive)
+                [ $# -ge 1 ] || die "$opt requires a number"
+                is_numeric "$1" || die "$opt must be numeric: $1"
+                shift ;;
+            peer)
+                [ $# -ge 1 ] || die "peer requires a public key"
+                is_wg_key "$1" || die "peer key malformed"
+                shift ;;
+            allowed-ips)
+                [ $# -ge 1 ] || die "allowed-ips requires a list"
+                is_cidr_list "$1" || die "allowed-ips malformed: $1"
+                shift ;;
+            endpoint)
+                [ $# -ge 1 ] || die "endpoint requires host:port"
+                is_endpoint "$1" || die "endpoint malformed: $1"
+                shift ;;
+            remove) ;;
+            *) die "unsupported set option: $opt" ;;
+        esac
+    done
+}
+
+case "$SUBCMD" in
+    show)
+        case $# in
+            0) exec /usr/bin/wg show "$IFACE" ;;
+            1)
+                [ "$1" = "dump" ] || die "show accepts only 'dump': $1"
+                exec /usr/bin/wg show "$IFACE" dump
+                ;;
+            *) die "show takes at most one arg" ;;
+        esac
+        ;;
+    set)
+        validate_set_args "$@"
+        exec /usr/bin/wg set "$IFACE" "$@"
+        ;;
+esac
