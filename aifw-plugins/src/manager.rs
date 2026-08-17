@@ -8,8 +8,6 @@ use crate::plugin::{Plugin, PluginConfig, PluginInfo, PluginState};
 
 struct LoadedPlugin {
     plugin: Arc<dyn Plugin>,
-    #[allow(dead_code)]
-    config: PluginConfig,
     state: PluginState,
     info: PluginInfo,
 }
@@ -97,9 +95,10 @@ impl PluginManager {
 
         self.plugins.insert(
             name,
+            // `config` is consumed by init(); the plugin holds whatever
+            // it needs from it, and the persisted copy lives in the DB.
             LoadedPlugin {
                 plugin: Arc::from(plugin),
-                config,
                 state,
                 info,
             },

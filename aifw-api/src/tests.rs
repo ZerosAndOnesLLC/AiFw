@@ -1237,6 +1237,42 @@ mod tests {
         assert!(resp.text().contains("directory_url"), "{}", resp.text());
     }
 
+    /// #200 follow-through: auto-snapshots record the acting username as
+    /// the config-history actor (was a hardcoded "auto"). Waits out the
+    /// real 5s debounce (paused time breaks the sqlx pool's acquire timer).
+    #[tokio::test]
+    async fn test_auto_snapshot_records_acting_user() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Any successful mutation on a snapshot-worthy path.
+        server
+            .post("/api/v1/aliases")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "name": "snap_actor_test",
+                "alias_type": "host",
+                "entries": ["10.9.9.9"]
+            }))
+            .await
+            .assert_status_success();
+
+        // Let the debounced background snapshot fire and finish.
+        tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+
+        let resp = server
+            .get("/api/v1/config/history")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let versions = body["data"].as_array().expect("history array");
+        assert!(
+            versions.iter().any(|v| v["created_by"] == "admin"),
+            "expected an auto-snapshot attributed to 'admin', got: {versions:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_invalid_token_returns_401() {
         let (server, _) = test_app().await;

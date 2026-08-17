@@ -239,9 +239,9 @@ fn query_ticket(q: Option<&str>) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: String,
-    /// Populated for logging/audit context and future per-request use; not
-    /// currently read by any guard (authz keys off `user_id` + `permissions`).
-    #[allow(dead_code)]
+    /// Display name of the acting user — recorded as the actor on
+    /// auto-snapshots (config history) so changes are attributable.
+    /// Authz itself keys off `user_id` + `permissions`.
     pub username: String,
     pub permissions: aifw_common::PermissionSet,
     pub role: String,

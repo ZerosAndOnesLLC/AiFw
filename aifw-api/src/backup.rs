@@ -2908,6 +2908,10 @@ pub struct AutoSnapshotPending {
     scheduled: bool,
     coalesced: u32,
     last_comment: String,
+    /// Username of the request that most recently folded into the pending
+    /// snapshot; recorded as the snapshot's actor so config history shows
+    /// who changed what (was a hardcoded "auto").
+    last_actor: String,
 }
 
 /// How long a scheduled auto-snapshot waits so that a burst of mutations
@@ -2922,6 +2926,14 @@ pub async fn auto_snapshot_middleware(
 ) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    // Auth middleware runs before this layer, so the acting identity is
+    // already on the request. Fall back to "auto" for anything unauthenticated
+    // that still reaches here (shouldn't, but keeps history readable).
+    let actor = request
+        .extensions()
+        .get::<crate::auth::AuthUser>()
+        .map(|u| u.username.clone())
+        .unwrap_or_else(|| "auto".to_string());
     let mutating = matches!(
         &method,
         &Method::POST | &Method::PUT | &Method::DELETE | &Method::PATCH
@@ -2951,6 +2963,7 @@ pub async fn auto_snapshot_middleware(
         let mut pending = state.auto_snapshot_pending.lock().await;
         pending.coalesced += 1;
         pending.last_comment = format!("{method} {path}");
+        pending.last_actor = actor;
         !std::mem::replace(&mut pending.scheduled, true)
     };
     if !spawn_worker {
@@ -2958,16 +2971,21 @@ pub async fn auto_snapshot_middleware(
     }
 
     let bg_state = state.clone();
-    let bg_actor = "auto".to_string();
     tokio::spawn(async move {
         tokio::time::sleep(AUTO_SNAPSHOT_DEBOUNCE).await;
-        let (coalesced, last_comment) = {
+        let (coalesced, last_comment, bg_actor) = {
             let mut pending = bg_state.auto_snapshot_pending.lock().await;
             pending.scheduled = false;
             (
                 std::mem::take(&mut pending.coalesced),
                 std::mem::take(&mut pending.last_comment),
+                std::mem::take(&mut pending.last_actor),
             )
+        };
+        let bg_actor = if bg_actor.is_empty() {
+            "auto".to_string()
+        } else {
+            bg_actor
         };
         let bg_comment = if coalesced > 1 {
             format!("{last_comment} (+{} coalesced)", coalesced - 1)
