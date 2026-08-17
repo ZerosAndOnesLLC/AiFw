@@ -126,11 +126,9 @@ struct Manifest {
     binaries: ManifestBinaries,
     external_repos: Vec<ExternalRepo>,
     rc_scripts: Vec<String>,
-    #[allow(dead_code)]
-    sbin_scripts: Vec<String>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    libexec_scripts: Vec<String>,
+    // `sbin_scripts` / `libexec_scripts` exist in manifest.json for the build
+    // scripts; the updater ships those via LIBEXEC_SCRIPTS below, so they are
+    // deliberately not deserialized here (serde ignores unknown keys).
     directories: Vec<String>,
     /// OS packages the appliance needs at runtime. Installed by
     /// build-iso.sh at image build; the updater installs any that are
@@ -148,16 +146,21 @@ struct ManifestBinaries {
 #[derive(Deserialize)]
 struct ExternalRepo {
     binaries: Vec<String>,
-    #[allow(dead_code)]
+    /// Human-readable companion name — used only in packaging-test failure
+    /// messages. (`repo` is build-script-only and not deserialized; serde
+    /// ignores unknown keys.)
+    #[cfg_attr(not(test), allow(dead_code))]
     name: String,
-    #[allow(dead_code)]
-    repo: String,
     /// crates.io package the build installs (#651, replaced the git SHA pins).
+    /// Read only by the packaging guard tests, which assert every companion
+    /// pin is a well-formed crate + semver so a bad manifest fails CI rather
+    /// than the release build.
     #[serde(rename = "crate")]
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     crate_name: String,
-    /// Exact published version pinned for appliance artifacts.
-    #[allow(dead_code)]
+    /// Exact published version pinned for appliance artifacts. Test-only
+    /// reader, see `crate_name`.
+    #[cfg_attr(not(test), allow(dead_code))]
     version: String,
 }
 

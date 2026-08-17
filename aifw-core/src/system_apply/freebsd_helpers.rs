@@ -1,6 +1,5 @@
 //! Pure string helpers for the FreeBSD apply layer — unit-testable
 //! on any host OS.
-#![allow(dead_code)]
 
 /// Rewrite (or append) the `127.0.1.1` line in `/etc/hosts` to reflect
 /// the new hostname + domain. Matches only lines whose first

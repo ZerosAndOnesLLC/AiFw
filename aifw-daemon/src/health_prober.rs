@@ -81,29 +81,24 @@ impl HealthProber {
                 st.last_run = Some(Instant::now());
 
                 let ok = run_probe(c, &client).await;
-                if ok {
-                    if !st.healthy {
-                        st.healthy = true;
-                        let _ = self.notify_health(&client, &c.name, true, None).await;
-                    }
-                    st.failures = 0; // always reset so accumulated partial failures
-                // don't carry over and reduce the effective threshold
-                } else {
-                    st.failures += 1;
-                    if st.failures >= c.failures_before_down && st.healthy {
-                        st.healthy = false;
-                        let _ = self
-                            .notify_health(
-                                &client,
-                                &c.name,
-                                false,
-                                Some(format!("{} consecutive failures", st.failures)),
-                            )
-                            .await;
-                    }
-                    if !st.healthy {
-                        any_failing_local = true;
-                    }
+                let outcome = apply_probe_result(st, ok, c.failures_before_down);
+                if outcome.became_healthy {
+                    // Notification is best-effort — a failed POST must not
+                    // stall the probe loop; the next tick retries the state.
+                    let _ = self.notify_health(&client, &c.name, true, None).await;
+                } else if outcome.became_unhealthy {
+                    // Same best-effort rationale as above.
+                    let _ = self
+                        .notify_health(
+                            &client,
+                            &c.name,
+                            false,
+                            Some(format!("{} consecutive failures", outcome.failures_after)),
+                        )
+                        .await;
+                }
+                if !outcome.healthy_after {
+                    any_failing_local = true;
                 }
             }
 
@@ -206,7 +201,6 @@ impl ProbeState {
 // ============================================================
 
 /// The result of applying one probe tick to a ProbeState.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 struct ProbeOutcome {
     /// True when this tick causes a transition healthy → unhealthy.
@@ -218,9 +212,8 @@ struct ProbeOutcome {
 }
 
 /// Apply one probe result to a mutable ProbeState, returning the outcome.
-/// This mirrors the exact logic in `HealthProber::run` but operates on
-/// owned data so it can be unit-tested without spawning async infrastructure.
-#[cfg_attr(not(test), allow(dead_code))]
+/// This is the single implementation of the health state machine — used by
+/// `HealthProber::run` and unit-tested directly without async infrastructure.
 fn apply_probe_result(st: &mut ProbeState, ok: bool, failures_before_down: u32) -> ProbeOutcome {
     let was_healthy = st.healthy;
     if ok {
