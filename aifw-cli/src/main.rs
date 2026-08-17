@@ -261,6 +261,18 @@ enum NodesAction {
     },
     /// Remove a cluster node
     Remove { id: String },
+    /// Reset (or set) the pinned TLS certificate fingerprint of a peer.
+    /// Without --fingerprint the pin is cleared and re-learned on next contact.
+    #[command(after_help = "\
+Peer HTTPS calls are pinned to the certificate seen on first contact. If a
+peer's API certificate changed by hand (self-signed regeneration, manual
+import), replication logs 'TLS pin mismatch' until you re-pin it here.")]
+    Repin {
+        id: String,
+        /// SHA-256 fingerprint of the peer's certificate (64 hex chars, colons ok)
+        #[arg(long)]
+        fingerprint: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1642,6 +1654,9 @@ async fn main() -> anyhow::Result<()> {
                     role,
                 } => commands::cluster_nodes_add(&name, &address, &role).await?,
                 NodesAction::Remove { id } => commands::cluster_nodes_remove(&id).await?,
+                NodesAction::Repin { id, fingerprint } => {
+                    commands::cluster_nodes_repin(&id, fingerprint.as_deref()).await?
+                }
             },
             ClusterAction::Health { action } => match action {
                 HealthAction::List => commands::cluster_health_list().await?,

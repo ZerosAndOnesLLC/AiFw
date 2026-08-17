@@ -36,6 +36,8 @@ export type Node = {
   role: string;
   health: string;
   last_seen: string;
+  /** SHA-256 of the peer's API certificate that our calls are pinned to (#317); null until first contact. */
+  cert_fingerprint?: string | null;
 };
 
 export type HealthCheck = {
@@ -200,6 +202,13 @@ export const demoteCluster = () => api.post<unknown>("/api/v1/cluster/demote");
 
 export const generateNodePeerKey = (nodeId: string) =>
   api.post<{ key: string }>(`/api/v1/cluster/nodes/${nodeId}/generate-key`);
+
+/** Clear (no fingerprint) or set the pinned TLS certificate of a peer (#317). */
+export const repinNode = (nodeId: string, fingerprint?: string) =>
+  api.post<Node>(
+    `/api/v1/cluster/nodes/${nodeId}/repin`,
+    fingerprint ? { fingerprint } : {},
+  );
 
 export const generateLoopbackKey = () =>
   api.post<{ ok: boolean; message: string }>(

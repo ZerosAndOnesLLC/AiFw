@@ -71,6 +71,7 @@ pub fn write_routes() -> Router<AppState> {
             "/api/v1/cluster/nodes/{id}/generate-key",
             post(generate_node_key),
         )
+        .route("/api/v1/cluster/nodes/{id}/repin", post(repin_node))
         .route("/api/v1/cluster/health", post(create_health))
         .route(
             "/api/v1/cluster/health/{id}",
@@ -467,6 +468,60 @@ async fn generate_node_key(
     Ok(Json(GenerateKeyResponse { key }))
 }
 
+/// Body for `POST /cluster/nodes/{id}/repin` (#317).
+#[derive(Deserialize, Default)]
+struct RepinRequest {
+    /// Explicit SHA-256 fingerprint (hex, colons optional) to pin. Omitted or
+    /// empty = clear the pin and re-learn on next contact.
+    #[serde(default)]
+    fingerprint: Option<String>,
+}
+
+/// Reset or set the pinned TLS certificate fingerprint of a peer (#317).
+/// Use after the peer's API certificate changed by hand (self-signed
+/// regeneration, manual cert import) — replication logs a pin mismatch
+/// until this is done. Cert pushes and first contact manage pins on their own.
+async fn repin_node(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+    body: Option<Json<RepinRequest>>,
+) -> Result<Json<ClusterNode>, (StatusCode, String)> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let fp = match req.fingerprint.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(raw) => {
+            let cleaned: String = raw
+                .chars()
+                .filter(|c| *c != ':')
+                .map(|c| c.to_ascii_lowercase())
+                .collect();
+            if cleaned.len() != 64 || !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "fingerprint must be a SHA-256 hex digest (64 hex chars)".into(),
+                ));
+            }
+            Some(cleaned)
+        }
+    };
+    s.cluster_engine
+        .set_peer_cert_fingerprint(id, fp.as_deref())
+        .await
+        .map_err(|e| match e {
+            aifw_common::AifwError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
+    tracing::info!(node = %id, pinned = fp.is_some(), "ha: peer TLS pin updated by operator");
+    let node = s
+        .cluster_engine
+        .list_nodes()
+        .await
+        .ok()
+        .and_then(|ns| ns.into_iter().find(|n| n.id == id))
+        .ok_or((StatusCode::NOT_FOUND, "node vanished".into()))?;
+    Ok(Json(node))
+}
+
 async fn list_health(State(s): State<AppState>) -> Result<Json<Vec<HealthCheck>>, StatusCode> {
     s.cluster_engine
         .list_health_checks()
@@ -750,10 +805,10 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
         peer.address,
         aifw_common::DEFAULT_LOOPBACK_API_PORT
     );
-    let client = match reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
+    // #317: pinned to the master's certificate (learned on first contact).
+    let client = match s
+        .cluster_engine
+        .peer_client(&peer, std::time::Duration::from_secs(15))
     {
         Ok(c) => c,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
@@ -765,10 +820,13 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
         .send()
         .await
     {
-        Ok(r) => match r.text().await {
-            Ok(s) => s,
-            Err(_) => return StatusCode::BAD_GATEWAY,
-        },
+        Ok(r) => {
+            s.cluster_engine.learn_peer_cert(&peer, &r).await;
+            match r.text().await {
+                Ok(s) => s,
+                Err(_) => return StatusCode::BAD_GATEWAY,
+            }
+        }
         Err(_) => return StatusCode::BAD_GATEWAY,
     };
 
@@ -892,6 +950,20 @@ async fn cert_push(
             // Standby tunnels referencing this cert must also rotate to the
             // renewed material (#568) so a failover presents a valid cert.
             aifw_core::ipsec::on_acme_cert_renewed(&s.pool, r.cert_id).await;
+            // #317: the master just renewed — its own API certificate may
+            // change with it. Drop our pin(s) on Primary nodes so the next
+            // call re-learns instead of failing on a stale fingerprint.
+            match s
+                .cluster_engine
+                .clear_pins_for_role(ClusterRole::Primary)
+                .await
+            {
+                Ok(n) if n > 0 => {
+                    tracing::info!(cleared = n, "ha: cleared master TLS pin after cert push")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "ha: could not clear master TLS pin"),
+            }
             StatusCode::NO_CONTENT
         }
         Err(e) => {

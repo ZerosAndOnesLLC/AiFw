@@ -359,6 +359,11 @@ pub struct ClusterNode {
     pub software_version: Option<String>,
     /// When this node last successfully pushed a TLS cert to its peer.
     pub last_pushed_cert_at: Option<DateTime<Utc>>,
+    /// SHA-256 fingerprint (lowercase hex) of the API certificate this peer
+    /// presents; every HTTPS call to the peer is pinned to it (#317). `None`
+    /// until first contact learns it (or after an operator re-pin).
+    #[serde(default)]
+    pub cert_fingerprint: Option<String>,
 }
 
 /// Health status of a cluster node (wire values are lowercase)
@@ -402,6 +407,7 @@ impl ClusterNode {
             created_at: now,
             software_version: None,
             last_pushed_cert_at: None,
+            cert_fingerprint: None,
         }
     }
 

@@ -988,6 +988,111 @@ mod tests {
         assert_eq!(ollama(&resp.json::<Value>())["tls_insecure"], false);
     }
 
+    /// #317: operator re-pin endpoint — clears or sets the pinned peer
+    /// certificate fingerprint; validates the digest; 404 on unknown nodes.
+    #[tokio::test]
+    async fn test_cluster_node_repin() {
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let engine = state.cluster_engine.clone();
+        let server = TestServer::new(crate::build_router(state, None, "*", false));
+        let token = create_user_and_login(&server).await;
+
+        let resp = server
+            .post("/api/v1/cluster/nodes")
+            .authorization_bearer(&token)
+            .json(&json!({"name": "peer-b", "address": "10.9.9.2", "role": "secondary"}))
+            .await;
+        assert!(resp.status_code().is_success(), "{}", resp.text());
+        let node: Value = resp.json();
+        let id = node["id"].as_str().unwrap().to_string();
+        assert!(
+            node["cert_fingerprint"].is_null(),
+            "no pin until first contact"
+        );
+
+        // Explicit pin, colons + uppercase normalised.
+        // "AB:CD:" + 30 × "EF" = 64 hex chars once the colons are stripped.
+        let fp_upper = format!("AB:CD:{}", "EF".repeat(30));
+        let resp = server
+            .post(&format!("/api/v1/cluster/nodes/{id}/repin"))
+            .authorization_bearer(&token)
+            .json(&json!({"fingerprint": fp_upper}))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let pinned = body["cert_fingerprint"].as_str().unwrap();
+        assert_eq!(pinned.len(), 64);
+        assert!(pinned.starts_with("abcd"));
+        assert!(
+            pinned
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        );
+
+        // Engine sees it and builds a pinned client.
+        let n = engine
+            .list_nodes()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|n| n.id.to_string() == id)
+            .unwrap();
+        assert_eq!(n.cert_fingerprint.as_deref(), Some(pinned));
+        assert!(
+            engine
+                .peer_client(&n, std::time::Duration::from_secs(1))
+                .is_ok()
+        );
+
+        // Bad digest → 400.
+        let resp = server
+            .post(&format!("/api/v1/cluster/nodes/{id}/repin"))
+            .authorization_bearer(&token)
+            .json(&json!({"fingerprint": "not-a-digest"}))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+
+        // Clear (empty body).
+        let resp = server
+            .post(&format!("/api/v1/cluster/nodes/{id}/repin"))
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        assert!(resp.json::<Value>()["cert_fingerprint"].is_null());
+
+        // Unknown node → 404.
+        let resp = server
+            .post(&format!(
+                "/api/v1/cluster/nodes/{}/repin",
+                uuid::Uuid::new_v4()
+            ))
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status(StatusCode::NOT_FOUND);
+
+        // clear_pins_for_role touches only the given role.
+        engine
+            .set_peer_cert_fingerprint(n.id, Some(&"11".repeat(32)))
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .clear_pins_for_role(aifw_common::ClusterRole::Primary)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            engine
+                .clear_pins_for_role(aifw_common::ClusterRole::Secondary)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
     /// SEC-H12 (#297): cluster snapshot/cert push must reject a broad HaManage
     /// credential (a JWT, or any non-peer key) — only a registered peer key or
     /// the daemon-loopback key is accepted.

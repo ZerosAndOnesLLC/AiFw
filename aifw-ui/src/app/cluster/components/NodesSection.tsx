@@ -23,6 +23,7 @@ export function NodesSection({
   onSave,
   onDelete,
   onGeneratePeerKey,
+  onRepin,
 }: {
   nodes: Node[];
   saving: boolean;
@@ -35,6 +36,8 @@ export function NodesSection({
   /// `onDeleted` is invoked only when the delete succeeded (before reload).
   onDelete: (n: Node, onDeleted: () => void) => void;
   onGeneratePeerKey: (nodeId: string, nodeName: string) => void;
+  /// #317: clear the peer's pinned TLS fingerprint so it is re-learned on next contact.
+  onRepin: (nodeId: string) => void;
 }) {
   const [showNodeForm, setShowNodeForm] = useState(false);
   const [nodeForm, setNodeForm] = useState<NodeFormState>(defaultNodeForm);
@@ -147,6 +150,12 @@ export function NodesSection({
                 <th className="text-left py-3 px-4 text-xs font-medium text-gray-400 uppercase tracking-wider">
                   Last seen
                 </th>
+                <th
+                  className="text-left py-3 px-4 text-xs font-medium text-gray-400 uppercase tracking-wider"
+                  title="SHA-256 of the peer's API certificate that our HTTPS calls are pinned to. Learned on first contact; reset it if the peer's certificate changed by hand."
+                >
+                  TLS pin
+                </th>
                 <th className="w-40"></th>
               </tr>
             </thead>
@@ -162,6 +171,27 @@ export function NodesSection({
                   <td className="py-2.5 px-4">{n.health}</td>
                   <td className="py-2.5 px-4">
                     {new Date(n.last_seen).toLocaleString()}
+                  </td>
+                  <td className="py-2.5 px-4">
+                    {n.cert_fingerprint ? (
+                      <span
+                        className="font-mono text-xs text-[var(--text-muted)]"
+                        title={n.cert_fingerprint}
+                      >
+                        {n.cert_fingerprint.slice(0, 16)}…
+                        <button
+                          onClick={() => onRepin(n.id)}
+                          className="ml-2 text-[var(--accent)] hover:underline"
+                          title="Forget this pin; the next contact re-learns the peer's current certificate"
+                        >
+                          Re-pin
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="text-xs text-[var(--text-muted)]" title="Not pinned yet — pinned automatically on the first successful contact">
+                        learn on first contact
+                      </span>
+                    )}
                   </td>
                   <td className="py-2.5 px-2">
                     <div className="flex items-center gap-1">

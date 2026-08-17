@@ -22,6 +22,7 @@ import {
   forceSnapshotSync,
   generateLoopbackKey as apiGenerateLoopbackKey,
   generateNodePeerKey,
+  repinNode,
   getHealthSummary,
   getPfsync,
   listCarpVips,
@@ -116,6 +117,18 @@ export function useCluster() {
     try {
       await demoteCluster();
       await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const repinPeer = async (nodeId: string) => {
+    setBusy(true);
+    try {
+      await repinNode(nodeId);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to reset peer TLS pin");
     } finally {
       setBusy(false);
     }
@@ -391,6 +404,7 @@ export function useCluster() {
     promote,
     demote,
     generatePeerKey,
+    repinPeer,
     generateLoopbackKey,
     registerPeerKey,
     saveVip,

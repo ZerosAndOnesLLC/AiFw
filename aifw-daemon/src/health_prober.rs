@@ -35,7 +35,11 @@ impl HealthProber {
         let mut demoted = false;
         let mut recovery_started: Option<Instant> = None;
 
-        let client = match reqwest::Client::builder()
+        // Client for operator-defined HTTP GET probes. These target
+        // arbitrary services (often internal, often self-signed) and carry
+        // no credentials, so certificate validity is not part of the
+        // "is it up" question — accept-any is deliberate here.
+        let probe_client = match reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(5))
             .build()
@@ -49,6 +53,8 @@ impl HealthProber {
                 return;
             }
         };
+        // #317: notifications to the local API are pinned to its certificate.
+        let loopback = aifw_core::peer_tls::LocalApiClient::new(Duration::from_secs(5));
 
         loop {
             tick.tick().await;
@@ -80,17 +86,17 @@ impl HealthProber {
                 }
                 st.last_run = Some(Instant::now());
 
-                let ok = run_probe(c, &client).await;
+                let ok = run_probe(c, &probe_client).await;
                 let outcome = apply_probe_result(st, ok, c.failures_before_down);
                 if outcome.became_healthy {
                     // Notification is best-effort — a failed POST must not
                     // stall the probe loop; the next tick retries the state.
-                    let _ = self.notify_health(&client, &c.name, true, None).await;
+                    let _ = self.notify_health(&loopback, &c.name, true, None).await;
                 } else if outcome.became_unhealthy {
                     // Same best-effort rationale as above.
                     let _ = self
                         .notify_health(
-                            &client,
+                            &loopback,
                             &c.name,
                             false,
                             Some(format!("{} consecutive failures", outcome.failures_after)),
@@ -157,14 +163,15 @@ impl HealthProber {
 
     async fn notify_health(
         &self,
-        client: &reqwest::Client,
+        loopback: &aifw_core::peer_tls::LocalApiClient,
         name: &str,
         healthy: bool,
         detail: Option<String>,
     ) -> anyhow::Result<()> {
         let body = serde_json::json!({"check": name, "healthy": healthy, "detail": detail});
         let url = format!("{}/api/v1/cluster/internal/health-changed", self.api_base);
-        let resp = client
+        let resp = loopback
+            .get()?
             .post(&url)
             .header("Authorization", format!("ApiKey {}", self.api_key))
             .json(&body)

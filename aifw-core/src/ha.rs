@@ -82,6 +82,7 @@ impl ClusterEngine {
             "ALTER TABLE cluster_nodes ADD COLUMN peer_api_key_hash TEXT",
             "ALTER TABLE cluster_nodes ADD COLUMN software_version TEXT",
             "ALTER TABLE cluster_nodes ADD COLUMN last_pushed_cert_at TEXT",
+            "ALTER TABLE cluster_nodes ADD COLUMN cert_fingerprint TEXT",
         ] {
             let _ = sqlx::query(stmt).execute(&self.pool).await;
         }
@@ -479,6 +480,80 @@ impl ClusterEngine {
     }
 
     // ============================================================
+    // Peer TLS pinning (#317)
+    // ============================================================
+
+    /// HTTPS client for calling `node`, pinned to its stored certificate
+    /// fingerprint. With no pin yet the client accepts any certificate and
+    /// exposes the observed one so [`Self::learn_peer_cert`] can pin it.
+    pub fn peer_client(
+        &self,
+        node: &ClusterNode,
+        timeout: std::time::Duration,
+    ) -> Result<reqwest::Client> {
+        crate::peer_tls::client_for(
+            node.cert_fingerprint.as_deref(),
+            &node.address.to_string(),
+            timeout,
+        )
+        .map_err(|e| AifwError::Other(e.to_string()))
+    }
+
+    /// Trust-on-first-use: if `node` has no pin yet, record the certificate
+    /// fingerprint observed on `resp` (a successful call made through
+    /// [`Self::peer_client`]). No-op when already pinned. Best-effort — the
+    /// call that produced `resp` already succeeded.
+    pub async fn learn_peer_cert(&self, node: &ClusterNode, resp: &reqwest::Response) {
+        if node.cert_fingerprint.is_some() {
+            return;
+        }
+        let Some(fp) = crate::peer_tls::observed_fingerprint(resp) else {
+            return;
+        };
+        match self.set_peer_cert_fingerprint(node.id, Some(&fp)).await {
+            Ok(()) => tracing::info!(
+                peer = %node.address,
+                pin = %crate::peer_tls::short(&fp),
+                "ha: pinned peer certificate on first contact"
+            ),
+            Err(e) => {
+                tracing::warn!(peer = %node.address, error = %e, "ha: could not store peer pin")
+            }
+        }
+    }
+
+    /// Set (or clear, with `None`) the pinned certificate fingerprint for a
+    /// node. Clearing = "re-pin on next contact".
+    pub async fn set_peer_cert_fingerprint(&self, id: Uuid, fp: Option<&str>) -> Result<()> {
+        let result = sqlx::query("UPDATE cluster_nodes SET cert_fingerprint = ?1 WHERE id = ?2")
+            .bind(fp.map(|f| f.to_ascii_lowercase()))
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(AifwError::NotFound(format!("cluster node {id} not found")));
+        }
+        Ok(())
+    }
+
+    /// Clear the pins of every node with `role` so the next contact
+    /// re-learns them. Used around a certificate distribution (cert push):
+    /// the peer's API certificate is about to change, and whether it will
+    /// serve exactly the pushed chain depends on its own ACME-export
+    /// settings, so a fresh TOFU is safer than guessing. Returns the number
+    /// of nodes cleared.
+    pub async fn clear_pins_for_role(&self, role: ClusterRole) -> Result<usize> {
+        let mut n = 0;
+        for node in self.list_nodes().await? {
+            if node.role == role && node.cert_fingerprint.is_some() {
+                self.set_peer_cert_fingerprint(node.id, None).await?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    // ============================================================
     // Health checks
     // ============================================================
 
@@ -851,7 +926,7 @@ impl PfsyncRow {
 /// Note: `peer_api_key`/`peer_api_key_hash` exist on the table but are NOT part
 /// of `ClusterNodeRow`, so they are intentionally omitted here.
 const CLUSTER_NODES_COLUMNS: &str = "id, name, address, role, health, last_seen, \
-    config_version, created_at, software_version, last_pushed_cert_at";
+    config_version, created_at, software_version, last_pushed_cert_at, cert_fingerprint";
 
 #[derive(sqlx::FromRow)]
 struct ClusterNodeRow {
@@ -865,6 +940,7 @@ struct ClusterNodeRow {
     created_at: String,
     software_version: Option<String>,
     last_pushed_cert_at: Option<String>,
+    cert_fingerprint: Option<String>,
 }
 
 impl ClusterNodeRow {
@@ -893,6 +969,7 @@ impl ClusterNodeRow {
             created_at: parse_dt(&self.created_at)?,
             software_version: self.software_version,
             last_pushed_cert_at,
+            cert_fingerprint: self.cert_fingerprint,
         })
     }
 }

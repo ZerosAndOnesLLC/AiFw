@@ -3370,6 +3370,20 @@ pub async fn cluster_nodes_add(name: &str, address: &str, role: &str) -> anyhow:
     Ok(())
 }
 
+pub async fn cluster_nodes_repin(id: &str, fingerprint: Option<&str>) -> anyhow::Result<()> {
+    let body = match fingerprint {
+        Some(fp) => serde_json::json!({ "fingerprint": fp }),
+        None => serde_json::json!({}),
+    };
+    let v: serde_json::Value =
+        api_post(&format!("/api/v1/cluster/nodes/{id}/repin"), &body).await?;
+    match v.get("cert_fingerprint").and_then(|f| f.as_str()) {
+        Some(fp) => println!("Node {id} pinned to {fp}"),
+        None => println!("Node {id} pin cleared — it will be re-learned on the next contact."),
+    }
+    Ok(())
+}
+
 pub async fn cluster_nodes_remove(id: &str) -> anyhow::Result<()> {
     api_delete(&format!("/api/v1/cluster/nodes/{id}")).await?;
     println!("Removed node {id}");
