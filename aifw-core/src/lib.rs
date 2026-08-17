@@ -34,6 +34,7 @@ pub mod ipsec;
 pub mod ipsec_status;
 /// Local log storage policy for the remote-syslog `disable_local` toggle
 pub mod local_log;
+pub mod log_rotation;
 pub mod migrations;
 pub mod multiwan;
 /// [`NatEngine`] — SNAT/DNAT/masquerade rule CRUD and application to pf

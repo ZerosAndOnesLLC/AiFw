@@ -20,7 +20,7 @@ pidfile="${trafficcop_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
 trafficcop_binary="/usr/local/sbin/trafficcop"
 command="/usr/sbin/daemon"
-command_args="-f -p ${trafficcop_pidfile} -P ${trafficcop_supervisor_pidfile} -R 5 -S -T trafficcop -o /var/log/trafficcop/trafficcop.log -u aifw ${trafficcop_binary} -c ${trafficcop_config}"
+command_args="-f -H -p ${trafficcop_pidfile} -P ${trafficcop_supervisor_pidfile} -R 5 -S -T trafficcop -o /var/log/trafficcop/trafficcop.log -u aifw ${trafficcop_binary} -c ${trafficcop_config}"
 
 start_precmd="trafficcop_precmd"
 stop_cmd="trafficcop_stop"

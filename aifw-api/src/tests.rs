@@ -3358,6 +3358,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_log_rotation_settings_defaults_and_roundtrip() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Defaults + status shape
+        let resp = server
+            .get("/api/v1/settings/log-rotation")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["config"]["max_size_mb"], 5);
+        assert_eq!(body["config"]["keep"], 7);
+        assert_eq!(body["config"]["compression"], "gzip");
+        assert_eq!(body["limits"]["max_size_mb"], 500);
+        assert_eq!(
+            body["logs"].as_array().map(|l| l.len()),
+            Some(aifw_core::log_rotation::MANAGED_LOGS.len())
+        );
+        assert!(body["logs"][0]["service"].is_string());
+
+        // Save + read back
+        let cfg = json!({"max_size_mb": 25, "keep": 3, "compression": "zstd"});
+        let resp = server
+            .put("/api/v1/settings/log-rotation")
+            .authorization_bearer(&token)
+            .json(&cfg)
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["config"]["max_size_mb"], 25);
+        assert_eq!(body["config"]["compression"], "zstd");
+        let resp = server
+            .get("/api/v1/settings/log-rotation")
+            .authorization_bearer(&token)
+            .await;
+        let body: Value = resp.json();
+        assert_eq!(body["config"]["keep"], 3);
+
+        // Out of range is rejected and does not persist
+        for bad in [
+            json!({"max_size_mb": 0, "keep": 3, "compression": "gzip"}),
+            json!({"max_size_mb": 501, "keep": 3, "compression": "gzip"}),
+            json!({"max_size_mb": 10, "keep": 51, "compression": "gzip"}),
+        ] {
+            let resp = server
+                .put("/api/v1/settings/log-rotation")
+                .authorization_bearer(&token)
+                .json(&bad)
+                .await;
+            resp.assert_status(StatusCode::BAD_REQUEST);
+        }
+        // Unknown compression fails deserialisation (422 from axum's Json)
+        let resp = server
+            .put("/api/v1/settings/log-rotation")
+            .authorization_bearer(&token)
+            .json(&json!({"max_size_mb": 10, "keep": 3, "compression": "lz4"}))
+            .await;
+        assert!(resp.status_code().is_client_error());
+        let resp = server
+            .get("/api/v1/settings/log-rotation")
+            .authorization_bearer(&token)
+            .await;
+        assert_eq!(resp.json::<Value>()["config"]["max_size_mb"], 25);
+
+        // Config export carries the section
+        let resp = server
+            .get("/api/v1/config/export")
+            .authorization_bearer(&token)
+            .await;
+        if resp.status_code().is_success() {
+            let exported: Value = resp.json();
+            assert_eq!(exported["config"]["log_rotation"]["max_size_mb"], 25);
+        }
+
+        // Unauthenticated read is rejected
+        let resp = server.get("/api/v1/settings/log-rotation").await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn test_syslog_settings_defaults_and_roundtrip() {
         let (server, _) = test_app().await;
         let token = create_user_and_login(&server).await;

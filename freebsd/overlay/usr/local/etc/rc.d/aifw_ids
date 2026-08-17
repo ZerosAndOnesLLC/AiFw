@@ -21,7 +21,7 @@ pidfile="${aifw_ids_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
 aifw_ids_binary="/usr/local/sbin/aifw-ids"
 command="/usr/sbin/daemon"
-command_args="-f -p ${aifw_ids_pidfile} -P ${aifw_ids_supervisor_pidfile} -R 5 -S -T aifw_ids -o /var/log/aifw/ids.log -u aifw ${aifw_ids_binary} --db ${aifw_ids_db} --socket ${aifw_ids_socket} --log-level info"
+command_args="-f -H -p ${aifw_ids_pidfile} -P ${aifw_ids_supervisor_pidfile} -R 5 -S -T aifw_ids -o /var/log/aifw/ids.log -u aifw ${aifw_ids_binary} --db ${aifw_ids_db} --socket ${aifw_ids_socket} --log-level info"
 
 start_precmd="aifw_ids_precmd"
 stop_cmd="aifw_ids_stop"

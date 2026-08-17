@@ -46,6 +46,11 @@ enum Commands {
         #[command(subcommand)]
         action: SyslogAction,
     },
+    /// Manage rotation of AiFw service logs (newsyslog policy)
+    Logrotate {
+        #[command(subcommand)]
+        action: LogrotateAction,
+    },
     /// Manage traffic queues
     Queue {
         #[command(subcommand)]
@@ -793,6 +798,41 @@ EXAMPLES:
 }
 
 #[derive(Subcommand)]
+enum LogrotateAction {
+    /// Show the rotation policy and the current size of every managed log
+    Show {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Update the policy — only the flags you pass change
+    #[command(after_help = "\
+EXAMPLES:
+    # Rotate at 20 MB, keep 5 compressed generations
+    aifw logrotate set --max-size 20 --keep 5
+
+    # Switch rotated logs to zstd (gzip, bzip2, xz, zstd, none)
+    aifw logrotate set --compression zstd")]
+    Set {
+        /// Rotate a log once it exceeds this many MB (1-500)
+        #[arg(long, value_name = "MB")]
+        max_size: Option<u32>,
+        /// Rotated generations to keep (0-50)
+        #[arg(long)]
+        keep: Option<u32>,
+        /// Compression for rotated generations: gzip, bzip2, xz, zstd, none
+        #[arg(long)]
+        compression: Option<String>,
+    },
+    /// Rotate now: one log by path, or every managed log that is over its limit
+    Rotate {
+        /// Path of a managed log to force-rotate regardless of size
+        #[arg(long)]
+        path: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum SyslogAction {
     /// Show the current remote syslog configuration
     Show {
@@ -1088,6 +1128,17 @@ async fn main() -> anyhow::Result<()> {
             }
             IdsAction::Retention { days } => {
                 commands::ids_retention(&cli.db, days).await?;
+            }
+        },
+        Commands::Logrotate { action } => match action {
+            LogrotateAction::Show { json } => commands::logrotate_show(&cli.db, json).await?,
+            LogrotateAction::Set {
+                max_size,
+                keep,
+                compression,
+            } => commands::logrotate_set(&cli.db, max_size, keep, compression.as_deref()).await?,
+            LogrotateAction::Rotate { path } => {
+                commands::logrotate_rotate(&cli.db, path.as_deref()).await?
             }
         },
         Commands::Syslog { action } => match action {

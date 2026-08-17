@@ -22,7 +22,7 @@ pidfile="${aifw_api_supervisor_pidfile}"
 procname="/usr/sbin/daemon"
 aifw_api_binary="/usr/local/sbin/aifw-api"
 command="/usr/sbin/daemon"
-command_args="-f -p ${aifw_api_pidfile} -P ${aifw_api_supervisor_pidfile} -R 5 -S -T aifw_api -o /var/log/aifw/api.log -u aifw ${aifw_api_binary} --db ${aifw_api_db} --listen ${aifw_api_listen}:${aifw_api_port} --ui-dir /usr/local/share/aifw/ui --log-level info"
+command_args="-f -H -p ${aifw_api_pidfile} -P ${aifw_api_supervisor_pidfile} -R 5 -S -T aifw_api -o /var/log/aifw/api.log -u aifw ${aifw_api_binary} --db ${aifw_api_db} --listen ${aifw_api_listen}:${aifw_api_port} --ui-dir /usr/local/share/aifw/ui --log-level info"
 
 start_precmd="aifw_api_precmd"
 stop_cmd="aifw_api_stop"

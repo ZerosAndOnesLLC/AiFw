@@ -3647,6 +3647,123 @@ pub struct SyslogSetOpts {
     pub disable_local: Option<bool>,
 }
 
+// ============================================================
+// Log rotation (#205)
+// ============================================================
+
+fn human_bytes(b: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = b as f64;
+    if b >= KB * KB * KB {
+        format!("{:.1} GB", b / (KB * KB * KB))
+    } else if b >= KB * KB {
+        format!("{:.1} MB", b / (KB * KB))
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{b} B")
+    }
+}
+
+pub async fn logrotate_show(db_path: &Path, json: bool) -> anyhow::Result<()> {
+    use aifw_core::log_rotation as lr;
+    let db = Database::new(db_path).await?;
+    let cfg = lr::load(db.pool()).await;
+    let logs = lr::status().await;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "config": cfg,
+                "logs": logs,
+                "conf_path": lr::CONF_PATH,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("Log rotation policy (all AiFw-managed service logs)");
+    println!("  Rotate above:   {} MB", cfg.max_size_mb);
+    println!("  Keep:           {} rotated generation(s)", cfg.keep);
+    println!("  Compression:    {}", cfg.compression.as_str());
+    println!("  newsyslog conf: {}", lr::CONF_PATH);
+    println!();
+    println!(
+        "  {:<13} {:<36} {:>10} {:>8} {:>10}",
+        "SERVICE", "LOG", "SIZE", "ROTATED", "TOTAL"
+    );
+    for l in &logs {
+        println!(
+            "  {:<13} {:<36} {:>10} {:>8} {:>10}",
+            l.service,
+            l.path,
+            l.size_bytes
+                .map(human_bytes)
+                .unwrap_or_else(|| "-".to_string()),
+            l.rotated,
+            human_bytes(l.total_bytes)
+        );
+    }
+    Ok(())
+}
+
+pub async fn logrotate_set(
+    db_path: &Path,
+    max_size: Option<u32>,
+    keep: Option<u32>,
+    compression: Option<&str>,
+) -> anyhow::Result<()> {
+    use aifw_core::log_rotation as lr;
+    if max_size.is_none() && keep.is_none() && compression.is_none() {
+        anyhow::bail!("nothing to change — pass --max-size, --keep and/or --compression");
+    }
+    let db = Database::new(db_path).await?;
+    let mut cfg = lr::load(db.pool()).await;
+    if let Some(v) = max_size {
+        cfg.max_size_mb = v;
+    }
+    if let Some(v) = keep {
+        cfg.keep = v;
+    }
+    if let Some(c) = compression {
+        cfg.compression = lr::Compression::parse(c).ok_or_else(|| {
+            anyhow::anyhow!("unknown compression {c:?} (gzip, bzip2, xz, zstd, none)")
+        })?;
+    }
+    cfg.validate().map_err(|e| anyhow::anyhow!(e))?;
+    lr::save(db.pool(), &cfg).await?;
+    println!(
+        "Saved: rotate above {} MB, keep {}, compression {}.",
+        cfg.max_size_mb,
+        cfg.keep,
+        cfg.compression.as_str()
+    );
+    if cfg!(target_os = "freebsd") {
+        lr::write_conf(&cfg).await?;
+        match lr::run_now().await {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => println!("Policy written; immediate newsyslog pass failed: {e}"),
+        }
+    }
+    Ok(())
+}
+
+pub async fn logrotate_rotate(db_path: &Path, path: Option<&str>) -> anyhow::Result<()> {
+    use aifw_core::log_rotation as lr;
+    if !cfg!(target_os = "freebsd") {
+        anyhow::bail!("log rotation is only available on the FreeBSD appliance");
+    }
+    // Make sure the fragment reflects the stored policy before rotating.
+    let db = Database::new(db_path).await?;
+    let cfg = lr::load(db.pool()).await;
+    lr::write_conf(&cfg).await?;
+    let msg = match path {
+        Some(p) => lr::rotate_now(p).await?,
+        None => lr::run_now().await?,
+    };
+    println!("{msg}");
+    Ok(())
+}
+
 async fn syslog_load(
     db_path: &Path,
 ) -> anyhow::Result<(Database, aifw_common::syslog::SyslogConfig)> {

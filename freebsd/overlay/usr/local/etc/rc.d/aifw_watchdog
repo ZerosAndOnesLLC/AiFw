@@ -22,7 +22,7 @@ command="/usr/sbin/daemon"
 # Watchdog runs as root because it needs to call `service X start`. The
 # loop body is in /usr/local/libexec/aifw-watchdog.sh; here we just hand
 # it to daemon(8) for supervision.
-command_args="-f -p ${aifw_watchdog_pidfile} -P ${aifw_watchdog_supervisor_pidfile} -R 5 -S -T aifw_watchdog -o /var/log/aifw/watchdog.log /usr/local/libexec/aifw-watchdog.sh"
+command_args="-f -H -p ${aifw_watchdog_pidfile} -P ${aifw_watchdog_supervisor_pidfile} -R 5 -S -T aifw_watchdog -o /var/log/aifw/watchdog.log /usr/local/libexec/aifw-watchdog.sh"
 
 start_precmd="aifw_watchdog_precmd"
 stop_cmd="aifw_watchdog_stop"

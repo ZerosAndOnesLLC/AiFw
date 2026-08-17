@@ -79,6 +79,10 @@ pub struct FirewallConfig {
     /// box's syslog config untouched rather than resetting it to defaults.
     #[serde(default)]
     pub syslog: Option<aifw_common::syslog::SyslogConfig>,
+    /// Log-rotation policy for AiFw-managed service logs (#205, the
+    /// `log_rotation_config` table). `None` = backup predates the section.
+    #[serde(default)]
+    pub log_rotation: Option<crate::log_rotation::LogRotationConfig>,
 }
 
 impl Default for FirewallConfig {
@@ -101,6 +105,7 @@ impl Default for FirewallConfig {
             static_routes: Vec::new(),
             dns_resolver: None,
             syslog: None,
+            log_rotation: None,
         }
     }
 }
@@ -255,6 +260,9 @@ impl FirewallConfig {
         }
         if let Some(s) = &self.syslog {
             s.validate().map_err(|e| format!("syslog: {e}"))?;
+        }
+        if let Some(l) = &self.log_rotation {
+            l.validate().map_err(|e| format!("log_rotation: {e}"))?;
         }
         Ok(())
     }

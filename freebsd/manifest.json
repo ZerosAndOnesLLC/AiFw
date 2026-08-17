@@ -86,6 +86,7 @@
     "/usr/local/etc/swanctl/conf.d",
     "/usr/local/etc/swanctl/private",
     "/usr/local/etc/swanctl/x509",
-    "/usr/local/etc/swanctl/x509ca"
+    "/usr/local/etc/swanctl/x509ca",
+    "/usr/local/etc/newsyslog.conf.d"
   ]
 }

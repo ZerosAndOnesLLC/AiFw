@@ -17,8 +17,8 @@ use crate::AppState;
 use crate::perm_check;
 use crate::{
     acme, ai_analysis, aliases, backup, backup_s3, ca, cluster, dhcp, dns_blocklists, dns_resolver,
-    ids, iface, multiwan, opnsense, plugins, reverse_proxy, routes, syslog, system, time_service,
-    updates,
+    ids, iface, log_rotation, multiwan, opnsense, plugins, reverse_proxy, routes, syslog, system,
+    time_service, updates,
 };
 use axum::middleware;
 
@@ -490,6 +490,10 @@ pub(crate) fn settings_read() -> Router<AppState> {
         .route("/api/v1/settings/syslog", get(syslog::get_syslog_config))
         .route("/api/v1/settings/syslog/status", get(syslog::syslog_status))
         .route(
+            "/api/v1/settings/log-rotation",
+            get(log_rotation::get_log_rotation),
+        )
+        .route(
             "/api/v1/settings/{section}",
             get(routes::get_generic_settings),
         )
@@ -549,6 +553,14 @@ pub(crate) fn settings_write() -> Router<AppState> {
         .route("/api/v1/settings/pf-tuning", put(routes::put_pf_tuning))
         .route("/api/v1/settings/syslog", put(syslog::put_syslog_config))
         .route("/api/v1/settings/syslog/test", post(syslog::test_syslog))
+        .route(
+            "/api/v1/settings/log-rotation",
+            put(log_rotation::put_log_rotation),
+        )
+        .route(
+            "/api/v1/settings/log-rotation/rotate",
+            post(log_rotation::rotate_logs),
+        )
         .route(
             "/api/v1/settings/{section}",
             put(routes::update_generic_settings),

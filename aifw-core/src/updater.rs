@@ -112,6 +112,10 @@ const EMBEDDED_SUDO_HELPERS: &[(&str, &str)] = &[
         include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-swanctl"),
     ),
     (
+        "aifw-sudo-newsyslog",
+        include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-newsyslog"),
+    ),
+    (
         "aifw-sudo-dummynet",
         include_str!("../../freebsd/overlay/usr/local/libexec/aifw-sudo-dummynet"),
     ),
