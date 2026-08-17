@@ -64,6 +64,8 @@ curl -X POST https://aifw.local/api/v1/ids/reload \
 
 ## Rule formats
 
+**Rule-header variables.** `$HOME_NET` and `$EXTERNAL_NET` expand to the `home_net` / `external_net` lists above (defaults: RFC 1918 and `!$HOME_NET`). The stock Suricata server groups (`$HTTP_SERVERS`, `$DNS_SERVERS`, `$SMTP_SERVERS`, `$SQL_SERVERS`, …) alias `$HOME_NET`, and port groups (`$HTTP_PORTS`, `$SSH_PORTS`, `$SHELLCODE_PORTS`, …) carry the `suricata.yaml` defaults. A rule that references an undefined variable never matches; the engine logs the variable name once so you can spot inert rules.
+
 **Suricata-compatible.** The native format. AiFw parses Suricata 7.x syntax &mdash; `alert`, `drop`, `pass`, plus the common `content`, `pcre`, `flow`, `threshold`, and `metadata` keywords. This is a practical **subset**, not full Suricata engine parity: most ET Open-style rules drop in unchanged, but rules relying on unsupported keywords are skipped (visible in the ruleset parse stats).
 
 **Sigma.** YAML detection rules originally designed for log events. AiFw maps the detection section to network flow fields, so a Sigma rule that targets HTTP request URIs or DNS query names will fire on matching traffic. Sigma rules always alert &mdash; they never drop, regardless of mode.

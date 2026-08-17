@@ -9,5 +9,6 @@ pub mod matching;
 pub mod multi_pattern;
 /// Per-rule, per-IP threshold and rate-limit tracking
 pub mod threshold;
+pub mod vars;
 
 pub use engine::*;

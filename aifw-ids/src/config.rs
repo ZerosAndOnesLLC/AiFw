@@ -29,6 +29,14 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    /// Build a runtime config from an in-memory `IdsConfig` (tests,
+    /// standalone engines).
+    pub fn from_config(cfg: IdsConfig) -> Self {
+        Self {
+            inner: ArcSwap::from_pointee(cfg),
+        }
+    }
+
     /// Load configuration from the database, falling back to defaults.
     pub async fn load(pool: &SqlitePool) -> Result<Self> {
         let cfg = Self::read_from_db(pool).await?;
