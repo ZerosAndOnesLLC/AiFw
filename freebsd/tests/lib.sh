@@ -137,6 +137,9 @@ client_can_reach() { # $1 = host, $2 = port
 # marker file when a connection arrives.
 server_listen_once() { # $1 = port, $2 = marker file
     jx_server sh -c "rm -f '$2'; (nc -l '$1' >/dev/null 2>&1 && touch '$2') &"
+    # Don't return before the port is actually bound — a SYN that beats the
+    # bind is RST'd and the caller reports a bogus "cannot reach".
+    wait_for_listener "$1" 5 || log "warning: listener on :$1 not visible after 5s"
 }
 
 # One-shot UDP listener for packet-path tests. UDP has no connection refusal,

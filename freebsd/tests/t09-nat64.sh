@@ -24,7 +24,6 @@ jx_client route -q add -inet6 "$NAT64_PREFIX" "$CLIENT6_NET_HOST" >/dev/null 2>&
 PORT=8091
 MARKER=/tmp/aifwfx-t09-tcp-marker
 server_listen_once $PORT $MARKER
-wait_for_listener $PORT 5 || fail "nat64 tcp: server listener on :$PORT never came up"
 if client_can_reach "$SERVER_IP_EMBEDDED" $PORT; then
     wait_for_file server $MARKER 5 || fail "nat64 tcp: connected but server never saw it"
 else
