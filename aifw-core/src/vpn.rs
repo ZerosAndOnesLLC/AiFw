@@ -6,7 +6,6 @@ use aifw_pf::PfBackend;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use std::sync::Arc;
-use tokio::process::Command;
 use uuid::Uuid;
 
 /// VPN engine: WireGuard tunnels and peers (`wg_tunnels`, `wg_peers`
@@ -561,15 +560,15 @@ impl VpnEngine {
         let iface = &tunnel.interface.0;
 
         // Write private key to temp file (wg set reads from file, not stdin)
-        let key_path = format!("/tmp/wg-{}.key", tunnel.id);
-        tokio::fs::write(&key_path, &tunnel.private_key)
+        // SEC-L5 #320: create-new + 0600 in one step so a pre-planted
+        // symlink is never followed and the key is never world-readable.
+        // The name carries a fresh random component: the tunnel id alone is
+        // visible via the API (guessable), and a stale file from a crashed
+        // earlier start must never collide with — and block — this one.
+        let key_path = format!("/tmp/wg-{}-{}.key", tunnel.id, Uuid::new_v4().simple());
+        aifw_common::secure_fs::write_private_new(&key_path, tunnel.private_key.as_bytes())
             .await
             .map_err(|e| AifwError::Pf(format!("Failed to write key file: {e}")))?;
-        // Restrict permissions
-        let _ = Command::new("chmod")
-            .args(["600", &key_path])
-            .output()
-            .await;
 
         // Create the WireGuard interface
         let _ = crate::sudo::ifconfig(iface, "destroy", &[]).await; // clean up if exists
@@ -627,9 +626,11 @@ impl VpnEngine {
             iface,
             &["private-key", &key_path, "listen-port", &listen_port_s],
         )
-        .await
-        .map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
+        .await;
+        // Remove the key file on every path — including a spawn error —
+        // so a secret never lingers in /tmp.
         let _ = tokio::fs::remove_file(&key_path).await;
+        let output = output.map_err(|e| AifwError::Pf(format!("wg set failed: {e}")))?;
         if !output.status.success() {
             let _ = crate::sudo::ifconfig(iface, "destroy", &[]).await;
             return Err(AifwError::Pf(format!(
@@ -726,11 +727,12 @@ impl VpnEngine {
         }
         // PSK requires a temp file
         let psk_path = if let Some(ref psk) = peer.preshared_key {
-            let path = format!("/tmp/wg-psk-{}.key", peer.id);
-            tokio::fs::write(&path, psk)
+            // SEC-L5 #320: create-new + 0600 with a random suffix, see
+            // start_tunnel.
+            let path = format!("/tmp/wg-psk-{}-{}.key", peer.id, Uuid::new_v4().simple());
+            aifw_common::secure_fs::write_private_new(&path, psk.as_bytes())
                 .await
                 .map_err(|e| AifwError::Pf(format!("Failed to write PSK: {e}")))?;
-            let _ = Command::new("chmod").args(["600", &path]).output().await;
             args.push("preshared-key".to_string());
             args.push(path.clone());
             Some(path)
@@ -739,13 +741,12 @@ impl VpnEngine {
         };
 
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let output = crate::sudo::wg("set", iface, &arg_refs)
-            .await
-            .map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
-
+        let output = crate::sudo::wg("set", iface, &arg_refs).await;
+        // Remove the PSK file on every path, including a spawn error.
         if let Some(ref path) = psk_path {
             let _ = tokio::fs::remove_file(path).await;
         }
+        let output = output.map_err(|e| AifwError::Pf(format!("wg set peer failed: {e}")))?;
 
         if !output.status.success() {
             return Err(AifwError::Pf(format!(

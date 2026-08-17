@@ -1174,6 +1174,69 @@ mod tests {
         }
     }
 
+    /// SEC-M14 #311 / SEC-M13 #310: ACME write endpoints validate the
+    /// operator-supplied URL / header at write time instead of storing a
+    /// value that can only fail (or pivot) later.
+    #[tokio::test]
+    async fn test_acme_target_and_account_reject_bad_input() {
+        let (server, _) = test_app().await;
+        let token = create_user_and_login(&server).await;
+
+        // Webhook auth_header with CRLF is not a legal header value.
+        let resp = server
+            .post("/api/v1/acme/certs/1/targets")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "kind": "webhook",
+                "config": {
+                    "url": "https://example.com/hook",
+                    "auth_header": "Bearer abc\r\nX-Injected: 1"
+                }
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        assert!(resp.text().contains("auth_header"), "{}", resp.text());
+
+        // Webhook URL must pass the outbound allow-list (https, public host).
+        let resp = server
+            .post("/api/v1/acme/certs/1/targets")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "kind": "webhook",
+                "config": { "url": "http://127.0.0.1:9/hook" }
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        assert!(resp.text().contains("url"), "{}", resp.text());
+
+        // Non-webhook kinds are not subject to the webhook checks: the
+        // request gets past validation (cert 1 doesn't exist in this
+        // fixture, so the insert itself fails on the FK — not a 400).
+        let resp = server
+            .post("/api/v1/acme/certs/1/targets")
+            .authorization_bearer(&token)
+            .json(&json!({ "kind": "local-tls-store", "config": {} }))
+            .await;
+        assert_ne!(
+            resp.status_code(),
+            StatusCode::BAD_REQUEST,
+            "{}",
+            resp.text()
+        );
+
+        // ACME directory URL: loopback / plaintext is refused up front.
+        let resp = server
+            .put("/api/v1/acme/account")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "directory_url": "http://127.0.0.1:14000/dir",
+                "contact_email": "ops@example.com"
+            }))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        assert!(resp.text().contains("directory_url"), "{}", resp.text());
+    }
+
     #[tokio::test]
     async fn test_invalid_token_returns_401() {
         let (server, _) = test_app().await;

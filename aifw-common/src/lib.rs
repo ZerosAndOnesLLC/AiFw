@@ -41,6 +41,7 @@ pub mod ratelimit;
 pub mod rule;
 pub mod schedule;
 pub mod schemas;
+pub mod secure_fs;
 #[cfg(unix)]
 pub mod single_instance;
 /// Remote syslog forwarding: config, RFC 3164/5424 formatting, async client

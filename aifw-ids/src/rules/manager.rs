@@ -255,10 +255,14 @@ impl RulesetManager {
     }
 
     /// List rules for a specific ruleset.
+    /// List rules with optional filters. `search` (#490) is a
+    /// case-insensitive substring match against `msg`, `rule_text`, and
+    /// the SID; `%`/`_` in the term are escaped so they match literally.
     pub async fn list_rules(
         &self,
         ruleset_id: Option<Uuid>,
         enabled_only: bool,
+        search: Option<&str>,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<IdsRule>> {
@@ -270,6 +274,15 @@ impl RulesetManager {
         if let Some(rs_id) = ruleset_id {
             sql.push_str(" AND ruleset_id = ?");
             binds.push(rs_id.to_string());
+        }
+        if let Some(term) = search.map(str::trim).filter(|t| !t.is_empty()) {
+            let pat = format!("%{}%", like_escape(term));
+            sql.push_str(
+                " AND (msg LIKE ? ESCAPE '\\' OR rule_text LIKE ? ESCAPE '\\' OR CAST(sid AS TEXT) LIKE ? ESCAPE '\\')",
+            );
+            binds.push(pat.clone());
+            binds.push(pat.clone());
+            binds.push(pat);
         }
         if enabled_only {
             sql.push_str(" AND enabled = 1 AND ruleset_id IN (SELECT id FROM ids_rulesets WHERE enabled = 1)");
@@ -377,7 +390,7 @@ impl RulesetManager {
 
     /// Load all enabled rules from the database and compile them into the RuleDatabase.
     pub async fn compile_rules(&self, rule_db: &RuleDatabase) -> Result<usize> {
-        let rules = self.list_rules(None, true, 100_000, 0).await?;
+        let rules = self.list_rules(None, true, None, 100_000, 0).await?;
 
         // Single bulk lookup of ruleset_id → rule_format so we avoid a per-rule
         // SELECT inside the hot path (previously ~47k queries per reload).
@@ -460,6 +473,19 @@ fn extract_msg(rule: &str) -> Option<String> {
         let rest = &rule[pos + 5..];
         rest.find('"').map(|end| rest[..end].to_string())
     })
+}
+
+/// Escape SQL LIKE metacharacters so a user term matches literally. Pairs
+/// with `ESCAPE '\\'` in the query.
+fn like_escape(term: &str) -> String {
+    let mut out = String::with_capacity(term.len());
+    for c in term.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -572,8 +598,107 @@ mod tests {
         }];
 
         mgr.store_rules(rs_id, &rules).await.unwrap();
-        let loaded = mgr.list_rules(Some(rs_id), true, 100, 0).await.unwrap();
+        let loaded = mgr
+            .list_rules(Some(rs_id), true, None, 100, 0)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].sid, Some(1001));
+    }
+
+    /// #490: `search` filters on msg / rule_text / sid, case-insensitively,
+    /// and LIKE metacharacters in the term are literal.
+    #[tokio::test]
+    async fn test_list_rules_search() {
+        let pool = test_pool().await;
+        let mgr = RulesetManager::new(pool);
+
+        let rs_id = Uuid::new_v4();
+        let rs = IdsRuleset {
+            id: rs_id,
+            name: "Search".into(),
+            source_url: None,
+            rule_format: RuleFormat::Suricata,
+            enabled: true,
+            auto_update: false,
+            update_interval_hours: 0,
+            last_updated: None,
+            rule_count: 0,
+            created_at: Utc::now(),
+        };
+        mgr.add_ruleset(&rs).await.unwrap();
+
+        let mk = |sid: u32, msg: &str, content: &str| IdsRule {
+            id: Uuid::new_v4(),
+            ruleset_id: rs_id,
+            sid: Some(sid),
+            rule_text: format!(
+                r#"alert tcp any any -> any any (msg:"{msg}"; content:"{content}"; sid:{sid};)"#
+            ),
+            msg: Some(msg.into()),
+            severity: IdsSeverity::MEDIUM,
+            enabled: true,
+            action_override: None,
+            hit_count: 0,
+            last_hit: None,
+            created_at: Utc::now(),
+        };
+        let rules = vec![
+            mk(2001, "ET MALWARE Beacon", "evil"),
+            mk(2002, "ET SCAN Nmap", "nmap"),
+            mk(2003, "100% CPU", "pct"),
+        ];
+        mgr.store_rules(rs_id, &rules).await.unwrap();
+
+        let by_msg = mgr
+            .list_rules(Some(rs_id), true, Some("malware"), 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            by_msg.iter().map(|r| r.sid).collect::<Vec<_>>(),
+            vec![Some(2001)]
+        );
+
+        let by_content = mgr
+            .list_rules(Some(rs_id), true, Some("nmap"), 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(by_content.len(), 1);
+        assert_eq!(by_content[0].sid, Some(2002));
+
+        let by_sid = mgr
+            .list_rules(Some(rs_id), true, Some("2003"), 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(by_sid.len(), 1);
+        assert_eq!(by_sid[0].sid, Some(2003));
+
+        // `%` is escaped: only the rule whose msg literally contains "100%".
+        let pct = mgr
+            .list_rules(Some(rs_id), true, Some("100%"), 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(pct.len(), 1);
+        assert_eq!(pct[0].sid, Some(2003));
+        // A bare `%` would match everything if unescaped; escaped it matches
+        // only the one rule that contains a literal percent sign.
+        let bare = mgr
+            .list_rules(Some(rs_id), true, Some("%"), 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(bare.len(), 1);
+
+        // Blank / whitespace search is a no-op.
+        let all = mgr
+            .list_rules(Some(rs_id), true, Some("  "), 100, 0)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(
+            mgr.list_rules(Some(rs_id), true, Some("nothing-here"), 100, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

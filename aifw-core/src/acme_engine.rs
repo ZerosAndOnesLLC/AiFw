@@ -391,7 +391,13 @@ pub async fn ensure_account(
         return Ok((row, account));
     }
 
-    // Need to register a fresh account.
+    // Need to register a fresh account. SEC-M13 #310: the directory URL is
+    // admin-set but still goes through the outbound allow-list (https only,
+    // globally-routable host) so ACME can't be pointed at an internal
+    // endpoint as an SSRF pivot. instant-acme follows redirects.
+    crate::net_safety::validate_outbound_url(directory_url)
+        .await
+        .map_err(|e| format!("ACME directory URL rejected: {e}"))?;
     let mailto = format!("mailto:{contact_email}");
     let new_account = NewAccount {
         contact: &[&mailto],
