@@ -414,6 +414,7 @@ pub async fn nat_add(
     redirect: &str,
     redirect_port: Option<&str>,
     label: Option<&str>,
+    static_port: bool,
 ) -> anyhow::Result<()> {
     let nat = create_nat_engine(db_path).await?;
 
@@ -431,6 +432,7 @@ pub async fn nat_add(
     rule.src_port = src_port.map(parse_port).transpose()?;
     rule.dst_port = dst_port.map(parse_port).transpose()?;
     rule.label = label.map(String::from);
+    rule.static_port = static_port;
 
     let rule = nat.add_rule(rule).await.map_err(|e| {
         let msg = e.to_string();
@@ -466,6 +468,10 @@ fn nat_flag_hint(msg: &str) -> Option<&'static str> {
         Some("drop --redirect-port — af-to translates addresses, not ports")
     } else if msg.contains("source address must be") {
         Some("fix --src: it must match the rule's ingress family (IPv6 for nat64, IPv4 for nat46)")
+    } else if msg.contains("static_port is only valid") {
+        Some("drop --static-port — it only applies to --type snat / masquerade")
+    } else if msg.contains("no-nat rules") {
+        Some("drop --redirect / --redirect-port — nonat exempts traffic and has no target")
     } else {
         None
     }
@@ -535,7 +541,14 @@ pub async fn nat_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
         let redir = match rule.nat_type {
             NatType::Nat64 => format!("v6->v4 via {}", rule.redirect.address),
             NatType::Nat46 => format!("v4->v6 via {}", rule.redirect.address),
+            NatType::NoNat => "(bypass — no NAT)".to_string(),
+            NatType::Masquerade => format!("({})", rule.interface),
             _ => format!("{}", rule.redirect),
+        };
+        let redir = if rule.static_port {
+            format!("{redir} static-port")
+        } else {
+            redir
         };
         let status = match rule.status {
             aifw_common::NatStatus::Active => "",

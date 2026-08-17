@@ -77,6 +77,20 @@ impl NatEngine {
             .execute(&self.pool)
             .await?;
 
+        // #253: `static_port` column added after the table shipped. SQLite
+        // has no ADD COLUMN IF NOT EXISTS, so probe the schema first.
+        let has_static_port: bool = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('nat_rules') WHERE name = 'static_port'",
+        )
+        .fetch_one(&self.pool)
+        .await?
+            > 0;
+        if !has_static_port {
+            sqlx::query("ALTER TABLE nat_rules ADD COLUMN static_port INTEGER NOT NULL DEFAULT 0")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -154,7 +168,7 @@ impl NatEngine {
                 src_addr = ?5, src_port_start = ?6, src_port_end = ?7,
                 dst_addr = ?8, dst_port_start = ?9, dst_port_end = ?10,
                 redirect_addr = ?11, redirect_port_start = ?12, redirect_port_end = ?13,
-                label = ?14, status = ?15, updated_at = ?16
+                label = ?14, status = ?15, updated_at = ?16, static_port = ?17
             WHERE id = ?1
             "#,
         )
@@ -177,6 +191,7 @@ impl NatEngine {
             NatStatus::Disabled => "disabled",
         })
         .bind(chrono::Utc::now().to_rfc3339())
+        .bind(rule.static_port as i64)
         .execute(&mut *tx)
         .await?;
 
@@ -376,8 +391,8 @@ impl NatEngine {
             INSERT INTO nat_rules (id, nat_type, interface, protocol, src_addr,
                 src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end,
                 redirect_addr, redirect_port_start, redirect_port_end,
-                label, status, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                label, status, created_at, updated_at, static_port)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             "#,
         )
         .bind(rule.id.to_string())
@@ -400,6 +415,7 @@ impl NatEngine {
         })
         .bind(rule.created_at.to_rfc3339())
         .bind(rule.updated_at.to_rfc3339())
+        .bind(rule.static_port as i64)
         .execute(exec)
         .await?;
 
@@ -445,6 +461,21 @@ pub fn validate_nat_rule(rule: &NatRule) -> Result<()> {
     // Masquerade redirect is the interface itself, no address needed
     if rule.nat_type == NatType::Masquerade && rule.redirect.address != Address::Any {
         // This is fine — we'll ignore the redirect address and use the interface
+    }
+
+    // #253: static-port is a pf pool option only valid on `nat` rules.
+    if rule.static_port && !matches!(rule.nat_type, NatType::Snat | NatType::Masquerade) {
+        return Err(AifwError::Validation(
+            "static_port is only valid for SNAT and masquerade rules".to_string(),
+        ));
+    }
+    // #253: `no nat` has no translation target.
+    if rule.nat_type == NatType::NoNat
+        && (rule.redirect.address != Address::Any || rule.redirect.port.is_some())
+    {
+        return Err(AifwError::Validation(
+            "no-nat rules exempt traffic from NAT and take no redirect target".to_string(),
+        ));
     }
 
     // Cross-family (af-to) rules: pf requires the matched side and the
@@ -533,7 +564,7 @@ fn validate_af_to(rule: &NatRule, inet6_match: bool) -> Result<()> {
 const NAT_RULE_COLUMNS: &str = "id, nat_type, interface, protocol, src_addr, \
     src_port_start, src_port_end, dst_addr, dst_port_start, dst_port_end, \
     redirect_addr, redirect_port_start, redirect_port_end, label, status, \
-    created_at, updated_at";
+    created_at, updated_at, static_port";
 
 #[derive(sqlx::FromRow)]
 struct NatRuleRow {
@@ -554,6 +585,7 @@ struct NatRuleRow {
     status: String,
     created_at: String,
     updated_at: String,
+    static_port: i64,
 }
 
 impl NatRuleRow {
@@ -587,6 +619,7 @@ impl NatRuleRow {
                 "active" => NatStatus::Active,
                 _ => NatStatus::Disabled,
             },
+            static_port: self.static_port != 0,
             created_at: DateTime::parse_from_rfc3339(&self.created_at)
                 .map_err(|e| AifwError::Database(format!("invalid date: {e}")))?
                 .with_timezone(&Utc),

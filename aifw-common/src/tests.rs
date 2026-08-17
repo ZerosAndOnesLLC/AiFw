@@ -324,6 +324,68 @@ mod tests {
         assert_eq!(pf, "nat on em0 from 10.0.0.0/8 to any -> (em0)");
     }
 
+    /// #253: pf `static-port` is appended after the translation target on
+    /// SNAT and masquerade rules.
+    #[test]
+    fn test_nat_static_port_pf_rule() {
+        let mut masq = NatRule::new(
+            NatType::Masquerade,
+            Interface("em0".to_string()),
+            Protocol::Udp,
+            Address::Network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8),
+            Address::Any,
+            NatRedirect {
+                address: Address::Any,
+                port: None,
+            },
+        );
+        masq.static_port = true;
+        assert_eq!(
+            masq.to_pf_rule(),
+            "nat on em0 proto udp from 10.0.0.0/8 to any -> (em0) static-port"
+        );
+
+        let mut snat = NatRule::new(
+            NatType::Snat,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Network(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24),
+            Address::Any,
+            NatRedirect {
+                address: Address::Single(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))),
+                port: None,
+            },
+        );
+        snat.static_port = true;
+        assert_eq!(
+            snat.to_pf_rule(),
+            "nat on em0 from 192.168.1.0/24 to any -> 203.0.113.1 static-port"
+        );
+    }
+
+    /// #253: `nonat` renders as pf `no nat` with no translation target.
+    #[test]
+    fn test_nat_nonat_pf_rule() {
+        let rule = NatRule::new(
+            NatType::NoNat,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Network(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24),
+            Address::Network(IpAddr::V4(Ipv4Addr::new(10, 50, 0, 0)), 16),
+            NatRedirect {
+                address: Address::Any,
+                port: None,
+            },
+        );
+        assert_eq!(
+            rule.to_pf_rule(),
+            "no nat on em0 from 192.168.1.0/24 to 10.50.0.0/16"
+        );
+        assert_eq!(NatType::parse("nonat").unwrap(), NatType::NoNat);
+        assert_eq!(NatType::parse("no-nat").unwrap(), NatType::NoNat);
+        assert_eq!(NatType::NoNat.to_string(), "nonat");
+    }
+
     #[test]
     fn test_nat_binat_pf_rule() {
         let rule = NatRule::new(

@@ -591,3 +591,74 @@ async fn pre_import_snapshot_restores_clean_baseline() {
         "imported aliases must be gone after restore"
     );
 }
+
+/// #253: `<nonat>` imports as a `no nat` rule and `<staticnatport>` as
+/// `static-port` on the SNAT/masquerade rule, instead of being skipped.
+#[tokio::test]
+async fn import_outbound_nonat_and_staticnatport() {
+    let (server, _) = test_app().await;
+    let token = login(&server).await;
+
+    let outbound = r#"<outbound>
+      <mode>hybrid</mode>
+      <rule>
+        <interface>wan</interface>
+        <protocol>any</protocol>
+        <source><address>10.0.0.0/8</address></source>
+        <destination><address>10.50.0.0/16</address></destination>
+        <nonat>1</nonat>
+        <descr>no nat to site-to-site</descr>
+      </rule>
+      <rule>
+        <interface>wan</interface>
+        <protocol>udp</protocol>
+        <source><address>10.0.0.0/8</address></source>
+        <destination><any/></destination>
+        <staticnatport>1</staticnatport>
+        <descr>masq static port</descr>
+      </rule>
+    </outbound>"#;
+    let start = MEDIUM_FIXTURE
+        .find("<outbound>")
+        .expect("fixture has <outbound>");
+    let end = MEDIUM_FIXTURE
+        .find("</outbound>")
+        .expect("fixture has </outbound>")
+        + "</outbound>".len();
+    let xml = format!(
+        "{}{}{}",
+        &MEDIUM_FIXTURE[..start],
+        outbound,
+        &MEDIUM_FIXTURE[end..]
+    );
+
+    let resp = server
+        .post("/api/v1/config/import-opnsense")
+        .add_header("authorization", format!("Bearer {token}"))
+        .json(&json!({ "xml": xml, "commit_confirm": false }))
+        .await;
+    resp.assert_status_ok();
+
+    let nat = server
+        .get("/api/v1/nat")
+        .add_header("authorization", format!("Bearer {token}"))
+        .await;
+    nat.assert_status_ok();
+    let body: Value = nat.json();
+    let arr = body["data"].as_array().or_else(|| body.as_array()).unwrap();
+
+    let nonat = arr
+        .iter()
+        .find(|n| n["nat_type"] == "nonat")
+        .expect("<nonat> rule should import as nonat");
+    assert_eq!(nonat["dst_addr"], "10.50.0.0/16");
+    assert_eq!(nonat["static_port"], false);
+
+    let masq = arr
+        .iter()
+        .find(|n| n["label"] == "masq static port")
+        .expect("<staticnatport> masquerade rule should import");
+    assert_eq!(masq["nat_type"], "masquerade");
+    assert_eq!(masq["protocol"], "udp");
+    assert_eq!(masq["static_port"], true);
+}

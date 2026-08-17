@@ -1289,6 +1289,7 @@ fn build_port_forward(
             },
             label: n.descr.clone(),
             status: NatStatus::Active,
+            static_port: false,
             created_at: now,
             updated_at: now,
         },
@@ -1301,18 +1302,6 @@ fn build_outbound(
     iface_map: &HashMap<String, String>,
     aliases: &HashSet<String>,
 ) -> Result<NatRule, String> {
-    if n.nonat {
-        return Err(
-            "<nonat> outbound NAT bypass not yet supported — leaves source rewriting on, opposite of intent. Configure manually after import."
-                .into(),
-        );
-    }
-    if n.staticnatport {
-        return Err(
-            "<staticnatport> (preserve source port) not yet supported — pf rule emits dynamic source port. Configure manually after import."
-                .into(),
-        );
-    }
     let interface = Interface(map_iface(&n.interface, iface_map));
     let protocol = Protocol::parse(&n.protocol).map_err(|e| e.to_string())?;
     let mut advisories: Vec<String> = Vec::new();
@@ -1325,12 +1314,19 @@ fn build_outbound(
         advisories.push(format!("destination: {a}"));
     }
 
-    // Empty target = masquerade (use interface address). Concrete IP = SNAT.
-    let (nat_type, redirect_addr) = match n.target.as_deref().filter(|s| !s.is_empty()) {
-        None => (NatType::Masquerade, Address::Any),
-        Some(t) => {
-            let a = Address::parse(t).map_err(|e| format!("outbound target '{t}': {e}"))?;
-            (NatType::Snat, a)
+    // <nonat> = NAT bypass → pf `no nat` (#253). No target; static-port
+    // is meaningless here (OPNsense greys it out too).
+    // Otherwise: empty target = masquerade (use interface address);
+    // concrete IP = SNAT. <staticnatport> → pf `static-port` on either.
+    let (nat_type, redirect_addr, static_port) = if n.nonat {
+        (NatType::NoNat, Address::Any, false)
+    } else {
+        match n.target.as_deref().filter(|s| !s.is_empty()) {
+            None => (NatType::Masquerade, Address::Any, n.staticnatport),
+            Some(t) => {
+                let a = Address::parse(t).map_err(|e| format!("outbound target '{t}': {e}"))?;
+                (NatType::Snat, a, n.staticnatport)
+            }
         }
     };
 
@@ -1351,6 +1347,7 @@ fn build_outbound(
         },
         label: n.descr.clone(),
         status: NatStatus::Active,
+        static_port,
         created_at: now,
         updated_at: now,
     })
@@ -1384,6 +1381,7 @@ fn build_one_to_one(
         },
         label: n.descr.clone(),
         status: NatStatus::Active,
+        static_port: false,
         created_at: now,
         updated_at: now,
     })

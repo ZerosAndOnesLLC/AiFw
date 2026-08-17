@@ -534,6 +534,88 @@ mod tests {
         assert_eq!(fetched.label.as_deref(), Some("web-redirect"));
     }
 
+    /// #253: static_port persists through the DB and nonat/static_port
+    /// validation rejects nonsensical combinations.
+    #[tokio::test]
+    async fn test_nat_static_port_and_nonat_roundtrip() {
+        let engine = create_nat_engine().await;
+
+        let mut masq = NatRule::new(
+            NatType::Masquerade,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Any,
+            Address::Any,
+            NatRedirect {
+                address: Address::Any,
+                port: None,
+            },
+        );
+        masq.static_port = true;
+        let masq_id = masq.id;
+        engine.add_rule(masq).await.unwrap();
+        let fetched = engine.get_rule(masq_id).await.unwrap();
+        assert!(fetched.static_port, "static_port must round-trip");
+        assert!(fetched.to_pf_rule().ends_with("static-port"));
+
+        // Update can clear it again.
+        let mut cleared = fetched.clone();
+        cleared.static_port = false;
+        engine.update_rule(&cleared).await.unwrap();
+        assert!(!engine.get_rule(masq_id).await.unwrap().static_port);
+
+        // nonat round-trips and renders `no nat`.
+        let nonat = NatRule::new(
+            NatType::NoNat,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Any,
+            Address::Any,
+            NatRedirect {
+                address: Address::Any,
+                port: None,
+            },
+        );
+        let nonat_id = nonat.id;
+        engine.add_rule(nonat).await.unwrap();
+        let fetched = engine.get_rule(nonat_id).await.unwrap();
+        assert_eq!(fetched.nat_type, NatType::NoNat);
+        assert!(fetched.to_pf_rule().starts_with("no nat on em0"));
+
+        // static_port on a DNAT rule is rejected.
+        let mut bad = NatRule::new(
+            NatType::Dnat,
+            Interface("em0".to_string()),
+            Protocol::Tcp,
+            Address::Any,
+            Address::Any,
+            NatRedirect {
+                address: Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                    192, 168, 1, 10,
+                ))),
+                port: Some(PortRange { start: 80, end: 80 }),
+            },
+        );
+        bad.static_port = true;
+        assert!(engine.add_rule(bad).await.is_err());
+
+        // nonat with a redirect target is rejected.
+        let bad = NatRule::new(
+            NatType::NoNat,
+            Interface("em0".to_string()),
+            Protocol::Any,
+            Address::Any,
+            Address::Any,
+            NatRedirect {
+                address: Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                    203, 0, 113, 1,
+                ))),
+                port: None,
+            },
+        );
+        assert!(engine.add_rule(bad).await.is_err());
+    }
+
     #[tokio::test]
     async fn test_nat_apply_rules() {
         let db = Database::new_in_memory().await.unwrap();

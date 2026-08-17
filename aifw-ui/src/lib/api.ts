@@ -346,6 +346,8 @@ export interface NatRule {
   redirect: { address: string; port: { start: number; end: number } | null };
   label: string | null;
   status: string;
+  /** pf static-port: keep the original source port (snat/masquerade only). */
+  static_port: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -354,7 +356,8 @@ export interface CreateNatRequest {
   nat_type: string;
   interface: string;
   protocol: string;
-  redirect_addr: string;
+  /** Translation target. Omit / "any" for masquerade and nonat. */
+  redirect_addr?: string;
   src_addr?: string;
   src_port_start?: number;
   src_port_end?: number;
@@ -365,6 +368,7 @@ export interface CreateNatRequest {
   redirect_port_end?: number;
   label?: string;
   status?: string;
+  static_port?: boolean;
 }
 
 export interface UpdateNatRequest extends CreateNatRequest {
