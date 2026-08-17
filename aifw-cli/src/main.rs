@@ -931,6 +931,8 @@ EXAMPLES:
     },
 }
 
+// `Add` carries a dozen optional strings; same rationale as `IdsAction`.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum NatAction {
     /// Add a NAT rule
@@ -1008,6 +1010,12 @@ EXAMPLES:
         /// source port is rewritten.
         #[arg(long)]
         static_port: bool,
+
+        /// nat46/nat64 only: explicit translated destination (pf `af-to …
+        /// to <addr>`), e.g. the IPv6 address a nat46 target server really
+        /// listens on. Omit to use the RFC 6052 embedded address.
+        #[arg(long, value_name = "ADDR")]
+        af_to_dst: Option<String>,
     },
     /// Remove a NAT rule by ID
     Remove {
@@ -1226,6 +1234,7 @@ async fn main() -> anyhow::Result<()> {
                 redirect_port,
                 label,
                 static_port,
+                af_to_dst,
             } => {
                 // Smart default: nat64 practically always matches the
                 // well-known prefix; every other type keeps "any".
@@ -1262,6 +1271,7 @@ async fn main() -> anyhow::Result<()> {
                     redirect_port.as_deref(),
                     label.as_deref(),
                     static_port,
+                    af_to_dst.as_deref(),
                 )
                 .await?;
             }

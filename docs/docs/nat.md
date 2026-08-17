@@ -164,13 +164,22 @@ Let IPv4-only clients reach an IPv6 service. Compiles to the opposite `af-to` di
 pass in quick on em0 inet from any to 192.0.2.80 af-to inet6 from 2001:db8:2::1
 ```
 
-Field mapping: `src_addr`/`dst_addr` are IPv4 (a concrete destination is required); `redirect.address` is a single IPv6 host the firewall owns. The translated destination is the IPv4 destination embedded in the /96 subnet of that IPv6 source (RFC 6052) &mdash; so the IPv6 server must answer on the embedded address (`192.0.2.80` under `2001:db8:2::/96` &rarr; `2001:db8:2::c000:250`; check with `aifw nat embed`). An explicit arbitrary-destination field is tracked as a follow-up. NAT46 is uncommon on most firewall distros &mdash; AiFw exposes it as a first-class rule type.
+Field mapping: `src_addr`/`dst_addr` are IPv4 (a concrete destination is required); `redirect.address` is a single IPv6 host the firewall owns. By default the translated destination is the IPv4 destination embedded in the /96 subnet of that IPv6 source (RFC 6052) &mdash; so the IPv6 server must answer on the embedded address (`192.0.2.80` under `2001:db8:2::/96` &rarr; `2001:db8:2::c000:250`; check with `aifw nat embed`).
+
+To reach an IPv6 server on an address it already has, set **`af_to_dst`** (UI: *Translated destination*, CLI: `--af-to-dst`) to that single IPv6 host; pf then rewrites the destination explicitly:
+
+```
+pass in quick on em0 inet from any to 192.0.2.80 af-to inet6 from 2001:db8:2::1 to 2001:db8:2::80
+```
 
 ```json
 { "nat_type": "nat46", "interface": "em0",
   "src_addr": "any", "dst_addr": "192.0.2.80",
-  "redirect": { "address": "2001:db8:2::1" } }
+  "redirect": { "address": "2001:db8:2::1" },
+  "af_to_dst": "2001:db8:2::80" }
 ```
+
+`af_to_dst` works the same way on NAT64 rules (a single IPv4 host instead of the address embedded in the /96), and is rejected on every other NAT type. NAT46 is uncommon on most firewall distros &mdash; AiFw exposes it as a first-class rule type.
 
 Cross-family notes (both types): `af-to` translates addresses, not ports (`redirect.port` is rejected); rules apply to inbound traffic on the selected interface; pf tables aren't allowed on the matched side (family must be concrete); requires FreeBSD 15+ (every AiFw appliance image ships on 15.x).
 

@@ -137,6 +137,9 @@ client_can_reach() { # $1 = host, $2 = port
 # marker file when a connection arrives.
 server_listen_once() { # $1 = port, $2 = marker file
     jx_server sh -c "rm -f '$2'; (nc -l '$1' >/dev/null 2>&1 && touch '$2') &"
+    # Don't return before the port is actually bound — a SYN that beats the
+    # bind is RST'd and the caller reports a bogus "cannot reach".
+    wait_for_listener "$1" 5 || log "warning: listener on :$1 not visible after 5s"
 }
 
 # One-shot UDP listener for packet-path tests. UDP has no connection refusal,
@@ -147,6 +150,22 @@ server_listen_udp_once() { # $1 = port, $2 = marker file
 
 client_send_udp() { # $1 = host, $2 = port
     printf 'aifw-functional-udp\n' | jx_client nc -u -w 2 "$1" "$2" >/dev/null 2>&1
+}
+
+# Wait until something in the server jail is listening on a TCP port. The
+# one-shot `nc -l` listeners above start in the background; connecting
+# before they bind gets an RST and a spurious "cannot reach" (seen on the
+# nat46 leg of t09).
+wait_for_listener() { # $1 = port, $2 = seconds
+    _i=0
+    while [ "$_i" -lt "$(( $2 * 5 ))" ]; do
+        # LOCAL ADDRESS column reads `*:8093` / `[::1]:8093`, followed by
+        # the FOREIGN ADDRESS column.
+        jx_server sockstat -l -P tcp 2>/dev/null | grep -qE ":$1[[:space:]]" && return 0
+        sleep 0.2
+        _i=$((_i + 1))
+    done
+    return 1
 }
 
 wait_for_file() { # $1 = jail (client|server), $2 = file, $3 = seconds

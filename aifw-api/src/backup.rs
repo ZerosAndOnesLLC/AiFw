@@ -452,6 +452,7 @@ pub(crate) async fn capture_runtime_snapshot(state: &AppState) -> Result<String,
                 label: n.label.clone(),
                 status: n.status,
                 static_port: n.static_port,
+                af_to_dst: n.af_to_dst.as_ref().map(|a| a.to_string()),
             })
             .collect(),
         aliases,
@@ -757,6 +758,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
                 label: n.label.clone(),
                 status: n.status,
                 static_port: n.static_port,
+                af_to_dst: n.af_to_dst.as_ref().map(|a| a.to_string()),
             })
             .collect(),
         queues: queues
@@ -2863,6 +2865,11 @@ fn nat_from_config(nc: &aifw_core::config::NatRuleConfig) -> Option<aifw_common:
         label: nc.label.clone(),
         status,
         static_port: nc.static_port,
+        af_to_dst: nc
+            .af_to_dst
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| Address::parse(s).ok()),
         created_at: now,
         updated_at: now,
     })
