@@ -39,6 +39,10 @@ pub async fn create_user(
     validate_password(&req.password, min_length)?;
     let pw_hash = hash_password(&req.password)?;
     let role = req.role.as_deref().unwrap_or("viewer").to_string();
+    // #318: the system role belongs to AiFw's own service identities only.
+    if role == "system" || role == super::migrate::SYSTEM_ROLE_ID {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let role_id = match role.as_str() {
         "admin" => Some("builtin-admin".to_string()),
         "operator" => Some("builtin-operator".to_string()),
@@ -133,6 +137,10 @@ pub async fn update_user(
         user.password_hash = hash_password(password)?;
     }
     if let Some(ref role) = req.role {
+        // #318: the system role belongs to AiFw's own service identities only.
+        if role == "system" || role == super::migrate::SYSTEM_ROLE_ID {
+            return Err(StatusCode::BAD_REQUEST);
+        }
         user.role = role.clone();
         // Map built-in role names to role_id; custom role_id can be set directly
         user.role_id = match role.as_str() {

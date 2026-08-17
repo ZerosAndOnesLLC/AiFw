@@ -44,8 +44,12 @@ const roleColors: Record<string, { badge: string; accent: string }> = {
   admin: { badge: "bg-red-500/20 text-red-400 border-red-500/30", accent: "border-red-500/40" },
   operator: { badge: "bg-blue-500/20 text-blue-400 border-blue-500/30", accent: "border-blue-500/40" },
   viewer: { badge: "bg-gray-500/20 text-gray-400 border-gray-500/30", accent: "border-gray-500/40" },
+  system: { badge: "bg-amber-500/20 text-amber-400 border-amber-500/30", accent: "border-amber-500/40" },
 };
 const customRoleStyle = { badge: "bg-purple-500/20 text-purple-400 border-purple-500/30", accent: "border-purple-500/40" };
+// #318: the built-in `system` role belongs to AiFw's own service identities
+// (aifw-daemon loopback / cluster peer keys) — never offer it to people.
+const SYSTEM_ROLE = "system";
 
 function getRoleStyle(name: string, builtin: boolean) {
   if (builtin) return roleColors[name] || customRoleStyle;
@@ -405,7 +409,7 @@ export default function UsersPage() {
                 <div><label className={labelCls}>Password</label><input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Password" className={inputCls} required /></div>
                 <div><label className={labelCls}>Role</label>
                   <select value={newRole} onChange={e => setNewRole(e.target.value)} className={inputCls}>
-                    {roles.map(r => <option key={r.id} value={r.name}>{r.name}{!r.builtin ? " (custom)" : ""}</option>)}
+                    {roles.filter(r => r.name !== SYSTEM_ROLE).map(r => <option key={r.id} value={r.name}>{r.name}{!r.builtin ? " (custom)" : ""}</option>)}
                   </select>
                 </div>
               </div>
@@ -438,7 +442,7 @@ export default function UsersPage() {
                         <td className="px-4 py-3"><input type="text" value={editUsername} onChange={e => setEditUsername(e.target.value)} className="w-full px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]" /></td>
                         <td className="px-4 py-3">
                           <select value={editRole} onChange={e => setEditRole(e.target.value)} className="px-2 py-1 text-sm bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]">
-                            {roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+                            {roles.filter(r => r.name !== SYSTEM_ROLE).map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
                           </select>
                         </td>
                         <td className="px-4 py-3 text-[var(--text-muted)] text-xs">{user.totp_enabled ? "On" : "Off"}</td>
@@ -553,7 +557,7 @@ export default function UsersPage() {
 
         {/* Roles Grid */}
         <div className="space-y-4">
-          {roles.map(role => {
+          {roles.filter(r => r.name !== SYSTEM_ROLE).map(role => {
             const style = getRoleStyle(role.name, role.builtin);
             const userCount = userCountByRole[role.name] || 0;
             const isEditing = editingRoleId === role.id;

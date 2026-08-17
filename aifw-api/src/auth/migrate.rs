@@ -1,6 +1,13 @@
 //! Auth/RBAC schema migration. Creates the users, tokens, OAuth, roles,
 //! schedules, and audit tables and seeds the built-in roles.
 
+/// Role id of the built-in `system` role (#318): what AiFw's own service
+/// identities run as. Not assignable to human users.
+pub const SYSTEM_ROLE_ID: &str = "builtin-system";
+/// Username of the locked service account behind the daemon-loopback and
+/// inbound cluster-peer API keys.
+pub const SYSTEM_USERNAME: &str = "aifw-daemon";
+
 use sqlx::sqlite::SqlitePool;
 
 pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -184,6 +191,8 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             PermissionSet::from_permissions(&builtin_role_permissions("operator")).to_bits() as i64;
         let viewer_bits =
             PermissionSet::from_permissions(&builtin_role_permissions("viewer")).to_bits() as i64;
+        let system_bits =
+            PermissionSet::from_permissions(&builtin_role_permissions("system")).to_bits() as i64;
 
         sqlx::query(
             "INSERT OR IGNORE INTO roles (id, name, permissions, builtin, description) VALUES (?1, ?2, ?3, 1, ?4)"
@@ -203,6 +212,14 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .bind("builtin-viewer").bind("viewer").bind(viewer_bits).bind("Read-only access")
         .execute(pool).await?;
 
+        // #318: internal service identity (aifw-daemon loopback / cluster peer keys).
+        sqlx::query(
+            "INSERT OR IGNORE INTO roles (id, name, permissions, builtin, description) VALUES (?1, ?2, ?3, 1, ?4)"
+        )
+        .bind(SYSTEM_ROLE_ID).bind("system").bind(system_bits)
+        .bind("AiFw internal services (aifw-daemon loopback, cluster peer) — not for people")
+        .execute(pool).await?;
+
         // Update built-in role permissions in case new permissions were added
         sqlx::query("UPDATE roles SET permissions = ?1 WHERE id = 'builtin-admin'")
             .bind(admin_bits)
@@ -214,6 +231,11 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             .await?;
         sqlx::query("UPDATE roles SET permissions = ?1 WHERE id = 'builtin-viewer'")
             .bind(viewer_bits)
+            .execute(pool)
+            .await?;
+        sqlx::query("UPDATE roles SET permissions = ?1 WHERE id = ?2")
+            .bind(system_bits)
+            .bind(SYSTEM_ROLE_ID)
             .execute(pool)
             .await?;
     }
@@ -237,6 +259,19 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE users SET role_id = 'builtin-viewer' WHERE role = 'viewer' AND role_id IS NULL",
     )
+    .execute(pool)
+    .await?;
+
+    // #318: the aifw-daemon service user was created without a role and so
+    // inherited the column default ('admin'). Demote every such row to the
+    // system role; the daemon only ever calls HaManage endpoints.
+    sqlx::query(
+        "UPDATE users SET role = 'system', role_id = ?1
+         WHERE username = ?2 AND auth_provider = 'system'
+           AND (role_id IS NULL OR role_id = 'builtin-admin' OR role = 'admin')",
+    )
+    .bind(SYSTEM_ROLE_ID)
+    .bind(SYSTEM_USERNAME)
     .execute(pool)
     .await?;
 

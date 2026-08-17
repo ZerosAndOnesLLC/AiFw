@@ -157,6 +157,7 @@ Tickets are 256 bits of entropy, single-use, and expire in **30 seconds**. They 
 - **admin** &mdash; every permission. Full read + write + system control.
 - **operator** &mdash; everything except `users:write`, `settings:write`, `updates:install`, `system:reboot`, and `ha:manage`. Day-to-day rule / NAT / VPN editing without account or platform-level changes.
 - **viewer** &mdash; read-only. All `*:read` and `*:view` permissions except `users:read`, `settings:read`, and `backup:read` (those leak too much).
+- **system** &mdash; `ha:manage` only. Held by the locked `aifw-daemon` service account behind the daemon-loopback and inbound cluster-peer API keys; it cannot be assigned to people (the API refuses it and the UI hides it). Before this role existed the service account inherited `admin` from a column default, so a leaked daemon key could mint administrators.
 
 Custom roles are arbitrary subsets of the permission set below. Create with `POST /api/v1/auth/roles`.
 

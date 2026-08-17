@@ -1040,6 +1040,109 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
+    /// #318: the daemon-loopback service user must not be an admin. New rows
+    /// get the built-in `system` role (HaManage only); a legacy row that
+    /// inherited the column default 'admin' is demoted by the auth migration.
+    #[tokio::test]
+    async fn test_daemon_service_user_is_not_admin() {
+        use aifw_common::permission::{Permission, PermissionSet};
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let pool = state.pool.clone();
+        let server = TestServer::new(crate::build_router(state, None, "*", false));
+        let token = create_user_and_login(&server).await;
+
+        // Generating the loopback key creates the service user.
+        let resp = server
+            .post("/api/v1/cluster/loopback-key/generate")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+
+        let (role, role_id): (String, Option<String>) =
+            sqlx::query_as("SELECT role, role_id FROM users WHERE username = 'aifw-daemon'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role, "system");
+        assert_eq!(
+            role_id.as_deref(),
+            Some(crate::auth::migrate::SYSTEM_ROLE_ID)
+        );
+
+        let (bits, name) =
+            crate::auth::tokens::resolve_token_permissions(&pool, &role, role_id.as_deref())
+                .await
+                .unwrap();
+        let perms = PermissionSet::from_bits(bits);
+        assert_eq!(name, "system");
+        assert!(perms.has(Permission::HaManage));
+        assert!(
+            !perms.has(Permission::UsersWrite),
+            "must not be able to mint admins"
+        );
+        assert!(!perms.has(Permission::SettingsWrite));
+        assert!(!perms.has(Permission::UpdatesInstall));
+
+        // People can't be given the system role.
+        for role in ["system", crate::auth::migrate::SYSTEM_ROLE_ID] {
+            let resp = server
+                .post("/api/v1/auth/users")
+                .authorization_bearer(&token)
+                .json(&json!({"username": format!("u-{role}"), "password": "LongEnough123!", "role": role}))
+                .await;
+            resp.assert_status(StatusCode::BAD_REQUEST);
+        }
+    }
+
+    /// #318: a pre-existing daemon user that got the 'admin' column default is
+    /// demoted to `system` when the auth migration runs.
+    #[tokio::test]
+    async fn test_auth_migration_demotes_legacy_daemon_user() {
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, created_at)
+             VALUES ('d1', 'aifw-daemon', 'x', 0, 'system', 'now')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        let (role, role_id): (String, Option<String>) =
+            sqlx::query_as("SELECT role, role_id FROM users WHERE id = 'd1'")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(role, "admin", "column default is the bug being fixed");
+        assert!(role_id.is_none());
+
+        crate::auth::migrate::migrate(&state.pool).await.unwrap();
+
+        let (role, role_id): (String, Option<String>) =
+            sqlx::query_as("SELECT role, role_id FROM users WHERE id = 'd1'")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(role, "system");
+        assert_eq!(role_id.as_deref(), Some("builtin-system"));
+        // A real admin is untouched.
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, role, role_id, created_at)
+             VALUES ('a1', 'alice', 'x', 0, 'local', 'admin', 'builtin-admin', 'now')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        crate::auth::migrate::migrate(&state.pool).await.unwrap();
+        let (role,): (String,) = sqlx::query_as("SELECT role FROM users WHERE id = 'a1'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(role, "admin");
+    }
+
     /// SEC-H12 (#297): the reserved cluster key names can't be minted through
     /// the normal Users → API Keys path (would otherwise self-grant peer
     /// privilege).

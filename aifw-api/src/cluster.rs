@@ -1036,12 +1036,16 @@ async fn register_peer_key(
                 Uuid::new_v4().simple(),
                 Uuid::new_v4().simple()
             ))?;
+            // #318: explicit non-admin service role — the column default
+            // is 'admin', which is exactly the implicit grant this closes.
             sqlx::query(
-                "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, created_at) \
-                 VALUES (?1, 'aifw-daemon', ?2, 0, 'system', ?3)",
+                "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, role, role_id, created_at) \
+                 VALUES (?1, ?2, ?3, 0, 'system', 'system', ?4, ?5)",
             )
             .bind(&uid)
+            .bind(crate::auth::migrate::SYSTEM_USERNAME)
             .bind(&dummy)
+            .bind(crate::auth::migrate::SYSTEM_ROLE_ID)
             .bind(chrono::Utc::now().to_rfc3339())
             .execute(&s.pool)
             .await
@@ -1110,12 +1114,16 @@ async fn generate_loopback_key(
                 Uuid::new_v4().simple(),
                 Uuid::new_v4().simple()
             ))?;
+            // #318: explicit non-admin service role — the column default
+            // is 'admin', which is exactly the implicit grant this closes.
             sqlx::query(
-                "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, created_at) \
-                 VALUES (?1, 'aifw-daemon', ?2, 0, 'system', ?3)",
+                "INSERT INTO users (id, username, password_hash, totp_enabled, auth_provider, role, role_id, created_at) \
+                 VALUES (?1, ?2, ?3, 0, 'system', 'system', ?4, ?5)",
             )
             .bind(&uid)
+            .bind(crate::auth::migrate::SYSTEM_USERNAME)
             .bind(&dummy)
+            .bind(crate::auth::migrate::SYSTEM_ROLE_ID)
             .bind(chrono::Utc::now().to_rfc3339())
             .execute(&s.pool)
             .await
