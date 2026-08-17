@@ -1,4 +1,23 @@
+//! Console prompts for the setup wizard. Every prompt returns
+//! `io::Result` so a lost terminal (stdin closed mid-wizard on an
+//! unattended SSH run, stdout gone) propagates as an error the caller can
+//! report instead of a panic (#446 / QUAL-M11).
+
 use std::io::{self, BufRead, Write};
+
+/// Read one line from stdin; a closed stdin (EOF) is an error too — the
+/// wizard cannot continue without an operator.
+fn read_line() -> io::Result<String> {
+    let mut input = String::new();
+    let n = io::stdin().lock().read_line(&mut input)?;
+    if n == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "stdin closed — terminal lost",
+        ));
+    }
+    Ok(input)
+}
 
 /// Print a section header
 pub fn header(title: &str) {
@@ -30,36 +49,28 @@ pub fn error(msg: &str) {
 }
 
 /// Prompt for text input with a default value
-pub fn prompt(label: &str, default: &str) -> String {
+pub fn prompt(label: &str, default: &str) -> io::Result<String> {
     if default.is_empty() {
         print!("  {label}: ");
     } else {
         print!("  {label} [{default}]: ");
     }
-    io::stdout()
-        .flush()
-        .expect("stdout flush failed — terminal lost");
+    io::stdout().flush()?;
 
-    let mut input = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut input)
-        .expect("stdin read failed — terminal lost");
-    let input = input.trim().to_string();
-
-    if input.is_empty() {
+    let input = read_line()?.trim().to_string();
+    Ok(if input.is_empty() {
         default.to_string()
     } else {
         input
-    }
+    })
 }
 
 /// Prompt for a required field (no default, keeps asking until non-empty)
-pub fn prompt_required(label: &str) -> String {
+pub fn prompt_required(label: &str) -> io::Result<String> {
     loop {
-        let val = prompt(label, "");
+        let val = prompt(label, "")?;
         if !val.is_empty() {
-            return val;
+            return Ok(val);
         }
         warn("This field is required.");
     }
@@ -67,11 +78,9 @@ pub fn prompt_required(label: &str) -> String {
 
 /// Prompt for a password (no echo)
 /// Falls back to regular prompt if terminal doesn't support no-echo
-pub fn prompt_password(label: &str) -> String {
+pub fn prompt_password(label: &str) -> io::Result<String> {
     print!("  {label}: ");
-    io::stdout()
-        .flush()
-        .expect("stdout flush failed — terminal lost");
+    io::stdout().flush()?;
 
     // Try to disable echo on Unix
     #[cfg(unix)]
@@ -83,72 +92,50 @@ pub fn prompt_password(label: &str) -> String {
             term.local_flags.remove(LocalFlags::ECHO);
             let _ = tcsetattr(&stdin, SetArg::TCSANOW, &term);
 
-            let mut input = String::new();
-            stdin
-                .lock()
-                .read_line(&mut input)
-                .expect("stdin read failed — terminal lost");
+            let read = read_line();
             println!(); // newline after hidden input
-
+            // Always restore echo, even when the read failed.
             let _ = tcsetattr(&stdin, SetArg::TCSANOW, &old_term);
-            return input.trim().to_string();
+            return Ok(read?.trim().to_string());
         }
         // tcgetattr failed (not a tty) — fall through to echoed read.
-        let mut input = String::new();
-        stdin
-            .lock()
-            .read_line(&mut input)
-            .expect("stdin read failed — terminal lost");
-        input.trim().to_string()
+        Ok(read_line()?.trim().to_string())
     }
 
     #[cfg(not(unix))]
     {
-        let mut input = String::new();
-        io::stdin()
-            .lock()
-            .read_line(&mut input)
-            .expect("stdin read failed — terminal lost");
-        input.trim().to_string()
+        Ok(read_line()?.trim().to_string())
     }
 }
 
 /// Prompt for password with confirmation
-pub fn prompt_password_confirm(label: &str) -> String {
+pub fn prompt_password_confirm(label: &str) -> io::Result<String> {
     loop {
-        let pw1 = prompt_password(label);
-        let pw2 = prompt_password("Confirm password");
+        let pw1 = prompt_password(label)?;
+        let pw2 = prompt_password("Confirm password")?;
 
         if pw1 == pw2 {
-            return pw1;
+            return Ok(pw1);
         }
         warn("Passwords do not match. Try again.");
     }
 }
 
 /// Prompt for a yes/no confirmation
-pub fn confirm(label: &str, default: bool) -> bool {
+pub fn confirm(label: &str, default: bool) -> io::Result<bool> {
     let hint = if default { "Y/n" } else { "y/N" };
     print!("  {label} [{hint}]: ");
-    io::stdout()
-        .flush()
-        .expect("stdout flush failed — terminal lost");
+    io::stdout().flush()?;
 
-    let mut input = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut input)
-        .expect("stdin read failed — terminal lost");
-    let input = input.trim().to_lowercase();
-
+    let input = read_line()?.trim().to_lowercase();
     if input.is_empty() {
-        return default;
+        return Ok(default);
     }
-    matches!(input.as_str(), "y" | "yes")
+    Ok(matches!(input.as_str(), "y" | "yes"))
 }
 
 /// Prompt to select from a numbered list. Returns the 0-based index.
-pub fn select(label: &str, options: &[&str], default: usize) -> usize {
+pub fn select(label: &str, options: &[&str], default: usize) -> io::Result<usize> {
     println!("  {label}:");
     for (i, opt) in options.iter().enumerate() {
         let marker = if i == default { " *" } else { "" };
@@ -156,12 +143,12 @@ pub fn select(label: &str, options: &[&str], default: usize) -> usize {
     }
 
     loop {
-        let input = prompt("Choice", &(default + 1).to_string());
+        let input = prompt("Choice", &(default + 1).to_string())?;
         if let Ok(n) = input.parse::<usize>()
             && n >= 1
             && n <= options.len()
         {
-            return n - 1;
+            return Ok(n - 1);
         }
         warn(&format!("Please enter 1-{}", options.len()));
     }

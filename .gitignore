@@ -34,3 +34,10 @@ freebsd/ui-export/
 
 # CLAUDE.md is project policy and is tracked in the repo — do not ignore it.
 Cargo.lock
+
+# Never track key material or local environment files (#455)
+.env
+.env.*
+*.pem
+*.key
+!freebsd/overlay/usr/local/etc/aifw/update-signing.pub

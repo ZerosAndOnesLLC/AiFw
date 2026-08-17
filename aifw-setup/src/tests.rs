@@ -475,6 +475,40 @@ mod let_underscore_tests {
         );
     }
 
+    /// QUAL-M11 (#446): the interactive console layer must never panic on
+    /// a lost terminal — every prompt returns `io::Result` and the wizard
+    /// propagates it. Keep `.expect(` / `.unwrap(` out of the non-test code
+    /// of these files.
+    #[test]
+    fn console_and_wizard_do_not_panic_on_terminal_loss() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut violations = Vec::new();
+        for rel in [
+            "aifw-setup/src/console.rs",
+            "aifw-setup/src/wizard.rs",
+            "aifw-setup/src/tuning.rs",
+        ] {
+            let content = std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|e| panic!("failed to read {rel}: {e}"));
+            // Only the non-test part of the file.
+            let prod = content.split("#[cfg(test)]").next().unwrap_or("");
+            for (idx, line) in prod.lines().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("//") {
+                    continue;
+                }
+                if t.contains(".expect(") || t.contains(".unwrap()") {
+                    violations.push(format!("{rel}:{}: {t}", idx + 1));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "panicking call in setup console/wizard code (QUAL-M11 #446) — return io::Result instead:\n{}",
+            violations.join("\n")
+        );
+    }
+
     // --- Unattended seed (#533 Phase 2) ---
 
     #[test]

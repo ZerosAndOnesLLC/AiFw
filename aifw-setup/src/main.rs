@@ -106,7 +106,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Run interactive wizard
-    let Some(result) = wizard::run_wizard(args.reconfigure) else {
+    // A lost terminal (stdin closed on an unattended SSH run) surfaces as an
+    // error here instead of a panic (#446).
+    let Some(result) = wizard::run_wizard(args.reconfigure)
+        .map_err(|e| anyhow::anyhow!("setup wizard aborted: {e}"))?
+    else {
         std::process::exit(0);
     };
 
