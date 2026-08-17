@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
+import { Toggle } from "@/components/ui/Toggle";
 
 interface Schedule {
   id: string;
@@ -275,17 +276,7 @@ export default function SchedulesPage() {
                       </div>
                     </td>
                     <td className="py-3 px-4">
-                      <button
-                        onClick={() => handleToggleEnabled(schedule)}
-                        className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
-                        style={{ backgroundColor: schedule.enabled ? "#22c55e" : "#4b5563" }}
-                        title={schedule.enabled ? "Disable schedule" : "Enable schedule"}
-                      >
-                        <span
-                          className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-                          style={{ transform: schedule.enabled ? "translateX(16px)" : "translateX(0)" }}
-                        />
-                      </button>
+                      <Toggle checked={schedule.enabled} onChange={() => handleToggleEnabled(schedule)} title={schedule.enabled ? "Disable schedule" : "Enable schedule"} />
                     </td>
                     <td className="py-3 px-4">
                       <div className="flex items-center justify-end gap-1">
@@ -430,16 +421,7 @@ export default function SchedulesPage() {
 
               {/* Enabled */}
               <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setForm((f) => ({ ...f, enabled: !f.enabled }))}
-                  className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
-                  style={{ backgroundColor: form.enabled ? "#22c55e" : "#4b5563" }}
-                >
-                  <span
-                    className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-                    style={{ transform: form.enabled ? "translateX(16px)" : "translateX(0)" }}
-                  />
-                </button>
+                <Toggle checked={form.enabled} onChange={() => setForm((f) => ({ ...f, enabled: !f.enabled }))} label="Enabled" title={form.enabled ? "Disable schedule" : "Enable schedule"} />
                 <span className="text-sm text-gray-300">Enabled</span>
               </div>
             </div>

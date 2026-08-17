@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ConfigModalData } from "@/lib/api/vpn";
+import { ModalOverlay } from "@/components/ui/ModalOverlay";
 
 interface ConfigModalProps {
   config: ConfigModalData;
@@ -22,9 +23,9 @@ export function ConfigModal({ config, onClose }: ConfigModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-2xl bg-gray-800 border border-gray-700 rounded-xl shadow-2xl m-4">
+    <ModalOverlay onClose={onClose} ariaLabel="WireGuard client configuration"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      panelClassName="relative w-full max-w-2xl bg-gray-800 border border-gray-700 rounded-xl shadow-2xl m-4">
         <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-lg font-semibold text-white">
             Client Config — {config.peerName}
@@ -93,7 +94,6 @@ export function ConfigModal({ config, onClose }: ConfigModalProps) {
             until it is.
           </p>
         </div>
-      </div>
-    </div>
+    </ModalOverlay>
   );
 }

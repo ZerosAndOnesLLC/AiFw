@@ -64,11 +64,11 @@ export function IdsAlertSection({
           </div>
           <div className="bg-[var(--bg-primary)] rounded-lg p-3">
             <div className="text-[10px] text-[var(--text-muted)] uppercase">Usage</div>
-            <div className="text-lg font-bold" style={{ color: stats.usage_pct > 80 ? "#ef4444" : "#22c55e" }}>
+            <div className={`text-lg font-bold ${stats.usage_pct > 80 ? "text-red-500" : "text-green-500"}`}>
               {stats.usage_pct.toFixed(0)}%
             </div>
             <div className="w-full h-1 bg-gray-700 rounded-full mt-1">
-              <div className="h-full rounded-full transition-all" style={{ width: `${stats.usage_pct}%`, backgroundColor: stats.usage_pct > 80 ? "#ef4444" : "#22c55e" }} />
+              <div className={`h-full rounded-full transition-all ${stats.usage_pct > 80 ? "bg-red-500" : "bg-green-500"}`} style={{ width: `${stats.usage_pct}%` }} />
             </div>
           </div>
           <div className="bg-[var(--bg-primary)] rounded-lg p-3">

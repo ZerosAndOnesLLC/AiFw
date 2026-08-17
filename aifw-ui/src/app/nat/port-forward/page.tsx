@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { api, NatRule, InterfaceInfo, CreateNatRequest, UpdateNatRequest } from "@/lib/api";
 import { parsePortField } from "@/lib/ports";
 import { validateAddress, validatePort, validateIP } from "@/lib/validate";
+import { Toggle } from "@/components/ui/Toggle";
 
 const defaultForm = {
   interface: "",
@@ -476,22 +477,7 @@ export default function PortForwardPage() {
                         <span className="text-xs text-gray-400">{rule.label || "-"}</span>
                       </td>
                       <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          onClick={() => handleToggleStatus(rule)}
-                          disabled={togglingId === rule.id}
-                          className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-50"
-                          style={{
-                            backgroundColor: rule.status === "active" ? "#22c55e" : "#4b5563",
-                          }}
-                          title={rule.status === "active" ? "Disable" : "Enable"}
-                        >
-                          <span
-                            className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-                            style={{
-                              transform: rule.status === "active" ? "translateX(16px)" : "translateX(0)",
-                            }}
-                          />
-                        </button>
+                        <Toggle checked={rule.status === "active"} onChange={() => handleToggleStatus(rule)} disabled={togglingId === rule.id} title={rule.status === "active" ? "Disable" : "Enable"} />
                       </td>
                       <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1">

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import Help, { HelpBanner } from "../Help";
 import { api } from "@/lib/api";
+import { ModalOverlay } from "@/components/ui/ModalOverlay";
 
 /* ---------- Types ---------- */
 
@@ -458,8 +459,9 @@ function AddSourceModal({ onClose, onCreated }: { onClose: () => void; onCreated
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose} ariaLabel="Add custom blocklist"
+      className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4"
+      panelClassName="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-md space-y-3">
         <h2 className="text-lg font-semibold text-white flex items-center gap-2">
           Add custom blocklist
           <Help title="Custom blocklists" size="sm">
@@ -528,8 +530,7 @@ function AddSourceModal({ onClose, onCreated }: { onClose: () => void; onCreated
             {busy ? "Saving…" : "Save"}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalOverlay>
   );
 }
 

@@ -10,6 +10,7 @@ import {
   isCrossFamily,
   validateCrossFamily,
 } from "./components/crossFamily";
+import { Toggle } from "@/components/ui/Toggle";
 
 const defaultForm = {
   nat_type: "dnat",
@@ -590,21 +591,7 @@ export default function NatPage() {
                       </td>
                       {/* Status toggle */}
                       <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          onClick={() => handleToggleStatus(rule)}
-                          disabled={togglingId === rule.id}
-                          className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50"
-                          style={{
-                            backgroundColor: rule.status === "active" ? "#22c55e" : "#4b5563",
-                          }}
-                          title={rule.status === "active" ? "Disable" : "Enable"}
-                        >
-                          <span
-                            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                              rule.status === "active" ? "translate-x-[18px]" : "translate-x-[3px]"
-                            }`}
-                          />
-                        </button>
+                        <Toggle checked={rule.status === "active"} onChange={() => handleToggleStatus(rule)} disabled={togglingId === rule.id} title={rule.status === "active" ? "Disable" : "Enable"} />
                       </td>
                       {/* Actions */}
                       <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>

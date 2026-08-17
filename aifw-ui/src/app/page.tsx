@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useWs } from "@/context/WsContext";
 import { api, isAuthed } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
+import { ModalOverlay } from "@/components/ui/ModalOverlay";
 
 interface StatusData {
   pf_running: boolean; pf_states: number; pf_rules: number;
@@ -571,11 +572,11 @@ export default function Dashboard() {
             <svg className="w-3.5 h-3.5 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
           </div>
           <div className="flex items-center gap-2 text-xs">
-            <span style={{ color: cpu > 80 ? "#ef4444" : "#3b82f6" }}>{cpu.toFixed(0)}% CPU</span>
+            <span className={cpu > 80 ? "text-red-500" : "text-blue-500"}>{cpu.toFixed(0)}% CPU</span>
             <span className="text-[var(--border)]">|</span>
-            <span style={{ color: mem > 80 ? "#ef4444" : "#8b5cf6" }}>{mem.toFixed(0)}% Mem</span>
+            <span className={mem > 80 ? "text-red-500" : "text-violet-500"}>{mem.toFixed(0)}% Mem</span>
             <span className="text-[var(--border)]">|</span>
-            <span style={{ color: disk > 90 ? "#ef4444" : "#06b6d4" }}>{disk.toFixed(0)}% Disk</span>
+            <span className={disk > 90 ? "text-red-500" : "text-cyan-500"}>{disk.toFixed(0)}% Disk</span>
           </div>
         </button>
 
@@ -705,8 +706,9 @@ export default function Dashboard() {
 
       {/* Modals */}
       {modal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setModal(null)}>
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl max-w-lg w-full mx-4 max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setModal(null)} ariaLabel={modal === "system" ? "System Details" : modal === "talkers" ? "Top Talkers" : "Recent Blocked"}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          panelClassName="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl max-w-lg w-full mx-4 max-h-[80vh] overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
               <h2 className="text-sm font-bold">
                 {modal === "system" ? "System Details" : modal === "talkers" ? "Top Talkers" : "Recent Blocked"}
@@ -740,7 +742,7 @@ export default function Dashboard() {
                 return (
                 <div className="space-y-3 text-xs">
                   <div className="flex justify-between"><span className="text-[var(--text-muted)]">Memory</span><span>{formatBytes(system?.memory_used ?? 0)} / {formatBytes(system?.memory_total ?? 0)} ({mem.toFixed(0)}%)</span></div>
-                  <div className="w-full h-1.5 bg-gray-700 rounded-full"><div className="h-full rounded-full transition-all" style={{ width: `${mem}%`, backgroundColor: mem > 80 ? "#ef4444" : "#8b5cf6" }} /></div>
+                  <div className="w-full h-1.5 bg-gray-700 rounded-full"><div className={`h-full rounded-full transition-all ${mem > 80 ? "bg-red-500" : "bg-violet-500"}`} style={{ width: `${mem}%` }} /></div>
 
                   {mb && (
                     <div className="pt-2 border-t border-[var(--border)]">
@@ -778,7 +780,7 @@ export default function Dashboard() {
                   {system?.disks?.map(d => (
                     <div key={d.mount}>
                       <div className="flex justify-between"><span className="text-[var(--text-muted)] font-mono">{d.mount}</span><span>{d.pct.toFixed(0)}% ({formatBytes(d.used)} / {formatBytes(d.total)})</span></div>
-                      <div className="w-full h-1.5 bg-gray-700 rounded-full mt-1"><div className="h-full rounded-full transition-all" style={{ width: `${d.pct}%`, backgroundColor: d.pct > 80 ? "#ef4444" : "#06b6d4" }} /></div>
+                      <div className="w-full h-1.5 bg-gray-700 rounded-full mt-1"><div className={`h-full rounded-full transition-all ${d.pct > 80 ? "bg-red-500" : "bg-cyan-500"}`} style={{ width: `${d.pct}%` }} /></div>
                     </div>
                   ))}
                   <div className="pt-2 border-t border-[var(--border)] space-y-2">
@@ -847,8 +849,7 @@ export default function Dashboard() {
                 </>
               )}
             </div>
-          </div>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );

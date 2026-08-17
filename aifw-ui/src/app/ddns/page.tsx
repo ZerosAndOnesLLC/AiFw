@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import Help, { HelpBanner } from "./Help";
+import { ModalOverlay } from "@/components/ui/ModalOverlay";
 
 interface DdnsRecord {
   id: number;
@@ -295,8 +296,9 @@ function RecordModal({ initial, providers, onClose, onSaved }:
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose} ariaLabel={`${isNew ? "Add" : "Edit"} DDNS record`}
+      className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4"
+      panelClassName="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-md space-y-3">
         <h2 className="text-lg font-semibold text-white">{isNew ? "Add" : "Edit"} DDNS record</h2>
 
         <Field label="DNS provider">
@@ -366,8 +368,7 @@ function RecordModal({ initial, providers, onClose, onSaved }:
             {busy ? "Saving…" : "Save"}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalOverlay>
   );
 }
 

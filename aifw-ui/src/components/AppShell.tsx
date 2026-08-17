@@ -90,7 +90,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="flex min-h-screen">
             {/* Mobile overlay */}
             {sidebarOpen && (
-              <div className="fixed inset-0 bg-black/50 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
+              <div role="presentation" aria-hidden="true" className="fixed inset-0 bg-black/50 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
             )}
 
             {/* Sidebar — fixed on desktop, slide-in on mobile */}

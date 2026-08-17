@@ -1,6 +1,7 @@
 "use client";
 
 import { type HttpRouter, parseJsonArray } from "@/lib/api/reverse-proxy/routers";
+import { Toggle } from "@/components/ui/Toggle";
 
 const chipCls =
   "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30";
@@ -106,20 +107,7 @@ export function RoutersTable({ routers, deletingId, onEdit, onDelete, onToggleEn
                     </td>
                     {/* Enabled toggle */}
                     <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => onToggleEnabled(router)}
-                        className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
-                        style={{
-                          backgroundColor: router.enabled ? "#2563eb" : "#4b5563",
-                        }}
-                        title={router.enabled ? "Disable" : "Enable"}
-                      >
-                        <span
-                          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                            router.enabled ? "translate-x-[18px]" : "translate-x-[3px]"
-                          }`}
-                        />
-                      </button>
+                      <Toggle checked={router.enabled} onChange={() => onToggleEnabled(router)} title={router.enabled ? "Disable" : "Enable"} color="blue" />
                     </td>
                     {/* Actions */}
                     <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>

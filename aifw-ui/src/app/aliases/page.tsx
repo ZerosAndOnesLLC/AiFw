@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { isValidAliasName, isValidIP, isValidCIDR, isValidPortRange, isValidURL } from "@/lib/validate";
+import { Toggle } from "@/components/ui/Toggle";
 
 interface Alias {
   id: string;
@@ -278,13 +279,7 @@ export default function AliasesPage() {
                         <span className="text-xs text-gray-400">{alias.description || "-"}</span>
                       </td>
                       <td className="py-2.5 px-4" onClick={(e) => e.stopPropagation()}>
-                        <button onClick={() => handleToggle(alias)}
-                          className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200"
-                          style={{ backgroundColor: alias.enabled ? "#22c55e" : "#4b5563" }}
-                          title={alias.enabled ? "Disable" : "Enable"}>
-                          <span className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200"
-                            style={{ transform: alias.enabled ? "translateX(16px)" : "translateX(0)" }} />
-                        </button>
+                        <Toggle checked={alias.enabled} onChange={() => handleToggle(alias)} title={alias.enabled ? "Disable" : "Enable"} />
                       </td>
                       <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1">
