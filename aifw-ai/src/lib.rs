@@ -1,8 +1,14 @@
 #![warn(missing_docs)]
 //! # aifw-ai
 //!
-//! **WIP** — AI/ML threat-detection engine. This crate is a work in progress;
-//! see the crate README for current status and caveats.
+//! **Prototype, not wired in.** Heuristic behavioural detectors (port
+//! scan, DDoS, brute force, C2 beacon, DNS tunnel), a feature extractor,
+//! an inference-backend trait with a development stub, and an auto-response
+//! model. No AiFw binary depends on this crate: nothing on the appliance
+//! runs these detectors and there is no setting that enables them (#171).
+//! It is excluded from the workspace's `default-members` — build it with
+//! `cargo build -p aifw-ai` or `--workspace`. The AI feature that ships is
+//! the LLM-assisted alert triage in `aifw-api::ai_analysis`.
 
 /// Heuristic threat detectors (port scan, DDoS, brute force, C2, DNS tunnel)
 pub mod detectors;

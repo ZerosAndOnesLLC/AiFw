@@ -16,6 +16,26 @@ members = [
     "aifw-cli",
     "aifw-setup",
 ]
+# `aifw-ai` (heuristic ML-detector prototypes, #171) is not wired into any
+# binary and is excluded from the default build set: plain `cargo build` /
+# `cargo test` skip it, `cargo build --workspace` or `-p aifw-ai` still
+# builds it. Move it back into the default set when it gets a data path.
+default-members = [
+    "aifw-common",
+    "aifw-pf",
+    "aifw-core",
+    "aifw-conntrack",
+    "aifw-plugins",
+    "aifw-ids",
+    "aifw-ids-bin",
+    "aifw-ids-ipc",
+    "aifw-metrics",
+    "aifw-api",
+    "aifw-tui",
+    "aifw-daemon",
+    "aifw-cli",
+    "aifw-setup",
+]
 resolver = "2"
 
 [workspace.package]

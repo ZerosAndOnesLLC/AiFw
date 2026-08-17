@@ -26,7 +26,7 @@ breadcrumb:
       "name": "Does AiFw require AI features to work?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "No. AiFw is a complete firewall, router, DHCP server, DNS resolver, IDS/IPS, reverse proxy, and NTP server without any AI features enabled. The five behavioural detectors in aifw-ai (port scan, DDoS, brute force, C2 beacon, DNS tunneling) are opt-in, experimental, and disabled by default."
+        "text": "No. AiFw is a complete firewall, router, DHCP server, DNS resolver, IDS/IPS, reverse proxy, and NTP server without any AI features enabled. The one AI feature that ships, LLM-assisted triage of critical/high IDS alerts, only runs when you configure a provider. Behavioural ML detectors exist only as unwired prototypes in the aifw-ai crate."
       }
     },
     { "@type": "Question", "name": "Can I import my existing OPNsense config?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. AiFw ships an OPNsense XML importer that parses your config, previews a diff of what will change, and applies atomically with rollback on failure. The importer was rewritten end-to-end in 2026 (PRs #230 and #248–#252)." } },
@@ -57,7 +57,7 @@ No. AiFw is a ground-up rewrite in Rust. It runs on FreeBSD and uses pf for pack
 
 ## Does AiFw require AI features to work?
 
-No. AiFw is a complete firewall, router, DHCP server, DNS resolver, IDS/IPS, reverse proxy, and NTP server without any AI features enabled. The five behavioural detectors in `aifw-ai` (port scan, DDoS, brute force, C2 beacon, DNS tunneling) are **opt-in, experimental, and disabled by default**. They will be developed further in future releases.
+No. AiFw is a complete firewall, router, DHCP server, DNS resolver, IDS/IPS, reverse proxy, and NTP server without any AI features enabled. The one AI feature that ships &mdash; LLM-assisted triage of critical/high IDS alerts &mdash; only runs when you configure a provider under Settings &rarr; AI. Behavioural ML detectors (port scan, DDoS, brute force, C2 beacon, DNS tunnelling) exist only as unwired prototypes in the `aifw-ai` crate; nothing on the appliance runs them.
 
 ## Can I import my existing OPNsense config?
 

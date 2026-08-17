@@ -84,25 +84,15 @@ Auto-update runs every **24 hours** by default (configurable per ruleset via `up
 
 Add additional rulesets (Abuse.ch, ET Pro, custom feeds) via `POST /api/v1/ids/rulesets`. Each ruleset gets its own URL, format (`suricata` / `sigma` / `yara`), enable flag, and update cadence.
 
-## AI threat detection
+## AI-assisted alert triage
 
-> **Status: opt-in / experimental.** The `aifw-ai` crate is a work in progress, disabled by default, and not yet production-ready. The Threats page in the UI marks this as WIP. See the README for the current framing.
+With an LLM provider configured under **Settings &rarr; AI**, AiFw periodically reviews unreviewed critical/high alerts (`POST /api/v1/ai/analyze` triggers a pass by hand) and records a classification plus reasoning on the **Threats** page; every call is logged at `GET /api/v1/ai/audit-log`. Without a provider nothing is called and the Threats page is a plain alert view.
 
-Five behavioural detectors run on flow features extracted from conntrack:
-
-| Detector | Trigger heuristic |
-|---|---|
-| **Port scan** | &geq; 15 unique destination ports with &geq; 60% failed connection ratio |
-| **DDoS / SYN flood** | &gt; 100 SYNs with &gt; 80% failure ratio, or sustained &gt; 50 conn/sec |
-| **Brute force** | &geq; 10 connections to &leq; 5 ports with &geq; 70% failure ratio |
-| **C2 beacon** | &geq; 5 connections to &leq; 2 destinations with low duration variance and small payloads |
-| **DNS tunneling** | &gt; 50 DNS queries with DNS / total connection ratio &gt; 80% |
-
-Thresholds are tuneable per-detector at construction time. Detectors emit `Threat` records with a 0..1 score, evidence string, and per-metric breakdown that the API surfaces alongside Suricata alerts.
+> **Behavioural ML detectors are not shipped.** The `aifw-ai` crate holds heuristic prototypes for port-scan, DDoS, brute-force, C2-beacon and DNS-tunnel detection, but it is not wired into the daemon or API &mdash; nothing on the appliance runs them and there is no setting that enables them ([#171](https://github.com/ZerosAndOnesLLC/AiFw/issues/171)). Reactive blocking on the box today comes from IDS rules and rate limits, not from these detectors.
 
 ## Alert management
 
-Every match &mdash; rule-driven or AI-detected &mdash; lands in the alerts table with severity, signature, source / destination, payload excerpt, and timestamp.
+Every match lands in the alerts table with severity, signature, source / destination, payload excerpt, and timestamp.
 
 ```bash
 curl https://aifw.local/api/v1/ids/alerts?limit=50 \
@@ -166,7 +156,6 @@ Suppressions are paginated: `GET /api/v1/ids/suppressions?limit=50&offset=0`.
 - [Firewall rules &rarr;]({{ '/docs/firewall/' | relative_url }})
 - [Auth &amp; RBAC &rarr;]({{ '/docs/auth/' | relative_url }})
 - Source: [`aifw-ids/src/`](https://github.com/ZerosAndOnesLLC/AiFw/tree/main/aifw-ids/src)
-- Source: [`aifw-ai/src/detectors/`](https://github.com/ZerosAndOnesLLC/AiFw/tree/main/aifw-ai/src/detectors)
 
 </article>
 </div>
