@@ -34,12 +34,20 @@ Three workflows live in the same place: **JSON config backup &amp; restore** for
 Export the entire configuration &mdash; rules, NAT, aliases, VPN, geo-IP, DNS, DHCP, IDS settings, multi-WAN policy, reverse proxy, users, OAuth providers &mdash; as a single JSON document:
 
 ```bash
+# Redacted export — secret fields are the literal "**REDACTED**"
 curl https://aifw.local/api/v1/config/export \
   -H "Authorization: Bearer $TOKEN" \
   -o aifw-backup-$(date +%F).json
+
+# Portable export — secrets wrapped under a passphrase (Argon2id + AES-256-GCM)
+curl -X POST https://aifw.local/api/v1/config/export \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"passphrase": "correct horse battery staple"}' \
+  -o aifw-backup-$(date +%F).json
 ```
 
-Restore by `POST`ing the same document back. The importer validates the shape, snapshots the current config to history first, then applies the new state through the same engine writers (`RuleEngine`, `NatEngine`, `AliasEngine`, &hellip;) that the UI uses &mdash; so pf actually picks up the changes.
+Restore by `POST`ing the same document back (add a top-level `"passphrase"` for a portable export). The importer validates the shape, snapshots the current config to history first, then applies the new state through the same engine writers (`RuleEngine`, `NatEngine`, `AliasEngine`, &hellip;) that the UI uses &mdash; so pf actually picks up the changes.
 
 ```bash
 curl -X POST https://aifw.local/api/v1/config/import \
@@ -48,13 +56,17 @@ curl -X POST https://aifw.local/api/v1/config/import \
   --data @aifw-backup.json
 ```
 
-> **Secrets at rest.** Integration secrets in the database (WireGuard private/preshared keys, IPsec PSKs, CARP passwords, OAuth client secrets, S3/SMTP credentials, TSIG, ACME DNS tokens, AI provider keys, TOTP seeds, cluster peer keys) are sealed with AES-256-GCM under a master key in `/var/db/aifw/secrets.key` (0600, beside `jwt.key`). The JSON export above goes through the engines, so it carries the *decrypted* values and imports cleanly on any box — treat the file accordingly. A **raw copy of `aifw.db`**, on the other hand, is only useful together with its `secrets.key`; move to a new box without the key and every sealed value reads as unset. Back the two up together. (The S3 destination below syncs JSON snapshots, which carry decrypted values and need no key.)
+> **Secrets in exports.** A backup never carries live keys in the clear. `GET /config/export` (and the UI's *Download Backup*) replaces every secret field — WireGuard private/preshared keys, IPsec PSKs and private keys, CARP passwords, the DDNS TSIG secret — with `**REDACTED**`; such a file restores cleanly onto the appliance it came from, because the importer fills the sentinels back in from the tunnels/VIPs the box already holds (matched by id) and refuses, naming each one, when it cannot. For a backup you can restore on a *replacement* box, use the `POST` form (UI: *Portable backup*): secrets are wrapped per field under a key derived from your passphrase with Argon2id (64 MiB, t=3) and AES-256-GCM, and the KDF salt travels in `config.secrets`. The passphrase is not stored anywhere. Config-history views (`/config/version`, `/config/diff`, `aifw config show`) are redacted too; the stored versions themselves are full-fidelity and sealed at rest.
+>
+> **Secrets at rest.** Integration secrets in the database (the above plus OAuth client secrets, S3/SMTP credentials, ACME DNS tokens, AI provider keys, TOTP seeds, cluster peer keys) are sealed with AES-256-GCM under a master key in `/var/db/aifw/secrets.key` (0600, beside `jwt.key`). A **raw copy of `aifw.db`** is only useful together with its `secrets.key`; move to a new box without the key and every sealed value reads as unset. Back the two up together.
 
 Preview a candidate import without applying via `POST /api/v1/config/import-preview`. The response lists every record that will be created / updated / deleted so you can sanity-check the diff first.
 
 ## S3 backup destination
 
 Push backups off-box on a schedule. Configure a bucket, region, prefix, and access keys; AiFw uploads a fresh JSON snapshot on every config save plus on a configurable rotation schedule.
+
+Uploads follow the same rule as downloads: with a **backup passphrase** set (`secrets_passphrase`, write-only like the S3 secret; UI: *Settings → S3 Backup Sync*), each object's secrets are passphrase-wrapped and the object restores on any appliance that knows the passphrase. Without one, uploads are redacted and only restore cleanly onto the appliance that produced them. `POST /backup/s3/import` unlocks a wrapped object with the stored passphrase, or with a `"passphrase"` in the request body when it differs.
 
 ```bash
 curl -X PUT https://aifw.local/api/v1/backup/s3/config \
@@ -67,7 +79,8 @@ curl -X PUT https://aifw.local/api/v1/backup/s3/config \
     "prefix": "site-a/",
     "path_style": false,
     "access_key_id": "AKIA...",
-    "secret_access_key": "..."
+    "secret_access_key": "...",
+    "secrets_passphrase": "correct horse battery staple"
   }'
 
 # Verify credentials + bucket access without touching anything:
@@ -177,8 +190,9 @@ If the timer expires, the snapshot taken at arm time is restored and the config 
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/v1/config/export` | Export entire config as JSON |
-| `POST` | `/api/v1/config/import` | Import a JSON config |
+| `GET` | `/api/v1/config/export` | Export entire config as JSON (secrets redacted) |
+| `POST` | `/api/v1/config/export` | Export with secrets wrapped under `{"passphrase"}` |
+| `POST` | `/api/v1/config/import` | Import a JSON config (`"passphrase"` unlocks a portable export) |
 | `POST` | `/api/v1/config/import-preview` | Dry-run a candidate import |
 | `GET` | `/api/v1/config/history` | List config-history versions |
 | `GET` | `/api/v1/config/version` | Get one version |

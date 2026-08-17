@@ -40,12 +40,21 @@ export interface DropSummary {
   pfsync: boolean;
 }
 
+/// How the secret fields of a backup file are stored (#313).
+export type SecretsState =
+  | { state: "plain" }
+  | { state: "redacted"; count: number }
+  | { state: "passphrase"; count: number };
+
 export interface ImportPreview {
   interfaces_found: string[];
   interfaces_missing: string[];
   interfaces_present: InterfaceInfo[];
   suggestions: Record<string, string>;
   drop_summary_if_unmapped: DropSummary;
+  secrets: SecretsState;
+  /// Redacted secrets this box cannot fill from its own state.
+  unresolved_secrets: string[];
 }
 
 export interface DiffSummary {
@@ -172,8 +181,15 @@ export async function fetchConfigCheck(): Promise<ConfigCheck> {
   return body.data;
 }
 
+/// Redacted export — secret fields replaced by `**REDACTED**`; restorable
+/// onto this box only.
 export function exportConfig(): Promise<unknown> {
   return api.get<unknown>("/api/v1/config/export");
+}
+
+/// Portable export — secret fields wrapped under `passphrase`.
+export function exportConfigWithPassphrase(passphrase: string): Promise<unknown> {
+  return api.post<unknown>("/api/v1/config/export", { passphrase });
 }
 
 export function fetchImportPreview(parsed: unknown): Promise<ImportPreview> {
@@ -217,6 +233,8 @@ export function listS3Archive(): Promise<S3Object[]> {
   return api.get<S3Object[]>("/api/v1/backup/s3/list?max=1000");
 }
 
-export function importS3Object(key: string): Promise<{ message?: string; version?: number }> {
-  return api.post<{ message?: string; version?: number }>("/api/v1/backup/s3/import", { key });
+/// `passphrase` unlocks a passphrase-wrapped object; omitted ⇒ the stored
+/// S3 backup passphrase is tried.
+export function importS3Object(key: string, passphrase?: string): Promise<{ message?: string; version?: number }> {
+  return api.post<{ message?: string; version?: number }>("/api/v1/backup/s3/import", { key, passphrase });
 }

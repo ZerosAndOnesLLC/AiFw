@@ -25,6 +25,11 @@ export interface S3BackupSectionProps {
   secret: string;
   setSecret: Dispatch<SetStateAction<string>>;
   hasSecret: boolean;
+  backupPassphrase: string;
+  setBackupPassphrase: Dispatch<SetStateAction<string>>;
+  clearBackupPassphrase: boolean;
+  setClearBackupPassphrase: Dispatch<SetStateAction<boolean>>;
+  hasBackupPassphrase: boolean;
   saving: boolean;
   testing: boolean;
   testResult: S3TestResult | null;
@@ -53,6 +58,11 @@ export function S3BackupSection({
   secret,
   setSecret,
   hasSecret,
+  backupPassphrase,
+  setBackupPassphrase,
+  clearBackupPassphrase,
+  setClearBackupPassphrase,
+  hasBackupPassphrase,
   saving,
   testing,
   testResult,
@@ -103,6 +113,27 @@ export function S3BackupSection({
           <label className={labelCls}>Secret Access Key {hasSecret && <span className="text-[var(--text-muted)]">(saved)</span>}</label>
           <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} className={inputCls} placeholder={hasSecret ? "••••••••  (leave blank to keep)" : "(optional)"} />
         </div>
+      </div>
+      <div className="mt-4 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] p-3 space-y-2">
+        <label className={labelCls}>
+          Backup passphrase {hasBackupPassphrase && <span className="text-[var(--text-muted)]">(saved)</span>}
+        </label>
+        <p className="text-xs text-[var(--text-muted)]">
+          Uploaded backups never carry live keys. With a passphrase set, WireGuard/IPsec keys, CARP passwords and
+          the DDNS TSIG secret are wrapped (Argon2id + AES-256-GCM) so the object can be restored on any
+          appliance that knows the passphrase. Without one, secrets are <strong>redacted</strong> and the
+          upload only restores cleanly onto this appliance.
+        </p>
+        <input type="password" autoComplete="new-password" value={backupPassphrase}
+          disabled={clearBackupPassphrase}
+          onChange={(e) => setBackupPassphrase(e.target.value)} className={inputCls}
+          placeholder={hasBackupPassphrase ? "••••••••  (leave blank to keep)" : "(none — uploads are redacted)"} />
+        {hasBackupPassphrase && (
+          <label className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <input type="checkbox" checked={clearBackupPassphrase} onChange={(e) => setClearBackupPassphrase(e.target.checked)} />
+            <span>Remove the stored passphrase (future uploads redacted)</span>
+          </label>
+        )}
       </div>
       <div className="mt-3">
         <label className="inline-flex items-center gap-2 text-sm">

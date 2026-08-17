@@ -185,6 +185,8 @@ export interface S3Config {
   path_style?: boolean;
   access_key_id?: string;
   has_secret?: boolean;
+  /// Uploads wrap secrets under a stored passphrase (#313); false ⇒ redacted.
+  has_secrets_passphrase?: boolean;
 }
 
 export type S3ConfigPayload = Record<string, unknown>;
@@ -210,8 +212,10 @@ export function getS3Config(): Promise<S3Config> {
   return api.get<S3Config>("/api/v1/backup/s3/config");
 }
 
-export function saveS3Config(payload: S3ConfigPayload): Promise<{ has_secret?: boolean }> {
-  return api.put<{ has_secret?: boolean }>("/api/v1/backup/s3/config", payload);
+export function saveS3Config(
+  payload: S3ConfigPayload,
+): Promise<{ has_secret?: boolean; has_secrets_passphrase?: boolean }> {
+  return api.put<{ has_secret?: boolean; has_secrets_passphrase?: boolean }>("/api/v1/backup/s3/config", payload);
 }
 
 export function testS3Config(payload: S3ConfigPayload): Promise<S3TestResponse> {

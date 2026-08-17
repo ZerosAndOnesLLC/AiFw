@@ -322,6 +322,7 @@ fn fix_owner(path: &Path) {
 pub const SEALED_COLUMNS: &[(&str, &str, &str)] = &[
     ("oauth_providers", "client_secret", "id"),
     ("s3_backup_config", "secret_access_key", "id"),
+    ("s3_backup_config", "secrets_passphrase", "id"),
     ("smtp_notify_config", "password", "id"),
     ("cluster_nodes", "peer_api_key", "id"),
     ("carp_vips", "password", "id"),

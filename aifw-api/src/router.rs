@@ -743,6 +743,10 @@ pub(crate) fn backup_read() -> Router<AppState> {
 pub(crate) fn backup_write() -> Router<AppState> {
     Router::new()
         .route("/api/v1/config/import", post(routes::import_config))
+        .route(
+            "/api/v1/config/export",
+            post(routes::export_config_with_passphrase),
+        )
         .route("/api/v1/config/restore", post(backup::restore_version))
         .route(
             "/api/v1/config/import-opnsense",

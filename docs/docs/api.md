@@ -405,8 +405,9 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 | `GET` | `/api/v1/config/version` | Current active version |
 | `GET` | `/api/v1/config/diff` | Diff two versions |
 | `GET` | `/api/v1/config/check` | Validate the active config |
-| `GET` | `/api/v1/config/export` | Export config as JSON |
-| `POST` | `/api/v1/config/import` | Import config from JSON |
+| `GET` | `/api/v1/config/export` | Export config as JSON (secrets redacted) |
+| `POST` | `/api/v1/config/export` | Export with secrets passphrase-wrapped (`{"passphrase"}`) |
+| `POST` | `/api/v1/config/import` | Import config from JSON (`"passphrase"` for portable exports) |
 | `POST` | `/api/v1/config/import-preview` | Dry-run import |
 | `POST` | `/api/v1/config/save` | Snapshot the current config |
 | `POST` | `/api/v1/config/restore` | Restore a previous version |

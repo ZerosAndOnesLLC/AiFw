@@ -409,11 +409,24 @@ enum ConfigAction {
     /// Show current active config
     Show,
     /// Export current config to stdout as JSON
-    Export,
+    Export {
+        /// How to treat secret fields (WireGuard/IPsec keys, CARP passwords,
+        /// TSIG): `redact` (default), `passphrase` (wrap under
+        /// $AIFW_BACKUP_PASSPHRASE or --passphrase-file), or `plain`
+        #[arg(long, default_value = "redact", value_parser = ["redact", "passphrase", "plain"])]
+        secrets: String,
+        /// File whose first line is the backup passphrase (--secrets passphrase)
+        #[arg(long)]
+        passphrase_file: Option<String>,
+    },
     /// Import config from a JSON file
     Import {
         /// Path to JSON config file
         file: String,
+        /// File whose first line is the passphrase for a passphrase-wrapped
+        /// backup (also read from $AIFW_BACKUP_PASSPHRASE)
+        #[arg(long)]
+        passphrase_file: Option<String>,
     },
     /// Show config version history
     History {
@@ -1405,8 +1418,14 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Config { action } => match action {
             ConfigAction::Show => commands::config_show(&cli.db).await?,
-            ConfigAction::Export => commands::config_export(&cli.db).await?,
-            ConfigAction::Import { file } => commands::config_import(&cli.db, &file).await?,
+            ConfigAction::Export {
+                secrets,
+                passphrase_file,
+            } => commands::config_export(&cli.db, &secrets, passphrase_file.as_deref()).await?,
+            ConfigAction::Import {
+                file,
+                passphrase_file,
+            } => commands::config_import(&cli.db, &file, passphrase_file.as_deref()).await?,
             ConfigAction::History { limit } => commands::config_history(&cli.db, limit).await?,
             ConfigAction::Rollback { version } => {
                 commands::config_rollback(&cli.db, version).await?
