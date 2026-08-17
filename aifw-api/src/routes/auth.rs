@@ -460,7 +460,16 @@ pub async fn create_oauth_provider(
     State(state): State<AppState>,
     Json(req): Json<auth::oauth::CreateProviderRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<auth::oauth::OAuthProvider>>), StatusCode> {
-    let provider = match req.provider_type.as_str() {
+    let name = req.name.trim().to_string();
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
+    {
+        return Err(bad_request());
+    }
+    let mut provider = match req.provider_type.as_str() {
         "google" => auth::oauth::OAuthProvider::google(&req.client_id, &req.client_secret),
         "github" => auth::oauth::OAuthProvider::github(&req.client_id, &req.client_secret),
         _ => auth::oauth::OAuthProvider {
@@ -479,11 +488,77 @@ pub async fn create_oauth_provider(
             created_at: chrono::Utc::now().to_rfc3339(),
         },
     };
+    provider.name = name;
+    if provider.provider_type == auth::oauth::OAuthProviderType::Oidc {
+        // Generic OIDC needs all three endpoints, all https.
+        for u in [
+            &provider.auth_url,
+            &provider.token_url,
+            &provider.userinfo_url,
+        ] {
+            if !(u.starts_with("https://")
+                || u.starts_with("http://localhost")
+                || u.starts_with("http://127."))
+            {
+                return Err(bad_request());
+            }
+        }
+    }
 
     auth::oauth::save_provider(&state.pool, &provider)
         .await
-        .map_err(|_| internal())?;
+        .map_err(|e| {
+            tracing::warn!(error = %e, "oauth: save provider failed");
+            StatusCode::CONFLICT
+        })?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: provider })))
+}
+
+/// Public: enabled providers the sign-in page may offer (names + types only).
+pub async fn oauth_login_options(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<auth::oauth::LoginOption>>>, StatusCode> {
+    let providers = auth::oauth::list_providers(&state.pool)
+        .await
+        .map_err(|_| internal())?;
+    Ok(Json(ApiResponse {
+        data: providers
+            .into_iter()
+            .filter(|p| p.enabled)
+            .map(|p| auth::oauth::LoginOption {
+                name: p.name,
+                provider_type: p.provider_type,
+            })
+            .collect(),
+    }))
+}
+
+pub async fn get_oauth_settings(
+    State(state): State<AppState>,
+) -> Result<Json<auth::oauth::OAuthSettings>, StatusCode> {
+    let public_url: Option<String> =
+        sqlx::query_scalar("SELECT value FROM auth_config WHERE key = ?1")
+            .bind(auth::oauth_flow::PUBLIC_URL_KEY)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| internal())?;
+    Ok(Json(auth::oauth::OAuthSettings {
+        public_url: public_url.unwrap_or_default(),
+    }))
+}
+
+pub async fn put_oauth_settings(
+    State(state): State<AppState>,
+    Json(req): Json<auth::oauth::OAuthSettings>,
+) -> Result<Json<auth::oauth::OAuthSettings>, StatusCode> {
+    let url = req.public_url.trim().trim_end_matches('/').to_string();
+    if !url.is_empty() && !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(bad_request());
+    }
+    auth::config::AuthSettings::save_setting(&state.pool, auth::oauth_flow::PUBLIC_URL_KEY, &url)
+        .await
+        .map_err(|_| internal())?;
+    Ok(Json(auth::oauth::OAuthSettings { public_url: url }))
 }
 
 pub async fn delete_oauth_provider(
@@ -502,20 +577,36 @@ pub async fn delete_oauth_provider(
 pub async fn oauth_authorize(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<auth::oauth::AuthorizeResponse>, StatusCode> {
+    use crate::auth::oauth_flow as flow;
     let provider = auth::oauth::get_provider_by_name(&state.pool, &provider_name)
         .await
         .map_err(|_| internal())?
+        .filter(|p| p.enabled)
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let oauth_state = Uuid::new_v4().to_string();
-    // SEC-H9: bind this state nonce so the callback can prove it originated
-    // from an authorize request this server issued.
-    auth::oauth::save_state(&state.pool, &oauth_state, &provider_name)
+    let base = flow::public_base_url(&state.pool, &headers, state.tls_enabled)
         .await
-        .map_err(|_| internal())?;
-    let redirect_uri = format!("/api/v1/auth/oauth/{}/callback", provider_name);
-    let url = provider.authorize_url(&redirect_uri, &oauth_state);
+        .ok_or(bad_request())?;
+    let redirect_uri = format!("{base}{}", flow::callback_path(&provider.name));
+    let oauth_state = Uuid::new_v4().to_string();
+    let verifier = flow::new_code_verifier();
+    // SEC-H9: bind this state nonce so the callback can prove it originated
+    // from an authorize request this server issued; the PKCE verifier and
+    // redirect URI ride along so the exchange repeats them exactly.
+    auth::oauth::save_state(
+        &state.pool,
+        &oauth_state,
+        &provider.name,
+        &auth::oauth::PendingAuthorize {
+            code_verifier: verifier.clone(),
+            redirect_uri: redirect_uri.clone(),
+        },
+    )
+    .await
+    .map_err(|_| internal())?;
+    let url = flow::authorize_url(&provider, &redirect_uri, &oauth_state, &verifier);
 
     Ok(Json(auth::oauth::AuthorizeResponse {
         authorize_url: url,
@@ -523,27 +614,199 @@ pub async fn oauth_authorize(
     }))
 }
 
+/// Where the browser lands after the callback: the login page carries the
+/// outcome in the query string (static UI, no server-side templating).
+fn oauth_ui_redirect(query: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    axum::response::Redirect::to(&format!("/login/?{query}")).into_response()
+}
+
+fn oauth_fail(provider: &str, err: crate::auth::oauth_flow::FlowError) -> axum::response::Response {
+    tracing::warn!(provider, error = err.code(), "oauth: login failed");
+    oauth_ui_redirect(&format!("oauth_error={}", err.code()))
+}
+
+/// Provider redirect target: exchange the code, resolve the account, and
+/// either install the session cookies or hand off to the TOTP step (#170).
 pub async fn oauth_callback(
     State(state): State<AppState>,
     Path(provider_name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<auth::oauth::CallbackQuery>,
-) -> Result<Json<MessageResponse>, StatusCode> {
-    // Validate required parameters are present
-    if query.code.is_empty() {
-        return Err(bad_request());
+) -> axum::response::Response {
+    use crate::auth::oauth_flow::{self as flow, FlowError};
+    use axum::response::IntoResponse;
+
+    if let Some(err) = query.error.as_deref() {
+        // The user (or provider) declined; the state stays consumable but
+        // expires on its own.
+        tracing::info!(provider = %provider_name, error = err, "oauth: provider returned error");
+        return oauth_ui_redirect("oauth_error=denied");
     }
-    if query.state.is_empty() {
-        return Err(bad_request());
+    if query.code.is_empty() || query.state.is_empty() {
+        return oauth_fail(&provider_name, FlowError::State);
     }
     // SEC-H9: the state nonce must match one we issued at /authorize for this
     // provider and be unexpired. consume_state deletes it (single-use), so a
     // replayed or forged callback is rejected before any token exchange.
-    if !auth::oauth::consume_state(&state.pool, &query.state, &provider_name).await {
+    let Some(pending) = auth::oauth::consume_state(&state.pool, &query.state, &provider_name).await
+    else {
+        return oauth_fail(&provider_name, FlowError::State);
+    };
+    let provider = match auth::oauth::get_provider_by_name(&state.pool, &provider_name).await {
+        Ok(Some(p)) if p.enabled => p,
+        _ => return oauth_fail(&provider_name, FlowError::Provider),
+    };
+
+    let access_token = match flow::exchange_code(
+        &provider,
+        &query.code,
+        &pending.redirect_uri,
+        &pending.code_verifier,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return oauth_fail(&provider_name, e),
+    };
+    let identity = match flow::fetch_identity(&provider, &access_token).await {
+        Ok(i) => i,
+        Err(e) => return oauth_fail(&provider_name, e),
+    };
+
+    // Policy flags are read live so a settings change applies without a
+    // restart.
+    let live = auth::AuthSettings::load(&state.pool).await;
+    let user = match flow::resolve_user(
+        &state.pool,
+        &provider,
+        &identity,
+        live.auto_create_oauth_users,
+    )
+    .await
+    {
+        Ok(u) => u,
+        Err(e) => return oauth_fail(&provider_name, e),
+    };
+    if !user.enabled {
+        auth::log_user_audit(
+            &state.pool,
+            &user.id.to_string(),
+            Some(&user.id.to_string()),
+            "login_denied_disabled",
+            Some(&format!("oauth:{}", provider.name)),
+        )
+        .await;
+        return oauth_fail(&provider_name, FlowError::Disabled);
+    }
+
+    // Second factor: with `require_totp_for_oauth` on, an account that has
+    // TOTP enrolled must present it; off ⇒ the IdP is trusted for MFA.
+    if live.require_totp_for_oauth && user.totp_enabled {
+        return match flow::issue_pending(&state.pool, &user.id.to_string(), &provider.name).await {
+            Ok(ticket) => oauth_ui_redirect(&format!(
+                "oauth_totp={ticket}&user={}",
+                url::form_urlencoded::byte_serialize(user.username.as_bytes()).collect::<String>()
+            )),
+            Err(e) => oauth_fail(&provider_name, e),
+        };
+    }
+
+    match issue_oauth_session(&state, &user, &provider.name).await {
+        Ok(cookies) => (cookies, oauth_ui_redirect("oauth=ok")).into_response(),
+        Err(_) => oauth_fail(&provider_name, FlowError::Internal),
+    }
+}
+
+/// Mint the token pair for an OAuth-authenticated user, write the audit row
+/// and return the session cookie headers.
+async fn issue_oauth_session(
+    state: &AppState,
+    user: &auth::User,
+    provider_name: &str,
+) -> Result<HeaderMap, StatusCode> {
+    let (perm_bits, role_name) =
+        auth::tokens::resolve_token_permissions(&state.pool, &user.role, user.role_id.as_deref())
+            .await
+            .map_err(|_| internal())?;
+    let tokens = auth::tokens::issue_token_pair(
+        &state.pool,
+        &user.id.to_string(),
+        &user.username,
+        perm_bits,
+        &role_name,
+        &state.auth_settings,
+    )
+    .await
+    .map_err(|_| internal())?;
+    auth::log_user_audit(
+        &state.pool,
+        &user.id.to_string(),
+        Some(&user.id.to_string()),
+        "login_success",
+        Some(&format!("{} via oauth:{provider_name}", user.username)),
+    )
+    .await;
+    Ok(session_cookie_headers(state, &tokens))
+}
+
+/// Finish a TOTP-gated OAuth login: the single-use ticket from the callback
+/// plus a TOTP or recovery code → session (cookies + token pair).
+pub async fn oauth_totp(
+    State(state): State<AppState>,
+    Json(req): Json<auth::oauth::OAuthTotpRequest>,
+) -> Result<(HeaderMap, Json<auth::TokenPair>), StatusCode> {
+    let Some(user_id) = auth::oauth_flow::consume_pending(&state.pool, &req.ticket).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let user = auth::get_user_by_id(&state.pool, &user_id)
+        .await?
+        .filter(|u| u.enabled)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let totp_valid = user
+        .totp_secret
+        .as_deref()
+        .map(|s| auth::totp::verify(s, &req.totp_code))
+        .unwrap_or(false);
+    let recovery_valid = if !totp_valid {
+        auth::use_recovery_code(&state.pool, &user.id.to_string(), &req.totp_code).await
+    } else {
+        false
+    };
+    if !totp_valid && !recovery_valid {
+        auth::log_user_audit(
+            &state.pool,
+            &user.id.to_string(),
+            Some(&user.id.to_string()),
+            "login_failed",
+            Some("oauth totp step"),
+        )
+        .await;
         return Err(StatusCode::UNAUTHORIZED);
     }
-    // State is valid, but the token exchange itself is not yet implemented
-    // (tracked in #170) — return 501 until that lands.
-    Err(StatusCode::NOT_IMPLEMENTED)
+    let (perm_bits, role_name) =
+        auth::tokens::resolve_token_permissions(&state.pool, &user.role, user.role_id.as_deref())
+            .await
+            .map_err(|_| internal())?;
+    let tokens = auth::tokens::issue_token_pair(
+        &state.pool,
+        &user.id.to_string(),
+        &user.username,
+        perm_bits,
+        &role_name,
+        &state.auth_settings,
+    )
+    .await
+    .map_err(|_| internal())?;
+    auth::log_user_audit(
+        &state.pool,
+        &user.id.to_string(),
+        Some(&user.id.to_string()),
+        "login_success",
+        Some(&format!("{} via oauth+totp", user.username)),
+    )
+    .await;
+    let cookies = session_cookie_headers(&state, &tokens);
+    Ok((cookies, Json(tokens)))
 }
 
 /// Public registration — only allowed when no human users exist

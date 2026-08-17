@@ -81,15 +81,13 @@ Disable from `POST /api/v1/auth/totp/disable` (requires a fresh password challen
 
 ## OAuth / SSO
 
-Three provider types are built in:
+Sign in with Google, GitHub or any OpenID Connect provider (Okta, Auth0, Keycloak, Entra ID, &hellip;). Configure providers under **Settings &rarr; API &amp; Auth &rarr; Single Sign-On**, or via the API:
 
 | Provider | `provider_type` | Notes |
 |---|---|---|
-| Google | `google` | Pre-configured auth + token URLs |
-| GitHub | `github` | Pre-configured auth + token URLs |
-| Generic OIDC | `oidc` | Supply your own auth / token / userinfo URLs (Okta, Auth0, Keycloak, Azure AD, &hellip;) |
-
-Add a provider:
+| Google | `google` | Pre-configured auth / token / userinfo URLs |
+| GitHub | `github` | Pre-configured; the verified primary email is read from `/user/emails` |
+| Generic OIDC | `oidc` | Supply your own `auth_url`, `token_url`, `userinfo_url` (must be `https`) |
 
 ```bash
 curl -X POST https://aifw.local/api/v1/auth/oauth/providers \
@@ -100,18 +98,25 @@ curl -X POST https://aifw.local/api/v1/auth/oauth/providers \
     "provider_type": "google",
     "client_id": "...apps.googleusercontent.com",
     "client_secret": "...",
-    "scopes": "openid email profile",
-    "enabled": true
+    "scopes": "openid email profile"
   }'
 ```
 
-Redirect URI to register with the provider:
+Register this redirect URI at the provider (the settings page shows it per provider):
 
 ```
-https://aifw.local/api/v1/auth/oauth/{provider}/callback
+https://aifw.local/api/v1/auth/oauth/{provider name}/callback
 ```
 
-Login flow uses `/api/v1/auth/oauth/{provider}/authorize` &rarr; provider consent &rarr; callback &rarr; AiFw mints a JWT for the matched (or auto-provisioned) local user.
+The host part comes from the request `Host` (with the API's own TLS mode) unless you pin it &mdash; `PUT /api/v1/auth/oauth/settings {"public_url": "https://fw.example.com:8080"}` &mdash; which you need behind a reverse proxy or when the box is reached under several names.
+
+**Flow.** The sign-in page lists enabled providers (`GET /api/v1/auth/oauth/login-options`). Clicking one calls `GET /api/v1/auth/oauth/{provider}/authorize`, which mints a single-use `state` nonce plus a PKCE (S256) verifier and returns the provider's authorization URL. After consent the provider redirects to the callback, which checks the `state` (10-minute TTL, replay-proof), exchanges the code at the token endpoint (client secret + PKCE verifier), reads the userinfo endpoint and resolves a local account:
+
+1. an existing link in `oauth_identities` (provider + subject) wins;
+2. otherwise a **verified** email that equals an existing local username links that account (unverified emails never link &mdash; a hostile IdP claim can't take over an admin);
+3. otherwise, when **Auto-create accounts** is on (default), a new `viewer` account is provisioned with an unusable password &mdash; promote it under Users; when off, the login is refused (`no_account`).
+
+The session is then installed as the usual `HttpOnly` cookies and the browser lands on the UI. With **Require TOTP after single sign-on** on, an account that has TOTP enrolled is sent to the TOTP prompt first (single-use 5-minute ticket, `POST /api/v1/auth/oauth/totp {"ticket","totp_code"}`); off means the identity provider is trusted for MFA. Failures come back to the sign-in page as `?oauth_error=state|exchange|userinfo|no_account|disabled|denied` and are logged server-side with detail. Provider client secrets are sealed at rest and never returned by the API.
 
 ## API keys
 
@@ -255,6 +260,11 @@ The canonical list lives in [`aifw-common/src/permission.rs`](https://github.com
 | `POST` | `/api/v1/auth/refresh` | Exchange a refresh token for a new JWT |
 | `POST` | `/api/v1/auth/logout` | Revoke the current session |
 | `POST` | `/api/v1/auth/register` | Bootstrap the first admin — unauthenticated, only succeeds while no user account exists |
+| `GET` | `/api/v1/auth/oauth/login-options` | Enabled SSO providers for the sign-in page (public) |
+| `GET` | `/api/v1/auth/oauth/{provider}/authorize` | Start SSO: returns the provider authorization URL (state + PKCE) |
+| `GET` | `/api/v1/auth/oauth/{provider}/callback` | Provider redirect target — installs the session or hands off to TOTP |
+| `POST` | `/api/v1/auth/oauth/totp` | Finish a TOTP-gated SSO login with the callback's ticket |
+| `GET` `/` `PUT` | `/api/v1/auth/oauth/settings` | SSO public URL (admin) |
 | `GET` | `/api/v1/auth/me` | Current user identity, role, perms |
 | `POST` | `/api/v1/auth/totp/setup` | Begin TOTP enrolment |
 | `POST` | `/api/v1/auth/totp/verify` | Verify and activate TOTP |

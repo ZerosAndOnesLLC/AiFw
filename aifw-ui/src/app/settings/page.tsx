@@ -26,6 +26,8 @@ import {
 import { AiProvidersSection } from "./components/AiProvidersSection";
 import { ApiServerSection } from "./components/ApiServerSection";
 import { AuthSection } from "./components/AuthSection";
+import { SsoSection } from "./components/SsoSection";
+import { useSsoSettings } from "@/hooks/useSsoSettings";
 import { BannerSection } from "./components/BannerSection";
 import { ConfigHistorySection } from "./components/ConfigHistorySection";
 import { ConsoleSection } from "./components/ConsoleSection";
@@ -52,7 +54,7 @@ import { ValkeySection } from "./components/ValkeySection";
 // system config) but the category tabs make the long scroll navigable.
 const CATEGORIES: { key: string; label: string; sections: string[] }[] = [
   { key: "system",  label: "System",          sections: ["General", "Login Banner & MOTD", "SSH Access", "Console", "System Actions", "pf State Table"] },
-  { key: "api",     label: "API & Auth",      sections: ["API Server", "TLS Policy", "Authentication"] },
+  { key: "api",     label: "API & Auth",      sections: ["API Server", "TLS Policy", "Authentication", "Single Sign-On (OAuth / OIDC)"] },
   { key: "dns",     label: "DNS",             sections: ["DNS Configuration"] },
   { key: "storage", label: "Storage & Metrics", sections: ["Metrics Storage", "Dashboard History", "Metrics Persistence (Valkey)", "IDS Alert Storage"] },
   { key: "backup",  label: "Backup & History", sections: ["Config History", "S3 Backup Sync", "Email Notifications (SMTP)"] },
@@ -72,6 +74,7 @@ export default function SettingsPage() {
   const apiServer = useApiServerSettings();
   const tls = useTlsPolicy();
   const auth = useAuthSettings();
+  const sso = useSsoSettings();
   const valkey = useValkeySettings();
   const ids = useIdsAlertSettings();
   const ai = useAiProviders();
@@ -150,6 +153,7 @@ export default function SettingsPage() {
       <ApiServerSection visible={inCategory("API Server")} {...apiServer} />
       <TlsPolicySection visible={inCategory("TLS Policy")} {...tls} />
       <AuthSection visible={inCategory("Authentication")} {...auth} />
+      <SsoSection visible={inCategory("Single Sign-On (OAuth / OIDC)")} {...sso} />
       <ValkeySection visible={inCategory("Metrics Persistence (Valkey)")} {...valkey} />
       <IdsAlertSection visible={inCategory("IDS Alert Storage")} {...ids} />
       <AiProvidersSection visible={inCategory("AI / LLM Providers")} {...ai} />

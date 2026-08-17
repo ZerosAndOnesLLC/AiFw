@@ -908,11 +908,17 @@ mod tests {
         let (server, _) = test_app().await;
         let token = create_user_and_login(&server).await;
 
-        // A forged state is rejected before any token exchange.
+        // A forged state is rejected before any token exchange — the
+        // browser is bounced to the login page with the `state` error (#170
+        // made the callback a redirecting endpoint).
         let resp = server
             .get("/api/v1/auth/oauth/Google/callback?code=abc&state=forged-nonce")
             .await;
-        resp.assert_status(StatusCode::UNAUTHORIZED);
+        assert!(resp.status_code().is_redirection());
+        assert_eq!(
+            resp.headers().get("location").unwrap(),
+            "/login/?oauth_error=state"
+        );
 
         // Create the provider, then obtain a real state from /authorize.
         server
@@ -934,14 +940,18 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // A valid state passes the CSRF check — the 501 confirms it reached
-        // the (still-unimplemented, #170) token-exchange step.
+        // A valid state passes the CSRF check and reaches the token
+        // exchange — which fails here (no real Google), so the error is
+        // `exchange`, not `state`.
         let resp = server
             .get(&format!(
                 "/api/v1/auth/oauth/Google/callback?code=abc&state={state}"
             ))
             .await;
-        resp.assert_status(StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            resp.headers().get("location").unwrap(),
+            "/login/?oauth_error=exchange"
+        );
 
         // Replaying the same (now-consumed) state is rejected.
         let resp = server
@@ -949,7 +959,10 @@ mod tests {
                 "/api/v1/auth/oauth/Google/callback?code=abc&state={state}"
             ))
             .await;
-        resp.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get("location").unwrap(),
+            "/login/?oauth_error=state"
+        );
     }
 
     /// SEC-H4 (#289): the per-provider `tls_insecure` opt-in must persist and
@@ -3947,5 +3960,345 @@ mod tests {
             .authorization_bearer(&token)
             .await;
         resp.assert_status_ok();
+    }
+    /// #170: full OAuth/OIDC round-trip against an in-process mock IdP —
+    /// PKCE + state, token exchange, userinfo, auto-provisioning, session
+    /// cookies, replay rejection, auto-create off, and the TOTP second step.
+    #[tokio::test]
+    async fn test_oauth_login_round_trip_with_mock_idp() {
+        use axum::{
+            Json, Router,
+            routing::{get, post},
+        };
+        use std::sync::{Arc, Mutex};
+
+        // ---- mock identity provider ------------------------------------
+        #[derive(Clone, Default)]
+        struct Idp {
+            token_forms: Arc<Mutex<Vec<String>>>,
+            userinfo: Arc<Mutex<Value>>,
+        }
+        let idp = Idp {
+            userinfo: Arc::new(Mutex::new(json!({
+                "sub": "sub-123", "email": "Alice@Example.com", "email_verified": true, "name": "Alice"
+            }))),
+            ..Default::default()
+        };
+        let idp_for_token = idp.clone();
+        let idp_for_info = idp.clone();
+        let idp_app = Router::new()
+            .route(
+                "/token",
+                post(move |body: String| {
+                    let idp = idp_for_token.clone();
+                    async move {
+                        idp.token_forms.lock().unwrap().push(body.clone());
+                        if body.contains("code=goodcode") {
+                            Json(json!({"access_token": "at-xyz", "token_type": "Bearer"}))
+                        } else {
+                            Json(json!({"error": "invalid_grant"}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/userinfo",
+                get(move |headers: axum::http::HeaderMap| {
+                    let idp = idp_for_info.clone();
+                    async move {
+                        let ok = headers.get("authorization").and_then(|h| h.to_str().ok())
+                            == Some("Bearer at-xyz");
+                        if ok {
+                            (StatusCode::OK, Json(idp.userinfo.lock().unwrap().clone()))
+                        } else {
+                            (StatusCode::UNAUTHORIZED, Json(json!({})))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let idp_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, idp_app).await.unwrap();
+        });
+        let idp_base = format!("http://127.0.0.1:{}", idp_addr.port());
+
+        // ---- AiFw side ---------------------------------------------------
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let pool = state.pool.clone();
+        let server = TestServer::new(crate::build_router(state, None, "*", false));
+        let token = create_user_and_login(&server).await;
+
+        // No providers yet → empty public login options.
+        let resp = server.get("/api/v1/auth/oauth/login-options").await;
+        resp.assert_status_ok();
+        assert_eq!(resp.json::<Value>()["data"].as_array().unwrap().len(), 0);
+
+        // Register a generic OIDC provider pointing at the mock.
+        let resp = server
+            .post("/api/v1/auth/oauth/providers")
+            .authorization_bearer(&token)
+            .json(&json!({
+                "name": "MockIdP", "provider_type": "oidc",
+                "client_id": "cid", "client_secret": "csecret",
+                "auth_url": format!("{idp_base}/authorize"),
+                "token_url": format!("{idp_base}/token"),
+                "userinfo_url": format!("{idp_base}/userinfo"),
+                "scopes": "openid email"
+            }))
+            .await;
+        assert_eq!(resp.status_code(), StatusCode::CREATED, "{}", resp.text());
+        let resp = server.get("/api/v1/auth/oauth/login-options").await;
+        let opts: Value = resp.json();
+        assert_eq!(opts["data"][0]["name"], "MockIdP");
+        assert!(opts["data"][0].get("client_secret").is_none());
+
+        // Pin the public URL (what the redirect URI is built from).
+        server
+            .put("/api/v1/auth/oauth/settings")
+            .authorization_bearer(&token)
+            .json(&json!({"public_url": "https://fw.example.test:8080/"}))
+            .await
+            .assert_status_ok();
+
+        // authorize → URL with state + PKCE
+        async fn start(server: &TestServer, idp_base: &str) -> String {
+            let resp = server.get("/api/v1/auth/oauth/MockIdP/authorize").await;
+            resp.assert_status_ok();
+            let body: Value = resp.json();
+            let url = body["authorize_url"].as_str().unwrap().to_string();
+            assert!(url.starts_with(&format!("{idp_base}/authorize?")), "{url}");
+            assert!(url.contains("redirect_uri=https%3A%2F%2Ffw.example.test%3A8080%2Fapi%2Fv1%2Fauth%2Foauth%2FMockIdP%2Fcallback"), "{url}");
+            assert!(url.contains("code_challenge_method=S256"), "{url}");
+            body["state"].as_str().unwrap().to_string()
+        }
+
+        // Happy path: new identity, auto-created viewer, session cookies set.
+        let st = start(&server, &idp_base).await;
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=goodcode&state={st}"
+            ))
+            .await;
+        assert!(resp.status_code().is_redirection(), "{}", resp.text());
+        let loc = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(loc, "/login/?oauth=ok", "{loc}");
+        let cookies: Vec<String> = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert!(
+            cookies.iter().any(|c| c.starts_with("aifw_at=")),
+            "{cookies:?}"
+        );
+        let access = cookies
+            .iter()
+            .find(|c| c.starts_with("aifw_at="))
+            .and_then(|c| c.split(';').next())
+            .and_then(|kv| kv.strip_prefix("aifw_at="))
+            .unwrap()
+            .to_string();
+        // Exchange carried the PKCE verifier and the exact redirect URI.
+        let forms = idp.token_forms.lock().unwrap().clone();
+        assert_eq!(forms.len(), 1);
+        assert!(forms[0].contains("code_verifier="), "{}", forms[0]);
+        assert!(forms[0].contains("client_secret=csecret"), "{}", forms[0]);
+        assert!(forms[0].contains("redirect_uri=https%3A%2F%2Ffw.example.test%3A8080%2Fapi%2Fv1%2Fauth%2Foauth%2FMockIdP%2Fcallback"), "{}", forms[0]);
+        // The cookie session works, and the account is the provisioned viewer.
+        let resp = server
+            .get("/api/v1/auth/me")
+            .add_header("cookie", format!("aifw_at={access}"))
+            .await;
+        resp.assert_status_ok();
+        let me: Value = resp.json();
+        assert_eq!(me["username"], "alice@example.com", "{me}");
+        assert_eq!(me["role"], "viewer");
+        assert_eq!(me["auth_provider"], "MockIdP");
+
+        // Replaying the same state is refused before any exchange.
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=goodcode&state={st}"
+            ))
+            .await;
+        assert_eq!(
+            resp.headers().get("location").unwrap().to_str().unwrap(),
+            "/login/?oauth_error=state"
+        );
+        assert_eq!(idp.token_forms.lock().unwrap().len(), 1);
+
+        // Bad code → exchange error.
+        let st = start(&server, &idp_base).await;
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=badcode&state={st}"
+            ))
+            .await;
+        assert_eq!(
+            resp.headers().get("location").unwrap().to_str().unwrap(),
+            "/login/?oauth_error=exchange"
+        );
+
+        // Second login of the same subject links to the same account (no dup user).
+        let st = start(&server, &idp_base).await;
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=goodcode&state={st}"
+            ))
+            .await;
+        assert_eq!(
+            resp.headers().get("location").unwrap().to_str().unwrap(),
+            "/login/?oauth=ok"
+        );
+        let n: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = 'alice@example.com'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(n, 1);
+
+        // Auto-create off: an unknown subject is refused.
+        server
+            .put("/api/v1/auth/settings")
+            .authorization_bearer(&token)
+            .json(&json!({"auto_create_oauth_users": false}))
+            .await
+            .assert_status_ok();
+        *idp.userinfo.lock().unwrap() =
+            json!({"sub": "sub-999", "email": "bob@example.com", "email_verified": true});
+        let st = start(&server, &idp_base).await;
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=goodcode&state={st}"
+            ))
+            .await;
+        assert_eq!(
+            resp.headers().get("location").unwrap().to_str().unwrap(),
+            "/login/?oauth_error=no_account"
+        );
+
+        // Verified email matching an existing local username links it —
+        // here the bootstrap admin, whose username is "admin".
+        *idp.userinfo.lock().unwrap() =
+            json!({"sub": "sub-admin", "email": "admin", "email_verified": true});
+        let st = start(&server, &idp_base).await;
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=goodcode&state={st}"
+            ))
+            .await;
+        assert_eq!(
+            resp.headers().get("location").unwrap().to_str().unwrap(),
+            "/login/?oauth=ok"
+        );
+        // …but an unverified email must not.
+        *idp.userinfo.lock().unwrap() =
+            json!({"sub": "sub-evil", "email": "admin", "email_verified": false});
+        let st = start(&server, &idp_base).await;
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=goodcode&state={st}"
+            ))
+            .await;
+        assert_eq!(
+            resp.headers().get("location").unwrap().to_str().unwrap(),
+            "/login/?oauth_error=no_account"
+        );
+
+        // TOTP second step: admin enrols TOTP and require_totp_for_oauth is on.
+        let resp = server
+            .post("/api/v1/auth/totp/setup")
+            .authorization_bearer(&token)
+            .await;
+        let secret = resp.json::<Value>()["secret"].as_str().unwrap().to_string();
+        let code = crate::auth::totp::generate_current(&secret).unwrap();
+        server
+            .post("/api/v1/auth/totp/verify")
+            .authorization_bearer(&token)
+            .json(&json!({"code": &code}))
+            .await
+            .assert_status_ok();
+        server
+            .put("/api/v1/auth/settings")
+            .authorization_bearer(&token)
+            .json(&json!({"require_totp_for_oauth": true}))
+            .await
+            .assert_status_ok();
+        *idp.userinfo.lock().unwrap() =
+            json!({"sub": "sub-admin", "email": "admin", "email_verified": true});
+        let st = start(&server, &idp_base).await;
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=goodcode&state={st}"
+            ))
+            .await;
+        let loc = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(loc.starts_with("/login/?oauth_totp="), "{loc}");
+        assert!(
+            !resp.headers().contains_key("set-cookie"),
+            "no session before TOTP"
+        );
+        let ticket = loc
+            .trim_start_matches("/login/?oauth_totp=")
+            .split('&')
+            .next()
+            .unwrap()
+            .to_string();
+        // Wrong code refused, ticket burnt.
+        let resp = server
+            .post("/api/v1/auth/oauth/totp")
+            .json(&json!({"ticket": &ticket, "totp_code": "000000"}))
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+        let code = crate::auth::totp::generate_current(&secret).unwrap();
+        let resp = server
+            .post("/api/v1/auth/oauth/totp")
+            .json(&json!({"ticket": &ticket, "totp_code": &code}))
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED); // single-use ticket
+        // Fresh ticket + right code → session.
+        let st = start(&server, &idp_base).await;
+        let resp = server
+            .get(&format!(
+                "/api/v1/auth/oauth/MockIdP/callback?code=goodcode&state={st}"
+            ))
+            .await;
+        let loc = resp
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let ticket = loc
+            .trim_start_matches("/login/?oauth_totp=")
+            .split('&')
+            .next()
+            .unwrap()
+            .to_string();
+        let code = crate::auth::totp::generate_current(&secret).unwrap();
+        let resp = server
+            .post("/api/v1/auth/oauth/totp")
+            .json(&json!({"ticket": &ticket, "totp_code": &code}))
+            .await;
+        resp.assert_status_ok();
+        assert!(resp.json::<Value>()["access_token"].is_string());
+        assert!(resp.headers().contains_key("set-cookie"));
     }
 }

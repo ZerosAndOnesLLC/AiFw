@@ -144,9 +144,12 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 | `POST` | `/api/v1/auth/api-keys` | Create an API key |
 | `GET`,&nbsp;`PUT` | `/api/v1/auth/settings` | Auth settings (lockout, refresh TTL, &hellip;) |
 | `GET`,&nbsp;`POST` | `/api/v1/auth/oauth/providers` | List / create OAuth providers |
-| `PUT`,&nbsp;`DELETE` | `/api/v1/auth/oauth/providers/{id}` | Manage one provider |
-| `GET` | `/api/v1/auth/oauth/{provider}/authorize` | Begin OAuth login |
-| `GET` | `/api/v1/auth/oauth/{provider}/callback` | OAuth provider callback |
+| `DELETE` | `/api/v1/auth/oauth/providers/{id}` | Remove a provider |
+| `GET`,&nbsp;`PUT` | `/api/v1/auth/oauth/settings` | SSO public URL used for the redirect URI |
+| `GET` | `/api/v1/auth/oauth/login-options` | Enabled providers for the sign-in page (public) |
+| `GET` | `/api/v1/auth/oauth/{provider}/authorize` | Begin OAuth login (state + PKCE) |
+| `GET` | `/api/v1/auth/oauth/{provider}/callback` | OAuth provider callback — installs the session cookies |
+| `POST` | `/api/v1/auth/oauth/totp` | Finish a TOTP-gated OAuth login |
 
 ## Status, metrics, logs
 

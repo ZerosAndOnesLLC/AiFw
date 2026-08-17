@@ -75,18 +75,6 @@ impl OAuthProvider {
             created_at: Utc::now().to_rfc3339(),
         }
     }
-
-    /// Build the authorization URL with state parameter
-    pub fn authorize_url(&self, redirect_uri: &str, state: &str) -> String {
-        format!(
-            "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}",
-            self.auth_url,
-            url_encode(&self.client_id),
-            url_encode(redirect_uri),
-            url_encode(&self.scopes),
-            url_encode(state),
-        )
-    }
 }
 
 // ============================================================
@@ -180,14 +168,31 @@ pub async fn delete_provider(pool: &SqlitePool, id: Uuid) -> Result<(), String> 
 /// while keeping the store self-cleaning.
 const OAUTH_STATE_TTL_SECS: i64 = 600;
 
-/// Persist a freshly-issued `state` nonce bound to a provider.
-pub async fn save_state(pool: &SqlitePool, state: &str, provider: &str) -> Result<(), String> {
+/// What was stored alongside a `state` nonce at authorize time (#170).
+#[derive(Debug, Clone)]
+pub struct PendingAuthorize {
+    /// PKCE code verifier to send with the token exchange.
+    pub code_verifier: String,
+    /// Exact redirect URI used in the authorize request (must repeat).
+    pub redirect_uri: String,
+}
+
+/// Persist a freshly-issued `state` nonce bound to a provider, together
+/// with the PKCE verifier and redirect URI the callback must reuse.
+pub async fn save_state(
+    pool: &SqlitePool,
+    state: &str,
+    provider: &str,
+    pending: &PendingAuthorize,
+) -> Result<(), String> {
     sqlx::query(
-        "INSERT OR REPLACE INTO oauth_states (state, provider, created_at) VALUES (?1, ?2, ?3)",
+        "INSERT OR REPLACE INTO oauth_states (state, provider, created_at, code_verifier, redirect_uri) VALUES (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(state)
     .bind(provider)
     .bind(Utc::now().to_rfc3339())
+    .bind(&pending.code_verifier)
+    .bind(&pending.redirect_uri)
     .execute(pool)
     .await
     .map_err(|e| format!("db error: {e}"))?;
@@ -196,9 +201,13 @@ pub async fn save_state(pool: &SqlitePool, state: &str, provider: &str) -> Resul
 
 /// Consume a `state` nonce at the callback: it must exist, match the
 /// provider, and be unexpired. The row is deleted so a nonce is single-use
-/// (replay-proof). Returns true iff the state was valid. Expired rows are
-/// swept opportunistically.
-pub async fn consume_state(pool: &SqlitePool, state: &str, provider: &str) -> bool {
+/// (replay-proof). Returns what was stored at authorize time iff the state
+/// was valid. Expired rows are swept opportunistically.
+pub async fn consume_state(
+    pool: &SqlitePool,
+    state: &str,
+    provider: &str,
+) -> Option<PendingAuthorize> {
     // Best-effort GC of stale nonces.
     let cutoff = (Utc::now() - chrono::Duration::seconds(OAUTH_STATE_TTL_SECS)).to_rfc3339();
     let _ = sqlx::query("DELETE FROM oauth_states WHERE created_at < ?1")
@@ -206,32 +215,25 @@ pub async fn consume_state(pool: &SqlitePool, state: &str, provider: &str) -> bo
         .execute(pool)
         .await;
 
-    let row = sqlx::query_as::<_, (String, String)>(
-        "DELETE FROM oauth_states WHERE state = ?1 RETURNING provider, created_at",
+    let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+        "DELETE FROM oauth_states WHERE state = ?1 RETURNING provider, created_at, code_verifier, redirect_uri",
     )
     .bind(state)
     .fetch_optional(pool)
     .await
     .unwrap_or(None);
 
-    match row {
-        Some((row_provider, created_at)) => {
-            let fresh = chrono::DateTime::parse_from_rfc3339(&created_at)
-                .map(|c| (Utc::now() - c.with_timezone(&Utc)).num_seconds() <= OAUTH_STATE_TTL_SECS)
-                .unwrap_or(false);
-            fresh && row_provider.eq_ignore_ascii_case(provider)
-        }
-        None => false,
+    let (row_provider, created_at, verifier, redirect_uri) = row?;
+    let fresh = chrono::DateTime::parse_from_rfc3339(&created_at)
+        .map(|c| (Utc::now() - c.with_timezone(&Utc)).num_seconds() <= OAUTH_STATE_TTL_SECS)
+        .unwrap_or(false);
+    if !(fresh && row_provider.eq_ignore_ascii_case(provider)) {
+        return None;
     }
-}
-
-fn url_encode(s: &str) -> String {
-    s.replace(' ', "+")
-        .replace(':', "%3A")
-        .replace('/', "%2F")
-        .replace('@', "%40")
-        .replace('&', "%26")
-        .replace('=', "%3D")
+    Some(PendingAuthorize {
+        code_verifier: verifier.unwrap_or_default(),
+        redirect_uri: redirect_uri.unwrap_or_default(),
+    })
 }
 
 // ============================================================
@@ -258,6 +260,34 @@ pub struct AuthorizeResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct CallbackQuery {
+    #[serde(default)]
     pub code: String,
+    #[serde(default)]
     pub state: String,
+    /// Provider-side denial (`access_denied`, …).
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Body of `POST /auth/oauth/totp` — finish a TOTP-gated OAuth login.
+#[derive(Debug, Deserialize)]
+pub struct OAuthTotpRequest {
+    pub ticket: String,
+    pub totp_code: String,
+}
+
+/// Public login options for the sign-in page (no secrets).
+#[derive(Debug, Serialize)]
+pub struct LoginOption {
+    pub name: String,
+    pub provider_type: OAuthProviderType,
+}
+
+/// `GET/PUT /auth/oauth/settings`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OAuthSettings {
+    /// Externally reachable base URL used to build the callback redirect
+    /// URI; empty ⇒ derived from the request `Host`.
+    #[serde(default)]
+    pub public_url: String,
 }

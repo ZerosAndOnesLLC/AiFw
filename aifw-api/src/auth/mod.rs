@@ -12,6 +12,7 @@ pub mod jwt_key;
 pub mod middleware;
 pub mod migrate;
 pub mod oauth;
+pub mod oauth_flow;
 pub mod password;
 pub mod revocation;
 pub mod tokens;
