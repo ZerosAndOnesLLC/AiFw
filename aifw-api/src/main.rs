@@ -5,6 +5,7 @@ mod auth;
 mod backup;
 mod backup_s3;
 mod ca;
+mod client_ip;
 mod cluster;
 mod dhcp;
 mod dns_blocklists;
@@ -200,6 +201,8 @@ pub struct AppState {
     /// Watch channel that fires whenever `pending` changes — drives SSE.
     pub pending_tx: watch::Sender<PendingChanges>,
     pub login_limiter: LoginRateLimiter,
+    /// #308: proxies whose X-Forwarded-For we believe. Empty = never.
+    pub trusted_proxies: Arc<client_ip::TrustedProxies>,
     pub ws_tickets: Arc<auth::ws_ticket::WsTicketStore>,
     /// Broadcast channel that carries the prepared per-tick dashboard JSON
     /// payload. A single producer task (`ws::run_dashboard_producer`) builds
@@ -331,6 +334,13 @@ struct Args {
     /// CORS allowed origins (comma-separated, or * for any)
     #[arg(long, default_value = "*")]
     cors_origins: String,
+
+    /// Reverse proxies / load balancers whose X-Forwarded-For header is
+    /// trusted for the client IP (comma-separated IPs or CIDRs). Merged with
+    /// the `api_server_trusted_proxies` setting. Empty (default) = the TCP
+    /// peer is always the client and XFF is ignored (#308).
+    #[arg(long, env = "AIFW_TRUSTED_PROXIES", default_value = "")]
+    trusted_proxies: String,
 
     /// Path to static UI build directory (serves web UI if set)
     #[arg(long, env = "AIFW_UI_DIR")]
@@ -631,6 +641,12 @@ pub fn build_router(
                 )
                 .layer(cors),
         )
+        // #308: resolve the client address (peer, or XFF behind a trusted
+        // proxy) once per request; handlers read `Extension<ClientIp>`.
+        .layer(middleware::from_fn_with_state(
+            state.trusted_proxies.clone(),
+            client_ip::attach_client_ip,
+        ))
         .with_state(state);
 
     // Serve static UI if directory is provided.
@@ -1169,6 +1185,7 @@ async fn create_state_from_db(
         pending: Arc::new(RwLock::new(PendingChanges::default())),
         pending_tx: watch::channel(PendingChanges::default()).0,
         login_limiter: LoginRateLimiter::default(),
+        trusted_proxies: Arc::new(client_ip::TrustedProxies::default()),
         ws_tickets: auth::ws_ticket::WsTicketStore::new(),
         // Broadcast capacity is per-subscriber lag tolerance, not aggregate.
         // 256 slots of Arc<String> (~16 KiB pointers + bookkeeping) absorb
@@ -1597,6 +1614,29 @@ async fn main() -> anyhow::Result<()> {
             auth::jwt_key::load_or_create(&args.jwt_key_file, &state.pool)
                 .await
                 .map_err(|e| anyhow::anyhow!("JWT key file: {e}"))?;
+    }
+
+    // #308: trusted proxies = CLI/env list + Settings → API Server value.
+    {
+        let (mut trusted, mut bad) = client_ip::TrustedProxies::parse(&args.trusted_proxies);
+        let stored: Option<(String,)> = sqlx::query_as(
+            "SELECT value FROM auth_config WHERE key = 'api_server_trusted_proxies'",
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or(None);
+        if let Some((v,)) = stored {
+            let (t, b) = client_ip::TrustedProxies::parse(&v);
+            trusted.extend(t);
+            bad.extend(b);
+        }
+        for b in &bad {
+            warn!(entry = %b, "trusted-proxies: ignoring unparseable entry");
+        }
+        if !trusted.is_empty() {
+            info!("X-Forwarded-For trusted from configured proxies");
+        }
+        state.trusted_proxies = Arc::new(trusted);
     }
 
     // Load non-secret auth settings from DB.
@@ -2057,9 +2097,12 @@ async fn main() -> anyhow::Result<()> {
         }
         let listener = tokio::net::TcpListener::bind(&args.listen).await?;
         info!("AiFw API listening on http://{}", args.listen);
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     } else {
         ensure_tls_cert(&args.tls_cert, &args.tls_key)?;
         let tls_config =
@@ -2079,7 +2122,7 @@ async fn main() -> anyhow::Result<()> {
         });
         axum_server::bind_rustls(addr, tls_config)
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await?;
     }
 

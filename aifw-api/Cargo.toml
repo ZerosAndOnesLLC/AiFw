@@ -51,6 +51,7 @@ time = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
+ip_network = "0.4"
 quick-xml = "0.41"
 thiserror = { workspace = true }
 

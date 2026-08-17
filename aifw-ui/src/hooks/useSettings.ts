@@ -49,6 +49,7 @@ import {
   rebootSystem,
   saveAiSettings,
   saveApiServerSettings,
+  getApiServerSettings,
   saveAuthSettings,
   saveConfigRetention,
   saveDashboardHistorySettings,
@@ -193,9 +194,22 @@ export function useMetricsSettings() {
 export function useApiServerSettings() {
   const [port, setPort] = useState("8080");
   const [corsOrigins, setCorsOrigins] = useState("*");
-  const [jwtSecret, setJwtSecret] = useState("auto-generated");
+  const [trustedProxies, setTrustedProxies] = useState("");
   const [saving, setSaving] = useState(false);
   const { feedback, showFeedback, clearFeedback } = useFeedback(4000);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await getApiServerSettings();
+        if (s.port) setPort(String(s.port));
+        if (s.cors_origins) setCorsOrigins(s.cors_origins);
+        if (s.trusted_proxies !== undefined) setTrustedProxies(s.trusted_proxies);
+      } catch {
+        // endpoint may not exist yet
+      }
+    })();
+  }, []);
 
   const save = async () => {
     setSaving(true);
@@ -204,9 +218,9 @@ export function useApiServerSettings() {
       await saveApiServerSettings({
         port: Number(port),
         cors_origins: corsOrigins,
-        jwt_secret: jwtSecret,
+        trusted_proxies: trustedProxies,
       });
-      showFeedback("success", "API settings saved.");
+      showFeedback("success", "API settings saved — applied at the next aifw-api restart.");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       showFeedback("error", `Save failed: ${msg}`);
@@ -215,7 +229,7 @@ export function useApiServerSettings() {
     }
   };
 
-  return { port, setPort, corsOrigins, setCorsOrigins, jwtSecret, setJwtSecret, saving, feedback, save };
+  return { port, setPort, corsOrigins, setCorsOrigins, trustedProxies, setTrustedProxies, saving, feedback, save };
 }
 
 // --- TLS Policy ---

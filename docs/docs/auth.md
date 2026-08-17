@@ -53,6 +53,8 @@ curl -X POST https://aifw.local/api/v1/auth/login \
   -d '{"username": "alice", "password": "..."}'
 ```
 
+Login and refresh are rate-limited per client IP and per username / token prefix. The client IP is the TCP peer; `X-Forwarded-For` is only believed when the peer is a configured **trusted proxy** (`--trusted-proxies` / `AIFW_TRUSTED_PROXIES`, or Settings &rarr; API Server &rarr; Trusted Proxies; comma-separated IPs or CIDRs, applied at the next API restart). With no trusted proxies configured &mdash; the default &mdash; the header is ignored, so a client can't dodge the limiter by rotating it. Behind a trusted proxy the rightmost hop that isn't itself a trusted proxy is used.
+
 ## TOTP 2FA
 
 Each user can enrol a TOTP authenticator (Google Authenticator, Authy, 1Password, Bitwarden, &hellip;).

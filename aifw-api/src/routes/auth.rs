@@ -22,19 +22,16 @@ fn session_cookie_headers(state: &AppState, tokens: &auth::TokenPair) -> HeaderM
 
 pub async fn login(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    client: Option<axum::Extension<crate::client_ip::ClientIp>>,
     Json(req): Json<auth::LoginRequest>,
 ) -> Result<(HeaderMap, Json<auth::LoginResponse>), StatusCode> {
-    // Rate-limit on two axes: the X-Forwarded-For-ish client IP (best
-    // effort — spoofable without a trusted-proxies allow-list, tracked
-    // as a follow-up) AND the username. The username axis guarantees a
-    // password-spray against one account still gets limited even if
-    // the attacker rotates XFF per request.
-    let client_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
+    // Rate-limit on two axes: the client IP AND the username. The IP is
+    // the TCP peer, or X-Forwarded-For only when the peer is a configured
+    // trusted proxy (#308) — so it can no longer be rotated per request by
+    // the attacker. The username axis guarantees a password-spray against
+    // one account still gets limited regardless.
+    let client_ip = client
+        .and_then(|c| c.0.key())
         .unwrap_or_else(|| format!("user:{}", req.username));
     let rl_user = req.username.to_ascii_lowercase();
 
@@ -200,6 +197,7 @@ pub async fn totp_login(
 pub async fn refresh_token(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client: Option<axum::Extension<crate::client_ip::ClientIp>>,
     body: Option<Json<auth::tokens::RefreshRequest>>,
 ) -> Result<(HeaderMap, Json<auth::TokenPair>), StatusCode> {
     // Token comes from the JSON body (header-auth clients) or, for the
@@ -208,17 +206,14 @@ pub async fn refresh_token(
         .map(|Json(r)| r.refresh_token)
         .or_else(|| auth::cookies::cookie_value(&headers, auth::cookies::REFRESH_COOKIE))
         .ok_or(bad_request())?;
-    // SEC-H8: rate-limit refresh like login. Key on the client IP (best
-    // effort, spoofable without a trusted-proxy allow-list) and on the
-    // token prefix so a spray of forged tokens from one source is capped.
-    // Falling back to the prefix as the IP key when there's no XFF avoids a
-    // single shared global bucket that would block unrelated clients.
+    // SEC-H8: rate-limit refresh like login. Key on the client IP (peer, or
+    // XFF behind a trusted proxy — #308) and on the token prefix so a spray
+    // of forged tokens from one source is capped. Falling back to the prefix
+    // as the IP key when the peer is unknown avoids a single shared global
+    // bucket that would block unrelated clients.
     let token_prefix = auth::tokens::refresh_prefix(&refresh_token).to_string();
-    let client_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
+    let client_ip = client
+        .and_then(|c| c.0.key())
         .unwrap_or_else(|| format!("rfx:{token_prefix}"));
 
     if state
