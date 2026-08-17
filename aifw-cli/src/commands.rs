@@ -1152,7 +1152,10 @@ pub async fn config_show(db_path: &Path) -> anyhow::Result<()> {
             println!("Resources: {}", config.resource_count());
             println!("Hash: {}", config.hash());
             println!();
-            println!("{}", config.to_json());
+            // #313: display surface — never print live keys.
+            let mut shown = config.clone();
+            aifw_core::config_secrets::redact(&mut shown);
+            println!("{}", shown.to_json());
         }
         None => {
             println!("No active configuration. Run 'aifw-setup' or 'aifw config import'.");
@@ -1161,19 +1164,91 @@ pub async fn config_show(db_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn config_export(db_path: &Path) -> anyhow::Result<()> {
-    let mgr = create_config_manager(db_path).await?;
-    match mgr.get_active().await.map_err(|e| anyhow::anyhow!(e))? {
-        Some((_, config)) => print!("{}", config.to_json()),
-        None => anyhow::bail!("no active configuration"),
+/// Backup passphrase from `--passphrase-file` (first line) or the
+/// `AIFW_BACKUP_PASSPHRASE` environment variable (#313).
+fn backup_passphrase(passphrase_file: Option<&str>) -> anyhow::Result<Option<String>> {
+    if let Some(path) = passphrase_file {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("reading passphrase file {path}: {e}"))?;
+        let line = content.lines().next().unwrap_or("").trim_end_matches('\r');
+        if line.is_empty() {
+            anyhow::bail!("passphrase file {path} is empty");
+        }
+        return Ok(Some(line.to_string()));
     }
+    Ok(std::env::var("AIFW_BACKUP_PASSPHRASE")
+        .ok()
+        .filter(|p| !p.is_empty()))
+}
+
+pub async fn config_export(
+    db_path: &Path,
+    secrets: &str,
+    passphrase_file: Option<&str>,
+) -> anyhow::Result<()> {
+    let mgr = create_config_manager(db_path).await?;
+    let Some((_, mut config)) = mgr.get_active().await.map_err(|e| anyhow::anyhow!(e))? else {
+        anyhow::bail!("no active configuration");
+    };
+    match secrets {
+        "plain" => {
+            eprintln!(
+                "warning: export contains live keys and passwords in the clear — protect the output"
+            );
+        }
+        "passphrase" => {
+            let Some(pw) = backup_passphrase(passphrase_file)? else {
+                anyhow::bail!(
+                    "--secrets passphrase needs --passphrase-file or $AIFW_BACKUP_PASSPHRASE"
+                );
+            };
+            aifw_core::config_secrets::seal_with_passphrase(&mut config, &pw)
+                .map_err(|e| anyhow::anyhow!(e))?;
+        }
+        _ => aifw_core::config_secrets::redact(&mut config),
+    }
+    print!("{}", config.to_json());
     Ok(())
 }
 
-pub async fn config_import(db_path: &Path, file: &str) -> anyhow::Result<()> {
+pub async fn config_import(
+    db_path: &Path,
+    file: &str,
+    passphrase_file: Option<&str>,
+) -> anyhow::Result<()> {
+    use aifw_core::config_secrets as cs;
     let mgr = create_config_manager(db_path).await?;
     let content = std::fs::read_to_string(file)?;
-    let config = aifw_core::FirewallConfig::from_json(&content).map_err(|e| anyhow::anyhow!(e))?;
+    let mut config =
+        aifw_core::FirewallConfig::from_json(&content).map_err(|e| anyhow::anyhow!(e))?;
+
+    // #313: unlock wrapped secrets, then fill redacted ones from the active
+    // config so the stored version is full-fidelity.
+    if matches!(cs::state(&config), cs::SecretsState::Passphrase { .. }) {
+        let Some(pw) = backup_passphrase(passphrase_file)? else {
+            anyhow::bail!(
+                "this backup's secrets are passphrase-protected — pass --passphrase-file or set $AIFW_BACKUP_PASSPHRASE"
+            );
+        };
+        cs::open_with_passphrase(&mut config, &pw)
+            .map_err(|e| anyhow::anyhow!("could not unlock backup secrets: {e}"))?;
+    }
+    if !cs::redacted_refs(&config).is_empty() {
+        let current = mgr
+            .get_active()
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?
+            .map(|(_, c)| c)
+            .unwrap_or_default();
+        let unresolved = cs::resolve_redacted(&mut config, &current);
+        if !unresolved.is_empty() {
+            let names: Vec<String> = unresolved.iter().map(|r| r.to_string()).collect();
+            anyhow::bail!(
+                "backup was exported without secrets and this box does not hold them: {}",
+                names.join(", ")
+            );
+        }
+    }
 
     println!("Importing config: {} resources", config.resource_count());
 

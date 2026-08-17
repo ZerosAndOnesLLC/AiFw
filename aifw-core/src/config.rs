@@ -83,6 +83,11 @@ pub struct FirewallConfig {
     /// `log_rotation_config` table). `None` = backup predates the section.
     #[serde(default)]
     pub log_rotation: Option<crate::log_rotation::LogRotationConfig>,
+    /// KDF envelope present only while the config's secret fields are
+    /// passphrase-wrapped for export (#313, `aifw_core::config_secrets`).
+    /// Never set on a config that is applied to the box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<crate::config_secrets::SecretsEnvelope>,
 }
 
 impl Default for FirewallConfig {
@@ -106,6 +111,7 @@ impl Default for FirewallConfig {
             dns_resolver: None,
             syslog: None,
             log_rotation: None,
+            secrets: None,
         }
     }
 }

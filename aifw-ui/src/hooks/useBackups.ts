@@ -18,6 +18,7 @@ import {
   fetchConfigDiff,
   fetchConfigCheck,
   exportConfig,
+  exportConfigWithPassphrase,
   fetchImportPreview,
   importConfig,
   previewOpnsenseConfig,
@@ -58,6 +59,7 @@ export function useBackups() {
   const [preview, setPreview] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importMap, setImportMap] = useState<Record<string, string>>({});
+  const [importPassphrase, setImportPassphrase] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   // History Restore preview/mapping modal
@@ -191,19 +193,22 @@ export function useBackups() {
 
   /* -- Export -------------------------------------------------------- */
 
-  const handleExport = async () => {
+  /// `passphrase` undefined ⇒ redacted export; otherwise secrets are
+  /// wrapped under it (#313).
+  const handleExport = async (passphrase?: string) => {
     setExporting(true);
     try {
-      const data = await exportConfig();
+      const data = passphrase ? await exportConfigWithPassphrase(passphrase) : await exportConfig();
       const json = JSON.stringify(data, null, 2);
       const blob = new Blob([json], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `aifw-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      const tag = passphrase ? "" : "-redacted";
+      a.download = `aifw-backup${tag}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      showFeedback("success", "Config exported");
+      showFeedback("success", passphrase ? "Config exported (secrets passphrase-protected)" : "Config exported (secrets redacted)");
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Export failed");
     } finally {
@@ -222,6 +227,7 @@ export function useBackups() {
       setPreview(text);
       setImportPreview(null);
       setImportMap({});
+      setImportPassphrase("");
       try {
         const parsed = JSON.parse(text);
         const data = await fetchImportPreview(parsed);
@@ -244,11 +250,13 @@ export function useBackups() {
     try {
       const data = JSON.parse(preview);
       const interface_map = importPreview ? buildInterfaceMapForApi(importPreview, importMap) : {};
-      const body = await importConfig({ ...data, interface_map });
+      const passphrase = importPassphrase || undefined;
+      const body = await importConfig({ ...data, interface_map, passphrase });
       showFeedback("success", body.message || "Config imported");
       setPreview(null);
       setImportPreview(null);
       setImportMap({});
+      setImportPassphrase("");
       if (fileRef.current) fileRef.current.value = "";
     } catch (err) {
       showFeedback("error", err instanceof Error ? err.message : "Import failed");
@@ -261,6 +269,7 @@ export function useBackups() {
     setPreview(null);
     setImportPreview(null);
     setImportMap({});
+    setImportPassphrase("");
     if (fileRef.current) fileRef.current.value = "";
   };
 
@@ -387,6 +396,8 @@ export function useBackups() {
     importPreview,
     importMap,
     setImportMap,
+    importPassphrase,
+    setImportPassphrase,
     fileRef,
     handleFileSelect,
     handleImport,
@@ -437,12 +448,12 @@ export function useS3Archive() {
 
   useEffect(() => { queueMicrotask(reload); }, [reload]);
 
-  const importNow = async (key: string) => {
+  const importNow = async (key: string, passphrase?: string) => {
     if (!confirm(`Import ${key}?\n\nThis saves it as a new local version. It does NOT apply — you can diff then restore from the History tab.`)) return;
     setImporting(key);
     setStatus(null);
     try {
-      const d = await importS3Object(key);
+      const d = await importS3Object(key, passphrase || undefined);
       setStatus(d.message || `Imported as version ${d.version}`);
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));

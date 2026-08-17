@@ -88,10 +88,12 @@ pub async fn get_version(
     Query(params): Query<VersionParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let mgr = ConfigManager::new(state.pool.clone());
-    let config = mgr
+    let mut config = mgr
         .get_version(params.version)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
+    // #313: history views are display surfaces — never hand out live keys.
+    aifw_core::config_secrets::redact(&mut config);
     let json: serde_json::Value = serde_json::to_value(&config).map_err(|_| internal())?;
     Ok(Json(json))
 }
@@ -123,8 +125,11 @@ pub async fn diff_versions(
         .diff(params.v1, params.v2)
         .await
         .map_err(|_| internal())?;
-    let c1 = mgr.get_version(params.v1).await.map_err(|_| internal())?;
-    let c2 = mgr.get_version(params.v2).await.map_err(|_| internal())?;
+    let mut c1 = mgr.get_version(params.v1).await.map_err(|_| internal())?;
+    let mut c2 = mgr.get_version(params.v2).await.map_err(|_| internal())?;
+    // #313: the side-by-side JSON is a display surface — redact secrets.
+    aifw_core::config_secrets::redact(&mut c1);
+    aifw_core::config_secrets::redact(&mut c2);
     let v1_json = serde_json::to_value(&c1).map_err(|_| internal())?;
     let v2_json = serde_json::to_value(&c2).map_err(|_| internal())?;
 
@@ -177,18 +182,24 @@ pub struct RestoreRequest {
 pub async fn restore_version(
     State(state): State<AppState>,
     Json(req): Json<RestoreRequest>,
-) -> Result<Json<MessageResponse>, StatusCode> {
+) -> Result<Json<MessageResponse>, (StatusCode, String)> {
     let mgr = ConfigManager::new(state.pool.clone());
     let config = mgr
         .get_version(req.version)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|_| (StatusCode::NOT_FOUND, "no such config version".to_string()))?;
 
-    apply_firewall_config_or_rollback(&state, &config, &req.interface_map).await?;
+    // A version imported from a redacted backup (S3 / file) carries the
+    // REDACTED sentinel; fill it from what the box holds now (#313).
+    let config = prepare_secrets_for_apply(&state, config, None).await?;
+
+    apply_firewall_config_or_rollback(&state, &config, &req.interface_map)
+        .await
+        .map_err(status_only)?;
 
     mgr.mark_applied(req.version)
         .await
-        .map_err(|_| internal())?;
+        .map_err(|_| status_only(internal()))?;
 
     Ok(Json(MessageResponse {
         message: format!("Restored to version {}", req.version),
@@ -863,6 +874,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         dns_resolver: Some(crate::dns_resolver::load_config(&state.pool).await),
         syslog: Some(aifw_common::syslog::load(&state.pool).await),
         log_rotation: Some(aifw_core::log_rotation::load(&state.pool).await),
+        secrets: None,
     };
 
     Ok(config)
@@ -1348,6 +1360,12 @@ pub struct ImportPreview {
     /// How many entries WILL BE DROPPED per section if every currently-missing
     /// interface is left unmapped. Updated client-side as user picks mappings.
     pub drop_summary_if_unmapped: DropSummary,
+    /// Whether the file's secrets are plain, redacted, or passphrase-wrapped
+    /// (#313). Wrapped ⇒ the import needs a passphrase.
+    pub secrets: aifw_core::config_secrets::SecretsState,
+    /// Redacted secrets this box cannot fill from its own state — the
+    /// import will be refused until they are supplied.
+    pub unresolved_secrets: Vec<String>,
 }
 
 /// Walk a FirewallConfig and collect every interface-name reference.
@@ -1463,8 +1481,26 @@ async fn collect_system_interfaces() -> Vec<InterfaceInfo> {
     out
 }
 
-/// Build the preview for a given FirewallConfig.
-pub(crate) async fn build_import_preview(cfg: &FirewallConfig) -> ImportPreview {
+/// Build the preview for a given FirewallConfig. `current` is what the box
+/// holds now, used to work out which redacted secrets an import can fill.
+pub(crate) async fn build_import_preview(
+    cfg: &FirewallConfig,
+    current: Option<&FirewallConfig>,
+) -> ImportPreview {
+    let secrets = aifw_core::config_secrets::state(cfg);
+    let unresolved_secrets: Vec<String> = match current {
+        Some(cur) => {
+            let mut probe = cfg.clone();
+            aifw_core::config_secrets::resolve_redacted(&mut probe, cur)
+                .iter()
+                .map(|r| r.to_string())
+                .collect()
+        }
+        None => aifw_core::config_secrets::redacted_refs(cfg)
+            .iter()
+            .map(|r| r.to_string())
+            .collect(),
+    };
     let refs = collect_interface_refs(cfg);
     let present = collect_system_interfaces().await;
     let present_names: std::collections::HashSet<String> =
@@ -1489,6 +1525,8 @@ pub(crate) async fn build_import_preview(cfg: &FirewallConfig) -> ImportPreview 
         interfaces_present: present,
         suggestions,
         drop_summary_if_unmapped: drop,
+        secrets,
+        unresolved_secrets,
     }
 }
 
@@ -1498,13 +1536,14 @@ pub struct RestorePreviewQuery {
 }
 
 pub async fn preview_import(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<ImportPreview>, StatusCode> {
     let config_val = payload.get("config").ok_or(StatusCode::BAD_REQUEST)?;
     let config: FirewallConfig =
         serde_json::from_value(config_val.clone()).map_err(|_| StatusCode::BAD_REQUEST)?;
-    Ok(Json(build_import_preview(&config).await))
+    let current = build_current_config(&state).await.ok();
+    Ok(Json(build_import_preview(&config, current.as_ref()).await))
 }
 
 pub async fn preview_restore(
@@ -1516,7 +1555,8 @@ pub async fn preview_restore(
         .get_version(q.version)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok(Json(build_import_preview(&config).await))
+    let current = build_current_config(&state).await.ok();
+    Ok(Json(build_import_preview(&config, current.as_ref()).await))
 }
 
 /// Resolve the target interface name via the provided map.
@@ -1543,6 +1583,62 @@ fn apply_fail(step: &str, e: impl std::fmt::Display) -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
+/// Attach the canonical reason to a bare status so handlers that now return
+/// `(StatusCode, String)` can keep using the older `StatusCode`-only helpers.
+pub(crate) fn status_only(s: StatusCode) -> (StatusCode, String) {
+    (s, s.canonical_reason().unwrap_or("error").to_string())
+}
+
+/// Bring an incoming config's secrets into applicable shape (#313):
+/// passphrase-wrapped values are opened with `passphrase` (400 if it is
+/// missing or wrong), then any [`REDACTED`](aifw_core::config_secrets::REDACTED)
+/// sentinel is filled from the config the box currently holds. Refuses
+/// with a 400 naming every secret that cannot be resolved — applying a
+/// sentinel would silently break a tunnel or VIP.
+pub(crate) async fn prepare_secrets_for_apply(
+    state: &AppState,
+    mut config: FirewallConfig,
+    passphrase: Option<&str>,
+) -> Result<FirewallConfig, (StatusCode, String)> {
+    use aifw_core::config_secrets as cs;
+    match cs::state(&config) {
+        cs::SecretsState::Plain => return Ok(config),
+        cs::SecretsState::Passphrase { .. } => {
+            let Some(pw) = passphrase.filter(|p| !p.is_empty()) else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "this backup's secrets are passphrase-protected — supply the passphrase to import it"
+                        .to_string(),
+                ));
+            };
+            cs::open_with_passphrase(&mut config, pw).map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("could not unlock backup secrets: {e}"),
+                )
+            })?;
+        }
+        cs::SecretsState::Redacted { .. } => {}
+    }
+    if cs::redacted_refs(&config).is_empty() {
+        return Ok(config);
+    }
+    let current = build_current_config(state).await.map_err(status_only)?;
+    let unresolved = cs::resolve_redacted(&mut config, &current);
+    if !unresolved.is_empty() {
+        let names: Vec<String> = unresolved.iter().map(|r| r.to_string()).collect();
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "backup was exported without secrets and this box does not hold them: {}. \
+                 Re-export with a passphrase, or recreate these objects after import.",
+                names.join(", ")
+            ),
+        ));
+    }
+    Ok(config)
+}
+
 /// Pre-apply validation (#535): run the target config through the same
 /// converters and validators the apply path uses, *before* the first
 /// destructive DELETE. Entries the apply loop would silently skip
@@ -1553,6 +1649,18 @@ pub(crate) fn prevalidate_config(
     iface_map: &InterfaceMap,
 ) -> Result<(), String> {
     config.validate()?;
+
+    // #313: sentinels / wrapped values must have been resolved by the caller
+    // (`prepare_secrets_for_apply`); writing them would break the data plane.
+    match aifw_core::config_secrets::state(config) {
+        aifw_core::config_secrets::SecretsState::Plain => {}
+        aifw_core::config_secrets::SecretsState::Redacted { count } => {
+            return Err(format!("{count} secret(s) are redacted and unresolved"));
+        }
+        aifw_core::config_secrets::SecretsState::Passphrase { .. } => {
+            return Err("secrets are passphrase-wrapped; unlock before applying".into());
+        }
+    }
 
     for rc in &config.rules {
         let iface_after = match rc.interface.as_deref() {
@@ -3043,7 +3151,25 @@ pub async fn auto_snapshot_middleware(
         let s3cfg = aifw_core::s3_backup::load(&bg_state.pool).await;
         if s3cfg.enabled {
             let now = chrono::Utc::now().to_rfc3339();
-            match aifw_core::s3_backup::upload_version(&s3cfg, version, &now, &cfg.to_json()).await
+            // #313: never ship live secrets to object storage — wrap them
+            // under the configured passphrase, or redact when none is set.
+            let mut upload = cfg.clone();
+            match s3cfg
+                .secrets_passphrase
+                .as_deref()
+                .filter(|p| !p.is_empty())
+            {
+                Some(pw) => {
+                    if let Err(e) = aifw_core::config_secrets::seal_with_passphrase(&mut upload, pw)
+                    {
+                        tracing::warn!(version, error = %e, "S3 upload: wrapping secrets failed; uploading redacted copy");
+                        aifw_core::config_secrets::redact(&mut upload);
+                    }
+                }
+                None => aifw_core::config_secrets::redact(&mut upload),
+            }
+            match aifw_core::s3_backup::upload_version(&s3cfg, version, &now, &upload.to_json())
+                .await
             {
                 Ok(key) => {
                     aifw_core::smtp_notify::send_event(

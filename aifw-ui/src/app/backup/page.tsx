@@ -54,6 +54,8 @@ export default function BackupPage() {
     importPreview,
     importMap,
     setImportMap,
+    importPassphrase,
+    setImportPassphrase,
     fileRef,
     handleFileSelect,
     handleImport,
@@ -162,6 +164,8 @@ export default function BackupPage() {
               importPreview={importPreview}
               importMap={importMap}
               setImportMap={setImportMap}
+              importPassphrase={importPassphrase}
+              setImportPassphrase={setImportPassphrase}
               fileRef={fileRef}
               handleFileSelect={handleFileSelect}
               handleImport={handleImport}

@@ -3808,4 +3808,144 @@ mod tests {
         let body: Value = resp.json();
         assert_eq!(body["ok"], false);
     }
+    /// #313: exports never carry live secrets — GET redacts, POST wraps
+    /// under a passphrase — and imports resolve/unlock them again.
+    #[tokio::test]
+    async fn test_config_export_secrets_redacted_and_passphrase_round_trip() {
+        use aifw_core::config_secrets::{PW_PREFIX, REDACTED};
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let cluster = state.cluster_engine.clone();
+        let vip = cluster
+            .add_carp_vip(aifw_common::CarpVip {
+                id: uuid::Uuid::new_v4(),
+                vhid: 7,
+                virtual_ip: "192.0.2.10".parse().unwrap(),
+                prefix: 24,
+                interface: aifw_common::Interface("em0".into()),
+                password: "carp-secret".into(),
+                status: aifw_common::CarpStatus::Init,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+        let server = TestServer::new(crate::build_router(state, None, "*", false));
+        let token = create_user_and_login(&server).await;
+
+        // GET: redacted
+        let resp = server
+            .get("/api/v1/config/export")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+        let redacted: Value = resp.json();
+        assert_eq!(redacted["secrets"], "redacted");
+        assert_eq!(
+            redacted["config"]["ha"]["carp_vips"][0]["password"],
+            REDACTED
+        );
+        assert!(redacted["config"].get("secrets").is_none());
+
+        // POST: passphrase-wrapped; short passphrase rejected
+        let resp = server
+            .post("/api/v1/config/export")
+            .authorization_bearer(&token)
+            .json(&json!({"passphrase": "short"}))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let resp = server
+            .post("/api/v1/config/export")
+            .authorization_bearer(&token)
+            .json(&json!({"passphrase": "correct horse battery"}))
+            .await;
+        resp.assert_status_ok();
+        let wrapped: Value = resp.json();
+        assert_eq!(wrapped["secrets"], "passphrase");
+        let pw_val = wrapped["config"]["ha"]["carp_vips"][0]["password"]
+            .as_str()
+            .unwrap();
+        assert!(pw_val.starts_with(PW_PREFIX), "{pw_val}");
+        assert!(!pw_val.contains("carp-secret"));
+        assert_eq!(wrapped["config"]["secrets"]["kdf"], "argon2id");
+
+        // Preview of the redacted file: this box holds every secret
+        let resp = server
+            .post("/api/v1/config/import-preview")
+            .authorization_bearer(&token)
+            .json(&redacted)
+            .await;
+        resp.assert_status_ok();
+        let preview: Value = resp.json();
+        assert_eq!(preview["secrets"]["state"], "redacted");
+        assert_eq!(preview["secrets"]["count"], 1);
+        assert_eq!(preview["unresolved_secrets"].as_array().unwrap().len(), 0);
+
+        // Importing the redacted file fills the secret from live state
+        let resp = server
+            .post("/api/v1/config/import")
+            .authorization_bearer(&token)
+            .json(&redacted)
+            .await;
+        assert!(resp.status_code().is_success(), "{}", resp.text());
+        let vips = cluster.list_carp_vips().await.unwrap();
+        assert_eq!(vips.len(), 1);
+        assert_eq!(vips[0].password, "carp-secret");
+
+        // Wrapped file: no passphrase → 400, wrong → 400, right → applied
+        let resp = server
+            .post("/api/v1/config/import")
+            .authorization_bearer(&token)
+            .json(&wrapped)
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        assert!(resp.text().contains("passphrase"), "{}", resp.text());
+        let mut with_bad = wrapped.clone();
+        with_bad["passphrase"] = json!("wrong passphrase");
+        let resp = server
+            .post("/api/v1/config/import")
+            .authorization_bearer(&token)
+            .json(&with_bad)
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let mut with_good = wrapped.clone();
+        with_good["passphrase"] = json!("correct horse battery");
+        let resp = server
+            .post("/api/v1/config/import")
+            .authorization_bearer(&token)
+            .json(&with_good)
+            .await;
+        assert!(resp.status_code().is_success(), "{}", resp.text());
+        let vips = cluster.list_carp_vips().await.unwrap();
+        assert_eq!(vips[0].password, "carp-secret");
+
+        // Box no longer holds the VIP: redacted import is refused by name
+        cluster.delete_carp_vip(vip.id).await.unwrap();
+        let resp = server
+            .post("/api/v1/config/import-preview")
+            .authorization_bearer(&token)
+            .json(&redacted)
+            .await;
+        let preview: Value = resp.json();
+        assert_eq!(
+            preview["unresolved_secrets"][0],
+            format!("carp[{}].password", vip.id)
+        );
+        let resp = server
+            .post("/api/v1/config/import")
+            .authorization_bearer(&token)
+            .json(&redacted)
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        assert!(resp.text().contains(&vip.id.to_string()), "{}", resp.text());
+        assert!(cluster.list_carp_vips().await.unwrap().is_empty());
+
+        // History view is a display surface — redacted too
+        let resp = server
+            .get("/api/v1/config/history")
+            .authorization_bearer(&token)
+            .await;
+        resp.assert_status_ok();
+    }
 }

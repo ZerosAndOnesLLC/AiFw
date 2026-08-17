@@ -213,9 +213,17 @@ aifw config diff 17 22
 # Rollback
 aifw config rollback 17
 
-# Export / import (full JSON dump)
+# Export / import (full JSON dump; secrets redacted by default)
 aifw config export > backup.json
 aifw config import backup.json
+
+# Portable backup — secrets passphrase-wrapped (Argon2id + AES-256-GCM).
+# The passphrase comes from --passphrase-file (first line) or $AIFW_BACKUP_PASSPHRASE.
+aifw config export --secrets passphrase --passphrase-file /root/.backup-pass > backup.json
+aifw config import backup.json --passphrase-file /root/.backup-pass
+
+# Plaintext secrets (prints a warning — protect the output)
+aifw config export --secrets plain > backup.json
 ```
 
 ## routes

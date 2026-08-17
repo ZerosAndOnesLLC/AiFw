@@ -66,6 +66,12 @@ pub struct S3Config {
     /// otherwise — never the real value.
     #[serde(default)]
     pub secret_access_key: Option<String>,
+    /// Passphrase used to wrap the secret fields of every uploaded config
+    /// (#313). Write-only over the API like the S3 secret. When unset,
+    /// uploads carry redacted secrets — restorable only onto a box that
+    /// still holds the same tunnels/VIPs.
+    #[serde(default)]
+    pub secrets_passphrase: Option<String>,
 }
 
 impl Default for S3Config {
@@ -79,6 +85,7 @@ impl Default for S3Config {
             path_style: false,
             access_key_id: None,
             secret_access_key: None,
+            secrets_passphrase: None,
         }
     }
 }
@@ -108,21 +115,29 @@ pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query("INSERT OR IGNORE INTO s3_backup_config (id) VALUES (1)")
         .execute(pool)
         .await?;
+    // #313: added after the table existed; ignore "duplicate column".
+    if let Err(e) = sqlx::query("ALTER TABLE s3_backup_config ADD COLUMN secrets_passphrase TEXT")
+        .execute(pool)
+        .await
+        && !e.to_string().contains("duplicate column")
+    {
+        return Err(e.into());
+    }
     Ok(())
 }
 
 /// Read the stored config row; a missing row or query failure yields
 /// `S3Config::default()` (disabled) rather than an error
 pub async fn load(pool: &SqlitePool) -> S3Config {
-    sqlx::query_as::<_, (i64, String, String, Option<String>, String, i64, Option<String>, Option<String>)>(
-        r#"SELECT enabled, bucket, region, endpoint, prefix, path_style, access_key_id, secret_access_key
+    sqlx::query_as::<_, (i64, String, String, Option<String>, String, i64, Option<String>, Option<String>, Option<String>)>(
+        r#"SELECT enabled, bucket, region, endpoint, prefix, path_style, access_key_id, secret_access_key, secrets_passphrase
              FROM s3_backup_config WHERE id = 1"#,
     )
     .fetch_optional(pool)
     .await
     .ok()
     .flatten()
-    .map(|(enabled, bucket, region, endpoint, prefix, path_style, ak, sk)| S3Config {
+    .map(|(enabled, bucket, region, endpoint, prefix, path_style, ak, sk, pw)| S3Config {
         enabled: enabled != 0,
         bucket,
         region,
@@ -132,6 +147,7 @@ pub async fn load(pool: &SqlitePool) -> S3Config {
         access_key_id: ak,
         // #298: sealed at rest; legacy plaintext rows pass through.
         secret_access_key: crate::secrets::open_opt_lossy(sk),
+        secrets_passphrase: crate::secrets::open_opt_lossy(pw),
     })
     .unwrap_or_default()
 }
@@ -151,10 +167,20 @@ pub async fn save(pool: &SqlitePool, cfg: &S3Config) -> Result<(), String> {
         .map(|v| crate::secrets::seal(&v))
         .transpose()
         .map_err(|e| e.to_string())?;
+    // Same tri-state for the backup passphrase (#313).
+    let final_pw = match cfg.secrets_passphrase.as_deref() {
+        None => existing.secrets_passphrase,
+        Some("") => None,
+        Some(v) => Some(v.to_string()),
+    }
+    .map(|v| crate::secrets::seal(&v))
+    .transpose()
+    .map_err(|e| e.to_string())?;
     sqlx::query(
         r#"UPDATE s3_backup_config
               SET enabled=?, bucket=?, region=?, endpoint=?, prefix=?,
-                  path_style=?, access_key_id=?, secret_access_key=?
+                  path_style=?, access_key_id=?, secret_access_key=?,
+                  secrets_passphrase=?
             WHERE id=1"#,
     )
     .bind(cfg.enabled as i64)
@@ -165,6 +191,7 @@ pub async fn save(pool: &SqlitePool, cfg: &S3Config) -> Result<(), String> {
     .bind(cfg.path_style as i64)
     .bind(&cfg.access_key_id)
     .bind(&final_secret)
+    .bind(&final_pw)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;

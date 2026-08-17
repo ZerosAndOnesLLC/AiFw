@@ -19,6 +19,7 @@ pub mod audit;
 pub mod config;
 /// [`ConfigManager`] — loads and saves the persisted system configuration
 pub mod config_manager;
+pub mod config_secrets;
 /// [`Database`] — SQLite pool wrapper and filter-rule persistence
 pub mod db;
 pub mod ddns;

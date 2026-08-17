@@ -571,6 +571,9 @@ export function useS3Backup() {
   const [accessKey, setAccessKey] = useState("");
   const [secret, setSecret] = useState("");             // "" means "unchanged" on save
   const [hasSecret, setHasSecret] = useState(false);
+  const [backupPassphrase, setBackupPassphrase] = useState(""); // "" = unchanged; " " sentinel never sent
+  const [clearBackupPassphrase, setClearBackupPassphrase] = useState(false);
+  const [hasBackupPassphrase, setHasBackupPassphrase] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<S3TestResult | null>(null);
@@ -590,6 +593,9 @@ export function useS3Backup() {
         setAccessKey(d.access_key_id || "");
         setHasSecret(!!d.has_secret);
         setSecret(""); // always blank in UI (means "unchanged")
+        setHasBackupPassphrase(!!d.has_secrets_passphrase);
+        setBackupPassphrase("");
+        setClearBackupPassphrase(false);
       } catch { /* silent */ } finally {
         setLoading(false);
       }
@@ -608,6 +614,8 @@ export function useS3Backup() {
     path_style: pathStyle,
     access_key_id: accessKey.trim() || null,
     secret_access_key: secret === "" ? null : secret,
+    // #313: null = unchanged, "" = clear, otherwise set.
+    secrets_passphrase: clearBackupPassphrase ? "" : backupPassphrase === "" ? null : backupPassphrase,
   });
 
   const save = async () => {
@@ -617,6 +625,9 @@ export function useS3Backup() {
       const d = await saveS3Config(buildPayload());
       setHasSecret(!!d.has_secret);
       setSecret("");
+      setHasBackupPassphrase(!!d.has_secrets_passphrase);
+      setBackupPassphrase("");
+      setClearBackupPassphrase(false);
       showFeedback("success", "S3 settings saved.");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -664,6 +675,11 @@ export function useS3Backup() {
     secret,
     setSecret,
     hasSecret,
+    backupPassphrase,
+    setBackupPassphrase,
+    clearBackupPassphrase,
+    setClearBackupPassphrase,
+    hasBackupPassphrase,
     saving,
     testing,
     testResult,

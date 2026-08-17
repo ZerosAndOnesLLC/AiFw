@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 import { useS3Archive } from "@/hooks/useBackups";
 
 /* ===================== S3 Archive tab ===================== */
@@ -17,6 +19,7 @@ function fmtWhen(s: string | null): string {
 
 export function S3ArchiveTab() {
   const { loading, error, items, importing, status, reload, importNow } = useS3Archive();
+  const [passphrase, setPassphrase] = useState("");
 
   return (
     <div className="space-y-4">
@@ -28,6 +31,16 @@ export function S3ArchiveTab() {
             <a className="text-blue-400 underline" href="/settings">Settings → S3 Backup Sync</a>.
             Importing fetches a copy as a new local version; nothing is applied automatically.
           </p>
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              type="password"
+              autoComplete="off"
+              value={passphrase}
+              onChange={(e) => setPassphrase(e.target.value)}
+              placeholder="Backup passphrase (only if it differs from the stored one)"
+              className="w-80 px-2 py-1 text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)]"
+            />
+          </div>
         </div>
         <button
           onClick={reload}
@@ -76,7 +89,7 @@ export function S3ArchiveTab() {
                   <td className="px-3 py-2 text-[var(--text-muted)]">{fmtWhen(o.last_modified)}</td>
                   <td className="px-3 py-2 text-right">
                     <button
-                      onClick={() => importNow(o.key)}
+                      onClick={() => importNow(o.key, passphrase)}
                       disabled={!!importing}
                       className="px-2 py-1 text-xs rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50"
                     >

@@ -32,6 +32,9 @@ pub struct S3ConfigResponse {
     pub path_style: bool,
     pub access_key_id: Option<String>,
     pub has_secret: bool,
+    /// Whether uploads wrap secrets under a stored passphrase (#313);
+    /// false ⇒ uploads are redacted.
+    pub has_secrets_passphrase: bool,
 }
 
 impl From<s3::S3Config> for S3ConfigResponse {
@@ -45,6 +48,7 @@ impl From<s3::S3Config> for S3ConfigResponse {
             path_style: c.path_style,
             access_key_id: c.access_key_id,
             has_secret: c.secret_access_key.is_some(),
+            has_secrets_passphrase: c.secrets_passphrase.is_some(),
         }
     }
 }
@@ -117,6 +121,10 @@ pub async fn list_s3(
 pub struct ImportRequest {
     pub key: String,
     pub comment: Option<String>,
+    /// Passphrase to unlock wrapped secrets in the object (#313). Falls
+    /// back to the stored S3 backup passphrase when omitted.
+    #[serde(default)]
+    pub passphrase: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -139,12 +147,37 @@ pub async fn import_s3(
     let json = s3::fetch(&cfg, &req.key)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
-    let fw_cfg: aifw_core::config::FirewallConfig = serde_json::from_str(&json).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("not a valid config JSON: {e}"),
-        )
-    })?;
+    let mut fw_cfg: aifw_core::config::FirewallConfig =
+        serde_json::from_str(&json).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("not a valid config JSON: {e}"),
+            )
+        })?;
+    // #313: unlock passphrase-wrapped secrets before the version is stored
+    // (history versions are full-fidelity). Redacted objects are kept as-is
+    // and resolved against the box at restore time.
+    if matches!(
+        aifw_core::config_secrets::state(&fw_cfg),
+        aifw_core::config_secrets::SecretsState::Passphrase { .. }
+    ) {
+        let pw = req
+            .passphrase
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .or(cfg.secrets_passphrase.as_deref().filter(|p| !p.is_empty()))
+            .ok_or((
+                StatusCode::BAD_REQUEST,
+                "this backup's secrets are passphrase-protected — supply the passphrase"
+                    .to_string(),
+            ))?;
+        aifw_core::config_secrets::open_with_passphrase(&mut fw_cfg, pw).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("could not unlock backup secrets: {e}"),
+            )
+        })?;
+    }
 
     let mgr = aifw_core::config_manager::ConfigManager::new(state.pool.clone());
     mgr.migrate().await.map_err(internal)?;
