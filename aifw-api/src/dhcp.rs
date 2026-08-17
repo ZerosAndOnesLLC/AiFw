@@ -569,7 +569,8 @@ async fn load_ddns_config(pool: &SqlitePool) -> DdnsConfig {
             "dns_server" => config.dns_server = value,
             "tsig_key" => config.tsig_key = value,
             "tsig_algorithm" => config.tsig_algorithm = value,
-            "tsig_secret" => config.tsig_secret = value,
+            // #298: sealed at rest; legacy plaintext passes through.
+            "tsig_secret" => config.tsig_secret = aifw_core::secrets::open_lossy(&value),
             "ttl" => config.ttl = value.parse().unwrap_or(300),
             _ => {}
         }
@@ -1405,7 +1406,11 @@ pub async fn update_ddns_config(
     save_ddns_key(&state.pool, "dns_server", &config.dns_server).await;
     save_ddns_key(&state.pool, "tsig_key", &config.tsig_key).await;
     save_ddns_key(&state.pool, "tsig_algorithm", &config.tsig_algorithm).await;
-    save_ddns_key(&state.pool, "tsig_secret", &config.tsig_secret).await;
+    let sealed_tsig = aifw_core::secrets::seal(&config.tsig_secret).map_err(|e| {
+        tracing::error!(error = %e, "dhcp: sealing tsig_secret failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    save_ddns_key(&state.pool, "tsig_secret", &sealed_tsig).await;
     save_ddns_key(&state.pool, "ttl", &config.ttl.to_string()).await;
     Ok(Json(MessageResponse {
         message: "DDNS config updated".to_string(),

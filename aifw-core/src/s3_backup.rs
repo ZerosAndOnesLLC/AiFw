@@ -130,7 +130,8 @@ pub async fn load(pool: &SqlitePool) -> S3Config {
         prefix,
         path_style: path_style != 0,
         access_key_id: ak,
-        secret_access_key: sk,
+        // #298: sealed at rest; legacy plaintext rows pass through.
+        secret_access_key: crate::secrets::open_opt_lossy(sk),
     })
     .unwrap_or_default()
 }
@@ -144,6 +145,12 @@ pub async fn save(pool: &SqlitePool, cfg: &S3Config) -> Result<(), String> {
         Some("") => None,
         Some(v) => Some(v.to_string()),
     };
+    // #298: seal at rest (also re-seals a legacy plaintext value on the
+    // next save).
+    let final_secret = final_secret
+        .map(|v| crate::secrets::seal(&v))
+        .transpose()
+        .map_err(|e| e.to_string())?;
     sqlx::query(
         r#"UPDATE s3_backup_config
               SET enabled=?, bucket=?, region=?, endpoint=?, prefix=?,

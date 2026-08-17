@@ -48,6 +48,8 @@ curl -X POST https://aifw.local/api/v1/config/import \
   --data @aifw-backup.json
 ```
 
+> **Secrets at rest.** Integration secrets in the database (WireGuard private/preshared keys, IPsec PSKs, CARP passwords, OAuth client secrets, S3/SMTP credentials, TSIG, ACME DNS tokens, AI provider keys, TOTP seeds, cluster peer keys) are sealed with AES-256-GCM under a master key in `/var/db/aifw/secrets.key` (0600, beside `jwt.key`). The JSON export above goes through the engines, so it carries the *decrypted* values and imports cleanly on any box — treat the file accordingly. A **raw copy of `aifw.db`**, on the other hand, is only useful together with its `secrets.key`; move to a new box without the key and every sealed value reads as unset. Back the two up together. (The S3 destination below syncs JSON snapshots, which carry decrypted values and need no key.)
+
 Preview a candidate import without applying via `POST /api/v1/config/import-preview`. The response lists every record that will be created / updated / deleted so you can sanity-check the diff first.
 
 ## S3 backup destination

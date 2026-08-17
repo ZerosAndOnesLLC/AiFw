@@ -78,6 +78,10 @@ Engines: `RuleEngine` (engine.rs), `NatEngine` (nat.rs), `AliasEngine` (alias.rs
 
 Each engine has its own `migrate()` method that creates its SQLite tables. Migrations are **inline SQL** in Rust code (no separate migration files).
 
+### Secrets at Rest (#298)
+
+Secret columns are sealed with AES-256-GCM via `aifw_core::secrets` (`seal` on write, `open`/`open_opt`/`open_lossy` on read; values without the `enc:v1:` prefix are legacy plaintext and pass through). Master key: `/var/db/aifw/secrets.key`, derived as `<db dir>/secrets.key` (`secrets::configure_from_db_path`) so scratch DBs get their own key. When you add a new secret column: seal at every write site, open at every read site, and add it to `secrets::SEALED_COLUMNS` / `SEALED_KV` so the startup `seal_legacy_rows` pass covers upgrades.
+
 ### Database Layer
 
 Central type: `Database` struct in `aifw-core/src/db.rs` wrapping `SqlitePool`.

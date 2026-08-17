@@ -566,8 +566,9 @@ fn row_to_provider(row: &sqlx::sqlite::SqliteRow) -> AcmeDnsProvider {
         name: row.get("name"),
         kind: DnsProviderKind::from_str(&row.get::<String, _>("kind"))
             .unwrap_or(DnsProviderKind::Manual),
-        api_token: row.get("api_token"),
-        aws_secret_key: row.get("aws_secret_key"),
+        // #298: sealed at rest; legacy plaintext passes through.
+        api_token: crate::secrets::open_opt_lossy(row.get("api_token")),
+        aws_secret_key: crate::secrets::open_opt_lossy(row.get("aws_secret_key")),
         zone: row.get("zone"),
         extra,
     }

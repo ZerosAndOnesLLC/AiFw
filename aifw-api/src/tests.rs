@@ -736,6 +736,29 @@ mod tests {
         resp.assert_status(StatusCode::UNAUTHORIZED);
     }
 
+    /// #298: OAuth client secrets are sealed in the DB; the loader opens them.
+    #[tokio::test]
+    async fn test_oauth_client_secret_sealed_at_rest() {
+        let state = crate::create_app_state_in_memory(plain_auth_settings())
+            .await
+            .unwrap();
+        let provider = crate::auth::oauth::OAuthProvider::google("cid", "very-secret");
+        crate::auth::oauth::save_provider(&state.pool, &provider)
+            .await
+            .unwrap();
+        let (stored,): (String,) =
+            sqlx::query_as("SELECT client_secret FROM oauth_providers WHERE client_id = 'cid'")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert!(aifw_core::secrets::is_sealed(&stored));
+        assert!(!stored.contains("very-secret"));
+        let listed = crate::auth::oauth::list_providers(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(listed[0].client_secret, "very-secret");
+    }
+
     #[tokio::test]
     async fn test_oauth_provider_crud() {
         let (server, _) = test_app().await;

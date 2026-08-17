@@ -74,6 +74,8 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 url = "2"
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 getrandom = "0.4"
+aws-lc-rs = "1"
+base64 = "0.22"
 
 # Workspace-wide clippy lint posture. Stylistic-only lints are allowed —
 # documented engine constructors legitimately have many parameters, the

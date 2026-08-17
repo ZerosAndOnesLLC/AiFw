@@ -236,7 +236,8 @@ pub async fn load(pool: &SqlitePool) -> SmtpConfig {
         port: port as u16,
         tls: TlsMode::from_str(&tls),
         username: u,
-        password: p,
+        // #298: sealed at rest; legacy plaintext rows pass through.
+        password: crate::secrets::open_opt_lossy(p),
         from_address,
         recipients,
         enabled_events: mask as u32,
@@ -252,6 +253,11 @@ pub async fn save(pool: &SqlitePool, cfg: &SmtpConfig) -> Result<(), String> {
         Some("") => None,
         Some(v) => Some(v.to_string()),
     };
+    // #298: seal at rest.
+    let final_password = final_password
+        .map(|v| crate::secrets::seal(&v))
+        .transpose()
+        .map_err(|e| e.to_string())?;
     sqlx::query(
         r#"UPDATE smtp_notify_config
               SET enabled=?, host=?, port=?, tls=?, username=?, password=?,

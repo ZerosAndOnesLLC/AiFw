@@ -65,7 +65,17 @@ pub async fn create_user(
     .bind(&user.username)
     .bind(&user.password_hash)
     .bind(user.totp_enabled)
-    .bind(user.totp_secret.as_deref())
+    .bind(
+        user.totp_secret
+            .as_deref()
+            .map(|s| {
+                aifw_core::secrets::seal(s).map_err(|e| {
+                    tracing::error!(error = %e, "auth: failed to seal TOTP secret");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })
+            })
+            .transpose()?,
+    )
     .bind(&user.auth_provider)
     .bind(&user.role)
     .bind(user.role_id.as_deref())
@@ -94,7 +104,7 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<User>, StatusCode> {
                 username,
                 password_hash: pw,
                 totp_enabled: totp_on,
-                totp_secret: totp_sec,
+                totp_secret: aifw_core::secrets::open_opt_lossy(totp_sec),
                 auth_provider: provider,
                 role,
                 role_id,
@@ -257,7 +267,7 @@ pub async fn get_user_by_username(
             username,
             password_hash: pw,
             totp_enabled: totp_on,
-            totp_secret: totp_sec,
+            totp_secret: aifw_core::secrets::open_opt_lossy(totp_sec),
             auth_provider: provider,
             role,
             role_id,
@@ -282,7 +292,7 @@ pub async fn get_user_by_id(pool: &SqlitePool, user_id: &str) -> Result<Option<U
             username,
             password_hash: pw,
             totp_enabled: totp_on,
-            totp_secret: totp_sec,
+            totp_secret: aifw_core::secrets::open_opt_lossy(totp_sec),
             auth_provider: provider,
             role,
             role_id,

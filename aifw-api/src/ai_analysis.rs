@@ -33,6 +33,7 @@ pub async fn run_analysis(pool: &SqlitePool) -> Result<u32, String> {
 
     let api_key = get_config(pool, &format!("ai_{provider}_api_key"))
         .await
+        .map(|v| aifw_core::secrets::open_lossy(&v))
         .unwrap_or_default();
     let endpoint = get_config(pool, &format!("ai_{provider}_endpoint"))
         .await

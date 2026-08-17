@@ -199,7 +199,7 @@ impl ClusterEngine {
         .bind(vip.virtual_ip.to_string())
         .bind(vip.prefix as i64)
         .bind(&vip.interface.0)
-        .bind(&vip.password)
+        .bind(crate::secrets::seal(&vip.password).map_err(crate::secrets::to_common)?)
         .bind(vip.status.to_string())
         .bind(vip.created_at.to_rfc3339())
         .bind(vip.updated_at.to_rfc3339())
@@ -230,7 +230,7 @@ impl ClusterEngine {
         .bind(v.virtual_ip.to_string())
         .bind(v.prefix as i64)
         .bind(&v.interface.0)
-        .bind(&v.password)
+        .bind(crate::secrets::seal(&v.password).map_err(crate::secrets::to_common)?)
         .bind(v.status.to_string())
         .bind(Utc::now().to_rfc3339())
         .bind(v.id.to_string())
@@ -456,10 +456,12 @@ impl ClusterEngine {
         // Two simple-format UUIDs = 64 hex chars = 256 bits of getrandom-sourced entropy.
         let key = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let hash = sha256_hex(&key);
+        // #298: the plaintext copy (needed for outbound calls) is sealed at rest.
+        let sealed = crate::secrets::seal(&key).map_err(crate::secrets::to_common)?;
         sqlx::query(
             "UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3",
         )
-        .bind(&key)
+        .bind(&sealed)
         .bind(&hash)
         .bind(node_id.to_string())
         .execute(&self.pool)
@@ -475,7 +477,7 @@ impl ClusterEngine {
                 .bind(node_id.to_string())
                 .fetch_optional(&self.pool)
                 .await?;
-        Ok(row.and_then(|(k,)| k))
+        crate::secrets::open_opt(row.and_then(|(k,)| k)).map_err(crate::secrets::to_common)
     }
 
     // ============================================================
@@ -789,7 +791,8 @@ impl CarpVipRow {
                 .map_err(|e| AifwError::Database(format!("{e}")))?,
             prefix: self.prefix as u8,
             interface: Interface(self.interface),
-            password: self.password,
+            // #298: sealed at rest; legacy plaintext passes through.
+            password: crate::secrets::open(&self.password).map_err(crate::secrets::to_common)?,
             status: match self.status.as_str() {
                 "master" => CarpStatus::Master,
                 "backup" => CarpStatus::Backup,

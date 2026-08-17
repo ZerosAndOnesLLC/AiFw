@@ -47,6 +47,7 @@ pub use aifw_common::net_safety;
 pub mod path_safety;
 pub mod pf_tuning;
 pub mod s3_backup;
+pub mod secrets;
 /// [`ShapingEngine`] — traffic-shaping queues and connection rate limits
 pub mod shaping;
 pub mod smtp_notify;

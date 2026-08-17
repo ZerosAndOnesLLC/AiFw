@@ -1080,6 +1080,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    // #298: secrets master key beside the database (shared with aifw-api).
+    aifw_core::secrets::configure_from_db_path(&cli.db);
 
     match cli.command {
         Commands::Init { path } => {

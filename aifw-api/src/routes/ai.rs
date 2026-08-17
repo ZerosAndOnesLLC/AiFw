@@ -28,6 +28,7 @@ pub async fn get_ai_settings(
             .unwrap_or(false);
         let api_key = get_val(pool, &format!("ai_{p}_api_key"))
             .await
+            .map(|v| aifw_core::secrets::open_lossy(&v))
             .unwrap_or_default();
         let endpoint = get_val(pool, &format!("ai_{p}_endpoint"))
             .await
@@ -106,7 +107,12 @@ pub async fn update_ai_settings(
             return Err(bad_request());
         }
         if let Some(ref key) = req.api_key {
-            save_val(pool, &format!("ai_{provider}_api_key"), key).await;
+            // #298: sealed at rest.
+            let sealed = aifw_core::secrets::seal(key).map_err(|e| {
+                tracing::error!(error = %e, "ai: failed to seal api key");
+                internal()
+            })?;
+            save_val(pool, &format!("ai_{provider}_api_key"), &sealed).await;
         }
         if let Some(ref endpoint) = req.endpoint {
             save_val(pool, &format!("ai_{provider}_endpoint"), endpoint).await;
@@ -303,7 +309,8 @@ pub async fn test_ai_provider(
             .unwrap_or_default()
     }
 
-    let api_key = get_val(pool, &format!("ai_{provider}_api_key")).await;
+    let api_key =
+        aifw_core::secrets::open_lossy(&get_val(pool, &format!("ai_{provider}_api_key")).await);
     let endpoint = get_val(pool, &format!("ai_{provider}_endpoint")).await;
     let model = get_val(pool, &format!("ai_{provider}_model")).await;
     let stored_insecure = get_val(pool, &format!("ai_{provider}_tls_insecure")).await == "true";
@@ -387,7 +394,8 @@ pub async fn list_ai_models(
             .unwrap_or_default()
     }
 
-    let api_key = get_val(pool, &format!("ai_{provider}_api_key")).await;
+    let api_key =
+        aifw_core::secrets::open_lossy(&get_val(pool, &format!("ai_{provider}_api_key")).await);
     let endpoint = get_val(pool, &format!("ai_{provider}_endpoint")).await;
     let tls_insecure = get_val(pool, &format!("ai_{provider}_tls_insecure")).await == "true";
 

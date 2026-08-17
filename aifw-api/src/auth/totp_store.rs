@@ -12,8 +12,13 @@ pub async fn save_totp_secret(
     user_id: &str,
     secret: &str,
 ) -> Result<(), StatusCode> {
+    // #298: TOTP seeds are sealed at rest.
+    let sealed = aifw_core::secrets::seal(secret).map_err(|e| {
+        tracing::error!(error = %e, "auth: failed to seal TOTP secret");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     sqlx::query("UPDATE users SET totp_secret = ?1 WHERE id = ?2")
-        .bind(secret)
+        .bind(sealed)
         .bind(user_id)
         .execute(pool)
         .await

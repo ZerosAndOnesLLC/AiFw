@@ -199,7 +199,7 @@ impl VpnEngine {
         .bind(tunnel.id.to_string())
         .bind(&tunnel.name)
         .bind(&tunnel.interface.0)
-        .bind(&tunnel.private_key)
+        .bind(crate::secrets::seal(&tunnel.private_key).map_err(crate::secrets::to_common)?)
         .bind(&tunnel.public_key)
         .bind(tunnel.listen_port as i64)
         .bind(tunnel.address.to_string())
@@ -284,7 +284,7 @@ impl VpnEngine {
         .bind(tunnel.mtu.map(|m| m as i64))
         .bind(tunnel.listen_interface.as_deref())
         .bind(tunnel.split_routes.as_deref())
-        .bind(&tunnel.private_key)
+        .bind(crate::secrets::seal(&tunnel.private_key).map_err(crate::secrets::to_common)?)
         .bind(&tunnel.public_key)
         .bind(tunnel.updated_at.to_rfc3339())
         .bind(tunnel.id.to_string())
@@ -388,8 +388,8 @@ impl VpnEngine {
         .bind(peer.tunnel_id.to_string())
         .bind(&peer.name)
         .bind(&peer.public_key)
-        .bind(peer.preshared_key.as_deref())
-        .bind(peer.client_private_key.as_deref())
+        .bind(seal_opt(peer.preshared_key.as_deref())?)
+        .bind(seal_opt(peer.client_private_key.as_deref())?)
         .bind(peer.endpoint.as_deref())
         .bind(allowed_ips.join(","))
         .bind(peer.persistent_keepalive.map(|k| k as i64))
@@ -457,8 +457,8 @@ impl VpnEngine {
         )
         .bind(&peer.name)
         .bind(&peer.public_key)
-        .bind(peer.preshared_key.as_deref())
-        .bind(peer.client_private_key.as_deref())
+        .bind(seal_opt(peer.preshared_key.as_deref())?)
+        .bind(seal_opt(peer.client_private_key.as_deref())?)
         .bind(peer.endpoint.as_deref())
         .bind(allowed_ips.join(","))
         .bind(peer.persistent_keepalive.map(|k| k as i64))
@@ -1072,7 +1072,9 @@ impl WgTunnelRow {
             id: Uuid::parse_str(&self.id).map_err(|e| AifwError::Database(format!("{e}")))?,
             name: self.name,
             interface: Interface(self.interface),
-            private_key: self.private_key,
+            // #298: sealed at rest; legacy plaintext passes through.
+            private_key: crate::secrets::open(&self.private_key)
+                .map_err(crate::secrets::to_common)?,
             public_key: self.public_key,
             listen_port: self.listen_port as u16,
             address: Address::parse(&self.address)?,
@@ -1086,6 +1088,12 @@ impl WgTunnelRow {
             updated_at: parse_dt(&self.updated_at)?,
         })
     }
+}
+
+/// #298: seal an optional secret column for storage.
+fn seal_opt(v: Option<&str>) -> Result<Option<String>> {
+    v.map(|s| crate::secrets::seal(s).map_err(crate::secrets::to_common))
+        .transpose()
 }
 
 /// Explicit column list for `WgPeerRow` selects (#348). `client_private_key`
@@ -1125,8 +1133,10 @@ impl WgPeerRow {
                 .map_err(|e| AifwError::Database(format!("{e}")))?,
             name: self.name,
             public_key: self.public_key,
-            preshared_key: self.preshared_key,
-            client_private_key: self.client_private_key,
+            preshared_key: crate::secrets::open_opt(self.preshared_key)
+                .map_err(crate::secrets::to_common)?,
+            client_private_key: crate::secrets::open_opt(self.client_private_key)
+                .map_err(crate::secrets::to_common)?,
             endpoint: self.endpoint,
             allowed_ips,
             persistent_keepalive: self.persistent_keepalive.map(|k| k as u16),
