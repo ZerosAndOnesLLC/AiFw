@@ -111,7 +111,7 @@ export default function LoginPage() {
               <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider block mb-1">TOTP Code</label>
               <input type="text" value={totpCode} onChange={(e) => setTotpCode(e.target.value)}
                 className={inputClass} required autoFocus autoComplete="one-time-code"
-                placeholder="000000" maxLength={20} />
+                placeholder="000000" maxLength={24} />
             </div>
 
             <button type="submit" disabled={loading}

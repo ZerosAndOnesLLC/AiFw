@@ -546,9 +546,15 @@ pub async fn oauth_callback(
     Err(StatusCode::NOT_IMPLEMENTED)
 }
 
-/// Public registration — only allowed when no users exist (first-user bootstrap).
-/// First user is always created as admin regardless of request.
-/// Uses a DB-level check to prevent TOCTOU race conditions.
+/// Public registration — only allowed when no human users exist
+/// (first-user bootstrap). First user is always created as admin regardless
+/// of request. Uses a DB-level check to prevent TOCTOU race conditions.
+///
+/// This is also the documented recovery path (#324): if every account is
+/// deleted, the next anonymous `POST /auth/register` re-creates the admin.
+/// The `aifw-daemon` service account (#318, `auth_provider = 'system'`)
+/// does not count — a cluster node whose human accounts are gone must
+/// still be recoverable.
 pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<auth::CreateUserRequest>,
@@ -565,11 +571,11 @@ pub async fn register(
     let user_id = uuid::Uuid::new_v4();
     let now = chrono::Utc::now().to_rfc3339();
 
-    // Atomic: INSERT ... WHERE (SELECT COUNT(*) FROM users) = 0
+    // Atomic: INSERT ... WHERE no non-system user exists
     let result = sqlx::query(
         r#"INSERT INTO users (id, username, password_hash, totp_enabled, totp_secret, auth_provider, role, role_id, enabled, created_at)
            SELECT ?1, ?2, ?3, 0, NULL, 'local', 'admin', 'builtin-admin', 1, ?4
-           WHERE (SELECT COUNT(*) FROM users) = 0"#,
+           WHERE NOT EXISTS (SELECT 1 FROM users WHERE auth_provider != 'system')"#,
     )
     .bind(user_id.to_string())
     .bind(&admin_req.username)

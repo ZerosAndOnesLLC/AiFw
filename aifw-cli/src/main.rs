@@ -1444,21 +1444,15 @@ async fn main() -> anyhow::Result<()> {
         Commands::Dhcp { action } => match action {
             DhcpAction::Status => commands::dhcp_status(&cli.db).await?,
             DhcpAction::Start => {
-                let _ = std::process::Command::new("service")
-                    .args(["rdhcpd", "start"])
-                    .output();
+                commands::service_ctl("rdhcpd", "start")?;
                 println!("DHCP started");
             }
             DhcpAction::Stop => {
-                let _ = std::process::Command::new("service")
-                    .args(["rdhcpd", "stop"])
-                    .output();
+                commands::service_ctl("rdhcpd", "stop")?;
                 println!("DHCP stopped");
             }
             DhcpAction::Restart => {
-                let _ = std::process::Command::new("service")
-                    .args(["rdhcpd", "restart"])
-                    .output();
+                commands::service_ctl("rdhcpd", "restart")?;
                 println!("DHCP restarted");
             }
             DhcpAction::Subnets { json } => commands::dhcp_subnets(&cli.db, json).await?,

@@ -14,18 +14,50 @@ const BIOCPROMISC: libc::c_ulong = 0x20004269; // _IO('B', 105)
 const BIOCSRTIMEOUT: libc::c_ulong = 0x8010426D; // _IOW('B', 109, struct timeval)
 const BIOCGBLEN: libc::c_ulong = 0x40044266; // _IOR('B', 102, u_int)
 
-/// BPF packet header (prepended to each packet in the buffer).
-/// On 64-bit FreeBSD, bh_tstamp is struct timeval = 16 bytes (two longs).
-/// Total header size is 32 bytes on 64-bit, 20 bytes on 32-bit.
-#[repr(C)]
+/// BPF packet header (prepended to each packet in the buffer), decoded
+/// field-by-field from the kernel-filled bytes. `struct bpf_hdr` is
+/// `{ struct timeval bh_tstamp; u_int32_t bh_caplen; u_int32_t
+/// bh_datalen; u_short bh_hdrlen; }` — the timeval is two `c_long`s (16
+/// bytes on 64-bit, 8 on 32-bit). Packets in the buffer are only
+/// `BPF_WORDALIGN`ed (4/8 bytes), which the old pointer cast to a
+/// `#[repr(C)]` struct silently relied on to also satisfy the timeval's
+/// alignment; reading the fields out of the byte slice needs no
+/// alignment at all and no `unsafe` (#306 / SEC-M9).
 struct BpfHeader {
-    bh_tstamp_sec: libc::c_long,  // 8 bytes on 64-bit
-    bh_tstamp_usec: libc::c_long, // 8 bytes on 64-bit
+    bh_tstamp_sec: libc::c_long,
+    bh_tstamp_usec: libc::c_long,
     bh_caplen: u32,
     bh_datalen: u32,
     bh_hdrlen: u16,
-    _padding: u16,
-    _padding2: u32, // alignment to 32 bytes on 64-bit
+}
+
+impl BpfHeader {
+    /// Bytes the fixed part of the header occupies (`bh_hdrlen` in the
+    /// header itself is authoritative for where the payload starts).
+    const LEN: usize = 2 * std::mem::size_of::<libc::c_long>() + 4 + 4 + 2;
+
+    /// Decode from the first [`Self::LEN`] bytes of `b` (native endian).
+    /// Returns `None` if the slice is too short.
+    fn parse(b: &[u8]) -> Option<Self> {
+        const L: usize = std::mem::size_of::<libc::c_long>();
+        if b.len() < Self::LEN {
+            return None;
+        }
+        let long_at = |off: usize| -> libc::c_long {
+            let mut buf = [0u8; L];
+            buf.copy_from_slice(&b[off..off + L]);
+            libc::c_long::from_ne_bytes(buf)
+        };
+        let u32_at = |off: usize| u32::from_ne_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]);
+        let u16_at = |off: usize| u16::from_ne_bytes([b[off], b[off + 1]]);
+        Some(Self {
+            bh_tstamp_sec: long_at(0),
+            bh_tstamp_usec: long_at(L),
+            bh_caplen: u32_at(2 * L),
+            bh_datalen: u32_at(2 * L + 4),
+            bh_hdrlen: u16_at(2 * L + 8),
+        })
+    }
 }
 
 /// ifreq struct for BIOCSETIF
@@ -174,16 +206,10 @@ impl CaptureBackend for BpfCapture {
         }
 
         // Parse BPF header at current position
-        if self.buf_pos + std::mem::size_of::<BpfHeader>() > self.buf_read {
+        let Some(hdr) = BpfHeader::parse(&self.buffer[self.buf_pos..self.buf_read]) else {
             self.buf_pos = self.buf_read; // Consumed
             return None;
-        }
-
-        // SAFETY: the bounds check above guarantees at least
-        // `size_of::<BpfHeader>()` bytes remain at `buf_pos`. BpfHeader is
-        // `#[repr(C)]` POD, so reinterpreting the kernel-filled bytes is valid;
-        // the borrow lives only as long as `self.buffer` is untouched below.
-        let hdr = unsafe { &*(self.buffer.as_ptr().add(self.buf_pos) as *const BpfHeader) };
+        };
 
         let caplen = hdr.bh_caplen as usize;
         let hdrlen = hdr.bh_hdrlen as usize;
@@ -282,4 +308,29 @@ fn open_bpf_device() -> Result<RawFd> {
     Err(crate::IdsError::Capture(
         "no available /dev/bpf device (tried bpf0..bpf255)".to_string(),
     ))
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::BpfHeader;
+
+    #[test]
+    fn parses_fields_from_unaligned_bytes() {
+        const L: usize = std::mem::size_of::<libc::c_long>();
+        let mut raw = vec![0xAAu8]; // one leading byte → misaligned start
+        raw.extend_from_slice(&(1_700_000_000 as libc::c_long).to_ne_bytes());
+        raw.extend_from_slice(&(123_456 as libc::c_long).to_ne_bytes());
+        raw.extend_from_slice(&64u32.to_ne_bytes());
+        raw.extend_from_slice(&1500u32.to_ne_bytes());
+        raw.extend_from_slice(&((2 * L + 10 + 6) as u16).to_ne_bytes());
+        raw.extend_from_slice(&[0u8; 8]);
+        let hdr = BpfHeader::parse(&raw[1..]).expect("enough bytes");
+        assert_eq!(hdr.bh_tstamp_sec, 1_700_000_000);
+        assert_eq!(hdr.bh_tstamp_usec, 123_456);
+        assert_eq!(hdr.bh_caplen, 64);
+        assert_eq!(hdr.bh_datalen, 1500);
+        assert_eq!(hdr.bh_hdrlen as usize, 2 * L + 16);
+        assert!(BpfHeader::parse(&raw[1..BpfHeader::LEN]).is_some());
+        assert!(BpfHeader::parse(&raw[1..BpfHeader::LEN - 1]).is_none());
+    }
 }

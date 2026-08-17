@@ -97,21 +97,32 @@ fn generate_code_at_step(secret: &[u8], step: u64) -> u32 {
 // Recovery codes
 // ============================================================
 
-/// Generate a set of one-time recovery codes
+/// Bytes of entropy per recovery code: 80 bits (OWASP ASVS 2.8.x floor),
+/// up from the 48 bits the pre-#319 UUID-derived codes carried.
+const RECOVERY_CODE_BYTES: usize = 10;
+
+/// Generate a set of one-time recovery codes, each 80 random bits from
+/// the OS RNG formatted as five groups of four upper-case hex digits
+/// (`XXXX-XXXX-XXXX-XXXX-XXXX`, 24 characters).
 pub fn generate_recovery_codes(count: usize) -> Vec<String> {
+    use argon2::password_hash::rand_core::{OsRng, RngCore};
     (0..count)
         .map(|_| {
-            let u = uuid::Uuid::new_v4();
-            let bytes = u.as_bytes();
-            // Format as XXXX-XXXX-XXXX (alphanumeric)
-            format!(
-                "{:04X}-{:04X}-{:04X}",
-                u16::from_be_bytes([bytes[0], bytes[1]]),
-                u16::from_be_bytes([bytes[2], bytes[3]]),
-                u16::from_be_bytes([bytes[4], bytes[5]]),
-            )
+            let mut bytes = [0u8; RECOVERY_CODE_BYTES];
+            OsRng.fill_bytes(&mut bytes);
+            bytes
+                .chunks(2)
+                .map(|pair| format!("{:02X}{:02X}", pair[0], pair[1]))
+                .collect::<Vec<_>>()
+                .join("-")
         })
         .collect()
+}
+
+/// Canonical form a typed recovery code is compared in: trimmed and
+/// upper-cased, so `abcd-1234-…` matches the code the user was shown.
+pub fn normalize_recovery_code(input: &str) -> String {
+    input.trim().to_ascii_uppercase()
 }
 
 // ============================================================
@@ -362,12 +373,21 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), 8);
-        // Format: XXXX-XXXX-XXXX
+        // Format: XXXX-XXXX-XXXX-XXXX-XXXX (80 bits, #319)
         for code in &codes {
-            assert_eq!(code.len(), 14);
-            assert_eq!(&code[4..5], "-");
-            assert_eq!(&code[9..10], "-");
+            assert_eq!(code.len(), 24);
+            for (i, ch) in code.chars().enumerate() {
+                if i % 5 == 4 {
+                    assert_eq!(ch, '-', "{code}");
+                } else {
+                    assert!(ch.is_ascii_hexdigit() && !ch.is_ascii_lowercase(), "{code}");
+                }
+            }
         }
+        assert_eq!(
+            normalize_recovery_code("  ab12-cd34-ef56-0789-1a2b\n"),
+            "AB12-CD34-EF56-0789-1A2B"
+        );
     }
 
     #[test]

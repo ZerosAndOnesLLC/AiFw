@@ -898,7 +898,7 @@ async fn finalize_os_upgrade(pool: SqlitePool, mut job: OsUpgradeState) {
 
 pub async fn reboot_system() -> Result<Json<MessageResponse>, StatusCode> {
     // Schedule reboot in 10 seconds
-    let _ = Command::new("/usr/local/bin/sudo")
+    let res = Command::new("/usr/local/bin/sudo")
         .args([
             "/sbin/shutdown",
             "-r",
@@ -907,6 +907,11 @@ pub async fn reboot_system() -> Result<Json<MessageResponse>, StatusCode> {
         ])
         .output()
         .await;
+    // #325: don't tell the operator the box is rebooting when shutdown(8)
+    // refused (sudoers drift, already pending shutdown, …).
+    if !aifw_core::sudo::warn_on_fail("schedule reboot", &res) {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     Ok(Json(MessageResponse {
         message: "System rebooting in 10 seconds".to_string(),
     }))
@@ -914,7 +919,7 @@ pub async fn reboot_system() -> Result<Json<MessageResponse>, StatusCode> {
 
 pub async fn shutdown_system() -> Result<Json<MessageResponse>, StatusCode> {
     // Schedule power-off in 10 seconds
-    let _ = Command::new("/usr/local/bin/sudo")
+    let res = Command::new("/usr/local/bin/sudo")
         .args([
             "/sbin/shutdown",
             "-p",
@@ -923,6 +928,9 @@ pub async fn shutdown_system() -> Result<Json<MessageResponse>, StatusCode> {
         ])
         .output()
         .await;
+    if !aifw_core::sudo::warn_on_fail("schedule shutdown", &res) {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     Ok(Json(MessageResponse {
         message: "System shutting down in 10 seconds".to_string(),
     }))

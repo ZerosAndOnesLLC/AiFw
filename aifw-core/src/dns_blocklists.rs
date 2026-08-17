@@ -954,10 +954,11 @@ async fn atomic_write(path: &std::path::Path, body: &str) -> std::io::Result<()>
 async fn remove_blocklist_file(path: &std::path::Path) {
     use tokio::process::Command;
     if let Some(p) = path.to_str() {
-        let _ = Command::new("/usr/local/bin/sudo")
+        let res = Command::new("/usr/local/bin/sudo")
             .args(["/bin/rm", "-f", p])
             .output()
             .await;
+        crate::sudo::warn_on_fail("dns blocklists: remove RPZ file", &res);
     }
 }
 

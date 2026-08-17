@@ -1144,6 +1144,23 @@ async fn create_config_manager(db_path: &Path) -> anyhow::Result<aifw_core::Conf
     Ok(mgr)
 }
 
+/// Run `service <name> <action>` and fail with its stderr on a non-zero
+/// exit (#325) instead of printing a success line regardless.
+pub fn service_ctl(name: &str, action: &str) -> anyhow::Result<()> {
+    let out = std::process::Command::new("service")
+        .args([name, action])
+        .output()
+        .map_err(|e| anyhow::anyhow!("service {name} {action}: failed to run: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "service {name} {action} exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 pub async fn config_show(db_path: &Path) -> anyhow::Result<()> {
     let mgr = create_config_manager(db_path).await?;
     match mgr.get_active().await.map_err(|e| anyhow::anyhow!(e))? {
@@ -1331,9 +1348,20 @@ pub async fn routes_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
 
     if let Some((dest, gw, enabled)) = row {
         if enabled {
-            let _ = std::process::Command::new("route")
+            // #325: a failed kernel-route delete leaves a stale route the
+            // DB no longer knows about — say so instead of hiding it.
+            match std::process::Command::new("route")
                 .args(["delete", &dest, &gw])
-                .output();
+                .output()
+            {
+                Ok(o) if o.status.success() => {}
+                Ok(o) => eprintln!(
+                    "warning: route delete {dest} {gw} exited {}: {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                Err(e) => eprintln!("warning: route delete {dest} {gw} failed to run: {e}"),
+            }
         }
         sqlx::query("DELETE FROM static_routes WHERE id = ?1")
             .bind(id)
