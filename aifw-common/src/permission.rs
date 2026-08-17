@@ -295,6 +295,11 @@ impl PermissionSet {
 pub fn builtin_role_permissions(role: &str) -> Vec<Permission> {
     match role {
         "admin" => ALL_PERMISSIONS.to_vec(),
+        // #318: AiFw's own service identities (aifw-daemon loopback key,
+        // inbound cluster peer key). Every endpoint they call sits behind
+        // HaManage; nothing else — in particular no users:write, so a leaked
+        // daemon key can no longer mint an admin.
+        "system" => vec![Permission::HaManage],
         "operator" => ALL_PERMISSIONS
             .iter()
             .filter(|p| {
