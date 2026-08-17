@@ -307,7 +307,7 @@ export default function TrafficPage() {
         </div>
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
           <div className="text-[10px] text-[var(--text-muted)] uppercase">Active Connections</div>
-          <div className="text-xl font-bold text-cyan-400">{connections.length}</div>
+          <div className="text-xl font-bold text-cyan-400">{ws.connectionsTotal || connections.length}</div>
         </div>
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
           <div className="text-[10px] text-[var(--text-muted)] uppercase">Interfaces</div>

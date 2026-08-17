@@ -6,7 +6,10 @@ import { getWsTicket, isAuthed } from "@/lib/api";
 interface WsData {
   status: Record<string, unknown> | null;
   system: Record<string, unknown> | null;
+  /// Top connections by traffic volume (server caps the list, #179);
+  /// `connectionsTotal` is the real size of the state table.
   connections: Record<string, unknown>[];
+  connectionsTotal: number;
   interfaces: Record<string, unknown>[];
   blocked: Record<string, unknown>[];
   services: Record<string, unknown>[];
@@ -25,16 +28,25 @@ interface WsData {
 const HISTORY_MAX = 1800;
 
 const WsContext = createContext<WsData>({
-  status: null, system: null, connections: [], interfaces: [], blocked: [], services: [],
+  status: null, system: null, connections: [], connectionsTotal: 0, interfaces: [], blocked: [], services: [],
   ids: null, connected: false, getHistory: () => [], historyLoaded: false,
 });
 
 export function useWs() { return useContext(WsContext); }
 
+/// Must match the server's `ConnectionPayload::key()`.
+function connKey(c: Record<string, unknown>): string {
+  return `${c.protocol}|${c.src_addr}:${c.src_port}|${c.dst_addr}:${c.dst_port}`;
+}
+
 export function WsProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
   const [system, setSystem] = useState<Record<string, unknown> | null>(null);
   const [connections, setConnections] = useState<Record<string, unknown>[]>([]);
+  const [connectionsTotal, setConnectionsTotal] = useState(0);
+  // Client-side connection table keyed by proto|src:port|dst:port; full
+  // frames replace it, delta frames patch it (#179).
+  const connMap = useRef<Map<string, Record<string, unknown>>>(new Map());
   const [interfaces, setInterfaces] = useState<Record<string, unknown>[]>([]);
   const [blocked, setBlocked] = useState<Record<string, unknown>[]>([]);
   const [services, setServices] = useState<Record<string, unknown>[]>([]);
@@ -88,7 +100,24 @@ export function WsProvider({ children }: { children: ReactNode }) {
         if (msg.type === "status_update") {
           setStatus(msg.status);
           if (msg.system) setSystem(msg.system);
-          if (msg.connections) setConnections(msg.connections);
+          if (Array.isArray(msg.connections)) {
+            const m = new Map<string, Record<string, unknown>>();
+            for (const c of msg.connections as Record<string, unknown>[]) m.set(connKey(c), c);
+            connMap.current = m;
+            setConnections(msg.connections);
+          } else if (msg.connections_delta) {
+            const d = msg.connections_delta as {
+              add?: Record<string, unknown>[];
+              update?: Record<string, unknown>[];
+              remove?: string[];
+            };
+            const m = connMap.current;
+            for (const k of d.remove ?? []) m.delete(k);
+            for (const c of d.add ?? []) m.set(connKey(c), c);
+            for (const c of d.update ?? []) m.set(connKey(c), c);
+            setConnections(Array.from(m.values()));
+          }
+          if (typeof msg.connections_total === "number") setConnectionsTotal(msg.connections_total);
           if (msg.interfaces) setInterfaces(msg.interfaces);
           if (msg.blocked) setBlocked(msg.blocked);
           if (msg.services) setServices(msg.services);
@@ -129,7 +158,7 @@ export function WsProvider({ children }: { children: ReactNode }) {
   const getHistory = useCallback(() => histBuf.current.slice(), []);
 
   return (
-    <WsContext.Provider value={{ status, system, connections, interfaces, blocked, services, ids, connected, getHistory, historyLoaded }}>
+    <WsContext.Provider value={{ status, system, connections, connectionsTotal, interfaces, blocked, services, ids, connected, getHistory, historyLoaded }}>
       {children}
     </WsContext.Provider>
   );
