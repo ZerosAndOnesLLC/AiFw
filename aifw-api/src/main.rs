@@ -647,15 +647,32 @@ pub fn build_router(
     if let Some(dir) = ui_dir
         && dir.exists()
     {
-        let index = dir.join("index.html");
-        let serve = ServeDir::new(dir)
-            .precompressed_br()
-            .precompressed_gzip()
-            .fallback(
-                ServeFile::new(index)
+        // #452: unknown UI paths get the exported 404 page with a real 404
+        // status (the UI has no dynamic routes, so anything ServeDir can't
+        // find is genuinely missing). Older UI builds without 404.html fall
+        // back to index.html as before.
+        let not_found = dir.join("404.html");
+        let (fallback_file, fallback_status) = if not_found.is_file() {
+            (not_found, axum::http::StatusCode::NOT_FOUND)
+        } else {
+            (dir.join("index.html"), axum::http::StatusCode::OK)
+        };
+        let fallback = tower::ServiceBuilder::new()
+            .map_response(move |mut resp: axum::response::Response<_>| {
+                if fallback_status != axum::http::StatusCode::OK && resp.status().is_success() {
+                    *resp.status_mut() = fallback_status;
+                }
+                resp
+            })
+            .service(
+                ServeFile::new(fallback_file)
                     .precompressed_br()
                     .precompressed_gzip(),
             );
+        let serve = ServeDir::new(dir)
+            .precompressed_br()
+            .precompressed_gzip()
+            .fallback(fallback);
         let layered = tower::ServiceBuilder::new()
             .layer(axum::middleware::from_fn(ui_cache_headers))
             .service(serve);
