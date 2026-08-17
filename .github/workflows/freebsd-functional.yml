@@ -45,7 +45,40 @@ jobs:
             cargo build -p aifw-api -p aifw-daemon
             echo "=== Running functional harness ==="
             mkdir -p func-artifacts
-            sh freebsd/tests/run-all.sh --artifacts "$(pwd)/func-artifacts"
+            # Do NOT let a harness failure fail this step: vmactions only
+            # copies the working tree back to the runner (copyback) when
+            # the step succeeds, so a failing run used to upload nothing and
+            # the per-test logs died with the VM. Record the exit code and
+            # let the next step fail the job after the artifacts are out.
+            rc=0
+            sh freebsd/tests/run-all.sh --artifacts "$(pwd)/func-artifacts" || rc=$?
+            echo "$rc" > func-artifacts/EXIT_CODE
+            echo "=== harness exit code: $rc ==="
+
+      - name: Harness result
+        if: always()
+        run: |
+          rc=$(cat func-artifacts/EXIT_CODE 2>/dev/null || echo 99)
+          if [ "$rc" != "0" ]; then
+            echo "::error::functional harness failed (exit $rc)"
+            # Surface every failing test's log inline so a red run is
+            # readable without downloading the artifact.
+            for f in func-artifacts/t*.log; do
+              [ -f "$f" ] || continue
+              if grep -q '^.*FAIL' "$f"; then
+                echo "::group::$(basename "$f")"
+                cat "$f"
+                echo "::endgroup::"
+              fi
+            done
+            for f in func-artifacts/aifw-api.log func-artifacts/aifw-daemon.log; do
+              [ -f "$f" ] || continue
+              echo "::group::$(basename "$f") (tail)"
+              tail -n 80 "$f"
+              echo "::endgroup::"
+            done
+            exit 1
+          fi
 
       - name: Upload artifacts
         if: always()
