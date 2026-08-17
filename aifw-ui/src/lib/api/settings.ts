@@ -35,11 +35,17 @@ export function saveMetricsSettings(body: MetricsSettingsPayload): Promise<unkno
 export interface ApiServerSettingsPayload {
   port: number;
   cors_origins: string;
-  jwt_secret: string;
+  /** Proxies whose X-Forwarded-For is trusted for the client IP (#308); IPs/CIDRs, comma-separated. */
+  trusted_proxies: string;
 }
 
+/** Stored under the generic `api_server` section; applied at the next aifw-api restart. */
 export function saveApiServerSettings(body: ApiServerSettingsPayload): Promise<unknown> {
-  return api.put("/api/v1/settings/api", body);
+  return api.put("/api/v1/settings/api_server", body);
+}
+
+export function getApiServerSettings(): Promise<Partial<Record<keyof ApiServerSettingsPayload, string>>> {
+  return api.get("/api/v1/settings/api_server");
 }
 
 // ---- TLS Policy ----

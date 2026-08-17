@@ -11,8 +11,8 @@ export interface ApiServerSectionProps {
   setPort: Dispatch<SetStateAction<string>>;
   corsOrigins: string;
   setCorsOrigins: Dispatch<SetStateAction<string>>;
-  jwtSecret: string;
-  setJwtSecret: Dispatch<SetStateAction<string>>;
+  trustedProxies: string;
+  setTrustedProxies: Dispatch<SetStateAction<string>>;
   saving: boolean;
   feedback: Feedback | null;
   save: () => void;
@@ -24,8 +24,8 @@ export function ApiServerSection({
   setPort,
   corsOrigins,
   setCorsOrigins,
-  jwtSecret,
-  setJwtSecret,
+  trustedProxies,
+  setTrustedProxies,
   saving,
   feedback,
   save,
@@ -58,14 +58,26 @@ export function ApiServerSection({
           </div>
         </div>
         <div>
-          <label className={labelCls}>JWT Secret</label>
+          <label className={labelCls}>Trusted Proxies</label>
           <input
-            type="password"
-            value={jwtSecret}
-            onChange={(e) => setJwtSecret(e.target.value)}
+            type="text"
+            value={trustedProxies}
+            onChange={(e) => setTrustedProxies(e.target.value)}
+            placeholder="e.g. 10.0.0.5, 192.168.10.0/24 — empty = none"
             className={inputCls}
           />
+          <p className="text-[11px] text-[var(--text-muted)] mt-1">
+            Only when a request arrives from one of these addresses is its
+            <code className="mx-1">X-Forwarded-For</code>header used as the client IP
+            (login / refresh rate limiting, plugin hooks). Leave empty unless AiFw sits
+            behind your own reverse proxy or load balancer. Applied at the next API restart;
+            <code className="mx-1">--trusted-proxies</code>/
+            <code className="mx-1">AIFW_TRUSTED_PROXIES</code>are merged in.
+          </p>
         </div>
+        <p className="text-[11px] text-[var(--text-muted)]">
+          The JWT signing secret lives in <code>/var/db/aifw/jwt.key</code> (not editable here).
+        </p>
 
         <div className="flex justify-end">
           <button onClick={save} disabled={saving} className={saveBtnCls}>

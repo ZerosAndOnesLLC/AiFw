@@ -201,7 +201,11 @@ pub async fn auth_middleware(
                 data: aifw_plugins::hooks::HookEventData::Api {
                     method,
                     path,
-                    remote_addr: None,
+                    // #308: resolved peer / trusted-proxy client address.
+                    remote_addr: request
+                        .extensions()
+                        .get::<crate::client_ip::ClientIp>()
+                        .and_then(|c| c.key()),
                 },
             };
             let actions = plugins.dispatch(&event).await;
