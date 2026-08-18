@@ -465,7 +465,7 @@ Subcommands without `--json` print human-readable tables.
 - [Auth &amp; RBAC &rarr;]({{ '/docs/auth/' | relative_url }})
 - [Backup &amp; migration &rarr;]({{ '/docs/backup/' | relative_url }})
 - Source: [`aifw-cli/src/main.rs`](https://github.com/ZerosAndOnesLLC/AiFw/blob/main/aifw-cli/src/main.rs)
-- Source: [`aifw-cli/src/commands.rs`](https://github.com/ZerosAndOnesLLC/AiFw/blob/main/aifw-cli/src/commands.rs)
+- Source: [`aifw-cli/src/commands/`](https://github.com/ZerosAndOnesLLC/AiFw/tree/main/aifw-cli/src/commands)
 
 </article>
 </div>
