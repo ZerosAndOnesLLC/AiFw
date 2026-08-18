@@ -107,6 +107,19 @@ aifw dhcp restart
 | `GET` | `/api/v1/dhcp/metrics` | Prometheus-style metrics |
 | `GET` | `/api/v1/dhcp/logs` | Recent rDHCP logs |
 
+## Relay metrics
+
+DHCP → Pool Metrics shows a **DHCP relay** card when rDHCP reports relay activity: relayed packets received (`giaddr ≠ 0`), accepted, and dropped by reason, both lifetime totals and the change since the last refresh. Counters are global (rDHCP does not label them per subnet). Drop reasons:
+
+| reason | meaning |
+|---|---|
+| `accept_relayed_disabled` | relayed packets arrived while *Accept relayed requests* is off |
+| `bad_giaddr` | `giaddr` is a bogon or matches no configured subnet — a misconfigured or spoofing relay |
+| `untrusted_relay` | relay source IP is not in the subnet's trusted-relays list |
+| `rate_limit` | the per-relay-source limiter engaged |
+
+New `untrusted_relay` / `bad_giaddr` drops since the previous refresh highlight the card and the row in red — those are the abuse signals; the other two are configuration.
+
 ## HA failover
 
 The DHCP `HaConfig` carries three modes: `standalone`, `active-active`, and `raft`.
