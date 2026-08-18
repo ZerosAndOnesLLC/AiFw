@@ -440,7 +440,12 @@ mod let_underscore_tests {
         "aifw-api/src/iface.rs",
         "aifw-api/src/backup.rs",
         "aifw-api/src/dhcp.rs",
-        "aifw-core/src/updater.rs",
+        "aifw-core/src/updater/install.rs",
+        "aifw-core/src/updater/services.rs",
+        "aifw-core/src/updater/rollback.rs",
+        "aifw-core/src/updater/verify.rs",
+        "aifw-core/src/updater/version.rs",
+        "aifw-core/src/updater/http.rs",
     ];
 
     #[test]

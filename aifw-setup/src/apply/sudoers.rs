@@ -128,7 +128,7 @@ aifw ALL=(ALL) NOPASSWD: /usr/sbin/sysrc *
 aifw ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump *
 
 # --- Detached restart driver ---
-# Required by aifw-core/src/updater.rs `restart_services()` so post-update
+# Required by aifw-core/src/updater/services.rs `restart_services()` so post-update
 # bounces survive aifw-api dying mid-iteration. -f flag double-forks
 # /usr/local/libexec/aifw-restart.sh into its own session.
 aifw ALL=(root) NOPASSWD: /usr/sbin/daemon -f *

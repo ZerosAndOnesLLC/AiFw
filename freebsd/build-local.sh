@@ -195,7 +195,7 @@ for bin in $EXT_BINS; do
 done
 cp -a "$PROJECT_ROOT/aifw-ui/out/"* "$TARBALL_DIR/ui/"
 
-# rc.d service scripts — the updater (aifw-core/src/updater.rs) iterates
+# rc.d service scripts — the updater (aifw-core/src/updater/) iterates
 # every file found under <tarball>/rc.d/ and installs it; it does not consult
 # manifest.json's rc_scripts list. Skipping this ships stale service files.
 mkdir -p "$TARBALL_DIR/rc.d"
@@ -211,7 +211,7 @@ fi
 
 # libexec scripts — aifw-restart.sh (detached bouncer), aifw-watchdog.sh
 # (self-heal loop), aifw-motd-cleanup.sh, aifw-login-migrate.sh. The
-# updater (aifw-core/src/updater.rs) iterates <tarball>/libexec/ on
+# updater (aifw-core/src/updater/) iterates <tarball>/libexec/ on
 # install. Skipping this means the new bouncer never reaches the
 # appliance and restart_services() falls back to the in-process loop.
 mkdir -p "$TARBALL_DIR/libexec"
