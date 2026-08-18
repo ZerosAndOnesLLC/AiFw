@@ -13,6 +13,14 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info};
 
+/// mimalloc as the process allocator (#412): the API/daemon/IDS workloads
+/// are dominated by many small short-lived allocations (JSON frames, pf
+/// state snapshots, alert records) where the default libc malloc on the
+/// appliance is measurably slower. `--no-default-features` builds without it.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 #[command(name = "aifw-daemon", about = "AiFw firewall daemon")]
 struct Args {
@@ -31,10 +39,24 @@ struct Args {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Serve tokio-console task diagnostics on 127.0.0.1:6669 (#413). Only
+    /// available in a build made with
+    /// `RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console`;
+    /// otherwise the flag is accepted and warns.
+    #[arg(long)]
+    tokio_console: bool,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Explicit runtime (#409): worker floor of 4 so a 2-vCPU appliance's
+    // periodic tasks don't fully subscribe the scheduler; override with
+    // AIFW_WORKER_THREADS.
+    let rt = aifw_common::runtime::build("aifw-daemon")?;
+    rt.block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // Fail closed when another instance actually holds the lock; fail open
@@ -67,7 +89,14 @@ async fn main() -> anyhow::Result<()> {
         use tracing_subscriber::util::SubscriberInitExt;
         let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| args.log_level.parse().unwrap_or_default());
+        // tokio-console layer (#413): only compiled in with the feature;
+        // otherwise `--tokio-console` is a no-op with a warning below.
+        #[cfg(feature = "tokio-console")]
+        let console_layer = args.tokio_console.then(console_subscriber::spawn);
+        #[cfg(not(feature = "tokio-console"))]
+        let console_layer: Option<tracing_subscriber::layer::Identity> = None;
         tracing_subscriber::registry()
+            .with(console_layer)
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_filter(env_filter)
@@ -80,6 +109,20 @@ async fn main() -> anyhow::Result<()> {
                 "aifw-daemon",
             ))
             .init();
+    }
+    #[cfg(not(feature = "tokio-console"))]
+    if args.tokio_console {
+        tracing::warn!(
+            "--tokio-console ignored: this build lacks the tokio-console feature \
+             (build with RUSTFLAGS=\"--cfg tokio_unstable\" --features tokio-console)"
+        );
+    }
+    {
+        let rt = aifw_common::runtime::snapshot();
+        tracing::info!(
+            worker_threads = rt.worker_threads,
+            "aifw-daemon: tokio runtime ready"
+        );
     }
 
     info!("AiFw daemon starting");

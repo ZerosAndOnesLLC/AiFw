@@ -9,6 +9,8 @@ name = "aifw-ids"
 path = "src/main.rs"
 
 [dependencies]
+mimalloc = { workspace = true, optional = true }
+console-subscriber = { workspace = true, optional = true }
 aifw-common = { workspace = true }
 aifw-ids = { workspace = true }
 aifw-ids-ipc = { workspace = true }
@@ -24,3 +26,8 @@ anyhow = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+default = ["mimalloc"]
+# tokio-console needs `RUSTFLAGS="--cfg tokio_unstable"` at build time (#413).
+tokio-console = ["dep:console-subscriber"]

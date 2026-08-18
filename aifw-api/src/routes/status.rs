@@ -30,6 +30,10 @@ pub struct MetricsResponse {
     pub aifw_rules_total: usize,
     pub aifw_rules_active: usize,
     pub aifw_nat_rules_total: usize,
+    /// Tokio runtime health of the API process (#413): configured workers,
+    /// live tasks, and the global queue depth (sustained > 0 ⇒ the workers
+    /// can't keep up — the first sign of a stalled dashboard).
+    pub runtime: aifw_common::runtime::RuntimeSnapshot,
 }
 
 pub async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
@@ -414,6 +418,7 @@ pub async fn metrics(State(state): State<AppState>) -> Result<Json<MetricsRespon
         aifw_rules_total: rules.len(),
         aifw_rules_active: active,
         aifw_nat_rules_total: nat_rules.len(),
+        runtime: aifw_common::runtime::snapshot(),
     }))
 }
 
