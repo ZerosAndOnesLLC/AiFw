@@ -238,3 +238,29 @@ pub async fn config_diff(db_path: &Path, v1: i64, v2: i64) -> anyhow::Result<()>
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::backup_passphrase;
+
+    #[test]
+    fn passphrase_file_first_line_wins_and_empty_is_error() {
+        let dir = std::env::temp_dir().join(format!("aifw-cli-pw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("pw");
+        std::fs::write(&f, "hunter2\r\nsecond line\n").unwrap();
+        assert_eq!(
+            backup_passphrase(Some(f.to_str().unwrap()))
+                .unwrap()
+                .as_deref(),
+            Some("hunter2")
+        );
+        std::fs::write(&f, "\n").unwrap();
+        assert!(
+            backup_passphrase(Some(f.to_str().unwrap())).is_err(),
+            "empty file is an error"
+        );
+        assert!(backup_passphrase(Some(dir.join("missing").to_str().unwrap())).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

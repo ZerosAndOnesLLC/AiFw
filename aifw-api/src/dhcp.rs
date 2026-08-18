@@ -814,6 +814,71 @@ fn validate_option_overrides(options: &[DhcpOptionOverride]) -> Result<(), Strin
     Ok(())
 }
 
+/// Address-family and range sanity for an IPv4 subnet definition (#442):
+/// `network` must be a v4 CIDR, the pool bounds and gateway must be v4
+/// addresses inside it, and the pool must not be inverted. The import path
+/// (`backup::validate_dhcp`) already enforced this; the create/update
+/// handlers accepted anything.
+fn validate_v4_subnet_shape(
+    network: &str,
+    pool_start: &str,
+    pool_end: &str,
+    gateway: &str,
+) -> Result<(), String> {
+    use std::net::Ipv4Addr;
+    let (net_s, prefix_s) = network
+        .split_once('/')
+        .ok_or_else(|| format!("network '{network}' must be IPv4 CIDR (a.b.c.d/nn)"))?;
+    let net: Ipv4Addr = net_s
+        .parse()
+        .map_err(|_| format!("network '{network}' is not a valid IPv4 CIDR"))?;
+    let prefix: u8 = prefix_s
+        .parse()
+        .ok()
+        .filter(|p| *p <= 32)
+        .ok_or_else(|| format!("network '{network}' has an invalid prefix length"))?;
+    let mask: u32 = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let in_net = |ip: Ipv4Addr| (u32::from(ip) & mask) == (u32::from(net) & mask);
+    let parse = |label: &str, v: &str| -> Result<Ipv4Addr, String> {
+        v.parse()
+            .map_err(|_| format!("{label} '{v}' is not a valid IPv4 address"))
+    };
+    let start = parse("pool_start", pool_start)?;
+    let end = parse("pool_end", pool_end)?;
+    let gw = parse("gateway", gateway)?;
+    for (label, ip) in [("pool_start", start), ("pool_end", end), ("gateway", gw)] {
+        if !in_net(ip) {
+            return Err(format!("{label} {ip} is outside network {network}"));
+        }
+    }
+    if u32::from(start) > u32::from(end) {
+        return Err(format!("pool_start {start} is after pool_end {end}"));
+    }
+    Ok(())
+}
+
+/// A reservation needs a real MAC (six hex octets, `:`/`-` separated) and a
+/// v4 address; rDHCP would otherwise render an unusable host entry (#442).
+fn validate_reservation_shape(mac: &str, ip: &str) -> Result<(), String> {
+    let octets: Vec<&str> = mac.split([':', '-']).collect();
+    let mac_ok = octets.len() == 6
+        && octets
+            .iter()
+            .all(|o| o.len() == 2 && o.chars().all(|c| c.is_ascii_hexdigit()));
+    if !mac_ok {
+        return Err(format!(
+            "mac_address '{mac}' is not a valid MAC (aa:bb:cc:dd:ee:ff)"
+        ));
+    }
+    ip.parse::<std::net::Ipv4Addr>()
+        .map(|_| ())
+        .map_err(|_| format!("ip_address '{ip}' is not a valid IPv4 address"))
+}
+
 /// Validate a list of trusted relay agent IPs. IPv4-only; loopback (127.0.0.0/8) rejected.
 fn validate_trusted_relays(relays: &[String]) -> Result<(), String> {
     use std::net::Ipv4Addr;
@@ -1643,6 +1708,13 @@ pub async fn create_subnet(
     let now = Utc::now().to_rfc3339();
     let enabled = req.enabled.unwrap_or(true);
     let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
+    if subnet_type == "address"
+        && let Err(e) =
+            validate_v4_subnet_shape(&req.network, &req.pool_start, &req.pool_end, &req.gateway)
+    {
+        tracing::warn!(error = %e, "dhcp: create subnet rejected");
+        return Err(bad_request());
+    }
     let dns_str = req.dns_servers.as_ref().map(|v| v.join(","));
     let ntp_str = req.ntp_servers.as_ref().and_then(|v| {
         let s = v
@@ -1719,6 +1791,13 @@ pub async fn update_subnet(
 ) -> Result<Json<ApiResponse<DhcpSubnet>>, StatusCode> {
     let enabled = req.enabled.unwrap_or(true);
     let subnet_type = req.subnet_type.as_deref().unwrap_or("address");
+    if subnet_type == "address"
+        && let Err(e) =
+            validate_v4_subnet_shape(&req.network, &req.pool_start, &req.pool_end, &req.gateway)
+    {
+        tracing::warn!(error = %e, "dhcp: update subnet rejected");
+        return Err(bad_request());
+    }
     let dns_str = req.dns_servers.as_ref().map(|v| v.join(","));
     let ntp_str = req.ntp_servers.as_ref().and_then(|v| {
         let s = v
@@ -1846,6 +1925,10 @@ pub async fn create_reservation(
     State(state): State<AppState>,
     Json(req): Json<CreateReservationRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<DhcpReservation>>), StatusCode> {
+    if let Err(e) = validate_reservation_shape(&req.mac_address, &req.ip_address) {
+        tracing::warn!(error = %e, "dhcp: create reservation rejected");
+        return Err(bad_request());
+    }
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     sqlx::query("INSERT INTO dhcp_reservations (id, subnet_id, mac_address, ip_address, hostname, client_id, description, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")
@@ -1875,6 +1958,10 @@ pub async fn update_reservation(
     Path(id): Path<String>,
     Json(req): Json<CreateReservationRequest>,
 ) -> Result<Json<ApiResponse<DhcpReservation>>, StatusCode> {
+    if let Err(e) = validate_reservation_shape(&req.mac_address, &req.ip_address) {
+        tracing::warn!(error = %e, "dhcp: update reservation rejected");
+        return Err(bad_request());
+    }
     let result = sqlx::query("UPDATE dhcp_reservations SET subnet_id=?2, mac_address=?3, ip_address=?4, hostname=?5, client_id=?6, description=?7 WHERE id=?1")
         .bind(&id).bind(req.subnet_id.as_deref()).bind(&req.mac_address).bind(&req.ip_address)
         .bind(req.hostname.as_deref()).bind(req.client_id.as_deref()).bind(req.description.as_deref())

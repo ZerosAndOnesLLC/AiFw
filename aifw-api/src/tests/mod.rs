@@ -199,6 +199,7 @@ mod backup;
 mod cluster;
 mod cookies;
 mod rbac;
+mod resources;
 mod rules;
 mod system;
 mod vpn_pki;

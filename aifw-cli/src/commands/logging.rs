@@ -394,3 +394,17 @@ mod syslog_cli_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(test)]
+mod human_bytes_tests {
+    use super::human_bytes;
+
+    #[test]
+    fn scales_with_binary_units() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(1024), "1 KB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
+    }
+}
