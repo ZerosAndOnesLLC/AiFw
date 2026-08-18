@@ -46,6 +46,15 @@ jobs:
         working-directory: aifw-ui
         run: npm run build
 
+      # Same pre-compression build-local.sh does (#203): tower_http serves
+      # .br/.gz siblings; without this CI-built appliances shipped raw JS.
+      - name: Pre-compress UI assets
+        run: |
+          sudo apt-get install -y brotli
+          PROJECT_ROOT="$GITHUB_WORKSPACE"
+          . freebsd/lib-build.sh
+          aifw_precompress_ui aifw-ui/out
+
       - name: Upload UI artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -81,7 +90,8 @@ jobs:
           usesh: true
           copyback: true
           prepare: |
-            # Install build tools
+            # Install build tools (same set build-local.sh installs, minus
+            # node — the UI is built on the Linux job)
             pkg install -y curl gmake jq
 
             # Install Rust via rustup
@@ -92,9 +102,16 @@ jobs:
             set -e
             . "$HOME/.cargo/env"
 
-            echo "=== Building AiFw binaries ==="
             cd /home/runner/work/AiFw/AiFw
+            # Shared build steps — the same functions build-local.sh /
+            # build-update.sh run, so CI cannot drift from a local build (#203).
+            PROJECT_ROOT="$(pwd)"
+            . freebsd/lib-build.sh
+            VERSION="${{ steps.version.outputs.version }}"
+
+            echo "=== Building AiFw binaries ==="
             cargo build --release
+            aifw_verify_binary_version "$VERSION"
 
             echo "=== Validating sudoers content (visudo -cf, #204) ==="
             # Pipe the same content aifw-setup writes to
@@ -105,81 +122,20 @@ jobs:
             visudo -cf /tmp/aifw-sudoers
             echo "sudoers OK"
 
-            # Install companion services from crates.io at the versions
-            # pinned in the manifest (#651, replacing the #538 git SHA
-            # pins). A missing pin or an unpublished version fails the
-            # build — never fall back to branch HEAD.
-            MANIFEST="freebsd/manifest.json"
+            echo "=== Installing companion services from crates.io (#651) ==="
             COMPANIONS_ROOT="/tmp/companions"
-            COMPANIONS_BIN="$COMPANIONS_ROOT/bin"
-            for NAME in $(jq -r '.external_repos[].name' "$MANIFEST"); do
-              CRATE=$(jq -r --arg n "$NAME" '.external_repos[] | select(.name == $n) | .crate // empty' "$MANIFEST")
-              VER=$(jq -r --arg n "$NAME" '.external_repos[] | select(.name == $n) | .version // empty' "$MANIFEST")
-              if [ -z "$CRATE" ] || [ -z "$VER" ]; then
-                echo "ERROR: ${NAME} has no crate/version pin in ${MANIFEST} (#651)" >&2
-                exit 1
-              fi
-              echo "=== Installing $NAME ($CRATE $VER from crates.io) ==="
-              cargo install --locked --version "$VER" --root "$COMPANIONS_ROOT" "$CRATE"
-            done
+            aifw_install_companions "$COMPANIONS_ROOT"
 
             echo "=== Preparing build inputs ==="
-            mkdir -p freebsd/release
-            # Copy local binaries
-            for bin in $(jq -r '.binaries.local[]' "$MANIFEST"); do
-              cp "target/release/${bin}" "freebsd/release/${bin}"
-            done
-            # Copy companion binaries — installed from crates.io above, so
-            # a missing one is a bug; refuse to ship a partial artifact set.
-            for bin in $(jq -r '.external_repos[].binaries[]' "$MANIFEST"); do
-              if [ ! -f "$COMPANIONS_BIN/$bin" ]; then
-                echo "ERROR: companion binary $bin missing from $COMPANIONS_BIN" >&2
-                exit 1
-              fi
-              cp "$COMPANIONS_BIN/$bin" "freebsd/release/$bin"
-            done
+            aifw_stage_binaries freebsd/release "$COMPANIONS_ROOT/bin"
 
             echo "=== Recording component versions (#538/#651) ==="
-            # Machine-readable record of the exact source that produced this
-            # artifact set: AiFw commit + every pinned companion crate version.
-            # Ships as a release asset and inside the update tarball.
-            VERSION="${{ steps.version.outputs.version }}"
-            jq -n \
-              --arg version "$VERSION" \
-              --arg aifw_commit "${{ github.sha }}" \
-              --slurpfile manifest "$MANIFEST" \
-              '{version: $version, aifw_commit: $aifw_commit,
-                components: [$manifest[0].external_repos[] | {name, repo, crate, version}]}' \
-              > /tmp/aifw-components.json
-            cat /tmp/aifw-components.json
             mkdir -p /usr/obj/aifw-iso/output
-            cp /tmp/aifw-components.json "/usr/obj/aifw-iso/output/aifw-components-${VERSION}.json"
+            aifw_write_components_json "$VERSION" "/usr/obj/aifw-iso/output/aifw-components-${VERSION}.json"
+            cat "/usr/obj/aifw-iso/output/aifw-components-${VERSION}.json"
 
             echo "=== Building update tarball ==="
-            TARBALL_DIR="/tmp/aifw-update-${VERSION}-amd64"
-            mkdir -p "$TARBALL_DIR/bin" "$TARBALL_DIR/ui" "$TARBALL_DIR/rc.d" "$TARBALL_DIR/sbin" "$TARBALL_DIR/libexec"
-            # Copy all binaries from freebsd/release/ into tarball
-            for bin in freebsd/release/*; do
-              [ -f "$bin" ] && cp "$bin" "$TARBALL_DIR/bin/"
-            done
-            cp -a freebsd/ui-export/* "$TARBALL_DIR/ui/"
-            cp -a freebsd/overlay/usr/local/etc/rc.d/* "$TARBALL_DIR/rc.d/"
-            cp -a freebsd/overlay/usr/local/sbin/* "$TARBALL_DIR/sbin/"
-            # libexec scripts (restart driver, watchdog, narrow-grant sudo
-            # helpers). The updater iterates <tarball>/libexec/ on install —
-            # without this, CI-built tarballs never ship helper updates (#469).
-            cp -a freebsd/overlay/usr/local/libexec/* "$TARBALL_DIR/libexec/"
-            chmod 755 "$TARBALL_DIR"/rc.d/* "$TARBALL_DIR"/sbin/* "$TARBALL_DIR"/libexec/*
-            echo "$VERSION" > "$TARBALL_DIR/version"
-            # OS floor stamp (#612): the updater refuses this tarball on a
-            # FreeBSD older than the VM it was built in.
-            freebsd-version -u | sed 's/-.*//' > "$TARBALL_DIR/required-os"
-            cp /tmp/aifw-components.json "$TARBALL_DIR/components.json"
-            tar -C /tmp -cJf "/usr/obj/aifw-iso/output/aifw-update-${VERSION}-amd64.tar.xz" "aifw-update-${VERSION}-amd64"
-            cd /usr/obj/aifw-iso/output
-            sha256 "aifw-update-${VERSION}-amd64.tar.xz" > "aifw-update-${VERSION}-amd64.tar.xz.sha256"
-            rm -rf "$TARBALL_DIR"
-            cd /home/runner/work/AiFw/AiFw
+            aifw_build_update_tarball "$VERSION" "$COMPANIONS_ROOT/bin" freebsd/ui-export /usr/obj/aifw-iso/output
 
             echo "=== Building ISO + IMG ==="
             cd freebsd
