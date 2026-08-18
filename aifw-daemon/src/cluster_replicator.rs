@@ -90,10 +90,7 @@ impl ClusterReplicator {
         let local_hash = aifw_core::sha256_hex(&local_data);
 
         let nodes = self.engine.list_nodes().await?;
-        for peer in nodes
-            .iter()
-            .filter(|n| !matches!(n.role, ClusterRole::Primary | ClusterRole::Standalone))
-        {
+        for peer in replication_targets(&nodes) {
             let key = match self.engine.peer_api_key(peer.id).await? {
                 Some(k) => k,
                 None => continue,
@@ -171,5 +168,46 @@ impl ClusterReplicator {
             }
         }
         Ok(())
+    }
+}
+
+/// Nodes the primary pushes snapshots to: every secondary. Primaries (this
+/// node, or a stale duplicate) and standalone entries are never targets.
+pub(crate) fn replication_targets(
+    nodes: &[aifw_common::ClusterNode],
+) -> Vec<&aifw_common::ClusterNode> {
+    nodes
+        .iter()
+        .filter(|n| !matches!(n.role, ClusterRole::Primary | ClusterRole::Standalone))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aifw_common::ClusterNode;
+
+    fn node(name: &str, role: ClusterRole) -> ClusterNode {
+        ClusterNode::new(
+            name.to_string(),
+            format!("10.0.0.{}", name.len()).parse().unwrap(),
+            role,
+        )
+    }
+
+    #[test]
+    fn only_secondaries_receive_snapshots() {
+        let nodes = vec![
+            node("me", ClusterRole::Primary),
+            node("standby", ClusterRole::Secondary),
+            node("lonely", ClusterRole::Standalone),
+            node("standby2", ClusterRole::Secondary),
+        ];
+        let targets: Vec<&str> = replication_targets(&nodes)
+            .iter()
+            .map(|n| n.name.as_str())
+            .collect();
+        assert_eq!(targets, vec!["standby", "standby2"]);
+        assert!(replication_targets(&[]).is_empty());
     }
 }

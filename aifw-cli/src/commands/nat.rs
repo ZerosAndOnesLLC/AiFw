@@ -192,3 +192,44 @@ pub async fn nat_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     println!("\n{} NAT rule(s) total", rules.len());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flag_hints_map_engine_errors_to_cli_flags() {
+        assert!(
+            nat_flag_hint("static_port is only valid for SNAT")
+                .unwrap()
+                .contains("--static-port")
+        );
+        assert!(
+            nat_flag_hint("af_to_dst (translated destination) is only valid for nat46")
+                .unwrap()
+                .contains("--af-to-dst")
+        );
+        assert!(
+            nat_flag_hint("nat46 translated destination must be a single IPv6")
+                .unwrap()
+                .contains("--af-to-dst")
+        );
+        assert!(
+            nat_flag_hint("rules do not support a redirect port")
+                .unwrap()
+                .contains("--redirect-port")
+        );
+        assert!(nat_flag_hint("something unrelated").is_none());
+    }
+
+    #[test]
+    fn nat_embed_validates_inputs() {
+        assert!(nat_embed("64:ff9b::/96", "10.1.2.3").is_ok());
+        assert!(
+            nat_embed("64:ff9b::", "10.1.2.3").is_ok(),
+            "bare address accepted"
+        );
+        assert!(nat_embed("not-v6", "10.1.2.3").is_err());
+        assert!(nat_embed("64:ff9b::/96", "300.1.1.1").is_err());
+    }
+}

@@ -85,8 +85,14 @@ pub struct App {
 impl App {
     pub async fn new(db_path: &std::path::Path) -> anyhow::Result<Self> {
         let db = Database::new(db_path).await?;
-        let pool = db.pool().clone();
         let pf: Arc<dyn PfBackend> = Arc::from(aifw_pf::create_backend());
+        Self::with_backend(db, pf).await
+    }
+
+    /// Build the app on an existing database + pf backend (tests use an
+    /// in-memory DB and the mock backend).
+    pub async fn with_backend(db: Database, pf: Arc<dyn PfBackend>) -> anyhow::Result<Self> {
+        let pool = db.pool().clone();
 
         let rule_engine = Arc::new(RuleEngine::new(pool.clone(), pf.clone()));
         // "aifw-nat" — must match the API/daemon anchor (#531).
@@ -207,5 +213,112 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aifw_common::{Action, Address, Direction, Protocol, RuleMatch};
+
+    async fn app() -> App {
+        let db = Database::new_in_memory().await.unwrap();
+        let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
+        App::with_backend(db, pf).await.unwrap()
+    }
+
+    fn rule(port: u16) -> Rule {
+        Rule::new(
+            Action::Pass,
+            Direction::In,
+            Protocol::Tcp,
+            RuleMatch {
+                src_addr: Address::Any,
+                src_port: None,
+                dst_addr: Address::Any,
+                dst_port: Some(aifw_common::PortRange {
+                    start: port,
+                    end: port,
+                }),
+            },
+        )
+    }
+
+    #[test]
+    fn tabs_cycle_in_both_directions() {
+        let mut t = Tab::Dashboard;
+        for expected in Tab::ALL.iter().skip(1) {
+            t = t.next();
+            assert_eq!(t.title(), expected.title());
+        }
+        assert_eq!(t.next().title(), Tab::Dashboard.title(), "wraps forward");
+        let mut t = Tab::Dashboard;
+        assert_eq!(t.prev().title(), Tab::Logs.title(), "wraps backward");
+        for _ in 0..Tab::ALL.len() {
+            t = t.prev();
+        }
+        assert_eq!(t.title(), Tab::Dashboard.title(), "full backward cycle");
+        // Every title is distinct — the tab bar relies on it.
+        let mut titles: Vec<&str> = Tab::ALL.iter().map(Tab::title).collect();
+        titles.sort();
+        titles.dedup();
+        assert_eq!(titles.len(), Tab::ALL.len());
+    }
+
+    #[tokio::test]
+    async fn fresh_app_starts_on_dashboard_with_empty_caches() {
+        let a = app().await;
+        assert!(a.running);
+        assert_eq!(a.tab.title(), "Dashboard");
+        assert!(a.rules.is_empty() && a.nat_rules.is_empty() && a.connections.is_empty());
+        assert_eq!(a.rules_selected, 0);
+    }
+
+    #[tokio::test]
+    async fn selection_is_clamped_per_tab_and_no_op_on_empty_lists() {
+        let mut a = app().await;
+        a.tab = Tab::Rules;
+        // Empty list: down does nothing, up saturates at 0.
+        a.select_down();
+        a.select_up();
+        assert_eq!(a.rules_selected, 0);
+
+        a.rule_engine.add_rule(rule(22)).await.unwrap();
+        a.rule_engine.add_rule(rule(80)).await.unwrap();
+        a.rule_engine.add_rule(rule(443)).await.unwrap();
+        a.refresh().await;
+        assert_eq!(a.rules.len(), 3);
+        for _ in 0..10 {
+            a.select_down();
+        }
+        assert_eq!(a.rules_selected, 2, "clamped to last row");
+        a.select_up();
+        assert_eq!(a.rules_selected, 1);
+        // Selection state is per tab — moving on Rules must not touch NAT.
+        assert_eq!(a.nat_selected, 0);
+        a.tab = Tab::Dashboard;
+        a.select_down();
+        assert_eq!(a.rules_selected, 1, "dashboard has no selection");
+    }
+
+    #[tokio::test]
+    async fn delete_selected_rule_removes_it_and_keeps_selection_in_range() {
+        let mut a = app().await;
+        a.rule_engine.add_rule(rule(22)).await.unwrap();
+        a.rule_engine.add_rule(rule(80)).await.unwrap();
+        a.refresh().await;
+        a.tab = Tab::Rules;
+        a.select_down();
+        assert_eq!(a.rules_selected, 1);
+        a.delete_selected_rule().await;
+        assert_eq!(a.rules.len(), 1);
+        assert!(
+            a.rules_selected < a.rules.len(),
+            "selection stays in range after delete"
+        );
+        a.delete_selected_rule().await;
+        assert!(a.rules.is_empty());
+        // Deleting with nothing selected is a no-op, not a panic.
+        a.delete_selected_rule().await;
     }
 }

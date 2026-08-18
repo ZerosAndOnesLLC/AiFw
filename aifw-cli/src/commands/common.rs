@@ -52,3 +52,37 @@ pub(super) async fn create_nat_engine(db_path: &Path) -> anyhow::Result<NatEngin
     // rule class in their anchor since #531.
     Ok(NatEngine::new(db.pool().clone(), pf).with_anchor("aifw-nat".to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_port_single_and_range() {
+        assert_eq!(parse_port("22").unwrap(), PortRange { start: 22, end: 22 });
+        assert_eq!(
+            parse_port("8000:8080").unwrap(),
+            PortRange {
+                start: 8000,
+                end: 8080
+            }
+        );
+        assert!(parse_port("x").is_err());
+        assert!(parse_port("70000").is_err(), "u16 overflow rejected");
+        assert!(parse_port("1:2:3").is_err());
+    }
+
+    #[test]
+    fn parse_action_and_direction_vocabulary() {
+        assert_eq!(parse_action("pass").unwrap(), Action::Pass);
+        assert_eq!(parse_action("block").unwrap(), Action::Block);
+        assert_eq!(parse_action("block-drop").unwrap(), Action::BlockDrop);
+        assert_eq!(parse_action("block-return").unwrap(), Action::BlockReturn);
+        let e = parse_action("deny").unwrap_err().to_string();
+        assert!(e.contains("pass, block, block-drop, block-return"), "{e}");
+        assert_eq!(parse_direction("in").unwrap(), Direction::In);
+        assert_eq!(parse_direction("out").unwrap(), Direction::Out);
+        assert_eq!(parse_direction("any").unwrap(), Direction::Any);
+        assert!(parse_direction("inbound").is_err());
+    }
+}

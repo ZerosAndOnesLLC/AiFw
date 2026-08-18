@@ -307,3 +307,18 @@ pub async fn vpn_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::split_ts;
+
+    #[test]
+    fn split_ts_trims_and_drops_empties() {
+        assert_eq!(
+            split_ts("10.0.0.0/24, 10.1.0.0/24 ,,"),
+            vec!["10.0.0.0/24", "10.1.0.0/24"]
+        );
+        assert!(split_ts("").is_empty());
+        assert!(split_ts(" , ").is_empty());
+    }
+}

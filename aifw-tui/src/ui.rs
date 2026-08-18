@@ -459,7 +459,7 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(table, area, &mut state);
 }
 
-fn format_bytes(bytes: u64) -> String {
+pub(crate) fn format_bytes(bytes: u64) -> String {
     if bytes >= 1_000_000_000 {
         format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
     } else if bytes >= 1_000_000 {
@@ -471,12 +471,64 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn format_duration(secs: u64) -> String {
+pub(crate) fn format_duration(secs: u64) -> String {
     if secs >= 3600 {
         format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
     } else if secs >= 60 {
         format!("{}m{}s", secs / 60, secs % 60)
     } else {
         format!("{secs}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn format_helpers() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(999), "999 B");
+        assert_eq!(format_bytes(1_000), "1.0 KB");
+        assert_eq!(format_bytes(1_536_000), "1.5 MB");
+        assert_eq!(format_bytes(2_000_000_000), "2.0 GB");
+        assert_eq!(format_duration(5), "5s");
+        assert_eq!(format_duration(65), "1m5s");
+        assert_eq!(format_duration(3_600), "1h0m");
+        assert_eq!(format_duration(3_725), "1h2m");
+    }
+
+    /// Every tab renders on a small terminal without panicking (index
+    /// arithmetic on empty lists, layout splits on tiny areas) and the tab
+    /// bar shows the active tab's title.
+    #[tokio::test]
+    async fn every_tab_renders_on_a_small_terminal() {
+        let db = aifw_core::Database::new_in_memory().await.unwrap();
+        let pf: std::sync::Arc<dyn aifw_pf::PfBackend> =
+            std::sync::Arc::new(aifw_pf::PfMock::new());
+        let mut app = crate::app::App::with_backend(db, pf).await.unwrap();
+        for tab in crate::app::Tab::ALL {
+            app.tab = tab;
+            for (w, h) in [(80u16, 24u16), (40, 12), (20, 6)] {
+                let backend = TestBackend::new(w, h);
+                let mut term = Terminal::new(backend).unwrap();
+                term.draw(|f| draw(f, &app)).unwrap();
+                if w >= 80 {
+                    let text: String = term
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .map(|c| c.symbol())
+                        .collect();
+                    assert!(
+                        text.contains(tab.title()),
+                        "{} missing from tab bar",
+                        tab.title()
+                    );
+                }
+            }
+        }
     }
 }
