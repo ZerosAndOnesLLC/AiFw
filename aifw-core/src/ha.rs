@@ -50,13 +50,15 @@ impl ClusterEngine {
         .await?;
 
         // Drop legacy per-VIP timer columns — profile on pfsync_config is now
-        // the source of truth (SQLite 3.35+; fails silently on older versions
-        // which is acceptable since the columns are simply unused on those nodes).
-        for stmt in [
-            "ALTER TABLE carp_vips DROP COLUMN advskew",
-            "ALTER TABLE carp_vips DROP COLUMN advbase",
-        ] {
-            let _ = sqlx::query(stmt).execute(&self.pool).await;
+        // the source of truth. Needs SQLite 3.35+ (DROP COLUMN); on older
+        // libraries the columns simply stay unused, so that failure is the
+        // one we tolerate — logged, not silent.
+        for column in ["advskew", "advbase"] {
+            if let Err(e) =
+                crate::schema::drop_column_if_present(&self.pool, "carp_vips", column).await
+            {
+                tracing::warn!(error = %e, column, "ha: could not drop legacy carp_vips column");
+            }
         }
 
         sqlx::query(
@@ -77,14 +79,15 @@ impl ClusterEngine {
         .await?;
 
         // New columns on cluster_nodes for peer auth + drift tracking
-        for stmt in [
-            "ALTER TABLE cluster_nodes ADD COLUMN peer_api_key TEXT",
-            "ALTER TABLE cluster_nodes ADD COLUMN peer_api_key_hash TEXT",
-            "ALTER TABLE cluster_nodes ADD COLUMN software_version TEXT",
-            "ALTER TABLE cluster_nodes ADD COLUMN last_pushed_cert_at TEXT",
-            "ALTER TABLE cluster_nodes ADD COLUMN cert_fingerprint TEXT",
+        for column in [
+            "peer_api_key",
+            "peer_api_key_hash",
+            "software_version",
+            "last_pushed_cert_at",
+            "cert_fingerprint",
         ] {
-            let _ = sqlx::query(stmt).execute(&self.pool).await;
+            crate::schema::add_column_if_missing(&self.pool, "cluster_nodes", column, "TEXT")
+                .await?;
         }
 
         sqlx::query(
@@ -151,14 +154,15 @@ impl ClusterEngine {
         .execute(&self.pool)
         .await?;
 
-        // New columns added in the HA epic — IDEMPOTENT (will fail silently on re-run)
-        for stmt in [
-            "ALTER TABLE pfsync_config ADD COLUMN latency_profile TEXT NOT NULL DEFAULT 'conservative'",
-            "ALTER TABLE pfsync_config ADD COLUMN heartbeat_iface TEXT",
-            "ALTER TABLE pfsync_config ADD COLUMN heartbeat_interval_ms INTEGER",
-            "ALTER TABLE pfsync_config ADD COLUMN dhcp_link INTEGER NOT NULL DEFAULT 0",
+        // Columns added in the HA epic (#193: probe, then alter).
+        for (column, definition) in [
+            ("latency_profile", "TEXT NOT NULL DEFAULT 'conservative'"),
+            ("heartbeat_iface", "TEXT"),
+            ("heartbeat_interval_ms", "INTEGER"),
+            ("dhcp_link", "INTEGER NOT NULL DEFAULT 0"),
         ] {
-            let _ = sqlx::query(stmt).execute(&self.pool).await;
+            crate::schema::add_column_if_missing(&self.pool, "pfsync_config", column, definition)
+                .await?;
         }
 
         Ok(())

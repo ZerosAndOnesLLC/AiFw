@@ -224,12 +224,14 @@ pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     )
     .execute(pool)
     .await?;
-    // Idempotent column add for existing deployments that predate the `enabled` flag.
-    let _ = sqlx::query(
-        "ALTER TABLE dns_blocklist_schedule ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0",
+    // Deployments that predate the `enabled` flag (#193: probe, then alter).
+    crate::schema::add_column_if_missing(
+        pool,
+        "dns_blocklist_schedule",
+        "enabled",
+        "INTEGER NOT NULL DEFAULT 0",
     )
-    .execute(pool)
-    .await;
+    .await?;
     sqlx::query(
         r#"
         INSERT OR IGNORE INTO dns_blocklist_schedule (id, cron, on_boot, concurrency, enabled)

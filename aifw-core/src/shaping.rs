@@ -70,19 +70,8 @@ impl ShapingEngine {
             ("fq_codel_flows", "INTEGER NOT NULL DEFAULT 1024"),
             ("fq_codel_ecn", "INTEGER NOT NULL DEFAULT 1"),
         ] {
-            let present = sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM pragma_table_info('queue_configs') WHERE name = ?1",
-            )
-            .bind(column)
-            .fetch_one(&self.pool)
-            .await?;
-            if present == 0 {
-                let statement =
-                    format!("ALTER TABLE queue_configs ADD COLUMN {column} {definition}");
-                sqlx::query(sqlx::AssertSqlSafe(statement))
-                    .execute(&self.pool)
-                    .await?;
-            }
+            crate::schema::add_column_if_missing(&self.pool, "queue_configs", column, definition)
+                .await?;
         }
 
         sqlx::query(

@@ -134,16 +134,15 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        // Idempotent ALTERs for pre-existing tables. SQLite has no IF NOT
-        // EXISTS for ADD COLUMN; ignore the duplicate-column error.
-        for stmt in [
-            "ALTER TABLE rules ADD COLUMN ip_version TEXT NOT NULL DEFAULT 'both'",
-            "ALTER TABLE rules ADD COLUMN src_invert INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE rules ADD COLUMN dst_invert INTEGER NOT NULL DEFAULT 0",
+        // Columns added after the table shipped (#193: probe, then alter).
+        for (column, definition) in [
+            ("ip_version", "TEXT NOT NULL DEFAULT 'both'"),
+            ("src_invert", "INTEGER NOT NULL DEFAULT 0"),
+            ("dst_invert", "INTEGER NOT NULL DEFAULT 0"),
             // Policy-routing gateway reference (#540)
-            "ALTER TABLE rules ADD COLUMN gateway TEXT",
+            ("gateway", "TEXT"),
         ] {
-            let _ = sqlx::query(stmt).execute(&self.pool).await;
+            crate::schema::add_column_if_missing(&self.pool, "rules", column, definition).await?;
         }
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_rules_priority ON rules(priority);")
