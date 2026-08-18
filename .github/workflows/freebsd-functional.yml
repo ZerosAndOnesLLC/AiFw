@@ -12,6 +12,11 @@ on:
       - 'aifw-common/**'
       - 'aifw-api/**'
       - 'aifw-daemon/**'
+      - 'aifw-setup/**'
+      - 'aifw-cli/**'
+      - 'aifw-tui/**'
+      - 'aifw-ids/**'
+      - 'aifw-ids-bin/**'
       - 'freebsd/tests/**'
       - '.github/workflows/freebsd-functional.yml'
   workflow_dispatch:
@@ -41,8 +46,14 @@ jobs:
             set -e
             . "$HOME/.cargo/env"
             cd /home/runner/work/AiFw/AiFw
-            echo "=== Building test binaries (debug) ==="
-            cargo build -p aifw-api -p aifw-daemon
+            echo "=== Building every binary (debug) ==="
+            # All default-member binaries, not just the two the harness
+            # runs: aifw-setup / aifw-cli / aifw-tui / aifw-ids carry
+            # `#[cfg(target_os = "freebsd")]` code that the Linux lint job
+            # never compiles — this is the only place it gets type-checked
+            # before a release build (v5.115.0 shipped a setup split with
+            # imports missing only inside those blocks).
+            cargo build
             echo "=== Running functional harness ==="
             mkdir -p func-artifacts
             # Do NOT let a harness failure fail this step: vmactions only

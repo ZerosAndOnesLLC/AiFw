@@ -4,7 +4,11 @@ use crate::config::SetupConfig;
 use crate::console;
 use aifw_common::{CarpVip, ClusterNode, ClusterRole, Interface, PfsyncConfig};
 
+// `run_best_effort`/`run_sysrc` are only referenced from the
+// `#[cfg(target_os = "freebsd")]` blocks below (sysrc/chown on a real box).
 use super::system::warn_on_err;
+#[cfg(target_os = "freebsd")]
+use super::system::{run_best_effort, run_sysrc};
 
 /// Initialize the SQLite database and create the admin user
 pub(super) async fn init_database(config: &SetupConfig) -> Result<(), String> {
