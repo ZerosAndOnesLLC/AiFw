@@ -3028,7 +3028,7 @@ mod sudoers_tests {
             ("aifw-api/src/dhcp.rs", 1),
             ("aifw-api/src/cluster.rs", 1),
             ("aifw-api/src/reverse_proxy.rs", 1),
-            ("aifw-cli/src/commands.rs", 1),
+            ("aifw-cli/src/commands/reverse_proxy.rs", 1),
             ("aifw-core/src/pf_tuning.rs", 1),
             ("aifw-core/src/ipsec.rs", 1),
             ("aifw-core/src/log_rotation.rs", 1),
