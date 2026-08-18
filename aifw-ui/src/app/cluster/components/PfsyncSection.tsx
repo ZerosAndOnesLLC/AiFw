@@ -51,6 +51,7 @@ export function PfsyncSection({
           ? String(pfsync.heartbeat_interval_ms)
           : "",
         dhcp_link: pfsync.dhcp_link,
+        wg_deconfigure_on_backup: pfsync.wg_deconfigure_on_backup ?? false,
       });
     } else {
       setPfsyncForm(defaultPfsyncForm);
@@ -274,6 +275,23 @@ export function PfsyncSection({
                 />
                 <span className="text-sm text-gray-300">DHCP Link</span>
               </label>
+            </div>
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer select-none"
+                title="Tear WireGuard interfaces down while this node is CARP BACKUP and bring them back on MASTER. Leave off unless a peer keeps a handshake alive with the standby.">
+                <input
+                  type="checkbox"
+                  checked={pfsyncForm.wg_deconfigure_on_backup}
+                  onChange={(e) =>
+                    setPfsyncForm((f) => ({
+                      ...f,
+                      wg_deconfigure_on_backup: e.target.checked,
+                    }))
+                  }
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                />
+                <span className="text-sm text-gray-300">Deconfigure WireGuard on BACKUP</span>
+              </label>
               <p className="text-xs text-gray-500 mt-0.5 ml-6">
                 Auto-derives the rDHCP HA peer list from the cluster nodes —
                 when enabled, you don&apos;t have to enter peer addresses again
@@ -298,6 +316,7 @@ export function PfsyncSection({
           </div>
           <div>Latency profile: {pfsync.latency_profile}</div>
           <div>DHCP link: {pfsync.dhcp_link ? "yes" : "no"}</div>
+          <div>WireGuard down on BACKUP: {pfsync.wg_deconfigure_on_backup ? "yes" : "no"}</div>
           <div>Enabled: {pfsync.enabled ? "yes" : "no"}</div>
           <div className="pt-1">
             <button

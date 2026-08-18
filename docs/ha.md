@@ -72,6 +72,14 @@ If your network does not satisfy "trusted pfsync segment," do not enable HA repl
 4. After both nodes are up: visit `https://<node-A-mgmt-ip>/cluster` and confirm both nodes appear in the table with a green health status.
 5. Verify with `aifw cluster verify` on each node, then run `scripts/ha-verify.sh node-a node-b` over SSH for a pair-wide check.
 
+### Peer API port
+
+Every cluster call to a peer (snapshot replication, health probes, cert push) goes to `https://<peer address>:<api_port>`. The port defaults to 8080 and is stored per node (`api_port` on `POST/PUT /api/v1/cluster/nodes`, the *API port* field on the Cluster → Nodes form, `aifw cluster nodes add --api-port`) — set it when a peer's API listens elsewhere.
+
+### WireGuard on the standby
+
+WireGuard listens on `0.0.0.0`, so a tunnel that terminates on a CARP VIP simply stops seeing traffic when the node goes BACKUP and picks it up again on MASTER — no action needed in the common case. If a remote peer keeps a handshake alive with the standby (a WAN VIP that is *also* reachable through the standby's own address), turn on **Deconfigure WireGuard on BACKUP** (`wg_deconfigure_on_backup` on `PUT /api/v1/cluster/pfsync`, `aifw cluster pfsync set --wg-deconfigure-on-backup`, or the checkbox in Cluster → pfsync). With it on, a transition to BACKUP destroys every `up` WireGuard interface (the DB status stays `up`) and a transition to MASTER recreates them; the flag is off by default.
+
 ## Latency profiles
 
 The `pfsync.latency_profile` setting controls CARP advertisement timing and therefore the detection window for unplanned failures.

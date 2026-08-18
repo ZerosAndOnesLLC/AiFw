@@ -352,6 +352,9 @@ struct PfsyncReq {
     pub heartbeat_iface: Option<String>,
     pub heartbeat_interval_ms: Option<u32>,
     pub dhcp_link: bool,
+    /// #486; omitted ⇒ unchanged (older clients).
+    #[serde(default)]
+    pub wg_deconfigure_on_backup: Option<bool>,
 }
 
 async fn update_pfsync(
@@ -375,6 +378,9 @@ async fn update_pfsync(
     p.heartbeat_iface = r.heartbeat_iface.map(Interface);
     p.heartbeat_interval_ms = r.heartbeat_interval_ms;
     p.dhcp_link = r.dhcp_link;
+    if let Some(v) = r.wg_deconfigure_on_backup {
+        p.wg_deconfigure_on_backup = v;
+    }
     let p = s.cluster_engine.set_pfsync(p).await.map_err(|e| {
         tracing::error!(error = %e, "cluster: failed to set pfsync config");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -398,13 +404,22 @@ struct NodeReq {
     pub name: String,
     pub address: IpAddr,
     pub role: ClusterRole,
+    /// Peer API port (#487); omitted ⇒ 8080.
+    #[serde(default)]
+    pub api_port: Option<u16>,
 }
 
 async fn create_node(
     State(s): State<AppState>,
     Json(r): Json<NodeReq>,
 ) -> Result<Json<ClusterNode>, StatusCode> {
-    let node = ClusterNode::new(r.name, r.address, r.role);
+    let mut node = ClusterNode::new(r.name, r.address, r.role);
+    if let Some(p) = r.api_port {
+        if p == 0 {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        node.api_port = p;
+    }
     let node = s.cluster_engine.add_node(node).await.map_err(|e| {
         tracing::error!(error = %e, "cluster: failed to add node");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -419,11 +434,15 @@ async fn update_node(
 ) -> Result<Json<ClusterNode>, StatusCode> {
     let mut n = ClusterNode::new(r.name, r.address, r.role);
     n.id = id;
+    if let Some(p) = r.api_port {
+        n.api_port = p;
+    }
     s.cluster_engine
         .update_node(&n)
         .await
         .map_err(|e| match e {
             aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+            aifw_common::AifwError::Validation(_) => StatusCode::BAD_REQUEST,
             _ => {
                 tracing::warn!(?e, "update_node failed");
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -688,7 +707,67 @@ async fn internal_role_changed(
     {
         tracing::warn!(?e, "internal_role_changed: record_failover_event");
     }
+    // #486: WireGuard role-change subscriber. Off unless the operator set
+    // pfsync.wg_deconfigure_on_backup; runs detached so the daemon's
+    // loopback POST returns immediately.
+    match wg_role_action(&r.to, wg_deconfigure_enabled(&s).await) {
+        Some(WgRoleAction::Deconfigure) => {
+            let vpn = s.vpn_engine.clone();
+            tokio::spawn(async move {
+                match vpn.deconfigure_for_backup().await {
+                    Ok(n) => {
+                        tracing::info!(interfaces = n, "ha: WireGuard deconfigured for BACKUP")
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ha: WireGuard deconfigure on BACKUP failed")
+                    }
+                }
+            });
+        }
+        Some(WgRoleAction::Reconfigure) => {
+            let vpn = s.vpn_engine.clone();
+            tokio::spawn(async move {
+                match vpn.reconfigure_for_master().await {
+                    Ok(n) => tracing::info!(tunnels = n, "ha: WireGuard reconfigured for MASTER"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ha: WireGuard reconfigure on MASTER failed")
+                    }
+                }
+            });
+        }
+        None => {}
+    }
     StatusCode::NO_CONTENT
+}
+
+/// What the WireGuard subscriber does on a CARP transition (#486).
+#[derive(Debug, PartialEq, Eq)]
+enum WgRoleAction {
+    /// Went BACKUP: tear the interfaces down.
+    Deconfigure,
+    /// Went MASTER: bring the `up` tunnels back.
+    Reconfigure,
+}
+
+/// Pure decision: only when the flag is on, only for the two canonical
+/// roles (`secondary` = BACKUP, `primary` = MASTER); `init`/`unknown` and
+/// anything else are ignored.
+fn wg_role_action(to_role: &str, enabled: bool) -> Option<WgRoleAction> {
+    if !enabled {
+        return None;
+    }
+    match to_role {
+        "secondary" => Some(WgRoleAction::Deconfigure),
+        "primary" => Some(WgRoleAction::Reconfigure),
+        _ => None,
+    }
+}
+
+async fn wg_deconfigure_enabled(s: &AppState) -> bool {
+    match s.cluster_engine.get_pfsync().await {
+        Ok(Some(p)) => p.wg_deconfigure_on_backup,
+        _ => false,
+    }
 }
 
 /// Maximum allowed byte length for the `detail` field in HealthChangedReq.
@@ -800,11 +879,7 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
         _ => return StatusCode::PRECONDITION_FAILED,
     };
 
-    let url = format!(
-        "https://{}:{}/api/v1/cluster/snapshot",
-        peer.address,
-        aifw_common::DEFAULT_LOOPBACK_API_PORT
-    );
+    let url = format!("{}/api/v1/cluster/snapshot", peer.api_base());
     // #317: pinned to the master's certificate (learned on first contact).
     let client = match s
         .cluster_engine
@@ -1253,6 +1328,25 @@ async fn generate_loopback_key(
 #[cfg(test)]
 mod tests {
     use super::parse_pfctl_si_state_count;
+    use super::{WgRoleAction, wg_role_action};
+
+    /// #486: the WireGuard subscriber only acts when the flag is on and only
+    /// on the two canonical CARP roles.
+    #[test]
+    fn wg_role_action_gated_by_flag_and_role() {
+        assert_eq!(
+            wg_role_action("secondary", true),
+            Some(WgRoleAction::Deconfigure)
+        );
+        assert_eq!(
+            wg_role_action("primary", true),
+            Some(WgRoleAction::Reconfigure)
+        );
+        assert_eq!(wg_role_action("init", true), None);
+        assert_eq!(wg_role_action("unknown", true), None);
+        assert_eq!(wg_role_action("secondary", false), None);
+        assert_eq!(wg_role_action("primary", false), None);
+    }
 
     #[test]
     fn pfctl_si_parses_normal() {

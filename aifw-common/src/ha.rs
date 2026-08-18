@@ -218,6 +218,13 @@ pub struct PfsyncConfig {
     pub heartbeat_interval_ms: Option<u32>,
     /// Link rDHCP HA state to this pfsync session (consumed in Commit 8 / #221)
     pub dhcp_link: bool,
+    /// Tear down WireGuard interfaces while this node is CARP BACKUP and
+    /// bring them back on MASTER (#486). Off by default: with the tunnels
+    /// bound to floating VIPs, wireguard-go on 0.0.0.0 already stops seeing
+    /// traffic on BACKUP; turn this on when a peer would otherwise keep a
+    /// handshake alive with the standby.
+    #[serde(default)]
+    pub wg_deconfigure_on_backup: bool,
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
 }
@@ -236,6 +243,7 @@ impl PfsyncConfig {
             heartbeat_iface: None,
             heartbeat_interval_ms: None,
             dhcp_link: false,
+            wg_deconfigure_on_backup: false,
             created_at: Utc::now(),
         }
     }
@@ -364,6 +372,15 @@ pub struct ClusterNode {
     /// until first contact learns it (or after an operator re-pin).
     #[serde(default)]
     pub cert_fingerprint: Option<String>,
+    /// TCP port the peer's API listens on (#487). Defaults to
+    /// [`crate::DEFAULT_LOOPBACK_API_PORT`]; set it when a peer runs its
+    /// API on a non-default port.
+    #[serde(default = "default_api_port")]
+    pub api_port: u16,
+}
+
+fn default_api_port() -> u16 {
+    crate::DEFAULT_LOOPBACK_API_PORT
 }
 
 /// Health status of a cluster node (wire values are lowercase)
@@ -408,6 +425,16 @@ impl ClusterNode {
             software_version: None,
             last_pushed_cert_at: None,
             cert_fingerprint: None,
+            api_port: crate::DEFAULT_LOOPBACK_API_PORT,
+        }
+    }
+
+    /// Base URL for calling this peer's API (`https://<address>:<port>`).
+    /// IPv6 addresses are bracketed.
+    pub fn api_base(&self) -> String {
+        match self.address {
+            std::net::IpAddr::V6(v6) => format!("https://[{v6}]:{}", self.api_port),
+            v4 => format!("https://{v4}:{}", self.api_port),
         }
     }
 

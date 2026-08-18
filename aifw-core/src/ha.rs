@@ -89,6 +89,17 @@ impl ClusterEngine {
             crate::schema::add_column_if_missing(&self.pool, "cluster_nodes", column, "TEXT")
                 .await?;
         }
+        // #487: per-node peer API port.
+        crate::schema::add_column_if_missing(
+            &self.pool,
+            "cluster_nodes",
+            "api_port",
+            &format!(
+                "INTEGER NOT NULL DEFAULT {}",
+                aifw_common::DEFAULT_LOOPBACK_API_PORT
+            ),
+        )
+        .await?;
 
         sqlx::query(
             r#"
@@ -160,6 +171,7 @@ impl ClusterEngine {
             ("heartbeat_iface", "TEXT"),
             ("heartbeat_interval_ms", "INTEGER"),
             ("dhcp_link", "INTEGER NOT NULL DEFAULT 0"),
+            ("wg_deconfigure_on_backup", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             crate::schema::add_column_if_missing(&self.pool, "pfsync_config", column, definition)
                 .await?;
@@ -288,8 +300,8 @@ impl ClusterEngine {
             r#"INSERT INTO pfsync_config
                (id, sync_interface, sync_peer, defer_mode, enabled,
                 latency_profile, heartbeat_iface, heartbeat_interval_ms, dhcp_link,
-                created_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+                created_at, wg_deconfigure_on_backup)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
         )
         .bind(config.id.to_string())
         .bind(&config.sync_interface.0)
@@ -301,6 +313,7 @@ impl ClusterEngine {
         .bind(config.heartbeat_interval_ms.map(|n| n as i64))
         .bind(config.dhcp_link)
         .bind(config.created_at.to_rfc3339())
+        .bind(config.wg_deconfigure_on_backup)
         .execute(&mut *conn)
         .await?;
         Ok(())
@@ -339,8 +352,8 @@ impl ClusterEngine {
 
         sqlx::query(
             r#"
-            INSERT INTO cluster_nodes (id, name, address, role, health, last_seen, config_version, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            INSERT INTO cluster_nodes (id, name, address, role, health, last_seen, config_version, created_at, api_port)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(node.id.to_string())
@@ -351,6 +364,7 @@ impl ClusterEngine {
         .bind(node.last_seen.to_rfc3339())
         .bind(node.config_version as i64)
         .bind(node.created_at.to_rfc3339())
+        .bind(i64::from(node.api_port))
         .execute(exec)
         .await?;
         Ok(())
@@ -377,16 +391,22 @@ impl ClusterEngine {
         Ok(())
     }
 
-    /// Update a node's name, address and role by id. Fails with `NotFound` if
-    /// the id doesn't exist
+    /// Update a node's name, address, role and API port by id. Fails with
+    /// `NotFound` if the id doesn't exist
     pub async fn update_node(&self, n: &ClusterNode) -> Result<()> {
+        if n.api_port == 0 {
+            return Err(AifwError::Validation(
+                "api_port must be 1-65535".to_string(),
+            ));
+        }
         let result = sqlx::query(
-            r#"UPDATE cluster_nodes SET name = ?1, address = ?2, role = ?3 WHERE id = ?4"#,
+            r#"UPDATE cluster_nodes SET name = ?1, address = ?2, role = ?3, api_port = ?5 WHERE id = ?4"#,
         )
         .bind(&n.name)
         .bind(n.address.to_string())
         .bind(n.role.to_string())
         .bind(n.id.to_string())
+        .bind(i64::from(n.api_port))
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
@@ -888,7 +908,8 @@ impl CarpVipRow {
 /// sqlx-sqlite column-count panic and blocks column pruning; an explicit list
 /// keeps the count deterministic and matches the `PfsyncRow` fields exactly.
 const PFSYNC_CONFIG_COLUMNS: &str = "id, sync_interface, sync_peer, defer_mode, enabled, \
-    created_at, latency_profile, heartbeat_iface, heartbeat_interval_ms, dhcp_link";
+    created_at, latency_profile, heartbeat_iface, heartbeat_interval_ms, dhcp_link, \
+    wg_deconfigure_on_backup";
 
 #[derive(sqlx::FromRow)]
 struct PfsyncRow {
@@ -902,6 +923,7 @@ struct PfsyncRow {
     heartbeat_interval_ms: Option<i64>,
     dhcp_link: bool,
     created_at: String,
+    wg_deconfigure_on_backup: bool,
 }
 
 impl PfsyncRow {
@@ -922,6 +944,7 @@ impl PfsyncRow {
                 .heartbeat_interval_ms
                 .and_then(|n| u32::try_from(n).ok()),
             dhcp_link: self.dhcp_link,
+            wg_deconfigure_on_backup: self.wg_deconfigure_on_backup,
             created_at: parse_dt(&self.created_at)?,
         })
     }
@@ -933,7 +956,8 @@ impl PfsyncRow {
 /// Note: `peer_api_key`/`peer_api_key_hash` exist on the table but are NOT part
 /// of `ClusterNodeRow`, so they are intentionally omitted here.
 const CLUSTER_NODES_COLUMNS: &str = "id, name, address, role, health, last_seen, \
-    config_version, created_at, software_version, last_pushed_cert_at, cert_fingerprint";
+    config_version, created_at, software_version, last_pushed_cert_at, cert_fingerprint, \
+    api_port";
 
 #[derive(sqlx::FromRow)]
 struct ClusterNodeRow {
@@ -948,6 +972,7 @@ struct ClusterNodeRow {
     software_version: Option<String>,
     last_pushed_cert_at: Option<String>,
     cert_fingerprint: Option<String>,
+    api_port: i64,
 }
 
 impl ClusterNodeRow {
@@ -977,6 +1002,10 @@ impl ClusterNodeRow {
             software_version: self.software_version,
             last_pushed_cert_at,
             cert_fingerprint: self.cert_fingerprint,
+            api_port: u16::try_from(self.api_port)
+                .ok()
+                .filter(|p| *p > 0)
+                .unwrap_or(aifw_common::DEFAULT_LOOPBACK_API_PORT),
         })
     }
 }

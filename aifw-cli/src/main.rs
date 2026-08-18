@@ -240,6 +240,9 @@ enum PfsyncAction {
         latency_profile: String,
         #[arg(long, default_value_t = false)]
         dhcp_link: bool,
+        /// Tear WireGuard interfaces down on CARP BACKUP, back up on MASTER (#486)
+        #[arg(long, default_value_t = false)]
+        wg_deconfigure_on_backup: bool,
     },
 }
 
@@ -258,6 +261,9 @@ enum NodesAction {
         /// Node role: primary, secondary, or standalone
         #[arg(long, default_value = "secondary")]
         role: String,
+        /// Port the peer's API listens on (default 8080)
+        #[arg(long)]
+        api_port: Option<u16>,
     },
     /// Remove a cluster node
     Remove { id: String },
@@ -1659,6 +1665,7 @@ async fn main() -> anyhow::Result<()> {
                     defer,
                     latency_profile,
                     dhcp_link,
+                    wg_deconfigure_on_backup,
                 } => {
                     commands::cluster_pfsync_set(
                         &sync_interface,
@@ -1666,6 +1673,7 @@ async fn main() -> anyhow::Result<()> {
                         defer,
                         &latency_profile,
                         dhcp_link,
+                        wg_deconfigure_on_backup,
                     )
                     .await?
                 }
@@ -1677,7 +1685,8 @@ async fn main() -> anyhow::Result<()> {
                     name,
                     address,
                     role,
-                } => commands::cluster_nodes_add(&name, &address, &role).await?,
+                    api_port,
+                } => commands::cluster_nodes_add(&name, &address, &role, api_port).await?,
                 NodesAction::Remove { id } => commands::cluster_nodes_remove(&id).await?,
                 NodesAction::Repin { id, fingerprint } => {
                     commands::cluster_nodes_repin(&id, fingerprint.as_deref()).await?

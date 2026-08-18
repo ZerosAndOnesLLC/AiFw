@@ -51,7 +51,7 @@ export function NodesSection({
   };
 
   const openEditNode = (n: Node) => {
-    setNodeForm({ name: n.name, address: n.address, role: n.role });
+    setNodeForm({ name: n.name, address: n.address, role: n.role, api_port: String(n.api_port ?? 8080) });
     setEditingNodeId(n.id);
     setShowNodeForm(true);
   };
@@ -122,6 +122,20 @@ export function NodesSection({
                 <option value="standalone">Standalone</option>
               </select>
             </div>
+            <div>
+              <label className={labelCls}>API port</label>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={nodeForm.api_port}
+                onChange={(e) =>
+                  setNodeForm((f) => ({ ...f, api_port: e.target.value }))
+                }
+                className={inputCls}
+              />
+              <p className="mt-1 text-[11px] text-[var(--text-muted)]">Port the peer&apos;s API listens on (default 8080).</p>
+            </div>
           </div>
         </FormCard>
       )}
@@ -166,7 +180,7 @@ export function NodesSection({
                   className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors"
                 >
                   <td className="py-2.5 px-4">{n.name}</td>
-                  <td className="py-2.5 px-4 font-mono">{n.address}</td>
+                  <td className="py-2.5 px-4 font-mono">{n.address}{n.api_port && n.api_port !== 8080 ? `:${n.api_port}` : ""}</td>
                   <td className="py-2.5 px-4">{n.role}</td>
                   <td className="py-2.5 px-4">{n.health}</td>
                   <td className="py-2.5 px-4">
