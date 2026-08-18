@@ -51,7 +51,7 @@ pub async fn rules_add(
     rule.label = label.map(String::from);
     rule.interface = interface.map(|s| Interface(s.to_string()));
 
-    let rule = engine.add_rule(rule).await?;
+    let rule = engine.add(rule).await?;
     println!("Added rule {}", rule.id);
     println!("  pf: {}", rule.to_pf_rule("aifw"));
     Ok(())
@@ -60,14 +60,14 @@ pub async fn rules_add(
 pub async fn rules_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let engine = create_engine(db_path).await?;
     let uuid = Uuid::parse_str(id)?;
-    engine.delete_rule(uuid).await?;
+    engine.delete(uuid).await?;
     println!("Removed rule {id}");
     Ok(())
 }
 
 pub async fn rules_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let engine = create_engine(db_path).await?;
-    let rules = engine.list_rules().await?;
+    let rules = engine.list().await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&rules)?);

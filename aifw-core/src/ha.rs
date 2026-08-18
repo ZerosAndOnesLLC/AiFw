@@ -23,7 +23,7 @@ impl ClusterEngine {
         Self {
             pool,
             pf,
-            anchor: "aifw-ha".to_string(),
+            anchor: aifw_common::anchors::HA.to_string(),
         }
     }
 

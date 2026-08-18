@@ -96,8 +96,7 @@ impl App {
 
         let rule_engine = Arc::new(RuleEngine::new(pool.clone(), pf.clone()));
         // "aifw-nat" — must match the API/daemon anchor (#531).
-        let nat_engine =
-            Arc::new(NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string()));
+        let nat_engine = Arc::new(NatEngine::new(pool.clone(), pf.clone()));
         nat_engine.migrate().await?;
         let shaping_engine = Arc::new(ShapingEngine::new(pool.clone(), pf.clone()));
         shaping_engine.migrate().await?;
@@ -134,10 +133,10 @@ impl App {
         if let Ok(stats) = self.pf.get_stats().await {
             self.pf_stats = stats;
         }
-        if let Ok(rules) = self.rule_engine.list_rules().await {
+        if let Ok(rules) = self.rule_engine.list().await {
             self.rules = rules;
         }
-        if let Ok(nat) = self.nat_engine.list_rules().await {
+        if let Ok(nat) = self.nat_engine.list().await {
             self.nat_rules = nat;
         }
         let _ = self.conntrack.refresh().await;
@@ -158,7 +157,7 @@ impl App {
     pub async fn delete_selected_rule(&mut self) {
         if let Some(rule) = self.rules.get(self.rules_selected) {
             let id = rule.id;
-            if self.rule_engine.delete_rule(id).await.is_ok() {
+            if self.rule_engine.delete(id).await.is_ok() {
                 self.refresh().await;
                 if self.rules_selected > 0 && self.rules_selected >= self.rules.len() {
                     self.rules_selected = self.rules.len().saturating_sub(1);
@@ -170,7 +169,7 @@ impl App {
     pub async fn delete_selected_nat(&mut self) {
         if let Some(rule) = self.nat_rules.get(self.nat_selected) {
             let id = rule.id;
-            if self.nat_engine.delete_rule(id).await.is_ok() {
+            if self.nat_engine.delete(id).await.is_ok() {
                 self.refresh().await;
                 if self.nat_selected > 0 && self.nat_selected >= self.nat_rules.len() {
                     self.nat_selected = self.nat_rules.len().saturating_sub(1);
@@ -283,9 +282,9 @@ mod tests {
         a.select_up();
         assert_eq!(a.rules_selected, 0);
 
-        a.rule_engine.add_rule(rule(22)).await.unwrap();
-        a.rule_engine.add_rule(rule(80)).await.unwrap();
-        a.rule_engine.add_rule(rule(443)).await.unwrap();
+        a.rule_engine.add(rule(22)).await.unwrap();
+        a.rule_engine.add(rule(80)).await.unwrap();
+        a.rule_engine.add(rule(443)).await.unwrap();
         a.refresh().await;
         assert_eq!(a.rules.len(), 3);
         for _ in 0..10 {
@@ -304,8 +303,8 @@ mod tests {
     #[tokio::test]
     async fn delete_selected_rule_removes_it_and_keeps_selection_in_range() {
         let mut a = app().await;
-        a.rule_engine.add_rule(rule(22)).await.unwrap();
-        a.rule_engine.add_rule(rule(80)).await.unwrap();
+        a.rule_engine.add(rule(22)).await.unwrap();
+        a.rule_engine.add(rule(80)).await.unwrap();
         a.refresh().await;
         a.tab = Tab::Rules;
         a.select_down();

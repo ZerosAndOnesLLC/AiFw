@@ -835,8 +835,7 @@ async fn create_state_from_db(
     auth::migrate(&pool).await?;
 
     let rule_engine = Arc::new(RuleEngine::new(pool.clone(), pf.clone()));
-    let nat_engine =
-        Arc::new(NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string()));
+    let nat_engine = Arc::new(NatEngine::new(pool.clone(), pf.clone()));
     let vpn_engine = Arc::new(VpnEngine::new(pool.clone(), pf.clone()));
     let ipsec_engine = Arc::new(aifw_core::IpsecEngine::new(
         pool.clone(),
@@ -1392,7 +1391,11 @@ async fn ensure_rdr_anchor() {
     const ND_RULE: &str =
         "pass quick inet6 proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }";
     let has_nd = lines.iter().any(|l| l.trim() == ND_RULE);
-    let mwan_anchors = ["aifw-pbr", "aifw-mwan-leak", "aifw-mwan-reply"];
+    let mwan_anchors = [
+        aifw_common::anchors::PBR,
+        aifw_common::anchors::MWAN_LEAK,
+        aifw_common::anchors::MWAN_REPLY,
+    ];
     let has_mwan: Vec<bool> = mwan_anchors
         .iter()
         .map(|a| {

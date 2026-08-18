@@ -92,18 +92,12 @@ pub fn generate_pf_conf(config: &SetupConfig) -> String {
     lines.push(String::new());
 
     lines.push("# AiFw filter anchors".to_string());
-    // Multi-WAN anchors MUST be evaluated first so policy-routing decisions
-    // (route-to / rtable) are set before general filtering.
-    lines.push("anchor \"aifw-pbr\"".to_string());
-    lines.push("anchor \"aifw-mwan-leak\"".to_string());
-    lines.push("anchor \"aifw-mwan-reply\"".to_string());
-    lines.push("anchor \"aifw\"".to_string());
-    lines.push("anchor \"aifw-nat\"".to_string());
-    lines.push("anchor \"aifw-ratelimit\"".to_string());
-    lines.push("anchor \"aifw-vpn\"".to_string());
-    lines.push("anchor \"aifw-geoip\"".to_string());
-    lines.push("anchor \"aifw-tls\"".to_string());
-    lines.push("anchor \"aifw-ha\"".to_string());
+    // Order comes from aifw_common::anchors::FILTER_HOOKS: multi-WAN anchors
+    // first so policy-routing decisions (route-to / rtable) are set before
+    // general filtering.
+    for anchor in aifw_common::anchors::FILTER_HOOKS {
+        lines.push(format!("anchor \"{anchor}\""));
+    }
     lines.push(String::new());
 
     // Default policy

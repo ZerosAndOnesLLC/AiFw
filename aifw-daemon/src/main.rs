@@ -133,10 +133,10 @@ async fn main() -> anyhow::Result<()> {
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::from(aifw_pf::create_backend());
     let engine =
         Arc::new(RuleEngine::new(pool.clone(), pf.clone()).with_anchor(args.anchor.clone()));
-    // Same anchor as the API's engine ("aifw-nat", not the default "aifw"):
+    // NAT engine defaults to aifw_common::anchors::NAT ("aifw-nat"):
     // NAT loads replace every rule class in their anchor since #531, so a
     // boot-time apply into "aifw" would wipe the filter rules loaded above.
-    let nat_engine = NatEngine::new(pool.clone(), pf.clone()).with_anchor("aifw-nat".to_string());
+    let nat_engine = NatEngine::new(pool.clone(), pf.clone());
     let alias_engine = AliasEngine::new(pool.clone(), pf.clone());
 
     // Check pf status
@@ -155,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
     // Load and apply filter rules
     match engine.apply_rules().await {
         Ok(()) => {
-            let rules = engine.list_rules().await?;
+            let rules = engine.list().await?;
             info!(count = rules.len(), anchor = %args.anchor, "filter rules applied");
         }
         Err(e) => error!("failed to apply filter rules: {e}"),

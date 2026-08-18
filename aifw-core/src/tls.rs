@@ -26,7 +26,7 @@ impl TlsEngine {
         Self {
             pool,
             pf,
-            anchor: "aifw-tls".to_string(),
+            anchor: aifw_common::anchors::TLS.to_string(),
             policy: TlsPolicy::default(),
             mitm_config: MitmProxyConfig::default(),
         }

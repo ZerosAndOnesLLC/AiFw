@@ -8,7 +8,7 @@ use crate::audit::{AuditAction, AuditLog};
 use crate::db::Database;
 use crate::validation::validate_rule;
 
-const DEFAULT_ANCHOR: &str = "aifw";
+const DEFAULT_ANCHOR: &str = aifw_common::anchors::FILTER;
 
 /// Resolve a rule's policy-routing gateway reference to the `(interface,
 /// next_hop)` pair `route-to` needs (#540). Falls back to default routing
@@ -82,7 +82,7 @@ impl RuleEngine {
     /// Validate and insert a rule; the rule row and its audit entry commit
     /// in one transaction. pf is untouched until [`Self::apply_rules`].
     /// Fails on validation or DB errors.
-    pub async fn add_rule(&self, rule: Rule) -> Result<Rule> {
+    pub async fn add(&self, rule: Rule) -> Result<Rule> {
         validate_rule(&rule)?;
         let pf_syntax = rule.to_pf_rule(&self.anchor);
         // PERF-H6 (#350): mutation + audit row commit together — one fsync
@@ -103,7 +103,7 @@ impl RuleEngine {
     }
 
     /// Fetch a rule by id. Fails with `NotFound` if it doesn't exist
-    pub async fn get_rule(&self, id: Uuid) -> Result<Rule> {
+    pub async fn get(&self, id: Uuid) -> Result<Rule> {
         self.db
             .get_rule(id)
             .await?
@@ -111,14 +111,14 @@ impl RuleEngine {
     }
 
     /// All rules ordered by priority, then creation time
-    pub async fn list_rules(&self) -> Result<Vec<Rule>> {
+    pub async fn list(&self) -> Result<Vec<Rule>> {
         self.db.list_rules().await
     }
 
     /// Validate and update a rule; the update and its audit entry commit in
     /// one transaction. Fails with `NotFound` for an unknown id. pf is
     /// untouched until [`Self::apply_rules`].
-    pub async fn update_rule(&self, rule: Rule) -> Result<()> {
+    pub async fn update(&self, rule: Rule) -> Result<()> {
         validate_rule(&rule)?;
         let mut tx = self.db.pool().begin().await?;
         Database::update_rule_on(&mut *tx, &rule).await?;
@@ -137,7 +137,7 @@ impl RuleEngine {
 
     /// Delete a rule; the delete and its audit entry commit in one
     /// transaction. Fails with `NotFound` for an unknown id
-    pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
         let mut tx = self.db.pool().begin().await?;
         Database::delete_rule_on(&mut *tx, id).await?;
         AuditLog::log_on(

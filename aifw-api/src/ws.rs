@@ -620,20 +620,12 @@ struct BuiltUpdate {
 
 async fn build_update(state: &AppState) -> Result<BuiltUpdate, String> {
     let stats = state.pf.get_stats().await.map_err(|e| e.to_string())?;
-    let rules = state
-        .rule_engine
-        .list_rules()
-        .await
-        .map_err(|e| e.to_string())?;
+    let rules = state.rule_engine.list().await.map_err(|e| e.to_string())?;
     let active = rules
         .iter()
         .filter(|r| r.status == RuleStatus::Active)
         .count();
-    let nat_rules = state
-        .nat_engine
-        .list_rules()
-        .await
-        .map_err(|e| e.to_string())?;
+    let nat_rules = state.nat_engine.list().await.map_err(|e| e.to_string())?;
 
     // conntrack snapshot — refreshed by the background polling task started
     // at boot, so this is an atomic ArcSwap load (no syscall, no clone).

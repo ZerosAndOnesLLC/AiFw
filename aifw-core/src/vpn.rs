@@ -24,7 +24,7 @@ impl VpnEngine {
         Self {
             pool,
             pf,
-            anchor: "aifw-vpn".to_string(),
+            anchor: aifw_common::anchors::VPN.to_string(),
         }
     }
 

@@ -90,9 +90,9 @@ async fn test_engine_add_list_rules() {
 
     let rule = make_test_rule();
     let id = rule.id;
-    engine.add_rule(rule).await.unwrap();
+    engine.add(rule).await.unwrap();
 
-    let rules = engine.list_rules().await.unwrap();
+    let rules = engine.list().await.unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].id, id);
 }
@@ -105,10 +105,10 @@ async fn test_engine_delete_rule() {
 
     let rule = make_test_rule();
     let id = rule.id;
-    engine.add_rule(rule).await.unwrap();
-    engine.delete_rule(id).await.unwrap();
+    engine.add(rule).await.unwrap();
+    engine.delete(id).await.unwrap();
 
-    let rules = engine.list_rules().await.unwrap();
+    let rules = engine.list().await.unwrap();
     assert!(rules.is_empty());
 }
 
@@ -118,7 +118,7 @@ async fn test_engine_delete_nonexistent() {
     let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
     let engine = RuleEngine::new(db.pool().clone(), pf);
 
-    let result = engine.delete_rule(uuid::Uuid::new_v4()).await;
+    let result = engine.delete(uuid::Uuid::new_v4()).await;
     assert!(result.is_err());
 }
 
@@ -129,7 +129,7 @@ async fn test_engine_apply_rules() {
     let pf: Arc<dyn PfBackend> = mock.clone();
     let engine = RuleEngine::new(db.pool().clone(), pf);
 
-    engine.add_rule(make_test_rule()).await.unwrap();
+    engine.add(make_test_rule()).await.unwrap();
 
     let mut rule2 = Rule::new(
         Action::Pass,
@@ -146,7 +146,7 @@ async fn test_engine_apply_rules() {
         },
     );
     rule2.priority = 50;
-    engine.add_rule(rule2).await.unwrap();
+    engine.add(rule2).await.unwrap();
 
     engine.apply_rules().await.unwrap();
 
@@ -207,7 +207,7 @@ async fn test_engine_schedule_gating() {
     dangling.schedule_id = Some("deleted-schedule".to_string());
     dangling.label = Some("dangling".to_string());
     for r in [gated, open, disabled_sched, dangling] {
-        engine.add_rule(r).await.unwrap();
+        engine.add(r).await.unwrap();
     }
 
     engine.apply_rules().await.unwrap();
@@ -275,16 +275,13 @@ async fn test_engine_gateway_route_to() {
         r.gateway = gw;
         r
     };
+    engine.add(mk("routed", Some(up_id.clone()))).await.unwrap();
     engine
-        .add_rule(mk("routed", Some(up_id.clone())))
+        .add(mk("gw-down", Some(down_id.clone())))
         .await
         .unwrap();
     engine
-        .add_rule(mk("gw-down", Some(down_id.clone())))
-        .await
-        .unwrap();
-    engine
-        .add_rule(mk("gw-dangling", Some(uuid::Uuid::new_v4().to_string())))
+        .add(mk("gw-dangling", Some(uuid::Uuid::new_v4().to_string())))
         .await
         .unwrap();
 
@@ -301,7 +298,7 @@ async fn test_engine_gateway_route_to() {
     assert!(!find("gw-dangling").contains("route-to"));
 
     // Round-trip: the gateway reference survives persistence
-    let rules = engine.list_rules().await.unwrap();
+    let rules = engine.list().await.unwrap();
     let routed = rules
         .iter()
         .find(|r| r.label.as_deref() == Some("routed"))
@@ -316,7 +313,7 @@ async fn test_engine_flush_rules() {
     let pf: Arc<dyn PfBackend> = mock.clone();
     let engine = RuleEngine::new(db.pool().clone(), pf);
 
-    engine.add_rule(make_test_rule()).await.unwrap();
+    engine.add(make_test_rule()).await.unwrap();
     engine.apply_rules().await.unwrap();
 
     let before = mock.get_rules("aifw").await.unwrap();
@@ -402,8 +399,8 @@ async fn test_audit_trail() {
 
     let rule = make_test_rule();
     let id = rule.id;
-    engine.add_rule(rule).await.unwrap();
-    engine.delete_rule(id).await.unwrap();
+    engine.add(rule).await.unwrap();
+    engine.delete(id).await.unwrap();
 
     let entries = engine.audit().list(10).await.unwrap();
     assert_eq!(entries.len(), 2);
@@ -419,7 +416,7 @@ async fn test_audit_for_apply_and_flush() {
     let pf: Arc<dyn PfBackend> = mock.clone();
     let engine = RuleEngine::new(db.pool().clone(), pf);
 
-    engine.add_rule(make_test_rule()).await.unwrap();
+    engine.add(make_test_rule()).await.unwrap();
     engine.apply_rules().await.unwrap();
     engine.flush_rules().await.unwrap();
 

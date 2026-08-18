@@ -8,7 +8,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// pf anchor that holds the compiled route-leak rules
-pub const LEAK_ANCHOR: &str = "aifw-mwan-leak";
+pub const LEAK_ANCHOR: &str = aifw_common::anchors::MWAN_LEAK;
 
 /// Route-leak engine: CRUD over `multiwan_leaks` (controlled cross-FIB
 /// traffic exceptions) and compilation of enabled leaks into pf rules in

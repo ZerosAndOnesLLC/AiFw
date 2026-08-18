@@ -10,7 +10,7 @@ pub async fn status(db_path: &Path) -> anyhow::Result<()> {
 
     let pf = engine.pf();
     let stats = pf.get_stats().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let rules = engine.list_rules().await?;
+    let rules = engine.list().await?;
     let active_rules = rules
         .iter()
         .filter(|r| r.status == aifw_common::RuleStatus::Active)
@@ -113,11 +113,11 @@ async fn sysrc_read_local(key: &str) -> Option<String> {
 pub async fn reload(db_path: &Path) -> anyhow::Result<()> {
     let engine = create_engine(db_path).await?;
     engine.apply_rules().await?;
-    let rules = engine.list_rules().await?;
+    let rules = engine.list().await?;
 
     let nat = create_nat_engine(db_path).await?;
     nat.apply_rules().await?;
-    let nat_rules = nat.list_rules().await?;
+    let nat_rules = nat.list().await?;
 
     let shaping = create_shaping_engine(db_path).await?;
     shaping.apply_queues().await?;

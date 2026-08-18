@@ -49,18 +49,7 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
     let anchors_dir = format!("{}/anchors", config.config_dir);
     std::fs::create_dir_all(&anchors_dir)
         .map_err(|e| format!("failed to create anchors dir: {e}"))?;
-    for anchor in [
-        "aifw",
-        "aifw-nat",
-        "aifw-ratelimit",
-        "aifw-vpn",
-        "aifw-geoip",
-        "aifw-tls",
-        "aifw-ha",
-        "aifw-pbr",
-        "aifw-mwan-leak",
-        "aifw-mwan-reply",
-    ] {
+    for anchor in aifw_common::anchors::FILTER_HOOKS {
         let path = format!("{anchors_dir}/{anchor}");
         if !std::path::Path::new(&path).exists() {
             write_file(&path, "# AiFw managed anchor\n")?;

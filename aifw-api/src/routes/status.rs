@@ -34,20 +34,12 @@ pub struct MetricsResponse {
 
 pub async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
     let stats = state.pf.get_stats().await.map_err(|_| internal())?;
-    let rules = state
-        .rule_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.rule_engine.list().await.map_err(|_| internal())?;
     let active = rules
         .iter()
         .filter(|r| r.status == RuleStatus::Active)
         .count();
-    let nat_rules = state
-        .nat_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let nat_rules = state.nat_engine.list().await.map_err(|_| internal())?;
 
     Ok(Json(StatusResponse {
         pf_running: stats.running,
@@ -388,20 +380,12 @@ pub async fn list_blocked_traffic() -> Result<Json<ApiResponse<Vec<BlockedEntry>
 
 pub async fn metrics(State(state): State<AppState>) -> Result<Json<MetricsResponse>, StatusCode> {
     let stats = state.pf.get_stats().await.map_err(|_| internal())?;
-    let rules = state
-        .rule_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.rule_engine.list().await.map_err(|_| internal())?;
     let active = rules
         .iter()
         .filter(|r| r.status == RuleStatus::Active)
         .count();
-    let nat_rules = state
-        .nat_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let nat_rules = state.nat_engine.list().await.map_err(|_| internal())?;
 
     Ok(Json(MetricsResponse {
         pf_running: stats.running,

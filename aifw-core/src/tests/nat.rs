@@ -33,9 +33,9 @@ async fn test_nat_add_list() {
 
     let rule = make_test_nat_rule();
     let id = rule.id;
-    engine.add_rule(rule).await.unwrap();
+    engine.add(rule).await.unwrap();
 
-    let rules = engine.list_rules().await.unwrap();
+    let rules = engine.list().await.unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].id, id);
     assert_eq!(rules[0].nat_type, NatType::Snat);
@@ -47,17 +47,17 @@ async fn test_nat_delete() {
 
     let rule = make_test_nat_rule();
     let id = rule.id;
-    engine.add_rule(rule).await.unwrap();
-    engine.delete_rule(id).await.unwrap();
+    engine.add(rule).await.unwrap();
+    engine.delete(id).await.unwrap();
 
-    let rules = engine.list_rules().await.unwrap();
+    let rules = engine.list().await.unwrap();
     assert!(rules.is_empty());
 }
 
 #[tokio::test]
 async fn test_nat_delete_nonexistent() {
     let engine = create_nat_engine().await;
-    assert!(engine.delete_rule(uuid::Uuid::new_v4()).await.is_err());
+    assert!(engine.delete(uuid::Uuid::new_v4()).await.is_err());
 }
 
 #[tokio::test]
@@ -86,8 +86,8 @@ async fn test_nat_db_roundtrip() {
     rule.label = Some("web-redirect".to_string());
     let id = rule.id;
 
-    engine.add_rule(rule).await.unwrap();
-    let fetched = engine.get_rule(id).await.unwrap();
+    engine.add(rule).await.unwrap();
+    let fetched = engine.get(id).await.unwrap();
 
     assert_eq!(fetched.nat_type, NatType::Dnat);
     assert_eq!(fetched.protocol, Protocol::Tcp);
@@ -116,16 +116,16 @@ async fn test_nat_static_port_and_nonat_roundtrip() {
     );
     masq.static_port = true;
     let masq_id = masq.id;
-    engine.add_rule(masq).await.unwrap();
-    let fetched = engine.get_rule(masq_id).await.unwrap();
+    engine.add(masq).await.unwrap();
+    let fetched = engine.get(masq_id).await.unwrap();
     assert!(fetched.static_port, "static_port must round-trip");
     assert!(fetched.to_pf_rule().ends_with("static-port"));
 
     // Update can clear it again.
     let mut cleared = fetched.clone();
     cleared.static_port = false;
-    engine.update_rule(&cleared).await.unwrap();
-    assert!(!engine.get_rule(masq_id).await.unwrap().static_port);
+    engine.update(&cleared).await.unwrap();
+    assert!(!engine.get(masq_id).await.unwrap().static_port);
 
     // nonat round-trips and renders `no nat`.
     let nonat = NatRule::new(
@@ -140,8 +140,8 @@ async fn test_nat_static_port_and_nonat_roundtrip() {
         },
     );
     let nonat_id = nonat.id;
-    engine.add_rule(nonat).await.unwrap();
-    let fetched = engine.get_rule(nonat_id).await.unwrap();
+    engine.add(nonat).await.unwrap();
+    let fetched = engine.get(nonat_id).await.unwrap();
     assert_eq!(fetched.nat_type, NatType::NoNat);
     assert!(fetched.to_pf_rule().starts_with("no nat on em0"));
 
@@ -160,7 +160,7 @@ async fn test_nat_static_port_and_nonat_roundtrip() {
         },
     );
     bad.static_port = true;
-    assert!(engine.add_rule(bad).await.is_err());
+    assert!(engine.add(bad).await.is_err());
 
     // nonat with a redirect target is rejected.
     let bad = NatRule::new(
@@ -176,7 +176,7 @@ async fn test_nat_static_port_and_nonat_roundtrip() {
             port: None,
         },
     );
-    assert!(engine.add_rule(bad).await.is_err());
+    assert!(engine.add(bad).await.is_err());
 }
 
 #[tokio::test]
@@ -186,7 +186,7 @@ async fn test_nat_apply_rules() {
     let pf: Arc<dyn PfBackend> = mock.clone();
     let engine = crate::nat::NatEngine::new(db.pool().clone(), pf);
 
-    engine.add_rule(make_test_nat_rule()).await.unwrap();
+    engine.add(make_test_nat_rule()).await.unwrap();
     engine.apply_rules().await.unwrap();
 
     let nat_rules = mock.get_nat_rules("aifw-nat").await.unwrap();
@@ -202,8 +202,8 @@ async fn test_nat_apply_mixed_classes_and_flush() {
     let engine =
         crate::nat::NatEngine::new(db.pool().clone(), pf).with_anchor("aifw-nat".to_string());
 
-    engine.add_rule(make_test_nat_rule()).await.unwrap();
-    engine.add_rule(make_test_nat64_rule()).await.unwrap();
+    engine.add(make_test_nat_rule()).await.unwrap();
+    engine.add(make_test_nat64_rule()).await.unwrap();
     engine.apply_rules().await.unwrap();
 
     // nat-class rule lands in the nat ruleset; the af-to pass rule is
@@ -240,7 +240,7 @@ async fn test_nat_validation_dnat_needs_port() {
         },
     );
     // DNAT without any port should fail validation
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 }
 
 #[tokio::test]
@@ -258,7 +258,7 @@ async fn test_nat_validation_needs_interface() {
             port: None,
         },
     );
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 }
 
 fn make_test_nat64_rule() -> NatRule {
@@ -280,7 +280,7 @@ fn make_test_nat64_rule() -> NatRule {
 #[tokio::test]
 async fn test_nat64_validation_accepts_well_formed_rule() {
     let engine = create_nat_engine().await;
-    engine.add_rule(make_test_nat64_rule()).await.unwrap();
+    engine.add(make_test_nat64_rule()).await.unwrap();
 
     // NAT46 mirror: v4 match, v6 translation source
     let nat46 = NatRule::new(
@@ -294,7 +294,7 @@ async fn test_nat64_validation_accepts_well_formed_rule() {
             port: None,
         },
     );
-    engine.add_rule(nat46).await.unwrap();
+    engine.add(nat46).await.unwrap();
 }
 
 #[tokio::test]
@@ -304,7 +304,7 @@ async fn test_nat64_validation_rejects_bad_families() {
     // dst not a /96 prefix
     let mut rule = make_test_nat64_rule();
     rule.dst_addr = Address::Network(std::net::IpAddr::V6("64:ff9b::".parse().unwrap()), 64);
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // dst IPv4
     let mut rule = make_test_nat64_rule();
@@ -312,17 +312,17 @@ async fn test_nat64_validation_rejects_bad_families() {
         std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 0)),
         8,
     );
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // source in the wrong (translated) family
     let mut rule = make_test_nat64_rule();
     rule.src_addr = Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)));
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // translation source IPv6 (must be IPv4 for nat64)
     let mut rule = make_test_nat64_rule();
     rule.redirect.address = Address::Single(std::net::IpAddr::V6("2001:db8::1".parse().unwrap()));
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // translation source as network (must be a single host)
     let mut rule = make_test_nat64_rule();
@@ -330,17 +330,17 @@ async fn test_nat64_validation_rejects_bad_families() {
         std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 0)),
         24,
     );
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // redirect port unsupported by af-to
     let mut rule = make_test_nat64_rule();
     rule.redirect.port = Some(PortRange { start: 80, end: 80 });
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // pf tables can't determine family
     let mut rule = make_test_nat64_rule();
     rule.src_addr = Address::Table("v6clients".to_string());
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 }
 
 #[tokio::test]
@@ -364,40 +364,40 @@ async fn test_nat46_validation_rejects_bad_families() {
     // dst IPv6 (must be the concrete IPv4 target)
     let mut rule = make();
     rule.dst_addr = Address::Single(std::net::IpAddr::V6("2001:db8::5".parse().unwrap()));
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // dst Any (a concrete IPv4 destination is required)
     let mut rule = make();
     rule.dst_addr = Address::Any;
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // translation source IPv4 (must be IPv6 for nat46)
     let mut rule = make();
     rule.redirect.address = Address::Single(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
         203, 0, 113, 1,
     )));
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
 
     // #596: explicit translated destination must be a single IPv6 host
     let mut rule = make();
     rule.af_to_dst = Some(Address::Single(std::net::IpAddr::V4(
         std::net::Ipv4Addr::new(192, 0, 2, 80),
     )));
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
     let mut rule = make();
     rule.af_to_dst = Some(Address::Network(
         std::net::IpAddr::V6("2001:db8:2::".parse().unwrap()),
         64,
     ));
-    assert!(engine.add_rule(rule).await.is_err());
+    assert!(engine.add(rule).await.is_err());
     let mut rule = make();
     rule.af_to_dst = Some(Address::Single(std::net::IpAddr::V6(
         "2001:db8:2::80".parse().unwrap(),
     )));
-    let added = engine.add_rule(rule).await.unwrap();
+    let added = engine.add(rule).await.unwrap();
     // round-trips through SQLite
     let stored = engine
-        .list_rules()
+        .list()
         .await
         .unwrap()
         .into_iter()
@@ -432,5 +432,5 @@ async fn test_nat46_validation_rejects_bad_families() {
     snat.af_to_dst = Some(Address::Single(std::net::IpAddr::V6(
         "2001:db8:2::80".parse().unwrap(),
     )));
-    assert!(engine.add_rule(snat).await.is_err());
+    assert!(engine.add(snat).await.is_err());
 }

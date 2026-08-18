@@ -18,11 +18,7 @@ pub struct CreateGeoIpRuleRequest {
 pub async fn list_geoip_rules(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<GeoIpRule>>>, StatusCode> {
-    let rules = state
-        .geoip_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.geoip_engine.list().await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: rules }))
 }
 
@@ -35,7 +31,7 @@ pub async fn create_geoip_rule(
     let rule = GeoIpRule::new(country, action);
     let rule = state
         .geoip_engine
-        .add_rule(rule)
+        .add(rule)
         .await
         .map_err(|_| bad_request())?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
@@ -49,7 +45,7 @@ pub async fn update_geoip_rule(
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     let mut rule = state
         .geoip_engine
-        .get_rule(uuid)
+        .get(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     rule.country = CountryCode::new(&req.country_code).map_err(|_| bad_request())?;
@@ -63,7 +59,7 @@ pub async fn update_geoip_rule(
     }
     state
         .geoip_engine
-        .update_rule(&rule)
+        .update(&rule)
         .await
         .map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: rule }))
@@ -76,7 +72,7 @@ pub async fn delete_geoip_rule(
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     state
         .geoip_engine
-        .delete_rule(uuid)
+        .delete(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(MessageResponse {

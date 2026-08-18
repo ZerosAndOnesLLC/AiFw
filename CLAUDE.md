@@ -76,7 +76,11 @@ pub struct XEngine {
 
 Engines: `RuleEngine` (engine.rs), `NatEngine` (nat.rs), `AliasEngine` (alias.rs), `GeoIpEngine` (geoip.rs), `VpnEngine` (vpn.rs), `ShapingEngine` (shaping.rs), `HaEngine` / `ClusterEngine` (ha.rs), plus the multiwan family (`InstanceEngine`, `GatewayEngine`, `GroupEngine`, `PolicyEngine`, `LeakEngine`, `PreflightEngine`, `SlaEngine`) under `multiwan/`.
 
-Each engine has its own `migrate()` method that creates its SQLite tables. Migrations are **inline SQL** in Rust code (no separate migration files).
+Each engine has its own `migrate()` method that creates its SQLite tables. Migrations are **inline SQL** in Rust code (no separate migration files); columns added after a table shipped go through `aifw_core::schema::add_column_if_missing` (never a raw `ALTER TABLE` — a guard test refuses it), and brand-new schema goes in `aifw-core/migrations/`.
+
+**Verb convention (#199).** An engine that manages one resource uses bare verbs: `add` / `get` / `list` / `update` / `delete` (`RuleEngine`, `NatEngine`, `GeoIpEngine`, `AliasEngine`, the multiwan engines). An engine that manages several resources uses `verb_<noun>`: `add_wg_tunnel`, `list_carp_vips`, `update_queue`. Applying to pf is `apply`/`apply_rules`; clearing is `flush`/`flush_rules`.
+
+**Anchor convention (#198).** All pf anchor names live in `aifw_common::anchors` (`FILTER = "aifw"`, `NAT = "aifw-nat"`, `VPN`, `GEOIP`, `TLS`, `HA`, `PBR`, `MWAN_LEAK`, `MWAN_REPLY`, `RATELIMIT`; `FILTER_HOOKS` is the pf.conf hook list in evaluation order). Engines default to their constant in `new()`; `with_anchor()` exists for tests, callers don't pass anchors. A new engine adds its `aifw-<domain>` constant there and to `FILTER_HOOKS` so setup writes the hook and the daemon heals it.
 
 ### Secrets at Rest (#298)
 

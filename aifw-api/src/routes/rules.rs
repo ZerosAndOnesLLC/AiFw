@@ -73,7 +73,12 @@ pub async fn list_system_rules() -> Result<Json<ApiResponse<Vec<String>>>, Statu
     }
 
     // AiFw anchor rules
-    for anchor in ["aifw", "aifw-nat", "aifw-vpn", "aifw-geoip"] {
+    for anchor in [
+        aifw_common::anchors::FILTER,
+        aifw_common::anchors::NAT,
+        aifw_common::anchors::VPN,
+        aifw_common::anchors::GEOIP,
+    ] {
         if let Ok(output) = tokio::process::Command::new("/usr/local/bin/sudo")
             .args(["pfctl", "-a", anchor, "-sr"])
             .output()
@@ -98,11 +103,7 @@ pub async fn list_system_rules() -> Result<Json<ApiResponse<Vec<String>>>, Statu
 pub async fn list_rules(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<Rule>>>, StatusCode> {
-    let rules = state
-        .rule_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.rule_engine.list().await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: rules }))
 }
 
@@ -113,7 +114,7 @@ pub async fn get_rule(
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     let rule = state
         .rule_engine
-        .get_rule(uuid)
+        .get(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(ApiResponse { data: rule }))
@@ -202,7 +203,7 @@ pub async fn create_rule(
 
     let rule = state
         .rule_engine
-        .add_rule(rule)
+        .add(rule)
         .await
         .map_err(|_| bad_request())?;
     state.set_pending(|p| p.firewall = true).await;
@@ -217,7 +218,7 @@ pub async fn update_rule(
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     let mut rule = state
         .rule_engine
-        .get_rule(uuid)
+        .get(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
@@ -295,7 +296,7 @@ pub async fn update_rule(
 
     state
         .rule_engine
-        .update_rule(rule.clone())
+        .update(rule.clone())
         .await
         .map_err(|_| internal())?;
     state.set_pending(|p| p.firewall = true).await;
@@ -309,7 +310,7 @@ pub async fn delete_rule(
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     state
         .rule_engine
-        .delete_rule(uuid)
+        .delete(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     state.set_pending(|p| p.firewall = true).await;
@@ -334,11 +335,7 @@ pub async fn toggle_block_logging(
         .execute(&state.pool).await.map_err(|_| internal())?;
 
     // Reload pf rules
-    let rules = state
-        .rule_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.rule_engine.list().await.map_err(|_| internal())?;
     let pf_rules: Vec<String> = rules.iter().map(|r| r.to_pf_rule("aifw")).collect();
     let _ = state.pf.load_rules("aifw", &pf_rules).await;
 
@@ -360,14 +357,14 @@ pub async fn reorder_rules(
         let uuid = Uuid::parse_str(id_str).map_err(|_| bad_request())?;
         let mut rule = state
             .rule_engine
-            .get_rule(uuid)
+            .get(uuid)
             .await
             .map_err(|_| StatusCode::NOT_FOUND)?;
         rule.priority = i as i32;
         rule.updated_at = chrono::Utc::now();
         state
             .rule_engine
-            .update_rule(rule)
+            .update(rule)
             .await
             .map_err(|_| internal())?;
     }

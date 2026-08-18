@@ -44,7 +44,7 @@ pub async fn nat_add(
         .map(Address::parse)
         .transpose()?;
 
-    let rule = nat.add_rule(rule).await.map_err(|e| {
+    let rule = nat.add(rule).await.map_err(|e| {
         let msg = e.to_string();
         match nat_flag_hint(&msg) {
             Some(hint) => anyhow::anyhow!("{msg}\n  hint: {hint}"),
@@ -111,14 +111,14 @@ pub fn nat_embed(prefix: &str, ipv4: &str) -> anyhow::Result<()> {
 pub async fn nat_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let nat = create_nat_engine(db_path).await?;
     let uuid = Uuid::parse_str(id)?;
-    nat.delete_rule(uuid).await?;
+    nat.delete(uuid).await?;
     println!("Removed NAT rule {id}");
     Ok(())
 }
 
 pub async fn nat_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let nat = create_nat_engine(db_path).await?;
-    let rules = nat.list_rules().await?;
+    let rules = nat.list().await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&rules)?);
