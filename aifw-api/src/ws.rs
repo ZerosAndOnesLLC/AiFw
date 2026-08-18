@@ -19,7 +19,18 @@ struct WsStatusUpdate {
     msg_type: &'static str,
     status: StatusPayload,
     system: SystemPayload,
-    connections: Vec<ConnectionPayload>,
+    /// Full (capped) connection list — present on the frame a client
+    /// receives first and on resyncs; `None` when `connections_delta` is
+    /// carried instead (#179).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connections: Option<Vec<ConnectionPayload>>,
+    /// Changes since the previous tick, keyed by 5-tuple; the client patches
+    /// its local table. `None` on full frames.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connections_delta: Option<ConnDelta>,
+    /// Size of the real state table; the list above is capped to the top
+    /// [`WS_CONNECTIONS_LIMIT`] by traffic volume.
+    connections_total: usize,
     interfaces: Vec<InterfacePayload>,
     blocked: Vec<BlockedPayload>,
     services: Vec<ServiceStatusPayload>,
@@ -27,6 +38,96 @@ struct WsStatusUpdate {
     vpn: Option<Vec<VpnTunnelStatus>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ids: Option<IdsStatusPayload>,
+}
+
+/// Per-tick change set for the capped connection list (#179). Keys are
+/// `proto|src:port|dst:port` — the client's map key.
+#[derive(Serialize, Clone, Default)]
+struct ConnDelta {
+    add: Vec<ConnectionPayload>,
+    update: Vec<ConnectionPayload>,
+    remove: Vec<String>,
+}
+
+/// Cap on connections carried per WS frame — the top-N by bytes in+out, so
+/// top talkers / top ports stay accurate on a 50k-state box while a frame
+/// stays around 60–80 KB instead of several MB (#179).
+const WS_CONNECTIONS_LIMIT: usize = 500;
+/// Cap on concurrent dashboard sockets; beyond it the upgrade is refused
+/// with 503 so a burst of tabs / a scraper can't multiply per-client work.
+const WS_MAX_CLIENTS: usize = 64;
+/// A client that can't take a frame within this window is dropped (the UI
+/// reconnects and gets a fresh full frame) rather than holding a task and
+/// a socket buffer open indefinitely.
+const WS_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Currently connected dashboard sockets.
+static WS_CLIENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Latest *full* live frame, for clients that just connected or lagged
+/// behind the broadcast (they missed deltas and must resync).
+static LATEST_FULL_FRAME: std::sync::OnceLock<tokio::sync::RwLock<Option<std::sync::Arc<String>>>> =
+    std::sync::OnceLock::new();
+
+fn latest_full_frame() -> &'static tokio::sync::RwLock<Option<std::sync::Arc<String>>> {
+    LATEST_FULL_FRAME.get_or_init(|| tokio::sync::RwLock::new(None))
+}
+
+/// Connection table as of the previous tick, for delta computation.
+static PREV_WS_CONNS: std::sync::OnceLock<
+    tokio::sync::Mutex<std::collections::HashMap<String, ConnectionPayload>>,
+> = std::sync::OnceLock::new();
+
+fn prev_ws_conns()
+-> &'static tokio::sync::Mutex<std::collections::HashMap<String, ConnectionPayload>> {
+    PREV_WS_CONNS.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+impl ConnectionPayload {
+    fn key(&self) -> String {
+        format!(
+            "{}|{}:{}|{}:{}",
+            self.protocol, self.src_addr, self.src_port, self.dst_addr, self.dst_port
+        )
+    }
+}
+
+/// Reduce the state table to the WS slice: top-N by traffic volume, then
+/// build the delta against the previous tick. Returns
+/// `(capped list, delta, total)`.
+fn cap_and_diff(
+    conns: Vec<ConnectionPayload>,
+    prev: &mut std::collections::HashMap<String, ConnectionPayload>,
+) -> (Vec<ConnectionPayload>, ConnDelta) {
+    let mut conns = conns;
+    if conns.len() > WS_CONNECTIONS_LIMIT {
+        conns.select_nth_unstable_by(WS_CONNECTIONS_LIMIT, |a, b| {
+            (b.bytes_in + b.bytes_out).cmp(&(a.bytes_in + a.bytes_out))
+        });
+        conns.truncate(WS_CONNECTIONS_LIMIT);
+    }
+    let mut delta = ConnDelta::default();
+    let mut current: std::collections::HashMap<String, ConnectionPayload> =
+        std::collections::HashMap::with_capacity(conns.len());
+    for c in &conns {
+        let key = c.key();
+        match prev.remove(&key) {
+            None => delta.add.push(c.clone()),
+            Some(old) => {
+                if old.bytes_in != c.bytes_in
+                    || old.bytes_out != c.bytes_out
+                    || old.state != c.state
+                {
+                    delta.update.push(c.clone());
+                }
+            }
+        }
+        current.insert(key, c.clone());
+    }
+    // Whatever is left in `prev` vanished from the slice.
+    delta.remove.extend(prev.drain().map(|(k, _)| k));
+    *prev = current;
+    (conns, delta)
 }
 
 #[derive(Serialize, Clone)]
@@ -168,7 +269,7 @@ struct StatusPayload {
     bytes_out: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct ConnectionPayload {
     protocol: String,
     src_addr: String,
@@ -251,10 +352,35 @@ fn decompress_history_entry(data: &[u8]) -> Option<String> {
 }
 
 pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    // Connection cap (#179): reserve a slot before upgrading; the guard
+    // inside handle_socket releases it whichever way the socket ends.
+    if WS_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) >= WS_MAX_CLIENTS {
+        use axum::response::IntoResponse;
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "too many dashboard connections",
+        )
+            .into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+/// Decrements the client counter on drop.
+struct ClientSlot;
+impl ClientSlot {
+    fn take() -> Self {
+        WS_CLIENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        ClientSlot
+    }
+}
+impl Drop for ClientSlot {
+    fn drop(&mut self) {
+        WS_CLIENTS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 async fn handle_socket(socket: WebSocket, state: AppState) {
+    let _slot = ClientSlot::take();
     let (mut sender, mut receiver) = socket.split();
 
     // Send a bounded slice of historical data so the frontend sets
@@ -298,19 +424,48 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // pf state table.
     let mut tick_rx = state.ws_tick.subscribe();
     let mut cluster_rx = state.cluster_events.subscribe();
+    // Subscribe *before* the initial full frame so no delta is missed
+    // between the two.
+    let initial_full = latest_full_frame().read().await.clone();
     let mut push_task = tokio::spawn(async move {
+        // Bounded send (#179): a client that can't drain a frame within
+        // WS_SEND_TIMEOUT is dropped instead of parking this task forever;
+        // the UI reconnects and resyncs from a full frame.
+        async fn send_bounded(
+            sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+            text: String,
+        ) -> bool {
+            matches!(
+                tokio::time::timeout(WS_SEND_TIMEOUT, sender.send(Message::Text(text.into())))
+                    .await,
+                Ok(Ok(()))
+            )
+        }
+        if let Some(full) = initial_full
+            && !send_bounded(&mut sender, (*full).clone()).await
+        {
+            return;
+        }
         loop {
             tokio::select! {
                 msg = tick_rx.recv() => {
                     match msg {
                         Ok(arc_msg) => {
-                            if sender.send(Message::Text((*arc_msg).clone().into())).await.is_err() {
+                            if !send_bounded(&mut sender, (*arc_msg).clone()).await {
                                 break;
                             }
                         }
-                        // We dropped frames because we couldn't keep up.
-                        // Don't disconnect — wait for the next tick.
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        // We missed frames (and therefore deltas): resync
+                        // from the latest full frame rather than drift.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::debug!(missed = n, "ws client lagged; resyncing with full frame");
+                            let full = latest_full_frame().read().await.clone();
+                            if let Some(full) = full
+                                && !send_bounded(&mut sender, (*full).clone()).await
+                            {
+                                break;
+                            }
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
@@ -318,7 +473,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     match ev {
                         Ok(ev) => {
                             let frame = serde_json::json!({"channel": "cluster", "event": ev});
-                            if sender.send(Message::Text(frame.to_string().into())).await.is_err() {
+                            if !send_bounded(&mut sender, frame.to_string()).await {
                                 break;
                             }
                         }
@@ -387,7 +542,11 @@ pub async fn run_dashboard_producer(state: AppState) {
 
         let started = Instant::now();
         match build_update(&state).await {
-            Ok((live_msg, history_msg)) => {
+            Ok(BuiltUpdate {
+                live_msg,
+                full_msg,
+                history_msg,
+            }) => {
                 // Slim history → Valkey (so the ring survives process
                 // restart when configured) and the in-memory ring buffer
                 // (so reconnects can backfill the dashboard).
@@ -418,9 +577,11 @@ pub async fn run_dashboard_producer(state: AppState) {
                     }
                     buf.push_back(compressed);
                 }
-                // Live frame to dashboard clients. `send` errors only if
+                // Remember the full frame for joiners/resyncs, then push
+                // the (usually delta) live frame. `send` errors only if
                 // there are no subscribers, which is fine — we wanted to
                 // populate history regardless.
+                *latest_full_frame().write().await = Some(Arc::new(full_msg));
                 let _ = state.ws_tick.send(Arc::new(live_msg));
             }
             Err(e) => {
@@ -447,7 +608,17 @@ pub async fn run_dashboard_producer(state: AppState) {
     }
 }
 
-async fn build_update(state: &AppState) -> Result<(String, String), String> {
+/// One tick's worth of frames: `live_msg` is what gets broadcast (a delta
+/// frame when that is smaller than the full list), `full_msg` carries the
+/// complete capped connection list for joiners/resync, `history_msg` is
+/// the slim ring-buffer entry.
+struct BuiltUpdate {
+    live_msg: String,
+    full_msg: String,
+    history_msg: String,
+}
+
+async fn build_update(state: &AppState) -> Result<BuiltUpdate, String> {
     let stats = state.pf.get_stats().await.map_err(|e| e.to_string())?;
     let rules = state
         .rule_engine
@@ -531,7 +702,8 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
         }
     }
 
-    let connections: Vec<ConnectionPayload> = conns
+    let connections_total = conns.len();
+    let all_connections: Vec<ConnectionPayload> = conns
         .iter()
         .map(|c| ConnectionPayload {
             protocol: c.protocol.clone(),
@@ -544,6 +716,11 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
             bytes_out: c.bytes_out,
         })
         .collect();
+    // #179: cap to the top-N by volume and diff against the previous tick.
+    let (connections, conn_delta) = {
+        let mut prev = prev_ws_conns().lock().await;
+        cap_and_diff(all_connections, &mut prev)
+    };
 
     // --- System metrics ---
     let mut system = collect_system_metrics().await;
@@ -778,21 +955,37 @@ async fn build_update(state: &AppState) -> Result<(String, String), String> {
     };
     let history_msg = serde_json::to_string(&history_entry).map_err(|e| e.to_string())?;
 
-    // Full live update — includes recent blocked + connections for live clients
-    let update = WsStatusUpdate {
+    // Full live update — includes recent blocked + connections for live
+    // clients. Two renderings: the full list (joiners/resync) and, when it
+    // is smaller, a delta frame that existing clients patch in (#179).
+    let delta_len = conn_delta.add.len() + conn_delta.update.len() + conn_delta.remove.len();
+    let mut update = WsStatusUpdate {
         msg_type: "status_update",
         system,
         blocked,
         services,
         status,
-        connections,
+        connections: Some(connections),
+        connections_delta: None,
+        connections_total,
         interfaces,
         vpn,
         ids,
     };
-    let live_msg = serde_json::to_string(&update).map_err(|e| e.to_string())?;
+    let full_msg = serde_json::to_string(&update).map_err(|e| e.to_string())?;
+    let live_msg = if delta_len < update.connections.as_ref().map(Vec::len).unwrap_or(0) {
+        update.connections = None;
+        update.connections_delta = Some(conn_delta);
+        serde_json::to_string(&update).map_err(|e| e.to_string())?
+    } else {
+        full_msg.clone()
+    };
 
-    Ok((live_msg, history_msg))
+    Ok(BuiltUpdate {
+        live_msg,
+        full_msg,
+        history_msg,
+    })
 }
 
 async fn collect_system_metrics() -> SystemPayload {
@@ -1375,6 +1568,53 @@ async fn collect_services(pool: &sqlx::SqlitePool) -> Vec<ServiceStatusPayload> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn conn(src: &str, sport: u16, bytes: u64) -> ConnectionPayload {
+        ConnectionPayload {
+            protocol: "tcp".into(),
+            src_addr: src.into(),
+            src_port: sport,
+            dst_addr: "10.0.0.1".into(),
+            dst_port: 443,
+            state: "ESTABLISHED".into(),
+            bytes_in: bytes,
+            bytes_out: 0,
+        }
+    }
+
+    /// #179: the WS slice is capped to the top-N by volume and the delta
+    /// against the previous tick carries only adds/updates/removes.
+    #[test]
+    fn cap_and_diff_caps_by_volume_and_diffs() {
+        let mut prev = std::collections::HashMap::new();
+        // First tick: more than the cap → top-N by bytes; everything is an add.
+        let many: Vec<_> = (0..(WS_CONNECTIONS_LIMIT as u64 + 50))
+            .map(|i| conn("192.0.2.1", 1000 + i as u16, i))
+            .collect();
+        let (list, delta) = cap_and_diff(many, &mut prev);
+        assert_eq!(list.len(), WS_CONNECTIONS_LIMIT);
+        assert!(
+            list.iter().all(|c| c.bytes_in >= 50),
+            "lowest-volume flows dropped"
+        );
+        assert_eq!(delta.add.len(), WS_CONNECTIONS_LIMIT);
+        assert!(delta.update.is_empty() && delta.remove.is_empty());
+
+        // Second tick: one flow grows, one disappears, one appears.
+        let mut prev2 = std::collections::HashMap::new();
+        let (_, _) = cap_and_diff(vec![conn("a", 1, 10), conn("b", 2, 20)], &mut prev2);
+        let (list, delta) = cap_and_diff(vec![conn("a", 1, 15), conn("c", 3, 5)], &mut prev2);
+        assert_eq!(list.len(), 2);
+        assert_eq!(delta.update.len(), 1);
+        assert_eq!(delta.update[0].src_addr, "a");
+        assert_eq!(delta.add.len(), 1);
+        assert_eq!(delta.add[0].src_addr, "c");
+        assert_eq!(delta.remove, vec!["tcp|b:2|10.0.0.1:443".to_string()]);
+
+        // Unchanged tick: empty delta.
+        let (_, delta) = cap_and_diff(vec![conn("a", 1, 15), conn("c", 3, 5)], &mut prev2);
+        assert!(delta.add.is_empty() && delta.update.is_empty() && delta.remove.is_empty());
+    }
 
     // Guard for the PERF-M8 (#376) rewrite: parse results must match what the
     // allocating implementation produced for real `tcpdump -tttt` pflog lines.

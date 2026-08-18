@@ -90,6 +90,8 @@ const ws = new WebSocket(`wss://aifw.local/api/v1/ws?ticket=${ticket}`);
 
 Tickets are 256 bits of entropy, **single-use**, and expire in **30 seconds**. They live only in process memory.
 
+**Dashboard stream shape.** After a `history` batch, the socket delivers one `status_update` frame per tick (1 s, or 5 s above 5k pf states). The connection list is capped to the **top 500 flows by traffic volume** with `connections_total` carrying the real state-table size; a client's first frame (and any resync after it falls behind the broadcast) carries the full `connections` array, later frames carry `connections_delta: {add, update, remove}` keyed by `proto|src:port|dst:port` when that is smaller. A socket that cannot take a frame within 5 s is closed (reconnect to resync), and the server accepts at most 64 concurrent dashboard sockets (`503` beyond that).
+
 ## Errors
 
 Most endpoints return raw HTTP status codes &mdash; no JSON envelope:

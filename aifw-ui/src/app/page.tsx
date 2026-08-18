@@ -517,7 +517,7 @@ export default function Dashboard() {
             <div className="flex justify-between"><span className="text-[var(--text-muted)]">PF Rules</span><span className="font-mono font-bold text-yellow-400">{status.pf_rules}</span></div>
             <div className="flex justify-between"><span className="text-[var(--text-muted)]">AiFw Rules</span><span className="font-mono font-bold text-blue-400">{status.aifw_active_rules}/{status.aifw_rules}</span></div>
             <div className="flex justify-between"><span className="text-[var(--text-muted)]">NAT Rules</span><span className="font-mono font-bold text-purple-400">{status.nat_rules}</span></div>
-            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Connections</span><span className="font-mono font-bold text-orange-400">{connections.length}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--text-muted)]">Connections</span><span className="font-mono font-bold text-orange-400">{ws.connectionsTotal || connections.length}</span></div>
             <div className="flex justify-between"><span className="text-[var(--text-muted)]">Blocked</span><span className="font-mono font-bold text-red-400">{blocked.length}</span></div>
           </div>
         </div>
