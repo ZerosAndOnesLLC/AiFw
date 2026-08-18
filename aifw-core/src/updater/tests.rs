@@ -442,6 +442,17 @@ fn test_external_repos_pin_crates_io_versions() {
             repo.name
         );
     }
+    // #203: the pin-consuming install lives once, in lib-build.sh; every
+    // release path must source it rather than carry its own copy.
+    let lib = include_str!("../../../freebsd/lib-build.sh");
+    assert!(
+        lib.contains("cargo install --locked --version"),
+        "freebsd/lib-build.sh no longer installs companions from crates.io at the manifest pin"
+    );
+    assert!(
+        !lib.contains(".commit"),
+        "lib-build.sh references the retired .commit field"
+    );
     for (path, content) in [
         (
             "freebsd/build-local.sh",
@@ -457,8 +468,16 @@ fn test_external_repos_pin_crates_io_versions() {
         ),
     ] {
         assert!(
-            content.contains("cargo install --locked --version"),
-            "{path} no longer installs companions from crates.io at the manifest pin"
+            content.contains("lib-build.sh") && content.contains("aifw_install_companions"),
+            "{path} must source freebsd/lib-build.sh and call aifw_install_companions (#203)"
+        );
+        assert!(
+            content.contains("aifw_build_update_tarball"),
+            "{path} must build the update tarball through lib-build.sh (#203)"
+        );
+        assert!(
+            !content.contains("cargo install --locked --version"),
+            "{path} carries its own companion install — use lib-build.sh (#203)"
         );
         assert!(
             !content.contains(".commit"),
