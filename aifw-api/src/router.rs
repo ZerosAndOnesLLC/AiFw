@@ -35,6 +35,11 @@ pub(crate) fn public_routes() -> Router<AppState> {
             "/api/v1/auth/oauth/{provider}/callback",
             get(routes::oauth_callback),
         )
+        .route("/api/v1/auth/oauth/totp", post(routes::oauth_totp))
+        .route(
+            "/api/v1/auth/oauth/login-options",
+            get(routes::oauth_login_options),
+        )
         .route("/api/v1/auth/register", post(routes::register))
 }
 
@@ -476,6 +481,10 @@ pub(crate) fn settings_read() -> Router<AppState> {
             "/api/v1/auth/oauth/providers",
             get(routes::list_oauth_providers),
         )
+        .route(
+            "/api/v1/auth/oauth/settings",
+            get(routes::get_oauth_settings),
+        )
         .route("/api/v1/settings/tls", get(routes::get_tls_settings))
         .route("/api/v1/settings/valkey", get(routes::get_valkey_settings))
         .route(
@@ -536,6 +545,10 @@ pub(crate) fn settings_write() -> Router<AppState> {
         .route(
             "/api/v1/auth/oauth/providers/{id}",
             delete(routes::delete_oauth_provider),
+        )
+        .route(
+            "/api/v1/auth/oauth/settings",
+            put(routes::put_oauth_settings),
         )
         .route("/api/v1/settings/tls", put(routes::update_tls_settings))
         .route(

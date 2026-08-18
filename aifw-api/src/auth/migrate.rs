@@ -104,6 +104,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
+    // #170: PKCE/redirect columns on oauth_states + TOTP-pending tickets.
+    super::oauth_flow::migrate(pool).await?;
+
     // Add role and enabled columns if they don't exist
     let _ = sqlx::query("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
         .execute(pool)
