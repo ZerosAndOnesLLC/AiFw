@@ -222,7 +222,7 @@ export default function BlockedTrafficPage() {
           ) : (
             <div className="divide-y divide-gray-700/50">
               {stats.topSources.map((s, i) => (
-                <div key={s.ip} className="px-4 py-2 hover:bg-gray-700/30 cursor-pointer" onClick={() => setFilterSrcAddr(s.ip)}>
+                <button type="button" key={s.ip} className="w-full text-left px-4 py-2 hover:bg-gray-700/30 cursor-pointer focus:outline-none focus-visible:bg-gray-700/40" onClick={() => setFilterSrcAddr(s.ip)} title={`Filter by ${s.ip}`}>
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] text-gray-600 w-4">{i + 1}.</span>
@@ -233,7 +233,7 @@ export default function BlockedTrafficPage() {
                   <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
                     <div className="h-full rounded-full bg-gradient-to-r from-red-500 to-orange-500 transition-all" style={{ width: `${(s.count / maxSourceCount) * 100}%` }} />
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           )}
@@ -251,14 +251,14 @@ export default function BlockedTrafficPage() {
               {stats.topPorts.map(p => {
                 const [port, proto] = p.port.split('/');
                 return (
-                  <div key={p.port} className="px-4 py-1.5 hover:bg-gray-700/30 cursor-pointer flex items-center gap-3" onClick={() => { setFilterDstPort(port); if (proto) setFilterProto(proto); }}>
+                  <button type="button" key={p.port} className="w-full text-left px-4 py-1.5 hover:bg-gray-700/30 cursor-pointer flex items-center gap-3 focus:outline-none focus-visible:bg-gray-700/40" onClick={() => { setFilterDstPort(port); if (proto) setFilterProto(proto); }} title={`Filter by port ${p.port}`}>
                     <span className={`uppercase text-[10px] font-bold w-7 ${proto === "tcp" ? "text-blue-400" : proto === "udp" ? "text-purple-400" : "text-gray-400"}`}>{proto}</span>
                     <span className="font-mono text-xs text-amber-400 w-14 text-right">{port}</span>
                     <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
                       <div className="h-full rounded-full bg-amber-500 transition-all" style={{ width: `${(p.count / (stats.topPorts[0]?.count || 1)) * 100}%` }} />
                     </div>
                     <span className="text-[10px] text-gray-400 w-8 text-right">{p.count}</span>
-                  </div>
+                  </button>
                 );
               })}
             </div>

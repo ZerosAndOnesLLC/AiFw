@@ -3,6 +3,7 @@
 import type { Rule } from "@/lib/api/rules";
 import { actionLabel, formatAddrPort, ipVersionLabel } from "@/lib/api/rules";
 import StatusBadge from "@/components/StatusBadge";
+import { Toggle } from "@/components/ui/Toggle";
 
 /* ─── Reusable rules table section ──────────────────────────────── */
 
@@ -82,17 +83,7 @@ export function RulesTable({
                       </div>
                     </td>
                     <td className="py-2.5 px-3" onClick={e => e.stopPropagation()}>
-                      <button
-                        onClick={() => onToggleStatus(rule)}
-                        className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
-                        style={{ backgroundColor: rule.status === "active" ? "#22c55e" : "#4b5563" }}
-                        title={rule.status === "active" ? "Disable rule" : "Enable rule"}
-                      >
-                        <span
-                          className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-                          style={{ transform: rule.status === "active" ? "translateX(16px)" : "translateX(0)" }}
-                        />
-                      </button>
+                      <Toggle checked={rule.status === "active"} onChange={() => onToggleStatus(rule)} title={rule.status === "active" ? "Disable rule" : "Enable rule"} />
                     </td>
                     <td className="py-2.5 px-3">
                       <span className="font-mono text-gray-300">{rule.priority}</span>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { ModalOverlay } from "@/components/ui/ModalOverlay";
 
 interface IdsAlert {
   id: string;
@@ -235,8 +236,9 @@ export default function IdsAlertsPage() {
 
       {/* Clear-all confirmation */}
       {purgeConfirm && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setPurgeConfirm(false)}>
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6 max-w-md w-full mx-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setPurgeConfirm(false)} ariaLabel="Clear all IDS alerts"
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+          panelClassName="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6 max-w-md w-full mx-4 space-y-3">
             <h3 className="text-lg font-semibold text-[var(--text-primary)]">Clear all IDS alerts?</h3>
             <p className="text-sm text-[var(--text-muted)]">
               This permanently deletes all {total.toLocaleString()} stored alerts and reclaims the
@@ -253,8 +255,7 @@ export default function IdsAlertsPage() {
                 {purging ? "Clearing..." : "Delete All"}
               </button>
             </div>
-          </div>
-        </div>
+        </ModalOverlay>
       )}
 
       {/* Alerts Table */}

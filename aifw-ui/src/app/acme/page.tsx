@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import Help, { HelpBanner } from "./Help";
+import { ModalOverlay } from "@/components/ui/ModalOverlay";
 
 /* ---------- Types ---------- */
 
@@ -274,8 +275,9 @@ function AddCertModal({ providers, onClose, onCreated }:
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose} ariaLabel="Request certificate"
+      className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4"
+      panelClassName="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-md space-y-3">
         <h2 className="text-lg font-semibold text-white">Request certificate</h2>
 
         <Field label="Common Name (CN)" error={cn ? cnErr : null}>
@@ -321,8 +323,7 @@ function AddCertModal({ providers, onClose, onCreated }:
             {busy ? "Creating…" : "Save (issue happens on Renew)"}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -406,8 +407,9 @@ function AddExportTargetModal({ certId, onClose, onCreated }: { certId: number; 
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-lg space-y-3" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose} ariaLabel="Add export target"
+      className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4"
+      panelClassName="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-5 w-full max-w-lg space-y-3">
         <h2 className="text-lg font-semibold text-white">Add export target</h2>
         <Field label="Kind">
           <select value={kind} onChange={(e) => setKind(e.target.value as "file" | "webhook" | "local-tls-store")} className="form-input">
@@ -427,8 +429,7 @@ function AddExportTargetModal({ certId, onClose, onCreated }: { certId: number; 
             {busy ? "Saving…" : "Save"}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalOverlay>
   );
 }
 
@@ -687,8 +688,9 @@ function ProviderModal({ initial, onClose, onSaved }: { initial: DnsProvider | n
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto space-y-4" onClick={(e) => e.stopPropagation()}>
+    <ModalOverlay onClose={onClose} ariaLabel={`${isNew ? "Add" : "Edit"} DNS provider`}
+      className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4"
+      panelClassName="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">{isNew ? "Add" : "Edit"} DNS provider</h2>
           <button onClick={onClose} className="text-[var(--text-muted)] hover:text-white text-xl leading-none">✕</button>
@@ -796,8 +798,7 @@ function ProviderModal({ initial, onClose, onSaved }: { initial: DnsProvider | n
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalOverlay>
   );
 }
 

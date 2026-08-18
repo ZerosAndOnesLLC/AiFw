@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { Toggle as Switch } from "@/components/ui/Toggle";
 
 /* ────────────────────────── Types ────────────────────────── */
 
@@ -210,6 +211,9 @@ function Toggle({ value, onChange, label }: { value: boolean; onChange: (v: bool
       <span className="text-sm text-gray-300">{label}</span>
       <button
         type="button"
+        role="switch"
+        aria-checked={value}
+        aria-label={label}
         onClick={() => onChange(!value)}
         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
           value ? "bg-blue-600" : "bg-gray-600"
@@ -828,18 +832,7 @@ export default function HttpServicesPage() {
                       <span className="text-xs text-gray-400 font-mono">{describeHealthCheck(svc)}</span>
                     </td>
                     <td className="py-2.5 px-4" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => handleToggleEnabled(svc)}
-                        className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
-                        style={{ backgroundColor: svc.enabled ? "#22c55e" : "#4b5563" }}
-                        title={svc.enabled ? "Disable" : "Enable"}
-                      >
-                        <span
-                          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                            svc.enabled ? "translate-x-[18px]" : "translate-x-[3px]"
-                          }`}
-                        />
-                      </button>
+                      <Switch checked={svc.enabled} onChange={() => handleToggleEnabled(svc)} title={svc.enabled ? "Disable" : "Enable"} />
                     </td>
                     <td className="py-2.5 px-2" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-1">

@@ -2,6 +2,7 @@
 
 import { HttpMiddleware, fmtDate } from "@/lib/api/reverse-proxy/middlewares";
 import { TypeBadge } from "./TypeBadge";
+import { Toggle } from "@/components/ui/Toggle";
 
 /* ── Middlewares table ────────────────────────────────────────── */
 
@@ -62,20 +63,7 @@ export function MiddlewaresTable({
                     <TypeBadge mtype={mw.middleware_type} />
                   </td>
                   <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      onClick={() => onToggleEnabled(mw)}
-                      className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
-                      style={{
-                        backgroundColor: mw.enabled ? "#22c55e" : "#4b5563",
-                      }}
-                      title={mw.enabled ? "Disable" : "Enable"}
-                    >
-                      <span
-                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                          mw.enabled ? "translate-x-[18px]" : "translate-x-[3px]"
-                        }`}
-                      />
-                    </button>
+                    <Toggle checked={mw.enabled} onChange={() => onToggleEnabled(mw)} title={mw.enabled ? "Disable" : "Enable"} />
                   </td>
                   <td className="py-2.5 px-3 text-xs text-[var(--text-muted)]">
                     {fmtDate(mw.created_at)}

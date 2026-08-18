@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { ModalOverlay } from "@/components/ui/ModalOverlay";
 
 interface PluginEntry {
   name: string;
@@ -139,7 +140,7 @@ export default function PluginsPage() {
                   <span className={`text-[10px] px-2 py-0.5 rounded-full border ${stateColor(p.state)}`}>
                     {p.state}
                   </span>
-                  <div onClick={(e) => e.stopPropagation()}>
+                  <div role="presentation" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => togglePlugin(p.name, p.state !== "running")}
                       className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${p.state === "running" ? "bg-green-500" : "bg-gray-600"}`}
@@ -157,8 +158,9 @@ export default function PluginsPage() {
 
       {/* Config Editor Modal */}
       {selectedPlugin && pluginConfig && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setSelectedPlugin(null)}>
-          <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <ModalOverlay onClose={() => setSelectedPlugin(null)} ariaLabel={`${selectedPlugin} configuration`}
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+          panelClassName="bg-gray-800 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold text-white">{selectedPlugin} Configuration</h3>
               <button onClick={() => setSelectedPlugin(null)} className="text-gray-400 hover:text-white">
@@ -196,8 +198,7 @@ export default function PluginsPage() {
                 {savingConfig ? "Saving..." : "Save Config"}
               </button>
             </div>
-          </div>
-        </div>
+        </ModalOverlay>
       )}
 
       {/* Hook Reference */}
