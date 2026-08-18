@@ -30,7 +30,7 @@ impl ShapingEngine {
         Self {
             pool,
             pf,
-            anchor: "aifw".to_string(),
+            anchor: aifw_common::anchors::FILTER.to_string(),
         }
     }
 
@@ -253,7 +253,10 @@ impl ShapingEngine {
         tracing::info!(count = active.len(), "applying rate limit rules to pf");
         // Rate limit rules go into the main rules anchor
         self.pf
-            .load_rules(&format!("{}-ratelimit", self.anchor), &pf_lines)
+            .load_rules(
+                &aifw_common::anchors::ratelimit_anchor(&self.anchor),
+                &pf_lines,
+            )
             .await
             .map_err(|e| AifwError::Pf(e.to_string()))?;
 

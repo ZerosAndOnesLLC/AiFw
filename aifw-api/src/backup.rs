@@ -226,11 +226,7 @@ pub async fn check_config(
     let mut info = Vec::new();
 
     // Check rules
-    let rules = state
-        .rule_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.rule_engine.list().await.map_err(|_| internal())?;
     info.push(format!("{} firewall rules configured", rules.len()));
 
     // Check for rules with Any/Any (too permissive)
@@ -248,11 +244,7 @@ pub async fn check_config(
     }
 
     // Check NAT
-    let nat_rules = state
-        .nat_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let nat_rules = state.nat_engine.list().await.map_err(|_| internal())?;
     info.push(format!("{} NAT rules configured", nat_rules.len()));
 
     // Check for duplicate NAT port forwards
@@ -270,11 +262,7 @@ pub async fn check_config(
     }
 
     // Check GeoIP
-    let geoip_rules = state
-        .geoip_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let geoip_rules = state.geoip_engine.list().await.map_err(|_| internal())?;
     if !geoip_rules.is_empty() {
         info.push(format!("{} Geo-IP rules configured", geoip_rules.len()));
     }
@@ -392,16 +380,8 @@ pub async fn commit_confirm_start(
 pub(crate) async fn capture_runtime_snapshot(state: &AppState) -> Result<String, StatusCode> {
     use aifw_core::config::*;
 
-    let rules = state
-        .rule_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
-    let nat_rules = state
-        .nat_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.rule_engine.list().await.map_err(|_| internal())?;
+    let nat_rules = state.nat_engine.list().await.map_err(|_| internal())?;
     let aliases = build_aliases_section(state).await;
     let static_routes = build_static_routes_section(&state.pool).await;
 
@@ -596,21 +576,9 @@ pub async fn commit_confirm_status() -> Result<Json<CommitConfirmState>, StatusC
 pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallConfig, StatusCode> {
     use aifw_core::config::*;
 
-    let rules = state
-        .rule_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
-    let nat_rules = state
-        .nat_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
-    let geoip_rules = state
-        .geoip_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.rule_engine.list().await.map_err(|_| internal())?;
+    let nat_rules = state.nat_engine.list().await.map_err(|_| internal())?;
+    let geoip_rules = state.geoip_engine.list().await.map_err(|_| internal())?;
     let wg_tunnels = state
         .vpn_engine
         .list_wg_tunnels()

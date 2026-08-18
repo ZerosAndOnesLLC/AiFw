@@ -17,6 +17,7 @@ pub const DEFAULT_LOOPBACK_API_BASE: &str = "https://127.0.0.1:8080";
 
 /// Named aliases (host/network/port/URL-table) usable in firewall rules
 pub mod alias;
+pub mod anchors;
 pub mod cluster_events;
 /// Crate-wide `AifwError` enum and `Result` alias
 pub mod error;

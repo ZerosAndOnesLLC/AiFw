@@ -36,11 +36,7 @@ pub struct CreateNatRuleRequest {
 pub async fn list_nat_rules(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<NatRule>>>, StatusCode> {
-    let rules = state
-        .nat_engine
-        .list_rules()
-        .await
-        .map_err(|_| internal())?;
+    let rules = state.nat_engine.list().await.map_err(|_| internal())?;
     Ok(Json(ApiResponse { data: rules }))
 }
 
@@ -131,11 +127,7 @@ pub async fn create_nat_rule(
         _ => None,
     };
 
-    let rule = state
-        .nat_engine
-        .add_rule(rule)
-        .await
-        .map_err(nat_engine_error)?;
+    let rule = state.nat_engine.add(rule).await.map_err(nat_engine_error)?;
     state.set_pending(|p| p.nat = true).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
@@ -146,11 +138,7 @@ pub async fn update_nat_rule(
     Json(req): Json<CreateNatRuleRequest>,
 ) -> Result<Json<ApiResponse<NatRule>>, NatError> {
     let uuid = Uuid::parse_str(&id).map_err(|_| nat_bad_request("invalid rule id"))?;
-    let mut rule = state
-        .nat_engine
-        .get_rule(uuid)
-        .await
-        .map_err(nat_engine_error)?;
+    let mut rule = state.nat_engine.get(uuid).await.map_err(nat_engine_error)?;
 
     rule.nat_type = NatType::parse(&req.nat_type)
         .map_err(|_| nat_bad_request(format!("unknown NAT type '{}'", req.nat_type)))?;
@@ -205,7 +193,7 @@ pub async fn update_nat_rule(
 
     state
         .nat_engine
-        .update_rule(&rule)
+        .update(&rule)
         .await
         .map_err(nat_engine_error)?;
     state.set_pending(|p| p.nat = true).await;
@@ -219,7 +207,7 @@ pub async fn delete_nat_rule(
     let uuid = Uuid::parse_str(&id).map_err(|_| bad_request())?;
     state
         .nat_engine
-        .delete_rule(uuid)
+        .delete(uuid)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
     state.set_pending(|p| p.nat = true).await;
@@ -234,8 +222,16 @@ pub async fn get_nat_pf_output(
     // The NAT engine loads into "aifw-nat" (this endpoint used to read the
     // "aifw" filter anchor and always came back empty). Cross-family af-to
     // rules are filter-class, so both rulesets of the anchor are shown.
-    let nat_rules = state.pf.get_nat_rules("aifw-nat").await.unwrap_or_default();
-    let filter_rules = state.pf.get_rules("aifw-nat").await.unwrap_or_default();
+    let nat_rules = state
+        .pf
+        .get_nat_rules(aifw_common::anchors::NAT)
+        .await
+        .unwrap_or_default();
+    let filter_rules = state
+        .pf
+        .get_rules(aifw_common::anchors::NAT)
+        .await
+        .unwrap_or_default();
     let mut output = Vec::new();
     if !nat_rules.is_empty() {
         output.push("# NAT rules (anchor: aifw-nat)".to_string());

@@ -50,7 +50,7 @@ pub(super) async fn create_nat_engine(db_path: &Path) -> anyhow::Result<NatEngin
     let pf = Arc::from(aifw_pf::create_backend());
     // "aifw-nat" — must match the API/daemon anchor; NAT loads replace every
     // rule class in their anchor since #531.
-    Ok(NatEngine::new(db.pool().clone(), pf).with_anchor("aifw-nat".to_string()))
+    Ok(NatEngine::new(db.pool().clone(), pf))
 }
 
 #[cfg(test)]

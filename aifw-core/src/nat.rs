@@ -35,7 +35,7 @@ impl NatEngine {
             pool,
             pf,
             audit,
-            anchor: "aifw-nat".to_string(),
+            anchor: aifw_common::anchors::NAT.to_string(),
         }
     }
 
@@ -95,7 +95,7 @@ impl NatEngine {
     /// in one transaction. pf is untouched until [`Self::apply_rules`].
     /// Fails validation when the interface is empty or a DNAT/RDR rule has
     /// neither a destination nor a redirect port.
-    pub async fn add_rule(&self, rule: NatRule) -> Result<NatRule> {
+    pub async fn add(&self, rule: NatRule) -> Result<NatRule> {
         validate_nat_rule(&rule)?;
         self.parser_gate_with(&rule).await?;
         let pf_syntax = rule.to_pf_rule();
@@ -117,7 +117,7 @@ impl NatEngine {
     }
 
     /// Fetch a NAT rule by id. Fails with `NotFound` if it doesn't exist
-    pub async fn get_rule(&self, id: Uuid) -> Result<NatRule> {
+    pub async fn get(&self, id: Uuid) -> Result<NatRule> {
         let row = sqlx::query_as::<_, NatRuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {NAT_RULE_COLUMNS} FROM nat_rules WHERE id = ?1"
         )))
@@ -131,7 +131,7 @@ impl NatEngine {
     }
 
     /// All NAT rules, oldest first
-    pub async fn list_rules(&self) -> Result<Vec<NatRule>> {
+    pub async fn list(&self) -> Result<Vec<NatRule>> {
         let rows = sqlx::query_as::<_, NatRuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {NAT_RULE_COLUMNS} FROM nat_rules ORDER BY created_at ASC"
         )))
@@ -155,7 +155,7 @@ impl NatEngine {
     /// Validate and update a NAT rule; the update and its audit entry
     /// commit in one transaction. Fails with `NotFound` for an unknown id.
     /// pf is untouched until [`Self::apply_rules`].
-    pub async fn update_rule(&self, rule: &NatRule) -> Result<()> {
+    pub async fn update(&self, rule: &NatRule) -> Result<()> {
         validate_nat_rule(rule)?;
         self.parser_gate_with(rule).await?;
         let mut tx = self.pool.begin().await?;
@@ -216,7 +216,7 @@ impl NatEngine {
 
     /// Delete a NAT rule; the delete and its audit entry commit in one
     /// transaction. Fails with `NotFound` for an unknown id
-    pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query("DELETE FROM nat_rules WHERE id = ?1")
             .bind(id.to_string())

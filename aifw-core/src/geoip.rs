@@ -57,7 +57,7 @@ impl GeoIpEngine {
         Self {
             pool,
             pf,
-            anchor: "aifw-geoip".to_string(),
+            anchor: aifw_common::anchors::GEOIP.to_string(),
             index: Arc::new(ArcSwap::from_pointee(GeoIpIndex::empty())),
         }
     }
@@ -98,7 +98,7 @@ impl GeoIpEngine {
 
     /// Insert a per-country block/allow rule row. pf tables aren't touched
     /// until the geo-IP rules are next applied
-    pub async fn add_rule(&self, rule: GeoIpRule) -> Result<GeoIpRule> {
+    pub async fn add(&self, rule: GeoIpRule) -> Result<GeoIpRule> {
         Self::insert_rule_on(&self.pool, &rule).await?;
         tracing::info!(id = %rule.id, country = %rule.country, action = %rule.action, "geo-ip rule added");
         Ok(rule)
@@ -132,7 +132,7 @@ impl GeoIpEngine {
     }
 
     /// All geo-IP rules ordered by country code
-    pub async fn list_rules(&self) -> Result<Vec<GeoIpRule>> {
+    pub async fn list(&self) -> Result<Vec<GeoIpRule>> {
         let rows = sqlx::query_as::<_, GeoIpRuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {GEOIP_RULE_COLUMNS} FROM geoip_rules ORDER BY country ASC"
         )))
@@ -142,7 +142,7 @@ impl GeoIpEngine {
     }
 
     /// Fetch a geo-IP rule by id. Fails with `NotFound` if it doesn't exist
-    pub async fn get_rule(&self, id: Uuid) -> Result<GeoIpRule> {
+    pub async fn get(&self, id: Uuid) -> Result<GeoIpRule> {
         let row = sqlx::query_as::<_, GeoIpRuleRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {GEOIP_RULE_COLUMNS} FROM geoip_rules WHERE id = ?1"
         )))
@@ -154,7 +154,7 @@ impl GeoIpEngine {
     }
 
     /// Update a geo-IP rule row. Fails with `NotFound` for an unknown id
-    pub async fn update_rule(&self, rule: &GeoIpRule) -> Result<()> {
+    pub async fn update(&self, rule: &GeoIpRule) -> Result<()> {
         let result = sqlx::query(
             r#"UPDATE geoip_rules SET country = ?2, action = ?3, label = ?4, status = ?5, updated_at = ?6 WHERE id = ?1"#,
         )
@@ -180,7 +180,7 @@ impl GeoIpEngine {
     }
 
     /// Delete a geo-IP rule row. Fails with `NotFound` for an unknown id
-    pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
         let result = sqlx::query("DELETE FROM geoip_rules WHERE id = ?1")
             .bind(id.to_string())
             .execute(&self.pool)
@@ -281,7 +281,7 @@ impl GeoIpEngine {
 
     /// Apply geo-ip rules: create pf tables per country and populate them
     pub async fn apply_rules(&self) -> Result<()> {
-        let rules = self.list_rules().await?;
+        let rules = self.list().await?;
         let active: Vec<_> = rules
             .iter()
             .filter(|r| r.status == GeoIpRuleStatus::Active)
@@ -322,7 +322,7 @@ impl GeoIpEngine {
     /// rules; emptiness invariant on real pfctl, which re-renders rules and
     /// omits table definitions from `-sr` (see `RuleEngine::verify_applied`).
     pub async fn verify_applied(&self) -> Result<()> {
-        let rules = self.list_rules().await?;
+        let rules = self.list().await?;
         let expected: Vec<String> = rules
             .iter()
             .filter(|r| r.status == GeoIpRuleStatus::Active)

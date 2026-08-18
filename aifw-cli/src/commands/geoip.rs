@@ -25,7 +25,7 @@ pub async fn geoip_add(
     let engine = create_geoip_engine(db_path).await?;
     let mut rule = GeoIpRule::new(CountryCode::new(country)?, GeoIpAction::parse(action)?);
     rule.label = label.map(String::from);
-    let rule = engine.add_rule(rule).await?;
+    let rule = engine.add(rule).await?;
     println!("Added geo-ip rule {}", rule.id);
     println!("  Country: {}", rule.country);
     println!("  Action:  {}", rule.action);
@@ -37,14 +37,14 @@ pub async fn geoip_add(
 pub async fn geoip_remove(db_path: &Path, id: &str) -> anyhow::Result<()> {
     let engine = create_geoip_engine(db_path).await?;
     let uuid = Uuid::parse_str(id)?;
-    engine.delete_rule(uuid).await?;
+    engine.delete(uuid).await?;
     println!("Removed geo-ip rule {id}");
     Ok(())
 }
 
 pub async fn geoip_list(db_path: &Path, json: bool) -> anyhow::Result<()> {
     let engine = create_geoip_engine(db_path).await?;
-    let rules = engine.list_rules().await?;
+    let rules = engine.list().await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&rules)?);

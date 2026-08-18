@@ -16,15 +16,15 @@ async fn test_geoip_rule_crud() {
 
     let rule = GeoIpRule::new(CountryCode::new("CN").unwrap(), GeoIpAction::Block);
     let id = rule.id;
-    engine.add_rule(rule).await.unwrap();
+    engine.add(rule).await.unwrap();
 
-    let rules = engine.list_rules().await.unwrap();
+    let rules = engine.list().await.unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].country.0, "CN");
     assert_eq!(rules[0].action, GeoIpAction::Block);
 
-    engine.delete_rule(id).await.unwrap();
-    assert!(engine.list_rules().await.unwrap().is_empty());
+    engine.delete(id).await.unwrap();
+    assert!(engine.list().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -83,7 +83,7 @@ async fn test_geoip_apply_rules() {
     engine.migrate().await.unwrap();
 
     engine
-        .add_rule(GeoIpRule::new(
+        .add(GeoIpRule::new(
             CountryCode::new("RU").unwrap(),
             GeoIpAction::Block,
         ))
@@ -91,7 +91,7 @@ async fn test_geoip_apply_rules() {
         .unwrap();
 
     engine
-        .add_rule(GeoIpRule::new(
+        .add(GeoIpRule::new(
             CountryCode::new("US").unwrap(),
             GeoIpAction::Allow,
         ))

@@ -13,9 +13,9 @@ use uuid::Uuid;
 use super::group::{Selection, select};
 
 /// pf anchor holding the compiled policy-based routing (inbound match) rules
-pub const PBR_ANCHOR: &str = "aifw-pbr";
+pub const PBR_ANCHOR: &str = aifw_common::anchors::PBR;
 /// pf anchor holding the reply-to rules that route return traffic back out the same gateway
-pub const REPLY_ANCHOR: &str = "aifw-mwan-reply";
+pub const REPLY_ANCHOR: &str = aifw_common::anchors::MWAN_REPLY;
 
 /// Policy-based routing engine: CRUD over `multiwan_policies` and compilation
 /// of active policies into pf rules in the PBR and reply anchors

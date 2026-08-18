@@ -170,7 +170,7 @@ async fn test_mid_apply_failure_rolls_back_db_transaction() {
             dst_port: None,
         },
     );
-    let rule_id = state.rule_engine.add_rule(rule).await.unwrap().id;
+    let rule_id = state.rule_engine.add(rule).await.unwrap().id;
 
     let config = crate::backup::build_current_config(&state).await.unwrap();
     sqlx::query("DROP TABLE dhcp_subnets")
@@ -180,7 +180,7 @@ async fn test_mid_apply_failure_rolls_back_db_transaction() {
     let res = crate::backup::apply_firewall_config(&state, &config, &Default::default()).await;
     assert!(res.is_err(), "late failure must abort the restore");
 
-    let rules = state.rule_engine.list_rules().await.unwrap();
+    let rules = state.rule_engine.list().await.unwrap();
     assert_eq!(rules.len(), 1, "transaction rollback must keep prior rows");
     assert_eq!(rules[0].id, rule_id);
 }
@@ -224,7 +224,7 @@ async fn test_restore_1k_rules_round_trips() {
         .await
         .expect("bulk restore must succeed");
     let elapsed = started.elapsed();
-    let rules = state.rule_engine.list_rules().await.unwrap();
+    let rules = state.rule_engine.list().await.unwrap();
     assert_eq!(rules.len(), 1000, "every rule must survive the round trip");
     // Generous bound — the point is one transaction, not per-row fsyncs.
     assert!(elapsed.as_secs() < 30, "bulk restore took {elapsed:?}");
@@ -264,7 +264,7 @@ async fn test_restore_failure_injection_every_db_stage() {
         let state = crate::create_app_state_in_memory(plain_auth_settings())
             .await
             .unwrap();
-        state.rule_engine.add_rule(any_tcp_rule()).await.unwrap();
+        state.rule_engine.add(any_tcp_rule()).await.unwrap();
         let config = crate::backup::build_current_config(&state).await.unwrap();
         // Replace the table with a read-only VIEW of the same name: the
         // engine migrates' CREATE TABLE IF NOT EXISTS no-op on it (so
@@ -283,7 +283,7 @@ async fn test_restore_failure_injection_every_db_stage() {
         .unwrap();
         let res = crate::backup::apply_firewall_config(&state, &config, &Default::default()).await;
         assert!(res.is_err(), "failure at {table} must abort the restore");
-        let rules = state.rule_engine.list_rules().await.unwrap();
+        let rules = state.rule_engine.list().await.unwrap();
         assert_eq!(
             rules.len(),
             1,
@@ -300,7 +300,7 @@ async fn test_restore_mid_tx_failure_rolls_back_and_audits() {
     let state = crate::create_app_state_in_memory(plain_auth_settings())
         .await
         .unwrap();
-    state.rule_engine.add_rule(any_tcp_rule()).await.unwrap();
+    state.rule_engine.add(any_tcp_rule()).await.unwrap();
     state
         .alias_engine
         .add(aifw_common::Alias {
@@ -336,7 +336,7 @@ async fn test_restore_mid_tx_failure_rolls_back_and_audits() {
     let aliases = state.alias_engine.list().await.unwrap();
     assert_eq!(aliases.len(), 1, "prior alias set must be restored");
     assert_eq!(aliases[0].name, "keepme");
-    assert_eq!(state.rule_engine.list_rules().await.unwrap().len(), 1);
+    assert_eq!(state.rule_engine.list().await.unwrap().len(), 1);
 
     let (audits,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM audit_log WHERE details LIKE '%rolled back to pre-restore state%'",
@@ -355,7 +355,7 @@ async fn test_restore_pf_failure_after_commit_rolls_back_cleanly() {
     let state = crate::create_app_state_in_memory(plain_auth_settings())
         .await
         .unwrap();
-    state.rule_engine.add_rule(any_tcp_rule()).await.unwrap();
+    state.rule_engine.add(any_tcp_rule()).await.unwrap();
     let mock = state
         .pf
         .as_any()
@@ -377,11 +377,11 @@ async fn test_restore_pf_failure_after_commit_rolls_back_cleanly() {
             .await;
     assert!(res.is_err(), "pf failure must abort the restore");
     assert_eq!(
-        state.geoip_engine.list_rules().await.unwrap().len(),
+        state.geoip_engine.list().await.unwrap().len(),
         0,
         "geo-ip rows from the failed target must be rolled back"
     );
-    assert_eq!(state.rule_engine.list_rules().await.unwrap().len(), 1);
+    assert_eq!(state.rule_engine.list().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -392,7 +392,7 @@ async fn test_restore_rollback_failure_is_audited_high_severity() {
     let state = crate::create_app_state_in_memory(plain_auth_settings())
         .await
         .unwrap();
-    state.rule_engine.add_rule(any_tcp_rule()).await.unwrap();
+    state.rule_engine.add(any_tcp_rule()).await.unwrap();
     let mock = state
         .pf
         .as_any()
@@ -450,7 +450,7 @@ async fn test_post_apply_verification_detects_pf_drift() {
             dst_port: None,
         },
     );
-    state.rule_engine.add_rule(rule).await.unwrap();
+    state.rule_engine.add(rule).await.unwrap();
     state.rule_engine.apply_rules().await.unwrap();
     state
         .rule_engine
@@ -483,7 +483,7 @@ async fn test_prevalidation_rejects_bad_config_without_mutation() {
             dst_port: None,
         },
     );
-    state.rule_engine.add_rule(rule).await.unwrap();
+    state.rule_engine.add(rule).await.unwrap();
 
     let mut config = crate::backup::build_current_config(&state).await.unwrap();
     config.rules[0].priority = 20_000; // validate_rule caps at 10000
@@ -492,7 +492,7 @@ async fn test_prevalidation_rejects_bad_config_without_mutation() {
         crate::backup::apply_firewall_config_or_rollback(&state, &config, &Default::default())
             .await;
     assert_eq!(res, Err(axum::http::StatusCode::BAD_REQUEST));
-    let rules = state.rule_engine.list_rules().await.unwrap();
+    let rules = state.rule_engine.list().await.unwrap();
     assert_eq!(rules.len(), 1, "prevalidation failure must not touch rows");
 }
 

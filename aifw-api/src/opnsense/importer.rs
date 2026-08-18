@@ -815,10 +815,10 @@ struct InsertedRows {
 impl InsertedRows {
     async fn cleanup(&self, state: &AppState) {
         for id in &self.rule_ids {
-            let _ = state.rule_engine.delete_rule(*id).await;
+            let _ = state.rule_engine.delete(*id).await;
         }
         for id in &self.nat_ids {
-            let _ = state.nat_engine.delete_rule(*id).await;
+            let _ = state.nat_engine.delete(*id).await;
         }
         for id in &self.alias_ids {
             let _ = state.alias_engine.delete(*id).await;
@@ -955,7 +955,7 @@ async fn apply_rules(
             match build_rule(r, iface.as_deref(), alias_names, priority) {
                 Ok(rule) => {
                     let rule_id = rule.id;
-                    match state.rule_engine.add_rule(rule).await {
+                    match state.rule_engine.add(rule).await {
                         Ok(_) => {
                             tracker.rule_ids.push(rule_id);
                             summary.rules += 1;
@@ -1136,7 +1136,7 @@ async fn apply_nat(
         match build_port_forward(n, iface_map, &empty) {
             Ok((rule, advisories)) => {
                 let id = rule.id;
-                match state.nat_engine.add_rule(rule).await {
+                match state.nat_engine.add(rule).await {
                     Ok(_) => {
                         tracker.nat_ids.push(id);
                         summary.nat_port_forwards += 1;
@@ -1182,7 +1182,7 @@ async fn apply_nat(
             match build_outbound(n, iface_map, &empty) {
                 Ok(rule) => {
                     let id = rule.id;
-                    match state.nat_engine.add_rule(rule).await {
+                    match state.nat_engine.add(rule).await {
                         Ok(_) => {
                             tracker.nat_ids.push(id);
                             summary.nat_outbound += 1;
@@ -1214,7 +1214,7 @@ async fn apply_nat(
         match build_one_to_one(n, iface_map, &empty) {
             Ok(rule) => {
                 let id = rule.id;
-                match state.nat_engine.add_rule(rule).await {
+                match state.nat_engine.add(rule).await {
                     Ok(_) => {
                         tracker.nat_ids.push(id);
                         summary.nat_one_to_one += 1;
