@@ -7,6 +7,8 @@ use crate::tuning::{self, TuningItem};
 use super::database::init_database;
 use super::pf_conf::generate_pf_conf;
 use super::rcd::write_rcd_scripts;
+#[cfg(target_os = "freebsd")]
+use super::sudoers::sudoers_content;
 use super::system::*;
 
 pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<(), String> {
