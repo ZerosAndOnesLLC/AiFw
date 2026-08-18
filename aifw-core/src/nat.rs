@@ -77,31 +77,16 @@ impl NatEngine {
             .execute(&self.pool)
             .await?;
 
-        // #253: `static_port` column added after the table shipped. SQLite
-        // has no ADD COLUMN IF NOT EXISTS, so probe the schema first.
-        let has_static_port: bool = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM pragma_table_info('nat_rules') WHERE name = 'static_port'",
+        // Columns added after the table shipped: static_port (#253),
+        // af_to_dst — explicit af-to translated destination (#596).
+        crate::schema::add_column_if_missing(
+            &self.pool,
+            "nat_rules",
+            "static_port",
+            "INTEGER NOT NULL DEFAULT 0",
         )
-        .fetch_one(&self.pool)
-        .await?
-            > 0;
-        if !has_static_port {
-            sqlx::query("ALTER TABLE nat_rules ADD COLUMN static_port INTEGER NOT NULL DEFAULT 0")
-                .execute(&self.pool)
-                .await?;
-        }
-        // #596: explicit af-to translated destination (NAT46/NAT64).
-        let has_af_to_dst: bool = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM pragma_table_info('nat_rules') WHERE name = 'af_to_dst'",
-        )
-        .fetch_one(&self.pool)
-        .await?
-            > 0;
-        if !has_af_to_dst {
-            sqlx::query("ALTER TABLE nat_rules ADD COLUMN af_to_dst TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
+        .await?;
+        crate::schema::add_column_if_missing(&self.pool, "nat_rules", "af_to_dst", "TEXT").await?;
 
         Ok(())
     }

@@ -41,9 +41,8 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // rows (pre-upgrade) have NULL prefix and simply won't match a lookup —
     // those refresh tokens become invalid on upgrade (services restart anyway),
     // forcing a harmless re-login.
-    let _ = sqlx::query("ALTER TABLE refresh_tokens ADD COLUMN token_prefix TEXT")
-        .execute(pool)
-        .await;
+    aifw_core::schema::add_column_if_missing(pool, "refresh_tokens", "token_prefix", "TEXT")
+        .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_prefix ON refresh_tokens(token_prefix)",
     )
@@ -108,12 +107,20 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     super::oauth_flow::migrate(pool).await?;
 
     // Add role and enabled columns if they don't exist
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
-        .execute(pool)
-        .await;
+    aifw_core::schema::add_column_if_missing(
+        pool,
+        "users",
+        "role",
+        "TEXT NOT NULL DEFAULT 'admin'",
+    )
+    .await?;
+    aifw_core::schema::add_column_if_missing(
+        pool,
+        "users",
+        "enabled",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    .await?;
 
     // Static routes — shared schema
     sqlx::query(aifw_common::schemas::STATIC_ROUTES_CREATE)
@@ -122,9 +129,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
     // Add fib column (0 = main FIB). Multi-WAN (#132) routes can target
     // additional FIBs created via routing instances.
-    let _ = sqlx::query("ALTER TABLE static_routes ADD COLUMN fib INTEGER NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    aifw_core::schema::add_column_if_missing(
+        pool,
+        "static_routes",
+        "fib",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
 
     // Schedules
     sqlx::query(
@@ -142,9 +153,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .await?;
 
     // Add schedule_id column to rules if not exists
-    let _ = sqlx::query("ALTER TABLE rules ADD COLUMN schedule_id TEXT")
-        .execute(pool)
-        .await;
+    aifw_core::schema::add_column_if_missing(pool, "rules", "schedule_id", "TEXT").await?;
 
     // User audit log
     sqlx::query(
@@ -244,9 +253,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     }
 
     // Add role_id column to users (references roles table)
-    let _ = sqlx::query("ALTER TABLE users ADD COLUMN role_id TEXT")
-        .execute(pool)
-        .await;
+    aifw_core::schema::add_column_if_missing(pool, "users", "role_id", "TEXT").await?;
 
     // Backfill role_id from legacy role string
     sqlx::query(

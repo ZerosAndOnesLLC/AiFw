@@ -73,27 +73,15 @@ impl VpnEngine {
         .execute(&self.pool)
         .await?;
 
-        // Add client_private_key column if missing (idempotent migration)
-        let _ = sqlx::query("ALTER TABLE wg_peers ADD COLUMN client_private_key TEXT")
-            .execute(&self.pool)
-            .await;
-
-        // Add listen_interface column to tunnels if missing
-        let _ = sqlx::query("ALTER TABLE wg_tunnels ADD COLUMN listen_interface TEXT")
-            .execute(&self.pool)
-            .await;
-
-        // Add split_routes column: comma-separated CIDRs used for split-tunnel
-        // AllowedIPs. NULL means fall back to tunnel's own network CIDR.
-        let _ = sqlx::query("ALTER TABLE wg_tunnels ADD COLUMN split_routes TEXT")
-            .execute(&self.pool)
-            .await;
-
-        // Add address6 column: the server's IPv6 tunnel address for
-        // dual-stack tunnels (#471). NULL means no inner IPv6.
-        let _ = sqlx::query("ALTER TABLE wg_tunnels ADD COLUMN address6 TEXT")
-            .execute(&self.pool)
-            .await;
+        // Columns added after the tables shipped (#193: probe, then alter):
+        // wg_peers.client_private_key; wg_tunnels.listen_interface,
+        // split_routes (comma-separated split-tunnel AllowedIPs, NULL = the
+        // tunnel's own CIDR), address6 (server IPv6 tunnel address, #471).
+        crate::schema::add_column_if_missing(&self.pool, "wg_peers", "client_private_key", "TEXT")
+            .await?;
+        for column in ["listen_interface", "split_routes", "address6"] {
+            crate::schema::add_column_if_missing(&self.pool, "wg_tunnels", column, "TEXT").await?;
+        }
 
         // Shared with aifw-setup / aifw-api (QUAL-C5) — wan_interface() below
         // reads it to build the WireGuard outbound NAT rule.

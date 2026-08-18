@@ -552,15 +552,8 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
-    for stmt in [
-        "ALTER TABLE oauth_states ADD COLUMN code_verifier TEXT",
-        "ALTER TABLE oauth_states ADD COLUMN redirect_uri TEXT",
-    ] {
-        if let Err(e) = sqlx::query(stmt).execute(pool).await
-            && !e.to_string().contains("duplicate column")
-        {
-            return Err(e);
-        }
+    for column in ["code_verifier", "redirect_uri"] {
+        aifw_core::schema::add_column_if_missing(pool, "oauth_states", column, "TEXT").await?;
     }
     Ok(())
 }

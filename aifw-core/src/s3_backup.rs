@@ -115,14 +115,9 @@ pub async fn migrate(pool: &SqlitePool) -> aifw_common::Result<()> {
     sqlx::query("INSERT OR IGNORE INTO s3_backup_config (id) VALUES (1)")
         .execute(pool)
         .await?;
-    // #313: added after the table existed; ignore "duplicate column".
-    if let Err(e) = sqlx::query("ALTER TABLE s3_backup_config ADD COLUMN secrets_passphrase TEXT")
-        .execute(pool)
-        .await
-        && !e.to_string().contains("duplicate column")
-    {
-        return Err(e.into());
-    }
+    // #313: added after the table existed.
+    crate::schema::add_column_if_missing(pool, "s3_backup_config", "secrets_passphrase", "TEXT")
+        .await?;
     Ok(())
 }
 

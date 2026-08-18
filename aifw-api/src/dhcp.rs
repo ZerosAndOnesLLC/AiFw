@@ -382,37 +382,20 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
-    // Add new columns if they don't exist (migration from old schema)
-    for col in [
-        "preferred_time INTEGER",
-        "subnet_type TEXT DEFAULT 'address'",
-        "delegated_length INTEGER",
-        "max_lease_time INTEGER",
-        "renewal_time INTEGER",
-        "rebinding_time INTEGER",
-        "accept_relayed INTEGER NOT NULL DEFAULT 1",
-        "trusted_relays TEXT NOT NULL DEFAULT '[]'",
-        "ntp_servers TEXT",
-        "options TEXT NOT NULL DEFAULT '[]'",
+    // Columns added after the table shipped (#193: probe, then alter).
+    for (column, definition) in [
+        ("preferred_time", "INTEGER"),
+        ("subnet_type", "TEXT DEFAULT 'address'"),
+        ("delegated_length", "INTEGER"),
+        ("max_lease_time", "INTEGER"),
+        ("renewal_time", "INTEGER"),
+        ("rebinding_time", "INTEGER"),
+        ("accept_relayed", "INTEGER NOT NULL DEFAULT 1"),
+        ("trusted_relays", "TEXT NOT NULL DEFAULT '[]'"),
+        ("ntp_servers", "TEXT"),
+        ("options", "TEXT NOT NULL DEFAULT '[]'"),
     ] {
-        let col_name = col.split_whitespace().next().unwrap_or("");
-        let check = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(format!(
-            "SELECT COUNT(*) FROM pragma_table_info('dhcp_subnets') WHERE name='{}'",
-            col_name
-        )))
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-        if check == 0
-            && let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "ALTER TABLE dhcp_subnets ADD COLUMN {}",
-                col
-            )))
-            .execute(pool)
-            .await
-        {
-            tracing::warn!(error = %e, column = col_name, "dhcp: dhcp_subnets column migration failed");
-        }
+        aifw_core::schema::add_column_if_missing(pool, "dhcp_subnets", column, definition).await?;
     }
 
     sqlx::query(
@@ -432,20 +415,8 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // Add client_id column if missing
-    let check = sqlx::query_scalar::<_, i32>(
-        "SELECT COUNT(*) FROM pragma_table_info('dhcp_reservations') WHERE name='client_id'",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
-    if check == 0
-        && let Err(e) = sqlx::query("ALTER TABLE dhcp_reservations ADD COLUMN client_id TEXT")
-            .execute(pool)
-            .await
-    {
-        tracing::warn!(error = %e, "dhcp: dhcp_reservations client_id column migration failed");
-    }
+    aifw_core::schema::add_column_if_missing(pool, "dhcp_reservations", "client_id", "TEXT")
+        .await?;
 
     sqlx::query(
         r#"

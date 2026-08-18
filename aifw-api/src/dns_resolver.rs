@@ -349,10 +349,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query(aifw_common::schemas::DNS_ACCESS_LISTS_CREATE)
         .execute(pool)
         .await?;
-    let _ =
-        sqlx::query("ALTER TABLE dns_access_lists ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
-            .execute(pool)
-            .await;
+    aifw_core::schema::add_column_if_missing(
+        pool,
+        "dns_access_lists",
+        "enabled",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    .await?;
 
     // Upgrade heal (v5.57.5): if forwarding is disabled but forwarding_servers
     // is populated, flip forwarding on. rDNS 1.12.8 has broken iterative
