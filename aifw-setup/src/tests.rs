@@ -433,7 +433,10 @@ mod tests {
 mod let_underscore_tests {
     /// Files cleaned in the #421 sweep, relative to the workspace root.
     const SWEPT_FILES: &[&str] = &[
-        "aifw-setup/src/apply.rs",
+        "aifw-setup/src/apply/run.rs",
+        "aifw-setup/src/apply/system.rs",
+        "aifw-setup/src/apply/database.rs",
+        "aifw-setup/src/apply/rcd.rs",
         "aifw-api/src/iface.rs",
         "aifw-api/src/backup.rs",
         "aifw-api/src/dhcp.rs",

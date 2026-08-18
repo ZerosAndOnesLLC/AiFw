@@ -263,7 +263,7 @@ for script in aifw-restart.sh aifw-watchdog.sh aifw-motd-cleanup.sh aifw-login-m
 done
 
 # Ensure sudoers for aifw user. The canonical content lives in
-# aifw-setup/src/apply.rs::sudoers_content() — deploy uses
+# aifw-setup/src/apply/sudoers.rs::sudoers_content() — deploy uses
 # `aifw-setup --print-sudoers` so this script can never drift from the
 # tested-in-CI sudoers definition (SEC-C1, SEC-C2).
 mkdir -p /usr/local/etc/sudoers.d
