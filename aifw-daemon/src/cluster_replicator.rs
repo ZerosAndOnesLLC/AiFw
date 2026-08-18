@@ -100,11 +100,7 @@ impl ClusterReplicator {
 
             // Cheap hash probe — we don't need the full snapshot from the peer,
             // only whether it matches what we already have.
-            let peer_hash_url = format!(
-                "https://{}:{}/api/v1/cluster/snapshot/hash",
-                peer.address,
-                aifw_common::DEFAULT_LOOPBACK_API_PORT
-            );
+            let peer_hash_url = format!("{}/api/v1/cluster/snapshot/hash", peer.api_base());
             let peer_hash = match client
                 .get(&peer_hash_url)
                 .header("Authorization", format!("ApiKey {key}"))
@@ -132,11 +128,7 @@ impl ClusterReplicator {
             // Hashes differ — push the snapshot body we already fetched above.
             // No second loopback call, so the pushed body and local_hash are
             // guaranteed to match.
-            let peer_put_url = format!(
-                "https://{}:{}/api/v1/cluster/snapshot",
-                peer.address,
-                aifw_common::DEFAULT_LOOPBACK_API_PORT
-            );
+            let peer_put_url = format!("{}/api/v1/cluster/snapshot", peer.api_base());
             let resp = client
                 .put(&peer_put_url)
                 .header("Authorization", format!("ApiKey {key}"))

@@ -26,6 +26,8 @@ export type Pfsync = {
   heartbeat_iface: string | null;
   heartbeat_interval_ms: number | null;
   dhcp_link: boolean;
+  /** Tear WireGuard down on CARP BACKUP, back up on MASTER (#486). */
+  wg_deconfigure_on_backup?: boolean;
   created_at: string;
 };
 
@@ -38,6 +40,8 @@ export type Node = {
   last_seen: string;
   /** SHA-256 of the peer's API certificate that our calls are pinned to (#317); null until first contact. */
   cert_fingerprint?: string | null;
+  /** Port the peer's API listens on (#487); 8080 unless configured. */
+  api_port?: number;
 };
 
 export type HealthCheck = {
@@ -84,12 +88,14 @@ export type PfsyncRequest = {
   heartbeat_iface: string | null;
   heartbeat_interval_ms: number | null;
   dhcp_link: boolean;
+  wg_deconfigure_on_backup?: boolean;
 };
 
 export type NodeRequest = {
   name: string;
   address: string;
   role: string;
+  api_port?: number;
 };
 
 export type HealthCheckRequest = {
@@ -131,6 +137,7 @@ export type PfsyncFormState = {
   heartbeat_iface: string;
   heartbeat_interval_ms: string;
   dhcp_link: boolean;
+  wg_deconfigure_on_backup: boolean;
 };
 
 export const defaultPfsyncForm: PfsyncFormState = {
@@ -142,18 +149,21 @@ export const defaultPfsyncForm: PfsyncFormState = {
   heartbeat_iface: "",
   heartbeat_interval_ms: "",
   dhcp_link: false,
+  wg_deconfigure_on_backup: false,
 };
 
 export type NodeFormState = {
   name: string;
   address: string;
   role: string;
+  api_port: string;
 };
 
 export const defaultNodeForm: NodeFormState = {
   name: "",
   address: "",
   role: "secondary",
+  api_port: "8080",
 };
 
 export type HcFormState = {

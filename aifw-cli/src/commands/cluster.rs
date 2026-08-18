@@ -196,6 +196,7 @@ pub async fn cluster_pfsync_set(
     defer: bool,
     latency_profile: &str,
     dhcp_link: bool,
+    wg_deconfigure_on_backup: bool,
 ) -> anyhow::Result<()> {
     let body = serde_json::json!({
         "sync_interface": sync_interface,
@@ -206,6 +207,7 @@ pub async fn cluster_pfsync_set(
         "heartbeat_iface": null,
         "heartbeat_interval_ms": null,
         "dhcp_link": dhcp_link,
+        "wg_deconfigure_on_backup": wg_deconfigure_on_backup,
     });
     let v: serde_json::Value = api_put("/api/v1/cluster/pfsync", &body).await?;
     println!("{}", serde_json::to_string_pretty(&v)?);
@@ -226,8 +228,16 @@ pub async fn cluster_nodes_show(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn cluster_nodes_add(name: &str, address: &str, role: &str) -> anyhow::Result<()> {
-    let body = serde_json::json!({ "name": name, "address": address, "role": role });
+pub async fn cluster_nodes_add(
+    name: &str,
+    address: &str,
+    role: &str,
+    api_port: Option<u16>,
+) -> anyhow::Result<()> {
+    let mut body = serde_json::json!({ "name": name, "address": address, "role": role });
+    if let Some(p) = api_port {
+        body["api_port"] = serde_json::json!(p);
+    }
     let v: serde_json::Value = api_post("/api/v1/cluster/nodes", &body).await?;
     println!("{}", serde_json::to_string_pretty(&v)?);
     Ok(())

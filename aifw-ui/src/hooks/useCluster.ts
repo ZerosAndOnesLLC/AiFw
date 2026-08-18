@@ -261,6 +261,7 @@ export function useCluster() {
           ? parseInt(form.heartbeat_interval_ms, 10)
           : null,
         dhcp_link: form.dhcp_link,
+        wg_deconfigure_on_backup: form.wg_deconfigure_on_backup,
       };
       await updatePfsync(body);
       onSaved?.();
@@ -298,10 +299,17 @@ export function useCluster() {
     setSavingNode(true);
     setError(null);
     try {
+      const port = parseInt(form.api_port, 10);
+      if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        setError("API port must be 1–65535");
+        setSavingNode(false);
+        return;
+      }
       const body = {
         name: form.name,
         address: form.address,
         role: form.role,
+        api_port: port,
       };
       if (editingNodeId) {
         await updateNode(editingNodeId, body);

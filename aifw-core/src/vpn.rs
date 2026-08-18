@@ -605,9 +605,9 @@ impl VpnEngine {
         // ListenAddress for explicit binding; if AiFw ever migrates to one,
         // this is where the per-iface bind would be wired.
         //
-        // TODO(#486): WG role-change subscriber for explicit wg-quick down on BACKUP
-        // (default-false `wg_deconfigure_on_backup` flag, deferred — out of
-        // scope for Commit 9 #222).
+        // #486: with `wg_deconfigure_on_backup` on, `deconfigure_for_backup`
+        // /`reconfigure_for_master` tear these interfaces down/up on CARP
+        // transitions without touching the DB status.
         let listen_port_s = tunnel.listen_port.to_string();
         let output = crate::sudo::wg(
             "set",
@@ -798,6 +798,45 @@ impl VpnEngine {
             "peer_count": peers.len(),
             "peers": peers,
         }))
+    }
+
+    /// CARP went BACKUP (#486): destroy every WireGuard interface whose
+    /// tunnel is `up` in the DB — but leave the DB status alone, so
+    /// [`Self::reconfigure_for_master`] (and boot recovery) know to bring
+    /// them back. Returns the number of interfaces torn down.
+    pub async fn deconfigure_for_backup(&self) -> Result<u32> {
+        let tunnels = self.list_wg_tunnels().await?;
+        let mut n = 0u32;
+        for t in tunnels.iter().filter(|t| t.status == VpnStatus::Up) {
+            let iface = &t.interface.0;
+            match crate::sudo::ifconfig(iface, "destroy", &[]).await {
+                Ok(o) if o.status.success() => {
+                    n += 1;
+                    tracing::info!(id = %t.id, iface, "WireGuard interface torn down for CARP BACKUP");
+                }
+                Ok(o) => {
+                    tracing::warn!(id = %t.id, iface, stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                    "ha: wg teardown on BACKUP failed")
+                }
+                Err(e) => {
+                    tracing::warn!(id = %t.id, iface, error = %e, "ha: wg teardown on BACKUP failed to run")
+                }
+            }
+        }
+        // Drop the pass/NAT rules for the interfaces that no longer exist;
+        // reconfigure_for_master re-applies them.
+        if n > 0
+            && let Err(e) = self.pf.flush_rules(&self.anchor).await
+        {
+            tracing::warn!(error = %e, "ha: could not flush aifw-vpn anchor on BACKUP");
+        }
+        Ok(n)
+    }
+
+    /// CARP went MASTER (#486): bring back every tunnel that is `up` in the
+    /// DB. Idempotent — `start_tunnel` recreates the interface from scratch.
+    pub async fn reconfigure_for_master(&self) -> Result<u32> {
+        self.start_active_tunnels().await
     }
 
     /// Start all tunnels that have status "up" in the DB (for boot recovery).

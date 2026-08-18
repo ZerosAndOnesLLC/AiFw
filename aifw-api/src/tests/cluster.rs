@@ -245,3 +245,114 @@ async fn derive_ha_peers_standalone_returns_no_peers() {
         "without short-circuit all 3 nodes would appear"
     );
 }
+
+/// #487: a peer's API port is stored per node (default 8080), validated,
+/// and used to build the peer base URL; #486: the WireGuard-on-BACKUP flag
+/// round-trips through the pfsync config (default off).
+#[tokio::test]
+async fn cluster_node_api_port_and_wg_backup_flag_round_trip() {
+    let state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let engine = state.cluster_engine.clone();
+    let server = TestServer::new(crate::build_router(state, None, "*", false));
+    let token = create_user_and_login(&server).await;
+
+    let resp = server
+        .post("/api/v1/cluster/nodes")
+        .authorization_bearer(&token)
+        .json(&json!({"name": "peer-default", "address": "10.9.9.10", "role": "secondary"}))
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    assert_eq!(resp.json::<Value>()["api_port"], 8080);
+
+    let resp = server
+        .post("/api/v1/cluster/nodes")
+        .authorization_bearer(&token)
+        .json(&json!({"name": "peer-alt", "address": "10.9.9.11", "role": "secondary", "api_port": 9443}))
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    let n: Value = resp.json();
+    let id = n["id"].as_str().unwrap().to_string();
+    assert_eq!(n["api_port"], 9443);
+    let stored = engine
+        .list_nodes()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|x| x.id.to_string() == id)
+        .unwrap();
+    assert_eq!(stored.api_port, 9443);
+    assert_eq!(stored.api_base(), "https://10.9.9.11:9443");
+
+    let resp = server
+        .post("/api/v1/cluster/nodes")
+        .authorization_bearer(&token)
+        .json(&json!({"name": "peer-bad", "address": "10.9.9.12", "role": "secondary", "api_port": 0}))
+        .await;
+    resp.assert_status(StatusCode::BAD_REQUEST);
+    let resp = server
+        .put(&format!("/api/v1/cluster/nodes/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({"name": "peer-alt", "address": "10.9.9.11", "role": "secondary", "api_port": 0}))
+        .await;
+    resp.assert_status(StatusCode::BAD_REQUEST);
+    let resp = server
+        .put(&format!("/api/v1/cluster/nodes/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({"name": "peer-alt", "address": "10.9.9.11", "role": "secondary", "api_port": 8443}))
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    let after = engine
+        .list_nodes()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|x| x.id.to_string() == id)
+        .unwrap();
+    assert_eq!(after.api_port, 8443);
+
+    let mut v6 = aifw_common::ClusterNode::new(
+        "v6".into(),
+        "fd00::2".parse().unwrap(),
+        aifw_common::ClusterRole::Secondary,
+    );
+    v6.api_port = 8080;
+    assert_eq!(v6.api_base(), "https://[fd00::2]:8080");
+
+    let body = json!({
+        "sync_interface": "em1", "sync_peer": null, "defer": true, "enabled": true,
+        "latency_profile": "conservative", "heartbeat_iface": null,
+        "heartbeat_interval_ms": null, "dhcp_link": false
+    });
+    let resp = server
+        .put("/api/v1/cluster/pfsync")
+        .authorization_bearer(&token)
+        .json(&body)
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    assert_eq!(resp.json::<Value>()["wg_deconfigure_on_backup"], false);
+    let mut on = body.clone();
+    on["wg_deconfigure_on_backup"] = json!(true);
+    let resp = server
+        .put("/api/v1/cluster/pfsync")
+        .authorization_bearer(&token)
+        .json(&on)
+        .await;
+    assert_eq!(resp.json::<Value>()["wg_deconfigure_on_backup"], true);
+    let resp = server
+        .put("/api/v1/cluster/pfsync")
+        .authorization_bearer(&token)
+        .json(&body)
+        .await;
+    assert_eq!(
+        resp.json::<Value>()["wg_deconfigure_on_backup"],
+        true,
+        "omitted field leaves the flag alone"
+    );
+    let resp = server
+        .get("/api/v1/cluster/pfsync")
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(resp.json::<Value>()["wg_deconfigure_on_backup"], true);
+}

@@ -214,11 +214,7 @@ async fn push_cert_to_peers(
         };
         // Pinned to the peer's current certificate (#317).
         let client = cluster_engine.peer_client(n, std::time::Duration::from_secs(30))?;
-        let url = format!(
-            "https://{}:{}/api/v1/cluster/cert-push",
-            n.address,
-            aifw_common::DEFAULT_LOOPBACK_API_PORT
-        );
+        let url = format!("{}/api/v1/cluster/cert-push", n.api_base());
         let body = serde_json::json!({
             "cert_id": cert_id,
             "fullchain_pem": fullchain,
