@@ -97,13 +97,7 @@ pub async fn create_nat_rule(
     let redirect_addr = Address::parse(req.redirect_addr.as_deref().unwrap_or("any"))
         .map_err(|e| nat_bad_request(format!("invalid redirect address: {e}")))?;
 
-    // Validate interface and label to prevent pf rule injection
-    aifw_core::validation::validate_interface_name(&req.interface)
-        .map_err(|e| nat_bad_request(e.to_string()))?;
-    if let Some(ref label) = req.label {
-        aifw_core::validation::validate_label(label).map_err(|e| nat_bad_request(e.to_string()))?;
-    }
-
+    // Interface/label/family checks live in NatEngine::add (`validate_nat_rule`).
     let mut rule = NatRule::new(
         nat_type,
         Interface(req.interface),
@@ -142,13 +136,6 @@ pub async fn update_nat_rule(
 
     rule.nat_type = NatType::parse(&req.nat_type)
         .map_err(|_| nat_bad_request(format!("unknown NAT type '{}'", req.nat_type)))?;
-    // Validate interface and label to prevent pf rule injection
-    aifw_core::validation::validate_interface_name(&req.interface)
-        .map_err(|e| nat_bad_request(e.to_string()))?;
-    if let Some(ref label) = req.label {
-        aifw_core::validation::validate_label(label).map_err(|e| nat_bad_request(e.to_string()))?;
-    }
-
     rule.interface = Interface(req.interface);
     rule.protocol = Protocol::parse(&req.protocol)
         .map_err(|_| nat_bad_request(format!("unknown protocol '{}'", req.protocol)))?;

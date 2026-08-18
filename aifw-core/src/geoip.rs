@@ -99,6 +99,7 @@ impl GeoIpEngine {
     /// Insert a per-country block/allow rule row. pf tables aren't touched
     /// until the geo-IP rules are next applied
     pub async fn add(&self, rule: GeoIpRule) -> Result<GeoIpRule> {
+        Self::validate(&rule)?;
         Self::insert_rule_on(&self.pool, &rule).await?;
         tracing::info!(id = %rule.id, country = %rule.country, action = %rule.action, "geo-ip rule added");
         Ok(rule)
@@ -153,8 +154,21 @@ impl GeoIpEngine {
         row.into_rule()
     }
 
+    /// Field checks every write path shares (#194): the country code must
+    /// be a real ISO 3166-1 alpha-2 code and the label must be pf-safe.
+    pub fn validate(rule: &GeoIpRule) -> Result<()> {
+        // Re-run the shape check even for values built from the type — a
+        // deserialised snapshot can carry anything.
+        CountryCode::new(&rule.country.0)?;
+        if let Some(label) = rule.label.as_deref() {
+            crate::validation::validate_label(label)?;
+        }
+        Ok(())
+    }
+
     /// Update a geo-IP rule row. Fails with `NotFound` for an unknown id
     pub async fn update(&self, rule: &GeoIpRule) -> Result<()> {
+        Self::validate(rule)?;
         let result = sqlx::query(
             r#"UPDATE geoip_rules SET country = ?2, action = ?3, label = ?4, status = ?5, updated_at = ?6 WHERE id = ?1"#,
         )

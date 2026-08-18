@@ -29,11 +29,7 @@ pub async fn create_geoip_rule(
     let country = CountryCode::new(&req.country_code).map_err(|_| bad_request())?;
     let action = GeoIpAction::parse(&req.action).map_err(|_| bad_request())?;
     let rule = GeoIpRule::new(country, action);
-    let rule = state
-        .geoip_engine
-        .add(rule)
-        .await
-        .map_err(|_| bad_request())?;
+    let rule = state.geoip_engine.add(rule).await.map_err(engine_error)?;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
 
@@ -61,7 +57,7 @@ pub async fn update_geoip_rule(
         .geoip_engine
         .update(&rule)
         .await
-        .map_err(|_| internal())?;
+        .map_err(engine_error)?;
     Ok(Json(ApiResponse { data: rule }))
 }
 
