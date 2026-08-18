@@ -1,8 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
+import {
+  RELAY_ABUSE_REASONS,
+  RELAY_DROP_REASONS,
+  RELAY_REASON_HELP,
+  parseRelayMetrics,
+  relayDelta,
+  type RelayMetrics,
+} from "@/lib/dhcp/relayMetrics";
 
 interface PoolStats {
   subnet: string;
@@ -15,6 +23,11 @@ interface PoolStats {
 export default function DhcpMetricsPage() {
   const [stats, setStats] = useState<PoolStats[]>([]);
   const [rawMetrics, setRawMetrics] = useState("");
+  // Relay counters (#159): current sample plus the delta since the previous
+  // poll so a burst of drops stands out even against a large lifetime total.
+  const [relay, setRelay] = useState<RelayMetrics | null>(null);
+  const [relayDeltaState, setRelayDeltaState] = useState<RelayMetrics | null>(null);
+  const prevRelay = useRef<RelayMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -30,7 +43,12 @@ export default function DhcpMetricsPage() {
 
   const fetchRawMetrics = useCallback(async () => {
     try {
-      setRawMetrics(await api.getText("/api/v1/dhcp/metrics"));
+      const text = await api.getText("/api/v1/dhcp/metrics");
+      setRawMetrics(text);
+      const parsed = parseRelayMetrics(text);
+      setRelayDeltaState(relayDelta(prevRelay.current, parsed));
+      prevRelay.current = parsed;
+      setRelay(parsed);
     } catch {
       setRawMetrics("# rDHCP metrics unavailable (service may not be running)");
     }
@@ -130,6 +148,60 @@ export default function DhcpMetricsPage() {
           ))}
         </div>
       )}
+
+      {/* DHCP relay (#159) — global counters from rDHCP */}
+      {relay?.present && (() => {
+        const abuse = RELAY_ABUSE_REASONS.some((r) => (relayDeltaState?.dropped[r] ?? 0) > 0);
+        return (
+          <div className={`bg-[var(--bg-card)] border rounded-lg p-5 ${abuse ? "border-red-500/50" : "border-[var(--border)]"}`}>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h2 className="text-sm font-medium text-[var(--text-primary)]">DHCP relay</h2>
+                <p className="text-xs text-[var(--text-muted)]">Relayed (giaddr ≠ 0) DHCPv4 traffic across all subnets — lifetime totals, with the change since the last refresh.</p>
+              </div>
+              {abuse && (
+                <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full border border-red-500/40 text-red-400 bg-red-500/10">
+                  new untrusted / bad-giaddr drops
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-center text-xs mb-4">
+              <div>
+                <span className="block text-[var(--text-muted)]">Received</span>
+                <span className="text-lg font-bold text-[var(--text-primary)]">{relay.received.toLocaleString()}</span>
+                {relayDeltaState && relayDeltaState.received > 0 && <span className="block text-[10px] text-cyan-400">+{relayDeltaState.received}</span>}
+              </div>
+              <div>
+                <span className="block text-[var(--text-muted)]">Accepted</span>
+                <span className="text-lg font-bold text-green-400">{relay.accepted.toLocaleString()}</span>
+                {relayDeltaState && relayDeltaState.accepted > 0 && <span className="block text-[10px] text-green-400">+{relayDeltaState.accepted}</span>}
+              </div>
+              <div>
+                <span className="block text-[var(--text-muted)]">Dropped</span>
+                <span className={`text-lg font-bold ${relay.droppedTotal > 0 ? "text-red-400" : "text-[var(--text-primary)]"}`}>{relay.droppedTotal.toLocaleString()}</span>
+                {relayDeltaState && relayDeltaState.droppedTotal > 0 && <span className="block text-[10px] text-red-400">+{relayDeltaState.droppedTotal}</span>}
+              </div>
+            </div>
+            <table className="w-full text-xs">
+              <thead className="text-[var(--text-muted)] uppercase tracking-wider text-[10px]">
+                <tr><th className="text-left py-1">Drop reason</th><th className="text-right py-1">Total</th><th className="text-right py-1">Since refresh</th></tr>
+              </thead>
+              <tbody>
+                {RELAY_DROP_REASONS.map((r) => {
+                  const hot = RELAY_ABUSE_REASONS.includes(r) && (relayDeltaState?.dropped[r] ?? 0) > 0;
+                  return (
+                    <tr key={r} className={`border-t border-[var(--border)] ${hot ? "text-red-300" : ""}`} title={RELAY_REASON_HELP[r]}>
+                      <td className="py-1.5 font-mono">{r}<span className="ml-2 font-sans text-[var(--text-muted)] hidden sm:inline">— {RELAY_REASON_HELP[r]}</span></td>
+                      <td className="py-1.5 text-right font-mono">{relay.dropped[r].toLocaleString()}</td>
+                      <td className="py-1.5 text-right font-mono">{(relayDeltaState?.dropped[r] ?? 0) > 0 ? `+${relayDeltaState?.dropped[r]}` : "–"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
 
       {/* Raw Prometheus Metrics */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg overflow-hidden">
