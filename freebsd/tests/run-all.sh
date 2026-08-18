@@ -173,7 +173,7 @@ jx_server ifconfig "${EPAIR_S}b" inet6 -ifdisabled auto_linklocal up
 # ---------------------------------------------------------------- pf.conf
 
 # Mirrors the anchor layout aifw-setup generates for the appliance
-# (generate_pf_conf in aifw-setup/src/apply.rs), scoped to the test path:
+# (generate_pf_conf in aifw-setup/src/apply/pf_conf.rs), scoped to the test path:
 # management is passed unconditionally BEFORE the anchors so no test rule
 # can cut off SSH/CI; the epair test path is default-deny after them.
 PF_CONF="$WORK_DIR/pf.conf"

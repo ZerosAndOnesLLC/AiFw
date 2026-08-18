@@ -1,7 +1,7 @@
 //! Canonical SQL `CREATE TABLE` strings for cross-crate-shared schemas.
 //!
 //! Background: the audit caught twelve `CREATE TABLE IF NOT EXISTS`
-//! definitions that lived in both `aifw-setup/src/apply.rs` (first-boot
+//! definitions that lived in both `aifw-setup/src/apply/database.rs` (first-boot
 //! wizard) AND the canonical engine module (`aifw-api/src/auth/mod.rs`,
 //! `aifw-core/src/db.rs`, etc.). Because `CREATE TABLE IF NOT EXISTS` is
 //! idempotent, whichever ran first won — and the two definitions could
