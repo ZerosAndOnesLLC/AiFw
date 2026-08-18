@@ -294,7 +294,7 @@ pub fn generate_recommendations(profile: &SystemProfile) -> Vec<TuningItem> {
 
 /// Interactive tuning wizard step. Shows recommendations and lets user
 /// accept defaults or customize each one.
-pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
+pub fn run_tuning_wizard(profile: &SystemProfile) -> std::io::Result<Vec<TuningItem>> {
     let mut items = generate_recommendations(profile);
 
     console::header("Step 4/11 — System Detection & Performance Tuning");
@@ -339,7 +339,7 @@ pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
             "Skip tuning entirely",
         ],
         0,
-    );
+    )?;
 
     match choice {
         0 => {
@@ -350,7 +350,7 @@ pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
             println!();
             console::info("Enter item numbers to toggle (space-separated), or 'done' to finish:");
             loop {
-                let input = console::prompt("Toggle items", "done");
+                let input = console::prompt("Toggle items", "done")?;
                 if input == "done" || input.is_empty() {
                     break;
                 }
@@ -377,7 +377,7 @@ pub fn run_tuning_wizard(profile: &SystemProfile) -> Vec<TuningItem> {
         }
     }
 
-    items
+    Ok(items)
 }
 
 /// Generate sysctl.conf content from enabled tuning items

@@ -37,26 +37,26 @@ fn detect_interfaces() -> Vec<String> {
 }
 
 /// Set the system root password via pw (FreeBSD)
-fn set_root_password() {
+fn set_root_password() -> std::io::Result<()> {
     let max_attempts = 5;
     for attempt in 1..=max_attempts {
-        let pass1 = console::prompt_password("New root password");
+        let pass1 = console::prompt_password("New root password")?;
         if pass1.len() < 8 {
             console::error("Password must be at least 8 characters.");
             if attempt == max_attempts {
                 console::warn(
                     "Max attempts reached. Skipping root password — set it manually later.",
                 );
-                return;
+                return Ok(());
             }
             continue;
         }
-        let pass2 = console::prompt_password("Confirm root password");
+        let pass2 = console::prompt_password("Confirm root password")?;
         if pass1 != pass2 {
             console::error("Passwords do not match. Try again.");
             if attempt == max_attempts {
                 console::warn("Max attempts reached. Skipping root password.");
-                return;
+                return Ok(());
             }
             continue;
         }
@@ -77,7 +77,7 @@ fn set_root_password() {
                 Ok(c) => c,
                 Err(e) => {
                     console::error(&format!("Failed to spawn pw: {}", e));
-                    return;
+                    return Ok(());
                 }
             };
 
@@ -89,7 +89,7 @@ fn set_root_password() {
                 None => {
                     console::error("pw stdin was not piped (internal error)");
                     let _ = child.wait();
-                    return;
+                    return Ok(());
                 }
             };
             let write_res = writeln!(stdin, "{}", pass1);
@@ -98,13 +98,13 @@ fn set_root_password() {
             if let Err(e) = write_res {
                 console::error(&format!("Failed to write password to pw stdin: {}", e));
                 let _ = child.wait();
-                return;
+                return Ok(());
             }
 
             match child.wait_with_output() {
                 Ok(out) if out.status.success() => {
                     console::success("Root password set.");
-                    return;
+                    return Ok(());
                 }
                 Ok(out) => {
                     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -113,11 +113,11 @@ fn set_root_password() {
                         out.status.code(),
                         stderr.trim()
                     ));
-                    return;
+                    return Ok(());
                 }
                 Err(e) => {
                     console::error(&format!("Failed to wait for pw: {}", e));
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -125,9 +125,10 @@ fn set_root_password() {
         #[cfg(not(target_os = "freebsd"))]
         {
             console::success("Root password set (simulated).");
-            return;
+            return Ok(());
         }
     }
+    Ok(())
 }
 
 /// Result of the setup wizard
@@ -187,7 +188,7 @@ fn step(n: u32, title: &str) {
 }
 
 /// Run the full setup wizard
-pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
+pub fn run_wizard(reconfigure: bool) -> std::io::Result<Option<WizardResult>> {
     let mut config = SetupConfig::default();
 
     // ── Splash Screen ───────────────────────────────────────
@@ -199,15 +200,15 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     if reconfigure {
         console::warn("Running in reconfigure mode. Existing config will be overwritten.");
-        if !console::confirm("Continue?", true) {
-            return None;
+        if !console::confirm("Continue?", true)? {
+            return Ok(None);
         }
     }
 
     // ── Step 1: Root Password ────────────────────────────────
     step(1, "Root Password");
     console::info("Set the system root password for console access.");
-    set_root_password();
+    set_root_password()?;
 
     // ── Step 2: SSH Access ───────────────────────────────────
     step(2, "SSH Access");
@@ -221,7 +222,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             "Password authentication (not recommended)",
         ],
         0,
-    );
+    )?;
     config.ssh_auth_method = if ssh_method_idx == 1 {
         SshAuthMethod::Password
     } else {
@@ -230,7 +231,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     if config.ssh_auth_method == SshAuthMethod::KeyOnly {
         console::info("You can import SSH keys from your GitHub account.");
-        let github_user = console::prompt("GitHub username (leave empty to skip)", "");
+        let github_user = console::prompt("GitHub username (leave empty to skip)", "")?;
         if !github_user.is_empty() {
             console::info(&format!("Fetching keys from github.com/{github_user}..."));
             match fetch_github_keys(&github_user) {
@@ -257,7 +258,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
         if config.ssh_authorized_keys.is_empty() {
             console::info("You can paste an SSH public key now (or press Enter to skip).");
-            let key = console::prompt("SSH public key", "");
+            let key = console::prompt("SSH public key", "")?;
             if !key.is_empty()
                 && (key.starts_with("ssh-") || key.starts_with("ecdsa-") || key.starts_with("sk-"))
             {
@@ -277,7 +278,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     // ── Step 3: Hostname ─────────────────────────────────────
     step(3, "Hostname");
     loop {
-        config.hostname = console::prompt("Hostname", &config.hostname);
+        config.hostname = console::prompt("Hostname", &config.hostname)?;
         // Basic RFC 1123 validation
         if config.hostname.is_empty()
             || config.hostname.len() > 63
@@ -299,7 +300,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     // ── Step 4: System Tuning (auto-detected) ────────────────
     let profile = SystemProfile::detect();
     config.ram_mb = profile.memory.total_mb;
-    let tuning_items = tuning::run_tuning_wizard(&profile);
+    let tuning_items = tuning::run_tuning_wizard(&profile)?;
 
     // ── Step 5: Network Interfaces ───────────────────────────
     step(5, "Network Interfaces");
@@ -308,7 +309,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     if interfaces.is_empty() {
         console::error("No network interfaces detected!");
         console::info("Continuing with manual configuration...");
-        config.wan_interface = console::prompt_required("WAN interface name");
+        config.wan_interface = console::prompt_required("WAN interface name")?;
     } else {
         console::info("Detected interfaces:");
         for iface in &interfaces {
@@ -329,7 +330,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             config.nat_enabled = false;
         } else {
             let iface_refs: Vec<&str> = interfaces.iter().map(|s| s.as_str()).collect();
-            let wan_idx = console::select("Select WAN interface", &iface_refs, 0);
+            let wan_idx = console::select("Select WAN interface", &iface_refs, 0)?;
             config.wan_interface = interfaces[wan_idx].clone();
 
             let remaining: Vec<&str> = interfaces
@@ -338,8 +339,8 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
                 .map(|s| s.as_str())
                 .collect();
 
-            if !remaining.is_empty() && console::confirm("Configure a LAN interface?", true) {
-                let lan_idx = console::select("Select LAN interface", &remaining, 0);
+            if !remaining.is_empty() && console::confirm("Configure a LAN interface?", true)? {
+                let lan_idx = console::select("Select LAN interface", &remaining, 0)?;
                 config.lan_interface = Some(remaining[lan_idx].to_string());
                 config.nat_enabled = true;
                 console::success("NAT will be enabled between WAN and LAN.");
@@ -356,7 +357,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
         "WAN IP configuration",
         &["DHCP (automatic)", "Static IP"],
         0,
-    );
+    )?;
     config.wan_mode = match wan_mode_idx {
         1 => WanMode::Static,
         _ => WanMode::Dhcp,
@@ -364,7 +365,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     if config.wan_mode == WanMode::Static {
         loop {
-            let ip = console::prompt_required("WAN IP address (e.g., 203.0.113.1/24)");
+            let ip = console::prompt_required("WAN IP address (e.g., 203.0.113.1/24)")?;
             if console::validate_cidr(&ip) {
                 config.wan_ip = Some(ip);
                 break;
@@ -372,7 +373,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             console::warn("Invalid IP/prefix format. Use format: x.x.x.x/xx");
         }
         loop {
-            let gw = console::prompt_required("Default gateway");
+            let gw = console::prompt_required("Default gateway")?;
             if console::validate_ip(&gw) {
                 config.wan_gateway = Some(gw);
                 break;
@@ -385,14 +386,14 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     if config.lan_interface.is_some() {
         step(7, "LAN Configuration");
         loop {
-            let ip = console::prompt("LAN IP address", "192.168.1.1/24");
+            let ip = console::prompt("LAN IP address", "192.168.1.1/24")?;
             if console::validate_cidr(&ip) {
                 config.lan_ip = Some(ip);
                 break;
             }
             console::warn("Invalid IP/prefix format.");
         }
-        if console::confirm("Enable DHCP server on the LAN interface?", true) {
+        if console::confirm("Enable DHCP server on the LAN interface?", true)? {
             config.dhcp_enabled = true;
             console::success("DHCP server will be enabled on LAN.");
         }
@@ -405,7 +406,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     println!();
 
     loop {
-        config.admin_username = console::prompt("Admin username", "admin");
+        config.admin_username = console::prompt("Admin username", "admin")?;
         if config.admin_username.is_empty()
             || config.admin_username.contains(' ')
             || config.admin_username.len() > 32
@@ -417,7 +418,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
 
     loop {
-        let password = console::prompt_password_confirm("Password");
+        let password = console::prompt_password_confirm("Password")?;
         match console::validate_password(&password) {
             Ok(()) => {
                 match hash_password(&password) {
@@ -438,9 +439,9 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
 
     // ── Step 9: API & Web UI ─────────────────────────────────
     step(9, "API & Web UI");
-    config.api_listen = console::prompt("API listen address", &config.api_listen);
+    config.api_listen = console::prompt("API listen address", &config.api_listen)?;
     loop {
-        let port_str = console::prompt("API port", &config.api_port.to_string());
+        let port_str = console::prompt("API port", &config.api_port.to_string())?;
         match port_str.parse::<u16>() {
             Ok(p) if p > 0 => {
                 config.api_port = p;
@@ -451,12 +452,12 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             }
         }
     }
-    config.ui_enabled = console::confirm("Enable web UI?", true);
+    config.ui_enabled = console::confirm("Enable web UI?", true)?;
 
     // ── Step 10: DNS Servers ─────────────────────────────────
     step(10, "DNS Servers");
     loop {
-        let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8");
+        let dns = console::prompt("DNS servers (comma-separated)", "1.1.1.1,8.8.8.8")?;
         let servers: Vec<String> = dns
             .split(',')
             .map(|s| s.trim().to_string())
@@ -481,7 +482,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
             "Permissive — allow all (testing only!)",
         ],
         0,
-    );
+    )?;
     config.default_policy = match policy_idx {
         1 => DefaultPolicy::Strict,
         2 => DefaultPolicy::Permissive,
@@ -489,7 +490,7 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     };
 
     // ── Optional HA step ────────────────────────────────────
-    config.cluster = ask_cluster(&config);
+    config.cluster = ask_cluster(&config)?;
 
     // ── Summary ──────────────────────────────────────────────
     console::header("Configuration Summary");
@@ -572,32 +573,32 @@ pub fn run_wizard(reconfigure: bool) -> Option<WizardResult> {
     }
     println!();
 
-    if console::confirm("Apply this configuration?", true) {
-        Some(WizardResult {
+    if console::confirm("Apply this configuration?", true)? {
+        Ok(Some(WizardResult {
             config,
             tuning: tuning_items,
-        })
+        }))
     } else {
         console::info("Setup cancelled.");
-        None
+        Ok(None)
     }
 }
 
 /// Ask whether this node is part of an HA pair and collect cluster settings.
 /// Returns `None` if the operator declines or enters invalid data.
-fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
+fn ask_cluster(config: &SetupConfig) -> std::io::Result<Option<WizardClusterConfig>> {
     if !console::confirm(
         "Configure this node as part of an HA pair? (Two AiFw boxes sharing a virtual IP via CARP + pfsync)",
         false,
-    ) {
-        return None;
+    )? {
+        return Ok(None);
     }
 
     let role_idx = console::select(
         "Is this the PRIMARY (master under normal load) or SECONDARY node?",
         &["primary", "secondary"],
         0,
-    );
+    )?;
     let role = match role_idx {
         0 => aifw_common::ClusterRole::Primary,
         _ => aifw_common::ClusterRole::Secondary,
@@ -606,7 +607,7 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
     let pfsync_iface = loop {
         let s = console::prompt_required(
             "Which interface carries pfsync traffic? (a dedicated NIC is strongly recommended)",
-        );
+        )?;
         let s = s.trim().to_string();
         // FreeBSD interface names: ASCII letters, digits, and dots only.
         // Reject anything else to prevent newline injection into rc.conf.
@@ -619,7 +620,7 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
     };
 
     let peer_address = loop {
-        let s = console::prompt_required("Peer node IP on the pfsync link:");
+        let s = console::prompt_required("Peer node IP on the pfsync link:")?;
         match s.parse::<std::net::IpAddr>() {
             Ok(addr) => break addr,
             Err(_) => console::error("Not a valid IP address."),
@@ -631,7 +632,8 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
     // rc.conf is sourced by /bin/sh at boot; these chars would corrupt the
     // value or execute arbitrary code as root.
     let password = loop {
-        let pw = console::prompt_password("CARP password (will be shared with peer; min 8 chars):");
+        let pw =
+            console::prompt_password("CARP password (will be shared with peer; min 8 chars):")?;
         if pw.len() < 8 {
             console::error("Password must be at least 8 characters.");
             continue;
@@ -653,7 +655,7 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
         if !console::confirm(
             &format!("Add a CARP VIP on the {iface_label} interface?"),
             true,
-        ) {
+        )? {
             continue;
         }
         let default_iface = if *iface_label == "WAN" {
@@ -664,7 +666,7 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
         // Validate interface name: ASCII letters, digits, and dots only.
         // Prevents newline injection into rc.conf values.
         let interface = loop {
-            let s = console::prompt(&format!("{iface_label} interface name:"), default_iface);
+            let s = console::prompt(&format!("{iface_label} interface name:"), default_iface)?;
             let s = s.trim().to_string();
             if s.is_empty() {
                 console::warn("Interface name required — skipping this VIP.");
@@ -681,7 +683,7 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
             continue;
         }
         let vip_str =
-            console::prompt_required(&format!("Virtual IP on {interface} (e.g. 192.0.2.1):"));
+            console::prompt_required(&format!("Virtual IP on {interface} (e.g. 192.0.2.1):"))?;
         let virtual_ip = match vip_str.parse::<std::net::IpAddr>() {
             Ok(ip) => ip,
             Err(_) => {
@@ -690,14 +692,14 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
             }
         };
         let prefix: u8 = loop {
-            let s = console::prompt("Prefix length (e.g. 24):", "24");
+            let s = console::prompt("Prefix length (e.g. 24):", "24")?;
             match s.parse::<u8>() {
                 Ok(p) if p <= 128 => break p,
                 _ => console::warn("Enter a valid prefix length (0-32 for IPv4, 0-128 for IPv6)."),
             }
         };
         let vhid: u8 = loop {
-            let s = console::prompt_required("CARP VHID (1-255, must match peer):");
+            let s = console::prompt_required("CARP VHID (1-255, must match peer):")?;
             match s.parse::<u8>() {
                 Ok(v) if v >= 1 => break v,
                 _ => console::warn("VHID must be 1-255."),
@@ -711,13 +713,13 @@ fn ask_cluster(config: &SetupConfig) -> Option<WizardClusterConfig> {
         });
     }
 
-    Some(WizardClusterConfig {
+    Ok(Some(WizardClusterConfig {
         role,
         pfsync_iface,
         peer_address,
         vips,
         password,
-    })
+    }))
 }
 
 /// Fetch SSH public keys from a GitHub user's profile.

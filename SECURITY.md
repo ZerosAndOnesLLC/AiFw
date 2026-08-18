@@ -52,3 +52,13 @@ This policy covers the AiFw firewall software, including:
 - `aifw-ui` (web interface)
 - `aifw-setup` (setup wizard)
 - FreeBSD ISO/IMG build artifacts
+
+## Secrets in the repository
+
+Nothing in this repository is a live credential. Verified 2026-08-17 (#455) against every tracked file and the full history (`git log --all -S` for private-key headers and AWS / GitHub / Slack / Google token prefixes; every file ever added, filtered for key/env/credential names):
+
+- **Intentionally checked in:** `freebsd/overlay/usr/local/etc/aifw/update-signing.pub` — the minisign *public* key the in-app updater verifies release tarballs with. Its private half lives outside the repo.
+- **Fixtures only:** the strings `-----BEGIN PRIVATE KEY-----\nabc\n…` in `aifw-common`/`aifw-core` IPsec tests, `TestPass123`-style passwords in API tests, and `AKIA...` / `CHANGE-ME` placeholders in docs and the setup seed template. None are usable.
+- **Ignored, never tracked:** `.env`, `*.pem`, `*.key`, key material and any local `status.md` (see `.gitignore`).
+
+Runtime secrets live outside the tree: `/var/db/aifw/secrets.key` (AES-256-GCM master key for values in the database), `/var/db/aifw/jwt.key`, and the appliance TLS key under `/usr/local/etc/aifw/tls/`. If you find anything that looks like a real credential in the repo, report it through the channel above.
