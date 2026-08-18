@@ -193,19 +193,9 @@ pub async fn create_rule(
     rule.schedule_id = req.schedule_id;
     rule.gateway = validate_gateway_ref(&state, req.gateway).await?;
 
-    // Validate label and interface to prevent pf rule injection
-    if let Some(ref iface) = rule.interface {
-        aifw_core::validation::validate_interface_name(&iface.0).map_err(|_| bad_request())?;
-    }
-    if let Some(ref label) = rule.label {
-        aifw_core::validation::validate_label(label).map_err(|_| bad_request())?;
-    }
-
-    let rule = state
-        .rule_engine
-        .add(rule)
-        .await
-        .map_err(|_| bad_request())?;
+    // Interface/label/port/priority checks live in RuleEngine::add
+    // (`validate_rule`), which every path — API, CLI, restore — goes through.
+    let rule = state.rule_engine.add(rule).await.map_err(engine_error)?;
     state.set_pending(|p| p.firewall = true).await;
     Ok((StatusCode::CREATED, Json(ApiResponse { data: rule })))
 }
@@ -286,19 +276,11 @@ pub async fn update_rule(
     rule.gateway = validate_gateway_ref(&state, req.gateway).await?;
     rule.updated_at = chrono::Utc::now();
 
-    // Validate label and interface to prevent pf rule injection
-    if let Some(ref iface) = rule.interface {
-        aifw_core::validation::validate_interface_name(&iface.0).map_err(|_| bad_request())?;
-    }
-    if let Some(ref label) = rule.label {
-        aifw_core::validation::validate_label(label).map_err(|_| bad_request())?;
-    }
-
     state
         .rule_engine
         .update(rule.clone())
         .await
-        .map_err(|_| internal())?;
+        .map_err(engine_error)?;
     state.set_pending(|p| p.firewall = true).await;
     Ok(Json(ApiResponse { data: rule }))
 }

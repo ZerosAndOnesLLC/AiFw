@@ -537,3 +537,32 @@ async fn test_rule_gateway_round_trip_and_validation() {
     let body: Value = resp.json();
     assert!(body["data"]["gateway"].is_null());
 }
+
+/// #194: engines own validation. Handlers translate request → domain type
+/// and rely on `add`/`update` re-validating, mapped through
+/// `routes::engine_error`. This keeps a handler from growing its own copy
+/// of a check (which drifts) or skipping one (which weakens an invariant).
+#[test]
+fn handlers_do_not_call_core_validation_directly() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut hits = Vec::new();
+    for rel in [
+        "routes/rules.rs",
+        "routes/nat.rs",
+        "routes/geoip.rs",
+        "routes/vpn.rs",
+        "aliases.rs",
+    ] {
+        let text = std::fs::read_to_string(root.join(rel)).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            if line.contains("aifw_core::validation::") && !line.trim_start().starts_with("//") {
+                hits.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "handler-side validation found — move it into the engine's add/update (#194):\n{}",
+        hits.join("\n")
+    );
+}

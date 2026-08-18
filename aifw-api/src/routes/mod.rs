@@ -115,6 +115,24 @@ pub(super) fn bad_request() -> StatusCode {
     StatusCode::BAD_REQUEST
 }
 
+/// Map an engine error to a status (#194): engines own validation, so a
+/// `Validation` error is the caller's fault (400), `NotFound` is 404, and
+/// anything else is a server-side failure — logged, 500. Handlers no longer
+/// pre-validate what the engine's `add`/`update` re-checks anyway.
+pub(crate) fn engine_error(e: aifw_common::AifwError) -> StatusCode {
+    match e {
+        aifw_common::AifwError::Validation(msg) => {
+            tracing::debug!(error = %msg, "request rejected by engine validation");
+            StatusCode::BAD_REQUEST
+        }
+        aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
+        other => {
+            tracing::error!(error = %other, "engine call failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 pub(super) fn internal() -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }

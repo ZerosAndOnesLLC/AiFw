@@ -80,6 +80,8 @@ Each engine has its own `migrate()` method that creates its SQLite tables. Migra
 
 **Verb convention (#199).** An engine that manages one resource uses bare verbs: `add` / `get` / `list` / `update` / `delete` (`RuleEngine`, `NatEngine`, `GeoIpEngine`, `AliasEngine`, the multiwan engines). An engine that manages several resources uses `verb_<noun>`: `add_wg_tunnel`, `list_carp_vips`, `update_queue`. Applying to pf is `apply`/`apply_rules`; clearing is `flush`/`flush_rules`.
 
+**Validation (#194).** Engines own validation: `add`/`update` re-validate every write (`validate_rule`, `validate_nat_rule`, `GeoIpEngine::validate`, `AliasEngine::validate_name`, `WgTunnel::validate_addresses`…), so API, CLI, restore and cluster snapshots share one set of invariants. Handlers only translate request → domain type and map engine errors with `routes::engine_error` (Validation → 400, NotFound → 404, else 500); a guard test fails if a handler calls `aifw_core::validation::` itself.
+
 **Anchor convention (#198).** All pf anchor names live in `aifw_common::anchors` (`FILTER = "aifw"`, `NAT = "aifw-nat"`, `VPN`, `GEOIP`, `TLS`, `HA`, `PBR`, `MWAN_LEAK`, `MWAN_REPLY`, `RATELIMIT`; `FILTER_HOOKS` is the pf.conf hook list in evaluation order). Engines default to their constant in `new()`; `with_anchor()` exists for tests, callers don't pass anchors. A new engine adds its `aifw-<domain>` constant there and to `FILTER_HOOKS` so setup writes the hook and the daemon heals it.
 
 ### Secrets at Rest (#298)
