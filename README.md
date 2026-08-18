@@ -230,6 +230,25 @@ sh scripts/install-hooks.sh   # pre-commit runs fmt --check + clippy -D warnings
 
 The hook mirrors CI's fast gates; skip a single run with `git commit --no-verify`.
 
+### Runtime tuning & diagnostics
+
+The long-running binaries (`aifw-api`, `aifw-daemon`, `aifw-ids`) build their
+tokio runtime explicitly with a floor of 4 worker threads (`max(4, cores)`,
+capped at 32) so a 2-vCPU appliance's periodic tasks don't fully subscribe the
+scheduler; override with `AIFW_WORKER_THREADS=<n>`. They use
+[mimalloc](https://github.com/microsoft/mimalloc) as the process allocator
+(cargo feature `mimalloc`, on by default; `--no-default-features` builds with
+the system malloc). `GET /api/v1/metrics` reports the API runtime's
+`worker_threads`, `alive_tasks` and `global_queue_depth` — a queue depth that
+stays above zero means the workers can't keep up. For task-level diagnostics
+build with tokio-console support and pass `--tokio-console`
+(serves on 127.0.0.1:6669):
+
+```bash
+RUSTFLAGS="--cfg tokio_unstable" cargo build --release -p aifw-api --features tokio-console
+aifw-api --tokio-console ...   # then: tokio-console http://127.0.0.1:6669
+```
+
 ## Target Environment
 
 - **OS**: FreeBSD 15.x

@@ -159,7 +159,7 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 |---|---|---|
 | `GET` | `/api/v1/status` | Daemon + pf health snapshot |
 | `GET` | `/api/v1/about` | Build / version / feature flags |
-| `GET` | `/api/v1/metrics` | Current metrics snapshot |
+| `GET` | `/api/v1/metrics` | Current metrics snapshot (pf counters, rule counts, API tokio runtime: workers / alive tasks / global queue depth) |
 | `GET` | `/api/v1/metrics/list` | Available metric series names |
 | `GET` | `/api/v1/metrics/series` | Time-series data for one or more metrics |
 | `GET` | `/api/v1/connections` | Live pf state table (paginated) |
