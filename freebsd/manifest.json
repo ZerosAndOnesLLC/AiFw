@@ -15,7 +15,7 @@
       "name": "TrafficCop",
       "repo": "ZerosAndOnesLLC/TrafficCop",
       "crate": "trafficcop",
-      "version": "1.4.11",
+      "version": "1.4.12",
       "binaries": ["trafficcop"]
     },
     {
@@ -36,7 +36,7 @@
       "name": "rTIME",
       "repo": "ZerosAndOnesLLC/rTIME",
       "crate": "rtimed",
-      "version": "0.14.1",
+      "version": "0.15.0",
       "binaries": ["rtime"]
     }
   ],
