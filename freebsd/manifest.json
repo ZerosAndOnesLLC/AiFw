@@ -15,7 +15,7 @@
       "name": "TrafficCop",
       "repo": "ZerosAndOnesLLC/TrafficCop",
       "crate": "trafficcop",
-      "version": "1.4.11",
+      "version": "1.4.12",
       "binaries": ["trafficcop"]
     },
     {
