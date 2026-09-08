@@ -61,7 +61,7 @@ axum = { version = "0.8", features = ["ws", "multipart"] }
 tower = { version = "0.5", default-features = false }
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "set-header", "compression-gzip", "compression-br"] }
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
-argon2 = { version = "0.5", features = ["std"] }
+argon2 = "0.6"
 # tokio base carries no runtime features (PERF-H3 #347). Every crate — library
 # and binary alike — opts into exactly the features it uses (no crate uses
 # "full"). Cargo unions features per build graph, so validate a library crate's
@@ -69,7 +69,7 @@ argon2 = { version = "0.5", features = ["std"] }
 # by the workspace union build + test suite.
 tokio = { version = "1" }
 mimalloc = { version = "0.1", default-features = false }
-console-subscriber = "0.4"
+console-subscriber = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
@@ -97,7 +97,8 @@ url = "2"
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 getrandom = "0.4"
 aws-lc-rs = "1"
-base64 = "0.22"
+# 0.23 turns on an `unsafe` SIMD engine by default; stick to the safe scalar one.
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 
 # Workspace-wide clippy lint posture. Stylistic-only lints are allowed —
 # documented engine constructors legitimately have many parameters, the

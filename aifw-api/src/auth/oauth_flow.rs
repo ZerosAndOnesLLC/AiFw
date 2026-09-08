@@ -82,11 +82,11 @@ impl FlowError {
 // ============================================================
 
 /// A fresh PKCE verifier (43 base64url chars from 32 random bytes).
-pub fn new_code_verifier() -> String {
+/// Fails closed if the OS CSPRNG is unavailable.
+pub fn new_code_verifier() -> anyhow::Result<String> {
     let mut bytes = [0u8; 32];
-    use argon2::password_hash::rand_core::{OsRng, RngCore};
-    OsRng.fill_bytes(&mut bytes);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("OS CSPRNG unavailable: {e}"))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
 /// S256 challenge for a verifier.
@@ -609,7 +609,7 @@ mod tests {
             code_challenge(v),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
-        let fresh = new_code_verifier();
+        let fresh = new_code_verifier().unwrap();
         assert!(
             fresh.len() >= 43
                 && fresh

@@ -377,7 +377,8 @@ fn md5_compute(message: &[u8]) -> [u8; 16] {
     }
     msg.extend_from_slice(&orig_len_bits.to_le_bytes());
 
-    for chunk in msg.chunks_exact(64) {
+    // Padding above makes `msg.len()` a multiple of 64, so the remainder is empty.
+    for chunk in msg.as_chunks::<64>().0 {
         let mut m = [0u32; 16];
         for (i, word) in m.iter_mut().enumerate() {
             *word = u32::from_le_bytes([

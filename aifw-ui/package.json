@@ -9,25 +9,25 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@tanstack/react-virtual": "^3.14.6",
-    "lucide-react": "^1.20.0",
-    "next": "^16.2.9",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "@tanstack/react-virtual": "^3.14.11",
+    "lucide-react": "^1.43.0",
+    "next": "^16.3.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.1",
-    "@types/node": "^26.2.0",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.5.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.2.9",
-    "postcss": "^8.5.15",
-    "tailwindcss": "^4.3.1",
+    "eslint-config-next": "^16.3.4",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3"
   },
   "overrides": {
-    "postcss": "^8.5.15",
-    "sharp": "^0.35.3"
+    "postcss": "^8.5.28",
+    "sharp": "^0.35.4"
   }
 }

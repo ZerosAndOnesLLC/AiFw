@@ -573,21 +573,21 @@ async fn generate_unbound_conf(pool: &SqlitePool) -> String {
     let threads = c.num_threads.max(1) as u32;
     let outgoing_range = ((1024u32.saturating_sub(128)) / threads).max(64);
     let mut server_lines = vec![
-        format!("    username: unbound"),
-        format!("    directory: /var/unbound"),
-        format!("    chroot: \"\""),
-        format!("    pidfile: /var/run/local_unbound.pid"),
-        format!("    auto-trust-anchor-file: /var/unbound/root.key"),
+        "    username: unbound".to_string(),
+        "    directory: /var/unbound".to_string(),
+        "    chroot: \"\"".to_string(),
+        "    pidfile: /var/run/local_unbound.pid".to_string(),
+        "    auto-trust-anchor-file: /var/unbound/root.key".to_string(),
         format!("    port: {}", c.port),
-        format!("    do-daemonize: yes"),
+        "    do-daemonize: yes".to_string(),
         format!("    outgoing-range: {}", outgoing_range),
         interfaces,
-        format!("    access-control: 0.0.0.0/0 allow"),
-        format!("    access-control: ::0/0 allow"),
-        format!("    do-ip4: yes"),
-        format!("    do-ip6: yes"),
-        format!("    do-udp: yes"),
-        format!("    do-tcp: yes"),
+        "    access-control: 0.0.0.0/0 allow".to_string(),
+        "    access-control: ::0/0 allow".to_string(),
+        "    do-ip4: yes".to_string(),
+        "    do-ip6: yes".to_string(),
+        "    do-udp: yes".to_string(),
+        "    do-tcp: yes".to_string(),
         format!(
             "    hide-identity: {}",
             if c.hide_identity { "yes" } else { "no" }
