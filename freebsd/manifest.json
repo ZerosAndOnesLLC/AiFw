@@ -15,21 +15,21 @@
       "name": "TrafficCop",
       "repo": "ZerosAndOnesLLC/TrafficCop",
       "crate": "trafficcop",
-      "version": "1.4.12",
+      "version": "1.5.0",
       "binaries": ["trafficcop"]
     },
     {
       "name": "rDHCP",
       "repo": "ZerosAndOnesLLC/rDHCP",
       "crate": "rdhcpd",
-      "version": "0.16.0",
+      "version": "0.16.1",
       "binaries": ["rdhcpd"]
     },
     {
       "name": "rDNS",
       "repo": "ZerosAndOnesLLC/rDNS",
       "crate": "rdns-server",
-      "version": "1.17.21",
+      "version": "1.17.22",
       "binaries": ["rdns", "rdns-control"]
     },
     {

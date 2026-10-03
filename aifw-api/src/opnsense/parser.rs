@@ -119,9 +119,7 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
             | Ok(Event::PI(_))
             | Ok(Event::DocType(_)) => {}
             Ok(Event::Start(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| ParseError::Malformed(err.to_string()))?
-                    .to_string();
+                let name = e.name().as_ref().to_string();
                 stack.push(Node {
                     name,
                     ..Default::default()
@@ -139,9 +137,7 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                     .push(node);
             }
             Ok(Event::Empty(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| ParseError::Malformed(err.to_string()))?
-                    .to_string();
+                let name = e.name().as_ref().to_string();
                 stack
                     .last_mut()
                     .expect("stack non-empty (root pushed at function entry)")
@@ -152,10 +148,7 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                     });
             }
             Ok(Event::Text(t)) => {
-                let s = t
-                    .xml10_content()
-                    .map_err(|err| ParseError::Malformed(err.to_string()))?
-                    .into_owned();
+                let s = t.xml10_content().into_owned();
                 let trimmed = s.trim();
                 if !trimmed.is_empty() {
                     let last = stack
@@ -180,9 +173,7 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
             Ok(Event::CData(c)) => {
                 // CDATA contents are preserved as-is; OPNsense uses CDATA in
                 // a few places (notes, scripts) and we should not lose them.
-                let s = std::str::from_utf8(c.as_ref())
-                    .map_err(|err| ParseError::Malformed(err.to_string()))?
-                    .to_string();
+                let s = c.as_ref().to_string();
                 let last = stack
                     .last_mut()
                     .expect("stack non-empty (root pushed at function entry)");
@@ -200,9 +191,7 @@ fn parse_dom(xml: &str) -> Result<Node, ParseError> {
                 let resolved = match r.resolve_char_ref() {
                     Ok(Some(ch)) => ch.to_string(),
                     Ok(None) => {
-                        let name = r
-                            .decode()
-                            .map_err(|err| ParseError::Malformed(err.to_string()))?;
+                        let name = r.xml10_content();
                         match name.as_ref() {
                             "amp" => "&".to_string(),
                             "lt" => "<".to_string(),

@@ -11,10 +11,7 @@
 //! Parameters are the OWASP 2023 recommendation for Argon2id:
 //! `m = 19 456 KiB (≈19 MiB), t = 2, p = 1`.
 
-use argon2::{
-    Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version,
-    password_hash::{SaltString, rand_core::OsRng},
-};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 
 use crate::error::{AifwError, Result};
 
@@ -42,11 +39,11 @@ pub fn hasher() -> Argon2<'static> {
 }
 
 /// Hash `password` (or any secret: API key, refresh token, recovery code)
-/// with a fresh random salt. Returns the PHC-encoded string.
+/// with a fresh random salt (16 OS-CSPRNG bytes, drawn by `password-hash`
+/// via `getrandom`). Returns the PHC-encoded string.
 pub fn hash_password(password: &str) -> Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
     hasher()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(|e| AifwError::Crypto(format!("argon2 hash failed: {e}")))
 }
@@ -70,7 +67,9 @@ mod tests {
 
     /// Random per-test secret so no credential literal lives in the tree.
     fn random_secret() -> String {
-        SaltString::generate(&mut OsRng).as_str().to_string()
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("OS CSPRNG available in tests");
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]
@@ -100,13 +99,12 @@ mod tests {
         // keep working so existing accounts survive the upgrade — the
         // params come from the PHC string, not from `hasher()`.
         let pw = random_secret();
-        let salt = SaltString::generate(&mut OsRng);
         let other = Argon2::new(
             Algorithm::Argon2id,
             Version::V0x13,
             Params::new(4096, 3, 1, None).unwrap(),
         )
-        .hash_password(pw.as_bytes(), &salt)
+        .hash_password(pw.as_bytes())
         .unwrap()
         .to_string();
         assert!(!other.starts_with(ARGON2_PHC_PREFIX), "got: {other}");

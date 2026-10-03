@@ -306,9 +306,15 @@ pub async fn totp_setup(
         .await?
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    let secret = auth::totp::generate_secret();
+    let secret = auth::totp::generate_secret().map_err(|e| {
+        tracing::error!("totp secret generation failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let uri = auth::totp::provisioning_uri(&secret, &user.username, "AiFw");
-    let recovery_codes = auth::totp::generate_recovery_codes(8);
+    let recovery_codes = auth::totp::generate_recovery_codes(8).map_err(|e| {
+        tracing::error!("recovery code generation failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // Save secret (not yet enabled — needs verification)
     auth::save_totp_secret(&state.pool, &user_id, &secret).await?;
@@ -591,7 +597,10 @@ pub async fn oauth_authorize(
         .ok_or(bad_request())?;
     let redirect_uri = format!("{base}{}", flow::callback_path(&provider.name));
     let oauth_state = Uuid::new_v4().to_string();
-    let verifier = flow::new_code_verifier();
+    let verifier = flow::new_code_verifier().map_err(|e| {
+        tracing::error!("pkce verifier generation failed: {e}");
+        internal()
+    })?;
     // SEC-H9: bind this state nonce so the callback can prove it originated
     // from an authorize request this server issued; the PKCE verifier and
     // redirect URI ride along so the exchange repeats them exactly.

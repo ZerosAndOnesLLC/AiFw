@@ -35,7 +35,7 @@ rustls-pemfile = { workspace = true }
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 rusty-s3 = "0.10"
 aws-sigv4 = { version = "1", default-features = false, features = ["sign-http", "http1"] }
-quick-xml = { version = "0.41", features = ["serialize"] }
+quick-xml = { version = "0.42", features = ["serialize"] }
 url = "2"
 
 [dev-dependencies]

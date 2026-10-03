@@ -6,12 +6,12 @@ const DIGITS: u32 = 6;
 const PERIOD: u64 = 30;
 const TOLERANCE: u64 = 1; // ±1 time step
 
-/// Generate a random TOTP secret (20 bytes = 160 bits, base32 encoded)
-pub fn generate_secret() -> String {
-    use argon2::password_hash::rand_core::{OsRng, RngCore};
+/// Generate a random TOTP secret (20 bytes = 160 bits, base32 encoded).
+/// Fails closed if the OS CSPRNG is unavailable.
+pub fn generate_secret() -> anyhow::Result<String> {
     let mut bytes = [0u8; 20];
-    OsRng.fill_bytes(&mut bytes);
-    base32_encode(&bytes)
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("OS CSPRNG unavailable: {e}"))?;
+    Ok(base32_encode(&bytes))
 }
 
 /// Generate a provisioning URI for QR code generation
@@ -103,18 +103,19 @@ const RECOVERY_CODE_BYTES: usize = 10;
 
 /// Generate a set of one-time recovery codes, each 80 random bits from
 /// the OS RNG formatted as five groups of four upper-case hex digits
-/// (`XXXX-XXXX-XXXX-XXXX-XXXX`, 24 characters).
-pub fn generate_recovery_codes(count: usize) -> Vec<String> {
-    use argon2::password_hash::rand_core::{OsRng, RngCore};
+/// (`XXXX-XXXX-XXXX-XXXX-XXXX`, 24 characters). Fails closed if the OS
+/// CSPRNG is unavailable.
+pub fn generate_recovery_codes(count: usize) -> anyhow::Result<Vec<String>> {
     (0..count)
         .map(|_| {
             let mut bytes = [0u8; RECOVERY_CODE_BYTES];
-            OsRng.fill_bytes(&mut bytes);
-            bytes
+            getrandom::fill(&mut bytes)
+                .map_err(|e| anyhow::anyhow!("OS CSPRNG unavailable: {e}"))?;
+            Ok(bytes
                 .chunks(2)
                 .map(|pair| format!("{:02X}{:02X}", pair[0], pair[1]))
                 .collect::<Vec<_>>()
-                .join("-")
+                .join("-"))
         })
         .collect()
 }
@@ -320,8 +321,8 @@ mod tests {
 
     #[test]
     fn test_generate_secret() {
-        let s1 = generate_secret();
-        let s2 = generate_secret();
+        let s1 = generate_secret().unwrap();
+        let s2 = generate_secret().unwrap();
         assert!(!s1.is_empty());
         assert_ne!(s1, s2);
         // Should be valid base32
@@ -339,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_generate_and_verify() {
-        let secret = generate_secret();
+        let secret = generate_secret().unwrap();
         let code = generate_current(&secret).unwrap();
         assert_eq!(code.len(), 6);
         assert!(verify(&secret, &code));
@@ -347,13 +348,13 @@ mod tests {
 
     #[test]
     fn test_verify_wrong_code() {
-        let secret = generate_secret();
+        let secret = generate_secret().unwrap();
         assert!(!verify(&secret, "000000"));
     }
 
     #[test]
     fn test_verify_bad_format() {
-        let secret = generate_secret();
+        let secret = generate_secret().unwrap();
         assert!(!verify(&secret, "12345")); // too short
         assert!(!verify(&secret, "1234567")); // too long
         assert!(!verify(&secret, "abcdef")); // not numeric
@@ -366,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_recovery_codes() {
-        let codes = generate_recovery_codes(8);
+        let codes = generate_recovery_codes(8).unwrap();
         assert_eq!(codes.len(), 8);
         // All unique
         let mut unique = codes.clone();

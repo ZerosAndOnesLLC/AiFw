@@ -32,6 +32,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
+getrandom = { workspace = true }
 anyhow = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
@@ -43,7 +44,7 @@ url = { workspace = true }
 base64 = { workspace = true }
 async-stream = "0.3"
 futures-util = "0.3"
-redis = { version = "1.6", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.7", features = ["tokio-comp", "connection-manager"] }
 clap = { workspace = true, features = ["env"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 # Already in the tree via tower-http's compression backends; used to
@@ -56,7 +57,7 @@ tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 ip_network = "0.4"
-quick-xml = "0.41"
+quick-xml = "0.42"
 thiserror = { workspace = true }
 
 [dev-dependencies]
