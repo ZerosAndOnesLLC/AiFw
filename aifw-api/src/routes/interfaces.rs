@@ -168,6 +168,9 @@ pub struct InterfaceStatsResponse {
 pub async fn get_interface_stats(
     Path(name): Path<String>,
 ) -> Result<Json<ApiResponse<InterfaceStatsResponse>>, StatusCode> {
+    if !crate::iface::validate_iface_name(&name) {
+        return Err(bad_request());
+    }
     // Use netstat -I <iface> -b to get byte counters
     let output = tokio::process::Command::new("netstat")
         .args(["-I", &name, "-b", "-n"])

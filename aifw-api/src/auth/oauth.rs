@@ -41,6 +41,25 @@ pub struct OAuthProvider {
     pub created_at: String,
 }
 
+/// Whether a generic-OIDC endpoint URL is acceptable: `https://` anywhere, or
+/// plain `http://` only to a loopback host (local IdP testing). Parsed, not
+/// prefix-matched, so `http://localhost.example.com` is rejected.
+pub fn is_allowed_endpoint(raw: &str) -> bool {
+    let Ok(u) = url::Url::parse(raw) else {
+        return false;
+    };
+    match u.scheme() {
+        "https" => u.host().is_some(),
+        "http" => match u.host() {
+            Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
 impl OAuthProvider {
     /// Create a Google provider with well-known endpoints
     pub fn google(client_id: &str, client_secret: &str) -> Self {
@@ -290,4 +309,23 @@ pub struct OAuthSettings {
     /// URI; empty ⇒ derived from the request `Host`.
     #[serde(default)]
     pub public_url: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_allowed_endpoint;
+
+    #[test]
+    fn endpoint_policy() {
+        assert!(is_allowed_endpoint("https://idp.example.com/token"));
+        assert!(is_allowed_endpoint("http://localhost:8080/token"));
+        assert!(is_allowed_endpoint("http://127.0.0.1/token"));
+        assert!(is_allowed_endpoint("http://[::1]/token"));
+        assert!(!is_allowed_endpoint("http://localhost.example.com/token"));
+        assert!(!is_allowed_endpoint("http://127.example.com/token"));
+        assert!(!is_allowed_endpoint("http://idp.example.com/token"));
+        assert!(!is_allowed_endpoint("ftp://idp.example.com/token"));
+        assert!(!is_allowed_endpoint("not a url"));
+        assert!(!is_allowed_endpoint(""));
+    }
 }

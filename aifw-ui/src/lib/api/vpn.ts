@@ -13,7 +13,6 @@ export interface WgTunnel {
   address: string;
   /** IPv6 tunnel address for dual-stack tunnels (#471); null = IPv4-only */
   address6: string | null;
-  private_key: string;
   public_key: string;
   dns: string | null;
   mtu: number | null;
