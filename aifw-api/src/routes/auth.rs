@@ -496,16 +496,13 @@ pub async fn create_oauth_provider(
     };
     provider.name = name;
     if provider.provider_type == auth::oauth::OAuthProviderType::Oidc {
-        // Generic OIDC needs all three endpoints, all https.
+        // Generic OIDC needs all three endpoints, all https (http only to loopback).
         for u in [
             &provider.auth_url,
             &provider.token_url,
             &provider.userinfo_url,
         ] {
-            if !(u.starts_with("https://")
-                || u.starts_with("http://localhost")
-                || u.starts_with("http://127."))
-            {
+            if !auth::oauth::is_allowed_endpoint(u) {
                 return Err(bad_request());
             }
         }

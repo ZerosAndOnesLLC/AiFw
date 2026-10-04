@@ -822,9 +822,11 @@ async fn get_iface_ipv4s(name: &str) -> Vec<String> {
 
 /// Run a command safely with direct args (no shell interpolation).
 /// Validate interface name — alphanumeric, underscore, hyphen, dot only. Max 15 chars.
-fn validate_iface_name(name: &str) -> bool {
+/// Must not start with `-`, so it can never be parsed as a command-line flag.
+pub(crate) fn validate_iface_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 15
+        && !name.starts_with('-')
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')

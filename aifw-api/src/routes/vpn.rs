@@ -10,6 +10,8 @@ pub struct CreateWgTunnelRequest {
     /// Optional IPv6 tunnel address for dual-stack tunnels (#471),
     /// e.g. `fd00:a1f0::1/64`. Empty/omitted means IPv4-only.
     pub address6: Option<String>,
+    /// Write-only (#691). Create: omitted/empty generates a keypair. Update:
+    /// omitted/empty keeps the stored key; a value replaces it.
     pub private_key: Option<String>,
     pub dns: Option<String>,
     pub mtu: Option<u16>,
@@ -27,6 +29,19 @@ fn parse_address6(raw: Option<&str>) -> Result<Option<Address>, StatusCode> {
     }
 }
 
+/// A caller-supplied private key; empty/whitespace means "not supplied".
+fn supplied_private_key(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Install a caller-supplied private key, re-deriving the public key so the
+/// stored pair is always related (#541).
+fn set_private_key(tunnel: &mut WgTunnel, pk: &str) -> Result<(), StatusCode> {
+    tunnel.public_key = aifw_common::vpn::derive_wg_pubkey(pk).map_err(|_| bad_request())?;
+    tunnel.private_key = pk.to_string();
+    Ok(())
+}
+
 pub async fn list_wg_tunnels(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<WgTunnel>>>, StatusCode> {
@@ -35,7 +50,9 @@ pub async fn list_wg_tunnels(
         .list_wg_tunnels()
         .await
         .map_err(|_| internal())?;
-    Ok(Json(ApiResponse { data: tunnels }))
+    Ok(Json(ApiResponse {
+        data: tunnels.iter().map(WgTunnel::redacted).collect(),
+    }))
 }
 
 pub async fn create_wg_tunnel(
@@ -59,10 +76,8 @@ pub async fn create_wg_tunnel(
     let iface_name = format!("wg{next_idx}");
     let mut tunnel = WgTunnel::new(req.name, Interface(iface_name), req.listen_port, address)
         .map_err(|_| internal())?;
-    if let Some(ref pk) = req.private_key {
-        // Re-derive the public key so the stored pair is always related (#541)
-        tunnel.public_key = aifw_common::vpn::derive_wg_pubkey(pk).map_err(|_| bad_request())?;
-        tunnel.private_key = pk.clone();
+    if let Some(pk) = supplied_private_key(req.private_key.as_deref()) {
+        set_private_key(&mut tunnel, pk)?;
     }
     tunnel.address6 = address6;
     tunnel.dns = req.dns;
@@ -79,7 +94,12 @@ pub async fn create_wg_tunnel(
         .add_wg_tunnel(tunnel)
         .await
         .map_err(|_| bad_request())?;
-    Ok((StatusCode::CREATED, Json(ApiResponse { data: tunnel })))
+    Ok((
+        StatusCode::CREATED,
+        Json(ApiResponse {
+            data: tunnel.redacted(),
+        }),
+    ))
 }
 
 pub async fn update_wg_tunnel(
@@ -97,6 +117,9 @@ pub async fn update_wg_tunnel(
     tunnel.listen_port = req.listen_port;
     tunnel.address = Address::parse(&req.address).map_err(|_| bad_request())?;
     tunnel.address6 = parse_address6(req.address6.as_deref())?;
+    if let Some(pk) = supplied_private_key(req.private_key.as_deref()) {
+        set_private_key(&mut tunnel, pk)?;
+    }
     tunnel.dns = req.dns;
     tunnel.mtu = req.mtu;
     tunnel.listen_interface = req.listen_interface;
@@ -112,7 +135,9 @@ pub async fn update_wg_tunnel(
         .update_wg_tunnel(tunnel)
         .await
         .map_err(|_| internal())?;
-    Ok(Json(ApiResponse { data: tunnel }))
+    Ok(Json(ApiResponse {
+        data: tunnel.redacted(),
+    }))
 }
 
 pub async fn delete_wg_tunnel(

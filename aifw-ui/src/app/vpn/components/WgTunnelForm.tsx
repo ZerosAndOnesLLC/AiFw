@@ -164,16 +164,16 @@ export function WgTunnelForm({
           <label className={labelCls}>
             Private Key (optional){" "}
             <Help title="Private key" size="xs">
-              Leave empty — a keypair is generated for you. Only
-              paste a key here when migrating an existing
-              WireGuard server so peers keep working.
+              {editingWgId
+                ? "Leave empty to keep the current key. The stored key is never shown. Pasting a new key replaces it and changes the public key, so every peer must be updated."
+                : "Leave empty — a keypair is generated for you. Only paste a key here when migrating an existing WireGuard server so peers keep working."}
             </Help>
           </label>
           <input
             type="password"
             value={wgForm.private_key}
             onChange={(e) => setWgForm((f) => ({ ...f, private_key: e.target.value }))}
-            placeholder="Auto-generated if empty"
+            placeholder={editingWgId ? "Unchanged if empty" : "Auto-generated if empty"}
             className={inputCls}
           />
         </div>

@@ -193,10 +193,28 @@ pub struct Identity {
     pub login: Option<String>,
 }
 
+/// Follow redirects (up to 10) but never from https to plain http — the
+/// token exchange carries the client secret and the userinfo calls carry
+/// the access token.
+fn no_downgrade_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let downgrade = attempt.url().scheme() != "https"
+            && attempt.previous().iter().any(|u| u.scheme() == "https");
+        if downgrade {
+            attempt.error("refusing https -> http redirect")
+        } else if attempt.previous().len() >= 10 {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 fn http() -> Result<reqwest::Client, FlowError> {
     reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .user_agent(concat!("AiFw/", env!("CARGO_PKG_VERSION")))
+        .redirect(no_downgrade_redirects())
         .build()
         .map_err(|e| {
             tracing::error!(error = %e, "oauth: http client build failed");

@@ -153,6 +153,67 @@ async fn wireguard_tunnel_and_peer_round_trip() {
 }
 
 #[tokio::test]
+async fn wireguard_private_key_is_write_only() {
+    // #691: the tunnel's private key must never come back from the API —
+    // not on create, list, or update — and an update without a key must
+    // keep the stored one.
+    let (server, _) = test_app().await;
+    let token = create_user_and_login(&server).await;
+    let no_key = |v: &Value| {
+        assert!(v.get("private_key").is_none(), "private key leaked: {v}");
+    };
+
+    let resp = server
+        .post("/api/v1/vpn/wg")
+        .authorization_bearer(&token)
+        .json(&json!({"name": "wg-keys", "listen_port": 51830, "address": "10.67.0.1/24"}))
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    let created: Value = resp.json();
+    no_key(&created["data"]);
+    let tid = created["data"]["id"].as_str().unwrap().to_string();
+    let pubkey = created["data"]["public_key"].as_str().unwrap().to_string();
+
+    let list: Value = server
+        .get("/api/v1/vpn/wg")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    for t in list["data"].as_array().unwrap() {
+        no_key(t);
+    }
+
+    // Update with an empty key keeps the keypair.
+    let resp = server
+        .put(&format!("/api/v1/vpn/wg/{tid}"))
+        .authorization_bearer(&token)
+        .json(&json!({"name": "wg-keys", "listen_port": 51830, "address": "10.67.0.1/24", "private_key": ""}))
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    let updated: Value = resp.json();
+    no_key(&updated["data"]);
+    assert_eq!(
+        updated["data"]["public_key"].as_str(),
+        Some(pubkey.as_str())
+    );
+
+    // Update with a new key replaces it and re-derives the public key.
+    let (new_priv, new_pub) = aifw_common::vpn::generate_wg_keypair().unwrap();
+    let resp = server
+        .put(&format!("/api/v1/vpn/wg/{tid}"))
+        .authorization_bearer(&token)
+        .json(&json!({"name": "wg-keys", "listen_port": 51830, "address": "10.67.0.1/24", "private_key": new_priv}))
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    let rotated: Value = resp.json();
+    no_key(&rotated["data"]);
+    assert_eq!(
+        rotated["data"]["public_key"].as_str(),
+        Some(new_pub.as_str())
+    );
+}
+
+#[tokio::test]
 async fn ids_endpoints_degrade_cleanly_without_the_ids_process() {
     // The IDS config and alert/suppression tables belong to the aifw-ids
     // process (IPC + its own schema). Without it the API must answer 503

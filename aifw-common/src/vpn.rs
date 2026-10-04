@@ -16,7 +16,10 @@ pub struct WgTunnel {
     pub name: String,
     /// WireGuard interface (e.g. "wg0")
     pub interface: Interface,
-    /// Server private key (base64)
+    /// Server private key (base64). Write-only over the API (#691): handlers
+    /// return [`WgTunnel::redacted`], whose blank key is omitted on the wire.
+    /// Backups and cluster snapshots serialize the real value.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub private_key: String,
     /// Server public key (base64), embedded in client configs
     pub public_key: String,
@@ -76,6 +79,14 @@ impl WgTunnel {
             created_at: now,
             updated_at: now,
         })
+    }
+
+    /// Copy with the private key blanked, safe for API responses (#691).
+    pub fn redacted(&self) -> Self {
+        Self {
+            private_key: String::new(),
+            ..self.clone()
+        }
     }
 
     /// Generate ifconfig commands to create the WireGuard interface.
