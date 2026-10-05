@@ -8,10 +8,12 @@ license.workspace = true
 aifw-common = { workspace = true }
 aifw-core = { workspace = true }
 aifw-pf = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time", "process"] }
 sqlx = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

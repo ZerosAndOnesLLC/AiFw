@@ -49,9 +49,9 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 - [x] Plugin: settings, KV restore, refresh scheduling, rules, status, actions
 
 ## Phase 6 — Notifier plugin
-- [ ] Channels: ntfy, Discord, Slack, generic webhook (HMAC), Telegram
-- [ ] Classification, filters, limiter/dedupe, delivery task, retries
-- [ ] Status + `test` action
+- [x] Channels: ntfy, Discord, Slack, generic webhook (HMAC), Telegram
+- [x] Classification, filters, limiter/dedupe, delivery task, retries
+- [x] Status + `test` action
 
 ## Phase 7 — UI
 - [ ] lib/api/plugins.ts, hooks/usePlugins.ts, hooks/usePlugin.ts, hooks/useAutoSave.ts
