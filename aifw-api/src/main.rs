@@ -1078,61 +1078,7 @@ async fn create_state_from_db(
 
     // Initialize plugin system
     let plugin_ctx = aifw_plugins::PluginContext::new(pf.clone());
-    let mut plugin_mgr = aifw_plugins::PluginManager::new(plugin_ctx);
-
-    // Register built-in plugins (disabled by default — user enables via UI)
-    let _ = plugin_mgr
-        .register(
-            Box::new(aifw_plugins::examples::LoggingPlugin::new()),
-            aifw_plugins::PluginConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        )
-        .await;
-    let _ = plugin_mgr
-        .register(
-            Box::new(aifw_plugins::examples::IpReputationPlugin::new()),
-            aifw_plugins::PluginConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        )
-        .await;
-    let _ = plugin_mgr
-        .register(
-            Box::new(aifw_plugins::examples::WebhookPlugin::new()),
-            aifw_plugins::PluginConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        )
-        .await;
-
-    // Load persisted plugin enable states from DB
-    let enabled_plugins: Vec<(String,)> =
-        sqlx::query_as("SELECT name FROM plugin_config WHERE enabled = 1")
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default();
-    for (name,) in &enabled_plugins {
-        // Unload disabled version and re-register as enabled, with the
-        // persisted settings — plugins only read settings in init() (#586).
-        let reg_name = plugins::canonical_builtin(name).unwrap_or(name);
-        let _ = plugin_mgr.unload(reg_name).await;
-        if let Some(p) = plugins::instantiate_builtin(name) {
-            let settings = plugins::load_settings(&pool, name).await;
-            let _ = plugin_mgr
-                .register(
-                    p,
-                    aifw_plugins::PluginConfig {
-                        enabled: true,
-                        settings,
-                    },
-                )
-                .await;
-        }
-    }
+    let plugin_mgr = aifw_plugins::PluginManager::new(plugin_ctx);
 
     // Seed the shadow counter with the boot-time running count (#488) —
     // previously it started at 0, so plugins enabled in the DB never

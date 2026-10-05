@@ -66,7 +66,6 @@
 | **RBAC (granular perms)** | Yes (34 perms) | Yes (ACL) | Partial (user/group) |
 | **Plugin System** | | | |
 | Package/plugin support | Yes | Yes | Yes |
-| WASM plugins | Yes | No | No |
 | **Architecture** | | | |
 | Web UI technology | React/Next.js | PHP/Phalcon | PHP |
 | REST API | Yes (Axum/Rust) | Yes | Partial (community) |
@@ -82,7 +81,6 @@
 | AI/ML threat detection (5 detectors) | Yes | No | No |
 | Sigma + YARA IDS rules | Yes | No | No |
 | NAT46 | Yes | No | No |
-| WASM plugin system | Yes | No | No |
 | WebSocket real-time metrics | Yes | No | No |
 | OAuth/SSO authentication | Yes | No | No |
 | Commit confirm with auto-rollback | Yes | No | No |

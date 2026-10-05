@@ -15,7 +15,6 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
-toml = "1.1"
 
 [lints]
 workspace = true

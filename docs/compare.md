@@ -124,7 +124,6 @@ A fair, honest comparison. Where a competitor is stronger, we say so. This matri
 
 <tr class="section-row"><td colspan="4">Plugins & extensibility</td></tr>
 <tr><td>Package/plugin system</td><td class="partial">beta</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-<tr><td>WASM plugins</td><td class="partial">planned</td><td class="no">—</td><td class="no">—</td></tr>
 
 <tr class="section-row"><td colspan="4">Architecture</td></tr>
 <tr><td>Web UI technology</td><td class="yes">React/Next.js</td><td class="partial">PHP</td><td class="partial">PHP</td></tr>

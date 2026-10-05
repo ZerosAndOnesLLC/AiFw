@@ -631,69 +631,6 @@ async fn build_update(state: &AppState) -> Result<BuiltUpdate, String> {
     // at boot, so this is an atomic ArcSwap load (no syscall, no clone).
     let conns = state.conntrack.snapshot();
 
-    // Dispatch plugin hooks for new/closed connections. Skipped entirely when
-    // no plugins are running — previously we paid for the HashSet diff
-    // (50k connections × format!() × 2) every tick even with zero plugins.
-    type ConnKey = (std::net::IpAddr, u16, std::net::IpAddr, u16);
-    {
-        use std::collections::HashSet;
-        // PERF-H17 (#361): snapshot the running plugins under a short read
-        // lock; all dispatching below happens without the manager lock.
-        let plugins = state.plugin_manager.read().await.dispatch_set();
-        if !plugins.is_empty() {
-            static PREV_CONNS: std::sync::OnceLock<tokio::sync::RwLock<HashSet<ConnKey>>> =
-                std::sync::OnceLock::new();
-            let prev_lock = PREV_CONNS.get_or_init(|| tokio::sync::RwLock::new(HashSet::new()));
-
-            let current_keys: HashSet<ConnKey> = conns
-                .iter()
-                .map(|c| (c.src_addr, c.src_port, c.dst_addr, c.dst_port))
-                .collect();
-            let prev_keys = prev_lock.read().await.clone();
-
-            for c in conns.iter() {
-                let key = (c.src_addr, c.src_port, c.dst_addr, c.dst_port);
-                if !prev_keys.contains(&key) {
-                    let event = aifw_plugins::HookEvent {
-                        hook: aifw_plugins::HookPoint::ConnectionNew,
-                        data: aifw_plugins::hooks::HookEventData::Connection {
-                            src_ip: c.src_addr,
-                            dst_ip: c.dst_addr,
-                            src_port: c.src_port,
-                            dst_port: c.dst_port,
-                            protocol: c.protocol.clone(),
-                            state: c.state.clone(),
-                        },
-                    };
-                    let actions = plugins.dispatch(&event).await;
-                    for action in actions {
-                        if let aifw_plugins::HookAction::AddToTable { ref table, ip } = action {
-                            let _ = state.pf.add_table_entry(table, ip).await;
-                        }
-                    }
-                }
-            }
-            // Closed connections — tuple keys mean no string-parse fallback.
-            for &(src_ip, src_port, dst_ip, dst_port) in &prev_keys {
-                if !current_keys.contains(&(src_ip, src_port, dst_ip, dst_port)) {
-                    let event = aifw_plugins::HookEvent {
-                        hook: aifw_plugins::HookPoint::ConnectionClosed,
-                        data: aifw_plugins::hooks::HookEventData::Connection {
-                            src_ip,
-                            dst_ip,
-                            src_port,
-                            dst_port,
-                            protocol: String::new(),
-                            state: "closed".to_string(),
-                        },
-                    };
-                    let _ = plugins.dispatch(&event).await;
-                }
-            }
-            *prev_lock.write().await = current_keys;
-        }
-    }
-
     let connections_total = conns.len();
     let all_connections: Vec<ConnectionPayload> = conns
         .iter()

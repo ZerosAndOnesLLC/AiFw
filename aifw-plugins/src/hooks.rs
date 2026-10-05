@@ -1,58 +1,53 @@
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-/// Where in the firewall pipeline the hook fires
+/// Where in the firewall the hook fires. Every variant here is wired to a
+/// real event source in aifw-api — hooks that nothing fires don't belong in
+/// this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookPoint {
-    /// Before rule evaluation — can modify or short-circuit
-    PreRule,
-    /// After rule evaluation — observe the result
+    /// A packet was logged by pf (rules with `log`), read from pflog0
     PostRule,
-    /// New connection established
-    ConnectionNew,
-    /// Connection state changed to established
-    ConnectionEstablished,
-    /// Connection closed/expired
-    ConnectionClosed,
-    /// Audit/log event emitted
+    /// An audit-log entry was written (rule/NAT/config changes)
     LogEvent,
-    /// API request received (before handler)
+    /// An authenticated API request is about to reach its handler
     ApiRequest,
-    /// DNS query received (rDNS integration)
-    DnsQuery,
-    /// DNS response sent
-    DnsResponse,
-    /// DHCP lease assigned (rDHCP integration)
-    DhcpLease,
-    /// VPN tunnel state change
+    /// A VPN tunnel or peer went up or down
     VpnEvent,
-    /// Scheduled timer tick (cron-like)
+    /// Periodic tick, once a minute
     Timer,
-    /// IDS alert fired (signature match, anomaly, etc.)
+    /// The IDS raised an alert
     IdsAlert,
-    /// IPS mode dropped a packet
-    IdsDrop,
+}
+
+impl HookPoint {
+    /// Every hook point, in display order.
+    pub const ALL: &'static [HookPoint] = &[
+        HookPoint::PostRule,
+        HookPoint::LogEvent,
+        HookPoint::ApiRequest,
+        HookPoint::VpnEvent,
+        HookPoint::Timer,
+        HookPoint::IdsAlert,
+    ];
+
+    /// Stable snake_case identifier (matches the serde form).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookPoint::PostRule => "post_rule",
+            HookPoint::LogEvent => "log_event",
+            HookPoint::ApiRequest => "api_request",
+            HookPoint::VpnEvent => "vpn_event",
+            HookPoint::Timer => "timer",
+            HookPoint::IdsAlert => "ids_alert",
+        }
+    }
 }
 
 impl std::fmt::Display for HookPoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HookPoint::PreRule => write!(f, "pre_rule"),
-            HookPoint::PostRule => write!(f, "post_rule"),
-            HookPoint::ConnectionNew => write!(f, "connection_new"),
-            HookPoint::ConnectionEstablished => write!(f, "connection_established"),
-            HookPoint::ConnectionClosed => write!(f, "connection_closed"),
-            HookPoint::LogEvent => write!(f, "log_event"),
-            HookPoint::ApiRequest => write!(f, "api_request"),
-            HookPoint::DnsQuery => write!(f, "dns_query"),
-            HookPoint::DnsResponse => write!(f, "dns_response"),
-            HookPoint::DhcpLease => write!(f, "dhcp_lease"),
-            HookPoint::VpnEvent => write!(f, "vpn_event"),
-            HookPoint::Timer => write!(f, "timer"),
-            HookPoint::IdsAlert => write!(f, "ids_alert"),
-            HookPoint::IdsDrop => write!(f, "ids_drop"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -69,7 +64,7 @@ pub struct HookEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum HookEventData {
-    /// Rule evaluation event
+    /// A pflog-logged packet (`PostRule`)
     Rule {
         /// Source IP, if known
         src_ip: Option<IpAddr>,
@@ -86,22 +81,7 @@ pub enum HookEventData {
         /// ID of the matched rule, if known
         rule_id: Option<String>,
     },
-    /// Connection event
-    Connection {
-        /// Source IP
-        src_ip: IpAddr,
-        /// Destination IP
-        dst_ip: IpAddr,
-        /// Source port
-        src_port: u16,
-        /// Destination port
-        dst_port: u16,
-        /// Protocol name (e.g. "tcp", "udp")
-        protocol: String,
-        /// Connection state (e.g. "new", "established", "closed")
-        state: String,
-    },
-    /// Log/audit event
+    /// Audit-log entry (`LogEvent`)
     Log {
         /// What happened (audit action name)
         action: String,
@@ -110,7 +90,7 @@ pub enum HookEventData {
         /// Component that emitted the event
         source: String,
     },
-    /// API request event
+    /// Authenticated API request (`ApiRequest`)
     Api {
         /// HTTP method
         method: String,
@@ -119,43 +99,21 @@ pub enum HookEventData {
         /// Client address, if known
         remote_addr: Option<String>,
     },
-    /// DNS query/response event
-    Dns {
-        /// Queried domain name
-        query_name: String,
-        /// Record type (e.g. "A", "AAAA", "TXT")
-        query_type: String,
-        /// Client IP that sent the query, if known
-        src_ip: Option<IpAddr>,
-        /// Response code (e.g. "NOERROR", "NXDOMAIN"); `None` for queries
-        response_code: Option<String>,
-    },
-    /// DHCP lease event
-    Dhcp {
-        /// Client MAC address
-        mac_address: String,
-        /// Leased IP address
-        ip_address: IpAddr,
-        /// Client-reported hostname, if any
-        hostname: Option<String>,
-        /// Lease lifecycle action
-        lease_action: String, // "assign", "renew", "release"
-    },
-    /// VPN event
+    /// VPN state change (`VpnEvent`)
     Vpn {
         /// Tunnel/interface name
         tunnel_name: String,
         /// Peer identifier, if known
         peer: Option<String>,
-        /// Tunnel state change
-        action: String, // "up", "down", "handshake"
+        /// Tunnel state change: "up" or "down"
+        action: String,
     },
-    /// Timer tick
+    /// Timer tick (`Timer`)
     Tick {
         /// Unix timestamp (seconds) of the tick
         timestamp: u64,
     },
-    /// IDS alert event
+    /// IDS alert (`IdsAlert`)
     IdsAlertEvent {
         /// Matched signature ID (SID), if signature-based
         signature_id: Option<u32>,
@@ -181,35 +139,30 @@ pub enum HookEventData {
 }
 
 /// Action returned by a plugin to influence firewall behavior
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 pub enum HookAction {
     /// Continue normal processing
     #[default]
     Continue,
-    /// Block/deny the packet or request
+    /// Reject the request. Only honored for `ApiRequest` (→ 403).
     Block,
-    /// Allow/pass the packet or request (skip further checks)
-    Allow,
-    /// Log this event with extra context
+    /// Write a line to the plugin's activity log
     Log(String),
-    /// Add an IP to a pf table (e.g., block list)
+    /// Add an IP to a pf table (must be a `plugin_`-prefixed table)
     AddToTable {
         /// Target pf table name
         table: String,
         /// Address to add
         ip: IpAddr,
     },
-    /// Remove an IP from a pf table
+    /// Remove an IP from a pf table (must be a `plugin_`-prefixed table)
     RemoveFromTable {
         /// Target pf table name
         table: String,
         /// Address to remove
         ip: IpAddr,
     },
-    /// Modify a value (e.g., rewrite DNS response)
-    Modify(String),
     /// Multiple actions
     Multi(Vec<HookAction>),
 }

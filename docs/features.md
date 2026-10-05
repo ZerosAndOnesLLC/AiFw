@@ -205,14 +205,12 @@ See the [backup &amp; migration guide]({{ '/docs/backup/' | relative_url }}) for
 <span class="callout-icon">⚠️</span>
 <div>
 <strong>Experimental</strong>
-The plugin system is under heavy development. APIs will change, built-in plugins haven't been production-tested, and WASM support is not yet implemented. Don't build production integrations yet.
+The plugin system is under heavy development. APIs may still change. Don't build production integrations yet.
 </div>
 </div>
 
 - Native Rust plugins via the `Plugin` trait
-- WASM plugin support (planned)
-- Pre/post rule hooks with event-based triggers
-- Plugin discovery from filesystem
+- Event hooks: timer, audit log, API requests, pflog, IDS alerts, VPN state
 - Per-plugin configuration and logs
 
 See the full [plugin system documentation]({{ '/plugins' | relative_url }}) for details.

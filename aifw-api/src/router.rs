@@ -642,7 +642,6 @@ pub(crate) fn plugins_read() -> Router<AppState> {
             "/api/v1/plugins/{name}/config",
             get(plugins::get_plugin_config),
         )
-        .route("/api/v1/plugins/discover", get(plugins::discover_plugins))
         .layer(middleware::from_fn(perm_check!(Permission::PluginsRead)))
 }
 
