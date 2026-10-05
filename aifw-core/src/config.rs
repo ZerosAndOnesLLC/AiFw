@@ -83,6 +83,10 @@ pub struct FirewallConfig {
     /// `log_rotation_config` table). `None` = backup predates the section.
     #[serde(default)]
     pub log_rotation: Option<crate::log_rotation::LogRotationConfig>,
+    /// Plugin configuration (the `plugin_config` table). `None` = backup
+    /// predates plugins; restore then leaves plugin config untouched.
+    #[serde(default)]
+    pub plugins: Option<Vec<PluginConfigEntry>>,
     /// KDF envelope present only while the config's secret fields are
     /// passphrase-wrapped for export (#313, `aifw_core::config_secrets`).
     /// Never set on a config that is applied to the box.
@@ -111,9 +115,28 @@ impl Default for FirewallConfig {
             dns_resolver: None,
             syslog: None,
             log_rotation: None,
+            plugins: None,
             secrets: None,
         }
     }
+}
+
+/// One plugin's configuration as captured in a config snapshot. Settings
+/// are validated against the plugin's schema when restored (aifw-plugins);
+/// secret values are plain strings here so the export paths can redact or
+/// passphrase-wrap them like every other secret (`config_secrets`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginConfigEntry {
+    /// Plugin name (registry key)
+    pub name: String,
+    /// Whether the plugin should run
+    pub enabled: bool,
+    /// Non-secret settings the operator set
+    #[serde(default)]
+    pub settings: serde_json::Map<String, serde_json::Value>,
+    /// Secret settings
+    #[serde(default)]
+    pub secrets: std::collections::BTreeMap<String, String>,
 }
 
 /// A named pf alias as captured in a config snapshot
@@ -269,6 +292,21 @@ impl FirewallConfig {
         }
         if let Some(l) = &self.log_rotation {
             l.validate().map_err(|e| format!("log_rotation: {e}"))?;
+        }
+        if let Some(plugins) = &self.plugins {
+            if plugins.len() > 256 {
+                return Err("plugins: too many entries".to_string());
+            }
+            for p in plugins {
+                let ok = !p.name.is_empty()
+                    && p.name.len() <= 48
+                    && p.name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+                if !ok {
+                    return Err(format!("plugins: invalid plugin name '{}'", p.name));
+                }
+            }
         }
         Ok(())
     }

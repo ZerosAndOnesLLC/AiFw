@@ -46,6 +46,11 @@ enum Commands {
         #[command(subcommand)]
         action: SyslogAction,
     },
+    /// View and configure built-in plugins (threat feeds, notifier, …)
+    Plugins {
+        #[command(subcommand)]
+        action: PluginsAction,
+    },
     /// Manage rotation of AiFw service logs (newsyslog policy)
     Logrotate {
         #[command(subcommand)]
@@ -829,6 +834,65 @@ EXAMPLES:
 }
 
 #[derive(Subcommand)]
+enum PluginsAction {
+    /// List built-in plugins and whether they are enabled
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a plugin's settings, their allowed values, and its actions
+    Show {
+        /// Plugin name (see `aifw plugins list`)
+        name: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable a plugin (its settings are checked first)
+    Enable {
+        /// Plugin name
+        name: String,
+    },
+    /// Disable a plugin; its pf rules and table contents are removed
+    Disable {
+        /// Plugin name
+        name: String,
+    },
+    /// Change settings — only the keys you pass change
+    #[command(after_help = "\
+EXAMPLES:
+    # Refresh threat feeds every 6 hours from two lists
+    aifw plugins set threat-feeds refresh_hours=6 feeds=spamhaus-drop,feodo
+
+    # Never block an upstream partner's network
+    aifw plugins set threat-feeds allowlist=198.51.100.0/24
+
+    # Send notifications to an ntfy topic (secrets go through --secret)
+    aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
+
+    # Back to the default
+    aifw plugins set threat-feeds --unset refresh_hours")]
+    Set {
+        /// Plugin name
+        name: String,
+        /// Settings as key=value (lists are comma-separated)
+        values: Vec<String>,
+        /// Secret settings as key=value (repeatable)
+        #[arg(long = "secret", value_name = "KEY=VALUE")]
+        secrets: Vec<String>,
+        /// Reset a setting to its default / clear a secret (repeatable)
+        #[arg(long = "unset", value_name = "KEY")]
+        unset: Vec<String>,
+    },
+    /// Forget all settings and secrets and disable the plugin
+    Reset {
+        /// Plugin name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum LogrotateAction {
     /// Show the rotation policy and the current size of every managed log
     Show {
@@ -1170,6 +1234,25 @@ async fn main() -> anyhow::Result<()> {
             IdsAction::Retention { days } => {
                 commands::ids_retention(&cli.db, days).await?;
             }
+        },
+        Commands::Plugins { action } => match action {
+            PluginsAction::List { json } => commands::plugins_list(&cli.db, json).await?,
+            PluginsAction::Show { name, json } => {
+                commands::plugins_show(&cli.db, &name, json).await?
+            }
+            PluginsAction::Enable { name } => {
+                commands::plugins_enable(&cli.db, &name, true).await?
+            }
+            PluginsAction::Disable { name } => {
+                commands::plugins_enable(&cli.db, &name, false).await?
+            }
+            PluginsAction::Set {
+                name,
+                values,
+                secrets,
+                unset,
+            } => commands::plugins_set(&cli.db, &name, &values, &secrets, &unset).await?,
+            PluginsAction::Reset { name } => commands::plugins_reset(&cli.db, &name).await?,
         },
         Commands::Logrotate { action } => match action {
             LogrotateAction::Show { json } => commands::logrotate_show(&cli.db, json).await?,

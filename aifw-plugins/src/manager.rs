@@ -459,11 +459,7 @@ impl PluginManager {
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> Result<PluginSummary> {
         let entry = self.entry(name)?;
         let mut cfg = self.store.load(name).await?;
-        if enabled {
-            let settings = schema::effective(&entry.schema, &cfg.values, &cfg.secrets);
-            (entry.factory)().validate_settings(&settings)?;
-        }
-        cfg.enabled = enabled;
+        cfg.set_enabled(&*(entry.factory)(), enabled)?;
         self.store.save(name, &cfg).await?;
         self.apply(entry).await;
         Ok(self.summary(entry))
@@ -474,15 +470,7 @@ impl PluginManager {
     pub async fn update_settings(&self, name: &str, patch: SettingsPatch) -> Result<PluginDetail> {
         let entry = self.entry(name)?;
         let mut cfg = self.store.load(name).await?;
-        merge(&mut cfg.values, patch.values);
-        merge(&mut cfg.secrets, patch.secrets);
-        let (values, secrets) = schema::normalize(&entry.schema, &cfg.values, &cfg.secrets)?;
-        let settings = schema::effective(&entry.schema, &values, &secrets);
-        if cfg.enabled {
-            (entry.factory)().validate_settings(&settings)?;
-        }
-        cfg.values = values;
-        cfg.secrets = secrets;
+        cfg.apply_patch(&*(entry.factory)(), patch)?;
         self.store.save(name, &cfg).await?;
         self.apply(entry).await;
         self.detail(name).await
@@ -718,16 +706,6 @@ impl PluginManager {
             }
         }
         outcome
-    }
-}
-
-fn merge(target: &mut Map<String, Value>, patch: Map<String, Value>) {
-    for (k, v) in patch {
-        if v.is_null() {
-            target.remove(&k);
-        } else {
-            target.insert(k, v);
-        }
     }
 }
 

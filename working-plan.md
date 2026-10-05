@@ -59,8 +59,8 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 - [x] Threat feeds + notifier status widgets; states, gating, a11y
 
 ## Phase 8 — Backup/export + CLI
-- [ ] Config export/restore of plugin_config incl. secrets handling
-- [ ] `aifw plugins list|show|enable|disable|set|reset`
+- [x] Config export/restore of plugin_config incl. secrets handling
+- [x] `aifw plugins list|show|enable|disable|set|reset`
 
 ## Phase 9 — Docs
 - [ ] docs/plugins.md "Build your first plugin" (threat-feeds walkthrough)

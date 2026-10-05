@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 use sqlx::SqlitePool;
 
 use crate::error::{PluginError, Result};
+use crate::manager::SettingsPatch;
+use crate::plugin::Plugin;
 
 /// One plugin's persisted configuration.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -19,6 +21,51 @@ pub struct StoredConfig {
     pub secrets: Map<String, Value>,
     /// Change marker; `None` when no row exists
     pub updated_at: Option<String>,
+}
+
+impl StoredConfig {
+    /// Merge `patch` (`null` = reset / clear), validate against `plugin`'s
+    /// schema — and, when enabled, its cross-field checks — and keep the
+    /// normalized result. On error `self` is unchanged.
+    pub fn apply_patch(&mut self, plugin: &dyn Plugin, patch: SettingsPatch) -> Result<()> {
+        let schema = plugin.settings_schema();
+        let mut values = self.values.clone();
+        let mut secrets = self.secrets.clone();
+        merge(&mut values, patch.values);
+        merge(&mut secrets, patch.secrets);
+        let (values, secrets) = crate::schema::normalize(&schema, &values, &secrets)?;
+        if self.enabled {
+            plugin.validate_settings(&crate::schema::effective(&schema, &values, &secrets))?;
+        }
+        self.values = values;
+        self.secrets = secrets;
+        Ok(())
+    }
+
+    /// Flip the enabled flag. Enabling runs the plugin's cross-field checks
+    /// first so a plugin that can't start says why instead of failing later.
+    pub fn set_enabled(&mut self, plugin: &dyn Plugin, enabled: bool) -> Result<()> {
+        if enabled {
+            let schema = plugin.settings_schema();
+            plugin.validate_settings(&crate::schema::effective(
+                &schema,
+                &self.values,
+                &self.secrets,
+            ))?;
+        }
+        self.enabled = enabled;
+        Ok(())
+    }
+}
+
+fn merge(target: &mut Map<String, Value>, patch: Map<String, Value>) {
+    for (k, v) in patch {
+        if v.is_null() {
+            target.remove(&k);
+        } else {
+            target.insert(k, v);
+        }
+    }
 }
 
 /// Names of plugins removed from AiFw; their rows are deleted on migrate.
@@ -156,4 +203,76 @@ where
     .execute(exec)
     .await?;
     Ok(marker)
+}
+
+/// Every built-in plugin's stored configuration as config-snapshot entries
+/// (secrets in plaintext — export paths redact or wrap them). Plugins with
+/// no row are omitted.
+pub async fn export_entries(
+    pool: &SqlitePool,
+) -> Result<Vec<aifw_core::config::PluginConfigEntry>> {
+    let store = PluginStore::new(pool.clone());
+    let mut out = Vec::new();
+    for f in crate::registry::factories() {
+        let name = f().info().name;
+        let cfg = store.load(&name).await?;
+        if cfg.updated_at.is_none() {
+            continue;
+        }
+        out.push(aifw_core::config::PluginConfigEntry {
+            name,
+            enabled: cfg.enabled,
+            settings: cfg.values,
+            secrets: cfg
+                .secrets
+                .into_iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+                .collect(),
+        });
+    }
+    Ok(out)
+}
+
+/// Replace all plugin configuration with `entries` inside the caller's
+/// transaction (config restore). Entries for plugins this build doesn't
+/// ship, or whose settings no longer fit the plugin's schema, are skipped;
+/// the returned warnings say which and why.
+pub async fn restore_on(
+    conn: &mut sqlx::SqliteConnection,
+    entries: &[aifw_core::config::PluginConfigEntry],
+) -> Result<Vec<String>> {
+    sqlx::query("DELETE FROM plugin_config")
+        .execute(&mut *conn)
+        .await?;
+    let mut warnings = Vec::new();
+    for e in entries {
+        let Some(plugin) = crate::registry::instantiate(&e.name) else {
+            warnings.push(format!(
+                "plugin '{}' is not part of this build; skipped",
+                e.name
+            ));
+            continue;
+        };
+        let secrets: Map<String, Value> = e
+            .secrets
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect();
+        let (values, secrets) =
+            match crate::schema::normalize(&plugin.settings_schema(), &e.settings, &secrets) {
+                Ok(v) => v,
+                Err(err) => {
+                    warnings.push(format!("plugin '{}' settings skipped: {err}", e.name));
+                    continue;
+                }
+            };
+        let cfg = StoredConfig {
+            enabled: e.enabled,
+            values,
+            secrets,
+            updated_at: None,
+        };
+        save_on(&mut *conn, &e.name, &cfg).await?;
+    }
+    Ok(warnings)
 }

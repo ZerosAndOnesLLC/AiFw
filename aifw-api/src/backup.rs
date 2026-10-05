@@ -844,6 +844,14 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
         dns_resolver: Some(crate::dns_resolver::load_config(&state.pool).await),
         syslog: Some(aifw_common::syslog::load(&state.pool).await),
         log_rotation: Some(aifw_core::log_rotation::load(&state.pool).await),
+        plugins: Some(
+            aifw_plugins::store::export_entries(&state.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, "config build: reading plugin config failed");
+                    internal()
+                })?,
+        ),
         secrets: None,
     };
 
@@ -2237,6 +2245,18 @@ pub(crate) async fn apply_firewall_config(
             .map_err(|e| apply_fail("log rotation config restore", e))?;
     }
 
+    // Plugin config: replaced wholesale when the backup carries the
+    // section; validated against each plugin's schema. Running plugins are
+    // reconciled after commit.
+    if let Some(entries) = &config.plugins {
+        let warnings = aifw_plugins::store::restore_on(&mut tx, entries)
+            .await
+            .map_err(|e| apply_fail("plugin config restore", e))?;
+        for w in warnings {
+            tracing::warn!("config apply: {w}");
+        }
+    }
+
     // One audit row for the whole restore, committed atomically with it.
     // (Pre-#158 each engine `add` wrote a per-row audit entry; a restore is
     // one operator action, not N rule additions.)
@@ -2382,6 +2402,9 @@ pub(crate) async fn apply_firewall_config(
     }
     if config.log_rotation.is_some() {
         aifw_core::log_rotation::ensure_applied(&state.pool).await;
+    }
+    if config.plugins.is_some() {
+        state.plugin_manager.reconcile().await;
     }
 
     if let Some(resolver) = &config.dns_resolver {
