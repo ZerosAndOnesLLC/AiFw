@@ -691,3 +691,12 @@ async fn actions_require_running_plugin_and_valid_args() {
     );
     assert_eq!(fx.mgr.status("p").await.unwrap(), json!({"ok": true}));
 }
+
+#[tokio::test]
+async fn list_follows_registry_order() {
+    let (z, _) = probe("zeta", Behaviour::default());
+    let (a, _) = probe("alpha", Behaviour::default());
+    let fx = fixture(vec![z, a]).await;
+    let names: Vec<String> = fx.mgr.list().into_iter().map(|s| s.name).collect();
+    assert_eq!(names, ["zeta", "alpha"]);
+}

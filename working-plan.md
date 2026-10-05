@@ -54,9 +54,9 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 - [x] Status + `test` action
 
 ## Phase 7 — UI
-- [ ] lib/api/plugins.ts, hooks/usePlugins.ts, hooks/usePlugin.ts, hooks/useAutoSave.ts
-- [ ] PluginCard, PluginDrawer (Overview/Settings/Activity), SchemaForm/SchemaField/SecretField
-- [ ] Threat feeds + notifier status widgets; states, gating, a11y
+- [x] lib/api/plugins.ts, hooks/usePlugins.ts, hooks/usePlugin.ts, hooks/useAutoSave.ts
+- [x] PluginCard, PluginDrawer (Overview/Settings/Activity), SchemaForm/SchemaField/SecretField
+- [x] Threat feeds + notifier status widgets; states, gating, a11y
 
 ## Phase 8 — Backup/export + CLI
 - [ ] Config export/restore of plugin_config incl. secrets handling

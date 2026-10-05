@@ -206,6 +206,8 @@ pub struct PluginManager {
     store: PluginStore,
     rules: Arc<RuleSink>,
     entries: BTreeMap<String, Arc<Entry>>,
+    /// Registry order, for display.
+    order: Vec<String>,
     hook_mask: AtomicU32,
 }
 
@@ -223,6 +225,7 @@ impl PluginManager {
     ) -> Result<Self> {
         let rules = Arc::new(RuleSink::new(pf.clone(), aifw_common::anchors::PLUGINS));
         let mut entries = BTreeMap::new();
+        let mut order = Vec::new();
         for factory in factories {
             let proto = factory();
             let info = proto.info();
@@ -254,12 +257,14 @@ impl PluginManager {
                     started_at: None,
                 }),
             };
+            order.push(info.name.clone());
             entries.insert(info.name, Arc::new(entry));
         }
         Ok(Self {
             store: PluginStore::new(pool),
             rules,
             entries,
+            order,
             hook_mask: AtomicU32::new(0),
         })
     }
@@ -560,7 +565,11 @@ impl PluginManager {
 
     /// Every registered plugin.
     pub fn list(&self) -> Vec<PluginSummary> {
-        self.entries.values().map(|e| self.summary(e)).collect()
+        self.order
+            .iter()
+            .filter_map(|n| self.entries.get(n))
+            .map(|e| self.summary(e))
+            .collect()
     }
 
     /// One plugin's summary.
