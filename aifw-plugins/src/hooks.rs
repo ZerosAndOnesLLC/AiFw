@@ -19,6 +19,8 @@ pub enum HookPoint {
     Timer,
     /// The IDS raised an alert
     IdsAlert,
+    /// A multi-WAN gateway changed health state (up / warning / down)
+    GatewayEvent,
 }
 
 impl HookPoint {
@@ -30,6 +32,7 @@ impl HookPoint {
         HookPoint::VpnEvent,
         HookPoint::Timer,
         HookPoint::IdsAlert,
+        HookPoint::GatewayEvent,
     ];
 
     /// Stable snake_case identifier (matches the serde form).
@@ -41,6 +44,7 @@ impl HookPoint {
             HookPoint::VpnEvent => "vpn_event",
             HookPoint::Timer => "timer",
             HookPoint::IdsAlert => "ids_alert",
+            HookPoint::GatewayEvent => "gateway_event",
         }
     }
 }
@@ -55,6 +59,7 @@ impl HookPoint {
             HookPoint::VpnEvent => "A WireGuard peer or IPsec tunnel went up or down",
             HookPoint::Timer => "Once a minute",
             HookPoint::IdsAlert => "The IDS raised an alert",
+            HookPoint::GatewayEvent => "A multi-WAN gateway went up, degraded, or down",
         }
     }
 }
@@ -115,12 +120,31 @@ pub enum HookEventData {
     },
     /// VPN state change (`VpnEvent`)
     Vpn {
-        /// Tunnel/interface name
+        /// "wireguard" or "ipsec"
+        kind: String,
+        /// Tunnel name as configured in AiFw
         tunnel_name: String,
-        /// Peer identifier, if known
+        /// Peer name (WireGuard), if the change is about one peer
         peer: Option<String>,
-        /// Tunnel state change: "up" or "down"
+        /// "up" or "down"
         action: String,
+        /// Extra context (interface, remote host, last handshake)
+        detail: Option<String>,
+    },
+    /// Gateway health change (`GatewayEvent`)
+    Gateway {
+        /// Gateway id
+        gateway_id: String,
+        /// Gateway name as configured in AiFw
+        gateway_name: String,
+        /// Interface the gateway sits on
+        interface: String,
+        /// Previous state ("up", "warning", "down", "unknown")
+        from_state: Option<String>,
+        /// New state
+        to_state: String,
+        /// Why (metric + threshold that tripped), if known
+        reason: Option<String>,
     },
     /// Timer tick (`Timer`)
     Tick {
@@ -129,6 +153,10 @@ pub enum HookEventData {
     },
     /// IDS alert (`IdsAlert`)
     IdsAlertEvent {
+        /// Alert id (matches `/api/v1/ids/alerts/{id}`)
+        alert_id: String,
+        /// When the IDS raised it (RFC 3339)
+        timestamp: String,
         /// Matched signature ID (SID), if signature-based
         signature_id: Option<u32>,
         /// Signature/alert message text

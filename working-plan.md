@@ -38,10 +38,10 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 - [x] `patch_pf_conf` pure fn for upgrades; list_system_rules; auto-snapshot skip
 
 ## Phase 4 — Event bridges
-- [ ] RowTail helper; IdsAlert bridge
-- [ ] GatewayEvent hook + bridge (multiwan_gateway_events, dedupe)
-- [ ] VpnEvent bridge (WireGuard + IPsec diff)
-- [ ] Timer gated on subscribers
+- [x] RowTail helper; IdsAlert bridge
+- [x] GatewayEvent hook + bridge (multiwan_gateway_events, dedupe)
+- [x] VpnEvent bridge (WireGuard + IPsec diff)
+- [x] Timer gated on subscribers
 
 ## Phase 5 — Threat Intel Feeds plugin
 - [ ] http.rs fetch_capped (net_safety, redirects, cap, ETag)

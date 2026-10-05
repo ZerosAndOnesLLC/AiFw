@@ -3,6 +3,8 @@
 
 mod bridges;
 mod handlers;
+mod tails;
+mod vpn_watch;
 
 pub use bridges::start;
 pub use handlers::*;

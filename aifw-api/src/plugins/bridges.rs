@@ -6,15 +6,15 @@
 use std::time::Duration;
 
 use aifw_plugins::{HookEvent, HookEventData, HookPoint};
-use sqlx::SqlitePool;
 
+use super::tails::{self, Source};
+use super::vpn_watch;
 use crate::AppState;
 
 /// How often config written outside the API (CLI, restore, cluster sync)
 /// is picked up.
 const RECONCILE_EVERY: Duration = Duration::from_secs(10);
 const TIMER_EVERY: Duration = Duration::from_secs(60);
-const AUDIT_POLL_EVERY: Duration = Duration::from_secs(5);
 
 /// Start enabled plugins and every hook bridge. Called once from
 /// `async_main` after engines are up.
@@ -32,7 +32,10 @@ pub async fn start(state: AppState) {
     });
 
     start_timer(state.clone());
-    start_audit_tail(state);
+    for src in [Source::Audit, Source::Ids, Source::Gateway] {
+        tails::spawn(state.clone(), src);
+    }
+    vpn_watch::spawn(state);
 }
 
 fn start_timer(state: AppState) {
@@ -51,81 +54,6 @@ fn start_timer(state: AppState) {
                     data: HookEventData::Tick { timestamp },
                 })
                 .await;
-        }
-    });
-}
-
-/// Current tail position (max rowid) of the audit_log table.
-async fn audit_log_tail(pool: &SqlitePool) -> i64 {
-    match sqlx::query_scalar("SELECT COALESCE(MAX(rowid), 0) FROM audit_log")
-        .fetch_one(pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "plugins: audit tail position query failed");
-            0
-        }
-    }
-}
-
-/// Dispatch audit rows past `last_rowid` as `LogEvent` hooks (#488) and
-/// return the new cursor. Split from the loop so tests can drive one poll.
-async fn dispatch_new_audit_entries(state: &AppState, last_rowid: i64) -> i64 {
-    let rows: Vec<(i64, String, String, String)> = match sqlx::query_as(
-        "SELECT rowid, action, details, source FROM audit_log \
-         WHERE rowid > ?1 ORDER BY rowid ASC LIMIT 200",
-    )
-    .bind(last_rowid)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(error = %e, "plugins: audit hook tail query failed");
-            return last_rowid;
-        }
-    };
-
-    let mut cursor = last_rowid;
-    for (rowid, action, details, source) in rows {
-        cursor = rowid;
-        state
-            .plugin_manager
-            .dispatch(HookEvent {
-                hook: HookPoint::LogEvent,
-                data: HookEventData::Log {
-                    action,
-                    details,
-                    source,
-                },
-            })
-            .await;
-    }
-    cursor
-}
-
-/// Tail audit_log into `LogEvent` hooks. Audit rows are written inside the
-/// aifw-core engines, which can't depend on aifw-plugins, so the API
-/// bridges the two here.
-fn start_audit_tail(state: AppState) {
-    tokio::spawn(async move {
-        let mut cursor = 0;
-        let mut active = false;
-        let mut tick = tokio::time::interval(AUDIT_POLL_EVERY);
-        loop {
-            tick.tick().await;
-            if !state.plugin_manager.wants(HookPoint::LogEvent) {
-                active = false;
-                continue;
-            }
-            if !active {
-                // Just became active — skip events from the idle gap.
-                cursor = audit_log_tail(&state.pool).await;
-                active = true;
-                continue;
-            }
-            cursor = dispatch_new_audit_entries(&state, cursor).await;
         }
     });
 }
@@ -226,7 +154,8 @@ mod tests {
     #[tokio::test]
     async fn audit_log_entries_reach_log_event_hook() {
         let (state, events) = state_with_capture(vec![HookPoint::LogEvent]).await;
-        let cursor = audit_log_tail(&state.pool).await;
+        let mut tail = tails::Tail::default();
+        tail.seek_end(&state, Source::Audit).await;
 
         aifw_core::audit::AuditLog::new(state.pool.clone())
             .log(
@@ -237,9 +166,9 @@ mod tests {
             )
             .await
             .unwrap();
-
-        let new_cursor = dispatch_new_audit_entries(&state, cursor).await;
-        assert!(new_cursor > cursor, "cursor must advance past the new row");
+        tail.poll(&state, Source::Audit).await;
+        // A second poll must not redeliver.
+        tail.poll(&state, Source::Audit).await;
 
         let captured = events.lock().unwrap();
         assert_eq!(captured.len(), 1);
@@ -255,6 +184,103 @@ mod tests {
             }
             other => panic!("unexpected event data: {other:?}"),
         }
+    }
+
+    async fn insert_alert(pool: &sqlx::SqlitePool, id: &str, src: &str) {
+        sqlx::query(
+            "INSERT INTO ids_alerts (id, timestamp, signature_id, signature_msg, severity, \
+             src_ip, src_port, dst_ip, dst_port, protocol, action, rule_source) \
+             VALUES (?1, '2026-10-05T00:00:00Z', 2001, 'ET SCAN test', 1, ?2, 4444, \
+             '10.0.0.1', 22, 'tcp', 'alert', 'suricata')",
+        )
+        .bind(id)
+        .bind(src)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ids_alerts_reach_ids_alert_hook_without_backlog() {
+        let (state, events) = state_with_capture(vec![HookPoint::IdsAlert]).await;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS ids_alerts (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, \
+             signature_id INTEGER, signature_msg TEXT NOT NULL, severity INTEGER NOT NULL, \
+             src_ip TEXT NOT NULL, src_port INTEGER, dst_ip TEXT NOT NULL, dst_port INTEGER, \
+             protocol TEXT NOT NULL, action TEXT NOT NULL, rule_source TEXT NOT NULL)",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        insert_alert(&state.pool, "old", "198.51.100.1").await;
+
+        let mut tail = tails::Tail::default();
+        tail.seek_end(&state, Source::Ids).await;
+        insert_alert(&state.pool, "new", "203.0.113.9").await;
+        insert_alert(&state.pool, "bad", "not-an-ip").await;
+        tail.poll(&state, Source::Ids).await;
+
+        let captured = events.lock().unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "history and unparseable rows are skipped"
+        );
+        match &captured[0].data {
+            HookEventData::IdsAlertEvent {
+                alert_id,
+                severity,
+                src_ip,
+                signature_id,
+                ..
+            } => {
+                assert_eq!(alert_id, "new");
+                assert_eq!(*severity, 1);
+                assert_eq!(src_ip.to_string(), "203.0.113.9");
+                assert_eq!(*signature_id, Some(2001));
+            }
+            other => panic!("unexpected event data: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_events_are_deduplicated() {
+        let (state, events) = state_with_capture(vec![HookPoint::GatewayEvent]).await;
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let mut tail = tails::Tail::default();
+        tail.seek_end(&state, Source::Gateway).await;
+        for (from, to) in [("up", "down"), ("up", "down"), ("down", "up")] {
+            sqlx::query(
+                "INSERT INTO multiwan_gateway_events (gateway_id, ts, from_state, to_state, reason) \
+                 VALUES ('gw1', '2026-10-05T00:00:00Z', ?1, ?2, 'loss 40% > 20%')",
+            )
+            .bind(from)
+            .bind(to)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        }
+        tail.poll(&state, Source::Gateway).await;
+
+        let captured = events.lock().unwrap();
+        let states: Vec<String> = captured
+            .iter()
+            .map(|e| match &e.data {
+                HookEventData::Gateway {
+                    to_state,
+                    gateway_name,
+                    ..
+                } => {
+                    assert_eq!(gateway_name, "gw1", "falls back to the id");
+                    to_state.clone()
+                }
+                other => panic!("unexpected event data: {other:?}"),
+            })
+            .collect();
+        assert_eq!(states, vec!["down", "up"]);
     }
 
     #[tokio::test]
