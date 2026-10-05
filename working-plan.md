@@ -63,5 +63,5 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 - [x] `aifw plugins list|show|enable|disable|set|reset`
 
 ## Phase 9 — Docs
-- [ ] docs/plugins.md "Build your first plugin" (threat-feeds walkthrough)
-- [ ] features/cli/README/CLAUDE.md endpoint updates
+- [x] docs/plugins.md "Build your first plugin" (threat-feeds walkthrough)
+- [x] features/cli/README/CLAUDE.md endpoint updates

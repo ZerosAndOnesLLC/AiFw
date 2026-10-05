@@ -82,7 +82,7 @@ Each engine has its own `migrate()` method that creates its SQLite tables. Migra
 
 **Validation (#194).** Engines own validation: `add`/`update` re-validate every write (`validate_rule`, `validate_nat_rule`, `GeoIpEngine::validate`, `AliasEngine::validate_name`, `WgTunnel::validate_addresses`…), so API, CLI, restore and cluster snapshots share one set of invariants. Handlers only translate request → domain type and map engine errors with `routes::engine_error` (Validation → 400, NotFound → 404, else 500); a guard test fails if a handler calls `aifw_core::validation::` itself.
 
-**Anchor convention (#198).** All pf anchor names live in `aifw_common::anchors` (`FILTER = "aifw"`, `NAT = "aifw-nat"`, `VPN`, `GEOIP`, `TLS`, `HA`, `PBR`, `MWAN_LEAK`, `MWAN_REPLY`, `RATELIMIT`; `FILTER_HOOKS` is the pf.conf hook list in evaluation order). Engines default to their constant in `new()`; `with_anchor()` exists for tests, callers don't pass anchors. A new engine adds its `aifw-<domain>` constant there and to `FILTER_HOOKS` so setup writes the hook and the daemon heals it.
+**Anchor convention (#198).** All pf anchor names live in `aifw_common::anchors` (`FILTER = "aifw"`, `NAT = "aifw-nat"`, `VPN`, `GEOIP`, `TLS`, `HA`, `PBR`, `MWAN_LEAK`, `MWAN_REPLY`, `RATELIMIT`, `PLUGINS`; `FILTER_HOOKS` is the pf.conf hook list in evaluation order, plugins first). Engines default to their constant in `new()`; `with_anchor()` exists for tests, callers don't pass anchors. A new engine adds its `aifw-<domain>` constant there and to `FILTER_HOOKS` so setup writes the hook; existing installs get it from `aifw-api/src/pf_conf_patch.rs` (`patch_pf_conf`), which must learn any new hook.
 
 ### Secrets at Rest (#298)
 
@@ -192,6 +192,7 @@ Base: `http://<ip>:8080/api/v1/`
 - **Log rotation**: `GET/PUT /settings/log-rotation`, `POST /settings/log-rotation/rotate` — size-based newsyslog policy for every AiFw service log (`aifw-core/src/log_rotation.rs` renders `/usr/local/etc/newsyslog.conf.d/aifw.conf`; rc.d runs daemon(8) with `-H`; CLI `aifw logrotate`, UI Settings → Logging → Log Rotation)
 - **Multiwan**: `GET/POST /multiwan/instances`, gateways/groups/policies/leak/preflight/sla under `/multiwan/{gateways,groups,policies,leak,preflight,sla}` — load-balancing, SLA-driven failover, leak detection. Implementation in `aifw-core/src/multiwan/` + `aifw-api/src/multiwan.rs`.
 - **Reverse proxy** (control plane for the external TrafficCop daemon): HTTP/TCP/UDP routers, services, middlewares, TLS certs under `/reverse-proxy/*`. Implementation in `aifw-api/src/reverse_proxy.rs`; data plane is the `trafficcop` service shipped via `freebsd/manifest.json`.
+- **Plugins**: `GET /plugins`, `GET /plugins/{name}`, `PUT /plugins/{name}/enabled`, `PATCH /plugins/{name}/settings`, `POST /plugins/{name}/reset`, `GET /plugins/{name}/status|logs`, `POST /plugins/{name}/actions/{action}`. Framework in `aifw-plugins` (registry, schema, sandboxed `PluginContext`, `aifw-plugins` pf anchor); built-ins under `aifw-plugins/src/builtin/` (`threat-feeds`, `notifier`); API + hook bridges in `aifw-api/src/plugins/`; CLI `aifw plugins`. Guide: `docs/plugins.md`.
 - **ACME**: `GET/POST /acme/certs`, providers, exports under `/acme/*` — Let's Encrypt cert issuance + push to local TLS store / file / webhook.
 
 ## Code Rules

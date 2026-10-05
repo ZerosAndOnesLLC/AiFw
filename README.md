@@ -81,7 +81,7 @@ High-performance firewall for FreeBSD built in Rust on top of pf. Optional AI-as
 - **VPN integration** — WireGuard tunnels + peers, and IKEv2 site-to-site IPsec (tunnel mode, PSK or X.509 auth, NAT-T) powered by strongSwan
 - **Geo-IP filtering** — country-based block/allow with GeoLite2 CSV, CIDR aggregation
 - **TLS inspection** — JA3/JA3S fingerprinting, SNI filtering, cert validation, version enforcement
-- **Plugin system** — native Rust plugins compiled into AiFw, with event hooks, typed settings, and sandboxed pf tables
+- **Plugins** — built-in Threat Intel Feeds (Spamhaus/abuse.ch/DShield blocklists into pf) and Notifier (ntfy/Discord/Slack/Telegram/webhook alerts); native Rust plugin API with event hooks, typed settings and a sandboxed pf context ([guide](docs/plugins.md))
 - **High availability (active-passive pair)** — Two AiFw nodes share a CARP virtual IP and pfsync state. Reboot the master and TCP sessions survive on the standby with no operator intervention. Setup via the UI in <15 minutes. See [docs/ha.md](docs/ha.md) for setup, ops, and failure modes.
 - **Remote syslog** — forward pf packet logs, IDS alerts, and app logs to a syslog server/SIEM (UDP/TCP, BSD or RFC 5424, per-category toggles, optional local-storage off)
 - **Secrets sealed at rest** — WireGuard/IPsec keys, CARP and integration credentials, TOTP seeds and cluster keys are AES-256-GCM encrypted in the database under a master key kept outside it (`/var/db/aifw/secrets.key`); legacy plaintext rows are sealed automatically on the first start after upgrade

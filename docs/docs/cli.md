@@ -65,6 +65,7 @@ Most list commands accept `--json` for machine-readable output. Most failures ex
 | `aifw dns` | Manage DNS nameservers + post-switch probe |
 | `aifw syslog` | Remote syslog forwarding (server, categories, test) |
 | `aifw logrotate` | Rotation policy for AiFw service logs |
+| `aifw plugins` | View and configure built-in plugins (threat feeds, notifier) |
 | `aifw dhcp` | Manage the DHCP server (rDHCP) |
 | `aifw users` | Manage local users |
 | `aifw reverse-proxy` | Control TrafficCop |
@@ -286,6 +287,24 @@ aifw logrotate rotate --path /var/log/rtime/rtime.log   # force-rotate one log n
 ```
 
 Defaults: rotate above 5 MB, keep 7 generations, gzip.
+
+## plugins
+
+Configure the built-in plugins. Writes go through the same validation as the web UI; the running API applies them within about ten seconds. Live status and actions (*Refresh now*, *Send test*) are on the Plugins page.
+
+```bash
+aifw plugins list                                    # name, title, enabled (--json)
+aifw plugins show threat-feeds                       # every setting, its value, allowed values, actions
+aifw plugins set threat-feeds refresh_hours=6 feeds=spamhaus-drop,feodo
+aifw plugins set threat-feeds allowlist=198.51.100.0/24,203.0.113.7
+aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
+aifw plugins set notifier --unset dedupe_minutes     # back to the default
+aifw plugins enable notifier                         # refused with a reason if it can't start yet
+aifw plugins disable threat-feeds                    # removes its pf rules and table contents
+aifw plugins reset notifier                          # forget settings + secrets, disable
+```
+
+Lists are comma-separated. Secrets must be passed with `--secret` and are never printed back.
 
 ## dhcp
 
