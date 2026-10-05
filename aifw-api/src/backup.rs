@@ -2998,6 +2998,8 @@ fn should_skip_auto_snapshot(path: &str) -> bool {
         || path.starts_with("/api/v1/ai/")         // analysis triggers
         || path.starts_with("/api/v1/connections") // runtime state kills
         || path.ends_with("/test") // test-fire endpoints (smtp/s3/ai)
+        // plugin actions (refresh now, send test) — no config delta
+        || (path.starts_with("/api/v1/plugins/") && path.contains("/actions/"))
 }
 
 /// Debounce state for auto-snapshots (PERF-H8 #352). Mutations landing
@@ -3410,6 +3412,7 @@ mod auto_snapshot_tests {
             "/api/v1/backup/s3/test",
             "/api/v1/config/save",
             "/api/v1/updates/install",
+            "/api/v1/plugins/threat-feeds/actions/refresh",
         ] {
             assert!(
                 should_skip_auto_snapshot(path),
@@ -3429,6 +3432,8 @@ mod auto_snapshot_tests {
             "/api/v1/aliases",
             "/api/v1/dhcp/v4/subnets",
             "/api/v1/settings/pf-tuning",
+            "/api/v1/plugins/threat-feeds/settings",
+            "/api/v1/plugins/threat-feeds/enabled",
         ] {
             assert!(
                 !should_skip_auto_snapshot(path),

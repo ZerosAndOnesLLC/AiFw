@@ -18,6 +18,7 @@ mod metrics_series;
 mod multiwan;
 mod native_metrics;
 mod opnsense;
+mod pf_conf_patch;
 mod plugins;
 mod reverse_proxy;
 mod router;
@@ -1310,111 +1311,22 @@ async fn ensure_rc_services_enabled() {
 #[cfg(not(target_os = "freebsd"))]
 async fn ensure_rc_services_enabled() {}
 
-/// Ensure AiFw anchors are present in /usr/local/etc/aifw/pf.conf.aifw.
+/// Ensure AiFw anchor hooks are present in /usr/local/etc/aifw/pf.conf.aifw.
 ///
-/// Works line-by-line (never substring-match) so `anchor "aifw"` cannot
-/// accidentally match inside `nat-anchor "aifw"` or `rdr-anchor "aifw"`.
-///
-/// - Adds `rdr-anchor "aifw-nat"` after `nat-anchor "aifw-nat"` if missing
-///   (fix for older installs that predated rdr support).
-/// - Inserts multi-WAN filter anchors (`aifw-pbr`, `aifw-mwan-leak`,
-///   `aifw-mwan-reply`) right before the first standalone `anchor "aifw"`
-///   line (i.e. the filter-anchors section, never the nat/rdr section).
-/// - Writes the patched file via `sudo tee` and reloads pf **only if**
-///   `pfctl -nf` validates it first. If validation fails we log a loud
-///   warning and leave the original file untouched.
+/// The text transform lives in [`pf_conf_patch::patch_pf_conf`] (pure,
+/// unit-tested): missing rdr / ND / plugin / multi-WAN / filter-NAT hooks
+/// are inserted line-by-line. The result is committed and pf reloaded
+/// **only if** `pfctl -nf` validates it first; otherwise the original file
+/// is left untouched with a loud warning.
 async fn ensure_rdr_anchor() {
     let pf_path = "/usr/local/etc/aifw/pf.conf.aifw";
     let Ok(content) = tokio::fs::read_to_string(pf_path).await else {
         return;
     };
 
-    let lines: Vec<&str> = content.lines().collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 8);
-    let mut changed = false;
-
-    let has_rdr = lines.iter().any(|l| l.trim() == "rdr-anchor \"aifw-nat\"");
-    // Filter-class hook for the NAT anchor: cross-family af-to rules are
-    // pass rules, so an install predating `anchor "aifw-nat"` would load
-    // them but never evaluate them (#531).
-    let has_nat_filter = lines.iter().any(|l| l.trim() == "anchor \"aifw-nat\"");
-    // ICMPv6 neighbor discovery: aifw-setup only emits this into NEWLY
-    // generated pf.conf files, so upgraded appliances keep dropping ND and
-    // all IPv6 (incl. NAT64) stays broken until healed here (#601).
-    const ND_RULE: &str =
-        "pass quick inet6 proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }";
-    let has_nd = lines.iter().any(|l| l.trim() == ND_RULE);
-    let mwan_anchors = [
-        aifw_common::anchors::PBR,
-        aifw_common::anchors::MWAN_LEAK,
-        aifw_common::anchors::MWAN_REPLY,
-    ];
-    let has_mwan: Vec<bool> = mwan_anchors
-        .iter()
-        .map(|a| {
-            let wanted = format!("anchor \"{a}\"");
-            lines.iter().any(|l| l.trim() == wanted)
-        })
-        .collect();
-
-    let mut mwan_inserted = false;
-    let mut nd_inserted = false;
-
-    for line in lines.iter() {
-        let t = line.trim();
-
-        // 1. After `nat-anchor "aifw-nat"` inject `rdr-anchor "aifw-nat"` if absent.
-        if t == "nat-anchor \"aifw-nat\"" {
-            out.push((*line).to_string());
-            if !has_rdr {
-                out.push("rdr-anchor \"aifw-nat\"".to_string());
-                changed = true;
-            }
-            continue;
-        }
-
-        // 2. Before the filter-section `anchor "aifw"` (trimmed EXACTLY — won't
-        //    match nat-anchor or rdr-anchor), inject any missing mwan anchors.
-        // ND pass must precede the FIRST filter anchor — anchors hold
-        // `block quick` rules that would otherwise eat neighbor
-        // solicitations (#601). Checked against every filter-anchor form so
-        // it lands before aifw-pbr when the mwan anchors already exist.
-        if !has_nd
-            && !nd_inserted
-            && (t == "anchor \"aifw\""
-                || mwan_anchors.iter().any(|a| t == format!("anchor \"{a}\"")))
-        {
-            out.push(ND_RULE.to_string());
-            nd_inserted = true;
-            changed = true;
-        }
-
-        if !mwan_inserted && t == "anchor \"aifw\"" {
-            for (i, a) in mwan_anchors.iter().enumerate() {
-                if !has_mwan[i] {
-                    out.push(format!("anchor \"{a}\""));
-                    changed = true;
-                }
-            }
-            mwan_inserted = true;
-            out.push((*line).to_string());
-            // 3. After the filter `anchor "aifw"`, inject the filter-class
-            //    `anchor "aifw-nat"` hook if absent (af-to rules, #531).
-            if !has_nat_filter {
-                out.push("anchor \"aifw-nat\"".to_string());
-                changed = true;
-            }
-            continue;
-        }
-
-        out.push((*line).to_string());
-    }
-
-    if !changed {
+    let Some(patched) = pf_conf_patch::patch_pf_conf(&content) else {
         return;
-    }
-
-    let patched = out.join("\n") + "\n";
+    };
 
     // Dry-run validate before committing. Write to a temp file, pfctl -nf it,
     // and only replace the real pf.conf.aifw if validation passes.

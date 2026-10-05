@@ -34,8 +34,8 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 ## Phase 3 — API + pf anchor
 - [x] `aifw-api/src/plugins/` handlers with new endpoints + typed errors + audit
 - [x] Reconcile task (DB updated_at vs applied)
-- [ ] `anchors::PLUGINS` at front of FILTER_HOOKS; rule rendering + validation
-- [ ] `patch_pf_conf` pure fn for upgrades; list_system_rules; auto-snapshot skip
+- [x] `anchors::PLUGINS` at front of FILTER_HOOKS; rule rendering + validation
+- [x] `patch_pf_conf` pure fn for upgrades; list_system_rules; auto-snapshot skip
 
 ## Phase 4 — Event bridges
 - [ ] RowTail helper; IdsAlert bridge

@@ -74,6 +74,7 @@ pub async fn list_system_rules() -> Result<Json<ApiResponse<Vec<String>>>, Statu
 
     // AiFw anchor rules
     for anchor in [
+        aifw_common::anchors::PLUGINS,
         aifw_common::anchors::FILTER,
         aifw_common::anchors::NAT,
         aifw_common::anchors::VPN,
