@@ -10,7 +10,7 @@ use crate::plugin::Plugin;
 pub type Factory = Arc<dyn Fn() -> Box<dyn Plugin> + Send + Sync>;
 
 /// Constructors of every built-in plugin, in display order.
-const BUILTINS: &[fn() -> Box<dyn Plugin>] = &[];
+const BUILTINS: &[fn() -> Box<dyn Plugin>] = &[crate::builtin::ThreatFeeds::boxed];
 
 /// Factories for every built-in plugin.
 pub fn factories() -> Vec<Factory> {

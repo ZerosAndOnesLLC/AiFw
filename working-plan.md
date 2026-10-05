@@ -44,9 +44,9 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 - [x] Timer gated on subscribers
 
 ## Phase 5 — Threat Intel Feeds plugin
-- [ ] http.rs fetch_capped (net_safety, redirects, cap, ETag)
-- [ ] Feed catalog + parsers + sanitize
-- [ ] Plugin: settings, KV restore, refresh scheduling, rules, status, actions
+- [x] http.rs fetch_capped (net_safety, redirects, cap, ETag)
+- [x] Feed catalog + parsers + sanitize
+- [x] Plugin: settings, KV restore, refresh scheduling, rules, status, actions
 
 ## Phase 6 — Notifier plugin
 - [ ] Channels: ntfy, Discord, Slack, generic webhook (HMAC), Telegram

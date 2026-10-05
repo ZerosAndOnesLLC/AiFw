@@ -14,12 +14,16 @@
 //!
 //! See `docs/plugins.md` for a walkthrough.
 
+/// Built-in plugins shipped with AiFw
+pub mod builtin;
 /// [`PluginContext`] — the per-plugin, sandboxed handle into AiFw
 pub mod context;
 /// Crate error type ([`PluginError`]) and `Result` alias
 pub mod error;
 /// Hook points, event payloads, and the [`HookAction`] responses plugins return
 pub mod hooks;
+/// Outbound HTTP helpers with SSRF guards and size caps
+pub mod http;
 /// [`PluginManager`] — lifecycle, settings, and hook dispatch
 pub mod manager;
 /// The [`Plugin`] trait plus plugin metadata and state types
