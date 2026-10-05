@@ -45,6 +45,20 @@ impl HookPoint {
     }
 }
 
+impl HookPoint {
+    /// What fires the hook, for operators reading the plugin page.
+    pub fn description(self) -> &'static str {
+        match self {
+            HookPoint::PostRule => "A packet matched a pf rule with logging enabled (pflog)",
+            HookPoint::LogEvent => "An audit-log entry was written (rule, NAT, or config change)",
+            HookPoint::ApiRequest => "An authenticated API request arrived (plugins may reject it)",
+            HookPoint::VpnEvent => "A WireGuard peer or IPsec tunnel went up or down",
+            HookPoint::Timer => "Once a minute",
+            HookPoint::IdsAlert => "The IDS raised an alert",
+        }
+    }
+}
+
 impl std::fmt::Display for HookPoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

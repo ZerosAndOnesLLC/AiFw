@@ -1321,7 +1321,7 @@ fn blocked_buffer() -> &'static BlockedBuffer {
 /// Live entries (not the bootstrap replay) are also forwarded to remote
 /// syslog when the pf category is enabled.
 pub fn start_pflog_collector(
-    plugin_mgr: std::sync::Arc<tokio::sync::RwLock<aifw_plugins::PluginManager>>,
+    plugin_mgr: std::sync::Arc<aifw_plugins::PluginManager>,
     syslog: aifw_common::syslog::SyslogHandle,
 ) {
     let buf = blocked_buffer().clone();
@@ -1367,10 +1367,8 @@ pub fn start_pflog_collector(
                     while let Ok(Some(line)) = reader.next_line().await {
                         if let Some(entry) = parse_pflog_line(&line) {
                             // Dispatch PostRule hook for blocked/passed traffic.
-                            // PERF-H17 (#361): snapshot, then dispatch unlocked.
                             {
-                                let plugins = pmgr.read().await.dispatch_set();
-                                if !plugins.is_empty() {
+                                if pmgr.wants(aifw_plugins::HookPoint::PostRule) {
                                     let event = aifw_plugins::HookEvent {
                                         hook: aifw_plugins::HookPoint::PostRule,
                                         data: aifw_plugins::hooks::HookEventData::Rule {
@@ -1391,7 +1389,7 @@ pub fn start_pflog_collector(
                                             rule_id: None,
                                         },
                                     };
-                                    let _ = plugins.dispatch(&event).await;
+                                    pmgr.dispatch(event).await;
                                 }
                             }
                             // Tee to remote syslog. enabled_for is an O(1)

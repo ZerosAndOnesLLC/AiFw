@@ -23,17 +23,17 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 - [x] Shrink tests to manager/context with a local test plugin
 
 ## Phase 2 — Framework (aifw-plugins)
-- [ ] Trait extensions: settings_schema, validate_settings, actions, run_action, status; shutdown(&self, ctx)
-- [ ] schema.rs (SettingField/FieldKind + validate)
-- [ ] registry.rs (single built-in list)
-- [ ] store.rs (PluginStore: plugin_config + sealed secrets + plugin_kv migration)
-- [ ] manager.rs rewrite (enable/disable keeps entry, Error state, hook mask, JoinSet+timeout dispatch, apply_actions, stats)
-- [ ] context.rs per-plugin (log ring, namespaced KV, spawn, table ops, rules)
-- [ ] error.rs variants + AifwError mapping; ALTER guard list
+- [x] Trait extensions: settings_schema, validate_settings, actions, run_action, status; shutdown(&self, ctx)
+- [x] schema.rs (SettingField/FieldKind + validate)
+- [x] registry.rs (single built-in list)
+- [x] store.rs (PluginStore: plugin_config + sealed secrets + plugin_kv migration)
+- [x] manager.rs rewrite (enable/disable keeps entry, Error state, hook mask, JoinSet+timeout dispatch, apply_actions, stats)
+- [x] context.rs per-plugin (log ring, namespaced KV, spawn, table ops, rules)
+- [x] error.rs variants + AifwError mapping; ALTER guard list
 
 ## Phase 3 — API + pf anchor
-- [ ] `aifw-api/src/plugins/` handlers with new endpoints + typed errors + audit
-- [ ] Reconcile task (DB updated_at vs applied)
+- [x] `aifw-api/src/plugins/` handlers with new endpoints + typed errors + audit
+- [x] Reconcile task (DB updated_at vs applied)
 - [ ] `anchors::PLUGINS` at front of FILTER_HOOKS; rule rendering + validation
 - [ ] `patch_pf_conf` pure fn for upgrades; list_system_rules; auto-snapshot skip
 

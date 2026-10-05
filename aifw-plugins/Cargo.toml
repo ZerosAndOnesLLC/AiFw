@@ -6,14 +6,15 @@ license.workspace = true
 
 [dependencies]
 aifw-common = { workspace = true }
+aifw-core = { workspace = true }
 aifw-pf = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+sqlx = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
-uuid = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]

@@ -5,23 +5,38 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum PluginError {
     /// General plugin failure (also what bare `String`/`&str` errors convert into)
-    #[error("plugin error: {0}")]
+    #[error("{0}")]
     Plugin(String),
 
-    /// pf table operation failed or was denied (non-`plugin_` prefixed table)
-    #[error("pf table error: {0}")]
+    /// pf table or rule operation failed or was denied (non-`plugin_` table)
+    #[error("pf error: {0}")]
     Table(String),
 
-    /// Catch-all for errors that don't fit a more specific variant
+    /// Unknown plugin, action, or setting
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    /// Settings or action arguments failed validation
     #[error("{0}")]
-    Other(String),
+    Validation(String),
+
+    /// The plugin's `init` failed or timed out
+    #[error("init failed: {0}")]
+    Init(String),
+
+    /// Persistence (plugin_config / plugin_kv) failed
+    #[error("store error: {0}")]
+    Store(String),
+
+    /// A plugin call exceeded its time budget
+    #[error("timed out: {0}")]
+    Timeout(String),
 }
 
 /// Crate-local result alias.
 pub type Result<T> = std::result::Result<T, PluginError>;
 
-// Ergonomic conversions so plugin authors can keep returning `Err("msg".into())`
-// and existing `.map_err(|e| e.to_string())?` chains still convert via `?`.
+// Ergonomic conversions so plugin authors can return `Err("msg".into())`.
 impl From<String> for PluginError {
     fn from(s: String) -> Self {
         PluginError::Plugin(s)
@@ -34,8 +49,24 @@ impl From<&str> for PluginError {
     }
 }
 
+impl From<sqlx::Error> for PluginError {
+    fn from(e: sqlx::Error) -> Self {
+        PluginError::Store(e.to_string())
+    }
+}
+
+impl From<aifw_core::CoreError> for PluginError {
+    fn from(e: aifw_core::CoreError) -> Self {
+        PluginError::Store(e.to_string())
+    }
+}
+
 impl From<PluginError> for aifw_common::AifwError {
     fn from(e: PluginError) -> Self {
-        aifw_common::AifwError::Other(e.to_string())
+        match e {
+            PluginError::NotFound(m) => aifw_common::AifwError::NotFound(m),
+            PluginError::Validation(m) => aifw_common::AifwError::Validation(m),
+            other => aifw_common::AifwError::Other(other.to_string()),
+        }
     }
 }

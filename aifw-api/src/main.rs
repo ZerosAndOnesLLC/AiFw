@@ -176,7 +176,7 @@ pub struct AppState {
     /// Created in `main` before the tracing subscriber so the forwarding
     /// layer can attach; config is applied once the DB pool is ready.
     pub syslog: Arc<aifw_common::syslog::SyslogManager>,
-    pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
+    pub plugin_manager: Arc<aifw_plugins::PluginManager>,
     pub metrics_store: Arc<aifw_metrics::MetricsStore>,
     pub auth_settings: auth::AuthSettings,
     pub cluster_engine: Arc<aifw_core::ClusterEngine>,
@@ -222,11 +222,6 @@ pub struct AppState {
     /// deadline is capped at the token's own `exp`, so an expired token is
     /// never served from cache.
     pub auth_token_cache: Arc<dashmap::DashMap<String, (auth::Claims, std::time::Instant)>>,
-    /// Shadow counter of `plugin_manager.read().await.running_count()` —
-    /// kept in sync by every register/unload call site. The auth middleware
-    /// uses this to skip the read lock + dispatch entirely when no plugins
-    /// are running (the common case).
-    pub plugin_running_count: Arc<std::sync::atomic::AtomicUsize>,
     /// Debounce state for the auto-snapshot middleware (PERF-H8 #352):
     /// mutations arriving within the debounce window coalesce into a
     /// single config rebuild + save_if_changed.
@@ -959,7 +954,12 @@ async fn create_state_from_db(
                     .await
                     .map_err(anyhow::Error::from)
             },
-            async { plugins::migrate(&pool).await.map_err(anyhow::Error::from) },
+            async {
+                aifw_plugins::store::PluginStore::new(pool.clone())
+                    .migrate()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            },
             async {
                 aifw_core::config_manager::ConfigManager::new(pool.clone())
                     .migrate()
@@ -1076,18 +1076,11 @@ async fn create_state_from_db(
     // direct-DB (no IPC hop for plain SQL pagination).
     let ids_client = Arc::new(aifw_ids_ipc::IdsClient::new(ids_socket));
 
-    // Initialize plugin system
-    let plugin_ctx = aifw_plugins::PluginContext::new(pf.clone());
-    let plugin_mgr = aifw_plugins::PluginManager::new(plugin_ctx);
-
-    // Seed the shadow counter with the boot-time running count (#488) —
-    // previously it started at 0, so plugins enabled in the DB never
-    // received hooks until toggled through the API once.
-    let plugin_running = plugin_mgr.running_count();
-    tracing::info!(
-        plugins = plugin_mgr.count(),
-        running = plugin_running,
-        "plugin system initialized"
+    // Plugin system: built-ins are registered here; enabled ones are
+    // started from async_main once the rest of the state is up.
+    let plugin_mgr = Arc::new(
+        aifw_plugins::PluginManager::new(pf.clone(), pool.clone())
+            .map_err(|e| anyhow::anyhow!("plugin registry: {e}"))?,
     );
 
     // Load configurable dashboard history size from DB (default 30 min = 1800 entries).
@@ -1130,7 +1123,7 @@ async fn create_state_from_db(
         conntrack,
         ids_client,
         syslog: syslog_mgr,
-        plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
+        plugin_manager: plugin_mgr,
         metrics_store: metrics_store.clone(),
         auth_settings,
         cluster_engine,
@@ -1155,7 +1148,6 @@ async fn create_state_from_db(
         auth_user_cache: Arc::new(dashmap::DashMap::new()),
         auth_jti_cache: Arc::new(dashmap::DashMap::new()),
         auth_token_cache: Arc::new(dashmap::DashMap::new()),
-        plugin_running_count: Arc::new(std::sync::atomic::AtomicUsize::new(plugin_running)),
         auto_snapshot_pending: Arc::new(tokio::sync::Mutex::new(
             backup::AutoSnapshotPending::default(),
         )),
@@ -1865,36 +1857,8 @@ async fn async_main() -> anyhow::Result<()> {
     // (background, non-blocking); also tees entries to remote syslog.
     ws::start_pflog_collector(state.plugin_manager.clone(), state.syslog.handle());
 
-    // Start plugin timer hook — fires every 60 seconds for cron-like plugins
-    {
-        let pmgr = state.plugin_manager.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                // PERF-H17/PERF-M20 (#361/#389): snapshot under a short read
-                // lock; the 60s timer dispatch runs unlocked so cron-like
-                // plugins doing slow I/O don't block enable/disable.
-                let plugins = pmgr.read().await.dispatch_set();
-                if !plugins.is_empty() {
-                    let event = aifw_plugins::HookEvent {
-                        hook: aifw_plugins::HookPoint::Timer,
-                        data: aifw_plugins::hooks::HookEventData::Tick {
-                            timestamp: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                        },
-                    };
-                    let _ = plugins.dispatch(&event).await;
-                }
-            }
-        });
-    }
-
-    // Tail the audit log into plugin LogEvent hooks (#488) — the bridge
-    // between aifw-core audit writes and plugins subscribed to LogEvent.
-    plugins::start_audit_hook_dispatcher(state.clone());
+    // Start enabled plugins and their event bridges (timer, audit log, …).
+    plugins::start(state.clone()).await;
 
     // Start AI analysis background task — reviews unclassified critical/high alerts every 5 minutes.
     // Now reads alerts directly from the SQLite ids_alerts table, since the
@@ -1995,10 +1959,8 @@ async fn async_main() -> anyhow::Result<()> {
                     .map(|s| s.states_count)
                     .unwrap_or(0);
                 let conns = mem_state.conntrack.get_connections().await.len();
-                let pmgr = mem_state.plugin_manager.read().await;
-                let plugins_total = pmgr.count();
-                let plugins_running = pmgr.running_count();
-                drop(pmgr);
+                let plugins_total = mem_state.plugin_manager.count();
+                let plugins_running = mem_state.plugin_manager.running_count();
                 // IDS counters come over IPC from aifw-ids. Distinguish
                 // "IPC is broken" from "IPC says 0" — the heartbeat used to
                 // silently report rules_loaded=0 even though startup loaded

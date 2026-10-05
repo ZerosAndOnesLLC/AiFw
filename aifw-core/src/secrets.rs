@@ -334,6 +334,8 @@ pub const SEALED_COLUMNS: &[(&str, &str, &str)] = &[
     ("acme_dns_provider", "api_token", "id"),
     ("acme_dns_provider", "aws_secret_key", "id"),
     ("users", "totp_secret", "id"),
+    // Plugin secret settings, one sealed JSON object per plugin.
+    ("plugin_config", "secrets", "name"),
     // Config-history snapshots embed every secret above in one JSON blob.
     ("config_versions", "config_json", "version"),
 ];

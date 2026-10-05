@@ -25,6 +25,8 @@ pub const PBR: &str = "aifw-pbr";
 pub const MWAN_REPLY: &str = "aifw-mwan-reply";
 /// Multi-WAN leak-detection block rules (`LeakEngine`).
 pub const MWAN_LEAK: &str = "aifw-mwan-leak";
+/// `block`/`match` rules contributed by plugins (`aifw_plugins::rules`).
+pub const PLUGINS: &str = "aifw-plugins";
 /// Suffix appended to the filter anchor for connection rate-limit rules
 /// (`ShapingEngine`): `aifw-ratelimit`.
 pub const RATELIMIT_SUFFIX: &str = "-ratelimit";

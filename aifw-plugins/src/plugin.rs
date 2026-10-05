@@ -1,18 +1,22 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::Value;
 
 use crate::context::PluginContext;
+use crate::error::{PluginError, Result};
 use crate::hooks::{HookAction, HookEvent, HookPoint};
+use crate::schema::{PluginSettings, SettingField};
 
-/// Information about a plugin
+/// Static metadata about a plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginInfo {
-    /// Unique plugin name (registration key)
+    /// Unique plugin name (registration key, `[a-z0-9-]`)
     pub name: String,
+    /// Display name shown in the UI
+    pub title: String,
     /// Plugin version string
     pub version: String,
-    /// Human-readable description of what the plugin does
+    /// What the plugin does, one or two sentences
     pub description: String,
     /// Plugin author
     pub author: String,
@@ -20,72 +24,115 @@ pub struct PluginInfo {
     pub hooks: Vec<HookPoint>,
 }
 
-/// Plugin configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PluginConfig {
-    /// Whether to initialize and run the plugin on registration
-    pub enabled: bool,
-    /// Free-form plugin settings (read via `get_str`/`get_u64`/`get_bool`)
-    pub settings: HashMap<String, serde_json::Value>,
+/// An operator-triggered action a plugin exposes (e.g. "Refresh now",
+/// "Send test notification").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionInfo {
+    /// Action id used in `POST /plugins/{name}/actions/{id}`
+    pub id: String,
+    /// Button label
+    pub label: String,
+    /// What the action does
+    pub description: String,
+    /// Arguments the action takes (rendered as a small form; may be empty)
+    pub args: Vec<SettingField>,
 }
 
-impl PluginConfig {
-    /// Setting as a string; `None` if the key is missing or not a JSON string
-    pub fn get_str(&self, key: &str) -> Option<&str> {
-        self.settings.get(key).and_then(|v| v.as_str())
+impl ActionInfo {
+    /// Action without arguments.
+    pub fn new(id: &str, label: &str, description: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            description: description.to_string(),
+            args: Vec::new(),
+        }
     }
 
-    /// Setting as a u64; `None` if the key is missing or not an unsigned JSON number
-    pub fn get_u64(&self, key: &str) -> Option<u64> {
-        self.settings.get(key).and_then(|v| v.as_u64())
-    }
-
-    /// Setting as a bool; `None` if the key is missing or not a JSON boolean
-    pub fn get_bool(&self, key: &str) -> Option<bool> {
-        self.settings.get(key).and_then(|v| v.as_bool())
+    /// Add an argument.
+    pub fn arg(mut self, field: SettingField) -> Self {
+        self.args.push(field);
+        self
     }
 }
 
-/// Current state of a loaded plugin
+/// Lifecycle state of a registered plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginState {
-    /// Registered but not yet initialized
-    Loaded,
-    /// `init` completed but the plugin is not yet receiving hooks
-    Initialized,
     /// Active and receiving hook events
     Running,
-    /// Disabled or shut down; not receiving hooks
+    /// Disabled; not receiving hooks
     Stopped,
-    /// Initialization or runtime failure
+    /// Enabled, but `init` failed — see `last_error`
     Error,
 }
 
 impl std::fmt::Display for PluginState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PluginState::Loaded => write!(f, "loaded"),
-            PluginState::Initialized => write!(f, "initialized"),
-            PluginState::Running => write!(f, "running"),
-            PluginState::Stopped => write!(f, "stopped"),
-            PluginState::Error => write!(f, "error"),
-        }
+        f.write_str(match self {
+            PluginState::Running => "running",
+            PluginState::Stopped => "stopped",
+            PluginState::Error => "error",
+        })
     }
 }
 
-/// The core plugin trait. All native plugins implement this.
+/// The plugin trait. Every built-in plugin implements it and is listed in
+/// [`crate::registry`].
+///
+/// Lifecycle: the manager builds a fresh instance from the registry
+/// factory, calls [`Plugin::init`] with the validated settings, routes
+/// subscribed hook events to [`Plugin::on_hook`], and calls
+/// [`Plugin::shutdown`] on disable or settings change (a settings change is
+/// a stop + fresh start). Background work goes through
+/// [`PluginContext::spawn`] so it is cancelled on stop.
 #[async_trait]
-pub trait Plugin: Send + Sync {
-    /// Return plugin metadata
+pub trait Plugin: Send + Sync + 'static {
+    /// Static metadata.
     fn info(&self) -> PluginInfo;
 
-    /// Initialize the plugin with its configuration
-    async fn init(&mut self, config: &PluginConfig, ctx: &PluginContext) -> crate::Result<()>;
+    /// Settings the plugin accepts. The store validates every write
+    /// against this and the UI renders its form from it.
+    fn settings_schema(&self) -> Vec<SettingField> {
+        Vec::new()
+    }
 
-    /// Handle a hook event. Return an action to influence firewall behavior.
-    async fn on_hook(&self, event: &HookEvent, ctx: &PluginContext) -> HookAction;
+    /// Cross-field checks that the per-field schema can't express. Runs
+    /// after schema validation on every settings write.
+    fn validate_settings(&self, _settings: &PluginSettings) -> Result<()> {
+        Ok(())
+    }
 
-    /// Graceful shutdown
-    async fn shutdown(&mut self) -> crate::Result<()>;
+    /// Operator-triggered actions.
+    fn actions(&self) -> Vec<ActionInfo> {
+        Vec::new()
+    }
+
+    /// Start the plugin with its effective settings. An error leaves the
+    /// plugin in the `error` state with the message shown to the operator.
+    async fn init(&mut self, settings: &PluginSettings, ctx: &PluginContext) -> Result<()>;
+
+    /// Handle a subscribed hook event. Must be quick: dispatch has a time
+    /// budget; push slow work to a task started with `ctx.spawn`.
+    async fn on_hook(&self, _event: &HookEvent, _ctx: &PluginContext) -> HookAction {
+        HookAction::Continue
+    }
+
+    /// Run an action declared in [`Plugin::actions`]. Returns JSON shown
+    /// to the operator.
+    async fn run_action(&self, action: &str, _args: Value, _ctx: &PluginContext) -> Result<Value> {
+        Err(PluginError::NotFound(format!("action '{action}'")))
+    }
+
+    /// Plugin-specific live status for the UI (JSON object).
+    async fn status(&self, _ctx: &PluginContext) -> Value {
+        Value::Null
+    }
+
+    /// Release resources. Spawned tasks, pf rules and touched tables are
+    /// cleaned up by the manager after this returns.
+    async fn shutdown(&self, _ctx: &PluginContext) -> Result<()> {
+        Ok(())
+    }
 }
