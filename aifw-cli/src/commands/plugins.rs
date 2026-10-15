@@ -291,7 +291,9 @@ pub async fn plugins_show(db_path: &Path, name: &str, json: bool) -> anyhow::Res
     let store = open_store(db_path).await?;
     let cfg = store.load(name).await?;
     let schema = plugin.settings_schema();
-    let eff = effective(&schema, &cfg.values, &cfg.secrets).into_map();
+    // Secrets are only ever shown as set / not set, so they stay out of the
+    // effective map that is printed.
+    let eff = effective(&schema, &cfg.values, &Map::new()).into_map();
     let info = plugin.info();
     let secrets_set: Vec<&str> = schema
         .iter()
