@@ -85,6 +85,7 @@ crossterm = "0.29"
 nix = { version = "0.31", features = ["fs", "process", "socket", "net", "fanotify", "feature", "hostname", "user"] }
 anyhow = "1"
 sha2 = "0.11"
+hmac = "0.13"
 hex = "0.4"
 rcgen = "0.14"
 libc = "0.2"

@@ -162,9 +162,15 @@ impl PluginStore {
         save_on(&self.pool, name, cfg).await
     }
 
-    /// Delete `name`'s row (reset to defaults, disabled).
+    /// Delete `name`'s row (reset to defaults, disabled) and its KV data.
+    /// The remembered table list survives so the manager can still empty
+    /// the plugin's pf tables afterwards.
     pub async fn reset(&self, name: &str) -> Result<()> {
         sqlx::query("DELETE FROM plugin_config WHERE name = ?1")
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM plugin_kv WHERE plugin = ?1 AND key != '__tables'")
             .bind(name)
             .execute(&self.pool)
             .await?;
@@ -213,8 +219,8 @@ pub async fn export_entries(
 ) -> Result<Vec<aifw_core::config::PluginConfigEntry>> {
     let store = PluginStore::new(pool.clone());
     let mut out = Vec::new();
-    for f in crate::registry::factories() {
-        let name = f().info().name;
+    for p in crate::registry::builtins() {
+        let name = p.info().name;
         let cfg = store.load(&name).await?;
         if cfg.updated_at.is_none() {
             continue;
@@ -236,7 +242,8 @@ pub async fn export_entries(
 /// Replace all plugin configuration with `entries` inside the caller's
 /// transaction (config restore). Entries for plugins this build doesn't
 /// ship, or whose settings no longer fit the plugin's schema, are skipped;
-/// the returned warnings say which and why.
+/// an enabled entry that fails the plugin's own checks is restored
+/// disabled. The returned warnings say which and why.
 pub async fn restore_on(
     conn: &mut sqlx::SqliteConnection,
     entries: &[aifw_core::config::PluginConfigEntry],
@@ -246,7 +253,7 @@ pub async fn restore_on(
         .await?;
     let mut warnings = Vec::new();
     for e in entries {
-        let Some(plugin) = crate::registry::instantiate(&e.name) else {
+        let Some(plugin) = crate::registry::find(&e.name) else {
             warnings.push(format!(
                 "plugin '{}' is not part of this build; skipped",
                 e.name
@@ -258,16 +265,24 @@ pub async fn restore_on(
             .iter()
             .map(|(k, v)| (k.clone(), Value::String(v.clone())))
             .collect();
-        let (values, secrets) =
-            match crate::schema::normalize(&plugin.settings_schema(), &e.settings, &secrets) {
-                Ok(v) => v,
-                Err(err) => {
-                    warnings.push(format!("plugin '{}' settings skipped: {err}", e.name));
-                    continue;
-                }
-            };
+        let schema = plugin.settings_schema();
+        let (values, secrets) = match crate::schema::normalize(&schema, &e.settings, &secrets) {
+            Ok(v) => v,
+            Err(err) => {
+                warnings.push(format!("plugin '{}' settings skipped: {err}", e.name));
+                continue;
+            }
+        };
+        let mut enabled = e.enabled;
+        if enabled
+            && let Err(err) =
+                plugin.validate_settings(&crate::schema::effective(&schema, &values, &secrets))
+        {
+            warnings.push(format!("plugin '{}' restored disabled: {err}", e.name));
+            enabled = false;
+        }
         let cfg = StoredConfig {
-            enabled: e.enabled,
+            enabled,
             values,
             secrets,
             updated_at: None,

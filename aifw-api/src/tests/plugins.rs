@@ -3,11 +3,14 @@ use super::*;
 use std::sync::Arc;
 
 use aifw_plugins::{
-    ActionInfo, HookPoint, Plugin, PluginContext, PluginInfo, PluginSettings, SettingField,
+    ActionInfo, HookPoint, Plugin, PluginContext, PluginInfo, PluginInstance, PluginSettings,
+    SettingField,
 };
 
 /// Plugin with a typed setting, a secret, and an action.
 struct Demo;
+
+struct DemoRunning;
 
 #[async_trait::async_trait]
 impl Plugin for Demo {
@@ -33,11 +36,18 @@ impl Plugin for Demo {
         vec![ActionInfo::new("ping", "Ping", "replies pong")]
     }
 
-    async fn init(&mut self, _s: &PluginSettings, ctx: &PluginContext) -> aifw_plugins::Result<()> {
+    async fn start(
+        &self,
+        _s: &PluginSettings,
+        ctx: &PluginContext,
+    ) -> aifw_plugins::Result<Box<dyn PluginInstance>> {
         ctx.info("demo up");
-        Ok(())
+        Ok(Box::new(DemoRunning))
     }
+}
 
+#[async_trait::async_trait]
+impl PluginInstance for DemoRunning {
     async fn run_action(
         &self,
         _action: &str,
@@ -55,12 +65,12 @@ impl Plugin for Demo {
 async fn plugin_app() -> TestServer {
     let (_, settings) = test_app().await;
     let mut state = crate::create_app_state_in_memory(settings).await.unwrap();
-    let factory: aifw_plugins::registry::Factory = Arc::new(|| Box::new(Demo) as Box<dyn Plugin>);
+    let plugin: Arc<dyn Plugin> = Arc::new(Demo);
     state.plugin_manager = Arc::new(
-        aifw_plugins::PluginManager::with_factories(
+        aifw_plugins::PluginManager::with_plugins(
             state.pf.clone(),
             state.pool.clone(),
-            vec![factory],
+            vec![plugin],
         )
         .unwrap(),
     );

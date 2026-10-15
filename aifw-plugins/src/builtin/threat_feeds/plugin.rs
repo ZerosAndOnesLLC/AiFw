@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +17,7 @@ use crate::context::PluginContext;
 use crate::error::{PluginError, Result};
 use crate::hooks::{HookAction, HookEvent, HookPoint};
 use crate::http::{self, Fetched};
-use crate::plugin::{ActionInfo, Plugin, PluginInfo};
+use crate::plugin::{ActionInfo, Plugin, PluginInfo, PluginInstance};
 use crate::schema::{ListItem, PluginSettings, SelectOption, SettingField, parse_cidr};
 
 const NAME: &str = "threat-feeds";
@@ -30,6 +30,20 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 const RETRY_AFTER_FAILURE: chrono::Duration = chrono::Duration::hours(1);
 /// pf's default `table-entries` limit is 200k across all tables.
 const MAX_ENTRIES_LIMIT: i64 = 190_000;
+
+/// The settings exactly as the schema declares them (see
+/// [`PluginSettings::deserialize`]).
+#[derive(Debug, Deserialize)]
+struct Settings {
+    feeds: Vec<String>,
+    custom_urls: Vec<String>,
+    refresh_hours: i64,
+    mode: String,
+    direction: String,
+    log_matches: bool,
+    allowlist: Vec<String>,
+    max_entries: i64,
+}
 
 /// A feed to download: a catalog entry or an operator URL.
 #[derive(Debug, Clone)]
@@ -99,7 +113,7 @@ struct Inner {
     cfg: Config,
     state: Mutex<State>,
     refreshing: AtomicBool,
-    client: reqwest::Client,
+    client: http::Client,
 }
 
 /// Clears the "refresh running" flag however the refresh ends.
@@ -112,22 +126,11 @@ impl Drop for RefreshGuard<'_> {
 }
 
 /// The Threat Intel Feeds plugin. See the module docs.
-#[derive(Default)]
-pub struct ThreatFeeds {
-    inner: Option<Arc<Inner>>,
-}
+pub struct ThreatFeeds;
 
-impl ThreatFeeds {
-    /// A fresh, un-initialized instance (registry factory).
-    pub fn boxed() -> Box<dyn Plugin> {
-        Box::new(Self::default())
-    }
-
-    fn inner(&self) -> Result<&Arc<Inner>> {
-        self.inner
-            .as_ref()
-            .ok_or_else(|| PluginError::Plugin("not initialized".into()))
-    }
+/// A running Threat Intel Feeds plugin.
+struct Running {
+    inner: Arc<Inner>,
 }
 
 /// Stable id for an operator-supplied URL (FNV-1a), so its KV state
@@ -141,9 +144,10 @@ fn custom_id(url: &str) -> String {
     format!("custom-{h:016x}")
 }
 
-fn config(s: &PluginSettings) -> Config {
+fn config(s: &PluginSettings) -> Result<Config> {
+    let s: Settings = s.deserialize()?;
     let mut sources: Vec<Source> = s
-        .strings("feeds")
+        .feeds
         .iter()
         .filter_map(|id| feeds::find(id))
         .map(|f| Source {
@@ -153,7 +157,7 @@ fn config(s: &PluginSettings) -> Config {
             format: f.format,
         })
         .collect();
-    for url in s.strings("custom_urls") {
+    for url in s.custom_urls {
         sources.push(Source {
             id: custom_id(&url),
             name: url.clone(),
@@ -161,23 +165,19 @@ fn config(s: &PluginSettings) -> Config {
             format: Format::Lines,
         });
     }
-    Config {
+    Ok(Config {
         sources,
-        mode: if s.str("mode") == Some("log") {
+        mode: if s.mode == "log" {
             Mode::LogOnly
         } else {
             Mode::Block
         },
-        both_directions: s.str("direction") == Some("both"),
-        log_matches: s.bool("log_matches"),
-        refresh: chrono::Duration::hours(s.i64("refresh_hours").unwrap_or(12)),
-        allowlist: s
-            .strings("allowlist")
-            .iter()
-            .filter_map(|c| parse_cidr(c))
-            .collect(),
-        max_entries: s.i64("max_entries").unwrap_or(150_000).max(1) as usize,
-    }
+        both_directions: s.direction == "both",
+        log_matches: s.log_matches,
+        refresh: chrono::Duration::hours(s.refresh_hours),
+        allowlist: s.allowlist.iter().filter_map(|c| parse_cidr(c)).collect(),
+        max_entries: usize::try_from(s.max_entries).unwrap_or(1).max(1),
+    })
 }
 
 /// The pf rules for the current mode. They only reference the plugin's own
@@ -229,6 +229,14 @@ fn decode_list(s: &str) -> Vec<(IpAddr, u8)> {
     s.lines().filter_map(parse_cidr).collect()
 }
 
+fn list_key(id: &str) -> String {
+    format!("list:{id}")
+}
+
+fn meta_key(id: &str) -> String {
+    format!("meta:{id}")
+}
+
 impl Inner {
     fn any_due(&self, state: &State, now: DateTime<Utc>) -> bool {
         self.cfg.sources.iter().any(|src| {
@@ -240,35 +248,44 @@ impl Inner {
     }
 
     /// Load the last good lists from the KV store — protection is back in
-    /// place right after boot, before any download.
+    /// place right after boot, before any download — and drop the stored
+    /// lists of feeds that are no longer selected.
     async fn load(&self, ctx: &PluginContext) -> Result<()> {
+        let keep: BTreeSet<&str> = self.cfg.sources.iter().map(|s| s.id.as_str()).collect();
+        for key in ctx.kv_keys("list:").await? {
+            if !keep.contains(&key[5..]) {
+                ctx.kv_delete(&key).await?;
+                ctx.kv_delete(&meta_key(&key[5..])).await?;
+            }
+        }
         let mut state = self.state.lock().await;
         for src in &self.cfg.sources {
-            if let Some(meta) = ctx
-                .kv_get_json::<FeedMeta>(&format!("meta:{}", src.id))
-                .await?
-            {
+            if let Some(meta) = ctx.kv_get_json::<FeedMeta>(&meta_key(&src.id)).await? {
                 state.meta.insert(src.id.clone(), meta);
             }
-            if let Some(list) = ctx.kv_get(&format!("list:{}", src.id)).await? {
+            if let Some(list) = ctx.kv_get(&list_key(&src.id)).await? {
                 state.lists.insert(src.id.clone(), decode_list(&list));
             }
         }
         Ok(())
     }
 
-    /// Rebuild the pf table from every configured feed's current list.
+    /// Rebuild the pf table from every configured feed's current list. The
+    /// state lock is held only while the entry list is built, never across
+    /// the pfctl call.
     async fn apply(&self, ctx: &PluginContext) -> Result<usize> {
-        let mut state = self.state.lock().await;
-        let all: Vec<(IpAddr, u8)> = self
-            .cfg
-            .sources
-            .iter()
-            .filter_map(|s| state.lists.get(&s.id))
-            .flatten()
-            .copied()
-            .collect();
-        let (entries, dropped) = sanitize(all, &self.cfg.allowlist, self.cfg.max_entries);
+        let (entries, dropped) = {
+            let state = self.state.lock().await;
+            let all: Vec<(IpAddr, u8)> = self
+                .cfg
+                .sources
+                .iter()
+                .filter_map(|s| state.lists.get(&s.id))
+                .flatten()
+                .copied()
+                .collect();
+            sanitize(all, &self.cfg.allowlist, self.cfg.max_entries)
+        };
         ctx.replace_table(TABLE, &entries).await?;
         if dropped.over_cap > 0 {
             ctx.warn(format!(
@@ -276,6 +293,7 @@ impl Inner {
                 dropped.over_cap, self.cfg.max_entries
             ));
         }
+        let mut state = self.state.lock().await;
         state.table_entries = entries.len();
         state.dropped = dropped;
         state.last_applied = Some(Utc::now());
@@ -284,20 +302,21 @@ impl Inner {
 
     /// Download one feed and record the outcome. Returns a one-line result.
     async fn fetch(&self, ctx: &PluginContext, src: &Source) -> String {
-        let (etag, have_list) = {
+        let (mut meta, have_list) = {
             let state = self.state.lock().await;
             (
-                state.meta.get(&src.id).and_then(|m| m.etag.clone()),
+                state.meta.get(&src.id).cloned().unwrap_or_default(),
                 state.lists.contains_key(&src.id),
             )
         };
         // Only send If-None-Match when we still hold the list it refers to.
-        let etag = etag.filter(|_| have_list);
+        let etag = meta.etag.clone().filter(|_| have_list);
         let now = Utc::now();
-        let outcome = http::fetch_text(&self.client, &src.url, etag.as_deref(), MAX_BODY).await;
+        let outcome = self
+            .client
+            .get_text(&src.url, etag.as_deref(), MAX_BODY)
+            .await;
 
-        let mut state = self.state.lock().await;
-        let mut meta = state.meta.get(&src.id).cloned().unwrap_or_default();
         meta.last_attempt = Some(now);
         let mut new_list = None;
         let result = match outcome {
@@ -331,22 +350,23 @@ impl Inner {
                 format!("failed: {e}")
             }
         };
-        if let Some(list) = &new_list {
-            if let Err(e) = ctx
-                .kv_set(&format!("list:{}", src.id), &encode_list(list))
-                .await
-            {
-                ctx.warn(format!("{}: could not persist list: {e}", src.name));
-            }
-            state
-                .lists
-                .insert(src.id.clone(), new_list.unwrap_or_default());
+        // Persist outside the state lock: a multi-MB write must not stall
+        // the timer hook or the status view.
+        if let Some(list) = &new_list
+            && let Err(e) = ctx.kv_set(&list_key(&src.id), &encode_list(list)).await
+        {
+            ctx.warn(format!("{}: could not persist list: {e}", src.name));
         }
-        if let Err(e) = ctx.kv_set_json(&format!("meta:{}", src.id), &meta).await {
+        if let Err(e) = ctx.kv_set_json(&meta_key(&src.id), &meta).await {
             ctx.warn(format!("{}: could not persist state: {e}", src.name));
         }
-        state.meta.insert(src.id.clone(), meta.clone());
-        drop(state);
+        {
+            let mut state = self.state.lock().await;
+            if let Some(list) = new_list {
+                state.lists.insert(src.id.clone(), list);
+            }
+            state.meta.insert(src.id.clone(), meta.clone());
+        }
 
         if meta.last_error.is_some() {
             ctx.warn(format!("{}: {result}", src.name));
@@ -418,7 +438,7 @@ impl Plugin for ThreatFeeds {
         PluginInfo {
             name: NAME.to_string(),
             title: "Threat Intel Feeds".to_string(),
-            version: "1.0.0".to_string(),
+            version: "1.1.0".to_string(),
             description: "Blocks traffic to and from addresses on public threat-intelligence \
                           blocklists (Spamhaus DROP, abuse.ch, DShield and more), refreshed \
                           automatically."
@@ -477,8 +497,10 @@ impl Plugin for ThreatFeeds {
                 .group("Enforcement"),
             SettingField::list("allowlist", "Never block", ListItem::Cidr, 256)
                 .help(
-                    "Addresses or networks to keep reachable. A feed entry that overlaps \
-                     any of these is skipped entirely.",
+                    "Addresses or networks to keep reachable. Add the address you manage \
+                     this firewall from: these blocks run before every other rule, and some \
+                     feeds list residential ranges. A feed entry that overlaps any of these \
+                     is skipped entirely.",
                 )
                 .group("Enforcement"),
             SettingField::integer(
@@ -494,7 +516,7 @@ impl Plugin for ThreatFeeds {
     }
 
     fn validate_settings(&self, settings: &PluginSettings) -> Result<()> {
-        if settings.strings("feeds").is_empty() && settings.strings("custom_urls").is_empty() {
+        if config(settings)?.sources.is_empty() {
             return Err(PluginError::Validation(
                 "Select at least one feed or add a custom URL.".into(),
             ));
@@ -518,10 +540,14 @@ impl Plugin for ThreatFeeds {
         ]
     }
 
-    async fn init(&mut self, settings: &PluginSettings, ctx: &PluginContext) -> Result<()> {
-        let cfg = config(settings);
+    async fn start(
+        &self,
+        settings: &PluginSettings,
+        ctx: &PluginContext,
+    ) -> Result<Box<dyn PluginInstance>> {
+        let cfg = config(settings)?;
         let inner = Arc::new(Inner {
-            client: http::client(NAME, FETCH_TIMEOUT, false)?,
+            client: http::Client::new(NAME, FETCH_TIMEOUT, false),
             cfg,
             state: Mutex::new(State::default()),
             refreshing: AtomicBool::new(false),
@@ -542,29 +568,28 @@ impl Plugin for ThreatFeeds {
         if due {
             inner.start_refresh(ctx, false);
         }
-        self.inner = Some(inner);
-        Ok(())
+        Ok(Box::new(Running { inner }))
     }
+}
 
+#[async_trait]
+impl PluginInstance for Running {
     async fn on_hook(&self, event: &HookEvent, ctx: &PluginContext) -> HookAction {
         if event.hook != HookPoint::Timer {
             return HookAction::Continue;
         }
-        let Ok(inner) = self.inner() else {
-            return HookAction::Continue;
-        };
         let due = {
-            let state = inner.state.lock().await;
-            inner.any_due(&state, Utc::now())
+            let state = self.inner.state.lock().await;
+            self.inner.any_due(&state, Utc::now())
         };
         if due {
-            inner.start_refresh(ctx, false);
+            self.inner.start_refresh(ctx, false);
         }
         HookAction::Continue
     }
 
     async fn run_action(&self, action: &str, args: Value, ctx: &PluginContext) -> Result<Value> {
-        let inner = self.inner()?;
+        let inner = &self.inner;
         match action {
             "refresh" => inner.refresh(ctx, true).await,
             "lookup" => {
@@ -605,9 +630,7 @@ impl Plugin for ThreatFeeds {
     }
 
     async fn status(&self, ctx: &PluginContext) -> Value {
-        let Ok(inner) = self.inner() else {
-            return Value::Null;
-        };
+        let inner = &self.inner;
         let state = inner.state.lock().await;
         let feeds: Vec<Value> = inner
             .cfg
@@ -648,7 +671,7 @@ mod tests {
     use crate::schema;
 
     fn settings(v: Value) -> PluginSettings {
-        let schema = ThreatFeeds::default().settings_schema();
+        let schema = ThreatFeeds.settings_schema();
         let (values, _) =
             schema::normalize(&schema, v.as_object().unwrap(), &serde_json::Map::new()).unwrap();
         schema::effective(&schema, &values, &serde_json::Map::new())
@@ -656,7 +679,7 @@ mod tests {
 
     #[test]
     fn defaults_select_low_false_positive_feeds() {
-        let cfg = config(&settings(json!({})));
+        let cfg = config(&settings(json!({}))).unwrap();
         let ids: Vec<&str> = cfg.sources.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -665,6 +688,7 @@ mod tests {
         assert_eq!(cfg.mode, Mode::Block);
         assert!(cfg.both_directions);
         assert_eq!(cfg.refresh, chrono::Duration::hours(12));
+        assert_eq!(cfg.max_entries, 150_000);
     }
 
     #[test]
@@ -674,15 +698,18 @@ mod tests {
             json!({"mode": "block", "direction": "both"}),
             json!({"mode": "log", "direction": "both"}),
         ] {
-            let r = rules(&config(&settings(v.clone())));
+            let r = rules(&config(&settings(v.clone())).unwrap());
             assert!(!r.is_empty());
             for rule in &r {
                 crate::rules::check_rule(rule).unwrap_or_else(|e| panic!("{v}: {e}"));
             }
         }
-        let inbound_block = rules(&config(&settings(
-            json!({"mode": "block", "direction": "inbound", "log_matches": false}),
-        )));
+        let inbound_block = rules(
+            &config(&settings(
+                json!({"mode": "block", "direction": "inbound", "log_matches": false}),
+            ))
+            .unwrap(),
+        );
         assert_eq!(
             inbound_block,
             ["block drop in quick from <plugin_threat_feeds> label \"threat-feeds:inbound\""]
@@ -691,16 +718,17 @@ mod tests {
 
     #[test]
     fn requires_a_source() {
-        let p = ThreatFeeds::default();
         assert!(
-            p.validate_settings(&settings(json!({"feeds": []})))
+            ThreatFeeds
+                .validate_settings(&settings(json!({"feeds": []})))
                 .is_err()
         );
         assert!(
-            p.validate_settings(&settings(
-                json!({"feeds": [], "custom_urls": ["https://example.com/l.txt"]})
-            ))
-            .is_ok()
+            ThreatFeeds
+                .validate_settings(&settings(
+                    json!({"feeds": [], "custom_urls": ["https://example.com/l.txt"]})
+                ))
+                .is_ok()
         );
     }
 
@@ -732,52 +760,129 @@ mod tests {
         assert!(failed.is_due(refresh, now + chrono::Duration::hours(1)));
     }
 
-    #[tokio::test]
-    async fn restores_table_from_kv_without_network() {
-        let db = aifw_core::Database::new_in_memory().await.unwrap();
-        let pf: Arc<dyn aifw_pf::PfBackend> = Arc::new(aifw_pf::PfMock::new());
-        let sink = Arc::new(crate::rules::RuleSink::new(pf.clone(), "aifw-plugins"));
-        let ctx = PluginContext::new(NAME, pf.clone(), db.pool().clone(), sink);
-
-        // A previous run left one feed's list behind, freshly fetched (so no
-        // refresh is due and the test never touches the network).
-        ctx.kv_set("list:feodo", "50.16.16.211/32\n10.0.0.0/8\n")
-            .await
-            .unwrap();
+    /// Mark every default feed as freshly fetched so no download is due
+    /// and the test never touches the network.
+    async fn mark_fresh(ctx: &PluginContext, ids: &[&str]) {
         let meta = FeedMeta {
             last_attempt: Some(Utc::now()),
             last_success: Some(Utc::now()),
             entries: 2,
             ..Default::default()
         };
-        for id in ["spamhaus-drop", "spamhaus-drop-v6", "feodo", "dshield"] {
-            ctx.kv_set_json(&format!("meta:{id}"), &meta).await.unwrap();
+        for id in ids {
+            ctx.kv_set_json(&meta_key(id), &meta).await.unwrap();
         }
+    }
 
-        let mut p = ThreatFeeds::default();
-        p.init(&settings(json!({})), &ctx).await.unwrap();
+    #[tokio::test]
+    async fn restores_table_from_kv_without_network() {
+        let t = PluginContext::for_tests(NAME).await;
+        let ctx = &t.ctx;
 
-        let table = pf.get_table_entries(TABLE).await.unwrap();
+        // A previous run left one feed's list behind.
+        ctx.kv_set("list:feodo", "50.16.16.211/32\n10.0.0.0/8\n")
+            .await
+            .unwrap();
+        mark_fresh(
+            ctx,
+            &["spamhaus-drop", "spamhaus-drop-v6", "feodo", "dshield"],
+        )
+        .await;
+
+        let p = ThreatFeeds.start(&settings(json!({})), ctx).await.unwrap();
+
+        let table = t.pf.get_table_entries(TABLE).await.unwrap();
         assert_eq!(table.len(), 1, "RFC1918 entry must be sanitized out");
         assert_eq!(table[0].addr.to_string(), "50.16.16.211");
-        assert_eq!(pf.get_rules("aifw-plugins").await.unwrap().len(), 3);
+        assert_eq!(
+            t.pf.get_rules(aifw_common::anchors::PLUGINS)
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
 
-        let status = p.status(&ctx).await;
+        let status = p.status(ctx).await;
         assert_eq!(status["table_entries"], 1);
         assert_eq!(status["dropped"]["non_public"], 1);
         assert_eq!(status["refreshing"], false);
 
         let hit = p
-            .run_action("lookup", json!({"ip": "50.16.16.211"}), &ctx)
+            .run_action("lookup", json!({"ip": "50.16.16.211"}), ctx)
             .await
             .unwrap();
         assert_eq!(hit["listed_in"], json!(["abuse.ch Feodo Tracker"]));
         assert_eq!(hit["blocked"], true);
         let miss = p
-            .run_action("lookup", json!({"ip": "8.8.8.8"}), &ctx)
+            .run_action("lookup", json!({"ip": "8.8.8.8"}), ctx)
             .await
             .unwrap();
         assert_eq!(miss["blocked"], false);
+    }
+
+    #[tokio::test]
+    async fn start_prunes_lists_of_deselected_feeds() {
+        let t = PluginContext::for_tests(NAME).await;
+        let ctx = &t.ctx;
+        ctx.kv_set("list:firehol-l1", "1.2.3.0/24\n").await.unwrap();
+        ctx.kv_set("list:feodo", "50.16.16.211/32\n").await.unwrap();
+        mark_fresh(ctx, &["firehol-l1", "feodo"]).await;
+
+        ThreatFeeds
+            .start(&settings(json!({"feeds": ["feodo"]})), ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(ctx.kv_keys("list:").await.unwrap(), ["list:feodo"]);
+        assert_eq!(ctx.kv_keys("meta:").await.unwrap(), ["meta:feodo"]);
+    }
+
+    #[tokio::test]
+    async fn fetches_a_custom_feed_and_persists_it() {
+        use crate::http::testing::{Reply, TestServer};
+        // The SSRF guard refuses loopback feeds; test the fetch path
+        // through the HTTP client with a LAN-allowing client instead.
+        let srv = TestServer::bind().await;
+        let url = srv.url("/list.txt");
+        srv.run(vec![
+            Reply::body(
+                200,
+                "# comment\nnot-an-address\n1.2.3.0/24\n5.6.7.8\n10.0.0.1\n",
+            )
+            .header("ETag", "\"abc\""),
+        ]);
+        let inner = Arc::new(Inner {
+            client: http::Client::new(NAME, FETCH_TIMEOUT, true),
+            cfg: Config {
+                sources: vec![Source {
+                    id: custom_id(&url),
+                    name: url.clone(),
+                    url: url.clone(),
+                    format: Format::Lines,
+                }],
+                mode: Mode::Block,
+                both_directions: false,
+                log_matches: false,
+                refresh: chrono::Duration::hours(12),
+                allowlist: Vec::new(),
+                max_entries: 1000,
+            },
+            state: Mutex::new(State::default()),
+            refreshing: AtomicBool::new(false),
+        });
+        let t = PluginContext::for_tests(NAME).await;
+        let out = inner.refresh(&t.ctx, true).await.unwrap();
+        assert_eq!(out["table_entries"], 2, "private entry sanitized out");
+        let meta: FeedMeta = t
+            .ctx
+            .kv_get_json(&meta_key(&custom_id(&url)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.etag.as_deref(), Some("\"abc\""));
+        assert_eq!(meta.entries, 3);
+        assert_eq!(meta.skipped_lines, 1);
+        assert_eq!(t.pf.get_table_entries(TABLE).await.unwrap().len(), 2);
     }
 }
 
@@ -790,9 +895,10 @@ mod live {
     #[tokio::test]
     #[ignore = "downloads every catalog feed from the internet"]
     async fn live_catalog_feeds_download_and_parse() {
-        let client = http::client(NAME, FETCH_TIMEOUT, false).unwrap();
+        let client = http::Client::new(NAME, FETCH_TIMEOUT, false);
         for feed in CATALOG {
-            let Fetched::Body { text, .. } = http::fetch_text(&client, feed.url, None, MAX_BODY)
+            let Fetched::Body { text, .. } = client
+                .get_text(feed.url, None, MAX_BODY)
                 .await
                 .unwrap_or_else(|e| panic!("{}: {e}", feed.id))
             else {

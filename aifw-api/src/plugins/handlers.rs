@@ -34,7 +34,7 @@ fn api_error(e: PluginError) -> ApiError {
         // Failures raised by the plugin itself (an action that couldn't
         // reach a webhook, a table write pf refused) are the operator's to
         // read, not a server bug.
-        PluginError::Plugin(_) | PluginError::Table(_) | PluginError::Init(_) => {
+        PluginError::Plugin(_) | PluginError::Table(_) | PluginError::Rule(_) => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
     };

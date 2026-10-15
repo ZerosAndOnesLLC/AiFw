@@ -87,6 +87,11 @@ impl Tail {
                     state.plugin_manager.dispatch(e).await;
                 }
             }
+            // ids_alerts only exists once aifw-ids has run: not an error,
+            // just nothing to tail yet.
+            Err(e) if e.to_string().contains("no such table") => {
+                tracing::debug!(source = ?src, "plugins: tail source table absent")
+            }
             Err(e) => tracing::warn!(source = ?src, error = %e, "plugins: tail query failed"),
         }
     }
@@ -106,7 +111,7 @@ impl Tail {
                 self.cursor = rowid;
                 HookEvent {
                     hook: HookPoint::LogEvent,
-                    data: HookEventData::Log {
+                    data: HookEventData::LogEvent {
                         action,
                         details,
                         source,
@@ -150,7 +155,7 @@ impl Tail {
             };
             out.push(HookEvent {
                 hook: HookPoint::IdsAlert,
-                data: HookEventData::IdsAlertEvent {
+                data: HookEventData::IdsAlert {
                     alert_id: id,
                     timestamp: ts,
                     signature_id: sid.and_then(|s| u32::try_from(s).ok()),
@@ -199,7 +204,7 @@ impl Tail {
             self.last_gateway_state.insert(gw_id.clone(), to.clone());
             out.push(HookEvent {
                 hook: HookPoint::GatewayEvent,
-                data: HookEventData::Gateway {
+                data: HookEventData::GatewayEvent {
                     gateway_id: gw_id,
                     gateway_name: name,
                     interface: iface,

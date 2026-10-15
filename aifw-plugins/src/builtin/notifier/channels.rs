@@ -3,12 +3,13 @@
 
 use std::time::Duration;
 
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 use super::message::{Level, Notification};
 use crate::error::{PluginError, Result};
-use crate::http::check_destination;
+use crate::http;
 
 const ATTEMPTS: u32 = 3;
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
@@ -93,32 +94,11 @@ fn text(n: &Notification, host: &str) -> String {
     s
 }
 
-/// HMAC-SHA256 (RFC 2104).
+/// HMAC-SHA256 of `msg` under `key` (RFC 2104), for webhook signing.
 pub fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut k = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        k[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        k[..key.len()].copy_from_slice(key);
-    }
-    let mut ipad = [0x36u8; BLOCK];
-    let mut opad = [0x5cu8; BLOCK];
-    for i in 0..BLOCK {
-        ipad[i] ^= k[i];
-        opad[i] ^= k[i];
-    }
-    let inner = Sha256::new()
-        .chain_update(ipad)
-        .chain_update(msg)
-        .finalize();
-    let outer = Sha256::new()
-        .chain_update(opad)
-        .chain_update(inner)
-        .finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&outer);
-    out
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts keys of any length");
+    mac.update(msg);
+    mac.finalize().into_bytes().into()
 }
 
 /// Build the request `channel` needs for `n`.
@@ -235,44 +215,28 @@ pub fn build(channel: &Channel, n: &Notification, host: &str) -> Request {
     }
 }
 
-/// Error text safe to show: never echo a URL, since webhook URLs and the
-/// Telegram bot token are secrets.
-fn redact(e: reqwest::Error) -> String {
-    if e.is_timeout() {
-        "timed out".into()
-    } else if e.is_connect() {
-        "could not connect".into()
-    } else {
-        e.without_url().to_string()
-    }
-}
-
-/// Deliver `n` through `channel`, retrying transient failures.
+/// Deliver `n` through `channel`, retrying transient failures. Every
+/// error is safe to show: URLs (which may embed tokens) are never echoed.
 pub async fn send(
-    client: &reqwest::Client,
+    client: &http::Client,
     channel: &Channel,
     n: &Notification,
     host: &str,
-    allow_private: bool,
 ) -> Result<()> {
     let req = build(channel, n, host);
-    // Telegram is always the public Bot API.
-    let private_ok = allow_private && !matches!(channel, Channel::Telegram { .. });
-    check_destination(&req.url, private_ok)
-        .await
-        .map_err(|_| PluginError::Validation(format!("{} destination refused", channel.id())))?;
-
+    // Telegram is always the public Bot API, whatever the LAN opt-in says.
+    let client = if matches!(channel, Channel::Telegram { .. }) {
+        client.public_only()
+    } else {
+        client.clone()
+    };
     let mut last_err = String::new();
     for attempt in 1..=ATTEMPTS {
-        let mut rb = client
-            .post(&req.url)
-            .header(reqwest::header::CONTENT_TYPE, req.content_type)
-            .body(req.body.clone());
-        for (k, v) in &req.headers {
-            rb = rb.header(k, v);
-        }
         let backoff = Duration::from_secs(1 << (attempt - 1));
-        match rb.send().await {
+        match client
+            .post(&req.url, &req.headers, req.content_type, req.body.clone())
+            .await
+        {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             Ok(resp) => {
                 let status = resp.status();
@@ -292,8 +256,15 @@ pub async fn send(
                     .min(MAX_RETRY_AFTER);
                 tokio::time::sleep(wait).await;
             }
+            Err(PluginError::Validation(_)) => {
+                return Err(PluginError::Validation(format!(
+                    "{} destination refused (not a public https URL; enable \
+                     \"Allow LAN / http destinations\" for a self-hosted service)",
+                    channel.id()
+                )));
+            }
             Err(e) => {
-                last_err = redact(e);
+                last_err = e.to_string();
                 if attempt == ATTEMPTS {
                     break;
                 }
@@ -406,62 +377,25 @@ mod tests {
         assert_eq!(tg.url, "https://api.telegram.org/bot123:abc/sendMessage");
     }
 
-    /// Minimal HTTP/1.1 server: answers each request with the next status
-    /// from `statuses` and records (headers, body).
-    async fn serve(
-        statuses: Vec<u16>,
-    ) -> (
-        String,
-        std::sync::Arc<tokio::sync::Mutex<Vec<(String, String)>>>,
-    ) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let seen = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let log = seen.clone();
-        tokio::spawn(async move {
-            for status in statuses {
-                let (mut sock, _) = listener.accept().await.unwrap();
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 4096];
-                let (head, body) = loop {
-                    let n = sock.read(&mut chunk).await.unwrap();
-                    buf.extend_from_slice(&chunk[..n]);
-                    let text = String::from_utf8_lossy(&buf).to_string();
-                    if let Some(i) = text.find("\r\n\r\n") {
-                        let head = text[..i].to_string();
-                        let len: usize = head
-                            .lines()
-                            .find_map(|l| {
-                                l.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .map(|v| v.trim().parse().unwrap())
-                            })
-                            .unwrap_or(0);
-                        if buf.len() >= i + 4 + len {
-                            break (head, text[i + 4..i + 4 + len].to_string());
-                        }
-                    }
-                };
-                log.lock().await.push((head, body));
-                let resp = format!(
-                    "HTTP/1.1 {status} X\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                );
-                sock.write_all(resp.as_bytes()).await.unwrap();
-            }
-        });
-        (format!("http://{addr}/hook"), seen)
+    use crate::http::testing::{Reply, TestServer};
+
+    fn lan_client() -> http::Client {
+        http::Client::new("notifier", Duration::from_secs(5), true)
     }
 
     #[tokio::test]
     async fn delivers_signed_webhook_and_retries_server_errors() {
-        let (url, seen) = serve(vec![503, 200]).await;
-        let client = crate::http::client("notifier", Duration::from_secs(5), true).unwrap();
+        let srv = TestServer::bind().await;
+        let url = srv.url("/hook");
+        let seen = srv.run(vec![
+            Reply::status(503).header("Retry-After", "0"),
+            Reply::status(200),
+        ]);
         let ch = Channel::Webhook {
             url: url.clone(),
             secret: Some("k".into()),
         };
-        send(&client, &ch, &test_notification(), "fw1", true)
+        send(&lan_client(), &ch, &test_notification(), "fw1")
             .await
             .unwrap();
         let reqs = seen.lock().await;
@@ -478,26 +412,45 @@ mod tests {
 
     #[tokio::test]
     async fn private_destinations_need_opt_in() {
-        let (url, seen) = serve(vec![200]).await;
-        let client = crate::http::client("notifier", Duration::from_secs(5), false).unwrap();
-        let ch = Channel::Slack { url };
-        let err = send(&client, &ch, &test_notification(), "fw1", false)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("destination refused"));
+        let srv = TestServer::bind().await;
+        let url = srv.url("/hook");
+        let seen = srv.run(vec![Reply::status(200)]);
+        let strict = http::Client::new("notifier", Duration::from_secs(5), false);
+        let err = send(
+            &strict,
+            &Channel::Slack { url: url.clone() },
+            &test_notification(),
+            "fw1",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("destination refused"), "{err}");
+        assert!(!err.contains(&url), "error must not echo the URL");
         assert!(seen.lock().await.is_empty());
     }
 
     #[tokio::test]
+    async fn telegram_ignores_the_lan_opt_in() {
+        // A LAN-allowing client still refuses a private Telegram "API":
+        // the bot token only ever goes to api.telegram.org, so a request
+        // that would go elsewhere must never leave. We can't point the
+        // Telegram channel at a test server (its URL is fixed), so check
+        // the client the channel would use.
+        assert!(!lan_client().public_only().allows_private());
+        assert!(lan_client().allows_private());
+    }
+
+    #[tokio::test]
     async fn client_errors_are_not_retried() {
-        let (url, seen) = serve(vec![404, 200]).await;
-        let client = crate::http::client("notifier", Duration::from_secs(5), true).unwrap();
+        let srv = TestServer::bind().await;
+        let url = srv.url("/hook");
+        let seen = srv.run(vec![Reply::status(404), Reply::status(200)]);
         let err = send(
-            &client,
+            &lan_client(),
             &Channel::Discord { url },
             &test_notification(),
             "fw1",
-            true,
         )
         .await
         .unwrap_err();

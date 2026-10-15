@@ -191,7 +191,7 @@ pub async fn auth_middleware(
     {
         let event = aifw_plugins::HookEvent {
             hook: aifw_plugins::HookPoint::ApiRequest,
-            data: aifw_plugins::HookEventData::Api {
+            data: aifw_plugins::HookEventData::ApiRequest {
                 method: request.method().to_string(),
                 path: request.uri().path().to_string(),
                 // #308: resolved peer / trusted-proxy client address.

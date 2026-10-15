@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
@@ -13,8 +14,8 @@ use tokio::task::JoinSet;
 use crate::context::{LogEntry, LogLevel, PluginContext};
 use crate::error::{PluginError, Result};
 use crate::hooks::{HookAction, HookEvent, HookPoint};
-use crate::plugin::{ActionInfo, Plugin, PluginInfo, PluginState};
-use crate::registry::{self, Factory};
+use crate::plugin::{ActionInfo, Plugin, PluginInfo, PluginInstance, PluginState};
+use crate::registry;
 use crate::rules::RuleSink;
 use crate::schema::{self, SettingField};
 use crate::store::{PluginStore, StoredConfig};
@@ -23,7 +24,7 @@ use crate::store::{PluginStore, StoredConfig};
 const HOOK_TIMEOUT: Duration = Duration::from_secs(5);
 /// `ApiRequest` sits in the request path of every authenticated call.
 const API_HOOK_TIMEOUT: Duration = Duration::from_millis(250);
-const INIT_TIMEOUT: Duration = Duration::from_secs(30);
+const START_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const ACTION_TIMEOUT: Duration = Duration::from_secs(120);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -96,26 +97,39 @@ struct Status {
     started_at: Option<DateTime<Utc>>,
 }
 
+/// A started plugin and the hooks it asked for with its settings.
+#[derive(Clone)]
+struct Running {
+    inst: Arc<dyn PluginInstance>,
+    hooks: Vec<HookPoint>,
+    mask: u32,
+}
+
 struct Entry {
-    factory: Factory,
+    plugin: Arc<dyn Plugin>,
     info: PluginInfo,
     schema: Vec<SettingField>,
     actions: Vec<ActionInfo>,
     ctx: PluginContext,
     stats: Stats,
-    /// Serializes start/stop/apply for this plugin; holds the config
-    /// marker last applied (reconcile compares it with the store).
+    /// Serializes every config write and start/stop for this plugin;
+    /// holds the config marker last applied (reconcile compares it with
+    /// the store).
     life: tokio::sync::Mutex<Option<String>>,
-    running: RwLock<Option<Arc<dyn Plugin>>>,
+    running: RwLock<Option<Running>>,
     status: Mutex<Status>,
 }
 
 impl Entry {
-    fn instance(&self) -> Option<Arc<dyn Plugin>> {
+    fn running(&self) -> Option<Running> {
         self.running
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    fn instance(&self) -> Option<Arc<dyn PluginInstance>> {
+        self.running().map(|r| r.inst)
     }
 
     fn status(&self) -> MutexGuard<'_, Status> {
@@ -136,7 +150,8 @@ pub struct PluginSummary {
     pub description: String,
     /// Author
     pub author: String,
-    /// Subscribed hooks
+    /// Hooks in use: the running instance's, or the plugin's full list
+    /// while stopped
     pub hooks: Vec<HookPoint>,
     /// Lifecycle state
     pub state: PluginState,
@@ -193,6 +208,10 @@ fn hook_bit(h: HookPoint) -> u32 {
     1 << (h as u32)
 }
 
+fn hook_mask(hooks: &[HookPoint]) -> u32 {
+    hooks.iter().fold(0, |m, h| m | hook_bit(*h))
+}
+
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 48
@@ -201,8 +220,20 @@ fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Owns every registered plugin: lifecycle, settings, dispatch.
-pub struct PluginManager {
+/// Run `fut` to completion on its own task. Lifecycle work runs this way
+/// so a client that disconnects mid-request (axum drops the handler
+/// future) can't leave a plugin half stopped or half started.
+async fn detached<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> Result<T> {
+    tokio::spawn(fut).await.map_err(|e| {
+        PluginError::Plugin(if e.is_panic() {
+            "plugin lifecycle task panicked".into()
+        } else {
+            "plugin lifecycle task cancelled".into()
+        })
+    })
+}
+
+struct Core {
     store: PluginStore,
     rules: Arc<RuleSink>,
     entries: BTreeMap<String, Arc<Entry>>,
@@ -211,24 +242,28 @@ pub struct PluginManager {
     hook_mask: AtomicU32,
 }
 
+/// Owns every registered plugin: lifecycle, settings, dispatch.
+pub struct PluginManager {
+    core: Arc<Core>,
+}
+
 impl PluginManager {
     /// Manager over the built-in plugins in [`crate::registry`].
     pub fn new(pf: Arc<dyn PfBackend>, pool: SqlitePool) -> Result<Self> {
-        Self::with_factories(pf, pool, registry::factories())
+        Self::with_plugins(pf, pool, registry::builtins())
     }
 
     /// Manager over an explicit plugin list (tests).
-    pub fn with_factories(
+    pub fn with_plugins(
         pf: Arc<dyn PfBackend>,
         pool: SqlitePool,
-        factories: Vec<Factory>,
+        plugins: Vec<Arc<dyn Plugin>>,
     ) -> Result<Self> {
         let rules = Arc::new(RuleSink::new(pf.clone(), aifw_common::anchors::PLUGINS));
         let mut entries = BTreeMap::new();
         let mut order = Vec::new();
-        for factory in factories {
-            let proto = factory();
-            let info = proto.info();
+        for plugin in plugins {
+            let info = plugin.info();
             if !valid_name(&info.name) {
                 return Err(PluginError::Plugin(format!(
                     "invalid plugin name '{}' (use [a-z0-9-])",
@@ -243,9 +278,9 @@ impl PluginManager {
             }
             let entry = Entry {
                 ctx: PluginContext::new(&info.name, pf.clone(), pool.clone(), rules.clone()),
-                schema: proto.settings_schema(),
-                actions: proto.actions(),
-                factory,
+                schema: plugin.settings_schema(),
+                actions: plugin.actions(),
+                plugin,
                 info: info.clone(),
                 stats: Stats::default(),
                 life: tokio::sync::Mutex::new(None),
@@ -261,28 +296,28 @@ impl PluginManager {
             entries.insert(info.name, Arc::new(entry));
         }
         Ok(Self {
-            store: PluginStore::new(pool),
-            rules,
-            entries,
-            order,
-            hook_mask: AtomicU32::new(0),
+            core: Arc::new(Core {
+                store: PluginStore::new(pool),
+                rules,
+                entries,
+                order,
+                hook_mask: AtomicU32::new(0),
+            }),
         })
     }
 
     /// The config store backing this manager.
     pub fn store(&self) -> &PluginStore {
-        &self.store
+        &self.core.store
     }
 
-    fn entry(&self, name: &str) -> Result<&Arc<Entry>> {
-        self.entries
-            .get(name)
-            .ok_or_else(|| PluginError::NotFound(format!("plugin '{name}'")))
+    fn entry(&self, name: &str) -> Result<Arc<Entry>> {
+        self.core.entry(name).cloned()
     }
 
     /// Settings schema of a registered plugin.
     pub fn schema(&self, name: &str) -> Result<&[SettingField]> {
-        Ok(&self.entry(name)?.schema)
+        Ok(&self.core.entry(name)?.schema)
     }
 
     // ---- lifecycle --------------------------------------------------------
@@ -290,14 +325,15 @@ impl PluginManager {
     /// Boot: clear the plugin anchor and start every plugin enabled in the
     /// store.
     pub async fn start(&self) {
-        if let Err(e) = self.rules.reload().await {
+        if let Err(e) = self.core.rules.reload().await {
             tracing::warn!(error = %e, "plugins: resetting plugin anchor failed");
         }
-        for entry in self.entries.values() {
-            self.apply(entry).await;
+        for entry in self.core.entries.values() {
+            let mut life = entry.life.lock().await;
+            self.core.apply_locked(entry, &mut life).await;
         }
         tracing::info!(
-            plugins = self.entries.len(),
+            plugins = self.core.entries.len(),
             running = self.running_count(),
             "plugin system started"
         );
@@ -307,147 +343,26 @@ impl PluginManager {
     /// sync): any plugin whose stored marker differs from the applied one
     /// is restarted with the stored config.
     pub async fn reconcile(&self) {
-        for entry in self.entries.values() {
-            let stored = match self.store.updated_at(&entry.info.name).await {
+        for entry in self.core.entries.values() {
+            let stored = match self.core.store.updated_at(&entry.info.name).await {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::warn!(plugin = %entry.info.name, error = %e, "plugins: reconcile read failed");
                     continue;
                 }
             };
-            let applied = entry.life.lock().await.clone();
-            if stored != applied {
-                self.apply(entry).await;
+            let mut life = entry.life.lock().await;
+            if stored != *life {
+                self.core.apply_locked(entry, &mut life).await;
             }
         }
-    }
-
-    /// Stop the plugin and, if the stored config says enabled, start it
-    /// fresh with the stored settings.
-    async fn apply(&self, entry: &Arc<Entry>) {
-        let mut life = entry.life.lock().await;
-        let cfg = match self.store.load(&entry.info.name).await {
-            Ok(c) => c,
-            Err(e) => {
-                entry
-                    .ctx
-                    .error(format!("could not load configuration: {e}"));
-                let mut st = entry.status();
-                st.state = PluginState::Error;
-                st.last_error = Some(e.to_string());
-                return;
-            }
-        };
-        self.stop_locked(entry).await;
-        entry.status().enabled = cfg.enabled;
-        if cfg.enabled {
-            self.start_locked(entry, &cfg).await;
-        }
-        *life = cfg.updated_at;
-    }
-
-    async fn start_locked(&self, entry: &Arc<Entry>, cfg: &StoredConfig) {
-        let settings = schema::effective(&entry.schema, &cfg.values, &cfg.secrets);
-        let mut inst = (entry.factory)();
-        let ctx = entry.ctx.clone();
-        let result = match inst.validate_settings(&settings) {
-            Err(e) => Err(e.to_string()),
-            Ok(()) => {
-                // init runs in its own task so a panicking plugin can't take
-                // the caller (boot, an API handler) down with it.
-                let task = tokio::spawn(async move {
-                    let r = tokio::time::timeout(INIT_TIMEOUT, inst.init(&settings, &ctx)).await;
-                    (inst, r)
-                });
-                match task.await {
-                    Ok((inst, Ok(Ok(())))) => Ok(inst),
-                    Ok((_, Ok(Err(e)))) => Err(e.to_string()),
-                    Ok((_, Err(_))) => Err(format!(
-                        "init did not finish within {}s",
-                        INIT_TIMEOUT.as_secs()
-                    )),
-                    Err(e) if e.is_panic() => Err("init panicked".to_string()),
-                    Err(e) => Err(e.to_string()),
-                }
-            }
-        };
-        match result {
-            Ok(inst) => {
-                *entry.running.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::from(inst));
-                {
-                    let mut st = entry.status();
-                    st.state = PluginState::Running;
-                    st.last_error = None;
-                    st.started_at = Some(Utc::now());
-                }
-                entry.ctx.info("started");
-            }
-            Err(msg) => {
-                entry.ctx.error(format!("failed to start: {msg}"));
-                // Undo whatever a half-finished init left behind.
-                Self::cleanup(&entry.ctx).await;
-                let mut st = entry.status();
-                st.state = PluginState::Error;
-                st.last_error = Some(msg);
-                st.started_at = None;
-            }
-        }
-        self.recompute_mask();
-    }
-
-    async fn stop_locked(&self, entry: &Arc<Entry>) {
-        let inst = entry
-            .running
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        {
-            let mut st = entry.status();
-            st.state = PluginState::Stopped;
-            st.last_error = None;
-            st.started_at = None;
-        }
-        self.recompute_mask();
-        let Some(inst) = inst else { return };
-        entry.ctx.abort_tasks();
-        let ctx = entry.ctx.clone();
-        let task = tokio::spawn(async move {
-            tokio::time::timeout(SHUTDOWN_TIMEOUT, inst.shutdown(&ctx)).await
-        });
-        match task.await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(e))) => entry.ctx.warn(format!("shutdown error: {e}")),
-            Ok(Err(_)) => entry.ctx.warn("shutdown timed out"),
-            Err(_) => entry.ctx.warn("shutdown panicked"),
-        }
-        Self::cleanup(&entry.ctx).await;
-        entry.ctx.info("stopped");
-    }
-
-    /// Remove every pf effect of a plugin: tasks, rules, table contents.
-    async fn cleanup(ctx: &PluginContext) {
-        ctx.abort_tasks();
-        if let Err(e) = ctx.clear_rules().await {
-            ctx.warn(format!("removing pf rules failed: {e}"));
-        }
-        ctx.flush_touched_tables().await;
-    }
-
-    fn recompute_mask(&self) {
-        let mask = self
-            .entries
-            .values()
-            .filter(|e| e.instance().is_some())
-            .flat_map(|e| e.info.hooks.iter().copied())
-            .fold(0, |m, h| m | hook_bit(h));
-        self.hook_mask.store(mask, Ordering::Relaxed);
     }
 
     /// Stop every plugin (process shutdown).
     pub async fn shutdown_all(&self) {
-        for entry in self.entries.values() {
+        for entry in self.core.entries.values() {
             let _life = entry.life.lock().await;
-            self.stop_locked(entry).await;
+            self.core.stop_locked(entry, false).await;
         }
     }
 
@@ -455,33 +370,65 @@ impl PluginManager {
 
     /// Enable or disable a plugin. Enabling validates the current settings
     /// first so a plugin that can't start says why instead of flipping to
-    /// `error`.
+    /// `error`. Asking for the state it already has changes nothing.
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> Result<PluginSummary> {
+        let core = self.core.clone();
         let entry = self.entry(name)?;
-        let mut cfg = self.store.load(name).await?;
-        cfg.set_enabled(&*(entry.factory)(), enabled)?;
-        self.store.save(name, &cfg).await?;
-        self.apply(entry).await;
-        Ok(self.summary(entry))
+        detached(async move {
+            let mut life = entry.life.lock().await;
+            let mut cfg = core.store.load(&entry.info.name).await?;
+            // Already in that state: nothing to restart. A plugin stuck in
+            // `error` is the exception — asking again is a retry.
+            if cfg.enabled == enabled && entry.status().state != PluginState::Error {
+                return Ok(core.summary(&entry));
+            }
+            cfg.set_enabled(&*entry.plugin, enabled)?;
+            core.store.save(&entry.info.name, &cfg).await?;
+            core.apply_locked(&entry, &mut life).await;
+            Ok(core.summary(&entry))
+        })
+        .await?
     }
 
     /// Merge, validate and persist a settings change; a running plugin is
-    /// restarted with the new settings.
+    /// restarted with the new settings. A patch that changes nothing is a
+    /// no-op.
     pub async fn update_settings(&self, name: &str, patch: SettingsPatch) -> Result<PluginDetail> {
+        let core = self.core.clone();
         let entry = self.entry(name)?;
-        let mut cfg = self.store.load(name).await?;
-        cfg.apply_patch(&*(entry.factory)(), patch)?;
-        self.store.save(name, &cfg).await?;
-        self.apply(entry).await;
-        self.detail(name).await
+        detached(async move {
+            let mut life = entry.life.lock().await;
+            let mut cfg = core.store.load(&entry.info.name).await?;
+            let before = cfg.clone();
+            cfg.apply_patch(&*entry.plugin, patch)?;
+            if cfg.values == before.values
+                && cfg.secrets == before.secrets
+                && before.updated_at.is_some()
+                && entry.status().state != PluginState::Error
+            {
+                return core.detail(&entry).await;
+            }
+            core.store.save(&entry.info.name, &cfg).await?;
+            core.apply_locked(&entry, &mut life).await;
+            core.detail(&entry).await
+        })
+        .await?
     }
 
-    /// Forget all settings and disable.
+    /// Stop the plugin, empty its pf tables, and forget every setting,
+    /// secret and stored value.
     pub async fn reset(&self, name: &str) -> Result<PluginSummary> {
+        let core = self.core.clone();
         let entry = self.entry(name)?;
-        self.store.reset(name).await?;
-        self.apply(entry).await;
-        Ok(self.summary(entry))
+        detached(async move {
+            let mut life = entry.life.lock().await;
+            core.stop_locked(&entry, true).await;
+            core.store.reset(&entry.info.name).await?;
+            entry.status().enabled = false;
+            *life = None;
+            Ok(core.summary(&entry))
+        })
+        .await?
     }
 
     /// Run an operator action on a running plugin.
@@ -521,7 +468,13 @@ impl PluginManager {
                 Ok(v)
             }
             Ok(Ok(Err(e))) => {
-                entry.ctx.warn(format!("action '{label}' failed: {e}"));
+                // A bad argument is the operator's typo, not a plugin
+                // problem — keep it out of the warning count.
+                if matches!(e, PluginError::Validation(_)) {
+                    entry.ctx.info(format!("action '{label}' refused: {e}"));
+                } else {
+                    entry.ctx.warn(format!("action '{label}' failed: {e}"));
+                }
                 Err(e)
             }
             Ok(Err(_)) => Err(PluginError::Timeout(format!("action '{label}'"))),
@@ -534,64 +487,24 @@ impl PluginManager {
 
     // ---- views ----------------------------------------------------------
 
-    fn summary(&self, entry: &Entry) -> PluginSummary {
-        let st = entry.status();
-        PluginSummary {
-            name: entry.info.name.clone(),
-            title: entry.info.title.clone(),
-            version: entry.info.version.clone(),
-            description: entry.info.description.clone(),
-            author: entry.info.author.clone(),
-            hooks: entry.info.hooks.clone(),
-            state: st.state,
-            enabled: st.enabled,
-            last_error: st.last_error.clone(),
-            started_at: st.started_at,
-            stats: entry.stats.snapshot(),
-        }
-    }
-
     /// Every registered plugin.
     pub fn list(&self) -> Vec<PluginSummary> {
-        self.order
+        self.core
+            .order
             .iter()
-            .filter_map(|n| self.entries.get(n))
-            .map(|e| self.summary(e))
+            .filter_map(|n| self.core.entries.get(n))
+            .map(|e| self.core.summary(e))
             .collect()
     }
 
     /// One plugin's summary.
     pub fn get(&self, name: &str) -> Result<PluginSummary> {
-        Ok(self.summary(self.entry(name)?))
+        Ok(self.core.summary(self.core.entry(name)?))
     }
 
     /// One plugin's full detail.
     pub async fn detail(&self, name: &str) -> Result<PluginDetail> {
-        let entry = self.entry(name)?;
-        let cfg = self.store.load(name).await?;
-        let effective = schema::effective(&entry.schema, &cfg.values, &Map::new());
-        let mut effective = effective.into_map();
-        let mut secrets_set = Vec::new();
-        for f in entry.schema.iter().filter(|f| f.secret) {
-            effective.remove(&f.key);
-            if cfg
-                .secrets
-                .get(&f.key)
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty())
-            {
-                secrets_set.push(f.key.clone());
-            }
-        }
-        Ok(PluginDetail {
-            summary: self.summary(entry),
-            schema: entry.schema.clone(),
-            values: cfg.values,
-            effective,
-            secrets_set,
-            actions: entry.actions.clone(),
-            rules: entry.ctx.rules().await,
-        })
+        self.core.detail(self.core.entry(name)?).await
     }
 
     /// Plugin-specific live status (`null` when not running).
@@ -614,17 +527,18 @@ impl PluginManager {
 
     /// Newest-first activity log.
     pub fn logs(&self, name: &str, limit: usize, min_level: LogLevel) -> Result<Vec<LogEntry>> {
-        Ok(self.entry(name)?.ctx.recent_logs(limit, min_level))
+        Ok(self.core.entry(name)?.ctx.recent_logs(limit, min_level))
     }
 
     /// Number of registered plugins.
     pub fn count(&self) -> usize {
-        self.entries.len()
+        self.core.entries.len()
     }
 
     /// Number of running plugins.
     pub fn running_count(&self) -> usize {
-        self.entries
+        self.core
+            .entries
             .values()
             .filter(|e| e.instance().is_some())
             .count()
@@ -635,7 +549,7 @@ impl PluginManager {
     /// True when at least one running plugin subscribes to `hook`. Event
     /// sources check this before doing any work.
     pub fn wants(&self, hook: HookPoint) -> bool {
-        self.hook_mask.load(Ordering::Relaxed) & hook_bit(hook) != 0
+        self.core.hook_mask.load(Ordering::Relaxed) & hook_bit(hook) != 0
     }
 
     /// Deliver `event` to every running subscriber concurrently, each under
@@ -651,16 +565,18 @@ impl PluginManager {
         } else {
             HOOK_TIMEOUT
         };
+        let bit = hook_bit(event.hook);
         let event = Arc::new(event);
         let mut set = JoinSet::new();
         let mut owners = std::collections::HashMap::new();
-        for entry in self.entries.values() {
-            if !entry.info.hooks.contains(&event.hook) {
-                continue;
-            }
-            let Some(inst) = entry.instance() else {
+        for entry in self.core.entries.values() {
+            let Some(running) = entry.running() else {
                 continue;
             };
+            if running.mask & bit == 0 {
+                continue;
+            }
+            let inst = running.inst;
             let ctx = entry.ctx.clone();
             let ev = event.clone();
             let handle = set.spawn(async move {
@@ -706,6 +622,208 @@ impl PluginManager {
             }
         }
         outcome
+    }
+}
+
+impl Core {
+    fn entry(&self, name: &str) -> Result<&Arc<Entry>> {
+        self.entries
+            .get(name)
+            .ok_or_else(|| PluginError::NotFound(format!("plugin '{name}'")))
+    }
+
+    /// Stop the plugin and, if the stored config says enabled, start it
+    /// fresh with the stored settings. The caller holds `entry.life`.
+    async fn apply_locked(&self, entry: &Arc<Entry>, life: &mut Option<String>) {
+        let cfg = match self.store.load(&entry.info.name).await {
+            Ok(c) => c,
+            Err(e) => {
+                // Reconcile retries every few seconds; log the failure
+                // once, not once per retry.
+                let msg = format!("could not load configuration: {e}");
+                let changed = {
+                    let mut st = entry.status();
+                    let changed = st.last_error.as_deref() != Some(msg.as_str());
+                    st.state = PluginState::Error;
+                    st.last_error = Some(msg.clone());
+                    changed
+                };
+                if changed {
+                    entry.ctx.error(msg);
+                }
+                return;
+            }
+        };
+        // A disabled plugin gets its pf leftovers removed even when nothing
+        // is running here — the CLI may have disabled it while the API was
+        // down, leaving its tables filled.
+        self.stop_locked(entry, !cfg.enabled).await;
+        entry.status().enabled = cfg.enabled;
+        if cfg.enabled {
+            self.start_locked(entry, &cfg).await;
+        }
+        *life = cfg.updated_at;
+    }
+
+    async fn start_locked(&self, entry: &Arc<Entry>, cfg: &StoredConfig) {
+        let settings = schema::effective(&entry.schema, &cfg.values, &cfg.secrets);
+        let plugin = entry.plugin.clone();
+        let ctx = entry.ctx.clone();
+        let result = match plugin.validate_settings(&settings) {
+            Err(e) => Err(e.to_string()),
+            Ok(()) => {
+                let hooks = plugin.hooks(&settings);
+                entry.ctx.activate();
+                // start runs in its own task so a panicking plugin can't
+                // take the caller (boot, an API handler) down with it.
+                let task = tokio::spawn(async move {
+                    tokio::time::timeout(START_TIMEOUT, plugin.start(&settings, &ctx)).await
+                });
+                match task.await {
+                    Ok(Ok(Ok(inst))) => Ok((inst, hooks)),
+                    Ok(Ok(Err(e))) => Err(e.to_string()),
+                    Ok(Err(_)) => Err(format!(
+                        "start did not finish within {}s",
+                        START_TIMEOUT.as_secs()
+                    )),
+                    Err(e) if e.is_panic() => Err("start panicked".to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+        };
+        match result {
+            Ok((inst, hooks)) => {
+                let mask = hook_mask(&hooks);
+                *entry.running.write().unwrap_or_else(|e| e.into_inner()) = Some(Running {
+                    inst: Arc::from(inst),
+                    hooks,
+                    mask,
+                });
+                {
+                    let mut st = entry.status();
+                    st.state = PluginState::Running;
+                    st.last_error = None;
+                    st.started_at = Some(Utc::now());
+                }
+                entry.ctx.info("started");
+            }
+            Err(msg) => {
+                entry.ctx.error(format!("failed to start: {msg}"));
+                // Undo whatever a half-finished start left behind.
+                Self::cleanup(&entry.ctx).await;
+                entry.ctx.deactivate();
+                let mut st = entry.status();
+                st.state = PluginState::Error;
+                st.last_error = Some(msg);
+                st.started_at = None;
+            }
+        }
+        self.recompute_mask();
+    }
+
+    /// Stop a running instance and remove its pf effects. With
+    /// `cleanup_if_idle`, pf leftovers (persisted table list, rules) are
+    /// removed even when no instance is running.
+    async fn stop_locked(&self, entry: &Arc<Entry>, cleanup_if_idle: bool) {
+        let running = entry
+            .running
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        {
+            let mut st = entry.status();
+            st.state = PluginState::Stopped;
+            st.last_error = None;
+            st.started_at = None;
+        }
+        self.recompute_mask();
+        entry.ctx.deactivate();
+        let Some(running) = running else {
+            if cleanup_if_idle {
+                Self::cleanup(&entry.ctx).await;
+            }
+            return;
+        };
+        entry.ctx.abort_tasks();
+        let ctx = entry.ctx.clone();
+        let inst = running.inst;
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(SHUTDOWN_TIMEOUT, inst.shutdown(&ctx)).await
+        });
+        match task.await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(e))) => entry.ctx.warn(format!("shutdown error: {e}")),
+            Ok(Err(_)) => entry.ctx.warn("shutdown timed out"),
+            Err(_) => entry.ctx.warn("shutdown panicked"),
+        }
+        Self::cleanup(&entry.ctx).await;
+        entry.ctx.info("stopped");
+    }
+
+    /// Remove every pf effect of a plugin: tasks, rules, table contents.
+    async fn cleanup(ctx: &PluginContext) {
+        ctx.abort_tasks();
+        if let Err(e) = ctx.clear_rules().await {
+            ctx.warn(format!("removing pf rules failed: {e}"));
+        }
+        ctx.flush_touched_tables().await;
+    }
+
+    fn recompute_mask(&self) {
+        let mask = self
+            .entries
+            .values()
+            .filter_map(|e| e.running().map(|r| r.mask))
+            .fold(0, |m, b| m | b);
+        self.hook_mask.store(mask, Ordering::Relaxed);
+    }
+
+    fn summary(&self, entry: &Entry) -> PluginSummary {
+        let hooks = entry
+            .running()
+            .map(|r| r.hooks)
+            .unwrap_or_else(|| entry.info.hooks.clone());
+        let st = entry.status();
+        PluginSummary {
+            name: entry.info.name.clone(),
+            title: entry.info.title.clone(),
+            version: entry.info.version.clone(),
+            description: entry.info.description.clone(),
+            author: entry.info.author.clone(),
+            hooks,
+            state: st.state,
+            enabled: st.enabled,
+            last_error: st.last_error.clone(),
+            started_at: st.started_at,
+            stats: entry.stats.snapshot(),
+        }
+    }
+
+    async fn detail(&self, entry: &Entry) -> Result<PluginDetail> {
+        let cfg = self.store.load(&entry.info.name).await?;
+        let effective = schema::effective(&entry.schema, &cfg.values, &Map::new());
+        let mut effective = effective.into_map();
+        let mut secrets_set = Vec::new();
+        for f in entry.schema.iter().filter(|f| f.secret) {
+            effective.remove(&f.key);
+            if cfg
+                .secrets
+                .get(&f.key)
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+            {
+                secrets_set.push(f.key.clone());
+            }
+        }
+        Ok(PluginDetail {
+            summary: self.summary(entry),
+            schema: entry.schema.clone(),
+            values: cfg.values,
+            effective,
+            secrets_set,
+            actions: entry.actions.clone(),
+            rules: entry.ctx.rules().await,
+        })
     }
 }
 

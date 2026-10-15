@@ -11,7 +11,10 @@ pub enum HookPoint {
     PostRule,
     /// An audit-log entry was written (rule/NAT/config changes)
     LogEvent,
-    /// An authenticated API request is about to reach its handler
+    /// An authenticated API request is about to reach its handler. A
+    /// plugin may answer `Block` (→ 403). The check fails open: if the
+    /// plugin times out or panics the request goes through, so this hook
+    /// is for policy hints and audit, not for authentication.
     ApiRequest,
     /// A VPN tunnel or peer went up or down
     VpnEvent,
@@ -79,12 +82,12 @@ pub struct HookEvent {
     pub data: HookEventData,
 }
 
-/// The payload varies by hook type
+/// The payload varies by hook type. Variant names match [`HookPoint`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum HookEventData {
     /// A pflog-logged packet (`PostRule`)
-    Rule {
+    PostRule {
         /// Source IP, if known
         src_ip: Option<IpAddr>,
         /// Destination IP, if known
@@ -101,7 +104,7 @@ pub enum HookEventData {
         rule_id: Option<String>,
     },
     /// Audit-log entry (`LogEvent`)
-    Log {
+    LogEvent {
         /// What happened (audit action name)
         action: String,
         /// Free-form event details
@@ -110,7 +113,7 @@ pub enum HookEventData {
         source: String,
     },
     /// Authenticated API request (`ApiRequest`)
-    Api {
+    ApiRequest {
         /// HTTP method
         method: String,
         /// Request path
@@ -119,7 +122,7 @@ pub enum HookEventData {
         remote_addr: Option<String>,
     },
     /// VPN state change (`VpnEvent`)
-    Vpn {
+    VpnEvent {
         /// "wireguard" or "ipsec"
         kind: String,
         /// Tunnel name as configured in AiFw
@@ -132,7 +135,7 @@ pub enum HookEventData {
         detail: Option<String>,
     },
     /// Gateway health change (`GatewayEvent`)
-    Gateway {
+    GatewayEvent {
         /// Gateway id
         gateway_id: String,
         /// Gateway name as configured in AiFw
@@ -147,12 +150,12 @@ pub enum HookEventData {
         reason: Option<String>,
     },
     /// Timer tick (`Timer`)
-    Tick {
+    Timer {
         /// Unix timestamp (seconds) of the tick
         timestamp: u64,
     },
     /// IDS alert (`IdsAlert`)
-    IdsAlertEvent {
+    IdsAlert {
         /// Alert id (matches `/api/v1/ids/alerts/{id}`)
         alert_id: String,
         /// When the IDS raised it (RFC 3339)
@@ -187,7 +190,9 @@ pub enum HookAction {
     /// Continue normal processing
     #[default]
     Continue,
-    /// Reject the request. Only honored for `ApiRequest` (→ 403).
+    /// Reject the request. Only honored for `ApiRequest` (→ 403), and
+    /// only when the plugin answers within its budget — see
+    /// [`HookPoint::ApiRequest`].
     Block,
     /// Write a line to the plugin's activity log
     Log(String),

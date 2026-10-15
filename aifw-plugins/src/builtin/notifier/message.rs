@@ -64,8 +64,11 @@ pub struct Filter {
     pub ids_max_severity: u8,
     /// Send gateway changes
     pub gateway: bool,
-    /// Send VPN changes
+    /// Send VPN tunnel changes
     pub vpn: bool,
+    /// Also send per-peer WireGuard changes (noisy on road-warrior
+    /// tunnels, where every laptop comes and goes)
+    pub vpn_peers: bool,
     /// Send configuration changes
     pub config: bool,
     /// Audit actions that count as configuration changes
@@ -85,7 +88,7 @@ fn severity_name(sev: u8) -> &'static str {
 pub fn classify(event: &HookEvent, f: &Filter) -> Option<Notification> {
     let now = Utc::now();
     match &event.data {
-        HookEventData::IdsAlertEvent {
+        HookEventData::IdsAlert {
             alert_id,
             signature_id,
             signature_msg,
@@ -133,7 +136,7 @@ pub fn classify(event: &HookEvent, f: &Filter) -> Option<Notification> {
                 dedupe_key: format!("ids:{}:{src_ip}", signature_id.unwrap_or(0)),
             })
         }
-        HookEventData::Gateway {
+        HookEventData::GatewayEvent {
             gateway_id,
             gateway_name,
             interface,
@@ -172,14 +175,14 @@ pub fn classify(event: &HookEvent, f: &Filter) -> Option<Notification> {
                 dedupe_key: format!("gw:{gateway_id}:{to_state}"),
             })
         }
-        HookEventData::Vpn {
+        HookEventData::VpnEvent {
             kind,
             tunnel_name,
             peer,
             action,
             detail,
         } => {
-            if !f.vpn {
+            if !f.vpn || (peer.is_some() && !f.vpn_peers) {
                 return None;
             }
             let label = if kind == "ipsec" {
@@ -205,7 +208,7 @@ pub fn classify(event: &HookEvent, f: &Filter) -> Option<Notification> {
                 ),
             })
         }
-        HookEventData::Log {
+        HookEventData::LogEvent {
             action,
             details,
             source,
@@ -225,7 +228,9 @@ pub fn classify(event: &HookEvent, f: &Filter) -> Option<Notification> {
                 dedupe_key: format!("audit:{action}:{details}"),
             })
         }
-        HookEventData::Rule { .. } | HookEventData::Api { .. } | HookEventData::Tick { .. } => None,
+        HookEventData::PostRule { .. }
+        | HookEventData::ApiRequest { .. }
+        | HookEventData::Timer { .. } => None,
     }
 }
 
@@ -253,6 +258,7 @@ mod tests {
             ids_max_severity: 2,
             gateway: true,
             vpn: true,
+            vpn_peers: true,
             config: true,
             config_actions: vec!["rules_applied".into()],
         }
@@ -261,7 +267,7 @@ mod tests {
     fn ids(sev: u8) -> HookEvent {
         HookEvent {
             hook: HookPoint::IdsAlert,
-            data: HookEventData::IdsAlertEvent {
+            data: HookEventData::IdsAlert {
                 alert_id: "a1".into(),
                 timestamp: "t".into(),
                 signature_id: Some(2001),
@@ -281,7 +287,7 @@ mod tests {
     fn gw(from: Option<&str>, to: &str) -> HookEvent {
         HookEvent {
             hook: HookPoint::GatewayEvent,
-            data: HookEventData::Gateway {
+            data: HookEventData::GatewayEvent {
                 gateway_id: "g".into(),
                 gateway_name: "WAN1".into(),
                 interface: "igb0".into(),
@@ -322,7 +328,7 @@ mod tests {
     fn config_changes_filtered_by_action_and_source() {
         let ev = |action: &str, source: &str| HookEvent {
             hook: HookPoint::LogEvent,
-            data: HookEventData::Log {
+            data: HookEventData::LogEvent {
                 action: action.into(),
                 details: "x".into(),
                 source: source.into(),
@@ -337,7 +343,7 @@ mod tests {
     fn vpn_events() {
         let ev = HookEvent {
             hook: HookPoint::VpnEvent,
-            data: HookEventData::Vpn {
+            data: HookEventData::VpnEvent {
                 kind: "wireguard".into(),
                 tunnel_name: "road".into(),
                 peer: Some("laptop".into()),
@@ -348,5 +354,24 @@ mod tests {
         let n = classify(&ev, &filter()).unwrap();
         assert_eq!(n.title, "WireGuard peer laptop on road is down");
         assert_eq!(n.level, Level::Warning);
+
+        // Peer changes are opt-in; tunnel changes still go out.
+        let tunnels_only = Filter {
+            vpn_peers: false,
+            ..filter()
+        };
+        assert!(classify(&ev, &tunnels_only).is_none());
+        let tunnel = HookEvent {
+            hook: HookPoint::VpnEvent,
+            data: HookEventData::VpnEvent {
+                kind: "ipsec".into(),
+                tunnel_name: "site-b".into(),
+                peer: None,
+                action: "down".into(),
+                detail: Some("no longer reported".into()),
+            },
+        };
+        let n = classify(&tunnel, &tunnels_only).unwrap();
+        assert_eq!(n.title, "IPsec tunnel site-b is down");
     }
 }

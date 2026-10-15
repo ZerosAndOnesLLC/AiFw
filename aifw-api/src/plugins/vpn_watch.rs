@@ -30,11 +30,25 @@ pub(crate) struct VpnObs {
 }
 
 /// Observations whose up/down state changed since `prev`. Endpoints seen
-/// for the first time are baseline, not events.
-pub(crate) fn diff_vpn<'a>(prev: &HashMap<String, bool>, cur: &'a [VpnObs]) -> Vec<&'a VpnObs> {
-    cur.iter()
-        .filter(|o| prev.get(&o.key).is_some_and(|was| *was != o.up))
-        .collect()
+/// for the first time are baseline, not events. An endpoint that was up
+/// and is no longer reported at all (interface destroyed, tunnel disabled
+/// or deleted, peer removed) counts as down.
+pub(crate) fn diff_vpn(prev: &HashMap<String, VpnObs>, cur: &[VpnObs]) -> Vec<VpnObs> {
+    let mut out: Vec<VpnObs> = cur
+        .iter()
+        .filter(|o| prev.get(&o.key).is_some_and(|was| was.up != o.up))
+        .cloned()
+        .collect();
+    for (key, was) in prev {
+        if was.up && !cur.iter().any(|o| &o.key == key) {
+            out.push(VpnObs {
+                up: false,
+                detail: Some("no longer reported".into()),
+                ..was.clone()
+            });
+        }
+    }
+    out
 }
 
 async fn observe(state: &AppState) -> Vec<VpnObs> {
@@ -129,7 +143,7 @@ async fn observe(state: &AppState) -> Vec<VpnObs> {
 fn event(o: &VpnObs) -> HookEvent {
     HookEvent {
         hook: HookPoint::VpnEvent,
-        data: HookEventData::Vpn {
+        data: HookEventData::VpnEvent {
             kind: o.kind.to_string(),
             tunnel_name: o.tunnel.clone(),
             peer: o.peer.clone(),
@@ -142,7 +156,7 @@ fn event(o: &VpnObs) -> HookEvent {
 /// Poll VPN state while a running plugin subscribes to `VpnEvent`.
 pub(crate) fn spawn(state: AppState) {
     tokio::spawn(async move {
-        let mut prev: Option<HashMap<String, bool>> = None;
+        let mut prev: Option<HashMap<String, VpnObs>> = None;
         let mut tick = tokio::time::interval(POLL_EVERY);
         loop {
             tick.tick().await;
@@ -153,10 +167,10 @@ pub(crate) fn spawn(state: AppState) {
             let cur = observe(&state).await;
             if let Some(p) = &prev {
                 for o in diff_vpn(p, &cur) {
-                    state.plugin_manager.dispatch(event(o)).await;
+                    state.plugin_manager.dispatch(event(&o)).await;
                 }
             }
-            prev = Some(cur.into_iter().map(|o| (o.key, o.up)).collect());
+            prev = Some(cur.into_iter().map(|o| (o.key.clone(), o)).collect());
         }
     });
 }
@@ -176,16 +190,40 @@ mod tests {
         }
     }
 
+    fn snapshot(list: Vec<VpnObs>) -> HashMap<String, VpnObs> {
+        list.into_iter().map(|o| (o.key.clone(), o)).collect()
+    }
+
     #[test]
     fn only_state_changes_are_events() {
-        let prev: HashMap<String, bool> = [("a".to_string(), true), ("b".to_string(), false)]
-            .into_iter()
-            .collect();
+        let prev = snapshot(vec![obs("a", true), obs("b", false)]);
         let cur = vec![obs("a", false), obs("b", false), obs("c", true)];
         let changed = diff_vpn(&prev, &cur);
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].key, "a");
         assert!(!changed[0].up);
+    }
+
+    #[test]
+    fn vanished_endpoints_go_down_once() {
+        let prev = snapshot(vec![
+            obs("up-then-gone", true),
+            obs("down-then-gone", false),
+        ]);
+        let changed = diff_vpn(&prev, &[]);
+        assert_eq!(changed.len(), 1, "only an up endpoint produces a down");
+        assert_eq!(changed[0].key, "up-then-gone");
+        assert!(!changed[0].up);
+        assert_eq!(changed[0].detail.as_deref(), Some("no longer reported"));
+        // Next poll: still absent, nothing new (it is no longer in prev).
+        let prev = snapshot(Vec::new());
+        assert!(diff_vpn(&prev, &[]).is_empty());
+        // Reappearing is an up event against a baseline of "gone", so the
+        // operator sees the recovery. (prev holds the synthesized down.)
+        let prev = snapshot(changed);
+        let back = diff_vpn(&prev, &[obs("up-then-gone", true)]);
+        assert_eq!(back.len(), 1);
+        assert!(back[0].up);
     }
 
     #[test]

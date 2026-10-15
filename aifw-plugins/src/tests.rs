@@ -10,7 +10,6 @@ use crate::error::PluginError;
 use crate::hooks::*;
 use crate::manager::{PluginManager, SettingsPatch};
 use crate::plugin::*;
-use crate::registry::Factory;
 use crate::rules::{RuleSink, check_rule, check_table_name};
 use crate::schema::{self, ListItem, PluginSettings, SelectOption, SettingField};
 use crate::store::{PluginStore, StoredConfig};
@@ -35,10 +34,16 @@ struct Seen {
     settings: Mutex<Option<PluginSettings>>,
     events: Mutex<Vec<HookEvent>>,
     shutdowns: Mutex<u32>,
+    starts: Mutex<u32>,
 }
 
 struct Probe {
     name: &'static str,
+    b: Behaviour,
+    seen: Arc<Seen>,
+}
+
+struct ProbeRunning {
     b: Behaviour,
     seen: Arc<Seen>,
 }
@@ -78,7 +83,12 @@ impl Plugin for Probe {
         ]
     }
 
-    async fn init(&mut self, settings: &PluginSettings, ctx: &PluginContext) -> crate::Result<()> {
+    async fn start(
+        &self,
+        settings: &PluginSettings,
+        ctx: &PluginContext,
+    ) -> crate::Result<Box<dyn PluginInstance>> {
+        *self.seen.starts.lock().unwrap() += 1;
         if self.b.init_panic {
             panic!("boom");
         }
@@ -93,9 +103,15 @@ impl Plugin for Probe {
             ctx.set_rules(self.b.rules.clone()).await?;
         }
         *self.seen.settings.lock().unwrap() = Some(settings.clone());
-        Ok(())
+        Ok(Box::new(ProbeRunning {
+            b: self.b.clone(),
+            seen: self.seen.clone(),
+        }))
     }
+}
 
+#[async_trait]
+impl PluginInstance for ProbeRunning {
     async fn on_hook(&self, event: &HookEvent, _ctx: &PluginContext) -> HookAction {
         if self.b.hook_panic {
             panic!("hook boom");
@@ -127,33 +143,36 @@ impl Plugin for Probe {
     }
 }
 
-fn probe(name: &'static str, b: Behaviour) -> (Factory, Arc<Seen>) {
+fn probe(name: &'static str, b: Behaviour) -> (Arc<dyn Plugin>, Arc<Seen>) {
     let seen = Arc::new(Seen::default());
-    let s = seen.clone();
-    let f: Factory = Arc::new(move || {
-        Box::new(Probe {
-            name,
-            b: b.clone(),
-            seen: s.clone(),
-        }) as Box<dyn Plugin>
+    let p: Arc<dyn Plugin> = Arc::new(Probe {
+        name,
+        b,
+        seen: seen.clone(),
     });
-    (f, seen)
+    (p, seen)
 }
 
 struct Fixture {
     mgr: PluginManager,
     pf: Arc<dyn aifw_pf::PfBackend>,
     pool: sqlx::SqlitePool,
+    _db: aifw_core::Database,
 }
 
-async fn fixture(factories: Vec<Factory>) -> Fixture {
+async fn fixture(plugins: Vec<Arc<dyn Plugin>>) -> Fixture {
     let db = aifw_core::Database::new_in_memory().await.unwrap();
     let pool = db.pool().clone();
     PluginStore::new(pool.clone()).migrate().await.unwrap();
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::new(aifw_pf::PfMock::new());
-    let mgr = PluginManager::with_factories(pf.clone(), pool.clone(), factories).unwrap();
+    let mgr = PluginManager::with_plugins(pf.clone(), pool.clone(), plugins).unwrap();
     mgr.start().await;
-    Fixture { mgr, pf, pool }
+    Fixture {
+        mgr,
+        pf,
+        pool,
+        _db: db,
+    }
 }
 
 fn hooks(h: &[HookPoint]) -> Behaviour {
@@ -166,7 +185,7 @@ fn hooks(h: &[HookPoint]) -> Behaviour {
 fn log_event() -> HookEvent {
     HookEvent {
         hook: HookPoint::LogEvent,
-        data: HookEventData::Log {
+        data: HookEventData::LogEvent {
             action: "rule_added".to_string(),
             details: "block ssh".to_string(),
             source: "engine".to_string(),
@@ -177,7 +196,7 @@ fn log_event() -> HookEvent {
 fn api_event() -> HookEvent {
     HookEvent {
         hook: HookPoint::ApiRequest,
-        data: HookEventData::Api {
+        data: HookEventData::ApiRequest {
             method: "GET".into(),
             path: "/api/v1/rules".into(),
             remote_addr: None,
@@ -193,9 +212,9 @@ async fn rejects_duplicate_and_invalid_names() {
     let pf: Arc<dyn aifw_pf::PfBackend> = Arc::new(aifw_pf::PfMock::new());
     let (a, _) = probe("dup", Behaviour::default());
     let (b, _) = probe("dup", Behaviour::default());
-    assert!(PluginManager::with_factories(pf.clone(), db.pool().clone(), vec![a, b]).is_err());
+    assert!(PluginManager::with_plugins(pf.clone(), db.pool().clone(), vec![a, b]).is_err());
     let (c, _) = probe("Bad Name", Behaviour::default());
-    assert!(PluginManager::with_factories(pf, db.pool().clone(), vec![c]).is_err());
+    assert!(PluginManager::with_plugins(pf, db.pool().clone(), vec![c]).is_err());
 }
 
 #[tokio::test]
@@ -268,7 +287,7 @@ async fn init_panic_is_contained() {
     let fx = fixture(vec![f]).await;
     let s = fx.mgr.set_enabled("p", true).await.unwrap();
     assert_eq!(s.state, PluginState::Error);
-    assert_eq!(s.last_error.as_deref(), Some("init panicked"));
+    assert_eq!(s.last_error.as_deref(), Some("start panicked"));
 }
 
 #[tokio::test]
@@ -298,9 +317,248 @@ async fn enabled_state_survives_restart() {
     fx.mgr.set_enabled("p", true).await.unwrap();
 
     let (f2, _) = probe("p", Behaviour::default());
-    let mgr2 = PluginManager::with_factories(fx.pf.clone(), fx.pool.clone(), vec![f2]).unwrap();
+    let mgr2 = PluginManager::with_plugins(fx.pf.clone(), fx.pool.clone(), vec![f2]).unwrap();
     mgr2.start().await;
     assert_eq!(mgr2.get("p").unwrap().state, PluginState::Running);
+}
+
+#[tokio::test]
+async fn redundant_enable_does_not_restart() {
+    let (f, seen) = probe("p", Behaviour::default());
+    let fx = fixture(vec![f]).await;
+    fx.mgr.set_enabled("p", true).await.unwrap();
+    assert_eq!(*seen.starts.lock().unwrap(), 1);
+    fx.mgr.set_enabled("p", true).await.unwrap();
+    assert_eq!(*seen.starts.lock().unwrap(), 1, "no stop/start cycle");
+    assert_eq!(*seen.shutdowns.lock().unwrap(), 0);
+
+    // A real change restarts …
+    let patch = |limit: i64| SettingsPatch {
+        values: serde_json::from_value(json!({"limit": limit})).unwrap(),
+        ..Default::default()
+    };
+    fx.mgr.update_settings("p", patch(6)).await.unwrap();
+    assert_eq!(*seen.starts.lock().unwrap(), 2);
+    // … but a patch that changes nothing is a no-op.
+    fx.mgr.update_settings("p", patch(6)).await.unwrap();
+    assert_eq!(*seen.starts.lock().unwrap(), 2);
+    fx.mgr.update_settings("p", patch(7)).await.unwrap();
+    assert_eq!(*seen.starts.lock().unwrap(), 3);
+}
+
+#[tokio::test]
+async fn errored_plugin_retries_on_enable() {
+    let (f, seen) = probe(
+        "p",
+        Behaviour {
+            init_error: true,
+            ..Default::default()
+        },
+    );
+    let fx = fixture(vec![f]).await;
+    assert_eq!(
+        fx.mgr.set_enabled("p", true).await.unwrap().state,
+        PluginState::Error
+    );
+    fx.mgr.set_enabled("p", true).await.unwrap();
+    assert_eq!(*seen.starts.lock().unwrap(), 2, "enable on error retries");
+}
+
+#[tokio::test]
+async fn concurrent_saves_are_serialized() {
+    let (f, _) = probe("p", Behaviour::default());
+    let fx = Arc::new(fixture(vec![f]).await);
+    fx.mgr.set_enabled("p", true).await.unwrap();
+    // Two writers race: a value change and a secret change. Both must
+    // survive, whatever the interleaving.
+    let a = {
+        let fx = fx.clone();
+        tokio::spawn(async move {
+            fx.mgr
+                .update_settings(
+                    "p",
+                    SettingsPatch {
+                        values: serde_json::from_value(json!({"limit": 9})).unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        })
+    };
+    let b = {
+        let fx = fx.clone();
+        tokio::spawn(async move {
+            fx.mgr
+                .update_settings(
+                    "p",
+                    SettingsPatch {
+                        secrets: serde_json::from_value(json!({"token": "t"})).unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        })
+    };
+    a.await.unwrap();
+    b.await.unwrap();
+    let cfg = fx.mgr.store().load("p").await.unwrap();
+    assert_eq!(cfg.values["limit"], 9);
+    assert_eq!(cfg.secrets["token"], "t");
+}
+
+#[tokio::test]
+async fn disable_written_while_stopped_still_empties_tables() {
+    // The plugin filled its table in an earlier run; the API restarts and
+    // finds it disabled (the CLI flipped it while the API was down).
+    let (f, _) = probe(
+        "p",
+        Behaviour {
+            touch_table: Some("plugin_probe"),
+            ..Default::default()
+        },
+    );
+    let fx = fixture(vec![f]).await;
+    fx.mgr.set_enabled("p", true).await.unwrap();
+    assert_eq!(
+        fx.pf.get_table_entries("plugin_probe").await.unwrap().len(),
+        1
+    );
+    // Simulate "API down": write the store directly, then a fresh manager.
+    let mut cfg = fx.mgr.store().load("p").await.unwrap();
+    cfg.enabled = false;
+    fx.mgr.store().save("p", &cfg).await.unwrap();
+    let (f2, _) = probe("p", Behaviour::default());
+    let mgr2 = PluginManager::with_plugins(fx.pf.clone(), fx.pool.clone(), vec![f2]).unwrap();
+    mgr2.start().await;
+    assert!(
+        fx.pf
+            .get_table_entries("plugin_probe")
+            .await
+            .unwrap()
+            .is_empty(),
+        "persisted table list must be flushed"
+    );
+}
+
+#[tokio::test]
+async fn reset_forgets_settings_secrets_and_kv() {
+    let (f, _) = probe(
+        "p",
+        Behaviour {
+            touch_table: Some("plugin_probe"),
+            ..Default::default()
+        },
+    );
+    let fx = fixture(vec![f]).await;
+    fx.mgr
+        .update_settings(
+            "p",
+            SettingsPatch {
+                values: serde_json::from_value(json!({"limit": 3})).unwrap(),
+                secrets: serde_json::from_value(json!({"token": "t"})).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    fx.mgr.set_enabled("p", true).await.unwrap();
+    let ctx_kv: Option<String> =
+        sqlx::query_scalar("SELECT value FROM plugin_kv WHERE plugin = 'p' AND key = '__tables'")
+            .fetch_optional(&fx.pool)
+            .await
+            .unwrap();
+    assert!(ctx_kv.is_some(), "touched tables are remembered");
+
+    let s = fx.mgr.reset("p").await.unwrap();
+    assert_eq!(s.state, PluginState::Stopped);
+    assert!(!s.enabled);
+    let cfg = fx.mgr.store().load("p").await.unwrap();
+    assert!(cfg.values.is_empty() && cfg.secrets.is_empty() && !cfg.enabled);
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plugin_kv WHERE plugin = 'p'")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "kv rows and the table list are gone");
+    assert!(
+        fx.pf
+            .get_table_entries("plugin_probe")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn hooks_follow_settings_and_late_writes_are_refused() {
+    struct Narrow;
+    struct NarrowRunning;
+    #[async_trait]
+    impl Plugin for Narrow {
+        fn info(&self) -> PluginInfo {
+            PluginInfo {
+                name: "narrow".into(),
+                title: "Narrow".into(),
+                version: "0".into(),
+                description: String::new(),
+                author: String::new(),
+                hooks: vec![HookPoint::LogEvent, HookPoint::Timer],
+            }
+        }
+        fn settings_schema(&self) -> Vec<SettingField> {
+            vec![SettingField::bool("timer", "Timer", false)]
+        }
+        fn hooks(&self, s: &PluginSettings) -> Vec<HookPoint> {
+            if s.bool("timer") {
+                self.info().hooks
+            } else {
+                vec![HookPoint::LogEvent]
+            }
+        }
+        async fn start(
+            &self,
+            _s: &PluginSettings,
+            _ctx: &PluginContext,
+        ) -> crate::Result<Box<dyn PluginInstance>> {
+            Ok(Box::new(NarrowRunning))
+        }
+    }
+    #[async_trait]
+    impl PluginInstance for NarrowRunning {}
+
+    let fx = fixture(vec![Arc::new(Narrow)]).await;
+    fx.mgr.set_enabled("narrow", true).await.unwrap();
+    assert!(fx.mgr.wants(HookPoint::LogEvent));
+    assert!(!fx.mgr.wants(HookPoint::Timer), "timer off by settings");
+    assert_eq!(fx.mgr.get("narrow").unwrap().hooks, [HookPoint::LogEvent]);
+    fx.mgr
+        .update_settings(
+            "narrow",
+            SettingsPatch {
+                values: serde_json::from_value(json!({"timer": true})).unwrap(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(fx.mgr.wants(HookPoint::Timer));
+
+    // A context handle kept by a finished run can't touch pf after stop.
+    let t = PluginContext::for_tests("late").await;
+    t.ctx
+        .add_to_table("plugin_late", IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+        .await
+        .unwrap();
+    t.ctx.deactivate();
+    assert!(
+        t.ctx
+            .add_to_table("plugin_late", IpAddr::V4(Ipv4Addr::new(1, 1, 1, 2)))
+            .await
+            .is_err()
+    );
+    assert!(t.ctx.set_rules(vec![]).await.is_err());
+    t.ctx.activate();
+    assert!(t.ctx.set_rules(vec![]).await.is_ok());
 }
 
 #[tokio::test]
@@ -595,9 +853,11 @@ fn rule_validation() {
         "block drop in log quick from <plugin_threat_feeds> label \"plugin:threat-feeds:in\"",
         "block drop out quick to <plugin_x>",
         "match in log from <plugin_x>",
-        "block in quick from ! <plugin_allow> to <plugin_x>",
+        "block in quick from { <plugin_a>, <plugin_b> } to any",
+        "block return in quick proto tcp from <plugin_x> to any port 22",
+        "block in quick from <plugin_x> label x",
     ] {
-        assert!(check_rule(ok).is_ok(), "{ok}");
+        assert!(check_rule(ok).is_ok(), "{ok}: {:?}", check_rule(ok));
     }
     for bad in [
         "pass in all",
@@ -608,6 +868,31 @@ fn rule_validation() {
         "block in from <plugin_x>; pass all",
         "block in from <plugin_x>\npass all",
         "anchor foo from <plugin_x>",
+        // Negation: with an empty table this blocks everything.
+        "block in quick from ! <plugin_x>",
+        "block in quick from !<plugin_x>",
+        // A table name smuggled inside the label is not a table reference.
+        "block in quick all label \"<plugin_x>\"",
+        "block in quick all label \"x\" from <plugin_x> label \"y\"",
+        "block in quick from <plugin_x> \"stray\"",
+        // pf ends a token at '(' — no space needed before the keyword.
+        "match out from <plugin_x> nat-to(em0)",
+        "block in quick to <plugin_x> route-to(em1 10.0.0.1)",
+        "match in from <plugin_x> rdr-to(10.0.0.1)",
+        // Routing tables, shaping, tags, comments.
+        "match in from <plugin_x> rtable 1",
+        "match in from <plugin_x> dnpipe 1",
+        "match in from <plugin_x> dnqueue 1",
+        "match in from <plugin_x> queue bulk",
+        "match in from <plugin_x> tag FOO",
+        "block in quick tagged FOO from <plugin_x>",
+        "match in from <plugin_x> set prio 7",
+        "match in from <plugin_x> prio 7",
+        "block in from <plugin_x> # pass all",
+        // A table outside an address position.
+        "block in quick on <plugin_x> all",
+        "block in quick from any to any <plugin_x>",
+        "block in quick from <plugin_x",
     ] {
         assert!(check_rule(bad).is_err(), "{bad}");
     }
@@ -626,12 +911,10 @@ fn rule_validation() {
 
 #[tokio::test]
 async fn kv_is_namespaced_per_plugin() {
-    let db = aifw_core::Database::new_in_memory().await.unwrap();
-    let pool = db.pool().clone();
-    let pf: Arc<dyn aifw_pf::PfBackend> = Arc::new(aifw_pf::PfMock::new());
-    let sink = Arc::new(RuleSink::new(pf.clone(), "aifw-plugins"));
-    let a = PluginContext::new("a", pf.clone(), pool.clone(), sink.clone());
-    let b = PluginContext::new("b", pf, pool, sink);
+    let t = PluginContext::for_tests("a").await;
+    let a = t.ctx.clone();
+    let sink = Arc::new(RuleSink::new(t.pf.clone(), "aifw-plugins"));
+    let b = PluginContext::new("b", t.pf.clone(), t.pool.clone(), sink);
 
     a.kv_set("k", "1").await.unwrap();
     assert_eq!(a.kv_get("k").await.unwrap().as_deref(), Some("1"));
@@ -643,14 +926,17 @@ async fn kv_is_namespaced_per_plugin() {
     );
     a.kv_delete("k").await.unwrap();
     assert_eq!(a.kv_get("k").await.unwrap(), None);
+    a.kv_set("list:x", "1").await.unwrap();
+    a.kv_set("list:y", "1").await.unwrap();
+    assert_eq!(a.kv_keys("list:").await.unwrap(), ["list:x", "list:y"]);
+    assert_eq!(a.kv_keys("").await.unwrap(), ["j", "list:x", "list:y"]);
+    assert!(b.kv_keys("").await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn activity_log_is_bounded_and_newest_first() {
-    let db = aifw_core::Database::new_in_memory().await.unwrap();
-    let pf: Arc<dyn aifw_pf::PfBackend> = Arc::new(aifw_pf::PfMock::new());
-    let sink = Arc::new(RuleSink::new(pf.clone(), "aifw-plugins"));
-    let ctx = PluginContext::new("a", pf, db.pool().clone(), sink);
+    let t = PluginContext::for_tests("a").await;
+    let ctx = &t.ctx;
     for i in 0..600 {
         ctx.info(format!("m{i}"));
     }

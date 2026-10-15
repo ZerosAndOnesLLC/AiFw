@@ -871,6 +871,9 @@ EXAMPLES:
     # Send notifications to an ntfy topic (secrets go through --secret)
     aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
 
+    # Read a secret from stdin so it stays out of shell history and ps
+    printf '%s' \"$TOKEN\" | aifw plugins set notifier --secret-stdin ntfy_token
+
     # Back to the default
     aifw plugins set threat-feeds --unset refresh_hours")]
     Set {
@@ -881,6 +884,9 @@ EXAMPLES:
         /// Secret settings as key=value (repeatable)
         #[arg(long = "secret", value_name = "KEY=VALUE")]
         secrets: Vec<String>,
+        /// Secret setting whose value is read from stdin (first line)
+        #[arg(long = "secret-stdin", value_name = "KEY")]
+        secret_stdin: Option<String>,
         /// Reset a setting to its default / clear a secret (repeatable)
         #[arg(long = "unset", value_name = "KEY")]
         unset: Vec<String>,
@@ -889,6 +895,45 @@ EXAMPLES:
     Reset {
         /// Plugin name
         name: String,
+    },
+    /// Runtime state, last error and live status (asks the running API)
+    Status {
+        /// Plugin name; all plugins when omitted
+        name: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// A plugin's activity log, newest first (asks the running API)
+    Logs {
+        /// Plugin name
+        name: String,
+        /// Entries to show
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Minimum level: info, warn or error
+        #[arg(long, default_value = "info")]
+        level: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a plugin action, e.g. `refresh` or `test` (asks the running API)
+    #[command(after_help = "\
+EXAMPLES:
+    aifw plugins run threat-feeds refresh
+    aifw plugins run threat-feeds lookup ip=203.0.113.9
+    aifw plugins run notifier test channel=ntfy")]
+    Run {
+        /// Plugin name
+        name: String,
+        /// Action id (see `aifw plugins show NAME`)
+        action: String,
+        /// Action arguments as key=value
+        args: Vec<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1250,9 +1295,35 @@ async fn main() -> anyhow::Result<()> {
                 name,
                 values,
                 secrets,
+                secret_stdin,
                 unset,
-            } => commands::plugins_set(&cli.db, &name, &values, &secrets, &unset).await?,
+            } => {
+                commands::plugins_set(
+                    &cli.db,
+                    &name,
+                    &values,
+                    &secrets,
+                    secret_stdin.as_deref(),
+                    &unset,
+                )
+                .await?
+            }
             PluginsAction::Reset { name } => commands::plugins_reset(&cli.db, &name).await?,
+            PluginsAction::Status { name, json } => {
+                commands::plugins_status(name.as_deref(), json).await?
+            }
+            PluginsAction::Logs {
+                name,
+                limit,
+                level,
+                json,
+            } => commands::plugins_logs(&name, limit, &level, json).await?,
+            PluginsAction::Run {
+                name,
+                action,
+                args,
+                json,
+            } => commands::plugins_run(&name, &action, &args, json).await?,
         },
         Commands::Logrotate { action } => match action {
             LogrotateAction::Show { json } => commands::logrotate_show(&cli.db, json).await?,

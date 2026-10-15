@@ -1,16 +1,21 @@
 use thiserror::Error;
 
 /// Errors produced by the plugin subsystem and returned by plugin authors
-/// from [`crate::plugin::Plugin`] lifecycle hooks.
+/// from [`crate::plugin::Plugin`] / [`crate::plugin::PluginInstance`]
+/// methods.
 #[derive(Debug, Error)]
 pub enum PluginError {
     /// General plugin failure (also what bare `String`/`&str` errors convert into)
     #[error("{0}")]
     Plugin(String),
 
-    /// pf table or rule operation failed or was denied (non-`plugin_` table)
-    #[error("pf error: {0}")]
+    /// pf table operation failed or was denied (non-`plugin_` table)
+    #[error("pf table error: {0}")]
     Table(String),
+
+    /// A pf rule the plugin offered was refused by the sandbox or by pf
+    #[error("pf rule rejected: {0}")]
+    Rule(String),
 
     /// Unknown plugin, action, or setting
     #[error("not found: {0}")]
@@ -19,10 +24,6 @@ pub enum PluginError {
     /// Settings or action arguments failed validation
     #[error("{0}")]
     Validation(String),
-
-    /// The plugin's `init` failed or timed out
-    #[error("init failed: {0}")]
-    Init(String),
 
     /// Persistence (plugin_config / plugin_kv) failed
     #[error("store error: {0}")]

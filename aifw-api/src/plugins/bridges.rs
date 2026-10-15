@@ -51,7 +51,7 @@ fn start_timer(state: AppState) {
                 .plugin_manager
                 .dispatch(HookEvent {
                     hook: HookPoint::Timer,
-                    data: HookEventData::Tick { timestamp },
+                    data: HookEventData::Timer { timestamp },
                 })
                 .await;
         }
@@ -63,11 +63,15 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use aifw_plugins::{Plugin, PluginContext, PluginInfo, PluginSettings, registry::Factory};
+    use aifw_plugins::{Plugin, PluginContext, PluginInfo, PluginInstance, PluginSettings};
 
     /// Test plugin that records every event it receives.
     struct CapturePlugin {
         hooks: Vec<HookPoint>,
+        events: Arc<Mutex<Vec<HookEvent>>>,
+    }
+
+    struct CaptureRunning {
         events: Arc<Mutex<Vec<HookEvent>>>,
     }
 
@@ -84,14 +88,19 @@ mod tests {
             }
         }
 
-        async fn init(
-            &mut self,
+        async fn start(
+            &self,
             _settings: &PluginSettings,
             _ctx: &PluginContext,
-        ) -> aifw_plugins::Result<()> {
-            Ok(())
+        ) -> aifw_plugins::Result<Box<dyn PluginInstance>> {
+            Ok(Box::new(CaptureRunning {
+                events: self.events.clone(),
+            }))
         }
+    }
 
+    #[async_trait::async_trait]
+    impl PluginInstance for CaptureRunning {
         async fn on_hook(
             &self,
             event: &HookEvent,
@@ -128,18 +137,15 @@ mod tests {
             .await
             .unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
-        let ev = events.clone();
-        let factory: Factory = Arc::new(move || {
-            Box::new(CapturePlugin {
-                hooks: hooks.clone(),
-                events: ev.clone(),
-            }) as Box<dyn Plugin>
+        let plugin: Arc<dyn Plugin> = Arc::new(CapturePlugin {
+            hooks,
+            events: events.clone(),
         });
         state.plugin_manager = Arc::new(
-            aifw_plugins::PluginManager::with_factories(
+            aifw_plugins::PluginManager::with_plugins(
                 state.pf.clone(),
                 state.pool.clone(),
-                vec![factory],
+                vec![plugin],
             )
             .unwrap(),
         );
@@ -173,7 +179,7 @@ mod tests {
         let captured = events.lock().unwrap();
         assert_eq!(captured.len(), 1);
         match &captured[0].data {
-            HookEventData::Log {
+            HookEventData::LogEvent {
                 action,
                 details,
                 source,
@@ -227,7 +233,7 @@ mod tests {
             "history and unparseable rows are skipped"
         );
         match &captured[0].data {
-            HookEventData::IdsAlertEvent {
+            HookEventData::IdsAlert {
                 alert_id,
                 severity,
                 src_ip,
@@ -269,7 +275,7 @@ mod tests {
         let states: Vec<String> = captured
             .iter()
             .map(|e| match &e.data {
-                HookEventData::Gateway {
+                HookEventData::GatewayEvent {
                     to_state,
                     gateway_name,
                     ..

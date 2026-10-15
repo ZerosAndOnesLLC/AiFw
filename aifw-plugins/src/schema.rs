@@ -243,6 +243,15 @@ impl PluginSettings {
         self.0
     }
 
+    /// Deserialize the settings into a plugin-defined struct. Every schema
+    /// key is present (operator value or default), so a struct with one
+    /// field per key and no `Option`s is enough — the schema stays the
+    /// single source of defaults.
+    pub fn deserialize<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
+        serde_json::from_value(Value::Object(self.0.clone()))
+            .map_err(|e| PluginError::Validation(format!("settings: {e}")))
+    }
+
     /// Raw value for `key`.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.0.get(key)
@@ -286,8 +295,11 @@ fn invalid(field: &SettingField, msg: impl std::fmt::Display) -> PluginError {
 
 /// Parse and check an http(s) URL string.
 fn check_url(field: &SettingField, s: &str, https_only: bool) -> Result<()> {
-    let lower = s.to_ascii_lowercase();
-    let ok_scheme = lower.starts_with("https://") || (!https_only && lower.starts_with("http://"));
+    if s.len() > 2048 || s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(invalid(field, "is not a valid URL"));
+    }
+    let url = url::Url::parse(s).map_err(|_| invalid(field, "is not a valid URL"))?;
+    let ok_scheme = url.scheme() == "https" || (!https_only && url.scheme() == "http");
     if !ok_scheme {
         return Err(invalid(
             field,
@@ -298,15 +310,11 @@ fn check_url(field: &SettingField, s: &str, https_only: bool) -> Result<()> {
             },
         ));
     }
-    if s.len() > 2048 || s.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(invalid(field, "is not a valid URL"));
-    }
-    let host = s
-        .split_once("://")
-        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
-        .unwrap_or("");
-    if host.is_empty() {
+    if url.host_str().is_none_or(str::is_empty) {
         return Err(invalid(field, "URL has no host"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(invalid(field, "must not contain credentials"));
     }
     Ok(())
 }

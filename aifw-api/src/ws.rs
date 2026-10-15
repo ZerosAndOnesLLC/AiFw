@@ -1371,7 +1371,7 @@ pub fn start_pflog_collector(
                                 if pmgr.wants(aifw_plugins::HookPoint::PostRule) {
                                     let event = aifw_plugins::HookEvent {
                                         hook: aifw_plugins::HookPoint::PostRule,
-                                        data: aifw_plugins::hooks::HookEventData::Rule {
+                                        data: aifw_plugins::hooks::HookEventData::PostRule {
                                             src_ip: entry.src_addr.parse().ok(),
                                             dst_ip: entry.dst_addr.parse().ok(),
                                             src_port: if entry.src_port > 0 {

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -16,7 +16,7 @@ use crate::context::PluginContext;
 use crate::error::{PluginError, Result};
 use crate::hooks::{HookAction, HookEvent, HookPoint};
 use crate::http;
-use crate::plugin::{ActionInfo, Plugin, PluginInfo};
+use crate::plugin::{ActionInfo, Plugin, PluginInfo, PluginInstance};
 use crate::schema::{PluginSettings, SelectOption, SettingField};
 
 const NAME: &str = "notifier";
@@ -34,6 +34,105 @@ const AUDIT_ACTIONS: &[(&str, &str)] = &[
     ("daemon_started", "Firewall daemon started"),
     ("daemon_stopped", "Firewall daemon stopped"),
 ];
+
+/// The settings exactly as the schema declares them. `effective` fills
+/// every key, so defaults live only in [`Notifier::settings_schema`].
+#[derive(Debug, Deserialize)]
+struct Settings {
+    ntfy_url: Option<String>,
+    ntfy_token: Option<String>,
+    discord_webhook: Option<String>,
+    slack_webhook: Option<String>,
+    telegram_bot_token: Option<String>,
+    telegram_chat_id: Option<String>,
+    webhook_url: Option<String>,
+    webhook_secret: Option<String>,
+    notify_ids: bool,
+    ids_min_severity: String,
+    notify_gateway: bool,
+    notify_vpn: bool,
+    notify_vpn_peers: bool,
+    notify_config: bool,
+    config_actions: Vec<String>,
+    rate_limit_per_minute: u32,
+    dedupe_minutes: u64,
+    allow_private_destinations: bool,
+}
+
+/// Text settings come back as `""` when cleared; treat that as unset.
+fn present(s: &Option<String>) -> Option<String> {
+    s.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+impl Settings {
+    fn parse(s: &PluginSettings) -> Result<Self> {
+        s.deserialize()
+    }
+
+    /// Channels the operator configured.
+    fn channels(&self) -> Vec<Channel> {
+        let mut out = Vec::new();
+        if let Some(url) = present(&self.ntfy_url) {
+            out.push(Channel::Ntfy {
+                url,
+                token: present(&self.ntfy_token),
+            });
+        }
+        if let Some(url) = present(&self.discord_webhook) {
+            out.push(Channel::Discord { url });
+        }
+        if let Some(url) = present(&self.slack_webhook) {
+            out.push(Channel::Slack { url });
+        }
+        if let (Some(token), Some(chat_id)) = (
+            present(&self.telegram_bot_token),
+            present(&self.telegram_chat_id),
+        ) {
+            out.push(Channel::Telegram { token, chat_id });
+        }
+        if let Some(url) = present(&self.webhook_url) {
+            out.push(Channel::Webhook {
+                url,
+                secret: present(&self.webhook_secret),
+            });
+        }
+        out
+    }
+
+    fn filter(&self) -> Filter {
+        Filter {
+            ids: self.notify_ids,
+            ids_max_severity: self.ids_min_severity.parse().unwrap_or(2),
+            gateway: self.notify_gateway,
+            vpn: self.notify_vpn,
+            vpn_peers: self.notify_vpn_peers,
+            config: self.notify_config,
+            config_actions: self.config_actions.clone(),
+        }
+    }
+
+    /// Only the hooks whose events the operator wants, so the other event
+    /// sources (IDS tail, VPN poller, …) stay idle.
+    fn hooks(&self) -> Vec<HookPoint> {
+        let mut h = Vec::new();
+        if self.notify_ids {
+            h.push(HookPoint::IdsAlert);
+        }
+        if self.notify_gateway {
+            h.push(HookPoint::GatewayEvent);
+        }
+        if self.notify_vpn {
+            h.push(HookPoint::VpnEvent);
+        }
+        if self.notify_config {
+            h.push(HookPoint::LogEvent);
+        }
+        h
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize)]
 struct ChannelStats {
@@ -57,9 +156,15 @@ struct Shared {
     stats: Mutex<Stats>,
     filter: Filter,
     channels: Vec<Channel>,
-    client: reqwest::Client,
+    client: http::Client,
     host: String,
-    allow_private: bool,
+}
+
+/// One channel's failure from a delivery round.
+#[derive(Debug, Serialize)]
+struct Failure {
+    channel: &'static str,
+    error: String,
 }
 
 impl Shared {
@@ -69,14 +174,14 @@ impl Shared {
 
     /// Send `n` to `targets` concurrently; record per-channel outcomes.
     /// Returns the failures.
-    async fn deliver(self: &Arc<Self>, n: &Notification, targets: &[Channel]) -> Vec<String> {
+    async fn deliver(self: &Arc<Self>, n: &Notification, targets: &[Channel]) -> Vec<Failure> {
         let mut set = JoinSet::new();
         for ch in targets {
             let ch = ch.clone();
             let me = self.clone();
             let n = n.clone();
             set.spawn(async move {
-                let r = channels::send(&me.client, &ch, &n, &me.host, me.allow_private).await;
+                let r = channels::send(&me.client, &ch, &n, &me.host).await;
                 (ch.id(), r)
             });
         }
@@ -94,7 +199,10 @@ impl Shared {
                 Err(e) => {
                     s.failed += 1;
                     s.last_error = Some(e.to_string());
-                    failures.push(e.to_string());
+                    failures.push(Failure {
+                        channel: id,
+                        error: e.to_string(),
+                    });
                 }
             }
         }
@@ -106,70 +214,11 @@ impl Shared {
 /// The Notifier plugin: pushes IDS alerts, gateway and VPN changes, and
 /// selected configuration changes to ntfy, Discord, Slack, Telegram, or a
 /// signed JSON webhook.
-#[derive(Default)]
-pub struct Notifier {
-    shared: Option<Arc<Shared>>,
-}
+pub struct Notifier;
 
-impl Notifier {
-    /// A fresh, un-initialized instance (registry factory).
-    pub fn boxed() -> Box<dyn Plugin> {
-        Box::new(Self::default())
-    }
-
-    fn shared(&self) -> Result<&Arc<Shared>> {
-        self.shared
-            .as_ref()
-            .ok_or_else(|| PluginError::Plugin("not initialized".into()))
-    }
-}
-
-/// Channels the operator configured.
-fn configured_channels(s: &PluginSettings) -> Vec<Channel> {
-    let mut out = Vec::new();
-    if let Some(url) = s.str("ntfy_url") {
-        out.push(Channel::Ntfy {
-            url: url.to_string(),
-            token: s.str("ntfy_token").map(str::to_string),
-        });
-    }
-    if let Some(url) = s.str("discord_webhook") {
-        out.push(Channel::Discord {
-            url: url.to_string(),
-        });
-    }
-    if let Some(url) = s.str("slack_webhook") {
-        out.push(Channel::Slack {
-            url: url.to_string(),
-        });
-    }
-    if let (Some(token), Some(chat_id)) = (s.str("telegram_bot_token"), s.str("telegram_chat_id")) {
-        out.push(Channel::Telegram {
-            token: token.to_string(),
-            chat_id: chat_id.to_string(),
-        });
-    }
-    if let Some(url) = s.str("webhook_url") {
-        out.push(Channel::Webhook {
-            url: url.to_string(),
-            secret: s.str("webhook_secret").map(str::to_string),
-        });
-    }
-    out
-}
-
-fn filter(s: &PluginSettings) -> Filter {
-    Filter {
-        ids: s.bool("notify_ids"),
-        ids_max_severity: s
-            .str("ids_min_severity")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(2),
-        gateway: s.bool("notify_gateway"),
-        vpn: s.bool("notify_vpn"),
-        config: s.bool("notify_config"),
-        config_actions: s.strings("config_actions"),
-    }
+/// A running Notifier.
+struct Running {
+    shared: Arc<Shared>,
 }
 
 async fn hostname() -> String {
@@ -198,8 +247,8 @@ async fn worker(
     while let Some(n) = rx.recv().await {
         match limiter.check(&n.dedupe_key, Instant::now()) {
             Verdict::Send => {
-                for failure in shared.deliver(&n, &shared.channels).await {
-                    ctx.warn(format!("delivery failed: {failure}"));
+                for f in shared.deliver(&n, &shared.channels).await {
+                    ctx.warn(format!("delivery failed: {}: {}", f.channel, f.error));
                 }
             }
             Verdict::Duplicate => shared.stats().duplicates += 1,
@@ -220,7 +269,7 @@ impl Plugin for Notifier {
         PluginInfo {
             name: NAME.to_string(),
             title: "Notifier".to_string(),
-            version: "1.0.0".to_string(),
+            version: "1.1.0".to_string(),
             description: "Sends IDS alerts, gateway and VPN outages, and configuration changes \
                           to ntfy, Discord, Slack, Telegram, or your own webhook."
                 .to_string(),
@@ -285,8 +334,16 @@ impl Plugin for Notifier {
                 .group("Events"),
             SettingField::bool("notify_gateway", "Gateway down / degraded / recovered", true)
                 .group("Events"),
-            SettingField::bool("notify_vpn", "VPN tunnel or peer up / down", true)
-                .help("WireGuard peers count as down after 3 minutes without a handshake.")
+            SettingField::bool("notify_vpn", "VPN tunnel up / down", true)
+                .help("WireGuard interfaces and IPsec tunnels.")
+                .group("Events"),
+            SettingField::bool("notify_vpn_peers", "Individual WireGuard peers", false)
+                .help(
+                    "Also notify when a single peer connects or drops. A peer counts as down \
+                     3 minutes after its last handshake, so this is noisy on road-warrior \
+                     tunnels where laptops and phones come and go.",
+                )
+                .visible_if("notify_vpn", true)
                 .group("Events"),
             SettingField::bool("notify_config", "Configuration changes", false)
                 .group("Events"),
@@ -312,19 +369,19 @@ impl Plugin for Notifier {
     }
 
     fn validate_settings(&self, s: &PluginSettings) -> Result<()> {
-        if s.str("telegram_bot_token").is_some() != s.str("telegram_chat_id").is_some() {
+        let s = Settings::parse(s)?;
+        if present(&s.telegram_bot_token).is_some() != present(&s.telegram_chat_id).is_some() {
             return Err(PluginError::Validation(
                 "Telegram needs both a bot token and a chat ID.".into(),
             ));
         }
-        if configured_channels(s).is_empty() {
+        if s.channels().is_empty() {
             return Err(PluginError::Validation(
                 "Configure at least one channel (ntfy, Discord, Slack, Telegram or webhook)."
                     .into(),
             ));
         }
-        let f = filter(s);
-        if !(f.ids || f.gateway || f.vpn || f.config) {
+        if s.hooks().is_empty() {
             return Err(PluginError::Validation(
                 "Turn on at least one kind of event.".into(),
             ));
@@ -351,41 +408,47 @@ impl Plugin for Notifier {
         ]
     }
 
-    async fn init(&mut self, s: &PluginSettings, ctx: &PluginContext) -> Result<()> {
-        let allow_private = s.bool("allow_private_destinations");
+    fn hooks(&self, s: &PluginSettings) -> Vec<HookPoint> {
+        Settings::parse(s)
+            .map(|s| s.hooks())
+            .unwrap_or_else(|_| self.info().hooks)
+    }
+
+    async fn start(
+        &self,
+        s: &PluginSettings,
+        ctx: &PluginContext,
+    ) -> Result<Box<dyn PluginInstance>> {
+        let s = Settings::parse(s)?;
         let (tx, rx) = mpsc::channel(QUEUE);
-        let channels = configured_channels(s);
+        let channels = s.channels();
         let shared = Arc::new(Shared {
             tx,
             stats: Mutex::new(Stats::default()),
-            filter: filter(s),
-            client: http::client(NAME, SEND_TIMEOUT, allow_private)?,
+            filter: s.filter(),
+            client: http::Client::new(NAME, SEND_TIMEOUT, s.allow_private_destinations),
             host: hostname().await,
-            allow_private,
             channels: channels.clone(),
         });
         let limiter = Limiter::new(
-            s.i64("rate_limit_per_minute")
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(10),
-            Duration::from_secs(60 * s.i64("dedupe_minutes").unwrap_or(10).max(0) as u64),
+            s.rate_limit_per_minute,
+            Duration::from_secs(60 * s.dedupe_minutes),
             Instant::now(),
         );
         ctx.spawn(worker(shared.clone(), rx, limiter, ctx.clone()));
         let names: Vec<&str> = channels.iter().map(Channel::id).collect();
         ctx.info(format!("delivering to {}", names.join(", ")));
-        self.shared = Some(shared);
-        Ok(())
+        Ok(Box::new(Running { shared }))
     }
+}
 
+#[async_trait]
+impl PluginInstance for Running {
     async fn on_hook(&self, event: &HookEvent, _ctx: &PluginContext) -> HookAction {
-        let Ok(shared) = self.shared() else {
-            return HookAction::Continue;
-        };
-        if let Some(n) = classify(event, &shared.filter)
-            && shared.tx.try_send(n).is_err()
+        if let Some(n) = classify(event, &self.shared.filter)
+            && self.shared.tx.try_send(n).is_err()
         {
-            shared.stats().dropped_queue_full += 1;
+            self.shared.stats().dropped_queue_full += 1;
         }
         HookAction::Continue
     }
@@ -394,9 +457,9 @@ impl Plugin for Notifier {
         if action != "test" {
             return Err(PluginError::NotFound(format!("action '{action}'")));
         }
-        let shared = self.shared()?;
         let which = args["channel"].as_str().unwrap_or("all");
-        let targets: Vec<Channel> = shared
+        let targets: Vec<Channel> = self
+            .shared
             .channels
             .iter()
             .filter(|c| which == "all" || c.id() == which)
@@ -407,21 +470,26 @@ impl Plugin for Notifier {
                 "{which} is not configured"
             )));
         }
-        let failures = shared.deliver(&test_notification(), &targets).await;
-        if failures.is_empty() {
-            let sent: Vec<&str> = targets.iter().map(Channel::id).collect();
-            Ok(json!({"sent": sent}))
-        } else {
-            Err(PluginError::Plugin(failures.join("; ")))
+        let failed = self.shared.deliver(&test_notification(), &targets).await;
+        let sent: Vec<&str> = targets
+            .iter()
+            .map(Channel::id)
+            .filter(|id| !failed.iter().any(|f| f.channel == *id))
+            .collect();
+        if sent.is_empty() {
+            let why: Vec<String> = failed
+                .iter()
+                .map(|f| format!("{}: {}", f.channel, f.error))
+                .collect();
+            return Err(PluginError::Plugin(why.join("; ")));
         }
+        Ok(json!({"sent": sent, "failed": failed}))
     }
 
     async fn status(&self, _ctx: &PluginContext) -> Value {
-        let Ok(shared) = self.shared() else {
-            return Value::Null;
-        };
-        let stats = shared.stats();
-        let channels: Vec<Value> = shared
+        let stats = self.shared.stats();
+        let channels: Vec<Value> = self
+            .shared
             .channels
             .iter()
             .map(|c| {
@@ -437,7 +505,7 @@ impl Plugin for Notifier {
             .collect();
         json!({
             "channels": channels,
-            "queue_depth": QUEUE - shared.tx.capacity(),
+            "queue_depth": QUEUE - self.shared.tx.capacity(),
             "dropped_queue_full": stats.dropped_queue_full,
             "duplicates": stats.duplicates,
             "rate_limited": stats.rate_limited,
@@ -452,7 +520,7 @@ mod tests {
     use crate::schema;
 
     fn settings(values: Value, secrets: Value) -> std::result::Result<PluginSettings, PluginError> {
-        let schema = Notifier::default().settings_schema();
+        let schema = Notifier.settings_schema();
         let (v, s) = schema::normalize(
             &schema,
             values.as_object().unwrap(),
@@ -463,21 +531,21 @@ mod tests {
 
     #[test]
     fn requires_a_channel_and_complete_telegram() {
-        let p = Notifier::default();
         let none = settings(json!({}), json!({})).unwrap();
-        assert!(p.validate_settings(&none).is_err());
+        assert!(Notifier.validate_settings(&none).is_err());
 
         let half_tg = settings(json!({}), json!({"telegram_bot_token": "1:a"})).unwrap();
         assert!(
-            p.validate_settings(&half_tg)
+            Notifier
+                .validate_settings(&half_tg)
                 .unwrap_err()
                 .to_string()
                 .contains("Telegram")
         );
 
         let ok = settings(json!({}), json!({"ntfy_url": "https://ntfy.sh/x"})).unwrap();
-        p.validate_settings(&ok).unwrap();
-        assert_eq!(configured_channels(&ok).len(), 1);
+        Notifier.validate_settings(&ok).unwrap();
+        assert_eq!(Settings::parse(&ok).unwrap().channels().len(), 1);
     }
 
     #[test]
@@ -493,30 +561,70 @@ mod tests {
     }
 
     #[test]
-    fn needs_some_event() {
-        let p = Notifier::default();
+    fn needs_some_event_and_hooks_follow_the_settings() {
         let s = settings(
             json!({"notify_ids": false, "notify_gateway": false, "notify_vpn": false}),
             json!({"slack_webhook": "https://hooks.slack.com/services/x"}),
         )
         .unwrap();
-        assert!(p.validate_settings(&s).is_err());
+        assert!(Notifier.validate_settings(&s).is_err());
+
+        let s = settings(
+            json!({"notify_ids": false, "notify_config": true}),
+            json!({"slack_webhook": "https://hooks.slack.com/services/x"}),
+        )
+        .unwrap();
+        assert_eq!(
+            Notifier.hooks(&s),
+            [
+                HookPoint::GatewayEvent,
+                HookPoint::VpnEvent,
+                HookPoint::LogEvent
+            ]
+        );
+        // Defaults: peers off, tunnels on.
+        let d = Settings::parse(&settings(json!({}), json!({})).unwrap()).unwrap();
+        assert!(d.notify_vpn && !d.notify_vpn_peers);
+        assert_eq!(d.rate_limit_per_minute, 10);
+        assert_eq!(d.dedupe_minutes, 10);
     }
 
     #[tokio::test]
     async fn test_action_reports_unconfigured_channel() {
-        let db = aifw_core::Database::new_in_memory().await.unwrap();
-        let pf: Arc<dyn aifw_pf::PfBackend> = Arc::new(aifw_pf::PfMock::new());
-        let sink = Arc::new(crate::rules::RuleSink::new(pf.clone(), "aifw-plugins"));
-        let ctx = PluginContext::new(NAME, pf, db.pool().clone(), sink);
+        let t = PluginContext::for_tests(NAME).await;
         let s = settings(json!({}), json!({"ntfy_url": "https://ntfy.sh/x"})).unwrap();
-        let mut p = Notifier::default();
-        p.init(&s, &ctx).await.unwrap();
+        let p = Notifier.start(&s, &t.ctx).await.unwrap();
         let err = p
-            .run_action("test", json!({"channel": "discord"}), &ctx)
+            .run_action("test", json!({"channel": "discord"}), &t.ctx)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("discord is not configured"));
-        assert_eq!(p.status(&ctx).await["channels"][0]["id"], "ntfy");
+        assert_eq!(p.status(&t.ctx).await["channels"][0]["id"], "ntfy");
+    }
+
+    #[tokio::test]
+    async fn test_action_reports_partial_success() {
+        use crate::http::testing::{Reply, TestServer};
+        let good = TestServer::bind().await;
+        let good_url = good.url("/ok");
+        good.run(vec![Reply::status(200)]);
+        let bad = TestServer::bind().await;
+        let bad_url = bad.url("/gone");
+        bad.run(vec![Reply::status(404)]);
+
+        let t = PluginContext::for_tests(NAME).await;
+        let s = settings(
+            json!({"allow_private_destinations": true}),
+            json!({"webhook_url": good_url, "ntfy_url": bad_url}),
+        )
+        .unwrap();
+        let p = Notifier.start(&s, &t.ctx).await.unwrap();
+        let v = p
+            .run_action("test", json!({"channel": "all"}), &t.ctx)
+            .await
+            .unwrap();
+        assert_eq!(v["sent"], json!(["webhook"]));
+        assert_eq!(v["failed"][0]["channel"], "ntfy");
+        assert!(v["failed"][0]["error"].as_str().unwrap().contains("404"));
     }
 }

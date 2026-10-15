@@ -13,6 +13,7 @@ sqlx = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 hex = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
