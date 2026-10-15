@@ -82,7 +82,6 @@
     "/usr/local/etc/rtime",
     "/var/run/rtime",
     "/var/log/rtime",
-    "/usr/local/lib/aifw/plugins",
     "/usr/local/etc/swanctl/conf.d",
     "/usr/local/etc/swanctl/private",
     "/usr/local/etc/swanctl/x509",

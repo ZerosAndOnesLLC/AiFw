@@ -65,3 +65,19 @@ Branch: `feat/plugin-system` off `main`. Mack merges the PR.
 ## Phase 9 — Docs
 - [x] docs/plugins.md "Build your first plugin" (threat-feeds walkthrough)
 - [x] features/cli/README/CLAUDE.md endpoint updates
+
+## Phase 10 — Review fixes (2026-10-07 + 2026-10-15 reviews)
+- [x] H1 rule validator escapes (negation, label smuggling, `nat-to(`, rtable/dnpipe/tag/#)
+- [x] M1/M2 config lock across read-modify-write; lifecycle detached from the request
+- [x] M3 outbound HTTP: resolve-and-pin, re-checked redirects, Telegram public-only
+- [x] M4 Threat Feeds pfctl/KV outside the state lock; UI batches feed toggles
+- [x] M6 VPN bridge reports vanished endpoints; L6 quiet IDS tail; M7 allowlist hint
+- [x] L1/L2/L3/L4/L7 load-error backoff, stopped-run writes refused, persisted table list, reset clears KV, restore validates
+- [x] M-A CLI status/logs/run via API, enable confirms, --secret-stdin
+- [x] M-B per-peer VPN notifications opt-in
+- [x] M-C Plugin/PluginInstance split, typed settings, hooks(settings)
+- [x] L-A stale old-system references; L-B honest sandbox wording; L-H hello-world + for_tests()
+- [x] L-D/L-E/L-F redundant enable no-op, partial Send test result, stable field focus
+- [x] L-G freebsd/tests/t11-plugins.sh
+- [ ] M5 PostRule dispatch off the pflog reader — deferred until a plugin subscribes
+- [ ] L5 IDS cursor across VACUUM — deferred (rare; re-anchor handles the common case)

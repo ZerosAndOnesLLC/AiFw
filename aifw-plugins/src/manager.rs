@@ -358,14 +358,6 @@ impl PluginManager {
         }
     }
 
-    /// Stop every plugin (process shutdown).
-    pub async fn shutdown_all(&self) {
-        for entry in self.core.entries.values() {
-            let _life = entry.life.lock().await;
-            self.core.stop_locked(entry, false).await;
-        }
-    }
-
     // ---- operator changes ---------------------------------------------
 
     /// Enable or disable a plugin. Enabling validates the current settings

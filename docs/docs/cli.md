@@ -290,21 +290,29 @@ Defaults: rotate above 5 MB, keep 7 generations, gzip.
 
 ## plugins
 
-Configure the built-in plugins. Writes go through the same validation as the web UI; the running API applies them within about ten seconds. Live status and actions (*Refresh now*, *Send test*) are on the Plugins page.
+Configure and operate the built-in plugins. Configuration commands write the same table the web UI uses, through the same validation, and work whether or not the API is running; the running API applies them within about ten seconds and `enable` / `disable` wait for it to confirm. Runtime commands (`status`, `logs`, `run`) ask the running API and need an API key with `plugins:read` (`plugins:write` for `run`) in `AIFW_TOKEN`.
 
 ```bash
-aifw plugins list                                    # name, title, enabled (--json)
+aifw plugins list                                    # name, title, enabled, runtime state (--json)
 aifw plugins show threat-feeds                       # every setting, its value, allowed values, actions
 aifw plugins set threat-feeds refresh_hours=6 feeds=spamhaus-drop,feodo
 aifw plugins set threat-feeds allowlist=198.51.100.0/24,203.0.113.7
 aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
+printf '%s' "$TOKEN" | aifw plugins set notifier --secret-stdin ntfy_token   # keeps it out of history/ps
 aifw plugins set notifier --unset dedupe_minutes     # back to the default
 aifw plugins enable notifier                         # refused with a reason if it can't start yet
 aifw plugins disable threat-feeds                    # removes its pf rules and table contents
-aifw plugins reset notifier                          # forget settings + secrets, disable
+aifw plugins reset notifier                          # forget settings, secrets and stored data, disable
+
+export AIFW_TOKEN=…                                  # an API key (Settings → API keys)
+aifw plugins status                                  # state, last error, counters, live status
+aifw plugins logs threat-feeds --level warn          # the plugin's activity log
+aifw plugins run threat-feeds refresh                # actions, with key=value arguments
+aifw plugins run threat-feeds lookup ip=203.0.113.9
+aifw plugins run notifier test channel=ntfy
 ```
 
-Lists are comma-separated. Secrets must be passed with `--secret` and are never printed back.
+Lists are comma-separated. Secrets must be passed with `--secret` or `--secret-stdin` and are never printed back.
 
 ## dhcp
 

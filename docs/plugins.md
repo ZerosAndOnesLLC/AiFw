@@ -17,7 +17,7 @@ breadcrumb:
   "description": "How AiFw plugins work, the built-in Threat Intel Feeds and Notifier plugins, and a step-by-step guide to writing your own.",
   "author": { "@type": "Organization", "name": "ZerosAndOnesLLC" },
   "datePublished": "2026-05-09",
-  "dateModified": "2026-10-05"
+  "dateModified": "2026-10-15"
 }
 </script>
 
@@ -29,7 +29,7 @@ breadcrumb:
 Plugins add optional features to AiFw without touching the core engines. A
 plugin is a Rust type compiled into AiFw. It declares the events it wants
 and the settings it accepts. AiFw provides the settings form, the CLI, backup
-and restore, an activity log, and a sandboxed handle into pf.
+and restore, an activity log, and a scoped handle into pf.
 
 AiFw ships two plugins. They are also the examples this guide builds on:
 
@@ -56,19 +56,27 @@ tabs:
 Turning a plugin off stops its background work, removes its pf rules, and
 empties its pf tables. Nothing it added stays behind.
 
-The same configuration is available from the shell:
+The same configuration is available from the shell, plus the runtime views:
 
 ```sh
-aifw plugins list
+aifw plugins list                       # enabled + runtime state
 aifw plugins show threat-feeds          # every setting, its value, and allowed values
 aifw plugins set threat-feeds refresh_hours=6 feeds=spamhaus-drop,feodo
 aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
-aifw plugins enable notifier
+printf '%s' "$TOKEN" | aifw plugins set notifier --secret-stdin ntfy_token
+aifw plugins enable notifier            # waits for the API to confirm it started
 aifw plugins set threat-feeds --unset refresh_hours   # back to the default
-aifw plugins reset notifier                           # forget everything, disable
+aifw plugins reset notifier             # forget everything, disable
+
+aifw plugins status                     # state, last error, counters, live status
+aifw plugins logs threat-feeds --level warn
+aifw plugins run threat-feeds refresh
+aifw plugins run notifier test channel=ntfy
 ```
 
-The running API applies CLI changes within about ten seconds.
+Configuration commands write the database directly and work whether or not
+the API is running; the API applies them within about ten seconds. `status`,
+`logs` and `run` ask the running API and need an API key in `AIFW_TOKEN`.
 
 Plugin configuration is part of config backups and history. Secrets are
 redacted or passphrase-encrypted on export, like every other credential.
@@ -110,8 +118,10 @@ pfctl -t plugin_threat_feeds -T test 1.10.16.5
 - **Events:**
   - IDS alerts at or above a chosen severity.
   - Gateway down, degraded, or recovered.
-  - WireGuard peer or IPsec tunnel up or down. A WireGuard peer counts as
-    down 3 minutes after its last handshake.
+  - WireGuard interface or IPsec tunnel up or down, including a tunnel that
+    disappears (interface destroyed, tunnel deleted). Per-peer WireGuard
+    changes are a separate switch, off by default: a peer counts as down 3
+    minutes after its last handshake, which is noisy on road-warrior tunnels.
   - Selected audit-log changes.
 - **Delivery:**
   - Repeats of the same event are suppressed for a configurable window.
@@ -119,7 +129,8 @@ pfctl -t plugin_threat_feeds -T test 1.10.16.5
   - Failed deliveries are retried, honouring `Retry-After`.
 - Destinations must be public https URLs unless you enable **Allow LAN /
   http destinations**, which you need for a self-hosted ntfy.
-- **Send test** checks each channel immediately.
+- **Send test** checks each channel immediately and reports per channel,
+  so one broken webhook doesn't hide the ones that worked.
 
 ## How plugins work
 
@@ -145,27 +156,35 @@ configuration changed.
 
 When a plugin is enabled, or its settings change, the manager:
 
-1. Builds a fresh instance from the registry.
-2. Validates the stored settings against the plugin's schema and its
+1. Validates the stored settings against the plugin's schema and its
    `validate_settings` check.
-3. Calls `init(settings, ctx)`. Init runs in its own task with a 30 s
-   budget. An error or panic leaves the plugin in the **error** state, and
-   the message is shown on its card.
-4. Delivers subscribed hook events until the plugin is stopped.
-5. On stop, calls `shutdown`, aborts every task started with `ctx.spawn`,
-   removes the plugin's pf rules, and flushes every pf table it touched.
+2. Asks the plugin which hooks it wants for these settings (`hooks`).
+3. Calls `start(settings, ctx)`, which returns the running instance. It
+   runs in its own task with a 30 s budget. An error or panic leaves the
+   plugin in the **error** state, and the message is shown on its card.
+4. Delivers subscribed hook events to the instance until the plugin is
+   stopped.
+5. On stop, calls the instance's `shutdown`, aborts every task started
+   with `ctx.spawn`, removes the plugin's pf rules, and flushes every pf
+   table it touched — in this run or an earlier one (the list is
+   persisted, so a disable written while the API was down still cleans up).
+
+Every configuration write and start/stop for a plugin is serialized, and
+runs to completion even if the HTTP client that asked for it goes away.
+Enabling an already-running plugin, or saving settings that didn't change,
+does nothing.
 
 ### Hooks
 
-| Hook | Fired when | Payload (`HookEventData`) |
+| Hook | Fired when | Payload (`HookEventData`, same name as the hook) |
 |---|---|---|
-| `timer` | every 60 s | `Tick { timestamp }` |
-| `log_event` | an audit-log row is written (rule/NAT/config changes, plugin changes) | `Log { action, details, source }` |
-| `ids_alert` | the IDS writes an alert | `IdsAlertEvent { alert_id, timestamp, signature_id, signature_msg, severity, src_ip, dst_ip, src_port, dst_port, protocol, action, rule_source }` |
-| `gateway_event` | a multi-WAN gateway changes state | `Gateway { gateway_id, gateway_name, interface, from_state, to_state, reason }` |
-| `vpn_event` | a WireGuard peer/tunnel or IPsec tunnel goes up or down | `Vpn { kind, tunnel_name, peer, action, detail }` |
-| `post_rule` | pf logs a packet (rules with `log`) | `Rule { src_ip, dst_ip, src_port, dst_port, protocol, action, rule_id }` |
-| `api_request` | an authenticated API request arrives | `Api { method, path, remote_addr }` |
+| `timer` | every 60 s | `Timer { timestamp }` |
+| `log_event` | an audit-log row is written (rule/NAT/config changes, plugin changes) | `LogEvent { action, details, source }` |
+| `ids_alert` | the IDS writes an alert | `IdsAlert { alert_id, timestamp, signature_id, signature_msg, severity, src_ip, dst_ip, src_port, dst_port, protocol, action, rule_source }` |
+| `gateway_event` | a multi-WAN gateway changes state | `GatewayEvent { gateway_id, gateway_name, interface, from_state, to_state, reason }` |
+| `vpn_event` | a WireGuard peer/tunnel or IPsec tunnel goes up or down, or stops being reported | `VpnEvent { kind, tunnel_name, peer, action, detail }` |
+| `post_rule` | pf logs a packet (rules with `log`) | `PostRule { src_ip, dst_ip, src_port, dst_port, protocol, action, rule_id }` |
+| `api_request` | an authenticated API request arrives | `ApiRequest { method, path, remote_addr }` |
 
 Each event source does nothing until a running plugin subscribes to it.
 When a source starts, it begins from "now", so enabling a plugin never
@@ -180,23 +199,32 @@ counted and logged. Other plugins still get the event.
 | `HookAction` | Effect |
 |---|---|
 | `Continue` | Nothing (the default). |
-| `Block` | For `api_request`: the request is rejected with 403. Ignored elsewhere. |
+| `Block` | For `api_request`: the request is rejected with 403. Ignored elsewhere. Fails open: a plugin that times out or panics does not block, so this is for policy hints, not authentication. |
 | `Log(msg)` | Written to the plugin's activity log. |
 | `AddToTable { table, ip }` / `RemoveFromTable { … }` | Applied through the plugin's context, so only `plugin_*` tables are allowed. |
 | `Multi(vec)` | Several of the above (bounded depth and count). |
 
 ### The sandbox
 
-`PluginContext` is the plugin's only handle into AiFw:
+`PluginContext` is the plugin's handle into AiFw. The pf side is enforced
+by code: a plugin cannot touch a table that isn't its own or load a rule
+that opens, redirects or reroutes traffic. The rest — the KV store, logging,
+background tasks and the HTTP client — is the supported surface for
+in-tree plugins, not a security boundary: plugins are compiled into the
+API process and `ctx.pool()` hands them the whole database for reading
+firewall state. Code review keeps plugins on the supported surface.
 
 - **pf tables:** `add_to_table`, `remove_from_table`, `replace_table`,
   `flush_table`, `table_len`. Only tables named `plugin_<name>` are allowed.
 - **pf rules:** `set_rules` / `clear_rules` load into the shared
   `aifw-plugins` anchor. That anchor is hooked first in `pf.conf`, so plugin
-  drops win over multi-WAN `pass quick` policy routes. Rules must start with
-  `block` or `match` and reference a `plugin_*` table. `pass`, `nat`/`rdr`,
-  `route-to` and similar keywords are refused, so a plugin can drop or log
-  traffic but never open or redirect it.
+  drops win over everything that follows — including the operator's own
+  `pass` rules, which is why Threat Feeds asks for a management allowlist.
+  A rule must start with `block` or `match`, may carry one `label "…"`,
+  and must reference a `plugin_*` table after `from` or `to`. Negation,
+  comments and every keyword that passes, translates, routes, shapes or
+  tags traffic (`pass`, `nat-to`, `rdr-to`, `route-to`, `rtable`, `dnpipe`,
+  `queue`, `tag`, …) are refused, however they are spaced.
 - **Storage:** `kv_get` / `kv_set` (plus `_json` variants) give the plugin a
   persistent key/value store that only it can see.
 - **Background work:** `spawn` runs a task that is cancelled when the plugin
@@ -231,17 +259,16 @@ its own tests. The `Plugin` impl should mostly wire those pieces together.
 
 ### 2. Describe the plugin
 
-```rust
-#[derive(Default)]
-pub struct ThreatFeeds {
-    inner: Option<Arc<Inner>>,   // built in init()
-}
+A plugin is two types: the **definition** (`Plugin`), a stateless value the
+registry holds — metadata, settings schema, and `start` — and the
+**instance** (`PluginInstance`) that `start` returns with the settings
+already applied. Every instance method sees a fully built `self`; there is
+no "not initialized yet" state to guard against.
 
-impl ThreatFeeds {
-    pub fn boxed() -> Box<dyn Plugin> {
-        Box::new(Self::default())
-    }
-}
+```rust
+pub struct ThreatFeeds;                   // the definition: nothing to store
+
+struct Running { inner: Arc<Inner> }      // the instance: built by start()
 
 #[async_trait]
 impl Plugin for ThreatFeeds {
@@ -249,20 +276,57 @@ impl Plugin for ThreatFeeds {
         PluginInfo {
             name: "threat-feeds".into(),          // [a-z0-9-], the registry key
             title: "Threat Intel Feeds".into(),
-            version: "1.0.0".into(),
+            version: "1.1.0".into(),
             description: "Blocks traffic to and from addresses on public …".into(),
             author: "AiFw".into(),
             hooks: vec![HookPoint::Timer],        // only what you need
         }
     }
-    // …
+    // settings_schema, validate_settings, actions, start — below
 }
 ```
+
+The smallest possible plugin, for reference (it logs a line every minute):
+
+```rust
+pub struct Hello;
+struct HelloRunning;
+
+#[async_trait]
+impl Plugin for Hello {
+    fn info(&self) -> PluginInfo {
+        PluginInfo {
+            name: "hello".into(), title: "Hello".into(), version: "0.1.0".into(),
+            description: "Says hello once a minute.".into(), author: "you".into(),
+            hooks: vec![HookPoint::Timer],
+        }
+    }
+    async fn start(&self, _s: &PluginSettings, ctx: &PluginContext)
+        -> Result<Box<dyn PluginInstance>>
+    {
+        ctx.info("hello: started");
+        Ok(Box::new(HelloRunning))
+    }
+}
+
+#[async_trait]
+impl PluginInstance for HelloRunning {
+    async fn on_hook(&self, _e: &HookEvent, ctx: &PluginContext) -> HookAction {
+        ctx.info("hello: tick");
+        HookAction::Continue
+    }
+}
+```
+
+Add `Arc::new(Hello)` to `registry::builtins()` and it appears in the UI
+and CLI with an empty settings form and an activity log.
 
 ### 3. Declare settings
 
 The schema drives validation (API and CLI), the UI form, and the CLI's
-`show` output. Settings are never accepted unvalidated.
+`show` output. Settings are never accepted unvalidated. Defaults live in
+the schema and nowhere else: `PluginSettings::deserialize` fills a plain
+struct with every key present, so the plugin never repeats a default.
 
 ```rust
 fn settings_schema(&self) -> Vec<SettingField> {
@@ -284,11 +348,36 @@ fn settings_schema(&self) -> Vec<SettingField> {
     ]
 }
 
+#[derive(Deserialize)]
+struct Settings {                           // one field per schema key
+    feeds: Vec<String>,
+    custom_urls: Vec<String>,
+    refresh_hours: i64,
+    mode: String,
+    log_matches: bool,
+    allowlist: Vec<String>,
+}
+
 fn validate_settings(&self, s: &PluginSettings) -> Result<()> {
-    if s.strings("feeds").is_empty() && s.strings("custom_urls").is_empty() {
+    let s: Settings = s.deserialize()?;
+    if s.feeds.is_empty() && s.custom_urls.is_empty() {
         return Err(PluginError::Validation("Select at least one feed or add a custom URL.".into()));
     }
     Ok(())
+}
+```
+
+If some settings turn whole event kinds on or off, override `hooks` so the
+event sources the operator disabled stay idle:
+
+```rust
+fn hooks(&self, s: &PluginSettings) -> Vec<HookPoint> {
+    // Notifier: only the hooks whose events are switched on.
+    let s: Settings = s.deserialize().unwrap_or_default();
+    let mut h = Vec::new();
+    if s.notify_ids { h.push(HookPoint::IdsAlert); }
+    if s.notify_vpn { h.push(HookPoint::VpnEvent); }
+    h
 }
 ```
 
@@ -307,38 +396,45 @@ sees, so write it for them.
 ### 4. Start up: restore state, then enforce
 
 ```rust
-async fn init(&mut self, settings: &PluginSettings, ctx: &PluginContext) -> Result<()> {
-    let inner = Arc::new(Inner { cfg: config(settings), /* … */ });
+async fn start(&self, settings: &PluginSettings, ctx: &PluginContext)
+    -> Result<Box<dyn PluginInstance>>
+{
+    let inner = Arc::new(Inner { cfg: config(settings)?, /* … */ });
 
     // Last good lists from the plugin's KV store: protection is back
-    // immediately after a reboot, before any download.
+    // immediately after a reboot, before any download. Lists of feeds
+    // that are no longer selected are pruned here (ctx.kv_keys).
     inner.load(ctx).await?;
 
     // Table first, then the rules that reference it.
     inner.apply(ctx).await?;                  // ctx.replace_table("plugin_threat_feeds", …)
     ctx.set_rules(rules(&inner.cfg)).await?;  // block drop in log quick from <plugin_threat_feeds> …
 
-    // Never block init on the network: schedule the download.
+    // Never block start on the network: schedule the download.
     if inner.any_due(/* … */) {
         inner.start_refresh(ctx, false);      // ctx.spawn(…)
     }
-    self.inner = Some(inner);
-    Ok(())
+    Ok(Box::new(Running { inner }))
 }
 ```
 
 A settings change restarts the plugin. Keep anything expensive to rebuild,
 such as downloaded lists and ETags, in the KV store so a restart costs
-nothing.
+nothing. Don't hold a lock across `ctx.replace_table` or a large `kv_set`:
+`on_hook` and `status` have time budgets and would queue behind it.
 
 ### 5. React to hooks without blocking
 
 ```rust
-async fn on_hook(&self, event: &HookEvent, ctx: &PluginContext) -> HookAction {
-    if event.hook == HookPoint::Timer && self.due() {
-        self.inner().start_refresh(ctx, false);   // background task, returns at once
+#[async_trait]
+impl PluginInstance for Running {
+    async fn on_hook(&self, event: &HookEvent, ctx: &PluginContext) -> HookAction {
+        if event.hook == HookPoint::Timer && self.inner.due().await {
+            self.inner.start_refresh(ctx, false);   // background task, returns at once
+        }
+        HookAction::Continue
     }
-    HookAction::Continue
+    // run_action, status — below
 }
 ```
 
@@ -363,12 +459,17 @@ fn actions(&self) -> Vec<ActionInfo> {
 
 async fn run_action(&self, action: &str, args: Value, ctx: &PluginContext) -> Result<Value> {
     match action {
-        "refresh" => self.inner()?.refresh(ctx, true).await,
+        "refresh" => self.inner.refresh(ctx, true).await,
         "lookup" => { /* … */ }
         other => Err(PluginError::NotFound(format!("action '{other}'"))),
     }
 }
 ```
+
+`actions` lives on the definition (the UI shows them even while the plugin
+is stopped); `run_action` lives on the instance. Return
+`PluginError::Validation` for a bad argument — it is shown as a 400 and
+logged quietly — and anything else for a failure the operator should see.
 
 The UI renders actions as buttons, with a small form when they take
 arguments, and shows the returned JSON as a readable result. A plugin
@@ -379,11 +480,13 @@ have small dedicated views in `aifw-ui/src/app/plugins/components/status/`.
 
 ```rust
 // aifw-plugins/src/registry.rs
-const BUILTINS: &[fn() -> Box<dyn Plugin>] = &[
-    crate::builtin::ThreatFeeds::boxed,
-    crate::builtin::Notifier::boxed,
-    crate::builtin::YourPlugin::boxed,   // ← one line
-];
+pub fn builtins() -> Vec<Arc<dyn Plugin>> {
+    vec![
+        Arc::new(crate::builtin::ThreatFeeds),
+        Arc::new(crate::builtin::Notifier),
+        Arc::new(crate::builtin::YourPlugin),   // ← one line
+    ]
+}
 ```
 
 That is the only change outside your module. The API, UI, CLI, and backup
@@ -392,37 +495,36 @@ and restore pick the plugin up from the registry.
 ### 8. Test it
 
 Everything runs on Linux with the in-memory database and the mock pf
-backend:
+backend. `PluginContext::for_tests` builds the whole fixture:
 
 ```rust
 #[tokio::test]
 async fn restores_table_from_kv_without_network() {
-    let db = aifw_core::Database::new_in_memory().await.unwrap();
-    let pf: Arc<dyn aifw_pf::PfBackend> = Arc::new(aifw_pf::PfMock::new());
-    let sink = Arc::new(RuleSink::new(pf.clone(), "aifw-plugins"));
-    let ctx = PluginContext::new("threat-feeds", pf.clone(), db.pool().clone(), sink);
+    let t = PluginContext::for_tests("threat-feeds").await;   // ctx + mock pf + db
 
-    ctx.kv_set("list:feodo", "50.16.16.211/32\n10.0.0.0/8\n").await.unwrap();
+    t.ctx.kv_set("list:feodo", "50.16.16.211/32\n10.0.0.0/8\n").await.unwrap();
     // … mark feeds fresh so no download is due …
 
-    let mut p = ThreatFeeds::default();
-    p.init(&settings(json!({})), &ctx).await.unwrap();
+    let p = ThreatFeeds.start(&settings(json!({})), &t.ctx).await.unwrap();
 
-    let table = pf.get_table_entries("plugin_threat_feeds").await.unwrap();
+    let table = t.pf.get_table_entries("plugin_threat_feeds").await.unwrap();
     assert_eq!(table.len(), 1, "RFC1918 entry must be sanitized out");
+    assert_eq!(p.status(&t.ctx).await["table_entries"], 1);
 }
 ```
 
-For lifecycle tests, `PluginManager::with_factories` takes an explicit plugin
-list. Network code can be tested against a throwaway local HTTP server. The
-Notifier's channel tests show how.
+For lifecycle tests, `PluginManager::with_plugins` takes an explicit plugin
+list. Network code is tested against the crate's scripted local HTTP server
+(`http::testing::TestServer`); the HTTP module's own tests and the
+Notifier's channel tests show how. On FreeBSD, `freebsd/tests/t11-plugins.sh`
+proves the pf side with real packets.
 
 ### Checklist
 
-- [ ] `info().hooks` lists only the hooks you use (each one wakes an event source).
-- [ ] Settings have labels and help text written for operators; secrets are `.secret()`.
+- [ ] `info().hooks` lists only the hooks you use (each one wakes an event source); `hooks(settings)` drops the ones the operator switched off.
+- [ ] Settings have labels and help text written for operators; secrets are `.secret()`; defaults live only in the schema.
 - [ ] `validate_settings` explains what to fix.
-- [ ] `init` doesn't wait on the network; slow work runs in `ctx.spawn` tasks.
+- [ ] `start` doesn't wait on the network; slow work runs in `ctx.spawn` tasks; no lock is held across pfctl or large KV writes.
 - [ ] Anything you want to survive a restart lives in the KV store.
 - [ ] pf tables are named `plugin_<something>`; rules are `block`/`match` only.
 - [ ] Outbound HTTP goes through `aifw_plugins::http`.
@@ -449,7 +551,8 @@ plugin itself failed.
 ## Limits and notes
 
 - Plugins are compiled into AiFw. There is no runtime loading of
-  third-party binaries.
+  third-party binaries, and the sandbox is a pf-side guarantee plus a
+  supported API surface, not an isolation boundary.
 - Activity logs and hook statistics are kept in memory and reset when the
   API restarts. Plugin settings, secrets and KV data persist.
 - In an HA pair, plugin configuration replicates with the rest of the

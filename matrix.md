@@ -65,7 +65,7 @@
 | API keys | Yes | Yes | Partial (community) |
 | **RBAC (granular perms)** | Yes (34 perms) | Yes (ACL) | Partial (user/group) |
 | **Plugin System** | | | |
-| Package/plugin support | Yes | Yes | Yes |
+| Package/plugin support | Built-in plugins (native Rust, in-tree) | Yes | Yes |
 | **Architecture** | | | |
 | Web UI technology | React/Next.js | PHP/Phalcon | PHP |
 | REST API | Yes (Axum/Rust) | Yes | Partial (community) |

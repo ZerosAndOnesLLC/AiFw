@@ -26,7 +26,7 @@ graph TB
 
     subgraph "Intelligence"
         AI[AI/ML Engine<br/>5 Detectors]
-        PM[Plugin Manager<br/>Native + WASM]
+        PM[Plugin Manager<br/>Native Rust, in-tree]
         AR[Auto-Responder]
     end
 
