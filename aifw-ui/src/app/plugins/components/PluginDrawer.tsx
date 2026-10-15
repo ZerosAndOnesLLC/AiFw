@@ -67,8 +67,10 @@ export function PluginDrawer({
             checked={summary.enabled}
             disabled={!canWrite || busy}
             onChange={async () => {
-              const err = await onToggle(!summary.enabled);
+              const next = !summary.enabled;
+              const err = await onToggle(next);
               if (err) p.showFeedback("error", err);
+              else p.showFeedback("success", `${summary.title} ${next ? "enabled" : "disabled"}.`);
               p.reload();
             }}
             label={`${summary.enabled ? "Disable" : "Enable"} ${summary.title}`}

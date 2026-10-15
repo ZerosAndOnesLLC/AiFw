@@ -64,8 +64,7 @@ export function SettingsTab({
                 />
               ) : (
                 <SchemaField
-                  // Remount on server-side change so drafts reset to the saved value.
-                  key={`${f.key}:${JSON.stringify(values[f.key])}`}
+                  key={f.key}
                   field={f}
                   value={values[f.key] ?? null}
                   save={fields[f.key]}

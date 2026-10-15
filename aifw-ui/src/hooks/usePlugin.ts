@@ -39,6 +39,23 @@ function summaryOf(d: PluginDetail): PluginSummary {
   };
 }
 
+/**
+ * Actions that fan out (Notifier's "Send test") succeed when any target
+ * succeeded and list the rest under `failed`; surface those too.
+ */
+function partialFailures(result: unknown): string[] {
+  if (!result || typeof result !== "object") return [];
+  const failed = (result as { failed?: unknown }).failed;
+  if (!Array.isArray(failed)) return [];
+  return failed.map((f) => {
+    if (f && typeof f === "object") {
+      const { channel, error } = f as { channel?: string; error?: string };
+      return [channel, error].filter(Boolean).join(": ");
+    }
+    return String(f);
+  });
+}
+
 /** Strip the "Label: " prefix the API puts on field validation errors. */
 function fieldMessage(label: string, msg: string): string {
   return msg.startsWith(`${label}: `) ? msg.slice(label.length + 2) : msg;
@@ -180,7 +197,12 @@ export function usePlugin(name: string, onSummary: (s: PluginSummary) => void) {
       try {
         const result = await runPluginAction(name, id, args);
         setLastResult({ action: label, result });
-        showFeedback("success", `${label} finished.`);
+        const failed = partialFailures(result);
+        if (failed.length) {
+          showFeedback("error", `${label}: ${failed.join("; ")}`);
+        } else {
+          showFeedback("success", `${label} finished.`);
+        }
         loadStatus();
         loadLogs();
       } catch (err: unknown) {

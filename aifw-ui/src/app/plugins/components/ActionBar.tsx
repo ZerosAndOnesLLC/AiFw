@@ -19,8 +19,9 @@ function ActionCard({
   const [args, setArgs] = useState<Record<string, SettingValue>>(() =>
     Object.fromEntries(action.args.map((a) => [a.key, a.default])),
   );
+  // An argument with no default must be filled in, whatever its kind.
   const missing = action.args.some(
-    (a) => a.kind.type === "text" && !String(args[a.key] ?? "").trim(),
+    (a) => a.default === null && !String(args[a.key] ?? "").trim(),
   );
 
   return (
@@ -56,6 +57,9 @@ function ActionCard({
           ) : (
             <input
               id={`action-${action.id}-${a.key}`}
+              type={a.kind.type === "integer" ? "number" : "text"}
+              min={a.kind.type === "integer" ? a.kind.min : undefined}
+              max={a.kind.type === "integer" ? a.kind.max : undefined}
               value={String(args[a.key] ?? "")}
               placeholder={a.label}
               onChange={(e) => setArgs({ ...args, [a.key]: e.target.value })}

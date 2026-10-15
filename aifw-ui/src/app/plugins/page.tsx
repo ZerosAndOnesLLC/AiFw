@@ -41,9 +41,9 @@ export default function PluginsPage() {
       <div>
         <h1 className="text-2xl font-bold text-white">Plugins</h1>
         <p className="text-sm text-[var(--text-muted)] mt-1 max-w-3xl">
-          Optional features built into AiFw. Plugins run inside the firewall with limited reach:
-          they can only manage their own pf tables and <code>block</code>/<code>match</code>{" "}
-          rules, and they stop cleanly — removing everything they added — when you turn them off.
+          Optional features compiled into AiFw. On the firewall side a plugin can only fill its
+          own pf tables and add <code>block</code>/<code>match</code> rules against them — never
+          open, redirect or reroute traffic — and turning it off removes everything it added.
         </p>
       </div>
 

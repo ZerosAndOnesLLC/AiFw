@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Toggle } from "@/components/ui/Toggle";
 import { FieldSave } from "@/hooks/usePlugin";
 import { SettingField, SettingValue } from "@/lib/api/plugins";
@@ -50,6 +50,26 @@ function FieldShell({
   );
 }
 
+/** How long a multi-select waits after the last click before saving. */
+const MULTI_SELECT_DEBOUNCE_MS = 800;
+
+/**
+ * Keep a local draft that follows the saved value when it changes on the
+ * server (another tab, a reset), without remounting the input — so focus
+ * and caret survive a save.
+ */
+function useDraft<T>(saved: T): [T, (v: T) => void] {
+  const [draft, setDraft] = useState(saved);
+  const last = useRef(saved);
+  useEffect(() => {
+    if (JSON.stringify(last.current) !== JSON.stringify(saved)) {
+      last.current = saved;
+      setDraft(saved);
+    }
+  }, [saved]);
+  return [draft, setDraft];
+}
+
 /** Text-like input that saves on blur / Enter when the value changed. */
 function DraftInput({
   field,
@@ -58,6 +78,8 @@ function DraftInput({
   onSave,
   type = "text",
   placeholder,
+  min,
+  max,
 }: {
   field: SettingField;
   initial: string;
@@ -65,8 +87,10 @@ function DraftInput({
   onSave: (draft: string) => void;
   type?: "text" | "number" | "url";
   placeholder?: string;
+  min?: number;
+  max?: number;
 }) {
-  const [draft, setDraft] = useState(initial);
+  const [draft, setDraft] = useDraft(initial);
   const commit = () => {
     if (draft !== initial) onSave(draft);
   };
@@ -77,6 +101,8 @@ function DraftInput({
       value={draft}
       disabled={disabled}
       placeholder={placeholder}
+      min={min}
+      max={max}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
@@ -181,49 +207,17 @@ export function SchemaField({
         </FieldShell>
       );
 
-    case "multi_select": {
-      const selected = Array.isArray(value) ? value : [];
-      const toggle = (v: string) =>
-        onSave(selected.includes(v) ? selected.filter((s) => s !== v) : [...selected, v]);
+    case "multi_select":
       return (
-        <FieldShell field={field} save={save}>
-          <div
-            id={`plugin-field-${field.key}`}
-            role="group"
-            aria-label={field.label}
-            className="grid gap-2 sm:grid-cols-2"
-          >
-            {k.options.map((o) => {
-              const on = selected.includes(o.value);
-              return (
-                <label
-                  key={o.value}
-                  className={`flex gap-3 p-3 rounded-md border cursor-pointer transition-colors ${
-                    on
-                      ? "border-[var(--accent)]/60 bg-[var(--accent)]/10"
-                      : "border-[var(--border)] bg-[var(--bg-primary)] hover:border-[var(--text-muted)]"
-                  } ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={on}
-                    disabled={disabled}
-                    onChange={() => toggle(o.value)}
-                    className="mt-0.5 accent-[var(--accent)]"
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-sm text-[var(--text-primary)]">{o.label}</span>
-                    {o.help && (
-                      <span className="block text-xs text-[var(--text-muted)] mt-0.5">{o.help}</span>
-                    )}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        </FieldShell>
+        <MultiSelectField
+          field={field}
+          options={k.options}
+          value={Array.isArray(value) ? value : []}
+          save={save}
+          disabled={disabled}
+          onSave={onSave}
+        />
       );
-    }
 
     case "integer":
       return (
@@ -232,6 +226,8 @@ export function SchemaField({
             <DraftInput
               field={field}
               type="number"
+              min={k.min}
+              max={k.max}
               initial={value === null ? "" : String(value)}
               disabled={disabled}
               placeholder={`${k.min}–${k.max}`}
@@ -282,6 +278,86 @@ export function SchemaField({
   }
 }
 
+/**
+ * Checkbox grid whose clicks are batched: the selection is kept locally
+ * and saved once the operator pauses, so toggling three feeds restarts
+ * the plugin once, not three times, and keyboard focus stays put.
+ */
+function MultiSelectField({
+  field,
+  options,
+  value,
+  save,
+  disabled,
+  onSave,
+}: {
+  field: SettingField;
+  options: { value: string; label: string; help?: string }[];
+  value: string[];
+  save?: FieldSave;
+  disabled: boolean;
+  onSave: Save;
+}) {
+  const [selected, setSelected] = useDraft(value);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pending = useRef<string[] | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const toggle = (v: string) => {
+    const next = selected.includes(v) ? selected.filter((s) => s !== v) : [...selected, v];
+    setSelected(next);
+    pending.current = next;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      if (pending.current) onSave(pending.current);
+      pending.current = null;
+    }, MULTI_SELECT_DEBOUNCE_MS);
+  };
+  return (
+    <FieldShell field={field} save={save}>
+      <div
+        id={`plugin-field-${field.key}`}
+        role="group"
+        aria-label={field.label}
+        className="grid gap-2 sm:grid-cols-2"
+      >
+        {options.map((o) => {
+          const on = selected.includes(o.value);
+          return (
+            <label
+              key={o.value}
+              className={`flex gap-3 p-3 rounded-md border cursor-pointer transition-colors ${
+                on
+                  ? "border-[var(--accent)]/60 bg-[var(--accent)]/10"
+                  : "border-[var(--border)] bg-[var(--bg-primary)] hover:border-[var(--text-muted)]"
+              } ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
+            >
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={disabled}
+                onChange={() => toggle(o.value)}
+                className="mt-0.5 accent-[var(--accent)]"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm text-[var(--text-primary)]">{o.label}</span>
+                {o.help && (
+                  <span className="block text-xs text-[var(--text-muted)] mt-0.5">{o.help}</span>
+                )}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </FieldShell>
+  );
+}
+
 function ListInput({
   field,
   initial,
@@ -295,7 +371,7 @@ function ListInput({
   placeholder: string;
   onSave: (lines: string[]) => void;
 }) {
-  const [draft, setDraft] = useState(initial);
+  const [draft, setDraft] = useDraft(initial);
   return (
     <textarea
       id={`plugin-field-${field.key}`}
