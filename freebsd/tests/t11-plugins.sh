@@ -9,8 +9,10 @@
 #   2. a plugin block wins over an operator `pass` in `aifw`, and disabling
 #      the plugin removes the rules and empties the table so the path
 #      reopens.
-# Feed downloads are irrelevant here (and may fail offline): the table is
-# seeded by hand, bypassing the plugin's private-range filter on purpose.
+# The plugin downloads its default feeds in the background right after it
+# starts (the CI VM has internet). Every refresh ends with `-T replace`, so
+# the test waits for that first refresh to finish before seeding the table
+# by hand — the seed bypasses the plugin's private-range filter on purpose.
 
 PORT=8086
 MARKER=/tmp/aifwfx-t11-marker
@@ -41,6 +43,21 @@ client_can_reach "$SERVER_IP" $PORT || fail "baseline: pass rule did not open th
 api PUT /api/v1/plugins/threat-feeds/enabled '{"enabled":true}' >/dev/null || fail "enable threat-feeds"
 wait_for_state running 10 || fail "plugin did not reach 'running': $(api GET /api/v1/plugins/threat-feeds | jq -c '{state,last_error}')"
 
+# Wait for the first refresh to settle so a late `-T replace` can't wipe
+# the seed below. A failed download still ends in a replace.
+_i=0
+while [ "$_i" -lt 90 ]; do
+    STATUS=$(api GET /api/v1/plugins/threat-feeds/status)
+    if printf '%s' "$STATUS" | jq -e '.refreshing == false and .last_applied != null and all(.feeds[]; .last_attempt != null)' >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+    _i=$((_i + 1))
+done
+[ "$_i" -lt 90 ] || fail "first feed refresh did not finish within 90s: $(printf '%s' "$STATUS" | jq -c '{refreshing,last_applied}')"
+note "feeds after first refresh: $(printf '%s' "$STATUS" | jq -c '[.feeds[] | {name, entries, last_error}]')"
+note "table entries (plugin view): $(printf '%s' "$STATUS" | jq -r '.pf_table_entries')"
+
 RULES=$(pfctl_anchor_rules $ANCHOR)
 note "anchor rules:"; printf '%s\n' "$RULES" | sed 's/^/      /'
 N=$(printf '%s\n' "$RULES" | grep -c "<$TABLE>")
@@ -58,8 +75,7 @@ $PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
 server_listen_once $PORT $MARKER
 if client_can_reach "$SERVER_IP" $PORT; then
     fail "plugin block did not win over the operator pass rule"
-    # Diagnostics: where did the lookup go? Root vs anchor table views,
-    # rule counters, and whether an anchor-scoped entry would have matched.
+    # Diagnostics: root vs anchor table views, rule counters, states.
     {
         echo "--- pfctl -a $ANCHOR -vvsr"; $PFCTL -a "$ANCHOR" -vvsr
         echo "--- pfctl -a $ANCHOR -vvsT"; $PFCTL -a "$ANCHOR" -vvsT
@@ -69,16 +85,6 @@ if client_can_reach "$SERVER_IP" $PORT; then
         echo "--- states"; $PFCTL -ss | grep "$CLIENT_IP"
     } > "$RESULTS_DIR/t11-diag.txt" 2>&1
     sed 's/^/      /' "$RESULTS_DIR/t11-diag.txt"
-    note "retrying with the address in the anchor-scoped table"
-    $PFCTL -a "$ANCHOR" -t "$TABLE" -T add "$CLIENT_IP" 2>&1 | sed 's/^/      /'
-    $PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
-    server_listen_once $PORT $MARKER
-    if client_can_reach "$SERVER_IP" $PORT; then
-        note "anchor-scoped entry did not block either"
-    else
-        note "anchor-scoped entry blocks: lookups are anchor-local, no root fallback"
-    fi
-    $PFCTL -a "$ANCHOR" -vvsr 2>&1 | sed 's/^/      /'
 fi
 
 # 3. The lookup action agrees (the address is allow-listed by nobody and
