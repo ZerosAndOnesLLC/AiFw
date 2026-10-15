@@ -56,7 +56,30 @@ $PFCTL -t "$TABLE" -T add "$CLIENT_IP" >/dev/null 2>&1 || fail "could not add $C
 $PFCTL -t "$TABLE" -T test "$CLIENT_IP" >/dev/null 2>&1 || fail "$CLIENT_IP not found in $TABLE after add"
 $PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
 server_listen_once $PORT $MARKER
-client_can_reach "$SERVER_IP" $PORT && fail "plugin block did not win over the operator pass rule"
+if client_can_reach "$SERVER_IP" $PORT; then
+    fail "plugin block did not win over the operator pass rule"
+    # Diagnostics: where did the lookup go? Root vs anchor table views,
+    # rule counters, and whether an anchor-scoped entry would have matched.
+    {
+        echo "--- pfctl -a $ANCHOR -vvsr"; $PFCTL -a "$ANCHOR" -vvsr
+        echo "--- pfctl -a $ANCHOR -vvsT"; $PFCTL -a "$ANCHOR" -vvsT
+        echo "--- pfctl -vvsT"; $PFCTL -vvsT
+        echo "--- root -T show"; $PFCTL -t "$TABLE" -T show
+        echo "--- anchor -T show"; $PFCTL -a "$ANCHOR" -t "$TABLE" -T show
+        echo "--- states"; $PFCTL -ss | grep "$CLIENT_IP"
+    } > "$RESULTS_DIR/t11-diag.txt" 2>&1
+    sed 's/^/      /' "$RESULTS_DIR/t11-diag.txt"
+    note "retrying with the address in the anchor-scoped table"
+    $PFCTL -a "$ANCHOR" -t "$TABLE" -T add "$CLIENT_IP" 2>&1 | sed 's/^/      /'
+    $PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
+    server_listen_once $PORT $MARKER
+    if client_can_reach "$SERVER_IP" $PORT; then
+        note "anchor-scoped entry did not block either"
+    else
+        note "anchor-scoped entry blocks: lookups are anchor-local, no root fallback"
+    fi
+    $PFCTL -a "$ANCHOR" -vvsr 2>&1 | sed 's/^/      /'
+fi
 
 # 3. The lookup action agrees (the address is allow-listed by nobody and
 #    was added by hand, so it is not 'listed_in' any feed — only pf knows).
