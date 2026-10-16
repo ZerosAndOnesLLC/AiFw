@@ -183,37 +183,26 @@ pub async fn auth_middleware(
         }
     };
 
-    // Dispatch ApiRequest hook to plugins. Short-circuit on the atomic
-    // shadow counter — no plugins running ⇒ no read-lock acquisition.
+    // Dispatch ApiRequest hook to plugins; `wants` is one atomic load, so
+    // the common no-subscriber case costs nothing.
     if state
-        .plugin_running_count
-        .load(std::sync::atomic::Ordering::Relaxed)
-        > 0
+        .plugin_manager
+        .wants(aifw_plugins::HookPoint::ApiRequest)
     {
-        // PERF-H17 (#361): snapshot under a short read lock, dispatch after
-        // dropping it — a slow plugin can't block enable/disable (write()).
-        let plugins = state.plugin_manager.read().await.dispatch_set();
-        if !plugins.is_empty() {
-            let method = request.method().to_string();
-            let path = request.uri().path().to_string();
-            let event = aifw_plugins::HookEvent {
-                hook: aifw_plugins::HookPoint::ApiRequest,
-                data: aifw_plugins::hooks::HookEventData::Api {
-                    method,
-                    path,
-                    // #308: resolved peer / trusted-proxy client address.
-                    remote_addr: request
-                        .extensions()
-                        .get::<crate::client_ip::ClientIp>()
-                        .and_then(|c| c.key()),
-                },
-            };
-            let actions = plugins.dispatch(&event).await;
-            for action in &actions {
-                if matches!(action, aifw_plugins::HookAction::Block) {
-                    return Err(StatusCode::FORBIDDEN);
-                }
-            }
+        let event = aifw_plugins::HookEvent {
+            hook: aifw_plugins::HookPoint::ApiRequest,
+            data: aifw_plugins::HookEventData::ApiRequest {
+                method: request.method().to_string(),
+                path: request.uri().path().to_string(),
+                // #308: resolved peer / trusted-proxy client address.
+                remote_addr: request
+                    .extensions()
+                    .get::<crate::client_ip::ClientIp>()
+                    .and_then(|c| c.key()),
+            },
+        };
+        if state.plugin_manager.dispatch(event).await.blocked {
+            return Err(StatusCode::FORBIDDEN);
         }
     }
 

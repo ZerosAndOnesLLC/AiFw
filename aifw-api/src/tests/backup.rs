@@ -666,3 +666,95 @@ async fn test_config_export_secrets_redacted_and_passphrase_round_trip() {
         .await;
     resp.assert_status_ok();
 }
+
+#[tokio::test]
+async fn test_restore_round_trips_plugin_config_and_secrets() {
+    use aifw_core::config_secrets::REDACTED;
+    let state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let mgr = state.plugin_manager.clone();
+    let patch: aifw_plugins::SettingsPatch = serde_json::from_value(json!({
+        "values": {"rate_limit_per_minute": 20},
+        "secrets": {"ntfy_url": "https://ntfy.sh/aifw-test-topic"}
+    }))
+    .unwrap();
+    mgr.update_settings("notifier", patch).await.unwrap();
+    mgr.set_enabled("notifier", true).await.unwrap();
+
+    let config = crate::backup::build_current_config(&state).await.unwrap();
+    let entry = config
+        .plugins
+        .as_ref()
+        .and_then(|p| p.iter().find(|e| e.name == "notifier"))
+        .expect("export must include the notifier");
+    assert!(entry.enabled);
+    assert_eq!(entry.settings["rate_limit_per_minute"], 20);
+    assert_eq!(entry.secrets["ntfy_url"], "https://ntfy.sh/aifw-test-topic");
+
+    // Exported (redacted) form hides the secret.
+    let mut redacted = config.clone();
+    aifw_core::config_secrets::redact(&mut redacted);
+    let r = redacted.plugins.as_ref().unwrap();
+    assert_eq!(r[0].secrets["ntfy_url"], REDACTED);
+
+    // Drift, then restore.
+    mgr.reset("notifier").await.unwrap();
+    assert!(!mgr.get("notifier").unwrap().enabled);
+    crate::backup::apply_firewall_config(&state, &config, &Default::default())
+        .await
+        .expect("restore must succeed");
+
+    let detail = mgr.detail("notifier").await.unwrap();
+    assert!(detail.summary.enabled);
+    assert_eq!(detail.summary.state, aifw_plugins::PluginState::Running);
+    assert_eq!(detail.values["rate_limit_per_minute"], 20);
+    assert_eq!(detail.secrets_set, vec!["ntfy_url".to_string()]);
+
+    // A redacted export restores onto the same box: the secret is resolved
+    // from live state.
+    let current = crate::backup::build_current_config(&state).await.unwrap();
+    let mut back = redacted.clone();
+    let unresolved = aifw_core::config_secrets::resolve_redacted(&mut back, &current);
+    assert!(unresolved.is_empty(), "{unresolved:?}");
+    assert_eq!(
+        back.plugins.unwrap()[0].secrets["ntfy_url"],
+        "https://ntfy.sh/aifw-test-topic"
+    );
+}
+
+#[tokio::test]
+async fn test_restore_skips_unknown_and_invalid_plugins() {
+    let state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let mut config = crate::backup::build_current_config(&state).await.unwrap();
+    config.plugins = Some(vec![
+        aifw_core::config::PluginConfigEntry {
+            name: "ip-reputation".into(),
+            enabled: true,
+            settings: Default::default(),
+            secrets: Default::default(),
+        },
+        aifw_core::config::PluginConfigEntry {
+            name: "threat-feeds".into(),
+            enabled: false,
+            settings: serde_json::from_value(json!({"refresh_hours": 9999})).unwrap(),
+            secrets: Default::default(),
+        },
+        aifw_core::config::PluginConfigEntry {
+            name: "notifier".into(),
+            enabled: false,
+            settings: serde_json::from_value(json!({"dedupe_minutes": 30})).unwrap(),
+            secrets: Default::default(),
+        },
+    ]);
+    crate::backup::apply_firewall_config(&state, &config, &Default::default())
+        .await
+        .expect("restore must succeed despite skipped plugins");
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM plugin_config ORDER BY name")
+        .fetch_all(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(names, vec!["notifier".to_string()]);
+}

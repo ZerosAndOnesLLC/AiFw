@@ -54,9 +54,9 @@ pub enum Permission {
     SettingsRead,
     /// Modify system settings ("settings:write")
     SettingsWrite,
-    /// Read installed plugins ("plugins:read")
+    /// Read plugins: list, settings, status, activity log ("plugins:read")
     PluginsRead,
-    /// Install/configure/remove plugins ("plugins:write")
+    /// Enable/disable/configure/reset plugins and run their actions ("plugins:write")
     PluginsWrite,
     /// Check for updates ("updates:read")
     UpdatesRead,

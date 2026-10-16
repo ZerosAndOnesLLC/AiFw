@@ -204,16 +204,15 @@ See the [backup &amp; migration guide]({{ '/docs/backup/' | relative_url }}) for
 <div class="callout beta" markdown="0">
 <span class="callout-icon">⚠️</span>
 <div>
-<strong>Experimental</strong>
-The plugin system is under heavy development. APIs will change, built-in plugins haven't been production-tested, and WASM support is not yet implemented. Don't build production integrations yet.
+<strong>Beta</strong>
+The plugin API may still change between releases.
 </div>
 </div>
 
-- Native Rust plugins via the `Plugin` trait
-- WASM plugin support (planned)
-- Pre/post rule hooks with event-based triggers
-- Plugin discovery from filesystem
-- Per-plugin configuration and logs
+- **Threat Intel Feeds** — Spamhaus DROP, abuse.ch Feodo, DShield, FireHOL, ET and CINS blocklists (or your own URLs) refreshed on a schedule into a pf table; block or log-only, inbound or both directions, allowlist, safety filtering of private/bogon ranges
+- **Notifier** — IDS alerts, gateway outages, VPN up/down and config changes to ntfy, Discord, Slack, Telegram or an HMAC-signed webhook, with dedupe and rate limiting
+- Schema-driven settings that auto-save in the UI, `aifw plugins` CLI, secrets sealed at rest and included (redacted/encrypted) in config backups
+- Native Rust `Plugin` trait with event hooks (timer, audit log, IDS alerts, gateway and VPN state, pflog, API requests) and a sandboxed pf context — see the guide to build your own
 
 See the full [plugin system documentation]({{ '/plugins' | relative_url }}) for details.
 

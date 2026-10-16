@@ -46,6 +46,11 @@ enum Commands {
         #[command(subcommand)]
         action: SyslogAction,
     },
+    /// View and configure built-in plugins (threat feeds, notifier, …)
+    Plugins {
+        #[command(subcommand)]
+        action: PluginsAction,
+    },
     /// Manage rotation of AiFw service logs (newsyslog policy)
     Logrotate {
         #[command(subcommand)]
@@ -829,6 +834,110 @@ EXAMPLES:
 }
 
 #[derive(Subcommand)]
+enum PluginsAction {
+    /// List built-in plugins and whether they are enabled
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a plugin's settings, their allowed values, and its actions
+    Show {
+        /// Plugin name (see `aifw plugins list`)
+        name: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable a plugin (its settings are checked first)
+    Enable {
+        /// Plugin name
+        name: String,
+    },
+    /// Disable a plugin; its pf rules and table contents are removed
+    Disable {
+        /// Plugin name
+        name: String,
+    },
+    /// Change settings — only the keys you pass change
+    #[command(after_help = "\
+EXAMPLES:
+    # Refresh threat feeds every 6 hours from two lists
+    aifw plugins set threat-feeds refresh_hours=6 feeds=spamhaus-drop,feodo
+
+    # Never block an upstream partner's network
+    aifw plugins set threat-feeds allowlist=198.51.100.0/24
+
+    # Send notifications to an ntfy topic (secrets go through --secret)
+    aifw plugins set notifier --secret ntfy_url=https://ntfy.sh/my-topic
+
+    # Read a secret from stdin so it stays out of shell history and ps
+    printf '%s' \"$TOKEN\" | aifw plugins set notifier --secret-stdin ntfy_token
+
+    # Back to the default
+    aifw plugins set threat-feeds --unset refresh_hours")]
+    Set {
+        /// Plugin name
+        name: String,
+        /// Settings as key=value (lists are comma-separated)
+        values: Vec<String>,
+        /// Secret settings as key=value (repeatable)
+        #[arg(long = "secret", value_name = "KEY=VALUE")]
+        secrets: Vec<String>,
+        /// Secret setting whose value is read from stdin (first line)
+        #[arg(long = "secret-stdin", value_name = "KEY")]
+        secret_stdin: Option<String>,
+        /// Reset a setting to its default / clear a secret (repeatable)
+        #[arg(long = "unset", value_name = "KEY")]
+        unset: Vec<String>,
+    },
+    /// Forget all settings and secrets and disable the plugin
+    Reset {
+        /// Plugin name
+        name: String,
+    },
+    /// Runtime state, last error and live status (asks the running API)
+    Status {
+        /// Plugin name; all plugins when omitted
+        name: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// A plugin's activity log, newest first (asks the running API)
+    Logs {
+        /// Plugin name
+        name: String,
+        /// Entries to show
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Minimum level: info, warn or error
+        #[arg(long, default_value = "info")]
+        level: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a plugin action, e.g. `refresh` or `test` (asks the running API)
+    #[command(after_help = "\
+EXAMPLES:
+    aifw plugins run threat-feeds refresh
+    aifw plugins run threat-feeds lookup ip=203.0.113.9
+    aifw plugins run notifier test channel=ntfy")]
+    Run {
+        /// Plugin name
+        name: String,
+        /// Action id (see `aifw plugins show NAME`)
+        action: String,
+        /// Action arguments as key=value
+        args: Vec<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum LogrotateAction {
     /// Show the rotation policy and the current size of every managed log
     Show {
@@ -1170,6 +1279,51 @@ async fn main() -> anyhow::Result<()> {
             IdsAction::Retention { days } => {
                 commands::ids_retention(&cli.db, days).await?;
             }
+        },
+        Commands::Plugins { action } => match action {
+            PluginsAction::List { json } => commands::plugins_list(&cli.db, json).await?,
+            PluginsAction::Show { name, json } => {
+                commands::plugins_show(&cli.db, &name, json).await?
+            }
+            PluginsAction::Enable { name } => {
+                commands::plugins_enable(&cli.db, &name, true).await?
+            }
+            PluginsAction::Disable { name } => {
+                commands::plugins_enable(&cli.db, &name, false).await?
+            }
+            PluginsAction::Set {
+                name,
+                values,
+                secrets,
+                secret_stdin,
+                unset,
+            } => {
+                commands::plugins_set(
+                    &cli.db,
+                    &name,
+                    &values,
+                    &secrets,
+                    secret_stdin.as_deref(),
+                    &unset,
+                )
+                .await?
+            }
+            PluginsAction::Reset { name } => commands::plugins_reset(&cli.db, &name).await?,
+            PluginsAction::Status { name, json } => {
+                commands::plugins_status(name.as_deref(), json).await?
+            }
+            PluginsAction::Logs {
+                name,
+                limit,
+                level,
+                json,
+            } => commands::plugins_logs(&name, limit, &level, json).await?,
+            PluginsAction::Run {
+                name,
+                action,
+                args,
+                json,
+            } => commands::plugins_run(&name, &action, &args, json).await?,
         },
         Commands::Logrotate { action } => match action {
             LogrotateAction::Show { json } => commands::logrotate_show(&cli.db, json).await?,

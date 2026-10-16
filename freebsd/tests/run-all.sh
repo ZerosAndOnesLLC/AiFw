@@ -194,6 +194,7 @@ pass quick on $MGMT_IF keep state
 # the trailing block would eat neighbor solicitations, killing all IPv6 on
 # the test path (t09 NAT64, #531). Mirrors the appliance pf.conf.
 pass quick inet6 proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }
+anchor "aifw-plugins"
 anchor "aifw-pbr"
 anchor "aifw-mwan-leak"
 anchor "aifw-mwan-reply"
@@ -249,7 +250,7 @@ log "API up, authenticated"
 
 # ---------------------------------------------------------------- run tests
 
-TESTS="${TESTS:-t01-pfctl-acceptance t02-pass-block t03-schedule-gating t04-nat t05-restore-roundtrip t06-wireguard t07-ipsec t08-control-plane t09-nat64 t10-dns64}"
+TESTS="${TESTS:-t01-pfctl-acceptance t02-pass-block t03-schedule-gating t04-nat t05-restore-roundtrip t06-wireguard t07-ipsec t08-control-plane t09-nat64 t10-dns64 t11-plugins}"
 TOTAL=0
 FAILED_TESTS=""
 

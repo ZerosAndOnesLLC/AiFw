@@ -83,7 +83,8 @@ pub enum SecretsState {
 /// for human-readable error messages.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SecretRef {
-    /// Section the secret belongs to (`wireguard`, `ipsec`, `carp`, `dhcp_ddns`).
+    /// Section the secret belongs to (`wireguard`, `ipsec`, `carp`,
+    /// `dhcp_ddns`, `plugin`).
     pub section: &'static str,
     /// Owning object id (tunnel / peer / VIP id; empty for singletons).
     pub id: String,
@@ -164,6 +165,18 @@ fn for_each_secret(cfg: &mut FirewallConfig, mut f: impl FnMut(SecretRef, &mut S
         },
         &mut cfg.dhcp.ddns.tsig_secret,
     );
+    for p in cfg.plugins.iter_mut().flatten() {
+        for (key, value) in &mut p.secrets {
+            f(
+                SecretRef {
+                    section: "plugin",
+                    id: format!("{}.{key}", p.name),
+                    field: "secret",
+                },
+                value,
+            );
+        }
+    }
 }
 
 /// Same walk over a shared reference (read-only inspection).

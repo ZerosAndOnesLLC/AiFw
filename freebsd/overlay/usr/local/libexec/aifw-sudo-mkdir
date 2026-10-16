@@ -14,7 +14,6 @@
 #   /usr/local/etc/sudoers.d       — exact: directory for the sudoers file
 #   /usr/local/etc/newsyslog.conf.d — exact: log-rotation fragment dir (#205)
 #   /usr/local/libexec             — exact: helper script dir (updater)
-#   /usr/local/lib/aifw/*          — plugin dir (manifest.json directories)
 #   /usr/local/share/aifw/*        — UI / share assets
 #   /var/db/aifw/*                 — runtime state
 #   /var/db/rdhcpd/*               — rDHCP lease db (manifest.json)
@@ -65,7 +64,6 @@ case "$TARGET" in
     /usr/local/etc/sudoers.d) ;;
     /usr/local/etc/newsyslog.conf.d) ;;
     /usr/local/libexec) ;;
-    /usr/local/lib/aifw|/usr/local/lib/aifw/*) ;;
     /usr/local/share/aifw|/usr/local/share/aifw/*) ;;
     /var/db/aifw|/var/db/aifw/*) ;;
     /var/db/rdhcpd|/var/db/rdhcpd/*) ;;

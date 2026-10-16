@@ -258,4 +258,22 @@ mod pf_conf_tests {
             .expect("filter anchors missing");
         assert!(nd < anchors, "ND pass must precede the filter anchors");
     }
+
+    /// Plugin `block quick` rules must be evaluated before every other
+    /// filter anchor — in particular before the multi-WAN `pass quick`
+    /// policy routes — and after the ND pass.
+    #[test]
+    fn plugin_anchor_is_first_filter_hook() {
+        let conf = super::tests_support::test_pf_conf();
+        let plugins = conf
+            .find("\nanchor \"aifw-plugins\"")
+            .expect("plugin anchor hook missing");
+        let nd = conf
+            .find("proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }")
+            .expect("ND rule missing");
+        let pbr = conf
+            .find("\nanchor \"aifw-pbr\"")
+            .expect("pbr hook missing");
+        assert!(nd < plugins && plugins < pbr);
+    }
 }

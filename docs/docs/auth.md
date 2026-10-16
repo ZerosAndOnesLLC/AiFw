@@ -237,8 +237,8 @@ The canonical list lives in [`aifw-common/src/permission.rs`](https://github.com
 
 | Permission | Description |
 |---|---|
-| `plugins:read` | List installed plugins and their status |
-| `plugins:write` | Install, enable, disable, remove plugins |
+| `plugins:read` | List plugins, their settings, status and activity log |
+| `plugins:write` | Enable, disable, configure and reset plugins; run plugin actions |
 
 **Updates, backup, system**
 

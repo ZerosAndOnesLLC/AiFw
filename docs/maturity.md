@@ -48,7 +48,7 @@ AiFw is in **active development (beta)**. This matrix is the honest, per-feature
 <tr><td>Reverse proxy + ACME (TrafficCop)</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">⏳</td><td class="partial">⏳</td><td>Beta</td></tr>
 <tr><td>AI-assisted alert triage (LLM)</td><td class="yes">✓</td><td class="yes">✓</td><td class="partial">⏳</td><td class="no">✗</td><td>Off unless a provider is configured</td></tr>
 <tr><td>Behavioural ML threat detection</td><td class="partial">⏳</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td><td>Prototype crate only — not wired into daemon/API (#171)</td></tr>
-<tr><td>Plugin system</td><td class="yes">✓</td><td class="partial">⏳</td><td class="no">✗</td><td class="no">✗</td><td>Beta — WASM planned</td></tr>
+<tr><td>Plugin system</td><td class="yes">✓</td><td class="partial">⏳</td><td class="no">✗</td><td class="no">✗</td><td>Beta — native in-tree plugins</td></tr>
 </tbody>
 </table>
 </div>

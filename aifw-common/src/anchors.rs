@@ -25,6 +25,8 @@ pub const PBR: &str = "aifw-pbr";
 pub const MWAN_REPLY: &str = "aifw-mwan-reply";
 /// Multi-WAN leak-detection block rules (`LeakEngine`).
 pub const MWAN_LEAK: &str = "aifw-mwan-leak";
+/// `block`/`match` rules contributed by plugins (`aifw_plugins::rules`).
+pub const PLUGINS: &str = "aifw-plugins";
 /// Suffix appended to the filter anchor for connection rate-limit rules
 /// (`ShapingEngine`): `aifw-ratelimit`.
 pub const RATELIMIT_SUFFIX: &str = "-ratelimit";
@@ -32,12 +34,14 @@ pub const RATELIMIT_SUFFIX: &str = "-ratelimit";
 pub const RATELIMIT: &str = "aifw-ratelimit";
 
 /// Filter-class anchors `pf.conf` must hook (`anchor "…"`), in evaluation
-/// order: multi-WAN first so route-to / rtable decisions exist before general
-/// filtering, then the base ruleset and the per-domain anchors. `NAT`
+/// order: plugin `block quick` rules first (threat-feed drops must win over
+/// multi-WAN `pass quick` policy routes), then multi-WAN so route-to /
+/// rtable decisions exist before general filtering, then the base ruleset
+/// and the per-domain anchors. `NAT`
 /// additionally needs `nat-anchor`/`rdr-anchor` hooks. `aifw-setup` writes
 /// this list; the API/daemon heal missing hooks from it.
 pub const FILTER_HOOKS: &[&str] = &[
-    PBR, MWAN_LEAK, MWAN_REPLY, FILTER, NAT, RATELIMIT, VPN, GEOIP, TLS, HA,
+    PLUGINS, PBR, MWAN_LEAK, MWAN_REPLY, FILTER, NAT, RATELIMIT, VPN, GEOIP, TLS, HA,
 ];
 
 /// Rate-limit anchor derived from a filter anchor.

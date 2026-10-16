@@ -152,6 +152,7 @@ mod tests {
             "aifw-daemon",
             "aifw-setup",
             "aifw-cli",
+            "aifw-plugins",
         ] {
             walk(&root.join(crate_dir).join("src"), &mut files);
         }

@@ -396,11 +396,14 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/v1/plugins` | Installed plugins + status |
-| `GET` | `/api/v1/plugins/discover` | Scan plugin directory for new bundles |
-| `POST` | `/api/v1/plugins/toggle` | Enable / disable a plugin |
-| `GET` | `/api/v1/plugins/{name}/logs` | Tail one plugin&rsquo;s logs |
-| `GET`,&nbsp;`PUT` | `/api/v1/plugins/{name}/config` | Plugin-specific config |
+| `GET` | `/api/v1/plugins` | Plugins with state, stats, and the hook catalog |
+| `GET` | `/api/v1/plugins/{name}` | Detail: settings schema, values, which secrets are set, actions, pf rules |
+| `PUT` | `/api/v1/plugins/{name}/enabled` | Enable / disable (`{"enabled": true}`) |
+| `PATCH` | `/api/v1/plugins/{name}/settings` | Partial settings update (`values`, `secrets`; `null` resets) |
+| `POST` | `/api/v1/plugins/{name}/reset` | Forget settings and disable |
+| `GET` | `/api/v1/plugins/{name}/status` | Plugin-specific live status |
+| `GET` | `/api/v1/plugins/{name}/logs` | Activity log (`?limit=&level=`) |
+| `POST` | `/api/v1/plugins/{name}/actions/{action}` | Run a plugin action |
 
 ## Backup &amp; configuration
 

@@ -11,7 +11,7 @@
 
 use aifw_common::Permission;
 use axum::Router;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 
 use crate::AppState;
 use crate::perm_check;
@@ -637,21 +637,23 @@ pub(crate) fn settings_write() -> Router<AppState> {
 pub(crate) fn plugins_read() -> Router<AppState> {
     Router::new()
         .route("/api/v1/plugins", get(plugins::list_plugins))
-        .route("/api/v1/plugins/{name}/logs", get(plugins::get_plugin_logs))
-        .route(
-            "/api/v1/plugins/{name}/config",
-            get(plugins::get_plugin_config),
-        )
-        .route("/api/v1/plugins/discover", get(plugins::discover_plugins))
+        .route("/api/v1/plugins/{name}", get(plugins::get_plugin))
+        .route("/api/v1/plugins/{name}/status", get(plugins::get_status))
+        .route("/api/v1/plugins/{name}/logs", get(plugins::get_logs))
         .layer(middleware::from_fn(perm_check!(Permission::PluginsRead)))
 }
 
 pub(crate) fn plugins_write() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/plugins/toggle", post(plugins::enable_plugin))
+        .route("/api/v1/plugins/{name}/enabled", put(plugins::set_enabled))
         .route(
-            "/api/v1/plugins/{name}/config",
-            put(plugins::update_plugin_config),
+            "/api/v1/plugins/{name}/settings",
+            patch(plugins::update_settings),
+        )
+        .route("/api/v1/plugins/{name}/reset", post(plugins::reset_plugin))
+        .route(
+            "/api/v1/plugins/{name}/actions/{action}",
+            post(plugins::run_action),
         )
         .layer(middleware::from_fn(perm_check!(Permission::PluginsWrite)))
 }

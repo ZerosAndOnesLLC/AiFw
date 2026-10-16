@@ -1,58 +1,75 @@
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-/// Where in the firewall pipeline the hook fires
+/// Where in the firewall the hook fires. Every variant here is wired to a
+/// real event source in aifw-api — hooks that nothing fires don't belong in
+/// this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookPoint {
-    /// Before rule evaluation — can modify or short-circuit
-    PreRule,
-    /// After rule evaluation — observe the result
+    /// A packet was logged by pf (rules with `log`), read from pflog0
     PostRule,
-    /// New connection established
-    ConnectionNew,
-    /// Connection state changed to established
-    ConnectionEstablished,
-    /// Connection closed/expired
-    ConnectionClosed,
-    /// Audit/log event emitted
+    /// An audit-log entry was written (rule/NAT/config changes)
     LogEvent,
-    /// API request received (before handler)
+    /// An authenticated API request is about to reach its handler. A
+    /// plugin may answer `Block` (→ 403). The check fails open: if the
+    /// plugin times out or panics the request goes through, so this hook
+    /// is for policy hints and audit, not for authentication.
     ApiRequest,
-    /// DNS query received (rDNS integration)
-    DnsQuery,
-    /// DNS response sent
-    DnsResponse,
-    /// DHCP lease assigned (rDHCP integration)
-    DhcpLease,
-    /// VPN tunnel state change
+    /// A VPN tunnel or peer went up or down
     VpnEvent,
-    /// Scheduled timer tick (cron-like)
+    /// Periodic tick, once a minute
     Timer,
-    /// IDS alert fired (signature match, anomaly, etc.)
+    /// The IDS raised an alert
     IdsAlert,
-    /// IPS mode dropped a packet
-    IdsDrop,
+    /// A multi-WAN gateway changed health state (up / warning / down)
+    GatewayEvent,
+}
+
+impl HookPoint {
+    /// Every hook point, in display order.
+    pub const ALL: &'static [HookPoint] = &[
+        HookPoint::PostRule,
+        HookPoint::LogEvent,
+        HookPoint::ApiRequest,
+        HookPoint::VpnEvent,
+        HookPoint::Timer,
+        HookPoint::IdsAlert,
+        HookPoint::GatewayEvent,
+    ];
+
+    /// Stable snake_case identifier (matches the serde form).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookPoint::PostRule => "post_rule",
+            HookPoint::LogEvent => "log_event",
+            HookPoint::ApiRequest => "api_request",
+            HookPoint::VpnEvent => "vpn_event",
+            HookPoint::Timer => "timer",
+            HookPoint::IdsAlert => "ids_alert",
+            HookPoint::GatewayEvent => "gateway_event",
+        }
+    }
+}
+
+impl HookPoint {
+    /// What fires the hook, for operators reading the plugin page.
+    pub fn description(self) -> &'static str {
+        match self {
+            HookPoint::PostRule => "A packet matched a pf rule with logging enabled (pflog)",
+            HookPoint::LogEvent => "An audit-log entry was written (rule, NAT, or config change)",
+            HookPoint::ApiRequest => "An authenticated API request arrived (plugins may reject it)",
+            HookPoint::VpnEvent => "A WireGuard peer or IPsec tunnel went up or down",
+            HookPoint::Timer => "Once a minute",
+            HookPoint::IdsAlert => "The IDS raised an alert",
+            HookPoint::GatewayEvent => "A multi-WAN gateway went up, degraded, or down",
+        }
+    }
 }
 
 impl std::fmt::Display for HookPoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HookPoint::PreRule => write!(f, "pre_rule"),
-            HookPoint::PostRule => write!(f, "post_rule"),
-            HookPoint::ConnectionNew => write!(f, "connection_new"),
-            HookPoint::ConnectionEstablished => write!(f, "connection_established"),
-            HookPoint::ConnectionClosed => write!(f, "connection_closed"),
-            HookPoint::LogEvent => write!(f, "log_event"),
-            HookPoint::ApiRequest => write!(f, "api_request"),
-            HookPoint::DnsQuery => write!(f, "dns_query"),
-            HookPoint::DnsResponse => write!(f, "dns_response"),
-            HookPoint::DhcpLease => write!(f, "dhcp_lease"),
-            HookPoint::VpnEvent => write!(f, "vpn_event"),
-            HookPoint::Timer => write!(f, "timer"),
-            HookPoint::IdsAlert => write!(f, "ids_alert"),
-            HookPoint::IdsDrop => write!(f, "ids_drop"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -65,12 +82,12 @@ pub struct HookEvent {
     pub data: HookEventData,
 }
 
-/// The payload varies by hook type
+/// The payload varies by hook type. Variant names match [`HookPoint`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum HookEventData {
-    /// Rule evaluation event
-    Rule {
+    /// A pflog-logged packet (`PostRule`)
+    PostRule {
         /// Source IP, if known
         src_ip: Option<IpAddr>,
         /// Destination IP, if known
@@ -86,23 +103,8 @@ pub enum HookEventData {
         /// ID of the matched rule, if known
         rule_id: Option<String>,
     },
-    /// Connection event
-    Connection {
-        /// Source IP
-        src_ip: IpAddr,
-        /// Destination IP
-        dst_ip: IpAddr,
-        /// Source port
-        src_port: u16,
-        /// Destination port
-        dst_port: u16,
-        /// Protocol name (e.g. "tcp", "udp")
-        protocol: String,
-        /// Connection state (e.g. "new", "established", "closed")
-        state: String,
-    },
-    /// Log/audit event
-    Log {
+    /// Audit-log entry (`LogEvent`)
+    LogEvent {
         /// What happened (audit action name)
         action: String,
         /// Free-form event details
@@ -110,8 +112,8 @@ pub enum HookEventData {
         /// Component that emitted the event
         source: String,
     },
-    /// API request event
-    Api {
+    /// Authenticated API request (`ApiRequest`)
+    ApiRequest {
         /// HTTP method
         method: String,
         /// Request path
@@ -119,44 +121,45 @@ pub enum HookEventData {
         /// Client address, if known
         remote_addr: Option<String>,
     },
-    /// DNS query/response event
-    Dns {
-        /// Queried domain name
-        query_name: String,
-        /// Record type (e.g. "A", "AAAA", "TXT")
-        query_type: String,
-        /// Client IP that sent the query, if known
-        src_ip: Option<IpAddr>,
-        /// Response code (e.g. "NOERROR", "NXDOMAIN"); `None` for queries
-        response_code: Option<String>,
-    },
-    /// DHCP lease event
-    Dhcp {
-        /// Client MAC address
-        mac_address: String,
-        /// Leased IP address
-        ip_address: IpAddr,
-        /// Client-reported hostname, if any
-        hostname: Option<String>,
-        /// Lease lifecycle action
-        lease_action: String, // "assign", "renew", "release"
-    },
-    /// VPN event
-    Vpn {
-        /// Tunnel/interface name
+    /// VPN state change (`VpnEvent`)
+    VpnEvent {
+        /// "wireguard" or "ipsec"
+        kind: String,
+        /// Tunnel name as configured in AiFw
         tunnel_name: String,
-        /// Peer identifier, if known
+        /// Peer name (WireGuard), if the change is about one peer
         peer: Option<String>,
-        /// Tunnel state change
-        action: String, // "up", "down", "handshake"
+        /// "up" or "down"
+        action: String,
+        /// Extra context (interface, remote host, last handshake)
+        detail: Option<String>,
     },
-    /// Timer tick
-    Tick {
+    /// Gateway health change (`GatewayEvent`)
+    GatewayEvent {
+        /// Gateway id
+        gateway_id: String,
+        /// Gateway name as configured in AiFw
+        gateway_name: String,
+        /// Interface the gateway sits on
+        interface: String,
+        /// Previous state ("up", "warning", "down", "unknown")
+        from_state: Option<String>,
+        /// New state
+        to_state: String,
+        /// Why (metric + threshold that tripped), if known
+        reason: Option<String>,
+    },
+    /// Timer tick (`Timer`)
+    Timer {
         /// Unix timestamp (seconds) of the tick
         timestamp: u64,
     },
-    /// IDS alert event
-    IdsAlertEvent {
+    /// IDS alert (`IdsAlert`)
+    IdsAlert {
+        /// Alert id (matches `/api/v1/ids/alerts/{id}`)
+        alert_id: String,
+        /// When the IDS raised it (RFC 3339)
+        timestamp: String,
         /// Matched signature ID (SID), if signature-based
         signature_id: Option<u32>,
         /// Signature/alert message text
@@ -181,35 +184,32 @@ pub enum HookEventData {
 }
 
 /// Action returned by a plugin to influence firewall behavior
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 pub enum HookAction {
     /// Continue normal processing
     #[default]
     Continue,
-    /// Block/deny the packet or request
+    /// Reject the request. Only honored for `ApiRequest` (→ 403), and
+    /// only when the plugin answers within its budget — see
+    /// [`HookPoint::ApiRequest`].
     Block,
-    /// Allow/pass the packet or request (skip further checks)
-    Allow,
-    /// Log this event with extra context
+    /// Write a line to the plugin's activity log
     Log(String),
-    /// Add an IP to a pf table (e.g., block list)
+    /// Add an IP to a pf table (must be a `plugin_`-prefixed table)
     AddToTable {
         /// Target pf table name
         table: String,
         /// Address to add
         ip: IpAddr,
     },
-    /// Remove an IP from a pf table
+    /// Remove an IP from a pf table (must be a `plugin_`-prefixed table)
     RemoveFromTable {
         /// Target pf table name
         table: String,
         /// Address to remove
         ip: IpAddr,
     },
-    /// Modify a value (e.g., rewrite DNS response)
-    Modify(String),
     /// Multiple actions
     Multi(Vec<HookAction>),
 }

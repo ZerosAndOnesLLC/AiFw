@@ -198,6 +198,7 @@ mod auth;
 mod backup;
 mod cluster;
 mod cookies;
+mod plugins;
 mod rbac;
 mod resources;
 mod rules;

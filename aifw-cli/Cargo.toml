@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 aifw-common = { workspace = true }
 aifw-core = { workspace = true }
+aifw-plugins = { workspace = true }
 aifw-pf = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "process"] }
 clap = { workspace = true }

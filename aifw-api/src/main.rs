@@ -18,6 +18,7 @@ mod metrics_series;
 mod multiwan;
 mod native_metrics;
 mod opnsense;
+mod pf_conf_patch;
 mod plugins;
 mod reverse_proxy;
 mod router;
@@ -176,7 +177,7 @@ pub struct AppState {
     /// Created in `main` before the tracing subscriber so the forwarding
     /// layer can attach; config is applied once the DB pool is ready.
     pub syslog: Arc<aifw_common::syslog::SyslogManager>,
-    pub plugin_manager: Arc<RwLock<aifw_plugins::PluginManager>>,
+    pub plugin_manager: Arc<aifw_plugins::PluginManager>,
     pub metrics_store: Arc<aifw_metrics::MetricsStore>,
     pub auth_settings: auth::AuthSettings,
     pub cluster_engine: Arc<aifw_core::ClusterEngine>,
@@ -222,11 +223,6 @@ pub struct AppState {
     /// deadline is capped at the token's own `exp`, so an expired token is
     /// never served from cache.
     pub auth_token_cache: Arc<dashmap::DashMap<String, (auth::Claims, std::time::Instant)>>,
-    /// Shadow counter of `plugin_manager.read().await.running_count()` —
-    /// kept in sync by every register/unload call site. The auth middleware
-    /// uses this to skip the read lock + dispatch entirely when no plugins
-    /// are running (the common case).
-    pub plugin_running_count: Arc<std::sync::atomic::AtomicUsize>,
     /// Debounce state for the auto-snapshot middleware (PERF-H8 #352):
     /// mutations arriving within the debounce window coalesce into a
     /// single config rebuild + save_if_changed.
@@ -959,7 +955,12 @@ async fn create_state_from_db(
                     .await
                     .map_err(anyhow::Error::from)
             },
-            async { plugins::migrate(&pool).await.map_err(anyhow::Error::from) },
+            async {
+                aifw_plugins::store::PluginStore::new(pool.clone())
+                    .migrate()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            },
             async {
                 aifw_core::config_manager::ConfigManager::new(pool.clone())
                     .migrate()
@@ -1076,72 +1077,11 @@ async fn create_state_from_db(
     // direct-DB (no IPC hop for plain SQL pagination).
     let ids_client = Arc::new(aifw_ids_ipc::IdsClient::new(ids_socket));
 
-    // Initialize plugin system
-    let plugin_ctx = aifw_plugins::PluginContext::new(pf.clone());
-    let mut plugin_mgr = aifw_plugins::PluginManager::new(plugin_ctx);
-
-    // Register built-in plugins (disabled by default — user enables via UI)
-    let _ = plugin_mgr
-        .register(
-            Box::new(aifw_plugins::examples::LoggingPlugin::new()),
-            aifw_plugins::PluginConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        )
-        .await;
-    let _ = plugin_mgr
-        .register(
-            Box::new(aifw_plugins::examples::IpReputationPlugin::new()),
-            aifw_plugins::PluginConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        )
-        .await;
-    let _ = plugin_mgr
-        .register(
-            Box::new(aifw_plugins::examples::WebhookPlugin::new()),
-            aifw_plugins::PluginConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        )
-        .await;
-
-    // Load persisted plugin enable states from DB
-    let enabled_plugins: Vec<(String,)> =
-        sqlx::query_as("SELECT name FROM plugin_config WHERE enabled = 1")
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default();
-    for (name,) in &enabled_plugins {
-        // Unload disabled version and re-register as enabled, with the
-        // persisted settings — plugins only read settings in init() (#586).
-        let reg_name = plugins::canonical_builtin(name).unwrap_or(name);
-        let _ = plugin_mgr.unload(reg_name).await;
-        if let Some(p) = plugins::instantiate_builtin(name) {
-            let settings = plugins::load_settings(&pool, name).await;
-            let _ = plugin_mgr
-                .register(
-                    p,
-                    aifw_plugins::PluginConfig {
-                        enabled: true,
-                        settings,
-                    },
-                )
-                .await;
-        }
-    }
-
-    // Seed the shadow counter with the boot-time running count (#488) —
-    // previously it started at 0, so plugins enabled in the DB never
-    // received hooks until toggled through the API once.
-    let plugin_running = plugin_mgr.running_count();
-    tracing::info!(
-        plugins = plugin_mgr.count(),
-        running = plugin_running,
-        "plugin system initialized"
+    // Plugin system: built-ins are registered here; enabled ones are
+    // started from async_main once the rest of the state is up.
+    let plugin_mgr = Arc::new(
+        aifw_plugins::PluginManager::new(pf.clone(), pool.clone())
+            .map_err(|e| anyhow::anyhow!("plugin registry: {e}"))?,
     );
 
     // Load configurable dashboard history size from DB (default 30 min = 1800 entries).
@@ -1184,7 +1124,7 @@ async fn create_state_from_db(
         conntrack,
         ids_client,
         syslog: syslog_mgr,
-        plugin_manager: Arc::new(RwLock::new(plugin_mgr)),
+        plugin_manager: plugin_mgr,
         metrics_store: metrics_store.clone(),
         auth_settings,
         cluster_engine,
@@ -1209,7 +1149,6 @@ async fn create_state_from_db(
         auth_user_cache: Arc::new(dashmap::DashMap::new()),
         auth_jti_cache: Arc::new(dashmap::DashMap::new()),
         auth_token_cache: Arc::new(dashmap::DashMap::new()),
-        plugin_running_count: Arc::new(std::sync::atomic::AtomicUsize::new(plugin_running)),
         auto_snapshot_pending: Arc::new(tokio::sync::Mutex::new(
             backup::AutoSnapshotPending::default(),
         )),
@@ -1372,111 +1311,22 @@ async fn ensure_rc_services_enabled() {
 #[cfg(not(target_os = "freebsd"))]
 async fn ensure_rc_services_enabled() {}
 
-/// Ensure AiFw anchors are present in /usr/local/etc/aifw/pf.conf.aifw.
+/// Ensure AiFw anchor hooks are present in /usr/local/etc/aifw/pf.conf.aifw.
 ///
-/// Works line-by-line (never substring-match) so `anchor "aifw"` cannot
-/// accidentally match inside `nat-anchor "aifw"` or `rdr-anchor "aifw"`.
-///
-/// - Adds `rdr-anchor "aifw-nat"` after `nat-anchor "aifw-nat"` if missing
-///   (fix for older installs that predated rdr support).
-/// - Inserts multi-WAN filter anchors (`aifw-pbr`, `aifw-mwan-leak`,
-///   `aifw-mwan-reply`) right before the first standalone `anchor "aifw"`
-///   line (i.e. the filter-anchors section, never the nat/rdr section).
-/// - Writes the patched file via `sudo tee` and reloads pf **only if**
-///   `pfctl -nf` validates it first. If validation fails we log a loud
-///   warning and leave the original file untouched.
+/// The text transform lives in [`pf_conf_patch::patch_pf_conf`] (pure,
+/// unit-tested): missing rdr / ND / plugin / multi-WAN / filter-NAT hooks
+/// are inserted line-by-line. The result is committed and pf reloaded
+/// **only if** `pfctl -nf` validates it first; otherwise the original file
+/// is left untouched with a loud warning.
 async fn ensure_rdr_anchor() {
     let pf_path = "/usr/local/etc/aifw/pf.conf.aifw";
     let Ok(content) = tokio::fs::read_to_string(pf_path).await else {
         return;
     };
 
-    let lines: Vec<&str> = content.lines().collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 8);
-    let mut changed = false;
-
-    let has_rdr = lines.iter().any(|l| l.trim() == "rdr-anchor \"aifw-nat\"");
-    // Filter-class hook for the NAT anchor: cross-family af-to rules are
-    // pass rules, so an install predating `anchor "aifw-nat"` would load
-    // them but never evaluate them (#531).
-    let has_nat_filter = lines.iter().any(|l| l.trim() == "anchor \"aifw-nat\"");
-    // ICMPv6 neighbor discovery: aifw-setup only emits this into NEWLY
-    // generated pf.conf files, so upgraded appliances keep dropping ND and
-    // all IPv6 (incl. NAT64) stays broken until healed here (#601).
-    const ND_RULE: &str =
-        "pass quick inet6 proto icmp6 icmp6-type { routersol, routeradv, neighbrsol, neighbradv }";
-    let has_nd = lines.iter().any(|l| l.trim() == ND_RULE);
-    let mwan_anchors = [
-        aifw_common::anchors::PBR,
-        aifw_common::anchors::MWAN_LEAK,
-        aifw_common::anchors::MWAN_REPLY,
-    ];
-    let has_mwan: Vec<bool> = mwan_anchors
-        .iter()
-        .map(|a| {
-            let wanted = format!("anchor \"{a}\"");
-            lines.iter().any(|l| l.trim() == wanted)
-        })
-        .collect();
-
-    let mut mwan_inserted = false;
-    let mut nd_inserted = false;
-
-    for line in lines.iter() {
-        let t = line.trim();
-
-        // 1. After `nat-anchor "aifw-nat"` inject `rdr-anchor "aifw-nat"` if absent.
-        if t == "nat-anchor \"aifw-nat\"" {
-            out.push((*line).to_string());
-            if !has_rdr {
-                out.push("rdr-anchor \"aifw-nat\"".to_string());
-                changed = true;
-            }
-            continue;
-        }
-
-        // 2. Before the filter-section `anchor "aifw"` (trimmed EXACTLY — won't
-        //    match nat-anchor or rdr-anchor), inject any missing mwan anchors.
-        // ND pass must precede the FIRST filter anchor — anchors hold
-        // `block quick` rules that would otherwise eat neighbor
-        // solicitations (#601). Checked against every filter-anchor form so
-        // it lands before aifw-pbr when the mwan anchors already exist.
-        if !has_nd
-            && !nd_inserted
-            && (t == "anchor \"aifw\""
-                || mwan_anchors.iter().any(|a| t == format!("anchor \"{a}\"")))
-        {
-            out.push(ND_RULE.to_string());
-            nd_inserted = true;
-            changed = true;
-        }
-
-        if !mwan_inserted && t == "anchor \"aifw\"" {
-            for (i, a) in mwan_anchors.iter().enumerate() {
-                if !has_mwan[i] {
-                    out.push(format!("anchor \"{a}\""));
-                    changed = true;
-                }
-            }
-            mwan_inserted = true;
-            out.push((*line).to_string());
-            // 3. After the filter `anchor "aifw"`, inject the filter-class
-            //    `anchor "aifw-nat"` hook if absent (af-to rules, #531).
-            if !has_nat_filter {
-                out.push("anchor \"aifw-nat\"".to_string());
-                changed = true;
-            }
-            continue;
-        }
-
-        out.push((*line).to_string());
-    }
-
-    if !changed {
+    let Some(patched) = pf_conf_patch::patch_pf_conf(&content) else {
         return;
-    }
-
-    let patched = out.join("\n") + "\n";
+    };
 
     // Dry-run validate before committing. Write to a temp file, pfctl -nf it,
     // and only replace the real pf.conf.aifw if validation passes.
@@ -1919,36 +1769,8 @@ async fn async_main() -> anyhow::Result<()> {
     // (background, non-blocking); also tees entries to remote syslog.
     ws::start_pflog_collector(state.plugin_manager.clone(), state.syslog.handle());
 
-    // Start plugin timer hook — fires every 60 seconds for cron-like plugins
-    {
-        let pmgr = state.plugin_manager.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                // PERF-H17/PERF-M20 (#361/#389): snapshot under a short read
-                // lock; the 60s timer dispatch runs unlocked so cron-like
-                // plugins doing slow I/O don't block enable/disable.
-                let plugins = pmgr.read().await.dispatch_set();
-                if !plugins.is_empty() {
-                    let event = aifw_plugins::HookEvent {
-                        hook: aifw_plugins::HookPoint::Timer,
-                        data: aifw_plugins::hooks::HookEventData::Tick {
-                            timestamp: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                        },
-                    };
-                    let _ = plugins.dispatch(&event).await;
-                }
-            }
-        });
-    }
-
-    // Tail the audit log into plugin LogEvent hooks (#488) — the bridge
-    // between aifw-core audit writes and plugins subscribed to LogEvent.
-    plugins::start_audit_hook_dispatcher(state.clone());
+    // Start enabled plugins and their event bridges (timer, audit log, …).
+    plugins::start(state.clone()).await;
 
     // Start AI analysis background task — reviews unclassified critical/high alerts every 5 minutes.
     // Now reads alerts directly from the SQLite ids_alerts table, since the
@@ -2049,10 +1871,8 @@ async fn async_main() -> anyhow::Result<()> {
                     .map(|s| s.states_count)
                     .unwrap_or(0);
                 let conns = mem_state.conntrack.get_connections().await.len();
-                let pmgr = mem_state.plugin_manager.read().await;
-                let plugins_total = pmgr.count();
-                let plugins_running = pmgr.running_count();
-                drop(pmgr);
+                let plugins_total = mem_state.plugin_manager.count();
+                let plugins_running = mem_state.plugin_manager.running_count();
                 // IDS counters come over IPC from aifw-ids. Distinguish
                 // "IPC is broken" from "IPC says 0" — the heartbeat used to
                 // silently report rules_loaded=0 even though startup loaded
