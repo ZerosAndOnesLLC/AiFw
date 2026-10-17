@@ -66,6 +66,137 @@ async fn geoip_rules_round_trip_and_reject_bad_country() {
 }
 
 #[tokio::test]
+async fn geoip_database_upload_counts_cidrs_and_fills_tables() {
+    use axum_test::multipart::{MultipartForm, Part};
+    let (_, settings) = test_app().await;
+    let state = crate::create_app_state_in_memory(settings).await.unwrap();
+    let dir = std::env::temp_dir().join(format!("aifw-geoip-api-{}", uuid::Uuid::new_v4()));
+    state.geoip_engine.set_db_dir(&dir).await.unwrap();
+    let pf = state.pf.clone();
+    let server = TestServer::new(crate::build_router(state, None, "*", false));
+    let token = create_user_and_login(&server).await;
+
+    // Nothing loaded yet.
+    let st: Value = server
+        .get("/api/v1/geoip/database")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    assert_eq!(st["loaded"], false);
+    assert_eq!(st["has_license_key"], false);
+
+    // A rule for a country counts zero CIDRs until a database exists.
+    let created: Value = server
+        .post("/api/v1/geoip")
+        .authorization_bearer(&token)
+        .json(&json!({"country": "CN", "action": "block"}))
+        .await
+        .json();
+    let id = created["data"]["id"].as_str().unwrap().to_string();
+    let list: Value = server
+        .get("/api/v1/geoip")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    assert_eq!(list["data"][0]["country"], "CN");
+    assert_eq!(list["data"][0]["cidr_count"], 0);
+    assert_eq!(list["data"][0]["table"], "geoip_cn");
+
+    // Upload the CSV release as separate files.
+    let blocks = "network,geoname_id,registered_country_geoname_id\n\
+                  1.0.2.0/24,1814991,1814991\n1.0.3.0/24,1814991,1814991\n";
+    let locations = "geoname_id,locale_code,continent_code,continent_name,country_iso_code\n\
+                     1814991,en,AS,Asia,CN\n";
+    let form = MultipartForm::new()
+        .add_part(
+            "blocks",
+            Part::text(blocks).file_name("GeoLite2-Country-Blocks-IPv4.csv"),
+        )
+        .add_part(
+            "locations",
+            Part::text(locations).file_name("GeoLite2-Country-Locations-en.csv"),
+        );
+    let resp = server
+        .post("/api/v1/geoip/database/upload")
+        .authorization_bearer(&token)
+        .multipart(form)
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    let up: Value = resp.json();
+    assert_eq!(up["cidrs"], 1, "aligned /24 pair aggregates to one /23");
+    assert_eq!(up["status"]["source"], "upload");
+
+    // The rule now reports its CIDRs and the pf table is filled.
+    let list: Value = server
+        .get("/api/v1/geoip")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    assert_eq!(list["data"][0]["cidr_count"], 1);
+    assert_eq!(pf.get_table_entries("geoip_cn").await.unwrap().len(), 1);
+    let anchor = pf.get_rules("aifw-geoip").await.unwrap();
+    assert_eq!(anchor.len(), 1);
+    assert!(anchor[0].starts_with("block drop in quick from <geoip_cn>"));
+
+    // Settings: a key is stored but never returned; a bad key is refused.
+    let st: Value = server
+        .put("/api/v1/geoip/database")
+        .authorization_bearer(&token)
+        .json(&json!({"license_key": "abcDEF0123456789", "update_interval_hours": 24}))
+        .await
+        .json();
+    assert_eq!(st["has_license_key"], true);
+    assert_eq!(st["update_interval_hours"], 24);
+    assert!(st.get("license_key").is_none());
+    assert!(st["next_refresh"].is_string());
+    server
+        .put("/api/v1/geoip/database")
+        .authorization_bearer(&token)
+        .json(&json!({"license_key": "bad key!"}))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    let st: Value = server
+        .put("/api/v1/geoip/database")
+        .authorization_bearer(&token)
+        .json(&json!({"license_key": null}))
+        .await
+        .json();
+    assert_eq!(st["has_license_key"], false);
+
+    // Refresh without a key explains itself instead of 500ing.
+    let resp = server
+        .post("/api/v1/geoip/database/refresh")
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(resp.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(resp.text().contains("license key"), "{}", resp.text());
+
+    // Garbage upload is a 400 and leaves the loaded release alone.
+    let resp = server
+        .post("/api/v1/geoip/database/upload")
+        .authorization_bearer(&token)
+        .multipart(MultipartForm::new().add_part("f", Part::text("x").file_name("evil.sh")))
+        .await;
+    assert_eq!(resp.status_code(), StatusCode::BAD_REQUEST);
+    let st: Value = server
+        .get("/api/v1/geoip/database")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    assert_eq!(st["cidrs"], 1);
+
+    // Deleting the rule empties the table and the anchor.
+    server
+        .delete(&format!("/api/v1/geoip/{id}"))
+        .authorization_bearer(&token)
+        .await
+        .assert_status_ok();
+    assert!(pf.get_table_entries("geoip_cn").await.unwrap().is_empty());
+    assert!(pf.get_rules("aifw-geoip").await.unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn wireguard_tunnel_and_peer_round_trip() {
     let (server, _) = test_app().await;
     let token = create_user_and_login(&server).await;

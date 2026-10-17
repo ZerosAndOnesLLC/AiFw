@@ -1016,9 +1016,12 @@ mod tests {
     fn test_geoip_rule_pf() {
         let rule = GeoIpRule::new(CountryCode::new("CN").unwrap(), GeoIpAction::Block);
         assert_eq!(rule.table_name(), "geoip_cn");
-        assert_eq!(rule.to_pf_table(), "table <geoip_cn> persist");
         let pf = rule.to_pf_rule();
         assert!(pf.contains("block drop in quick from <geoip_cn>"));
+        assert!(
+            !pf.starts_with("table"),
+            "anchor must not define the table (#704)"
+        );
     }
 
     #[test]

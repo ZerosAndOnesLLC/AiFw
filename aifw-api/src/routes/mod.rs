@@ -52,7 +52,8 @@ pub use auth::{
 pub use config_io::{export_config, export_config_with_passphrase, import_config};
 pub use dns::{get_dns, update_dns};
 pub use geoip::{
-    create_geoip_rule, delete_geoip_rule, geoip_lookup, list_geoip_rules, update_geoip_rule,
+    create_geoip_rule, delete_geoip_rule, geoip_lookup, get_geoip_database, list_geoip_rules,
+    refresh_geoip_database, update_geoip_database, update_geoip_rule, upload_geoip_database,
 };
 pub use interfaces::{get_interface_stats, get_system_routes, list_interfaces};
 pub use nat::{

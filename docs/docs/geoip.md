@@ -29,9 +29,18 @@ breadcrumb:
 
 AiFw maps countries to pf tables and emits one `block drop` or `pass quick` rule per country. The country list is sourced from MaxMind's free **GeoLite2** CSV release; AiFw aggregates adjacent CIDRs to keep the pf tables compact. Each rule takes a 2-letter ISO 3166-1 alpha-2 code and an action (`allow` or `block`). Rules live in the dedicated `aifw-geoip` anchor.
 
+## The database comes first
+
+A rule is only as good as the networks behind it. Until a GeoLite2 release is loaded, every country table is empty and the Geo-IP page says so. Two ways to load one, both under **Firewall → Geo-IP → GeoLite2 database**:
+
+- **Automatic (recommended).** Create a free account at maxmind.com, generate a license key, and paste it into the page (or `aifw geoip database --license-key-stdin`). AiFw downloads the `GeoLite2-Country-CSV` release at once and then on a schedule — weekly by default, like pfBlockerNG and OPNsense; choose daily, monthly, or off. The key is stored encrypted and never shown again.
+- **Manual.** Download `GeoLite2-Country-CSV_*.zip` from your MaxMind account and upload it on the page (or `aifw geoip import FILE.zip`). The three CSV files inside are accepted as separate uploads too.
+
+The page shows how many countries and networks are loaded, where the data came from, when it was refreshed, when the next download is due, and the last error if a download failed. Each rule shows how many networks its country table holds.
+
 ## Quickstart
 
-In the Web UI go to **Firewall &rarr; Geo-IP** and click **Add rule**. Pick a country, an action (block or allow), and an optional label.
+In the Web UI go to **Firewall &rarr; Geo-IP**, load the database as above, then use **Add a country rule**. Pick a country, an action (block or allow), and an optional label. Rules apply to pf as soon as they are saved; click a row to edit it in place.
 
 Block all inbound traffic from a country:
 
@@ -60,10 +69,19 @@ Response:
 ```bash
 aifw geoip add --country CN --action block
 aifw geoip add --country US --action allow
-aifw geoip lookup 1.2.3.4
-aifw geoip list
+aifw geoip list                                      # rules with live network counts
 aifw geoip remove <uuid>
+
+# the database (asks the running API; needs AIFW_TOKEN)
+aifw geoip database                                  # loaded? source, schedule, last error
+printf '%s' "$KEY" | aifw geoip database --license-key-stdin
+aifw geoip database --update-interval-hours 168      # 0 turns the schedule off
+aifw geoip refresh                                   # download from MaxMind now
+aifw geoip import GeoLite2-Country-CSV_20261001.zip
+aifw geoip lookup 1.2.3.4
 ```
+
+Rule commands write the database directly and work without the API; the running API re-applies the anchor within a minute.
 
 ## API endpoints
 
@@ -74,25 +92,31 @@ aifw geoip remove <uuid>
 | `PUT` | `/api/v1/geoip/{id}` | Update a rule |
 | `DELETE` | `/api/v1/geoip/{id}` | Delete a rule |
 | `GET` | `/api/v1/geoip/lookup/{ip}` | Resolve an IP to its country code |
+| `GET` | `/api/v1/geoip/database` | Database status: loaded counts, source, schedule, last error |
+| `PUT` | `/api/v1/geoip/database` | `{ "license_key": "…" \| null, "update_interval_hours": 168 }` |
+| `POST` | `/api/v1/geoip/database/refresh` | Download the GeoLite2 Country release from MaxMind now |
+| `POST` | `/api/v1/geoip/database/upload` | Multipart upload of the GeoLite2 zip or its CSV files |
+
+The rule list returns each rule with its pf `table` and `cidr_count` (networks in the loaded database for that country).
 
 ## How it works
 
-Each rule generates a pf table named `geoip_<cc>` (e.g. `geoip_cn`, `geoip_ru`) populated with the country's networks from the GeoLite2 database. The compiled pf rule is:
+Each rule reads a pf table named `geoip_<cc>` (e.g. `geoip_cn`, `geoip_ru`) that AiFw fills at the root with the country's networks from the GeoLite2 database. The compiled pf rule is:
 
 ```text
 block drop in quick from <geoip_cn> label "geoip-block-CN"
 ```
 
-`pass`-action rules use `pass in quick`. Adjacent and overlapping CIDRs are merged before being loaded into the table so a country's table stays small enough to evaluate cheaply.
+The anchor never defines the table itself: a `table` line inside the anchor would create an empty anchor-local copy that shadows the root table (#704). `pass`-action rules use `pass in quick`. Adjacent and overlapping CIDRs are merged before being loaded so a country's table stays small enough to evaluate cheaply. Disabling or deleting a rule empties its table. The `freebsd/tests/t12-geoip.sh` harness test proves the whole path on a real kernel.
 
 ## Configuration
 
 | Field | Default | Notes |
 |---|---|---|
 | Anchor name | `aifw-geoip` | Dedicated anchor, separate from the main rule list |
-| `db_path` | `/var/db/aifw/geoip` | GeoLite2 CSV directory |
-| `update_interval_hours` | `168` (weekly) | Set to `0` to disable auto-update |
-| `license_key` | unset | Optional MaxMind license key for direct downloads |
+| `db_path` | `/var/db/aifw/geoip` | GeoLite2 CSV directory (`GeoLite2-Country-Blocks-IPv4.csv`, `-IPv6.csv`, `GeoLite2-Country-Locations-en.csv`) |
+| `update_interval_hours` | `168` (weekly) | Scheduled MaxMind download; `0` disables. A failed download is retried after 6 hours |
+| `license_key` | unset | MaxMind license key; sealed at rest, required for downloads (uploads work without one) |
 | `country` (rule) | required | Two-letter ISO 3166-1 alpha-2 code; case-insensitive on input |
 
 ## See also

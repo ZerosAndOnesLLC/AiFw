@@ -168,15 +168,23 @@ Overload offenders land in the named pf table (`flooders` above) so you can bloc
 
 ## geoip
 
-Country-level allow / block rules + interactive lookup.
+Country rules write the database directly; the running API re-applies the `aifw-geoip` anchor within a minute. The GeoLite2 database behind the rules lives in the API process, so `database`, `refresh` and `import` ask the API and need an API key with `geoip:read` (`geoip:write` for changes) in `AIFW_TOKEN`.
 
 ```bash
 aifw geoip add --country CN --action block --label "block China"
-aifw geoip list
+aifw geoip list                                      # rules, with live network counts from the API
 aifw geoip lookup 8.8.8.8
-# => US — Google LLC (AS15169)
-aifw geoip remove <id>
+aifw geoip remove <uuid>
+
+export AIFW_TOKEN=…                                  # an API key (Settings → API keys)
+aifw geoip database                                  # loaded? source, schedule, next/last refresh, last error
+printf '%s' "$KEY" | aifw geoip database --license-key-stdin   # MaxMind key, stored sealed
+aifw geoip database --update-interval-hours 168      # weekly (default); 0 turns auto-refresh off
+aifw geoip refresh                                   # download the GeoLite2 Country release now
+aifw geoip import GeoLite2-Country-CSV_20261001.zip  # or the .csv files
 ```
+
+Nothing is blocked until a database is loaded: `list` and `database` both say so.
 
 ## vpn
 

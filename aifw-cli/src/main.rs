@@ -485,6 +485,34 @@ enum GeoIpCmd {
         /// IP address to look up
         ip: String,
     },
+    /// Show or configure the GeoLite2 database and its refresh schedule (asks the running API)
+    #[command(after_help = "\
+EXAMPLES:
+    aifw geoip database                                  # status, schedule, last refresh
+    printf '%s' \"$KEY\" | aifw geoip database --license-key-stdin
+    aifw geoip database --update-interval-hours 168      # weekly (0 turns auto-refresh off)
+    aifw geoip database --clear-license-key")]
+    Database {
+        /// Read a MaxMind license key from stdin (first line) and store it sealed
+        #[arg(long)]
+        license_key_stdin: bool,
+        /// Remove the stored license key
+        #[arg(long, conflicts_with = "license_key_stdin")]
+        clear_license_key: bool,
+        /// Hours between scheduled downloads; 0 disables
+        #[arg(long)]
+        update_interval_hours: Option<u32>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download the GeoLite2 Country release from MaxMind now (needs a license key)
+    Refresh,
+    /// Import a GeoLite2 Country CSV release: the MaxMind zip, or the .csv files
+    Import {
+        /// GeoLite2-Country-CSV_*.zip, or GeoLite2-Country-Blocks-IPv4.csv [+ IPv6] + GeoLite2-Country-Locations-en.csv
+        files: Vec<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1519,6 +1547,22 @@ async fn main() -> anyhow::Result<()> {
             GeoIpCmd::List { json } => {
                 commands::geoip_list(&cli.db, json).await?;
             }
+            GeoIpCmd::Database {
+                license_key_stdin,
+                clear_license_key,
+                update_interval_hours,
+                json,
+            } => {
+                commands::geoip_database(
+                    license_key_stdin,
+                    clear_license_key,
+                    update_interval_hours,
+                    json,
+                )
+                .await?
+            }
+            GeoIpCmd::Refresh => commands::geoip_refresh().await?,
+            GeoIpCmd::Import { files } => commands::geoip_import(&files).await?,
             GeoIpCmd::Lookup { ip } => {
                 commands::geoip_lookup(&cli.db, &ip).await?;
             }
