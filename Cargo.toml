@@ -40,7 +40,7 @@ resolver = "2"
 
 [workspace.package]
 
-version = "5.116.1"
+version = "5.116.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ZerosAndOnesLLC/AiFw"
