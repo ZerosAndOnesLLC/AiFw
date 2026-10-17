@@ -34,6 +34,8 @@ export interface GeoIpDatabase {
   update_interval_hours: number;
   next_refresh: string | null;
   has_license_key: boolean;
+  /** MaxMind account ID paired with the key (not secret) */
+  account_id: string | null;
 }
 
 export interface GeoIpLookup {
@@ -99,9 +101,10 @@ export function getDatabase(): Promise<GeoIpDatabase> {
   return api.get<GeoIpDatabase>(`${BASE}/database`);
 }
 
-/** `license_key: null` clears the key; omit a field to leave it alone. */
+/** `license_key: null` / `account_id: null` clear; omit a field to leave it alone. */
 export function updateDatabase(patch: {
   license_key?: string | null;
+  account_id?: string | null;
   update_interval_hours?: number;
 }): Promise<GeoIpDatabase> {
   return api.put<GeoIpDatabase>(`${BASE}/database`, patch);

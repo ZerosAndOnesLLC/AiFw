@@ -489,6 +489,7 @@ enum GeoIpCmd {
     #[command(after_help = "\
 EXAMPLES:
     aifw geoip database                                  # status, schedule, last refresh
+    aifw geoip database --account-id 123456              # MaxMind account ID (pairs with the key)
     printf '%s' \"$KEY\" | aifw geoip database --license-key-stdin
     aifw geoip database --update-interval-hours 168      # weekly (0 turns auto-refresh off)
     aifw geoip database --clear-license-key")]
@@ -499,6 +500,9 @@ EXAMPLES:
         /// Remove the stored license key
         #[arg(long, conflicts_with = "license_key_stdin")]
         clear_license_key: bool,
+        /// MaxMind account ID (numeric); pass an empty string to clear
+        #[arg(long, value_name = "ID")]
+        account_id: Option<String>,
         /// Hours between scheduled downloads; 0 disables
         #[arg(long)]
         update_interval_hours: Option<u32>,
@@ -1550,12 +1554,14 @@ async fn main() -> anyhow::Result<()> {
             GeoIpCmd::Database {
                 license_key_stdin,
                 clear_license_key,
+                account_id,
                 update_interval_hours,
                 json,
             } => {
                 commands::geoip_database(
                     license_key_stdin,
                     clear_license_key,
+                    account_id.as_deref(),
                     update_interval_hours,
                     json,
                 )

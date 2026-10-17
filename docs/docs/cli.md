@@ -178,6 +178,7 @@ aifw geoip remove <uuid>
 
 export AIFW_TOKEN=…                                  # an API key (Settings → API keys)
 aifw geoip database                                  # loaded? source, schedule, next/last refresh, last error
+aifw geoip database --account-id 123456              # MaxMind account ID (pairs with the key)
 printf '%s' "$KEY" | aifw geoip database --license-key-stdin   # MaxMind key, stored sealed
 aifw geoip database --update-interval-hours 168      # weekly (default); 0 turns auto-refresh off
 aifw geoip refresh                                   # download the GeoLite2 Country release now

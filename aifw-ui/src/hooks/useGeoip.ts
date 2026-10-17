@@ -118,12 +118,13 @@ export function useGeoip() {
   const lookup = useCallback(async (ip: string): Promise<GeoIpLookup> => lookupIp(ip), []);
 
   const saveDatabaseSettings = useCallback(
-    (patch: { license_key?: string | null; update_interval_hours?: number }) =>
+    (patch: { license_key?: string | null; account_id?: string | null; update_interval_hours?: number }) =>
       run("db-settings", async () => {
         const st = await updateDatabase(patch);
         setDatabase(st);
         if (patch.license_key === null) return "License key removed.";
         if (patch.license_key) return "License key saved.";
+        if (patch.account_id !== undefined) return patch.account_id ? "Account ID saved." : "Account ID cleared.";
         return "Refresh schedule saved.";
       }),
     [run],
