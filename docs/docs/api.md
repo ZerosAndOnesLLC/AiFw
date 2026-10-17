@@ -330,7 +330,10 @@ Sensible defaults are applied when omitted; check the relevant subsystem doc for
 |---|---|---|
 | `GET`,&nbsp;`POST` | `/api/v1/geoip` | List / create geo-IP rules |
 | `PUT`,&nbsp;`DELETE` | `/api/v1/geoip/{id}` | Manage one rule |
-| `GET` | `/api/v1/geoip/lookup/{ip}` | Country / ASN lookup for one IP |
+| `GET` | `/api/v1/geoip/lookup/{ip}` | Country lookup for one IP |
+| `GET`,&nbsp;`PUT` | `/api/v1/geoip/database` | GeoLite2 database status / settings (license key, refresh interval) |
+| `POST` | `/api/v1/geoip/database/refresh` | Download the GeoLite2 release from MaxMind now |
+| `POST` | `/api/v1/geoip/database/upload` | Upload the GeoLite2 Country CSV zip or files |
 
 ## Reverse proxy (TrafficCop control plane)
 

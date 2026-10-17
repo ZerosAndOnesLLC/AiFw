@@ -345,6 +345,7 @@ pub const SEALED_COLUMNS: &[(&str, &str, &str)] = &[
 pub const SEALED_KV: &[(&str, &str, &str, &str)] = &[
     ("dhcp_ddns_config", "key", "value", "tsig_secret"),
     ("auth_config", "key", "value", "ai_%_api_key"),
+    ("geoip_config", "key", "value", "license_key"),
 ];
 
 /// One-shot upgrade pass: seal every legacy plaintext secret still in the

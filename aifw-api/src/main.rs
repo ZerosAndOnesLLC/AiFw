@@ -10,6 +10,7 @@ mod cluster;
 mod dhcp;
 mod dns_blocklists;
 mod dns_resolver;
+mod geoip_db;
 mod ids;
 mod iface;
 mod log_rotation;
@@ -1771,6 +1772,10 @@ async fn async_main() -> anyhow::Result<()> {
 
     // Start enabled plugins and their event bridges (timer, audit log, …).
     plugins::start(state.clone()).await;
+
+    // Geo-IP: load the GeoLite2 release from disk (or download it), apply
+    // the country tables, and keep both current on a schedule.
+    geoip_db::start(state.clone()).await;
 
     // Start AI analysis background task — reviews unclassified critical/high alerts every 5 minutes.
     // Now reads alerts directly from the SQLite ids_alerts table, since the

@@ -186,6 +186,7 @@ pub(crate) fn vpn_write() -> Router<AppState> {
 pub(crate) fn geoip_read() -> Router<AppState> {
     Router::new()
         .route("/api/v1/geoip", get(routes::list_geoip_rules))
+        .route("/api/v1/geoip/database", get(routes::get_geoip_database))
         .route("/api/v1/geoip/lookup/{ip}", get(routes::geoip_lookup))
         .layer(middleware::from_fn(perm_check!(Permission::GeoipRead)))
 }
@@ -196,6 +197,18 @@ pub(crate) fn geoip_write() -> Router<AppState> {
         .route(
             "/api/v1/geoip/{id}",
             put(routes::update_geoip_rule).delete(routes::delete_geoip_rule),
+        )
+        .route("/api/v1/geoip/database", put(routes::update_geoip_database))
+        .route(
+            "/api/v1/geoip/database/refresh",
+            post(routes::refresh_geoip_database),
+        )
+        .route(
+            "/api/v1/geoip/database/upload",
+            // The raw IPv4 blocks CSV alone is ~15 MB; the zip is ~6 MB.
+            post(routes::upload_geoip_database).layer(axum::extract::DefaultBodyLimit::max(
+                aifw_core::geoip::MAX_ARCHIVE_BYTES,
+            )),
         )
         .layer(middleware::from_fn(perm_check!(Permission::GeoipWrite)))
 }

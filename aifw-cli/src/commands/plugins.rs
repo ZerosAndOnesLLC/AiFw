@@ -39,7 +39,7 @@ fn find(name: &str) -> anyhow::Result<std::sync::Arc<dyn Plugin>> {
 // ---- API access -------------------------------------------------------------
 
 /// Why the API could not be asked; the caller decides how loud to be.
-enum ApiUnavailable {
+pub(super) enum ApiUnavailable {
     /// Connection refused / timed out: aifw-api is not running here.
     Down,
     /// 401/403: no (usable) token.
@@ -54,15 +54,15 @@ impl std::fmt::Display for ApiUnavailable {
             ApiUnavailable::Down => write!(f, "aifw-api is not reachable at {AIFW_API_BASE}"),
             ApiUnavailable::Unauthorized => write!(
                 f,
-                "the API refused the request: set AIFW_TOKEN to an API key with plugins:read \
-                 (and plugins:write for `run`)"
+                "the API refused the request: set AIFW_TOKEN to an API key with read access \
+                 to this resource (and write access for commands that change it)"
             ),
             ApiUnavailable::Other(m) => f.write_str(m),
         }
     }
 }
 
-async fn api(
+pub(super) async fn api(
     method: reqwest::Method,
     path: &str,
     body: Option<&Value>,

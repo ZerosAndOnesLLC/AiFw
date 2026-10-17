@@ -110,12 +110,10 @@ impl GeoIpRule {
         format!("geoip_{}", self.country.0.to_lowercase())
     }
 
-    /// Generate pf table definition
-    pub fn to_pf_table(&self) -> String {
-        format!("table <{}> persist", self.table_name())
-    }
-
-    /// Generate pf rule for this country
+    /// Generate the pf rule for this country. It references the root table
+    /// `table_name()` without defining it in the anchor: a `table` line in
+    /// the anchor would create an anchor-local (empty) copy that shadows
+    /// the root table the engine fills (#704).
     pub fn to_pf_rule(&self) -> String {
         let action = match self.action {
             GeoIpAction::Allow => "pass",

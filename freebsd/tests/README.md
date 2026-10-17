@@ -31,6 +31,7 @@ by hand on a test VM and under `vmactions/freebsd-vm` in CI
 | `t05-restore-roundtrip` | #535: save → mutate → restore brings both DB and the live anchor back |
 | `t06-wireguard` | Tunnel creation on the real kernel + #541 pubkey-derives-from-privkey via `wg pubkey` (skips without wireguard-kmod) |
 | `t08-control-plane` | Unauthenticated access rejection, invalid-login rejection, live PF/rule counters, identity, and representative JSON response shapes |
+| `t12-geoip` | #704: a GeoLite2 release uploaded through the API fills the root `geoip_aq` table, the anchor rule (no `table` line) blocks the listed client over an operator `pass`, disabling empties both |
 | `t11-plugins` | Threat Feeds plugin on real pf: its rules load into the `aifw-plugins` anchor, a `block quick` against `<plugin_threat_feeds>` beats a `pass` in `aifw`, and disabling empties both the anchor and the table |
 
 ## Running on a test VM

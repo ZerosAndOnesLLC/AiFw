@@ -183,7 +183,7 @@ Base: `http://<ip>:8080/api/v1/`
 - **Rules**: `GET/POST /rules`, `GET/PUT/DELETE /rules/{id}`, `PUT /rules/reorder`
 - **NAT**: `GET/POST /nat`, `PUT/DELETE /nat/{id}`
 - **VPN**: `GET/POST /vpn/wg`, `PUT/DELETE /vpn/wg/{id}`, peers at `/vpn/wg/{id}/peers`; IPsec IKEv2 tunnels at `/vpn/ipsec/tunnels` (CRUD + `/{id}/start|stop|status`, fleet status at `/vpn/ipsec/status`; engine in `aifw-core/src/ipsec.rs`, strongSwan/swanctl-backed); legacy read-only SA records at `/vpn/ipsec`
-- **Geo-IP**: `GET/POST /geoip`, `PUT/DELETE /geoip/{id}`, `GET /geoip/lookup/{ip}`
+- **Geo-IP**: `GET/POST /geoip`, `PUT/DELETE /geoip/{id}`, `GET /geoip/lookup/{ip}`; database at `GET/PUT /geoip/database`, `POST /geoip/database/refresh|upload` (GeoLite2 CSV release loaded from `<db dir>/geoip`, MaxMind download on a schedule — `aifw-api/src/geoip_db.rs`; the anchor references root tables and must never define them, #704)
 - **Auth**: `/auth/login`, `/auth/totp/*`, `/auth/refresh`, `/auth/logout`, `/auth/users`, `/auth/api-keys`, `/auth/oauth/*`
 - **Status**: `GET /status`, `/connections`, `/metrics`, `/logs`, `POST /reload`
 - **IDS**: `GET/PUT /ids/config`, `POST /ids/reload`, `GET /ids/alerts`, `GET/PUT /ids/alerts/{id}`, `PUT /ids/alerts/{id}/acknowledge`, `GET/POST /ids/rulesets`, `PUT/DELETE /ids/rulesets/{id}`, `GET /ids/rules`, `GET/PUT /ids/rules/{id}`, `GET/POST /ids/suppressions` (paginated via `?limit=&offset=`), `DELETE /ids/suppressions/{id}`, `GET /ids/stats`
