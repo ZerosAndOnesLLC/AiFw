@@ -290,6 +290,20 @@ async fn license_key_is_sealed_and_drives_the_schedule() {
     engine.set_license_key(None).await.unwrap();
     assert!(engine.license_key().await.unwrap().is_none());
     assert!(engine.status().await.unwrap().next_refresh.is_none());
+
+    // Account ID: numeric only, shown in status, clearable.
+    assert!(engine.set_account_id(Some("abc")).await.is_err());
+    engine.set_account_id(Some(" 123456 ")).await.unwrap();
+    assert_eq!(
+        engine.account_id().await.unwrap().as_deref(),
+        Some("123456")
+    );
+    assert_eq!(
+        engine.status().await.unwrap().account_id.as_deref(),
+        Some("123456")
+    );
+    engine.set_account_id(None).await.unwrap();
+    assert!(engine.account_id().await.unwrap().is_none());
 }
 
 fn engine_pool(engine: &crate::geoip::GeoIpEngine) -> &sqlx::SqlitePool {

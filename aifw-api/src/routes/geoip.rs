@@ -31,6 +31,8 @@ pub struct CreateGeoIpRuleRequest {
 pub struct GeoIpDatabaseSettings {
     #[serde(default, deserialize_with = "deserialize_some")]
     pub license_key: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub account_id: Option<Option<String>>,
     pub update_interval_hours: Option<u32>,
 }
 
@@ -216,6 +218,18 @@ pub async fn update_geoip_database(
             "license key set"
         } else {
             "license key cleared"
+        });
+    }
+    if let Some(acct) = req.account_id {
+        state
+            .geoip_engine
+            .set_account_id(acct.as_deref())
+            .await
+            .map_err(engine_error)?;
+        changed.push(if acct.is_some() {
+            "account ID set"
+        } else {
+            "account ID cleared"
         });
     }
     if let Some(hours) = req.update_interval_hours {

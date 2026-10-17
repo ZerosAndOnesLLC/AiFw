@@ -22,7 +22,8 @@ pub async fn refresh(state: &AppState) -> anyhow::Result<usize> {
             "no MaxMind license key configured — add one under Geo-IP → Database, or upload the CSV release"
         );
     };
-    let result = download(&key).await;
+    let account = engine.account_id().await?;
+    let result = download(account.as_deref(), &key).await;
     engine
         .record_refresh(result.as_ref().map(|_| ()).map_err(|e| e.to_string()))
         .await?;
@@ -39,9 +40,16 @@ pub async fn refresh(state: &AppState) -> anyhow::Result<usize> {
     Ok(cidrs)
 }
 
-/// Fetch the zip. Errors never include the URL: it carries the key.
-async fn download(key: &str) -> anyhow::Result<Vec<u8>> {
-    let url = aifw_core::GeoIpEngine::maxmind_url(key);
+/// Fetch the zip. With an account ID, use MaxMind's permalink with HTTP
+/// Basic auth (account ID / license key); otherwise fall back to the
+/// legacy key-in-URL endpoint. Errors never include the URL or the key.
+/// The permalink redirects to a presigned object-store URL; reqwest drops
+/// the Authorization header on that cross-host hop.
+async fn download(account_id: Option<&str>, key: &str) -> anyhow::Result<Vec<u8>> {
+    let url = match account_id {
+        Some(_) => aifw_core::GeoIpEngine::MAXMIND_PERMALINK.to_string(),
+        None => aifw_core::GeoIpEngine::maxmind_legacy_url(key),
+    };
     aifw_common::net_safety::validate_outbound_url(&url)
         .await
         .map_err(|e| anyhow::anyhow!("download.maxmind.com: {e}"))?;
@@ -50,15 +58,26 @@ async fn download(key: &str) -> anyhow::Result<Vec<u8>> {
         .connect_timeout(Duration::from_secs(15))
         .user_agent(format!("AiFw/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let mut resp = client
-        .get(&url)
+    let mut req = client.get(&url);
+    if let Some(acct) = account_id {
+        req = req.basic_auth(acct, Some(key));
+    }
+    let mut resp = req
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("MaxMind download failed: {}", e.without_url()))?;
     match resp.status() {
         s if s.is_success() => {}
-        reqwest::StatusCode::UNAUTHORIZED => {
-            anyhow::bail!("MaxMind rejected the license key (HTTP 401)")
+        reqwest::StatusCode::UNAUTHORIZED if account_id.is_none() => anyhow::bail!(
+            "MaxMind rejected the license key (HTTP 401). Keys issued by the current MaxMind \
+             portal only work together with your account ID — add it next to the key."
+        ),
+        reqwest::StatusCode::UNAUTHORIZED => anyhow::bail!(
+            "MaxMind rejected the account ID / license key pair (HTTP 401). Check both in \
+             the MaxMind portal under Manage License Keys."
+        ),
+        reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            anyhow::bail!("MaxMind rate-limited the download (HTTP 429); try again later")
         }
         s => anyhow::bail!("MaxMind returned HTTP {s}"),
     }

@@ -30,6 +30,7 @@ const RETRY_AFTER_FAILURE_HOURS: i64 = 6;
 // geoip_config keys
 const CFG_DB_PATH: &str = "db_path";
 const CFG_LICENSE_KEY: &str = "license_key";
+const CFG_ACCOUNT_ID: &str = "account_id";
 const CFG_INTERVAL: &str = "update_interval_hours";
 const CFG_SOURCE: &str = "db_source";
 const CFG_UPDATED_AT: &str = "db_updated_at";
@@ -61,6 +62,8 @@ pub struct GeoIpDbStatus {
     pub next_refresh: Option<DateTime<Utc>>,
     /// A MaxMind license key is stored (value never returned)
     pub has_license_key: bool,
+    /// MaxMind account ID the key belongs to (not secret)
+    pub account_id: Option<String>,
 }
 
 /// A rule plus the size of the country's CIDR set in the loaded index.
@@ -370,6 +373,27 @@ impl GeoIpEngine {
         self.config_set(CFG_LICENSE_KEY, sealed.as_deref()).await
     }
 
+    /// The MaxMind account ID paired with the license key, if set.
+    pub async fn account_id(&self) -> Result<Option<String>> {
+        Ok(self
+            .config_get(CFG_ACCOUNT_ID)
+            .await?
+            .filter(|a| !a.is_empty()))
+    }
+
+    /// Store or clear the MaxMind account ID (digits only).
+    pub async fn set_account_id(&self, id: Option<&str>) -> Result<()> {
+        let id = id.map(str::trim).filter(|a| !a.is_empty());
+        if let Some(a) = id
+            && (a.len() > 20 || !a.chars().all(|c| c.is_ascii_digit()))
+        {
+            return Err(AifwError::Validation(
+                "account ID must be the numeric ID shown in the MaxMind portal".into(),
+            ));
+        }
+        self.config_set(CFG_ACCOUNT_ID, id).await
+    }
+
     /// Scheduled refresh cadence in hours (0 = off).
     pub async fn update_interval_hours(&self) -> Result<u32> {
         Ok(self
@@ -427,9 +451,16 @@ impl GeoIpEngine {
             .is_some_and(|due| due <= Utc::now()))
     }
 
-    /// MaxMind download URL for the GeoLite2 Country CSV edition. Carries
-    /// the key, so never log it.
-    pub fn maxmind_url(license_key: &str) -> String {
+    /// MaxMind's permalink for the GeoLite2 Country CSV edition. Needs HTTP
+    /// Basic auth: account ID as the user, license key as the password.
+    pub const MAXMIND_PERMALINK: &str =
+        "https://download.maxmind.com/geoip/databases/GeoLite2-Country-CSV/download?suffix=zip";
+
+    /// Legacy download URL that authenticates with the key alone. Keys
+    /// created since MaxMind moved to account-based auth are refused here
+    /// (HTTP 401), so it is only used when no account ID is configured.
+    /// Carries the key, so never log it.
+    pub fn maxmind_legacy_url(license_key: &str) -> String {
         format!(
             "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country-CSV&license_key={license_key}&suffix=zip"
         )
@@ -450,6 +481,7 @@ impl GeoIpEngine {
             update_interval_hours: self.update_interval_hours().await?,
             next_refresh: self.next_refresh().await?,
             has_license_key: self.license_key().await?.is_some(),
+            account_id: self.account_id().await?,
         })
     }
 

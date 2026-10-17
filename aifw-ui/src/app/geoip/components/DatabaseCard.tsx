@@ -28,12 +28,17 @@ export function DatabaseCard({
   db: GeoIpDatabase | null;
   busy: string | null;
   canWrite: boolean;
-  onSaveSettings: (patch: { license_key?: string | null; update_interval_hours?: number }) => Promise<boolean>;
+  onSaveSettings: (patch: {
+    license_key?: string | null;
+    account_id?: string | null;
+    update_interval_hours?: number;
+  }) => Promise<boolean>;
   onRefresh: () => Promise<boolean>;
   onUpload: (files: File[]) => Promise<boolean>;
 }) {
   const [keyDraft, setKeyDraft] = useState("");
   const [editingKey, setEditingKey] = useState(false);
+  const [accountDraft, setAccountDraft] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   if (!db) {
@@ -88,7 +93,36 @@ export function DatabaseCard({
           </div>
         )}
 
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-3">
+          {/* Account ID */}
+          <div className="space-y-1.5">
+            <label htmlFor="geoip-account-id" className={labelCls}>
+              MaxMind account ID
+            </label>
+            <input
+              id="geoip-account-id"
+              inputMode="numeric"
+              value={accountDraft ?? db.account_id ?? ""}
+              placeholder="e.g. 123456"
+              disabled={!canWrite || saving}
+              onChange={(e) => setAccountDraft(e.target.value.replace(/\D/g, ""))}
+              onBlur={() => {
+                if (accountDraft === null) return;
+                const next = accountDraft.trim();
+                setAccountDraft(null);
+                if (next !== (db.account_id ?? "")) onSaveSettings({ account_id: next || null });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") setAccountDraft(null);
+              }}
+              className={inputCls}
+            />
+            <p className="text-xs text-[var(--text-muted)]">
+              Shown at the top of the MaxMind portal. Keys issued today only work together with it.
+            </p>
+          </div>
+
           {/* License key */}
           <div className="space-y-1.5">
             <label htmlFor="geoip-license-key" className={labelCls}>
@@ -155,7 +189,7 @@ export function DatabaseCard({
               </div>
             )}
             <p className="text-xs text-[var(--text-muted)]">
-              Free account at maxmind.com → Manage License Keys. Stored encrypted, never shown again.
+              maxmind.com → Manage License Keys. Stored encrypted, never shown again.
             </p>
           </div>
 
@@ -196,7 +230,13 @@ export function DatabaseCard({
               type="button"
               onClick={onRefresh}
               disabled={!db.has_license_key || busy !== null}
-              title={db.has_license_key ? "Download the latest release from MaxMind" : "Add a license key first"}
+              title={
+                !db.has_license_key
+                  ? "Add a license key first"
+                  : db.account_id
+                    ? "Download the latest release from MaxMind"
+                    : "Downloads with the key alone; add the account ID if MaxMind answers 401"
+              }
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {busy === "db-refresh" ? (

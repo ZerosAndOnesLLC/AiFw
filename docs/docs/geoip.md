@@ -33,7 +33,7 @@ AiFw maps countries to pf tables and emits one `block drop` or `pass quick` rule
 
 A rule is only as good as the networks behind it. Until a GeoLite2 release is loaded, every country table is empty and the Geo-IP page says so. Two ways to load one, both under **Firewall → Geo-IP → GeoLite2 database**:
 
-- **Automatic (recommended).** Create a free account at maxmind.com, generate a license key, and paste it into the page (or `aifw geoip database --license-key-stdin`). AiFw downloads the `GeoLite2-Country-CSV` release at once and then on a schedule — weekly by default, like pfBlockerNG and OPNsense; choose daily, monthly, or off. The key is stored encrypted and never shown again.
+- **Automatic (recommended).** Create a free account at maxmind.com, generate a license key, and paste your **account ID** (shown at the top of the portal) and the key into the page (or `aifw geoip database --account-id 123456` and `--license-key-stdin`). MaxMind authenticates downloads with the account ID and key together; a key alone is refused with HTTP 401 unless it predates that change. AiFw downloads the `GeoLite2-Country-CSV` release at once and then on a schedule — weekly by default, like pfBlockerNG and OPNsense; choose daily, monthly, or off. The key is stored encrypted and never shown again.
 - **Manual.** Download `GeoLite2-Country-CSV_*.zip` from your MaxMind account and upload it on the page (or `aifw geoip import FILE.zip`). The three CSV files inside are accepted as separate uploads too.
 
 The page shows how many countries and networks are loaded, where the data came from, when it was refreshed, when the next download is due, and the last error if a download failed. Each rule shows how many networks its country table holds.
@@ -93,7 +93,7 @@ Rule commands write the database directly and work without the API; the running 
 | `DELETE` | `/api/v1/geoip/{id}` | Delete a rule |
 | `GET` | `/api/v1/geoip/lookup/{ip}` | Resolve an IP to its country code |
 | `GET` | `/api/v1/geoip/database` | Database status: loaded counts, source, schedule, last error |
-| `PUT` | `/api/v1/geoip/database` | `{ "license_key": "…" \| null, "update_interval_hours": 168 }` |
+| `PUT` | `/api/v1/geoip/database` | `{ "license_key": "…" \| null, "account_id": "123456" \| null, "update_interval_hours": 168 }` |
 | `POST` | `/api/v1/geoip/database/refresh` | Download the GeoLite2 Country release from MaxMind now |
 | `POST` | `/api/v1/geoip/database/upload` | Multipart upload of the GeoLite2 zip or its CSV files |
 
@@ -119,6 +119,7 @@ The anchor never defines the table itself: a `table` line inside the anchor woul
 | `db_path` | `/var/db/aifw/geoip` | GeoLite2 CSV directory (`GeoLite2-Country-Blocks-IPv4.csv`, `-IPv6.csv`, `GeoLite2-Country-Locations-en.csv`) |
 | `update_interval_hours` | `168` (weekly) | Scheduled MaxMind download; `0` disables. A failed download is retried after 6 hours |
 | `license_key` | unset | MaxMind license key; sealed at rest, required for downloads (uploads work without one) |
+| `account_id` | unset | MaxMind account ID; with it set, downloads use the permalink with HTTP Basic auth (required for keys issued by the current portal) |
 | `country` (rule) | required | Two-letter ISO 3166-1 alpha-2 code; case-insensitive on input |
 
 ## See also

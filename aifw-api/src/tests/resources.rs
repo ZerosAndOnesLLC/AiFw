@@ -142,10 +142,11 @@ async fn geoip_database_upload_counts_cidrs_and_fills_tables() {
     let st: Value = server
         .put("/api/v1/geoip/database")
         .authorization_bearer(&token)
-        .json(&json!({"license_key": "abcDEF0123456789", "update_interval_hours": 24}))
+        .json(&json!({"license_key": "abcDEF0123456789", "account_id": "123456", "update_interval_hours": 24}))
         .await
         .json();
     assert_eq!(st["has_license_key"], true);
+    assert_eq!(st["account_id"], "123456");
     assert_eq!(st["update_interval_hours"], 24);
     assert!(st.get("license_key").is_none());
     assert!(st["next_refresh"].is_string());
@@ -153,6 +154,12 @@ async fn geoip_database_upload_counts_cidrs_and_fills_tables() {
         .put("/api/v1/geoip/database")
         .authorization_bearer(&token)
         .json(&json!({"license_key": "bad key!"}))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    server
+        .put("/api/v1/geoip/database")
+        .authorization_bearer(&token)
+        .json(&json!({"account_id": "not-a-number"}))
         .await
         .assert_status(StatusCode::BAD_REQUEST);
     let st: Value = server

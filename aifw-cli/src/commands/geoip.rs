@@ -125,10 +125,21 @@ fn database_line(st: &Value) -> String {
 pub async fn geoip_database(
     license_key_stdin: bool,
     clear_license_key: bool,
+    account_id: Option<&str>,
     update_interval_hours: Option<u32>,
     json_out: bool,
 ) -> anyhow::Result<()> {
     let mut body = serde_json::Map::new();
+    if let Some(a) = account_id {
+        body.insert(
+            "account_id".into(),
+            if a.is_empty() {
+                Value::Null
+            } else {
+                Value::String(a.to_string())
+            },
+        );
+    }
     if license_key_stdin {
         let mut line = String::new();
         std::io::stdin().read_line(&mut line)?;
@@ -162,6 +173,10 @@ pub async fn geoip_database(
     println!(
         "  Directory:      {}",
         st["db_path"].as_str().unwrap_or("?")
+    );
+    println!(
+        "  Account ID:     {}",
+        st["account_id"].as_str().unwrap_or("not set")
     );
     println!(
         "  License key:    {}",
