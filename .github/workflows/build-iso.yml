@@ -77,11 +77,15 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: if [ -n "${{ inputs.version }}" ]; then
-              echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            else
-              echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-            fi
+        # A plain scalar here is folded onto one line by YAML, which turns
+        # the if/else/fi into a bash syntax error (broke the v5.116.0 tag
+        # build). The literal block keeps the newlines.
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build in FreeBSD VM
         uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1.5.2
@@ -338,11 +342,15 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: if [ -n "${{ inputs.version }}" ]; then
-              echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            else
-              echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-            fi
+        # A plain scalar here is folded onto one line by YAML, which turns
+        # the if/else/fi into a bash syntax error (broke the v5.116.0 tag
+        # build). The literal block keeps the newlines.
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
