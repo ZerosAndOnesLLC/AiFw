@@ -1,10 +1,14 @@
 # shellcheck shell=sh
 # T12 — Geo-IP on real pf (#704). A tiny GeoLite2 Country CSV release is
-# uploaded through the API, a block rule for its country is added, and the
-# client jail (listed in that release) must be unable to reach the server
-# while an operator pass rule is in place. Proves on a real kernel that:
-#   1. the anchor rule references the ROOT table the engine fills (no
-#      `table` line in the anchor shadowing it — the #704 defect);
+# uploaded through the API and a rule for its country is added. The
+# geo-IP anchor is hooked after the operator rule set in pf.conf, so an
+# operator `pass quick` always wins over a geo-IP block; the proof here is
+# therefore an ALLOW rule: with nothing else opening the test path, the
+# client jail (listed in the release) reaches the server only if the
+# anchor rule matched it against the ROOT table the engine filled. Then a
+# block closes the path again and disabling empties anchor and table.
+#   1. the anchor rule references the ROOT table (no `table` line in the
+#      anchor shadowing it — the #704 defect);
 #   2. uploads, rule writes and deletes all reach pf without a restart.
 
 PORT=8087
@@ -26,12 +30,11 @@ geoname_id,locale_code,continent_code,continent_name,country_iso_code,country_na
 6697173,en,AN,Antarctica,AQ,Antarctica,0
 CSV
 
-# 0. Baseline: nothing in the geo-IP anchor; operator pass opens the path.
+# 0. Baseline: nothing in the geo-IP anchor, no pass rule, so the harness
+#    default-deny closes the test path.
 [ -z "$(pfctl_anchor_rules $ANCHOR)" ] || fail "anchor $ANCHOR not empty before the test"
-PASS_ID=$(add_rule '{"action":"pass","direction":"in","protocol":"tcp","dst_addr":"'"$SERVER_IP"'","dst_port_start":'$PORT',"dst_port_end":'$PORT',"label":"t12-pass"}') || fail "create pass"
-api_reload || fail "reload pass"
 server_listen_once $PORT $MARKER
-client_can_reach "$SERVER_IP" $PORT || fail "baseline: pass rule did not open the path"
+client_can_reach "$SERVER_IP" $PORT && fail "baseline: client reached server with no pass rule"
 
 # 1. Upload the release (CSV files, multipart).
 UP=$(curl -sS -m 30 -w '\n%{http_code}' -X POST "$API_BASE/api/v1/geoip/database/upload" \
@@ -47,11 +50,24 @@ note "upload: $(printf '%s' "$UP_BODY" | jq -c '{cidrs, loaded: .status.loaded, 
 LOOKUP=$(api GET "/api/v1/geoip/lookup/$CLIENT_IP" | jq -r '.country')
 [ "$LOOKUP" = "AQ" ] || fail "lookup of $CLIENT_IP gave '$LOOKUP', expected AQ"
 
-# 2. Block AQ. The rule write applies to pf immediately.
-RULE_ID=$(api POST /api/v1/geoip '{"country_code":"AQ","action":"block","label":"t12-aq"}' | jq -r '.data.id') || fail "create geo-ip rule"
+pf_snapshot() { # $1 = label; root + anchor table views and the anchor rules
+    {
+        echo "=== $1 @ $(date -u '+%H:%M:%S')"
+        echo "--- root -T show"; $PFCTL -t "$TABLE" -T show
+        echo "--- pfctl -a $ANCHOR -vvsT"; $PFCTL -a "$ANCHOR" -vvsT
+        echo "--- pfctl -a $ANCHOR -vvsr"; $PFCTL -a "$ANCHOR" -vvsr
+    } >> "$RESULTS_DIR/t12-diag.txt" 2>&1
+}
+: > "$RESULTS_DIR/t12-diag.txt"
+
+# 2. ALLOW Antarctica. The geo-IP anchor is evaluated after the operator
+#    rule set, so an allow is the only way a geo-IP rule can be the thing
+#    that opens the path: if the client gets through, the anchor rule
+#    matched the client against the ROOT table the engine filled (#704).
+RULE_ID=$(api POST /api/v1/geoip '{"country_code":"AQ","action":"allow","label":"t12-aq"}' | jq -r '.data.id') || fail "create geo-ip rule"
 RULES=$(pfctl_anchor_rules $ANCHOR)
 note "anchor rules:"; printf '%s\n' "$RULES" | sed 's/^/      /'
-printf '%s\n' "$RULES" | grep -q "block drop in quick from <$TABLE>" || fail "block rule for <$TABLE> missing from $ANCHOR"
+printf '%s\n' "$RULES" | grep -q "pass in quick from <$TABLE>" || fail "pass rule for <$TABLE> missing from $ANCHOR"
 printf '%s\n' "$RULES" | grep -q "^table" && fail "anchor defines the table itself — root entries would be shadowed (#704)"
 N=$($PFCTL -t "$TABLE" -T show 2>/dev/null | wc -l | tr -d ' ')
 [ "$N" = 2 ] || fail "root table $TABLE holds $N entries, expected 2"
@@ -60,53 +76,32 @@ VIEW=$(api GET /api/v1/geoip | jq -c '.data[] | select(.country=="AQ") | {countr
 note "rule view: $VIEW"
 [ "$(printf '%s' "$VIEW" | jq -r '.cidr_count')" = 2 ] || fail "API reports wrong cidr_count: $VIEW"
 
-pf_snapshot() { # $1 = label; root + anchor table views and the anchor rules
-    {
-        echo "=== $1 @ $(date -u '+%H:%M:%S.%N')"
-        echo "--- root -T show"; $PFCTL -t "$TABLE" -T show
-        echo "--- pfctl -vvsT (root)"; $PFCTL -vvsT
-        echo "--- pfctl -a $ANCHOR -vvsT"; $PFCTL -a "$ANCHOR" -vvsT
-        echo "--- pfctl -a $ANCHOR -t $TABLE -T show"; $PFCTL -a "$ANCHOR" -t "$TABLE" -T show
-        echo "--- pfctl -a $ANCHOR -vvsr"; $PFCTL -a "$ANCHOR" -vvsr
-    } >> "$RESULTS_DIR/t12-diag.txt" 2>&1
-}
-: > "$RESULTS_DIR/t12-diag.txt"
-pf_snapshot before-connect
-$PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
+pf_snapshot before-allow-connect
 server_listen_once $PORT $MARKER
 if client_can_reach "$SERVER_IP" $PORT; then
-    fail "geo-ip block did not win over the operator pass rule"
-    pf_snapshot after-connect
-    # Is the table really empty now, or was the lookup wrong? Re-check
-    # membership and try once more.
-    if $PFCTL -t "$TABLE" -T test "$CLIENT_IP" >/dev/null 2>&1; then
-        note "root table still lists $CLIENT_IP after the connect"
-    else
-        note "root table NO LONGER lists $CLIENT_IP after the connect"
-    fi
-    $PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
-    server_listen_once $PORT $MARKER
-    if client_can_reach "$SERVER_IP" $PORT; then note "second connect also passed"; else note "second connect was blocked"; fi
-    pf_snapshot after-second-connect
-    sed 's/^/      /' "$RESULTS_DIR/t12-diag.txt"
+    note "geo-ip allow let the listed client through — root-table lookup from the anchor works"
 else
-    pf_snapshot after-block
+    fail "geo-ip allow did not open the path: the anchor rule did not match the root table"
+    pf_snapshot after-failed-allow
+    sed 's/^/      /' "$RESULTS_DIR/t12-diag.txt"
 fi
+
+# 3. Flip to BLOCK: the path closes again (block + default deny).
+api PUT "/api/v1/geoip/$RULE_ID" '{"country_code":"AQ","action":"block"}' >/dev/null || fail "switch rule to block"
+pfctl_anchor_rules $ANCHOR | grep -q "block drop in quick from <$TABLE>" || fail "block rule missing after switch"
+$PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
+server_listen_once $PORT $MARKER
+client_can_reach "$SERVER_IP" $PORT && fail "client still reaches server after switching the rule to block"
 save_pf_artifacts t12
 
-# 3. Disable the rule: anchor and table empty, path open again.
+# 4. Disable the rule: anchor and table empty.
 api PUT "/api/v1/geoip/$RULE_ID" '{"country_code":"AQ","action":"block","status":"disabled"}' >/dev/null || fail "disable rule"
 [ -z "$(pfctl_anchor_rules $ANCHOR)" ] || fail "anchor still has rules after disabling"
 N=$($PFCTL -t "$TABLE" -T show 2>/dev/null | wc -l | tr -d ' ')
 [ "$N" = 0 ] || fail "$TABLE still holds $N entries after disabling"
-$PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
-server_listen_once $PORT $MARKER
-client_can_reach "$SERVER_IP" $PORT || fail "path did not reopen after disabling the rule"
 
-# 4. Delete the rule; cleanup.
+# 5. Delete the rule; cleanup.
 api DELETE "/api/v1/geoip/$RULE_ID" >/dev/null || fail "delete rule"
-api DELETE "/api/v1/rules/$PASS_ID" >/dev/null || fail "delete pass"
-api_reload || fail "cleanup reload"
 
 [ "$FAILURES" = 0 ] || exit 1
 exit 0

@@ -109,6 +109,8 @@ block drop in quick from <geoip_cn> label "geoip-block-CN"
 
 The anchor never defines the table itself: a `table` line inside the anchor would create an empty anchor-local copy that shadows the root table (#704). `pass`-action rules use `pass in quick`. Adjacent and overlapping CIDRs are merged before being loaded so a country's table stays small enough to evaluate cheaply. Disabling or deleting a rule empties its table. The `freebsd/tests/t12-geoip.sh` harness test proves the whole path on a real kernel.
 
+**Evaluation order.** `aifw-geoip` is hooked into `pf.conf` after the main rule set (`aifw`), so an explicit operator `pass` for a port is matched first and lets listed countries through on that port; a geo-IP *block* stops traffic that no operator rule has already accepted (useful with non-quick or broad pass rules), and a geo-IP *allow* opens all inbound traffic from that country past the default deny. Put the geo-IP block ahead of a port you have opened by adding a block rule for the country in the main rule set, or move the hook earlier in `pf.conf` if you want country blocks to override every pass rule.
+
 ## Configuration
 
 | Field | Default | Notes |
