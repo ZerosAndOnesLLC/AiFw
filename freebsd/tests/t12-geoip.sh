@@ -60,14 +60,37 @@ VIEW=$(api GET /api/v1/geoip | jq -c '.data[] | select(.country=="AQ") | {countr
 note "rule view: $VIEW"
 [ "$(printf '%s' "$VIEW" | jq -r '.cidr_count')" = 2 ] || fail "API reports wrong cidr_count: $VIEW"
 
+pf_snapshot() { # $1 = label; root + anchor table views and the anchor rules
+    {
+        echo "=== $1 @ $(date -u '+%H:%M:%S.%N')"
+        echo "--- root -T show"; $PFCTL -t "$TABLE" -T show
+        echo "--- pfctl -vvsT (root)"; $PFCTL -vvsT
+        echo "--- pfctl -a $ANCHOR -vvsT"; $PFCTL -a "$ANCHOR" -vvsT
+        echo "--- pfctl -a $ANCHOR -t $TABLE -T show"; $PFCTL -a "$ANCHOR" -t "$TABLE" -T show
+        echo "--- pfctl -a $ANCHOR -vvsr"; $PFCTL -a "$ANCHOR" -vvsr
+    } >> "$RESULTS_DIR/t12-diag.txt" 2>&1
+}
+: > "$RESULTS_DIR/t12-diag.txt"
+pf_snapshot before-connect
 $PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
 server_listen_once $PORT $MARKER
 if client_can_reach "$SERVER_IP" $PORT; then
     fail "geo-ip block did not win over the operator pass rule"
-    { echo "--- pfctl -a $ANCHOR -vvsr"; $PFCTL -a "$ANCHOR" -vvsr
-      echo "--- pfctl -vvsT"; $PFCTL -vvsT
-      echo "--- pfctl -a $ANCHOR -vvsT"; $PFCTL -a "$ANCHOR" -vvsT
-    } > "$RESULTS_DIR/t12-diag.txt" 2>&1
+    pf_snapshot after-connect
+    # Is the table really empty now, or was the lookup wrong? Re-check
+    # membership and try once more.
+    if $PFCTL -t "$TABLE" -T test "$CLIENT_IP" >/dev/null 2>&1; then
+        note "root table still lists $CLIENT_IP after the connect"
+    else
+        note "root table NO LONGER lists $CLIENT_IP after the connect"
+    fi
+    $PFCTL -k "$CLIENT_IP" >/dev/null 2>&1 || true
+    server_listen_once $PORT $MARKER
+    if client_can_reach "$SERVER_IP" $PORT; then note "second connect also passed"; else note "second connect was blocked"; fi
+    pf_snapshot after-second-connect
+    sed 's/^/      /' "$RESULTS_DIR/t12-diag.txt"
+else
+    pf_snapshot after-block
 fi
 save_pf_artifacts t12
 
