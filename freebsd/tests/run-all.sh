@@ -6,7 +6,7 @@
 # through the real REST API, and verifies behavior with the real pfctl and
 # real packets. Designed to run identically:
 #   - by hand on a FreeBSD test VM:   sh freebsd/tests/run-all.sh
-#   - under vmactions in GitHub CI:   see .github/workflows/freebsd-functional.yml
+#   - under vmactions in GitHub CI:   the `gate` job in .github/workflows/build-iso.yml
 #
 # Must run as root on a DISPOSABLE FreeBSD host — it loads its own pf.conf.
 # The management interface (auto-detected, override with MGMT_IF=...) gets a

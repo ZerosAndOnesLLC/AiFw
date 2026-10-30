@@ -156,7 +156,7 @@ Release builds (CI, `build-local.sh`, `build-update.sh`) install them from crate
 ## FreeBSD Deployment
 
 ### ISO Build (CI)
-Push tag `v*` → `.github/workflows/build-iso.yml` builds UI on Linux, compiles Rust in FreeBSD VM, produces ISO + USB IMG.
+`gh release create vX.Y.Z --prerelease --generate-notes` → `.github/workflows/build-iso.yml` runs the FreeBSD functional gate, builds UI on Linux, compiles Rust in FreeBSD VM, produces ISO + USB IMG, boot-smokes it, and uploads everything into that release. Pushing a tag alone no longer builds anything.
 
 ### Local Build
 ```bash
