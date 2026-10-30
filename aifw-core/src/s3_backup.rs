@@ -473,8 +473,10 @@ pub async fn list(cfg: &S3Config, max: usize) -> Result<Vec<RemoteObject>, Strin
             }
             out.push(RemoteObject {
                 key: obj.key,
-                size: obj.size as i64,
-                last_modified: Some(obj.last_modified),
+                // rusty-s3 0.11 models Size as optional; S3 always sends it
+                // for ListObjectsV2 entries, so a missing value reads as 0.
+                size: obj.size.unwrap_or(0) as i64,
+                last_modified: obj.last_modified,
             });
         }
         if out.len() >= max {

@@ -224,7 +224,7 @@ impl CaptureBackend for BpfCapture {
             return None;
         }
 
-        let timestamp_us = hdr.bh_tstamp_sec as i64 * 1_000_000 + hdr.bh_tstamp_usec as i64;
+        let timestamp_us: i64 = hdr.bh_tstamp_sec * 1_000_000 + hdr.bh_tstamp_usec;
 
         // BPF on Ethernet interfaces includes the Ethernet header.
         // Skip the 14-byte Ethernet header to get raw IP.

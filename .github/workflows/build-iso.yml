@@ -1,10 +1,17 @@
 name: Build FreeBSD ISO
 
+# Runs when a GitHub release is published:
+#   gh release create v5.32.7 --prerelease --generate-notes
+# The gate (FreeBSD functional suite) must pass before anything is built;
+# the built ISO/IMG/update assets are then uploaded into that release.
+# Re-run for an existing release with workflow_dispatch and its tag.
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version (e.g. 5.32.7)'
+      tag:
+        description: 'Existing release tag to build and upload to (e.g. v5.32.7)'
         required: true
       freebsd_version:
         description: >-
@@ -13,26 +20,128 @@ on:
           that have not upgraded their OS yet (#612).
         required: false
         default: '15.1'
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
   id-token: write
   attestations: write
 
+# One run per tag; never cancel a release build part-way.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
 env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
   FREEBSD_VERSION: ${{ inputs.freebsd_version || '15.1' }}
 
 jobs:
+  # Field appliances auto-pull /releases/latest, which skips pre-releases.
+  # Mark the release pre-release first thing, so a release created without
+  # --prerelease can't become "latest" before it is tested and has assets.
+  # Promote after testing with: gh release edit <tag> --prerelease=false --latest
+  prerelease:
+    name: Keep release pre-release
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Mark pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease
+
+  # Release gate (#533 Phase 1): real pfctl + real packets in a FreeBSD VM.
+  # The harness itself lives in freebsd/tests/ and runs identically by hand
+  # on a test VM. If it fails, nothing is built or published.
+  gate:
+    name: Gate - pf data-plane tests (FreeBSD VM)
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Run harness in FreeBSD VM
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.1"
+          usesh: true
+          copyback: true
+          prepare: |
+            pkg install -y curl jq sudo wireguard-tools
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            . "$HOME/.cargo/env"
+          run: |
+            set -e
+            . "$HOME/.cargo/env"
+            cd /home/runner/work/AiFw/AiFw
+            echo "=== Building every binary (debug) ==="
+            # All default-member binaries, not just the two the harness
+            # runs: aifw-setup / aifw-cli / aifw-tui / aifw-ids carry
+            # `#[cfg(target_os = "freebsd")]` code that the Linux lint job
+            # never compiles — this is the only place it gets type-checked
+            # before a release build (v5.115.0 shipped a setup split with
+            # imports missing only inside those blocks).
+            cargo build
+            echo "=== Running functional harness ==="
+            mkdir -p func-artifacts
+            # Do NOT let a harness failure fail this step: vmactions only
+            # copies the working tree back to the runner (copyback) when
+            # the step succeeds, so a failing run used to upload nothing and
+            # the per-test logs died with the VM. Record the exit code and
+            # let the next step fail the job after the artifacts are out.
+            rc=0
+            sh freebsd/tests/run-all.sh --artifacts "$(pwd)/func-artifacts" || rc=$?
+            echo "$rc" > func-artifacts/EXIT_CODE
+            echo "=== harness exit code: $rc ==="
+
+      - name: Harness result
+        if: always()
+        run: |
+          rc=$(cat func-artifacts/EXIT_CODE 2>/dev/null || echo 99)
+          if [ "$rc" != "0" ]; then
+            echo "::error::functional harness failed (exit $rc)"
+            # Surface every failing test's log inline so a red run is
+            # readable without downloading the artifact.
+            for f in func-artifacts/t*.log; do
+              [ -f "$f" ] || continue
+              if grep -q '^.*FAIL' "$f"; then
+                echo "::group::$(basename "$f")"
+                cat "$f"
+                echo "::endgroup::"
+              fi
+            done
+            for f in func-artifacts/aifw-api.log func-artifacts/aifw-daemon.log; do
+              [ -f "$f" ] || continue
+              echo "::group::$(basename "$f") (tail)"
+              tail -n 80 "$f"
+              echo "::endgroup::"
+            done
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: freebsd-functional-artifacts
+          path: func-artifacts/
+          retention-days: 7
+
   build-ui:
     name: Build Web UI (static export)
+    needs: gate
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -56,7 +165,7 @@ jobs:
           aifw_precompress_ui aifw-ui/out
 
       - name: Upload UI artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ui-export
           path: aifw-ui/out/
@@ -66,29 +175,24 @@ jobs:
     name: Build FreeBSD ISO (amd64)
     needs: build-ui
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Download UI artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ui-export
           path: freebsd/ui-export
 
       - name: Extract version from tag
         id: version
-        # A plain scalar here is folded onto one line by YAML, which turns
-        # the if/else/fi into a bash syntax error (broke the v5.116.0 tag
-        # build). The literal block keeps the newlines.
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build in FreeBSD VM
-        uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1.5.2
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           release: "${{ env.FREEBSD_VERSION }}"
           usesh: true
@@ -169,12 +273,14 @@ jobs:
       # aifw-ui/package-lock.json — the dependency set actually compiled
       # into this release.
       - name: Generate release CycloneDX SBOM
-        uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b # v0.20.6
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: .
           format: cyclonedx-json
           output-file: output/aifw-release.cdx.json
           upload-artifact: false
+          # The release job uploads this SBOM with the other assets.
+          upload-release-assets: false
 
       - name: Sign release checksums
         env:
@@ -203,35 +309,35 @@ jobs:
           done
 
       - name: Upload ISO artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: aifw-iso-amd64
           path: output/aifw-*.iso.xz
           retention-days: 5
 
       - name: Upload IMG artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: aifw-img-amd64
           path: output/aifw-*.img.xz
           retention-days: 5
 
       - name: Upload checksums
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: checksums
           path: output/*.sha256
           retention-days: 5
 
       - name: Upload component manifest
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: components
           path: output/aifw-components-*.json
           retention-days: 5
 
       - name: Upload SBOMs and signatures
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: supply-chain
           path: |
@@ -241,7 +347,7 @@ jobs:
           retention-days: 5
 
       - name: Attest release artifacts
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             output/aifw-*.iso.xz
@@ -255,10 +361,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Download IMG
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aifw-img-amd64
           path: smoke/
@@ -284,45 +392,49 @@ jobs:
 
       - name: Upload smoke artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: boot-smoke-artifacts
           path: smoke-artifacts/
           retention-days: 7
+
   release:
-    name: Create GitHub Release
+    name: Upload to GitHub Release
     # smoke-boot gates the release: an image nobody booted never ships (#533).
     needs: [build-iso, smoke-boot]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Download ISO
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aifw-iso-amd64
           path: release-assets/
 
       - name: Download IMG
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aifw-img-amd64
           path: release-assets/
 
       - name: Download checksums
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: checksums
           path: release-assets/
 
       - name: Download component manifest
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: components
           path: release-assets/
 
       - name: Download supply-chain assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: supply-chain
           path: release-assets/
@@ -342,63 +454,63 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        # A plain scalar here is folded onto one line by YAML, which turns
-        # the if/else/fi into a bash syntax error (broke the v5.116.0 tag
-        # build). The literal block keeps the newlines.
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # The release already exists (gh release create made it and the tag).
+      # Title it, keep it pre-release, put the download/verify notes above the
+      # generated notes, and upload the assets into it.
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          fi
+          set -euo pipefail
+          generated=$(gh release view "$TAG" --json body --jq .body)
+          # Quoted heredoc: the notes contain backticks, so nothing may be
+          # expanded by the shell; envsubst fills in only the named variables.
+          envsubst '${VERSION} ${FREEBSD_VERSION} ${GITHUB_REPOSITORY}' > "$RUNNER_TEMP/notes.md" <<'EOF'
+          ## AiFw v${VERSION}
 
-      - name: Create Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          name: "AiFw v${{ steps.version.outputs.version }}"
-          draft: false
+          AI-Powered Firewall for FreeBSD ${FREEBSD_VERSION}
+
+          Requires-OS: FreeBSD ${FREEBSD_VERSION}
+
+          ### Downloads
+
+          | File | Description |
+          |------|-------------|
+          | `aifw-${VERSION}-amd64.iso.xz` | Bootable ISO (CD/DVD, VM) — xz compressed |
+          | `aifw-${VERSION}-amd64.img.xz` | USB flash drive image — xz compressed |
+
+          ### Quick Start
+
+          1. Boot from the ISO or write the IMG to a USB drive (`dd if=aifw-*.img of=/dev/sdX bs=1M`)
+          2. The setup wizard starts automatically on first boot
+          3. Follow the prompts to configure networking, admin account, and firewall policy
+          4. Use menu option **14** to install to disk (ZFS or UFS)
+
+          ### Verify Downloads
+
+          ```bash
+          minisign -Vm aifw-${VERSION}-amd64.iso.xz.sha256 \
+            -x aifw-${VERSION}-amd64.iso.xz.sha256.minisig \
+            -p update-signing.pub
+          sha256sum -c aifw-${VERSION}-amd64.iso.xz.sha256
+          ```
+
+          GitHub build provenance can also be verified with:
+
+          ```bash
+          gh attestation verify aifw-${VERSION}-amd64.iso.xz \
+            --repo ${GITHUB_REPOSITORY}
+          ```
+          EOF
+          printf '\n%s\n' "$generated" >> "$RUNNER_TEMP/notes.md"
           # ALWAYS pre-release: field appliances auto-pull /releases/latest,
-          # which skips pre-releases. A plain v* tag used to publish stable
-          # instantly — an untested build every appliance would grab the
-          # moment CI finished. Promote after testing with:
+          # which skips pre-releases. Promote after testing with:
           #   gh release edit <tag> --prerelease=false --latest
-          prerelease: true
-          generate_release_notes: true
-          files: |
-            release-assets/*
-          body: |
-            ## AiFw v${{ steps.version.outputs.version }}
-
-            AI-Powered Firewall for FreeBSD ${{ env.FREEBSD_VERSION }}
-
-            Requires-OS: FreeBSD ${{ env.FREEBSD_VERSION }}
-
-            ### Downloads
-
-            | File | Description |
-            |------|-------------|
-            | `aifw-${{ steps.version.outputs.version }}-amd64.iso.xz` | Bootable ISO (CD/DVD, VM) — xz compressed |
-            | `aifw-${{ steps.version.outputs.version }}-amd64.img.xz` | USB flash drive image — xz compressed |
-
-            ### Quick Start
-
-            1. Boot from the ISO or write the IMG to a USB drive (`dd if=aifw-*.img of=/dev/sdX bs=1M`)
-            2. The setup wizard starts automatically on first boot
-            3. Follow the prompts to configure networking, admin account, and firewall policy
-            4. Use menu option **14** to install to disk (ZFS or UFS)
-
-            ### Verify Downloads
-
-            ```bash
-            minisign -Vm aifw-${{ steps.version.outputs.version }}-amd64.iso.xz.sha256 \
-              -x aifw-${{ steps.version.outputs.version }}-amd64.iso.xz.sha256.minisig \
-              -p update-signing.pub
-            sha256sum -c aifw-${{ steps.version.outputs.version }}-amd64.iso.xz.sha256
-            ```
-
-            GitHub build provenance can also be verified with:
-
-            ```bash
-            gh attestation verify aifw-${{ steps.version.outputs.version }}-amd64.iso.xz \
-              --repo ${{ github.repository }}
-            ```
+          gh release edit "$TAG" \
+            --title "AiFw v${VERSION}" \
+            --prerelease \
+            --notes-file "$RUNNER_TEMP/notes.md"
+          gh release upload "$TAG" release-assets/* --clobber

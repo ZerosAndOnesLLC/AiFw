@@ -4,7 +4,7 @@ Live-traffic validation of the AiFw data plane on a real FreeBSD kernel:
 real `pfctl`, real packets, real jails — the layer the Linux/PfMock unit
 suite cannot cover. The harness is standalone-first: the same scripts run
 by hand on a test VM and under `vmactions/freebsd-vm` in CI
-(`.github/workflows/freebsd-functional.yml`).
+(the `gate` job of `.github/workflows/build-iso.yml`).
 
 ## What it does
 
@@ -55,10 +55,12 @@ sh freebsd/tests/run-all.sh --stop-services
 
 ## CI
 
-`freebsd-functional.yml` runs on pull requests touching data-plane code
-(path-filtered) and on manual dispatch. It builds debug binaries inside a
-FreeBSD 15 VM, runs this harness, and uploads the artifacts directory.
-Expect ~20–30 minutes; the FreeBSD VM boot + build dominates.
+The `gate` job in `build-iso.yml` runs this harness when a GitHub release
+is published, before anything is built: if it fails, no ISO/IMG is built
+or uploaded. It builds debug binaries inside a FreeBSD 15 VM, runs this
+harness, and uploads the artifacts directory. Expect ~20–30 minutes; the
+FreeBSD VM boot + build dominates. It no longer runs on pull requests, so
+run it by hand on a test VM when changing data-plane code.
 
 ## Appliance boot smoke (`smoke-boot.sh`, #533 Phase 2)
 

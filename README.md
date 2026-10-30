@@ -249,6 +249,26 @@ RUSTFLAGS="--cfg tokio_unstable" cargo build --release -p aifw-api --features to
 aifw-api --tokio-console ...   # then: tokio-console http://127.0.0.1:6669
 ```
 
+## CI & Releases
+
+- **Pull requests** run checks only, on GitHub-hosted `ubuntu-latest` runners
+  (`lint-and-test.yml`): `cargo fmt --check`, `cargo clippy -D warnings`,
+  `cargo test`, ESLint and `tsc --noEmit` for the UI. No `next build`, ISO
+  builds or artifacts. `fq-codel-freebsd.yml` also runs a short FreeBSD
+  dummynet check on PRs that touch the shaping code. Merges to `main` don't
+  re-run CI.
+- **Releases**: `gh release create v<version> --prerelease --generate-notes`.
+  Publishing the release triggers `build-iso.yml` on GitHub-hosted runners:
+  the FreeBSD functional suite runs first as a gate, then the UI export, the
+  FreeBSD VM build of the ISO/IMG/update tarball, signing, SBOM and
+  provenance, and a qemu boot smoke test. Only then are the assets uploaded
+  into the release. Releases stay pre-release until promoted with
+  `gh release edit <tag> --prerelease=false --latest`.
+- **Re-runs / transitional builds**: run `build-iso.yml` manually with the
+  release tag (and optionally `freebsd_version`, #612). For a transitional
+  build, cancel the run the release started (`gh run cancel <id>`) before
+  dispatching the one with the older FreeBSD version.
+
 ## Target Environment
 
 - **OS**: FreeBSD 15.x

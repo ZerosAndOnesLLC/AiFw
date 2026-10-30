@@ -1,9 +1,9 @@
 name: Lint and Test
 
+# PR checks only. Release builds (and the FreeBSD functional suite that
+# gates them) run in build-iso.yml when a GitHub release is published.
 on:
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
   workflow_dispatch:
 
@@ -24,8 +24,9 @@ jobs:
   rust:
     name: Rust (fmt + clippy + test)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
         run: |
@@ -34,7 +35,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -46,12 +47,13 @@ jobs:
         run: cargo test --workspace --no-fail-fast
 
   ui:
-    name: UI (lint + build)
+    name: UI (lint + typecheck)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -63,12 +65,8 @@ jobs:
 
       - name: npm run lint
         working-directory: aifw-ui
-        # ~70 pre-existing eslint errors (mostly setState-in-effect from Next 16 /
-        # react-hooks plugin upgrade) — running for visibility, not yet blocking.
-        # Tracked: tighten this once UI lint debt is cleaned.
-        continue-on-error: true
         run: npm run lint
 
-      - name: npm run build
+      - name: tsc --noEmit
         working-directory: aifw-ui
-        run: npm run build
+        run: npx tsc --noEmit
