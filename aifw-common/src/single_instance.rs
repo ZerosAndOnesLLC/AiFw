@@ -73,8 +73,8 @@ pub fn acquire_at(path: &Path) -> Result<InstanceLock, InstanceLockError> {
         })?;
 
     let flock = nix::libc::flock {
-        l_type: nix::libc::F_WRLCK as i16,
-        l_whence: nix::libc::SEEK_SET as i16,
+        l_type: nix::libc::F_WRLCK as nix::libc::c_short,
+        l_whence: nix::libc::SEEK_SET as nix::libc::c_short,
         l_start: 0,
         l_len: 0,
         l_pid: 0,
