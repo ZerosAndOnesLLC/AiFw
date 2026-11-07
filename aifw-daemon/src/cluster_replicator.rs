@@ -1,11 +1,11 @@
 //! Periodically replicates config snapshots to peer nodes when this node is master.
 //!
-//! Runs every 10 seconds. If the local CARP role is Primary, fetches our snapshot
-//! ONCE from the loopback API and computes its SHA-256 hash locally so that both
-//! values are derived from the same read. For each registered non-primary peer it:
+//! Runs every 10 seconds. If this node is CARP MASTER on every vhid, fetches our
+//! snapshot ONCE from the loopback API and computes its SHA-256 hash locally so
+//! that both values are derived from the same read. For every other node it:
 //!   1. Fetches the peer's current hash cheaply via GET /snapshot/hash.
 //!   2. If hashes differ, pushes the snapshot body we already have (no second fetch).
-//!   3. Logs 409 conflicts (split-brain: peer also thinks it's master).
+//!   3. Records a refused push (409: the peer is MASTER or still initialising).
 
 use aifw_common::ClusterRole;
 use aifw_core::ClusterEngine;
@@ -92,8 +92,13 @@ impl ClusterReplicator {
             .await?;
         let local_hash = aifw_core::sha256_hex(&local_data);
 
-        let nodes = self.engine.list_nodes().await?;
-        for peer in replication_targets(&nodes) {
+        // Whoever is MASTER pushes to every other node — including a node
+        // configured primary while a promoted secondary holds the VIPs, so
+        // edits made during a failover reach the primary before it takes
+        // the VIPs back (#712 review). The receiver refuses unless it is
+        // fully BACKUP.
+        let peers = self.engine.peer_nodes().await?;
+        for peer in &peers {
             let key = match self.engine.peer_api_key(peer.id).await? {
                 Some(k) => k,
                 None => continue,
@@ -171,46 +176,5 @@ impl ClusterReplicator {
             }
         }
         Ok(())
-    }
-}
-
-/// Nodes the primary pushes snapshots to: every secondary. Primaries (this
-/// node, or a stale duplicate) and standalone entries are never targets.
-pub(crate) fn replication_targets(
-    nodes: &[aifw_common::ClusterNode],
-) -> Vec<&aifw_common::ClusterNode> {
-    nodes
-        .iter()
-        .filter(|n| !matches!(n.role, ClusterRole::Primary | ClusterRole::Standalone))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use aifw_common::ClusterNode;
-
-    fn node(name: &str, role: ClusterRole) -> ClusterNode {
-        ClusterNode::new(
-            name.to_string(),
-            format!("10.0.0.{}", name.len()).parse().unwrap(),
-            role,
-        )
-    }
-
-    #[test]
-    fn only_secondaries_receive_snapshots() {
-        let nodes = vec![
-            node("me", ClusterRole::Primary),
-            node("standby", ClusterRole::Secondary),
-            node("lonely", ClusterRole::Standalone),
-            node("standby2", ClusterRole::Secondary),
-        ];
-        let targets: Vec<&str> = replication_targets(&nodes)
-            .iter()
-            .map(|n| n.name.as_str())
-            .collect();
-        assert_eq!(targets, vec!["standby", "standby2"]);
-        assert!(replication_targets(&[]).is_empty());
     }
 }

@@ -4,8 +4,10 @@
 //! `boot` demotion hold on the node before any interface is configured. The
 //! daemon then loads the `aifw-ha` anchor, configures pfsync and the CARP
 //! vhids, and only releases the hold once pfsync's bulk update has finished
-//! (or a timeout passes). Until then the peer keeps the VIPs, so a rebooted
-//! primary can't preempt with an empty state table.
+//! and — when the peer is MASTER — this node has the peer's replicated
+//! config (or a timeout passes). Until then the peer keeps the VIPs, so a
+//! rebooted primary can't preempt with an empty state table, nor with a
+//! config older than the edits made on the peer during the failover.
 
 use aifw_core::ClusterEngine;
 use aifw_core::carp::DemoteReason;
@@ -23,7 +25,12 @@ const NO_SYNCOK_HOLD: Duration = Duration::from_secs(30);
 
 /// Load the HA anchor and bring the kernel in line with the DB, then
 /// release the boot hold in the background once state sync is ready.
-pub async fn start(engine: Arc<ClusterEngine>) {
+pub async fn start(engine: Arc<ClusterEngine>, loopback_key: Option<String>) {
+    // rc.conf switches follow the DB, so a node whose cluster config was
+    // removed stops holding a boot demotion on the next boot.
+    if let Err(e) = engine.sync_rc_conf().await {
+        tracing::warn!(error = %e, "ha: rc.conf sync failed");
+    }
     if let Err(e) = engine.apply_ha_rules().await {
         tracing::error!(error = %e, "ha: loading the aifw-ha anchor failed");
     }
@@ -36,10 +43,10 @@ pub async fn start(engine: Arc<ClusterEngine>) {
         Err(e) => tracing::warn!(error = %e, "ha: kernel reconcile failed"),
     }
     scrub_legacy_vip_aliases(&engine).await;
-    tokio::spawn(release_boot_hold(engine));
+    tokio::spawn(release_boot_hold(engine, loopback_key));
 }
 
-async fn release_boot_hold(engine: Arc<ClusterEngine>) {
+async fn release_boot_hold(engine: Arc<ClusterEngine>, loopback_key: Option<String>) {
     if !aifw_core::carp::held_reasons()
         .await
         .contains(&DemoteReason::Boot)
@@ -59,7 +66,9 @@ async fn release_boot_hold(engine: Arc<ClusterEngine>) {
             .await
             .pfsync
             .and_then(|p| p.syncok);
-        if boot_hold_ready(pfsync_configured, syncok, elapsed) {
+        let config_ok =
+            elapsed < MIN_HOLD || config_converged(&engine, loopback_key.as_deref()).await;
+        if boot_hold_ready(pfsync_configured, syncok, config_ok, elapsed) {
             match aifw_core::carp::undemote(DemoteReason::Boot).await {
                 Ok(()) => tracing::info!(
                     waited_secs = elapsed.as_secs(),
@@ -73,12 +82,84 @@ async fn release_boot_hold(engine: Arc<ClusterEngine>) {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct PeerState {
+    state: String,
+    #[serde(default)]
+    config_hash: Option<String>,
+}
+
+/// Whether this node already runs the config of a peer that is currently
+/// MASTER. `true` whenever there's nothing to wait for or it can't be
+/// determined (no keys, peer unreachable) — the hold only waits on a known
+/// difference, and `MAX_HOLD` bounds it anyway.
+async fn config_converged(engine: &ClusterEngine, loopback_key: Option<&str>) -> bool {
+    let Some(key) = loopback_key else {
+        return true;
+    };
+    let Ok(peers) = engine.peer_nodes().await else {
+        return true;
+    };
+    for peer in &peers {
+        let Ok(Some(peer_key)) = engine.peer_api_key(peer.id).await else {
+            continue;
+        };
+        let Ok(client) = engine.peer_client(peer, Duration::from_secs(4)) else {
+            continue;
+        };
+        let state: PeerState = match client
+            .get(format!("{}/api/v1/cluster/peer-state", peer.api_base()))
+            .header("Authorization", format!("ApiKey {peer_key}"))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => match r.json().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            },
+            _ => continue,
+        };
+        if state.state != "primary" {
+            continue;
+        }
+        let Some(peer_hash) = state.config_hash else {
+            continue;
+        };
+        let local = aifw_core::peer_tls::LocalApiClient::new(Duration::from_secs(5));
+        let Ok(c) = local.get() else {
+            return true;
+        };
+        let local_hash = match c
+            .get(format!(
+                "{}/api/v1/cluster/snapshot/hash",
+                aifw_common::DEFAULT_LOOPBACK_API_BASE
+            ))
+            .header("Authorization", format!("ApiKey {key}"))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
+            _ => return true,
+        };
+        if local_hash.trim() != peer_hash {
+            tracing::info!(peer = %peer.name, "ha: boot hold waiting for the MASTER's config to replicate");
+            return false;
+        }
+    }
+    true
+}
+
 /// Pure release decision for the boot hold.
-fn boot_hold_ready(pfsync_configured: bool, syncok: Option<bool>, elapsed: Duration) -> bool {
+fn boot_hold_ready(
+    pfsync_configured: bool,
+    syncok: Option<bool>,
+    config_ok: bool,
+    elapsed: Duration,
+) -> bool {
     if elapsed >= MAX_HOLD {
         return true;
     }
-    if elapsed < MIN_HOLD {
+    if elapsed < MIN_HOLD || !config_ok {
         return false;
     }
     if !pfsync_configured {
@@ -166,13 +247,16 @@ mod tests {
     #[test]
     fn boot_hold_waits_for_syncok() {
         let s = Duration::from_secs;
-        assert!(!boot_hold_ready(true, Some(true), s(2)), "min hold");
-        assert!(boot_hold_ready(true, Some(true), s(11)));
-        assert!(!boot_hold_ready(true, Some(false), s(60)));
-        assert!(boot_hold_ready(true, Some(false), s(121)), "max hold");
-        assert!(!boot_hold_ready(true, None, s(20)));
-        assert!(boot_hold_ready(true, None, s(31)));
-        assert!(boot_hold_ready(false, None, s(11)));
+        assert!(!boot_hold_ready(true, Some(true), true, s(2)), "min hold");
+        assert!(boot_hold_ready(true, Some(true), true, s(11)));
+        assert!(!boot_hold_ready(true, Some(false), true, s(60)));
+        assert!(boot_hold_ready(true, Some(false), true, s(121)), "max hold");
+        assert!(!boot_hold_ready(true, None, true, s(20)));
+        assert!(boot_hold_ready(true, None, true, s(31)));
+        assert!(boot_hold_ready(false, None, true, s(11)));
+        // waits for the MASTER's config, bounded by the max hold
+        assert!(!boot_hold_ready(true, Some(true), false, s(60)));
+        assert!(boot_hold_ready(true, Some(true), false, s(121)));
     }
 
     #[test]

@@ -32,10 +32,10 @@ impl PeerMonitor {
         let mut split_brain = false;
         loop {
             tick.tick().await;
-            let Ok(nodes) = self.engine.list_nodes().await else {
+            let Ok(peers) = self.engine.peer_nodes().await else {
                 continue;
             };
-            if nodes.len() < 2 {
+            if peers.is_empty() {
                 continue;
             }
             let me = self.engine.self_node().await.ok().flatten();
@@ -43,10 +43,7 @@ impl PeerMonitor {
             let local_master = local.aggregate_state() == "master";
             let mut peer_master = false;
 
-            for peer in nodes
-                .iter()
-                .filter(|n| Some(n.id) != me.as_ref().map(|m| m.id))
-            {
+            for peer in &peers {
                 let (health, state, version) = self.probe(peer).await;
                 peer_master |= state.as_deref() == Some("primary");
                 if let Err(e) = self

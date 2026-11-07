@@ -144,15 +144,20 @@ pub struct DemotionStatus {
 const PEER_FRESH_SECS: i64 = 30;
 
 async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse>, StatusCode> {
-    let (view, configured, nodes, me) = tokio::join!(
+    let (view, configured, nodes, me, peers) = tokio::join!(
         aifw_core::carp::kernel_view(),
         state.cluster_engine.configured_role(),
         state.cluster_engine.list_nodes(),
         state.cluster_engine.self_node(),
+        state.cluster_engine.peer_nodes(),
     );
-    let nodes = nodes.unwrap_or_default();
-    let me_id = me.ok().flatten().map(|n| n.id);
-    let peer = nodes.into_iter().find(|n| Some(n.id) != me_id);
+    let node_count = nodes.map(|n| n.len()).unwrap_or(0);
+    let me_known = matches!(me, Ok(Some(_)));
+    let peer = peers.ok().and_then(|p| p.into_iter().next());
+    let have_peer_key = match &peer {
+        Some(p) => matches!(state.cluster_engine.peer_api_key(p.id).await, Ok(Some(_))),
+        None => false,
+    };
 
     let (pfsync_state_count, level, preempt, reasons, maintenance) = tokio::join!(
         pfsync_state_count(),
@@ -213,13 +218,32 @@ async fn get_status(State(state): State<AppState>) -> Result<Json<StatusResponse
     if peer.is_some() && !peer_reachable {
         warnings.push("Peer is not answering on its API".to_string());
     }
-    if let Some(p) = &peer
-        && p.health == aifw_common::NodeHealth::Degraded
-    {
-        warnings.push(format!(
-            "Peer {} is reachable but refused our peer key",
-            p.name
-        ));
+    if let Some(p) = &peer {
+        if !have_peer_key {
+            warnings.push(format!(
+                "No peer key for {} — this node can't push config to it after a failover (Generate Peer Key and register it on {})",
+                p.name, p.name
+            ));
+        } else if p.health == aifw_common::NodeHealth::Degraded {
+            warnings.push(format!(
+                "Peer {} is reachable but refused our peer key",
+                p.name
+            ));
+        }
+    }
+    if node_count > 0 && !me_known {
+        warnings.push(
+            "This node isn't in the cluster node list (no node named after its hostname or \
+             with one of its addresses) — its CARP role and advskew can't be determined; \
+             add it or rename its node entry to the hostname"
+                .to_string(),
+        );
+    }
+    if reasons.contains(&aifw_core::carp::DemoteReason::Boot) {
+        warnings.push(
+            "Boot demotion still held — waiting for pfsync / config sync (released by aifw-daemon, or by the failsafe after 5 minutes)"
+                .to_string(),
+        );
     }
 
     let last_snapshot_hash = state
@@ -257,6 +281,10 @@ pub struct PeerState {
     pub demotion: Option<i64>,
     pub reasons: Vec<aifw_core::carp::DemoteReason>,
     pub software_version: String,
+    /// Replicated-config snapshot hash, so a rebooting peer can hold its
+    /// boot demotion until it has this node's config (#712 review).
+    #[serde(default)]
+    pub config_hash: Option<String>,
 }
 
 async fn peer_state(State(s): State<AppState>) -> Json<PeerState> {
@@ -273,6 +301,13 @@ async fn peer_state(State(s): State<AppState>) -> Json<PeerState> {
         demotion: aifw_core::carp::demotion_level().await,
         reasons: aifw_core::carp::held_reasons().await,
         software_version: env!("CARGO_PKG_VERSION").to_string(),
+        config_hash: match s.cluster_snapshot_data().await {
+            Ok((_, h)) => Some(h),
+            Err(e) => {
+                tracing::warn!(error = %e, "peer_state: snapshot hash unavailable");
+                None
+            }
+        },
     })
 }
 
@@ -381,32 +416,58 @@ fn ha_engine_error(e: aifw_common::AifwError) -> HaError {
     (crate::routes::engine_error(e), msg)
 }
 
-/// After any HA config write: reload the `aifw-ha` anchor, push the change
-/// into the kernel (pfsync0, CARP vhids) and keep the rc.conf cluster
-/// switches in step. Kernel failures are reported to the caller — the DB
-/// change is kept, and the daemon re-reconciles on its next start.
-async fn apply_ha_change(s: &AppState) -> Result<(), HaError> {
-    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
+/// A successful HA write, plus a warning when the DB change was saved but
+/// applying it to pf / the kernel failed (#712 review: returning an error
+/// there made clients believe a saved VIP didn't exist).
+#[derive(Serialize)]
+struct Saved<T: Serialize> {
+    #[serde(flatten)]
+    item: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+}
+
+/// After any HA config write: remove the kernel addresses of VIPs that went
+/// away or moved, reload the `aifw-ha` anchor, push the change into the
+/// kernel (pfsync0, CARP vhids) and keep the rc.conf cluster switches in
+/// step. Never fails — the DB change is already committed; problems come
+/// back as a warning (and the daemon re-reconciles on its next start).
+async fn apply_ha_change(s: &AppState, removed: &[CarpVip]) -> Option<String> {
+    let mut problems = s.cluster_engine.remove_kernel_vips(removed).await;
+    if let Err(e) = s.cluster_engine.apply_ha_rules().await {
         tracing::error!(error = %e, "cluster: failed to apply HA pf rules");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("saved, but loading the HA pf rules failed: {e}"),
-        )
-    })?;
+        problems.push(format!("loading the HA pf rules failed: {e}"));
+    }
     if let Err(e) = s.cluster_engine.sync_rc_conf().await {
         tracing::warn!(error = %e, "cluster: rc.conf sync failed");
     }
-    let report = s
+    match s.cluster_engine.reconcile_kernel_state().await {
+        Ok(report) => problems.extend(report.errors),
+        Err(e) => problems.push(format!("kernel reconcile failed: {e}")),
+    }
+    (!problems.is_empty()).then(|| {
+        format!(
+            "Saved, but applying it to the system failed: {}",
+            problems.join("; ")
+        )
+    })
+}
+
+/// pfsync must have its own link: refuse a VIP on the sync interface.
+async fn check_not_sync_iface(s: &AppState, vip: &CarpVip) -> Result<(), HaError> {
+    if let Some(p) = s
         .cluster_engine
-        .reconcile_kernel_state()
+        .get_pfsync()
         .await
-        .map_err(ha_engine_error)?;
-    if !report.errors.is_empty() {
+        .map_err(ha_engine_error)?
+        && p.enabled
+        && p.sync_interface == vip.interface
+    {
         return Err((
-            StatusCode::BAD_GATEWAY,
+            StatusCode::BAD_REQUEST,
             format!(
-                "saved, but applying to the kernel failed: {}",
-                report.errors.join("; ")
+                "{} is the pfsync link; CARP VIPs belong on a LAN/WAN interface",
+                vip.interface
             ),
         ));
     }
@@ -416,7 +477,7 @@ async fn apply_ha_change(s: &AppState) -> Result<(), HaError> {
 async fn create_carp(
     State(s): State<AppState>,
     Json(r): Json<CarpReq>,
-) -> Result<Json<CarpVip>, HaError> {
+) -> Result<Json<Saved<CarpVip>>, HaError> {
     let vip = CarpVip::new(
         r.vhid,
         r.virtual_ip,
@@ -430,20 +491,21 @@ async fn create_carp(
         .await
         .map_err(ha_engine_error)?;
     check_vip_conflicts(&existing, &vip)?;
+    check_not_sync_iface(&s, &vip).await?;
     let vip = s
         .cluster_engine
         .add_carp_vip(vip)
         .await
         .map_err(ha_engine_error)?;
-    apply_ha_change(&s).await?;
-    Ok(Json(vip))
+    let warning = apply_ha_change(&s, &[]).await;
+    Ok(Json(Saved { item: vip, warning }))
 }
 
 async fn update_carp(
     State(s): State<AppState>,
     Path(id): Path<Uuid>,
     Json(r): Json<CarpReq>,
-) -> Result<Json<CarpVip>, HaError> {
+) -> Result<Json<Saved<CarpVip>>, HaError> {
     let mut vip = CarpVip::new(
         r.vhid,
         r.virtual_ip,
@@ -458,12 +520,15 @@ async fn update_carp(
         .await
         .map_err(ha_engine_error)?;
     check_vip_conflicts(&existing, &vip)?;
+    check_not_sync_iface(&s, &vip).await?;
     s.cluster_engine
         .update_carp_vip(&vip)
         .await
         .map_err(ha_engine_error)?;
-    apply_ha_change(&s).await?;
-    Ok(Json(vip))
+    let old: Vec<CarpVip> = existing.into_iter().filter(|v| v.id == id).collect();
+    let removed = aifw_core::ha::vips_to_remove(&old, std::slice::from_ref(&vip));
+    let warning = apply_ha_change(&s, &removed).await;
+    Ok(Json(Saved { item: vip, warning }))
 }
 
 /// Reject a VIP that would collide with another one: same VHID on the same
@@ -499,13 +564,24 @@ fn check_vip_conflicts(existing: &[CarpVip], vip: &CarpVip) -> Result<(), HaErro
 async fn delete_carp(
     State(s): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, HaError> {
+) -> Result<Json<Saved<serde_json::Value>>, HaError> {
+    let old: Vec<CarpVip> = s
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(ha_engine_error)?
+        .into_iter()
+        .filter(|v| v.id == id)
+        .collect();
     s.cluster_engine
         .delete_carp_vip(id)
         .await
         .map_err(ha_engine_error)?;
-    apply_ha_change(&s).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let warning = apply_ha_change(&s, &old).await;
+    Ok(Json(Saved {
+        item: serde_json::json!({ "deleted": id }),
+        warning,
+    }))
 }
 
 async fn get_pfsync(State(s): State<AppState>) -> Result<Json<Option<PfsyncConfig>>, StatusCode> {
@@ -533,7 +609,7 @@ struct PfsyncReq {
 async fn update_pfsync(
     State(s): State<AppState>,
     Json(r): Json<PfsyncReq>,
-) -> Result<Json<PfsyncConfig>, HaError> {
+) -> Result<Json<Saved<PfsyncConfig>>, HaError> {
     let mut p = s
         .cluster_engine
         .get_pfsync()
@@ -583,8 +659,8 @@ async fn update_pfsync(
         .set_pfsync(p)
         .await
         .map_err(ha_engine_error)?;
-    apply_ha_change(&s).await?;
-    Ok(Json(p))
+    let warning = apply_ha_change(&s, &[]).await;
+    Ok(Json(Saved { item: p, warning }))
 }
 
 async fn list_nodes(State(s): State<AppState>) -> Result<Json<Vec<ClusterNode>>, StatusCode> {
@@ -964,84 +1040,10 @@ async fn internal_role_changed(
     {
         tracing::warn!(?e, "internal_role_changed: record_failover_event");
     }
-    // IPsec: only the MASTER initiates (#712).
-    let standby = match r.to.as_str() {
-        "primary" => Some(false),
-        "secondary" => Some(true),
-        _ => None,
-    };
-    if let Some(standby) = standby
-        && s.ipsec_engine.set_standby(standby)
-    {
-        let ipsec = s.ipsec_engine.clone();
-        tokio::spawn(async move {
-            match ipsec.apply_all().await {
-                Ok(()) => tracing::info!(standby, "ha: IPsec re-rendered for role change"),
-                Err(e) => tracing::warn!(error = %e, "ha: IPsec re-apply on role change failed"),
-            }
-        });
-    }
-    // #486: WireGuard role-change subscriber. Off unless the operator set
-    // pfsync.wg_deconfigure_on_backup; runs detached so the daemon's
-    // loopback POST returns immediately.
-    match wg_role_action(&r.to, wg_deconfigure_enabled(&s).await) {
-        Some(WgRoleAction::Deconfigure) => {
-            let vpn = s.vpn_engine.clone();
-            tokio::spawn(async move {
-                match vpn.deconfigure_for_backup().await {
-                    Ok(n) => {
-                        tracing::info!(interfaces = n, "ha: WireGuard deconfigured for BACKUP")
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "ha: WireGuard deconfigure on BACKUP failed")
-                    }
-                }
-            });
-        }
-        Some(WgRoleAction::Reconfigure) => {
-            let vpn = s.vpn_engine.clone();
-            tokio::spawn(async move {
-                match vpn.reconfigure_for_master().await {
-                    Ok(n) => tracing::info!(tunnels = n, "ha: WireGuard reconfigured for MASTER"),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "ha: WireGuard reconfigure on MASTER failed")
-                    }
-                }
-            });
-        }
-        None => {}
-    }
+    // IPsec standby / WireGuard follow the role via crate::ha_roles, which
+    // re-checks the kernel itself; this event just makes it look now.
+    crate::ha_roles::nudge();
     StatusCode::NO_CONTENT
-}
-
-/// What the WireGuard subscriber does on a CARP transition (#486).
-#[derive(Debug, PartialEq, Eq)]
-enum WgRoleAction {
-    /// Went BACKUP: tear the interfaces down.
-    Deconfigure,
-    /// Went MASTER: bring the `up` tunnels back.
-    Reconfigure,
-}
-
-/// Pure decision: only when the flag is on, only for the two canonical
-/// roles (`secondary` = BACKUP, `primary` = MASTER); `init`/`unknown` and
-/// anything else are ignored.
-fn wg_role_action(to_role: &str, enabled: bool) -> Option<WgRoleAction> {
-    if !enabled {
-        return None;
-    }
-    match to_role {
-        "secondary" => Some(WgRoleAction::Deconfigure),
-        "primary" => Some(WgRoleAction::Reconfigure),
-        _ => None,
-    }
-}
-
-async fn wg_deconfigure_enabled(s: &AppState) -> bool {
-    match s.cluster_engine.get_pfsync().await {
-        Ok(Some(p)) => p.wg_deconfigure_on_backup,
-        _ => false,
-    }
 }
 
 /// Maximum allowed byte length for the `detail` field in HealthChangedReq.
@@ -1138,14 +1140,17 @@ async fn snapshot_put(
 }
 
 async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
-    // Look up the primary peer, fetch its snapshot, and apply locally.
-    let nodes = match s.cluster_engine.list_nodes().await {
+    // Pull from the peer — preferring whichever one currently reports MASTER
+    // — not from "the node configured primary": on the primary itself that
+    // was its own row, with no key, so this always returned 412 (#712).
+    let peers = match s.cluster_engine.peer_nodes().await {
         Ok(n) => n,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
     };
-    let peer = match nodes
+    let peer = match peers
         .iter()
-        .find(|n| matches!(n.role, ClusterRole::Primary))
+        .find(|n| n.peer_state.as_deref() == Some("primary"))
+        .or_else(|| peers.first())
     {
         Some(p) => p.clone(),
         None => return StatusCode::PRECONDITION_FAILED,
@@ -1671,25 +1676,6 @@ async fn generate_loopback_key(
 #[cfg(test)]
 mod tests {
     use super::parse_pfctl_si_state_count;
-    use super::{WgRoleAction, wg_role_action};
-
-    /// #486: the WireGuard subscriber only acts when the flag is on and only
-    /// on the two canonical CARP roles.
-    #[test]
-    fn wg_role_action_gated_by_flag_and_role() {
-        assert_eq!(
-            wg_role_action("secondary", true),
-            Some(WgRoleAction::Deconfigure)
-        );
-        assert_eq!(
-            wg_role_action("primary", true),
-            Some(WgRoleAction::Reconfigure)
-        );
-        assert_eq!(wg_role_action("init", true), None);
-        assert_eq!(wg_role_action("unknown", true), None);
-        assert_eq!(wg_role_action("secondary", false), None);
-        assert_eq!(wg_role_action("primary", false), None);
-    }
 
     #[test]
     fn push_guard_refuses_master_and_initialising_primary() {

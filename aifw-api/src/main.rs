@@ -11,6 +11,7 @@ mod dhcp;
 mod dns_blocklists;
 mod dns_resolver;
 mod geoip_db;
+mod ha_roles;
 mod ids;
 mod iface;
 mod log_rotation;
@@ -1629,18 +1630,17 @@ async fn async_main() -> anyhow::Result<()> {
     // Re-render IPsec swanctl config from the DB and reload charon (#530).
     // Covers reboot, restore-from-backup, and upgrade; no-op on boxes that
     // never configured IPsec tunnels.
-    // #712: a clustered node that isn't CARP MASTER renders IPsec passive
-    // (start_action = none); the role-change hook flips it on MASTER.
-    if !state
+    // #712: on a clustered node IPsec starts passive until ha_roles sees
+    // this node is CARP MASTER (it re-checks every 2 s, so a missed
+    // role-change event can't leave it wrong).
+    let clustered = !state
         .cluster_engine
         .list_carp_vips()
         .await
         .unwrap_or_default()
-        .is_empty()
-        && aifw_core::carp::kernel_view().await.aggregate_state() != "master"
-    {
+        .is_empty();
+    if clustered {
         state.ipsec_engine.set_standby(true);
-        tracing::info!("IPsec in standby mode: this node is not CARP MASTER");
     }
     if let Err(e) = state.ipsec_engine.ensure_applied().await {
         warn!(error = %e, "IPsec ensure_applied failed — tunnels may need a manual re-apply");
@@ -1780,16 +1780,11 @@ async fn async_main() -> anyhow::Result<()> {
     if let Err(e) = state.cluster_engine.apply_ha_rules().await {
         tracing::error!("Failed to apply HA pf rules on startup: {e}");
     }
-    // #486/#712: a BACKUP with wg_deconfigure_on_backup keeps WireGuard down;
-    // the role watcher brings the tunnels up when this node becomes MASTER.
-    let wg_hold = matches!(state.cluster_engine.get_pfsync().await, Ok(Some(p)) if p.wg_deconfigure_on_backup)
-        && aifw_core::carp::kernel_view().await.aggregate_state() != "master";
-    if wg_hold {
-        tracing::info!(
-            "WireGuard held down on startup: not CARP MASTER and wg_deconfigure_on_backup is on"
-        );
-    }
-    match if wg_hold {
+    // #712: in a cluster WireGuard runs only on the CARP MASTER (both nodes
+    // hold the same keys); ha_roles starts the tunnels when this node is
+    // MASTER. Standalone nodes start them here.
+    match if clustered {
+        tracing::info!("WireGuard start deferred to the CARP role (clustered node)");
         Ok(0)
     } else {
         state.vpn_engine.start_active_tunnels().await
@@ -1798,6 +1793,8 @@ async fn async_main() -> anyhow::Result<()> {
         Ok(_) => {}
         Err(e) => tracing::warn!("Failed to restart WireGuard tunnels: {e}"),
     }
+    // Keep IPsec standby + WireGuard in step with the live CARP role.
+    ha_roles::spawn(state.clone());
 
     // Start persistent pflog0 live capture for blocked traffic page
     // (background, non-blocking); also tees entries to remote syslog.

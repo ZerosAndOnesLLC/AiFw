@@ -259,7 +259,7 @@ enum PfsyncAction {
         latency_profile: String,
         #[arg(long, default_value_t = false)]
         dhcp_link: bool,
-        /// Tear WireGuard interfaces down on CARP BACKUP, back up on MASTER (#486)
+        /// Legacy (#486), ignored: since #712 WireGuard always follows the CARP role
         #[arg(long, default_value_t = false)]
         wg_deconfigure_on_backup: bool,
     },

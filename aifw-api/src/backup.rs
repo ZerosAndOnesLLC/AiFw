@@ -1928,6 +1928,11 @@ pub(crate) async fn apply_firewall_config_mode(
         before.as_ref().is_none_or(|b| f(b) != f(config))
     };
     let wg_before = wg_fingerprints(state).await;
+    let vips_before = state
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(|e| apply_fail("reading CARP VIPs", e))?;
 
     // Single transaction for ALL database mutations (#158/#535): the
     // DELETE-then-reinsert of every section below either commits wholesale
@@ -2559,6 +2564,15 @@ pub(crate) async fn apply_firewall_config_mode(
     // HA pass rules + kernel CARP/pfsync (#712). Restore/sync could add or
     // drop VIPs; the kernel must follow. Warn-only: the daemon reconciles
     // again on its next start, and a kernel step can't be rolled back here.
+    let vips_after = state
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(|e| apply_fail("reading CARP VIPs", e))?;
+    let removed = aifw_core::ha::vips_to_remove(&vips_before, &vips_after);
+    for e in state.cluster_engine.remove_kernel_vips(&removed).await {
+        tracing::warn!(error = %e, "config apply: removing a dropped CARP VIP failed");
+    }
     state
         .cluster_engine
         .apply_ha_rules()
@@ -2631,15 +2645,21 @@ async fn wg_fingerprints(
 /// Bring the kernel's WireGuard interfaces in line after a restore/sync
 /// (#712): (re)start enabled tunnels that are new or changed, tear down
 /// ones that were removed or disabled. Unchanged running tunnels are left
-/// alone. On a CARP BACKUP with `wg_deconfigure_on_backup` nothing is
-/// started — the role watcher brings tunnels up on MASTER.
+/// alone. In a cluster nothing is started unless this node is CARP MASTER
+/// — `ha_roles` brings tunnels up when it becomes MASTER (#712 review: both
+/// nodes hold the same keys).
 async fn reconcile_wireguard(
     state: &AppState,
     before: &std::collections::HashMap<uuid::Uuid, (String, bool)>,
 ) {
     let after = wg_fingerprints(state).await;
-    let hold_on_backup = matches!(state.cluster_engine.get_pfsync().await, Ok(Some(p)) if p.wg_deconfigure_on_backup)
-        && aifw_core::carp::kernel_view().await.aggregate_state() == "backup";
+    let clustered = state
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .is_ok_and(|v| !v.is_empty());
+    let hold_on_backup =
+        clustered && aifw_core::carp::kernel_view().await.aggregate_state() != "master";
 
     for (id, (fp, up)) in &after {
         let was = before.get(id);

@@ -26,7 +26,7 @@ export type Pfsync = {
   heartbeat_iface: string | null;
   heartbeat_interval_ms: number | null;
   dhcp_link: boolean;
-  /** Tear WireGuard down on CARP BACKUP, back up on MASTER (#486). */
+  /** Legacy (#486). Since #712 WireGuard always follows the CARP role. */
   wg_deconfigure_on_backup?: boolean;
   created_at: string;
 };
@@ -310,17 +310,21 @@ export const generateLoopbackKey = () =>
 export const registerPeerKey = (key: string) =>
   api.post<{ message: string }>("/api/v1/cluster/peer-key", { key });
 
+/** HA writes succeed once the DB is updated; `warning` is set when applying
+ *  the change to pf / the kernel failed (#712). */
+export type HaSaveResult = { warning?: string };
+
 export const createCarpVip = (body: CarpVipRequest) =>
-  api.post<unknown>("/api/v1/cluster/carp", body);
+  api.post<HaSaveResult>("/api/v1/cluster/carp", body);
 
 export const updateCarpVip = (id: string, body: CarpVipRequest) =>
-  api.put<unknown>(`/api/v1/cluster/carp/${id}`, body);
+  api.put<HaSaveResult>(`/api/v1/cluster/carp/${id}`, body);
 
 export const deleteCarpVip = (id: string) =>
-  api.delete<unknown>(`/api/v1/cluster/carp/${id}`);
+  api.delete<HaSaveResult>(`/api/v1/cluster/carp/${id}`);
 
 export const updatePfsync = (body: PfsyncRequest) =>
-  api.put<unknown>("/api/v1/cluster/pfsync", body);
+  api.put<HaSaveResult>("/api/v1/cluster/pfsync", body);
 
 export const forceSnapshotSync = () =>
   api.post<unknown>("/api/v1/cluster/snapshot/force");

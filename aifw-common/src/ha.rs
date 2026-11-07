@@ -195,11 +195,10 @@ pub struct PfsyncConfig {
     pub heartbeat_interval_ms: Option<u32>,
     /// Link rDHCP HA state to this pfsync session (consumed in Commit 8 / #221)
     pub dhcp_link: bool,
-    /// Tear down WireGuard interfaces while this node is CARP BACKUP and
-    /// bring them back on MASTER (#486). Off by default: with the tunnels
-    /// bound to floating VIPs, wireguard-go on 0.0.0.0 already stops seeing
-    /// traffic on BACKUP; turn this on when a peer would otherwise keep a
-    /// handshake alive with the standby.
+    /// Legacy (#486), kept for API/backup compatibility and no longer read:
+    /// since #712 WireGuard always follows the CARP role in a cluster (only
+    /// the MASTER runs tunnels — both nodes hold the same keys, so a standby
+    /// with a configured endpoint would pull the remote peer away).
     #[serde(default)]
     pub wg_deconfigure_on_backup: bool,
     /// Creation timestamp

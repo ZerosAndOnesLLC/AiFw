@@ -39,19 +39,16 @@ pub enum DemoteReason {
     Manual,
     /// Persistent maintenance mode (survives reboot).
     Maintenance,
-    /// Software update in progress.
-    Update,
 }
 
 impl DemoteReason {
     /// All reasons, in display order.
-    pub const ALL: [DemoteReason; 6] = [
+    pub const ALL: [DemoteReason; 5] = [
         Self::Boot,
         Self::Shutdown,
         Self::Health,
         Self::Manual,
         Self::Maintenance,
-        Self::Update,
     ];
 
     /// Wire / ledger name.
@@ -62,7 +59,6 @@ impl DemoteReason {
             Self::Health => "health",
             Self::Manual => "manual",
             Self::Maintenance => "maintenance",
-            Self::Update => "update",
         }
     }
 
@@ -138,8 +134,10 @@ pub async fn enable_preempt() -> std::io::Result<()> {
     helper(&["preempt"], None).await
 }
 
-/// Configure (or retune) a CARP vhid and its address. The password goes
-/// over stdin so it never shows up in the helper's argv.
+/// Configure (or retune) a CARP vhid and its address; an address already
+/// bound to another vhid is moved. The password goes over stdin so it stays
+/// out of sudo's and the helper's argv (ifconfig itself still takes it as an
+/// argument for the instant it runs).
 pub async fn vip_set(vip: &CarpVip, timing: CarpTiming) -> std::io::Result<()> {
     let vhid = vip.vhid.to_string();
     let advskew = timing.advskew.to_string();
@@ -292,7 +290,9 @@ pub struct KernelCarpView {
     pub addrs: Vec<KernelCarpAddr>,
     /// pfsync0, when it exists
     pub pfsync: Option<KernelPfsync>,
-    /// Non-CARP addresses configured on local interfaces
+    /// Non-CARP addresses configured on local interfaces. Internal only —
+    /// not serialised, `/cluster/status` is readable by viewer roles.
+    #[serde(skip)]
     pub local_addrs: Vec<IpAddr>,
 }
 

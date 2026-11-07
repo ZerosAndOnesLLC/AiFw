@@ -410,7 +410,10 @@ async fn async_main() -> anyhow::Result<()> {
         }
         // Load the aifw-ha anchor, reconcile pfsync/CARP into the kernel and
         // release the boot demotion hold once state sync is ready (#712).
-        ha_boot::start(cluster_engine.clone()).await;
+        let loopback_key = std::env::var("AIFW_LOOPBACK_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty());
+        ha_boot::start(cluster_engine.clone(), loopback_key).await;
         // Peer monitor: node health / last_seen / peer role / split brain.
         tokio::spawn(peer_monitor::PeerMonitor::new(cluster_engine.clone()).run());
 

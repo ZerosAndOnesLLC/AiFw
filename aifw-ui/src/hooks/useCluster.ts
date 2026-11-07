@@ -224,13 +224,12 @@ export function useCluster() {
         interface: form.interface,
         password: form.password,
       };
-      if (editingVipId) {
-        await updateCarpVip(editingVipId, body);
-      } else {
-        await createCarpVip(body);
-      }
+      const res = editingVipId
+        ? await updateCarpVip(editingVipId, body)
+        : await createCarpVip(body);
       onSaved?.();
       await reload();
+      if (res?.warning) setError(res.warning);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save VIP");
     } finally {
@@ -240,9 +239,10 @@ export function useCluster() {
 
   const deleteVip = async (v: CarpVip, onDeleted?: () => void) => {
     try {
-      await deleteCarpVip(v.id);
+      const res = await deleteCarpVip(v.id);
       onDeleted?.();
       await reload();
+      if (res?.warning) setError(res.warning);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete VIP");
     }
@@ -273,9 +273,10 @@ export function useCluster() {
         dhcp_link: form.dhcp_link,
         wg_deconfigure_on_backup: form.wg_deconfigure_on_backup,
       };
-      await updatePfsync(body);
+      const res = await updatePfsync(body);
       onSaved?.();
       await reload();
+      if (res?.warning) setError(res.warning);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save pfsync config");
     } finally {

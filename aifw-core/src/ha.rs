@@ -781,14 +781,15 @@ impl ClusterEngine {
             }
         }
 
-        // Anything the kernel holds on a vhid that the DB no longer lists.
-        for stale in stale_carp_addrs(&view, &vips) {
-            match crate::carp::vip_del(&stale.interface, &stale.addr).await {
-                Ok(()) => report.removed += 1,
-                Err(e) => report
-                    .errors
-                    .push(format!("remove {} on {}: {e}", stale.addr, stale.interface)),
-            }
+        // CARP addresses the DB doesn't list are left alone: they may belong
+        // to the operator or another tool (#712 review). VIPs AiFw removes
+        // or changes are deleted explicitly via `remove_kernel_vips`.
+        let unmanaged = unmanaged_carp_addrs(&view, &vips);
+        if !unmanaged.is_empty() {
+            tracing::info!(
+                addrs = ?unmanaged.iter().map(|a| format!("{}@{}", a.addr, a.interface)).collect::<Vec<_>>(),
+                "ha: CARP addresses in the kernel that AiFw doesn't manage (left as is)"
+            );
         }
 
         for e in &report.errors {
@@ -804,6 +805,34 @@ impl ClusterEngine {
             "ha: kernel state reconciled"
         );
         Ok(report)
+    }
+
+    /// Remove these VIPs' addresses from the kernel — call with the *old*
+    /// versions of VIPs that were deleted or whose interface / address /
+    /// VHID changed. Returns the failures (also logged).
+    pub async fn remove_kernel_vips(&self, vips: &[CarpVip]) -> Vec<String> {
+        let mut errors = Vec::new();
+        for v in vips {
+            if let Err(e) = crate::carp::vip_del(&v.interface.0, &v.virtual_ip).await {
+                tracing::warn!(vip = %v.virtual_ip, iface = %v.interface, error = %e, "ha: removing CARP VIP from the kernel failed");
+                errors.push(format!("remove {} on {}: {e}", v.virtual_ip, v.interface));
+            }
+        }
+        errors
+    }
+
+    /// Every node except this one. A row whose address is configured on a
+    /// local interface is never treated as the peer, even when this node
+    /// can't be identified by name (#712 review).
+    pub async fn peer_nodes(&self) -> Result<Vec<ClusterNode>> {
+        let me = self.self_node().await?.map(|n| n.id);
+        let local = crate::carp::kernel_view().await.local_addrs;
+        Ok(self
+            .list_nodes()
+            .await?
+            .into_iter()
+            .filter(|n| Some(n.id) != me && !local.contains(&n.address))
+            .collect())
     }
 
     /// Keep the rc.conf cluster switches in step with the DB, so clusters
@@ -874,7 +903,7 @@ pub struct ReconcileReport {
 }
 
 /// CARP addresses present in the kernel but absent from the DB.
-fn stale_carp_addrs<'a>(
+fn unmanaged_carp_addrs<'a>(
     view: &'a crate::carp::KernelCarpView,
     vips: &[CarpVip],
 ) -> Vec<&'a crate::carp::KernelCarpAddr> {
@@ -885,6 +914,23 @@ fn stale_carp_addrs<'a>(
                 .iter()
                 .any(|v| v.interface.0 == k.interface && v.virtual_ip == k.addr)
         })
+        .collect()
+}
+
+/// VIPs from `before` whose kernel address must be removed given `after`:
+/// deleted ones, and ones whose interface or address changed (matched
+/// by interface + address; a VHID-only change is handled by `vip-set`,
+/// which moves the address onto the new vhid). Used by the API and by
+/// restore/replication.
+pub fn vips_to_remove(before: &[CarpVip], after: &[CarpVip]) -> Vec<CarpVip> {
+    before
+        .iter()
+        .filter(|old| {
+            !after
+                .iter()
+                .any(|new| new.interface == old.interface && new.virtual_ip == old.virtual_ip)
+        })
+        .cloned()
         .collect()
 }
 
@@ -1198,6 +1244,33 @@ fn parse_dt(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Database;
+
+    #[test]
+    fn vips_to_remove_covers_delete_and_moves_not_vhid_changes() {
+        let a = CarpVip::new(
+            1,
+            "10.0.0.1".parse().unwrap(),
+            24,
+            Interface("em0".into()),
+            "k".into(),
+        );
+        let b = CarpVip::new(
+            2,
+            "10.0.1.1".parse().unwrap(),
+            24,
+            Interface("em1".into()),
+            "k".into(),
+        );
+        let mut b_moved = b.clone();
+        b_moved.interface = Interface("em2".into());
+        let mut a_new_vhid = a.clone();
+        a_new_vhid.vhid = 9;
+        let removed = vips_to_remove(&[a.clone(), b.clone()], &[a_new_vhid, b_moved]);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].interface.0, "em1");
+        assert_eq!(vips_to_remove(std::slice::from_ref(&a), &[]).len(), 1);
+        assert!(vips_to_remove(std::slice::from_ref(&a), std::slice::from_ref(&a)).is_empty());
+    }
 
     #[tokio::test]
     async fn reconcile_kernel_state_standalone_is_noop() {

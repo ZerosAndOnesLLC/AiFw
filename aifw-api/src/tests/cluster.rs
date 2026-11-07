@@ -429,12 +429,22 @@ async fn carp_vip_validation_and_dedicated_sync_link() {
         "{rules:?}"
     );
 
-    // deleting the VIP keeps only the pfsync rule
-    server
+    // ...and the reverse: no VIP on the pfsync link (#712 review L5)
+    let resp = server
+        .post("/api/v1/cluster/carp")
+        .authorization_bearer(&token)
+        .json(&vip(5, "10.0.5.1", "em2", "s3cretkey"))
+        .await;
+    resp.assert_status(StatusCode::BAD_REQUEST);
+
+    // deleting the VIP keeps only the pfsync rule; the write reports success
+    // with no warning (the kernel side is a no-op off FreeBSD)
+    let resp = server
         .delete(&format!("/api/v1/cluster/carp/{id}"))
         .authorization_bearer(&token)
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
+        .await;
+    resp.assert_status_ok();
+    assert!(resp.json::<Value>().get("warning").is_none());
     let rules = pf.get_rules("aifw-ha").await.unwrap();
     assert!(
         !rules.iter().any(|r| r.contains("carp-vhid-1")),

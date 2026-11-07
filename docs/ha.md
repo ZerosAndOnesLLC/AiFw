@@ -34,7 +34,7 @@ of any failure on the master.
 | Component | Survives | Notes |
 |---|---|---|
 | TCP sessions through the firewall | yes | pfsync replicates state to the backup; `state-policy floating` lets replicated states match traffic on the new master's interface |
-| WireGuard tunnels | yes* | Tunnels and their running state replicate to the standby; wireguard-go binds wildcard so CARP VIPs are accepted automatically. Existing peers reconnect within ~5 s **provided remote peers have `PersistentKeepalive` ≤ 5** (the default is off — peers without keepalive only reconnect on next outbound traffic) |
+| WireGuard tunnels | yes* | Tunnels replicate to the standby but run only on the CARP MASTER; the new master brings them up within ~2 s of taking over. Existing peers reconnect within ~5 s **provided remote peers have `PersistentKeepalive` ≤ 5** (the default is off — peers without keepalive only reconnect on next outbound traffic) |
 | IPsec (IKEv2) tunnels | re-established | Tunnels replicate; the BACKUP renders them passive (`start_action = none`) so it never initiates with the master's identities, and re-renders them active when it becomes MASTER. SAs are not synced — IKE re-negotiates after failover |
 | DHCP leases (rDHCP) | yes | rDHCP HA handles its own state replication; AiFw's `dhcp_link` flag keeps the peer list in sync |
 | ACME certificates | yes | renewal happens master-only; on success the cert+key are pushed to peers via `POST /api/v1/cluster/cert-push` |
@@ -83,9 +83,16 @@ switches in `rc.conf`.
 
 Every cluster call to a peer (snapshot replication, health probes, cert push) goes to `https://<peer address>:<api_port>`. The port defaults to 8080 and is stored per node (`api_port` on `POST/PUT /api/v1/cluster/nodes`, the *API port* field on the Cluster → Nodes form, `aifw cluster nodes add --api-port`) — set it when a peer's API listens elsewhere.
 
-### WireGuard on the standby
+### WireGuard and IPsec follow the CARP role
 
-WireGuard listens on `0.0.0.0`, so a tunnel that terminates on a CARP VIP simply stops seeing traffic when the node goes BACKUP and picks it up again on MASTER — no action needed in the common case. If a remote peer keeps a handshake alive with the standby (a WAN VIP that is *also* reachable through the standby's own address), turn on **Deconfigure WireGuard on BACKUP** (`wg_deconfigure_on_backup` on `PUT /api/v1/cluster/pfsync`, `aifw cluster pfsync set --wg-deconfigure-on-backup`, or the checkbox in Cluster → pfsync). With it on, a transition to BACKUP destroys every `up` WireGuard interface (the DB status stays `up`) and a transition to MASTER recreates them; the flag is off by default.
+Both nodes hold the same WireGuard private keys and IPsec identities, so in
+a cluster only the CARP MASTER runs WireGuard and initiates IPsec. The API
+re-checks the kernel every 2 seconds (and immediately on a role-change
+event): on MASTER it brings the enabled WireGuard tunnels up and renders
+IPsec tunnels with their configured `start_action`; on BACKUP it tears
+WireGuard down and renders IPsec passive (`start_action = none`). The older
+`wg_deconfigure_on_backup` setting is kept for compatibility but no longer
+changes anything.
 
 ## How CARP is driven
 
@@ -101,9 +108,13 @@ call it via sudo.
   (`/var/run/aifw-carp/<reason>`) and adds or removes one step of 240 per
   reason exactly once. Reasons: `boot`, `shutdown`, `health`, `manual`,
   `maintenance`. The dashboard and `GET /cluster/status` show which are held.
+- **AiFw only removes CARP addresses it manages** — VIPs deleted or moved
+  through AiFw (UI, API, restore, replication). CARP addresses configured
+  outside AiFw are left alone.
 - **VIPs are created by aifw-daemon, not rc.conf.** The daemon configures
-  pfsync0 and every VHID from the database (password passed over stdin, never
-  written to `rc.conf`) and removes VHIDs that are no longer configured.
+  pfsync0 (loading `pfsync(4)` if needed) and every VHID from the database.
+  The CARP password is never written to `rc.conf`; it reaches the helper over
+  stdin and is only on `ifconfig`'s own command line for the instant it runs.
 
 ### Boot sequence
 
@@ -112,12 +123,16 @@ call it via sudo.
    maintenance mode is on).
 2. pfsync0 comes up from `rc.conf`, then pf.
 3. aifw-daemon loads the `aifw-ha` pf anchor (CARP and pfsync pass rules),
-   configures pfsync and the VHIDs, and waits for pfsync's bulk update
-   (`syncok: 1` in `ifconfig pfsync0`, minimum 10 s, maximum 120 s) before
-   releasing the `boot` hold.
+   configures pfsync and the VHIDs, and releases the `boot` hold once
+   pfsync's bulk update has finished (`syncok: 1` in `ifconfig pfsync0`)
+   **and**, if the peer is MASTER, this node has the peer's replicated
+   config — minimum 10 s, maximum 120 s.
+4. If aifw-daemon never releases it (disabled, crashing), a failsafe started
+   by step 1 releases the hold after 5 minutes.
 
-A rebooted primary therefore comes back as BACKUP, receives the state table,
-and only then preempts.
+A rebooted primary therefore comes back as BACKUP, receives the state table
+and any config edits made on the peer while it was down, and only then
+preempts. Running `service aifw_carp_demote start` again later is a no-op.
 
 ## Latency profiles
 
@@ -160,8 +175,10 @@ For unplanned failures (power loss, kernel panic, NIC death) the gap is CARP's
 - **UPS on each node** is the single biggest reliability win. It turns power
   loss into a graceful shutdown with a full CARP demote.
 - **Dedicated pfsync NIC** keeps replication off the data plane.
-- **pfsync `defer` stays off** (default) unless you have a reason: it holds the
-  first packet of every new connection until the peer acknowledges the state.
+- **Leave pfsync `defer` off** unless you have a reason: it holds the first
+  packet of every new connection until the peer acknowledges the state. New
+  pfsync configs default to off; configs created before #712 keep their
+  setting (it used to default on) — check Cluster → pfsync.
 
 Without a UPS, a hard power loss results in:
 
@@ -243,9 +260,17 @@ node standalone, also remove its CARP VIPs and pfsync config; that clears
 aifw cluster sync     # this node pulls the current snapshot from the primary
 ```
 
-The dashboard's **Force sync from peer** button does the same thing. Use this
+The dashboard's **Force sync from peer** button does the same thing. It pulls
+from the peer that currently reports MASTER (or the only peer). Use this
 when the standby's `cluster_snapshot_state.last_applied_hash` doesn't match the
 master's live config hash and the next replicator tick is too far away.
+
+Replication always flows from the current MASTER to the other node —
+including from a promoted secondary back to the primary while the primary is
+BACKUP — so changes made during a failover survive the primary's return.
+Each node therefore needs a peer key for the other (Generate Peer Key on
+both, register each on the opposite node); the dashboard warns when one is
+missing.
 
 Replication carries cluster-wide config only. Each node keeps its own node
 table (peer keys, TLS pins, API ports), pfsync settings, DHCP-HA peer settings,
