@@ -1,40 +1,25 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchApi, getWsTicket } from "@/lib/api";
+import {
+  demoteCluster,
+  getClusterStatus,
+  getFailoverHistory,
+  promoteCluster,
+  runHealthChecks,
+  setMaintenance,
+  type ClusterStatus,
+  type FailoverEvent,
+  type HealthRunResult,
+  type Node,
+} from "@/lib/api/cluster";
 
 type Metrics = {
   pfsync_in: number;
   pfsync_out: number;
   state_count: number;
   ts_ms: number;
-};
-
-type Status = {
-  role: string;
-  peer_reachable: boolean;
-  pfsync_state_count: number;
-  last_snapshot_hash: string | null;
-};
-
-type Node = {
-  id: string;
-  name: string;
-  address: string;
-  role: string;
-  health: string;
-  last_seen: string;
-  software_version?: string;
-  last_pushed_cert_at?: string;
-};
-
-type FailoverEvent = {
-  id: string;
-  ts: string;
-  from_role: string;
-  to_role: string;
-  cause: string;
-  detail?: string;
 };
 
 type CarpVip = {
@@ -52,6 +37,26 @@ type HealthCheck = {
   check_type: string;
   target: string;
   enabled: boolean;
+};
+
+const ROLE_LABEL: Record<string, string> = {
+  primary: "MASTER",
+  secondary: "BACKUP",
+  split: "SPLIT",
+  init: "INITIALISING",
+  standalone: "STANDALONE",
+};
+
+const STATE_CLASS: Record<string, string> = {
+  master: "text-green-400",
+  backup: "text-blue-300",
+  init: "text-amber-300",
+};
+
+const HEALTH_CLASS: Record<string, string> = {
+  healthy: "text-green-400",
+  degraded: "text-amber-300",
+  unreachable: "text-red-400",
 };
 
 function Sparkline({ data }: { data: number[] }) {
@@ -86,7 +91,11 @@ function Sparkline({ data }: { data: number[] }) {
 }
 
 export default function ClusterDashboard() {
-  const [status, setStatus] = useState<Status | null>(null);
+  const [status, setStatus] = useState<ClusterStatus | null>(null);
+  const [historyDays, setHistoryDays] = useState(1);
+  const historyDaysRef = useRef(1);
+  const [runResults, setRunResults] = useState<HealthRunResult[] | null>(null);
+  const [confirmMaint, setConfirmMaint] = useState(false);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [history, setHistory] = useState<FailoverEvent[]>([]);
   const [vips, setVips] = useState<CarpVip[]>([]);
@@ -104,11 +113,12 @@ export default function ClusterDashboard() {
     return () => clearTimeout(t);
   }, [errorMsg]);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    const days = historyDaysRef.current;
     const [s, n, h, v, c] = await Promise.all([
-      fetchApi<Status>("/api/v1/cluster/status").catch(() => null),
+      getClusterStatus().catch(() => null),
       fetchApi<Node[]>("/api/v1/cluster/nodes").catch(() => [] as Node[]),
-      fetchApi<FailoverEvent[]>("/api/v1/cluster/failover-history").catch(() => [] as FailoverEvent[]),
+      getFailoverHistory(days).catch(() => [] as FailoverEvent[]),
       fetchApi<CarpVip[]>("/api/v1/cluster/carp").catch(() => [] as CarpVip[]),
       fetchApi<HealthCheck[]>("/api/v1/cluster/health").catch(() => [] as HealthCheck[]),
     ]);
@@ -117,7 +127,7 @@ export default function ClusterDashboard() {
     setHistory(h);
     setVips(v);
     setChecks(c);
-  };
+  }, []);
 
   useEffect(() => {
     queueMicrotask(() => { refresh().catch(() => {}); }); // initial fetch only — WS events drive subsequent updates
@@ -179,7 +189,7 @@ export default function ClusterDashboard() {
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       if (wsRef.current) wsRef.current.close();
     };
-  }, []);
+  }, [refresh]);
 
   if (!status) {
     return (
@@ -189,41 +199,57 @@ export default function ClusterDashboard() {
     );
   }
 
-  // HA is documented as active-passive (exactly 2 nodes); this picks the first
-  // non-local node deterministically. If multi-node HA ever ships, surface the
-  // peer count separately and render multiple node cards inline.
   const isMaster = status.role === "primary";
-  const peerNode = nodes.find((n) => n.role !== status.role);
+  const peerNode = status.peer;
 
-  const forceSync = async () => {
+  const act = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(true);
     try {
-      await fetchApi("/api/v1/cluster/snapshot/force", { method: "POST" }).catch(
-        (e: unknown) => {
-          setErrorMsg(`Force sync failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      );
-      await refresh();
+      await fn();
+    } catch (e: unknown) {
+      setErrorMsg(`${label} failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      await refresh().catch(() => {});
       setBusy(false);
     }
   };
 
-  const demote = async () => {
-    setBusy(true);
-    try {
-      await fetchApi("/api/v1/cluster/demote", { method: "POST" }).catch(() => {});
-      await refresh();
-    } finally {
-      setBusy(false);
+  const forceSync = () =>
+    act("Force sync", () =>
+      fetchApi("/api/v1/cluster/snapshot/force", { method: "POST" }),
+    );
+  const demote = () => act("Demote", demoteCluster);
+  const clearDemotion = () => act("Clear demotion", promoteCluster);
+  const toggleMaintenance = () => {
+    if (!status.demotion.maintenance && !confirmMaint) {
+      setConfirmMaint(true);
+      return;
     }
+    setConfirmMaint(false);
+    return act("Maintenance mode", () =>
+      setMaintenance(!status.demotion.maintenance),
+    );
+  };
+  const runChecks = () =>
+    act("Health check run", async () => setRunResults(await runHealthChecks()));
+  const changeDays = (d: number) => {
+    setHistoryDays(d);
+    historyDaysRef.current = d;
+    refresh().catch(() => {});
   };
 
-  const heroBg = isMaster
-    ? "bg-green-500/10 border-green-500/40"
-    : status.role === "standalone"
-    ? "bg-gray-500/10 border-gray-500/40"
-    : "bg-blue-500/10 border-blue-500/40";
+  const kernelVhid = (v: CarpVip) =>
+    status.carp.vhids.find((k) => k.vhid === v.vhid && k.interface === v.interface);
+  const heroBg = status.split_brain
+    ? "bg-red-500/10 border-red-500/50"
+    : status.warnings.length > 0 && status.role !== "standalone"
+      ? "bg-amber-500/10 border-amber-500/40"
+      : isMaster
+        ? "bg-green-500/10 border-green-500/40"
+        : status.role === "standalone"
+          ? "bg-gray-500/10 border-gray-500/40"
+          : "bg-blue-500/10 border-blue-500/40";
+  const pf = status.carp.pfsync;
 
   return (
     <div className="space-y-6">
@@ -245,17 +271,63 @@ export default function ClusterDashboard() {
       {/* Hero */}
       <div className={`rounded-lg p-4 border ${heroBg}`}>
         <div className="text-sm opacity-70">This node</div>
-        <div className="text-3xl font-bold">{status.role.toUpperCase()}</div>
-        <div className="mt-2 text-sm">
-          Peer: {peerNode?.name ?? "—"} (
-          {status.peer_reachable ? (
-            "reachable"
-          ) : (
-            <span className="text-red-400 font-semibold">UNREACHABLE</span>
-          )}
-          ) &middot; {status.pfsync_state_count} pfsync states
+        <div className="text-3xl font-bold">
+          {ROLE_LABEL[status.role] ?? status.role.toUpperCase()}
         </div>
+        <div className="mt-2 text-sm space-y-1">
+          <div>
+            Configured {status.configured_role} &middot; peer{" "}
+            {peerNode?.name ?? "—"} (
+            {status.peer_reachable ? (
+              "answering"
+            ) : (
+              <span className="text-red-400 font-semibold">NOT ANSWERING</span>
+            )}
+            {peerNode?.peer_state && <> · reports {ROLE_LABEL[peerNode.peer_state] ?? peerNode.peer_state}</>}
+            ) &middot; {status.pfsync_state_count.toLocaleString()} states
+          </div>
+          <div className="text-xs opacity-80">
+            Demotion {status.demotion.level ?? "—"}
+            {status.demotion.reasons.length > 0
+              ? ` (held: ${status.demotion.reasons.join(", ")})`
+              : " (none held)"}
+            {" · "}preempt {status.demotion.preempt === null ? "—" : status.demotion.preempt ? "on" : "OFF"}
+            {status.demotion.maintenance && " · maintenance mode"}
+          </div>
+        </div>
+        {status.warnings.length > 0 && (
+          <ul className="mt-3 text-sm list-disc pl-5 space-y-0.5">
+            {status.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        )}
       </div>
+
+      {/* pfsync link */}
+      <section className="bg-[var(--bg-card)] border border-[var(--border)] rounded p-3 text-sm">
+        <div className="font-semibold mb-1">pfsync</div>
+        {pf ? (
+          <div className="text-xs space-y-0.5">
+            <div>
+              pfsync0 {pf.up ? "up" : <span className="text-red-400">DOWN</span>} on{" "}
+              <span className="font-mono">{pf.syncdev ?? "—"}</span>
+              {pf.syncpeer && <> → <span className="font-mono">{pf.syncpeer}</span></>}
+              {" · "}defer {pf.defer ? "on" : "off"}
+            </div>
+            <div>
+              Bulk sync:{" "}
+              {pf.syncok === null ? "—" : pf.syncok ? (
+                <span className="text-green-400">complete</span>
+              ) : (
+                <span className="text-amber-300">in progress</span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-[var(--text-muted)]">pfsync0 not present in the kernel.</div>
+        )}
+      </section>
 
       {/* pfsync sparkline */}
       <section>
@@ -287,7 +359,8 @@ export default function ClusterDashboard() {
                   <th className="text-left p-2">VHID</th>
                   <th className="text-left p-2">Interface</th>
                   <th className="text-left p-2">VIP</th>
-                  <th className="text-left p-2">Status</th>
+                  <th className="text-left p-2">Kernel state</th>
+                  <th className="text-left p-2">advskew</th>
                 </tr>
               </thead>
               <tbody>
@@ -298,7 +371,10 @@ export default function ClusterDashboard() {
                     <td className="p-2 font-mono">
                       {v.virtual_ip}/{v.prefix}
                     </td>
-                    <td className="p-2">{v.status}</td>
+                    <td className={`p-2 font-semibold ${STATE_CLASS[kernelVhid(v)?.state ?? ""] ?? "text-red-400"}`}>
+                      {kernelVhid(v)?.state.toUpperCase() ?? "NOT IN KERNEL"}
+                    </td>
+                    <td className="p-2">{kernelVhid(v)?.advskew ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -324,7 +400,13 @@ export default function ClusterDashboard() {
                 {n.address} &middot; last seen{" "}
                 {new Date(n.last_seen).toLocaleString()}
               </div>
-              <div className="text-xs opacity-70">health: {n.health}</div>
+              <div className="text-xs">
+                health:{" "}
+                <span className={HEALTH_CLASS[n.health] ?? "opacity-70"}>{n.health}</span>
+                {n.peer_state && (
+                  <span className="opacity-70"> · reports {ROLE_LABEL[n.peer_state] ?? n.peer_state}</span>
+                )}
+              </div>
               {n.software_version && (
                 <div className="text-xs opacity-70">
                   version: {n.software_version}
@@ -367,7 +449,16 @@ export default function ClusterDashboard() {
 
       {/* Health-check matrix */}
       <section>
-        <h2 className="text-lg font-semibold mb-2">Health checks</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold">Health checks</h2>
+          <button
+            onClick={runChecks}
+            disabled={busy || checks.length === 0}
+            className="px-3 py-1 rounded bg-[var(--bg-card)] border border-[var(--border)] hover:border-blue-500 disabled:opacity-50 text-xs"
+          >
+            Run now
+          </button>
+        </div>
         {checks.length === 0 ? (
           <div className="text-sm text-[var(--text-muted)]">
             No health checks configured.
@@ -381,6 +472,7 @@ export default function ClusterDashboard() {
                   <th className="text-left p-2">Type</th>
                   <th className="text-left p-2">Target</th>
                   <th className="text-left p-2">Enabled</th>
+                  <th className="text-left p-2">Last run</th>
                 </tr>
               </thead>
               <tbody>
@@ -390,6 +482,17 @@ export default function ClusterDashboard() {
                     <td className="p-2">{c.check_type}</td>
                     <td className="p-2 font-mono break-all">{c.target}</td>
                     <td className="p-2">{c.enabled ? "yes" : "no"}</td>
+                    <td className="p-2">
+                      {(() => {
+                        const r = runResults?.find((x) => x.name === c.name);
+                        if (!r) return "—";
+                        return r.healthy ? (
+                          <span className="text-green-400">pass</span>
+                        ) : (
+                          <span className="text-red-400">FAIL</span>
+                        );
+                      })()}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -400,9 +503,19 @@ export default function ClusterDashboard() {
 
       {/* Failover timeline */}
       <section>
-        <h2 className="text-lg font-semibold mb-2">
-          Failover events (last 24 h)
-        </h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold">Failover events</h2>
+          <select
+            value={historyDays}
+            onChange={(e) => changeDays(Number(e.target.value))}
+            className="bg-[var(--bg-card)] border border-[var(--border)] rounded px-2 py-1 text-xs"
+          >
+            <option value={1}>Last 24 h</option>
+            <option value={7}>Last 7 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={365}>Last year</option>
+          </select>
+        </div>
         {history.length === 0 ? (
           <div className="text-sm text-[var(--text-muted)]">
             No failover events recorded.
@@ -439,21 +552,51 @@ export default function ClusterDashboard() {
       </section>
 
       {/* Quick actions */}
-      <section className="flex gap-2 flex-wrap">
-        <button
-          onClick={demote}
-          disabled={busy}
-          className="px-3 py-1.5 rounded bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white text-sm"
-        >
-          Demote this node
-        </button>
-        <button
-          onClick={forceSync}
-          disabled={busy}
-          className="px-3 py-1.5 rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm"
-        >
-          Force sync from peer
-        </button>
+      <section className="space-y-2">
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={demote}
+            disabled={busy || status.demotion.reasons.includes("manual")}
+            title="Hand the VIPs to the peer until you clear it or reboot"
+            className="px-3 py-1.5 rounded bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white text-sm"
+          >
+            Demote this node
+          </button>
+          <button
+            onClick={clearDemotion}
+            disabled={
+              busy ||
+              !(status.demotion.reasons.includes("manual") || status.demotion.maintenance)
+            }
+            title="Clear operator demotion and maintenance mode"
+            className="px-3 py-1.5 rounded bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white text-sm"
+          >
+            Clear demotion
+          </button>
+          <button
+            onClick={toggleMaintenance}
+            disabled={busy}
+            className={`px-3 py-1.5 rounded disabled:opacity-50 text-white text-sm ${
+              confirmMaint ? "bg-red-600 hover:bg-red-700" : "bg-slate-600 hover:bg-slate-700"
+            }`}
+          >
+            {status.demotion.maintenance
+              ? "Leave maintenance mode"
+              : confirmMaint
+                ? "Confirm: enter maintenance"
+                : "Enter maintenance mode"}
+          </button>
+          <button
+            onClick={forceSync}
+            disabled={busy}
+            className="px-3 py-1.5 rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm"
+          >
+            Force sync from peer
+          </button>
+        </div>
+        <div className="text-xs text-[var(--text-muted)]">
+          Demote hands the VIPs to the peer until cleared or reboot. Maintenance mode keeps this node BACKUP across reboots until you leave it.
+        </div>
       </section>
     </div>
   );

@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   type CarpVip,
   type InterfaceInfo,
+  type KernelVhid,
   type VipFormState,
   defaultVipForm,
 } from "@/lib/api/cluster";
@@ -20,12 +21,15 @@ import { btnDanger, btnEdit, inputCls, labelCls, selectCls } from "./styles";
 
 export function CarpVipSection({
   vips,
+  kernelVhids,
   ifaces,
   saving,
   onSave,
   onDelete,
 }: {
   vips: CarpVip[];
+  /** Live kernel state per vhid (#712). */
+  kernelVhids: KernelVhid[];
   ifaces: InterfaceInfo[];
   saving: boolean;
   /// `onSaved` is invoked only when the save succeeded (before reload).
@@ -207,7 +211,26 @@ export function CarpVipSection({
                   <td className="py-2.5 px-4 font-mono">
                     {v.virtual_ip}/{v.prefix}
                   </td>
-                  <td className="py-2.5 px-4">{v.status}</td>
+                  <td className="py-2.5 px-4">
+                    {(() => {
+                      const k = kernelVhids.find(
+                        (x) => x.vhid === v.vhid && x.interface === v.interface,
+                      );
+                      if (!k) return <span className="text-red-400">not in kernel</span>;
+                      const cls =
+                        k.state === "master"
+                          ? "text-green-400"
+                          : k.state === "backup"
+                            ? "text-blue-300"
+                            : "text-amber-300";
+                      return (
+                        <span className={cls}>
+                          {k.state.toUpperCase()}
+                          <span className="text-gray-500"> · skew {k.advskew}</span>
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="py-2.5 px-2">
                     <div className="flex items-center gap-1">
                       <button

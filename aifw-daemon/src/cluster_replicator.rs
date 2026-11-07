@@ -23,6 +23,8 @@ pub struct ClusterReplicator {
     /// Tracks whether we have already emitted the one-shot auth warning so we
     /// don't spam the log on every 10-second tick.
     auth_warned: AtomicBool,
+    /// A refused push is recorded once per episode, not every 10 s tick.
+    refused: AtomicBool,
 }
 
 impl ClusterReplicator {
@@ -32,6 +34,7 @@ impl ClusterReplicator {
             api_base,
             self_api_key,
             auth_warned: AtomicBool::new(false),
+            refused: AtomicBool::new(false),
         }
     }
 
@@ -140,19 +143,27 @@ impl ClusterReplicator {
             if resp.status().as_u16() == 409 {
                 tracing::warn!(
                     peer = %peer.address,
-                    "ha: peer rejected snapshot (conflict — peer also reports MASTER)"
+                    "ha: peer refused snapshot (it reports MASTER or is initialising)"
                 );
-                let _ = self
-                    .engine
-                    .record_failover_event(
-                        "primary",
-                        "primary",
-                        "split_brain_detected",
-                        Some(&format!("peer {} also reports MASTER", peer.address)),
-                    )
-                    .await;
+                if !self.refused.swap(true, Ordering::Relaxed)
+                    && let Err(e) = self
+                        .engine
+                        .record_failover_event(
+                            "primary",
+                            "primary",
+                            "push_refused",
+                            Some(&format!(
+                                "peer {} refused the snapshot (it is MASTER or initialising)",
+                                peer.address
+                            )),
+                        )
+                        .await
+                {
+                    tracing::warn!(error = %e, "ha: could not record refused push");
+                }
             } else {
                 resp.error_for_status()?;
+                self.refused.store(false, Ordering::Relaxed);
                 tracing::debug!(
                     peer = %peer.address,
                     "ha: snapshot pushed to peer"

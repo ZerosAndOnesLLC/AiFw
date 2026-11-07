@@ -33,6 +33,8 @@ pub mod error;
 pub mod geoip;
 /// [`ClusterEngine`] and CARP role helpers for high-availability clustering
 pub mod ha;
+/// HA health-check probes shared by the daemon and the API
+pub mod ha_probe;
 pub mod ipsec;
 pub mod ipsec_status;
 /// Local log storage policy for the remote-syslog `disable_local` toggle

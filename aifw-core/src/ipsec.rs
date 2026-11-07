@@ -573,6 +573,10 @@ pub struct IpsecEngine {
     pool: SqlitePool,
     ike: Arc<dyn IkeControl>,
     store: Arc<dyn IpsecConfStore>,
+    /// CARP BACKUP (#712): render every child with `start_action = none`
+    /// so the standby only responds and never initiates with the same
+    /// identities as the master. Flipped by the role-change hook.
+    standby: std::sync::atomic::AtomicBool,
 }
 
 impl IpsecEngine {
@@ -580,7 +584,25 @@ impl IpsecEngine {
     /// a conf store (SwanctlControl + SystemConfStore on FreeBSD,
     /// mocks elsewhere).
     pub fn new(pool: SqlitePool, ike: Arc<dyn IkeControl>, store: Arc<dyn IpsecConfStore>) -> Self {
-        Self { pool, ike, store }
+        Self {
+            pool,
+            ike,
+            store,
+            standby: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Mark this node as HA standby (true) or active (false). Returns
+    /// whether the value changed; the caller re-runs [`Self::apply_all`].
+    pub fn set_standby(&self, standby: bool) -> bool {
+        self.standby
+            .swap(standby, std::sync::atomic::Ordering::SeqCst)
+            != standby
+    }
+
+    /// Whether tunnels are currently rendered in standby mode.
+    pub fn is_standby(&self) -> bool {
+        self.standby.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The IKE control backend (used by the apply/status layer).
@@ -785,11 +807,19 @@ impl IpsecEngine {
         use aifw_common::{IpsecAuthMethod, IpsecCertSource};
 
         let mut files = std::collections::HashMap::new();
+        let standby = self.is_standby();
         for t in tunnels.iter().filter(|t| t.enabled) {
             let conn = t.conn_name();
+            let rendered = if standby {
+                let mut passive = t.clone();
+                passive.start_action = aifw_common::IpsecStartAction::None;
+                render_swanctl_conf(&passive)
+            } else {
+                render_swanctl_conf(t)
+            };
             files.insert(
                 format!("{SWANCTL_CONF_DIR}/{conn}.conf"),
-                render_swanctl_conf(t).into_bytes(),
+                rendered.into_bytes(),
             );
 
             if t.auth_method == IpsecAuthMethod::Cert {

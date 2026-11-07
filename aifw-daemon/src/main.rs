@@ -1,6 +1,7 @@
 mod cluster_replicator;
 mod ha_boot;
 mod health_prober;
+mod peer_monitor;
 mod role_watcher;
 
 use aifw_core::{
@@ -410,6 +411,8 @@ async fn async_main() -> anyhow::Result<()> {
         // Load the aifw-ha anchor, reconcile pfsync/CARP into the kernel and
         // release the boot demotion hold once state sync is ready (#712).
         ha_boot::start(cluster_engine.clone()).await;
+        // Peer monitor: node health / last_seen / peer role / split brain.
+        tokio::spawn(peer_monitor::PeerMonitor::new(cluster_engine.clone()).run());
 
         // Cluster background tasks — active only when AIFW_LOOPBACK_API_KEY is set.
         // RoleWatcher: 1s CARP role polling → /cluster/internal/role-changed

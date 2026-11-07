@@ -42,6 +42,74 @@ export type Node = {
   cert_fingerprint?: string | null;
   /** Port the peer's API listens on (#487); 8080 unless configured. */
   api_port?: number;
+  software_version?: string | null;
+  last_pushed_cert_at?: string | null;
+  /** Live CARP role the peer last reported to the peer monitor (#712). */
+  peer_state?: string | null;
+};
+
+/** One CARP vhid as the kernel reports it (#712). */
+export type KernelVhid = {
+  interface: string;
+  vhid: number;
+  state: "master" | "backup" | "init" | string;
+  advbase: number;
+  advskew: number;
+};
+
+export type KernelPfsync = {
+  up: boolean;
+  syncdev: string | null;
+  syncpeer: string | null;
+  defer: boolean;
+  /** Bulk update finished; null when the kernel doesn't report it. */
+  syncok: boolean | null;
+};
+
+export type DemoteReason =
+  | "boot"
+  | "shutdown"
+  | "health"
+  | "manual"
+  | "maintenance";
+
+export type ClusterStatus = {
+  /** primary | secondary | split | init | standalone */
+  role: string;
+  configured_role: string;
+  peer_reachable: boolean;
+  pfsync_state_count: number;
+  last_snapshot_hash: string | null;
+  carp: {
+    vhids: KernelVhid[];
+    addrs: { interface: string; addr: string; vhid: number }[];
+    pfsync: KernelPfsync | null;
+  };
+  demotion: {
+    level: number | null;
+    reasons: DemoteReason[];
+    preempt: boolean | null;
+    maintenance: boolean;
+  };
+  peer: Node | null;
+  split_brain: boolean;
+  warnings: string[];
+};
+
+export type HealthRunResult = {
+  name: string;
+  check_type: string;
+  target: string;
+  healthy: boolean;
+};
+
+export type FailoverEvent = {
+  id: string;
+  ts: string;
+  from_role: string;
+  to_role: string;
+  cause: string;
+  detail?: string | null;
 };
 
 export type HealthCheck = {
@@ -209,6 +277,19 @@ export const promoteCluster = () =>
   api.post<unknown>("/api/v1/cluster/promote");
 
 export const demoteCluster = () => api.post<unknown>("/api/v1/cluster/demote");
+
+export const getClusterStatus = () =>
+  api.get<ClusterStatus>("/api/v1/cluster/status", { noAuthRedirect: true });
+
+/** Persistent CARP maintenance mode — stays BACKUP across reboots (#712). */
+export const setMaintenance = (enabled: boolean) =>
+  api.put<unknown>("/api/v1/cluster/maintenance", { enabled });
+
+export const runHealthChecks = () =>
+  api.post<HealthRunResult[]>("/api/v1/cluster/health/run");
+
+export const getFailoverHistory = (days: number) =>
+  api.get<FailoverEvent[]>(`/api/v1/cluster/failover-history?days=${days}`);
 
 export const generateNodePeerKey = (nodeId: string) =>
   api.post<{ key: string }>(`/api/v1/cluster/nodes/${nodeId}/generate-key`);

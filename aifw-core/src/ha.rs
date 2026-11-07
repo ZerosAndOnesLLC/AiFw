@@ -85,6 +85,8 @@ impl ClusterEngine {
             "software_version",
             "last_pushed_cert_at",
             "cert_fingerprint",
+            // #712: live CARP role the peer last reported (peer monitor)
+            "peer_state",
         ] {
             crate::schema::add_column_if_missing(&self.pool, "cluster_nodes", column, "TEXT")
                 .await?;
@@ -374,6 +376,35 @@ impl ClusterEngine {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(|r| r.into_node()).collect()
+    }
+
+    /// Record a peer-monitor probe (#712): health, and — when the peer
+    /// answered — its live CARP role and software version. `last_seen` only
+    /// moves when the peer actually answered.
+    pub async fn record_peer_probe(
+        &self,
+        id: Uuid,
+        health: NodeHealth,
+        peer_state: Option<&str>,
+        software_version: Option<&str>,
+    ) -> Result<()> {
+        let answered = matches!(health, NodeHealth::Healthy | NodeHealth::Degraded);
+        sqlx::query(
+            "UPDATE cluster_nodes SET health = ?1, \
+             last_seen = CASE WHEN ?2 THEN ?3 ELSE last_seen END, \
+             peer_state = COALESCE(?4, peer_state), \
+             software_version = COALESCE(?5, software_version) \
+             WHERE id = ?6",
+        )
+        .bind(health.to_string())
+        .bind(answered)
+        .bind(Utc::now().to_rfc3339())
+        .bind(peer_state)
+        .bind(software_version)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Set a node's health status and bump its `last_seen` timestamp to now
@@ -923,44 +954,23 @@ async fn local_hostname() -> Option<String> {
 
 /// Returns the live CARP role of this node.
 ///
-/// Reads `ifconfig` for the authoritative kernel state; falls back to
-/// `sysrc aifw_cluster_role` when no CARP iface has reported state yet
-/// (e.g., during early boot). Returns `ClusterRole::Standalone` when
-/// neither source yields a result.
+/// Reads the kernel (all VHIDs): `Primary` only when every VHID is MASTER,
+/// `Secondary` when any VHID is BACKUP/INIT or the VHIDs disagree (#712:
+/// this used to look at the first `carp:` line only, so a node that was
+/// MASTER on LAN but BACKUP on WAN reported whichever came first). With no
+/// CARP in the kernel at all it falls back to `aifw_cluster_role`, then
+/// `Standalone`.
 ///
 /// This is the canonical role helper. All callers in aifw-api and
 /// aifw-daemon should delegate here rather than reimplementing.
 pub async fn current_local_role() -> aifw_common::ClusterRole {
-    let live = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg("ifconfig 2>/dev/null | awk '/carp:/ {print tolower($2); exit}'")
-        .output()
-        .await
-        .ok();
-    if let Some(o) = live
-        && o.status.success()
-    {
-        match String::from_utf8_lossy(&o.stdout).trim() {
-            "master" => return aifw_common::ClusterRole::Primary,
-            "backup" => return aifw_common::ClusterRole::Secondary,
-            _ => {} // fall through to sysrc fallback
-        }
+    match crate::carp::kernel_view().await.aggregate_state() {
+        "master" => aifw_common::ClusterRole::Primary,
+        "none" => read_rc_cluster_role()
+            .await
+            .unwrap_or(aifw_common::ClusterRole::Standalone),
+        _ => aifw_common::ClusterRole::Secondary,
     }
-    tokio::process::Command::new("sysrc")
-        .arg("-n")
-        .arg("aifw_cluster_role")
-        .output()
-        .await
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .and_then(|s| aifw_common::ClusterRole::parse(&s).ok())
-        .unwrap_or(aifw_common::ClusterRole::Standalone)
 }
 
 /// Returns true if the local node is currently the active CARP MASTER.
@@ -1088,7 +1098,7 @@ impl PfsyncRow {
 /// of `ClusterNodeRow`, so they are intentionally omitted here.
 const CLUSTER_NODES_COLUMNS: &str = "id, name, address, role, health, last_seen, \
     config_version, created_at, software_version, last_pushed_cert_at, cert_fingerprint, \
-    api_port";
+    api_port, peer_state";
 
 #[derive(sqlx::FromRow)]
 struct ClusterNodeRow {
@@ -1104,6 +1114,7 @@ struct ClusterNodeRow {
     last_pushed_cert_at: Option<String>,
     cert_fingerprint: Option<String>,
     api_port: i64,
+    peer_state: Option<String>,
 }
 
 impl ClusterNodeRow {
@@ -1137,6 +1148,7 @@ impl ClusterNodeRow {
                 .ok()
                 .filter(|p| *p > 0)
                 .unwrap_or(aifw_common::DEFAULT_LOOPBACK_API_PORT),
+            peer_state: self.peer_state,
         })
     }
 }

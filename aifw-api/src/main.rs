@@ -618,6 +618,7 @@ pub fn build_router(
         .merge(router::proxy_write())
         .merge(router::multiwan_read())
         .merge(router::multiwan_write())
+        .merge(router::cluster_status())
         .merge(router::cluster_read())
         .merge(router::cluster_write())
         .merge(router::system_read())
@@ -1628,6 +1629,19 @@ async fn async_main() -> anyhow::Result<()> {
     // Re-render IPsec swanctl config from the DB and reload charon (#530).
     // Covers reboot, restore-from-backup, and upgrade; no-op on boxes that
     // never configured IPsec tunnels.
+    // #712: a clustered node that isn't CARP MASTER renders IPsec passive
+    // (start_action = none); the role-change hook flips it on MASTER.
+    if !state
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .unwrap_or_default()
+        .is_empty()
+        && aifw_core::carp::kernel_view().await.aggregate_state() != "master"
+    {
+        state.ipsec_engine.set_standby(true);
+        tracing::info!("IPsec in standby mode: this node is not CARP MASTER");
+    }
     if let Err(e) = state.ipsec_engine.ensure_applied().await {
         warn!(error = %e, "IPsec ensure_applied failed — tunnels may need a manual re-apply");
     }

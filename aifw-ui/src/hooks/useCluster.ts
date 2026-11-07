@@ -23,6 +23,7 @@ import {
   generateLoopbackKey as apiGenerateLoopbackKey,
   generateNodePeerKey,
   repinNode,
+  getClusterStatus,
   getHealthSummary,
   getPfsync,
   listCarpVips,
@@ -35,6 +36,7 @@ import {
   updateHealthCheck,
   updateNode,
   updatePfsync,
+  type KernelVhid,
 } from "@/lib/api/cluster";
 
 /// Data + actions for the Cluster & High Availability page (#428).
@@ -53,6 +55,8 @@ export function useCluster() {
   const [healthChecks, setHealthChecks] = useState<HealthCheck[]>([]);
   const [summary, setSummary] = useState<HealthSummary | null>(null);
   const [ifaces, setIfaces] = useState<InterfaceInfo[]>([]);
+  /** Live CARP vhids from the kernel (#712) — the DB `status` is never updated. */
+  const [kernelVhids, setKernelVhids] = useState<KernelVhid[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -86,6 +90,8 @@ export function useCluster() {
       getHealthSummary().catch(() => null),
       listInterfaces().catch(() => ({ data: [] as InterfaceInfo[] })),
     ]);
+    const st = await getClusterStatus().catch(() => null);
+    setKernelVhids(st?.carp.vhids ?? []);
     setVips(v);
     setPfsync(p);
     setNodes(n);
@@ -107,6 +113,8 @@ export function useCluster() {
     try {
       await promoteCluster();
       await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Clearing demotion failed");
     } finally {
       setBusy(false);
     }
@@ -117,6 +125,8 @@ export function useCluster() {
     try {
       await demoteCluster();
       await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Demote failed");
     } finally {
       setBusy(false);
     }
@@ -392,6 +402,7 @@ export function useCluster() {
     healthChecks,
     summary,
     ifaces,
+    kernelVhids,
     // shared flags
     busy,
     error,

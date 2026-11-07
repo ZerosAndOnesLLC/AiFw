@@ -33,22 +33,57 @@ pub(super) fn read_api_token() -> String {
         .to_string()
 }
 
+/// Base URL of the local API: `AIFW_API_URL`, else the appliance loopback
+/// (`https://127.0.0.1:8080`). The API serves HTTPS; the old plain-HTTP
+/// default never connected (#712).
+fn api_base() -> String {
+    std::env::var("AIFW_API_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| aifw_common::DEFAULT_LOOPBACK_API_BASE.to_string())
+}
+
+/// Path of the daemon loopback key (root:aifw 0640) — a `system` identity
+/// with `ha:manage`, so `aifw cluster …` works as root out of the box.
+const LOOPBACK_KEY_PATH: &str = "/usr/local/etc/aifw/daemon.key";
+
+/// `Authorization` header value for the local API.
+///
+/// Resolution order:
+///   1. `AIFW_TOKEN` env var → `Bearer <token>` (a user's JWT)
+///   2. the daemon loopback key → `ApiKey <key>` (readable by root)
+pub(super) fn auth_header() -> Option<String> {
+    if let Ok(t) = std::env::var("AIFW_TOKEN")
+        && !t.is_empty()
+    {
+        return Some(format!("Bearer {t}"));
+    }
+    std::fs::read_to_string(LOOPBACK_KEY_PATH)
+        .ok()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .map(|k| format!("ApiKey {k}"))
+}
+
 fn api_client() -> anyhow::Result<reqwest::Client> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-    Ok(client)
+    let timeout = std::time::Duration::from_secs(10);
+    if api_base().starts_with("https://") {
+        // Pinned to the certificate the local API serves (#317).
+        return Ok(aifw_core::peer_tls::LocalApiClient::new(timeout).get()?);
+    }
+    Ok(reqwest::Client::builder().timeout(timeout).build()?)
+}
+
+fn authed(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match auth_header() {
+        Some(h) => req.header("Authorization", h),
+        None => req,
+    }
 }
 
 async fn api_get(path: &str) -> anyhow::Result<serde_json::Value> {
-    let url = format!("{AIFW_API_BASE}{path}");
-    let token = read_api_token();
-    let client = api_client()?;
-    let mut req = client.get(&url);
-    if !token.is_empty() {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-    let resp = req.send().await?;
+    let url = format!("{}{path}", api_base());
+    let resp = authed(api_client()?.get(&url)).send().await?;
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -58,14 +93,8 @@ async fn api_get(path: &str) -> anyhow::Result<serde_json::Value> {
 }
 
 async fn api_post(path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    let url = format!("{AIFW_API_BASE}{path}");
-    let token = read_api_token();
-    let client = api_client()?;
-    let mut req = client.post(&url).json(body);
-    if !token.is_empty() {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-    let resp = req.send().await?;
+    let url = format!("{}{path}", api_base());
+    let resp = authed(api_client()?.post(&url).json(body)).send().await?;
     let status = resp.status();
     if !status.is_success() {
         let body_text = resp.text().await.unwrap_or_default();
@@ -79,14 +108,8 @@ async fn api_post(path: &str, body: &serde_json::Value) -> anyhow::Result<serde_
 }
 
 async fn api_put(path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    let url = format!("{AIFW_API_BASE}{path}");
-    let token = read_api_token();
-    let client = api_client()?;
-    let mut req = client.put(&url).json(body);
-    if !token.is_empty() {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-    let resp = req.send().await?;
+    let url = format!("{}{path}", api_base());
+    let resp = authed(api_client()?.put(&url).json(body)).send().await?;
     let status = resp.status();
     if !status.is_success() {
         let body_text = resp.text().await.unwrap_or_default();
@@ -99,14 +122,8 @@ async fn api_put(path: &str, body: &serde_json::Value) -> anyhow::Result<serde_j
 }
 
 async fn api_delete(path: &str) -> anyhow::Result<()> {
-    let url = format!("{AIFW_API_BASE}{path}");
-    let token = read_api_token();
-    let client = api_client()?;
-    let mut req = client.delete(&url);
-    if !token.is_empty() {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-    let resp = req.send().await?;
+    let url = format!("{}{path}", api_base());
+    let resp = authed(api_client()?.delete(&url)).send().await?;
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
@@ -295,13 +312,27 @@ pub async fn cluster_health_remove(id: &str) -> anyhow::Result<()> {
 }
 
 pub async fn cluster_health_run() -> anyhow::Result<()> {
-    // POST to the trigger endpoint; the daemon still probes on its own 1-second
-    // tick. This returns 202 Accepted — the actual out-of-band probe mechanism
-    // is a future enhancement. See aifw-api/src/cluster.rs::run_health_checks.
-    let r = api_post("/api/v1/cluster/health/run", &serde_json::json!({})).await;
-    match r {
-        Ok(_) => println!("Health-check run requested (daemon probes on its own 1s tick)."),
-        Err(e) => eprintln!("Failed: {e}"),
+    let results = api_post("/api/v1/cluster/health/run", &serde_json::json!({})).await?;
+    let rows = results.as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        println!("No enabled health checks.");
+    }
+    let mut failed = 0;
+    for r in &rows {
+        let ok = r["healthy"].as_bool().unwrap_or(false);
+        if !ok {
+            failed += 1;
+        }
+        println!(
+            "{:4}  {:<24} {:<16} {}",
+            if ok { "OK" } else { "FAIL" },
+            r["name"].as_str().unwrap_or(""),
+            r["check_type"].as_str().unwrap_or(""),
+            r["target"].as_str().unwrap_or("")
+        );
+    }
+    if failed > 0 {
+        anyhow::bail!("{failed} health check(s) failing");
     }
     Ok(())
 }
@@ -346,80 +377,10 @@ pub async fn cluster_sync() -> anyhow::Result<()> {
 /// Exits 0 when healthy, 1 on any failure.
 /// Designed to be called by scripts/ha-verify.sh (Commit 11 / #223).
 pub async fn cluster_verify(as_json: bool) -> anyhow::Result<()> {
-    let mut failures: Vec<String> = Vec::new();
-
-    // 1. pf state-policy floating
-    match tokio::process::Command::new("pfctl")
-        .args(["-sr"])
-        .output()
+    let failures = verify_failures().await;
+    let status: serde_json::Value = api_get("/api/v1/cluster/status")
         .await
-    {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            if !stdout.contains("set state-policy floating") {
-                failures.push("pf state-policy is not floating".into());
-            }
-        }
-        Err(_) => failures.push("pfctl -sr failed (not on FreeBSD or pf disabled?)".into()),
-    }
-
-    // 2. pfsync0 UP
-    match tokio::process::Command::new("ifconfig")
-        .arg("pfsync0")
-        .output()
-        .await
-    {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            if !stdout.contains("UP") {
-                failures.push("pfsync0 not UP".into());
-            }
-        }
-        Err(_) => failures.push("pfsync0 not present (kernel module loaded?)".into()),
-    }
-
-    // 3. Some CARP VIPs configured (any interface) — only meaningful on FreeBSD
-    match tokio::process::Command::new("ifconfig").output().await {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            if !stdout.contains("carp:") {
-                if std::env::consts::OS == "freebsd" {
-                    failures.push("no CARP VIPs configured (no 'carp:' lines in ifconfig)".into());
-                } else {
-                    failures.push(format!(
-                        "CARP check skipped: not running on FreeBSD (host OS is {})",
-                        std::env::consts::OS
-                    ));
-                }
-            }
-        }
-        Err(_) => failures.push("ifconfig failed".into()),
-    }
-
-    // 4+5. Status from API: peer_reachable and snapshot hash present
-    let status: serde_json::Value = match api_get("/api/v1/cluster/status").await {
-        Ok(s) => s,
-        Err(e) => {
-            failures.push(format!("/cluster/status failed: {e}"));
-            serde_json::json!({})
-        }
-    };
-    if !status
-        .get("peer_reachable")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        failures.push("peer unreachable".into());
-    }
-    if status
-        .get("last_snapshot_hash")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .is_empty()
-    {
-        failures.push("no config snapshot on record (replication may be stalled)".into());
-    }
-
+        .unwrap_or(serde_json::Value::Null);
     if as_json {
         let body = serde_json::json!({
             "ok": failures.is_empty(),
@@ -440,4 +401,75 @@ pub async fn cluster_verify(as_json: bool) -> anyhow::Result<()> {
     } else {
         std::process::exit(1);
     }
+}
+
+/// Every check `aifw cluster verify` runs (#712: the old checks grepped
+/// `pfctl -sr` for a `set` option that never appears there, and required a
+/// received-snapshot hash that only a standby ever has — a healthy primary
+/// could not pass).
+async fn verify_failures() -> Vec<String> {
+    let mut failures: Vec<String> = Vec::new();
+    if std::env::consts::OS != "freebsd" {
+        failures.push(format!(
+            "kernel checks skipped: not running on FreeBSD (host OS is {})",
+            std::env::consts::OS
+        ));
+    }
+
+    // 1. floating state policy in the loaded pf.conf (needed for pfsync'd
+    //    states to match on the surviving node)
+    let pf_conf = std::fs::read_to_string("/usr/local/etc/aifw/pf.conf.aifw").unwrap_or_default();
+    if !pf_conf
+        .lines()
+        .any(|l| l.trim() == "set state-policy floating")
+    {
+        failures.push("pf.conf.aifw does not set `state-policy floating`".into());
+    }
+
+    // 2. kernel CARP + pfsync
+    let view = aifw_core::carp::kernel_view().await;
+    if view.vhids.is_empty() {
+        failures.push("no CARP vhids in the kernel".into());
+    }
+    match view.aggregate_state() {
+        "split" => failures.push("vhids disagree (MASTER on some, BACKUP on others)".into()),
+        "init" => failures.push("a vhid is still in INIT".into()),
+        _ => {}
+    }
+    if aifw_core::carp::preempt_enabled().await != Some(true) {
+        failures.push("net.inet.carp.preempt is not 1".into());
+    }
+    match &view.pfsync {
+        None => failures.push("pfsync0 does not exist".into()),
+        Some(p) if !p.up => failures.push("pfsync0 is down".into()),
+        Some(p) if p.syncdev.is_none() => failures.push("pfsync0 has no syncdev".into()),
+        Some(p) if p.syncok == Some(false) => {
+            failures.push("pfsync bulk update not complete (syncok 0)".into())
+        }
+        _ => {}
+    }
+    let reasons = aifw_core::carp::held_reasons().await;
+    if !reasons.is_empty() {
+        let names: Vec<&str> = reasons.iter().map(|r| r.as_str()).collect();
+        failures.push(format!("demotion held: {}", names.join(", ")));
+    }
+
+    // 3. API view: peer answering, no split brain, replication state
+    match api_get("/api/v1/cluster/status").await {
+        Ok(st) => {
+            if !st["peer_reachable"].as_bool().unwrap_or(false) {
+                failures.push("peer is not answering on its API".into());
+            }
+            if st["split_brain"].as_bool().unwrap_or(false) {
+                failures.push("split brain: both nodes report MASTER".into());
+            }
+            if st["configured_role"] == "secondary"
+                && st["last_snapshot_hash"].as_str().unwrap_or("").is_empty()
+            {
+                failures.push("no config snapshot received from the primary yet".into());
+            }
+        }
+        Err(e) => failures.push(format!("/cluster/status failed: {e}")),
+    }
+    failures
 }

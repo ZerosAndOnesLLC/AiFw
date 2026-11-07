@@ -1108,6 +1108,10 @@ pub(crate) fn multiwan_write() -> Router<AppState> {
         .layer(middleware::from_fn(perm_check!(Permission::MultiWanWrite)))
 }
 
+pub(crate) fn cluster_status() -> Router<AppState> {
+    cluster::status_routes().layer(middleware::from_fn(perm_check!(Permission::DashboardView)))
+}
+
 pub(crate) fn cluster_read() -> Router<AppState> {
     cluster::read_routes().layer(middleware::from_fn(perm_check!(Permission::HaManage)))
 }

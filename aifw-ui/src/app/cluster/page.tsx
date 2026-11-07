@@ -18,6 +18,7 @@ export default function ClusterPage() {
     healthChecks,
     summary,
     ifaces,
+    kernelVhids,
     busy,
     error,
     dismissError,
@@ -63,7 +64,7 @@ export default function ClusterPage() {
             disabled={busy}
             className="px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm"
           >
-            Promote
+            Clear demotion
           </button>
           <button
             onClick={demote}
@@ -150,6 +151,7 @@ export default function ClusterPage() {
       {/* CARP Virtual IPs */}
       <CarpVipSection
         vips={vips}
+        kernelVhids={kernelVhids}
         ifaces={ifaces}
         saving={savingVip}
         onSave={saveVip}

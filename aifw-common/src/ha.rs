@@ -11,20 +11,25 @@ use crate::types::Interface;
 
 /// Latency profile controlling CARP advertisement timers.
 ///
-/// Maps to (advbase, primary_advskew, secondary_advskew):
-/// - Conservative: ~3 s detection, very stable
-/// - Tight: ~1.5 s detection, requires reliable network
-/// - Aggressive: ~1 s detection, requires future heartbeat daemon
+/// Maps to (advbase, primary_advskew, secondary_advskew). A BACKUP declares
+/// the master dead after `3 × advbase + advskew/256` seconds without an
+/// advertisement, and advbase can't go below 1 s, so hard-failure takeover
+/// is ~3.0–3.4 s for every profile (#712: the old ~1.5 s / ~1 s figures were
+/// never achievable). Planned moves (demotion, maintenance, shutdown) take
+/// about one advertisement interval with any profile.
+/// - Conservative: secondary skew 100 → ~3.4 s, most margin on lossy links
+/// - Tight: secondary skew 20 → ~3.1 s
+/// - Aggressive: secondary skew 10 → ~3.0 s
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
 pub enum CarpLatencyProfile {
-    /// ~3 s failover detection, very stable (default)
+    /// Secondary advskew 100 — ~3.4 s takeover (default)
     #[default]
     Conservative,
-    /// ~1.5 s failover detection, requires a reliable network
+    /// Secondary advskew 20 — ~3.1 s takeover
     Tight,
-    /// ~1 s failover detection, requires the future heartbeat daemon
+    /// Secondary advskew 10 — ~3.0 s takeover
     Aggressive,
 }
 
@@ -321,6 +326,10 @@ pub struct ClusterNode {
     /// API on a non-default port.
     #[serde(default = "default_api_port")]
     pub api_port: u16,
+    /// Live CARP role this peer last reported to the peer monitor
+    /// (`primary`/`secondary`/`split`/`init`/`none`); `None` until probed.
+    #[serde(default)]
+    pub peer_state: Option<String>,
 }
 
 fn default_api_port() -> u16 {
@@ -370,6 +379,7 @@ impl ClusterNode {
             last_pushed_cert_at: None,
             cert_fingerprint: None,
             api_port: crate::DEFAULT_LOOPBACK_API_PORT,
+            peer_state: None,
         }
     }
 
