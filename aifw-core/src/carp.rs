@@ -494,6 +494,20 @@ lo0: flags=1008049<UP,LOOPBACK,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 16384
         assert_eq!(init.aggregate_state(), "init");
     }
 
+    /// Verbatim `ifconfig pfsync0` from FreeBSD 15.1 (captured on the dev VM
+    /// during the live helper test, #712).
+    #[test]
+    fn parses_real_freebsd_15_pfsync0() {
+        let v = parse_ifconfig(
+            "pfsync0: flags=1000041<UP,RUNNING,LOWER_UP> metric 0 mtu 1500\n\toptions=0\n\tsyncdev: epair0b maxupd: 128 defer: off version: 1500\n\tsyncok: 0\n\tgroups: pfsync\n",
+        );
+        let p = v.pfsync.expect("pfsync0");
+        assert!(p.up);
+        assert_eq!(p.syncdev.as_deref(), Some("epair0b"));
+        assert!(!p.defer);
+        assert_eq!(p.syncok, Some(false));
+    }
+
     #[test]
     fn pfsync_syncok_zero_is_not_ready() {
         let v = parse_ifconfig(
