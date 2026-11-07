@@ -153,10 +153,13 @@ See the [reverse proxy guide]({{ '/docs/reverse-proxy/' | relative_url }}) for s
 
 ## High availability
 
-- **CARP** virtual IPs with VHID, advskew, advbase tuning
-- **pfsync** state table synchronization
-- **Cluster node management** with health checks
-- Config sync between nodes
+- **CARP** virtual IPs (IPv4/IPv6) with latency profiles, preemption, and reason-tracked demotion
+- **pfsync** state table synchronization; a rebooted node stays BACKUP until the bulk update completes
+- **Maintenance mode** that survives reboots, plus demote / clear from the UI and CLI
+- **Health checks** that demote the node on failure and release after a hold-down
+- **Peer monitor** with per-VHID status, peer health, and split-brain detection
+- Config sync between nodes that keeps each node's own identity (keys, pins, pfsync, DHCP-HA)
+- WireGuard and IPsec role handling: the standby never initiates IPsec; WireGuard can be torn down on BACKUP
 
 ## Geo-IP
 
