@@ -645,6 +645,7 @@ pub(crate) async fn build_current_config(state: &AppState) -> Result<FirewallCon
             address6: t.address6.as_ref().map(|a| a.to_string()),
             dns: t.dns.clone(),
             mtu: t.mtu,
+            enabled: Some(t.status == aifw_common::VpnStatus::Up),
             peers: peers
                 .iter()
                 .map(|p| WireguardPeerConfig {
@@ -1835,10 +1836,48 @@ pub(crate) async fn apply_firewall_config_or_rollback(
     Err(apply_err)
 }
 
+/// How [`apply_firewall_config_mode`] treats node-local state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyMode {
+    /// Backup restore / import: the config is authoritative for this node.
+    /// Node-local HA tables are still kept when the backup came from a
+    /// different host (restoring node A's backup on node B must not hand B
+    /// A's cluster identity, #712).
+    Restore,
+    /// Master → standby replication (#712): never touch this node's
+    /// identity (`cluster_nodes`, `pfsync_config`, DHCP-HA peer settings,
+    /// `/etc/resolv.conf`) and only restart services whose section changed.
+    ClusterSync,
+}
+
 pub(crate) async fn apply_firewall_config(
     state: &AppState,
     config: &FirewallConfig,
     iface_map: &InterfaceMap,
+) -> Result<(), StatusCode> {
+    apply_firewall_config_mode(state, config, iface_map, ApplyMode::Restore).await
+}
+
+/// True when `config` was exported on a different host than this one and
+/// this node already has its own cluster identity to protect.
+async fn is_foreign_cluster_backup(state: &AppState, config: &FirewallConfig) -> bool {
+    let local = gethostname().unwrap_or_default();
+    if config.system.hostname.is_empty() || local.is_empty() || config.system.hostname == local {
+        return false;
+    }
+    state
+        .cluster_engine
+        .list_nodes()
+        .await
+        .map(|n| !n.is_empty())
+        .unwrap_or(false)
+}
+
+pub(crate) async fn apply_firewall_config_mode(
+    state: &AppState,
+    config: &FirewallConfig,
+    iface_map: &InterfaceMap,
+    mode: ApplyMode,
 ) -> Result<(), StatusCode> {
     use aifw_common::{
         Address, CountryCode, GeoIpRule, Interface, IpsecSa, VpnStatus, WgPeer, WgTunnel,
@@ -1869,6 +1908,26 @@ pub(crate) async fn apply_firewall_config(
         .migrate()
         .await
         .map_err(|e| apply_fail("ha migrate", e))?;
+
+    let cluster_sync = mode == ApplyMode::ClusterSync;
+    let keep_local_ha = cluster_sync || is_foreign_cluster_backup(state, config).await;
+    if keep_local_ha && !cluster_sync {
+        tracing::info!(
+            backup_host = %config.system.hostname,
+            "restore: backup is from another host — keeping this node's cluster identity"
+        );
+    }
+    // Pre-apply view, for change detection: a replication push must not
+    // bounce rDHCP/the resolver/IPsec when only a firewall rule changed.
+    let before = if cluster_sync {
+        Some(build_current_config(state).await?)
+    } else {
+        None
+    };
+    let changed = |f: &dyn Fn(&FirewallConfig) -> serde_json::Value| -> bool {
+        before.as_ref().is_none_or(|b| f(b) != f(config))
+    };
+    let wg_before = wg_fingerprints(state).await;
 
     // Single transaction for ALL database mutations (#158/#535): the
     // DELETE-then-reinsert of every section below either commits wholesale
@@ -1910,6 +1969,9 @@ pub(crate) async fn apply_firewall_config(
         "pfsync_config",
         "cluster_nodes",
     ] {
+        if keep_local_ha && matches!(table, "pfsync_config" | "cluster_nodes") {
+            continue;
+        }
         sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&mut *tx)
             .await
@@ -2050,7 +2112,13 @@ pub(crate) async fn apply_firewall_config(
             mtu: wg.mtu,
             listen_interface: None,
             split_routes: None,
-            status: VpnStatus::Down,
+            // #712: carry the running state across restore/replication —
+            // a tunnel imported as `down` never comes up on failover.
+            status: if wg.enabled == Some(true) {
+                VpnStatus::Up
+            } else {
+                VpnStatus::Down
+            },
             created_at: now,
             updated_at: now,
         };
@@ -2196,7 +2264,8 @@ pub(crate) async fn apply_firewall_config(
             *inserted.entry("carp_vips").or_default() += 1;
         }
     }
-    if let Some(pc) = &config.ha.pfsync
+    if !keep_local_ha
+        && let Some(pc) = &config.ha.pfsync
         && let Some(mapped_sync) = map_iface(&pc.sync_interface, iface_map)
     {
         let mut pc = pc.clone();
@@ -2207,7 +2276,7 @@ pub(crate) async fn apply_firewall_config(
                 .map_err(|e| apply_fail("pfsync restore", e))?;
         }
     }
-    for nc in &config.ha.nodes {
+    for nc in config.ha.nodes.iter().filter(|_| !keep_local_ha) {
         if let Some(node) = cluster_node_from_config(nc) {
             aifw_core::ha::ClusterEngine::insert_node_on(&mut *tx, &node)
                 .await
@@ -2218,7 +2287,7 @@ pub(crate) async fn apply_firewall_config(
 
     // DHCP: subnets, reservations, global/DDNS/HA config (DB rows only; the
     // rDHCP service regen runs after commit)
-    apply_dhcp_section_db(&mut tx, &config.dhcp).await?;
+    apply_dhcp_section_db(&mut tx, &config.dhcp, cluster_sync).await?;
 
     // DNS resolver settings (#589). `None` = backup predates the section;
     // leave the box's resolver config untouched instead of resetting it to
@@ -2303,6 +2372,9 @@ pub(crate) async fn apply_firewall_config(
         "carp_vips",
         "cluster_nodes",
     ] {
+        if keep_local_ha && table == "cluster_nodes" {
+            continue;
+        }
         let expected = inserted.get(table).copied().unwrap_or(0);
         let (count,): (i64,) =
             sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
@@ -2349,12 +2421,15 @@ pub(crate) async fn apply_firewall_config(
     // FreeBSD-side companion service absent on dev hosts; tunnels stay down
     // until re-applied.
     if !config.vpn.ipsec_tunnels.is_empty()
+        && changed(&|c| serde_json::json!([c.vpn.ipsec_tunnels]))
         && let Err(e) = state.ipsec_engine.apply_all().await
     {
         tracing::warn!(error = %e, "restored IPsec tunnels but swanctl apply failed — tunnels stay down until re-applied");
     }
 
-    if !config.system.dns_servers.is_empty() {
+    // resolv.conf is per node (DHCP-learned upstreams differ) — never
+    // replicated (#712).
+    if !cluster_sync && !config.system.dns_servers.is_empty() {
         let content: String = config
             .system
             .dns_servers
@@ -2387,7 +2462,14 @@ pub(crate) async fn apply_firewall_config(
     // Regenerate rDHCP TOML + restart service so the restored config takes
     // effect. Best-effort: the companion service may be absent (dev hosts);
     // the DB rows are authoritative and reapplied at boot.
-    crate::dhcp::auto_apply(state).await;
+    // DHCP-HA is per node (not replicated), so compare without it.
+    if changed(&|c| {
+        let mut d = c.dhcp.clone();
+        d.dhcp_ha = Default::default();
+        serde_json::json!([d])
+    }) {
+        crate::dhcp::auto_apply(state).await;
+    }
 
     // Regenerate resolver config + restart the DNS backend so the restored
     // settings take effect (#589). Best-effort like rDHCP above: the backend
@@ -2396,18 +2478,22 @@ pub(crate) async fn apply_firewall_config(
     // Remote syslog: the rows are already committed; apply in this process
     // immediately (daemon/IDS pick it up via their 60s pollers) and
     // reconcile the pflogd local-storage policy.
-    if let Some(syslog_cfg) = &config.syslog {
+    if let Some(syslog_cfg) = &config.syslog
+        && changed(&|c| serde_json::json!([c.syslog]))
+    {
         state.syslog.apply(syslog_cfg.clone());
         aifw_core::local_log::apply_local_log_policy(syslog_cfg).await;
     }
-    if config.log_rotation.is_some() {
+    if config.log_rotation.is_some() && changed(&|c| serde_json::json!([c.log_rotation])) {
         aifw_core::log_rotation::ensure_applied(&state.pool).await;
     }
-    if config.plugins.is_some() {
+    if config.plugins.is_some() && changed(&|c| serde_json::json!([c.plugins])) {
         state.plugin_manager.reconcile().await;
     }
 
-    if let Some(resolver) = &config.dns_resolver {
+    if let Some(resolver) = &config.dns_resolver
+        && changed(&|c| serde_json::json!([c.dns_resolver]))
+    {
         let report = crate::dns_resolver::switch_backend(state, &resolver.backend, resolver).await;
         if report.rolled_back || (resolver.enabled && !report.probe_udp) {
             tracing::warn!(
@@ -2470,7 +2556,133 @@ pub(crate) async fn apply_firewall_config(
         .await
         .map_err(|e| apply_fail("geoip rules verification", e))?;
 
+    // HA pass rules + kernel CARP/pfsync (#712). Restore/sync could add or
+    // drop VIPs; the kernel must follow. Warn-only: the daemon reconciles
+    // again on its next start, and a kernel step can't be rolled back here.
+    state
+        .cluster_engine
+        .apply_ha_rules()
+        .await
+        .map_err(|e| apply_fail("ha rules apply", e))?;
+    match state.cluster_engine.reconcile_kernel_state().await {
+        Ok(r) if !r.errors.is_empty() => {
+            tracing::warn!(errors = ?r.errors, "config apply: HA kernel reconcile incomplete")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "config apply: HA kernel reconcile failed"),
+    }
+
+    reconcile_wireguard(state, &wg_before).await;
+
     Ok(())
+}
+
+/// Per-tunnel fingerprint of everything that shapes the running WireGuard
+/// interface, keyed by tunnel id, plus whether the tunnel is `up`.
+async fn wg_fingerprints(
+    state: &AppState,
+) -> std::collections::HashMap<uuid::Uuid, (String, bool)> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(tunnels) = state.vpn_engine.list_wg_tunnels().await else {
+        return out;
+    };
+    let mut peers = state
+        .vpn_engine
+        .list_all_wg_peers_grouped()
+        .await
+        .unwrap_or_default();
+    for t in tunnels {
+        let mut p: Vec<String> = peers
+            .remove(&t.id)
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}|{:?}|{:?}|{:?}|{:?}",
+                    p.public_key,
+                    p.preshared_key,
+                    p.endpoint,
+                    p.allowed_ips
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>(),
+                    p.persistent_keepalive
+                )
+            })
+            .collect();
+        p.sort();
+        let fp = format!(
+            "{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{}",
+            t.name,
+            t.interface.0,
+            t.listen_port,
+            t.private_key,
+            t.address,
+            t.address6.as_ref().map(|a| a.to_string()),
+            t.dns,
+            t.mtu,
+            p.join(";")
+        );
+        out.insert(t.id, (fp, t.status == aifw_common::VpnStatus::Up));
+    }
+    out
+}
+
+/// Bring the kernel's WireGuard interfaces in line after a restore/sync
+/// (#712): (re)start enabled tunnels that are new or changed, tear down
+/// ones that were removed or disabled. Unchanged running tunnels are left
+/// alone. On a CARP BACKUP with `wg_deconfigure_on_backup` nothing is
+/// started — the role watcher brings tunnels up on MASTER.
+async fn reconcile_wireguard(
+    state: &AppState,
+    before: &std::collections::HashMap<uuid::Uuid, (String, bool)>,
+) {
+    let after = wg_fingerprints(state).await;
+    let hold_on_backup = matches!(state.cluster_engine.get_pfsync().await, Ok(Some(p)) if p.wg_deconfigure_on_backup)
+        && aifw_core::carp::kernel_view().await.aggregate_state() == "backup";
+
+    for (id, (fp, up)) in &after {
+        let was = before.get(id);
+        let needs_start = *up && was.is_none_or(|(old_fp, was_up)| old_fp != fp || !was_up);
+        if needs_start && !hold_on_backup {
+            if let Err(e) = state.vpn_engine.start_tunnel(*id).await {
+                tracing::warn!(tunnel = %id, error = %e, "config apply: WireGuard tunnel start failed");
+            }
+        } else if !*up && was.is_some_and(|(_, was_up)| *was_up) {
+            stop_wg_iface(state, *id).await;
+        }
+    }
+    // Removed tunnels: their DB rows are gone, so tear down by interface.
+    let removed: Vec<&uuid::Uuid> = before
+        .iter()
+        .filter(|(id, (_, was_up))| *was_up && !after.contains_key(id))
+        .map(|(id, _)| id)
+        .collect();
+    if !removed.is_empty() {
+        tracing::info!(
+            count = removed.len(),
+            "config apply: WireGuard tunnels removed by restore/sync"
+        );
+    }
+    for (id, (fp, _)) in before.iter().filter(|(id, _)| removed.contains(id)) {
+        // interface name is the second fingerprint field
+        if let Some(iface) = fp.split('|').nth(1) {
+            let out = aifw_core::sudo::ifconfig(iface, "destroy", &[]).await;
+            aifw_core::sudo::warn_on_fail(
+                &format!("destroying removed WireGuard {iface} ({id})"),
+                &out,
+            );
+        }
+    }
+    if let Err(e) = state.vpn_engine.apply_vpn_rules().await {
+        tracing::warn!(error = %e, "config apply: VPN pf rules apply failed");
+    }
+}
+
+async fn stop_wg_iface(state: &AppState, id: uuid::Uuid) {
+    if let Err(e) = state.vpn_engine.stop_tunnel(id).await {
+        tracing::warn!(tunnel = %id, error = %e, "config apply: WireGuard tunnel stop failed");
+    }
 }
 
 /// Stage `content` in /tmp and atomically install it as `/etc/resolv.conf`
@@ -2505,9 +2717,11 @@ async fn install_resolv_conf(content: &str) -> Result<(), String> {
 async fn apply_dhcp_section_db(
     conn: &mut sqlx::SqliteConnection,
     dhcp: &aifw_core::config::DhcpSection,
+    keep_local_ha: bool,
 ) -> Result<(), StatusCode> {
     // Wipe + re-insert for a clean restore. DB mutations are required
-    // steps (#535).
+    // steps (#535). DHCP-HA (peer/listen/node id) is per node and kept on
+    // cluster sync (#712).
     for table in [
         "dhcp_subnets",
         "dhcp_reservations",
@@ -2515,6 +2729,9 @@ async fn apply_dhcp_section_db(
         "dhcp_ddns_config",
         "dhcp_ha_config",
     ] {
+        if keep_local_ha && table == "dhcp_ha_config" {
+            continue;
+        }
         sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&mut *conn)
             .await
@@ -2698,6 +2915,9 @@ async fn apply_dhcp_section_db(
     }
 
     // --- DHCP HA ---------------------------------------------
+    if keep_local_ha {
+        return Ok(());
+    }
     let h = &dhcp.dhcp_ha;
     for (k, v) in [
         ("mode", h.mode.clone()),
@@ -3286,7 +3506,8 @@ pub struct IdsSuppressionRecord {
 pub(crate) async fn cluster_export_payload(
     state: &AppState,
 ) -> Result<ClusterSnapshotPayload, StatusCode> {
-    let firewall = build_current_config(state).await?;
+    let mut firewall = build_current_config(state).await?;
+    strip_node_local(&mut firewall);
 
     // IDS rule overrides: rows with non-default enabled or action_override
     let overrides: Vec<IdsRuleOverride> = sqlx::query_as::<_, (String, bool, Option<String>)>(
@@ -3323,6 +3544,19 @@ pub(crate) async fn cluster_export_payload(
     })
 }
 
+/// Remove the per-node parts of a config before it is replicated (#712):
+/// hostname, resolver upstreams, the cluster node table (peer keys, pins),
+/// pfsync (sync peer differs per node) and DHCP-HA peer settings. They are
+/// never applied by ClusterSync, and leaving them in made the snapshot hash
+/// differ between nodes forever, so the master re-pushed every 10 s.
+pub(crate) fn strip_node_local(cfg: &mut FirewallConfig) {
+    cfg.system.hostname = String::new();
+    cfg.system.dns_servers.clear();
+    cfg.ha.nodes.clear();
+    cfg.ha.pfsync = None;
+    cfg.dhcp.dhcp_ha = Default::default();
+}
+
 /// Apply a cluster snapshot payload (JSON string) to this node.
 /// Parses the payload, applies the firewall config, then syncs
 /// IDS rule overrides and suppressions from the DB.
@@ -3339,38 +3573,13 @@ pub(crate) async fn apply_cluster_snapshot(state: &AppState, body: &str) -> anyh
         .validate()
         .map_err(|e| anyhow::anyhow!("snapshot failed validation: {e}"))?;
 
-    // Per-peer API keys are LOCAL credentials — never replicate them.
-    // apply_firewall_config wipes cluster_nodes and rebuilds from the snapshot
-    // (which was captured on the master, where this node's outgoing key is absent).
-    // We preserve them here and restore them after apply so this node can keep
-    // authenticating to its peers.
-    let saved_keys: Vec<(String, Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT id, peer_api_key, peer_api_key_hash FROM cluster_nodes")
-            .fetch_all(&state.pool)
-            .await
-            .unwrap_or_default();
-
-    // Apply firewall config using an identity interface map (same-box restore)
+    // ClusterSync keeps this node's identity — cluster_nodes (peer keys,
+    // TLS pins, api_port), pfsync_config, DHCP-HA peer and resolv.conf —
+    // and only restarts services whose section changed (#712).
     let iface_map = std::collections::HashMap::new();
-    apply_firewall_config(state, &payload.firewall, &iface_map)
+    apply_firewall_config_mode(state, &payload.firewall, &iface_map, ApplyMode::ClusterSync)
         .await
         .map_err(|sc| anyhow::anyhow!("apply_firewall_config failed: {sc:?}"))?;
-
-    // Restore local per-peer credentials wiped by apply_firewall_config.
-    for (id, key, hash) in &saved_keys {
-        if (key.is_some() || hash.is_some())
-            && let Err(e) = sqlx::query(
-                "UPDATE cluster_nodes SET peer_api_key = ?1, peer_api_key_hash = ?2 WHERE id = ?3",
-            )
-            .bind(key)
-            .bind(hash)
-            .bind(id)
-            .execute(&state.pool)
-            .await
-        {
-            tracing::warn!(node = %id, error = %e, "cluster snapshot: peer api key restore failed");
-        }
-    }
 
     // Sync IDS rule overrides: apply enabled/action_override to ids_rules rows
     for ov in &payload.ids_rule_overrides {

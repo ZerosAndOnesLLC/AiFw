@@ -974,8 +974,10 @@ async fn snapshot_put(
         );
         return StatusCode::FORBIDDEN;
     }
-    // Master never accepts pushes — split-brain protection
-    if is_carp_master_locally().await {
+    // Split-brain protection: only a node that is fully BACKUP (or, while
+    // CARP is still initialising, one not configured as primary) accepts a
+    // config push (#712).
+    if !accepts_peer_push(&s).await {
         return StatusCode::CONFLICT;
     }
     match apply_snapshot_data(&s, &body).await {
@@ -1049,10 +1051,26 @@ async fn snapshot_force(State(s): State<AppState>) -> StatusCode {
     }
 }
 
-// Thin wrapper that delegates to the single shared implementation in aifw-core.
-// This avoids duplicating the ifconfig grep across cluster.rs and acme_engine.rs.
-async fn is_carp_master_locally() -> bool {
-    aifw_core::is_local_master().await
+/// Whether this node may accept a snapshot / cert push from a peer.
+async fn accepts_peer_push(s: &AppState) -> bool {
+    let live = aifw_core::carp::kernel_view().await;
+    push_allowed(
+        live.aggregate_state(),
+        s.cluster_engine.configured_role().await,
+    )
+}
+
+/// Pure decision for [`accepts_peer_push`]. Any MASTER vhid refuses (that
+/// is split brain from the pusher's side). While CARP is initialising (boot,
+/// interface down) the configured primary refuses: before #712 a primary in
+/// that window accepted a full config replacement from whoever held the
+/// peer key.
+fn push_allowed(aggregate_state: &str, configured: ClusterRole) -> bool {
+    match aggregate_state {
+        "backup" => true,
+        "master" | "split" => false,
+        _ => configured != ClusterRole::Primary,
+    }
 }
 
 async fn apply_snapshot_data(state: &AppState, body: &str) -> Result<String, anyhow::Error> {
@@ -1131,9 +1149,9 @@ async fn cert_push(
         );
         return StatusCode::FORBIDDEN;
     }
-    // Master never accepts cert pushes — defends against a stale standby
-    // pushing back during a network partition.
-    if aifw_core::is_local_master().await {
+    // Same split-brain guard as snapshot_put — defends against a stale
+    // standby pushing back during a partition or our boot.
+    if !accepts_peer_push(&s).await {
         return StatusCode::CONFLICT;
     }
 
@@ -1478,6 +1496,20 @@ mod tests {
         assert_eq!(wg_role_action("unknown", true), None);
         assert_eq!(wg_role_action("secondary", false), None);
         assert_eq!(wg_role_action("primary", false), None);
+    }
+
+    #[test]
+    fn push_guard_refuses_master_and_initialising_primary() {
+        use super::push_allowed;
+        use aifw_common::ClusterRole::*;
+        assert!(push_allowed("backup", Primary));
+        assert!(push_allowed("backup", Secondary));
+        assert!(!push_allowed("master", Secondary));
+        assert!(!push_allowed("split", Secondary));
+        assert!(!push_allowed("init", Primary));
+        assert!(!push_allowed("none", Primary));
+        assert!(push_allowed("init", Secondary));
+        assert!(push_allowed("none", Standalone));
     }
 
     #[test]

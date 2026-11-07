@@ -408,6 +408,7 @@ mod tests {
             public_key: "PUB".into(),
             dns: None,
             mtu: None,
+            enabled: None,
             peers: vec![WireguardPeerConfig {
                 id: "peer-1".into(),
                 name: "p".into(),

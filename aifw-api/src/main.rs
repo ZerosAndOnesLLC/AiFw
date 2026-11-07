@@ -1766,7 +1766,20 @@ async fn async_main() -> anyhow::Result<()> {
     if let Err(e) = state.cluster_engine.apply_ha_rules().await {
         tracing::error!("Failed to apply HA pf rules on startup: {e}");
     }
-    match state.vpn_engine.start_active_tunnels().await {
+    // #486/#712: a BACKUP with wg_deconfigure_on_backup keeps WireGuard down;
+    // the role watcher brings the tunnels up when this node becomes MASTER.
+    let wg_hold = matches!(state.cluster_engine.get_pfsync().await, Ok(Some(p)) if p.wg_deconfigure_on_backup)
+        && aifw_core::carp::kernel_view().await.aggregate_state() != "master";
+    if wg_hold {
+        tracing::info!(
+            "WireGuard held down on startup: not CARP MASTER and wg_deconfigure_on_backup is on"
+        );
+    }
+    match if wg_hold {
+        Ok(0)
+    } else {
+        state.vpn_engine.start_active_tunnels().await
+    } {
         Ok(n) if n > 0 => tracing::info!(count = n, "WireGuard tunnels restarted on startup"),
         Ok(_) => {}
         Err(e) => tracing::warn!("Failed to restart WireGuard tunnels: {e}"),

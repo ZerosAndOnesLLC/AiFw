@@ -666,6 +666,10 @@ pub struct WireguardTunnelConfig {
     pub dns: Option<String>,
     /// Optional interface MTU override
     pub mtu: Option<u16>,
+    /// Whether the tunnel is running (`up`). `None` in backups that predate
+    /// the field (#712) — those restore as down, as before.
+    #[serde(default)]
+    pub enabled: Option<bool>,
     /// Peers configured on this tunnel
     pub peers: Vec<WireguardPeerConfig>,
 }
