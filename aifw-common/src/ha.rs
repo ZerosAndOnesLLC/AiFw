@@ -156,34 +156,6 @@ impl CarpVip {
         }
     }
 
-    /// Render ifconfig argv for the given CARP timing (derived from profile + role).
-    ///
-    /// Returns a list of argument vectors — each inner `Vec<String>` is one
-    /// command where `[0]` is the executable and the rest are its arguments.
-    /// Pass them directly to `tokio::process::Command::new(&argv[0]).args(&argv[1..])`.
-    pub fn to_ifconfig_argv(&self, timing: CarpTiming) -> Vec<Vec<String>> {
-        let af = if self.virtual_ip.is_ipv4() {
-            "inet"
-        } else {
-            "inet6"
-        };
-        vec![vec![
-            "ifconfig".to_string(),
-            self.interface.to_string(),
-            "vhid".to_string(),
-            self.vhid.to_string(),
-            "advskew".to_string(),
-            timing.advskew.to_string(),
-            "advbase".to_string(),
-            timing.advbase.to_string(),
-            "pass".to_string(),
-            self.password.clone(),
-            af.to_string(),
-            format!("{}/{}", self.virtual_ip, self.prefix),
-            "alias".to_string(),
-        ]]
-    }
-
     /// Generate pf rules to allow CARP protocol traffic
     pub fn to_pf_rules(&self) -> Vec<String> {
         vec![format!(
@@ -230,14 +202,17 @@ pub struct PfsyncConfig {
 }
 
 impl PfsyncConfig {
-    /// Create an enabled multicast config with defer on, the conservative
-    /// latency profile, and no heartbeat/DHCP linkage
+    /// Create an enabled multicast config with defer off, the conservative
+    /// latency profile, and no heartbeat/DHCP linkage. `defer` holds the
+    /// first packet of every new state until the peer acknowledges it, which
+    /// adds latency to every new connection and stalls them when the peer is
+    /// down — off by default, as on pfSense/OPNsense.
     pub fn new(sync_interface: Interface) -> Self {
         Self {
             id: Uuid::new_v4(),
             sync_interface,
             sync_peer: None,
-            defer: true,
+            defer: false,
             enabled: true,
             latency_profile: CarpLatencyProfile::Conservative,
             heartbeat_iface: None,
@@ -248,47 +223,16 @@ impl PfsyncConfig {
         }
     }
 
-    /// Generate ifconfig argv vectors to configure pfsync.
-    ///
-    /// Returns a list of argument vectors — each inner `Vec<String>` is one
-    /// command where `[0]` is the executable and the rest are its arguments.
-    /// Pass them directly to `tokio::process::Command::new(&argv[0]).args(&argv[1..])`.
-    pub fn to_ifconfig_cmds(&self) -> Vec<Vec<String>> {
-        if !self.enabled {
-            return Vec::new();
-        }
-
-        let create_argv = vec![
-            "ifconfig".to_string(),
-            "pfsync0".to_string(),
-            "create".to_string(),
-        ];
-
-        let mut config_argv = vec![
-            "ifconfig".to_string(),
-            "pfsync0".to_string(),
-            "syncdev".to_string(),
-            self.sync_interface.to_string(),
-        ];
-        if let Some(ref peer) = self.sync_peer {
-            config_argv.push("syncpeer".to_string());
-            config_argv.push(peer.to_string());
-        }
-        if self.defer {
-            config_argv.push("defer".to_string());
-        }
-        config_argv.push("up".to_string());
-
-        vec![create_argv, config_argv]
-    }
-
     /// Generate pf rules to allow pfsync traffic
     pub fn to_pf_rules(&self) -> Vec<String> {
         if !self.enabled {
             return Vec::new();
         }
+        // `quick`: the base pf.conf ends with `block in log all`, and a
+        // non-quick pass in an anchor is overridden by that later block —
+        // pfsync on the sync link was being dropped.
         let mut rules = vec![format!(
-            "pass on {} proto pfsync keep state label \"pfsync\"",
+            "pass quick on {} proto pfsync keep state label \"pfsync\"",
             self.sync_interface
         )];
         if let Some(ref peer) = self.sync_peer {

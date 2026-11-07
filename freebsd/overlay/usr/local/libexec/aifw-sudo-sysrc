@@ -56,7 +56,7 @@ case "$KEY" in
     hostname|defaultrouter|sshd_enable) ;;
 
     # AiFw service rcvars (aifw_daemon_enable, aifw_api_enable, etc.)
-    aifw_cluster_enabled) ;;
+    aifw_cluster_enabled|aifw_cluster_role) ;;
     aifw_daemon_enable|aifw_api_enable|aifw_ids_enable|aifw_watchdog_enable) ;;
     aifw_carp_demote_enable|aifw_demote_on_shutdown_enable) ;;
 
@@ -105,6 +105,14 @@ if [ -z "$FLAG" ]; then
             exit 1 ;;
     esac
     case "$KEY" in
+        aifw_cluster_role)
+            case "$VALUE" in
+                primary|secondary|standalone) ;;
+                *)
+                    echo "aifw-sudo-sysrc: aifw_cluster_role must be primary|secondary|standalone: $VALUE" >&2
+                    exit 1 ;;
+            esac
+            ;;
         ifconfig_*)
             # Accepted templates (exactly what aifw-api/src/iface.rs writes):
             #   DHCP | SYNCDHCP | up | down

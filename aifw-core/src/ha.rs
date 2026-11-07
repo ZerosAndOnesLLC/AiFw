@@ -197,12 +197,7 @@ impl ClusterEngine {
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        if vip.vhid == 0 {
-            return Err(AifwError::Validation("VHID must be > 0".to_string()));
-        }
-        if vip.password.is_empty() {
-            return Err(AifwError::Validation("CARP password required".to_string()));
-        }
+        validate_carp_vip(vip)?;
 
         sqlx::query(
             r#"
@@ -238,6 +233,7 @@ impl ClusterEngine {
     /// Update an existing CARP VIP by id (refreshes `updated_at`). Fails with
     /// `NotFound` if the id doesn't exist
     pub async fn update_carp_vip(&self, v: &CarpVip) -> Result<()> {
+        validate_carp_vip(v)?;
         let result = sqlx::query(
             r#"UPDATE carp_vips SET vhid = ?1, virtual_ip = ?2, prefix = ?3,
                interface = ?4, password = ?5, status = ?6, updated_at = ?7
@@ -660,81 +656,152 @@ impl ClusterEngine {
     // Apply HA pf rules
     // ============================================================
 
-    /// On daemon startup, re-run ifconfig commands if kernel state is missing.
-    /// Idempotent: re-running pfsync/CARP ifconfig is a no-op when already
-    /// configured, so we always run them without an existence pre-check.
-    /// No-ops on standalone nodes (role = standalone or tables absent).
-    pub async fn recover_kernel_state(&self) -> Result<()> {
-        let role = read_local_role().await;
-        self.recover_kernel_state_for_role(role).await
-    }
-
-    /// Redact the element immediately after "pass" in an ifconfig argv slice.
-    /// CARP ifconfig commands include `pass <password>` as discrete elements;
-    /// this prevents the password from leaking into tracing logs on failure.
-    fn redact_password_in_argv(argv: &[String]) -> Vec<String> {
-        let mut out = argv.to_vec();
-        if let Some(pos) = out.iter().position(|s| s == "pass")
-            && pos + 1 < out.len()
+    /// The role this node is *configured* for (not the live CARP state):
+    /// `aifw_cluster_role` from rc.conf, else this node's own row in
+    /// `cluster_nodes`, else `Standalone`. CARP timing (advskew) must come
+    /// from this — deriving it from the live role makes a primary that is
+    /// temporarily BACKUP re-render itself with the secondary's skew (#712).
+    pub async fn configured_role(&self) -> ClusterRole {
+        if let Some(role) = read_rc_cluster_role().await
+            && role != ClusterRole::Standalone
         {
-            out[pos + 1] = "<redacted>".to_string();
+            return role;
         }
-        out
+        match self.self_node().await {
+            Ok(Some(n)) => n.role,
+            _ => ClusterRole::Standalone,
+        }
     }
 
-    /// Inner implementation of kernel-state recovery, taking an explicit role
-    /// so it can be called from tests without spawning sysrc.
-    pub async fn recover_kernel_state_for_role(
+    /// This node's own row in `cluster_nodes`: matched by hostname, else by
+    /// an address configured on a local interface.
+    pub async fn self_node(&self) -> Result<Option<ClusterNode>> {
+        let nodes = self.list_nodes().await?;
+        if let Some(host) = local_hostname().await
+            && let Some(n) = nodes.iter().find(|n| n.name == host)
+        {
+            return Ok(Some(n.clone()));
+        }
+        let view = crate::carp::kernel_view().await;
+        Ok(nodes
+            .into_iter()
+            .find(|n| view.local_addrs.contains(&n.address)))
+    }
+
+    /// Make the kernel match the DB: pfsync0, every CARP vhid/address (with
+    /// timing from the stored latency profile and the *configured* role),
+    /// preemption on, and stale CARP addresses removed. All writes go
+    /// through the `aifw-sudo-carp` helper. Idempotent; called at daemon
+    /// start and after every HA config change.
+    pub async fn reconcile_kernel_state(&self) -> Result<ReconcileReport> {
+        let role = self.configured_role().await;
+        self.reconcile_kernel_state_for_role(role).await
+    }
+
+    /// [`Self::reconcile_kernel_state`] with an explicit role (setup knows
+    /// the role before rc.conf is written; tests pass one directly).
+    pub async fn reconcile_kernel_state_for_role(
         &self,
-        role: aifw_common::ClusterRole,
-    ) -> Result<()> {
-        // Standalone nodes need no kernel-state recovery
-        if matches!(role, aifw_common::ClusterRole::Standalone) {
-            return Ok(());
+        role: ClusterRole,
+    ) -> Result<ReconcileReport> {
+        let mut report = ReconcileReport::default();
+        let pfsync = self.get_pfsync().await?;
+        let vips = self.list_carp_vips().await?;
+
+        if matches!(role, ClusterRole::Standalone) && vips.is_empty() && pfsync.is_none() {
+            return Ok(report);
         }
 
-        let pfsync = self.get_pfsync().await?;
+        let view = crate::carp::kernel_view().await;
 
-        // pfsync — always run (idempotent; no existence pre-check needed)
-        if let Some(p) = &pfsync {
-            for argv in p.to_ifconfig_cmds() {
-                if let Err(error) = run_argv(&argv).await {
-                    tracing::warn!(?error, cmd = ?argv, "ha: pfsync ifconfig command failed");
+        match &pfsync {
+            Some(p) => {
+                if let Err(e) = crate::carp::pfsync_apply(p).await {
+                    report.errors.push(format!("pfsync: {e}"));
+                }
+            }
+            None => {
+                if view.pfsync.as_ref().is_some_and(|p| p.syncdev.is_some())
+                    && let Err(e) = crate::carp::pfsync_down().await
+                {
+                    report.errors.push(format!("pfsync down: {e}"));
                 }
             }
         }
 
-        // Derive timing from the stored latency profile (default Conservative if absent)
         let profile = pfsync
             .as_ref()
             .map(|p| p.latency_profile)
             .unwrap_or_default();
         let timing = profile.timing_for(role);
 
-        // CARP VIPs — render with profile-derived timing
-        for vip in self.list_carp_vips().await? {
-            for argv in vip.to_ifconfig_argv(timing) {
-                if let Err(error) = run_argv(&argv).await {
-                    let safe_argv = Self::redact_password_in_argv(&argv);
-                    tracing::warn!(?error, cmd = ?safe_argv, "ha: CARP ifconfig command failed");
-                }
+        if !vips.is_empty()
+            && let Err(e) = crate::carp::enable_preempt().await
+        {
+            report.errors.push(format!("preempt: {e}"));
+        }
+
+        for vip in &vips {
+            match crate::carp::vip_set(vip, timing).await {
+                Ok(()) => report.applied += 1,
+                Err(e) => report
+                    .errors
+                    .push(format!("vhid {} ({}): {e}", vip.vhid, vip.virtual_ip)),
             }
         }
 
-        // Enable CARP preemption so this node can compete in elections
-        if let Err(error) = tokio::process::Command::new("sysctl")
-            .arg("net.inet.carp.preempt=1")
-            .status()
-            .await
-        {
-            tracing::warn!(?error, "ha: sysctl carp.preempt failed");
+        // Anything the kernel holds on a vhid that the DB no longer lists.
+        for stale in stale_carp_addrs(&view, &vips) {
+            match crate::carp::vip_del(&stale.interface, &stale.addr).await {
+                Ok(()) => report.removed += 1,
+                Err(e) => report
+                    .errors
+                    .push(format!("remove {} on {}: {e}", stale.addr, stale.interface)),
+            }
         }
 
+        for e in &report.errors {
+            tracing::warn!(error = %e, "ha: kernel reconcile step failed");
+        }
+        tracing::info!(
+            %role,
+            advskew = timing.advskew,
+            advbase = timing.advbase,
+            applied = report.applied,
+            removed = report.removed,
+            failed = report.errors.len(),
+            "ha: kernel state reconciled"
+        );
+        Ok(report)
+    }
+
+    /// Keep the rc.conf cluster switches in step with the DB, so clusters
+    /// built from the UI/API get the boot hold, shutdown demotion and the
+    /// configured-role lookup exactly like wizard-built ones (#712).
+    pub async fn sync_rc_conf(&self) -> Result<()> {
+        let clustered = !self.list_carp_vips().await?.is_empty()
+            || self.get_pfsync().await?.is_some_and(|p| p.enabled);
+        let yes_no = if clustered { "YES" } else { "NO" };
+        let mut sets = vec![
+            format!("aifw_cluster_enabled={yes_no}"),
+            format!("aifw_carp_demote_enable={yes_no}"),
+            format!("aifw_demote_on_shutdown_enable={yes_no}"),
+        ];
+        if let Some(me) = self.self_node().await? {
+            sets.push(format!("aifw_cluster_role={}", me.role));
+        } else if !clustered {
+            sets.push("aifw_cluster_role=standalone".to_string());
+        }
+        for kv in &sets {
+            let out = crate::sudo::sysrc(&[kv]).await;
+            crate::sudo::warn_on_fail(&format!("ha: sysrc {kv}"), &out);
+        }
         Ok(())
     }
 
     /// Render pf rules from the stored CARP VIPs and pfsync config and load
-    /// them into the `aifw-ha` anchor. Does nothing when no HA rules exist
+    /// them into the `aifw-ha` anchor; flushes the anchor when nothing is
+    /// configured so a removed VIP doesn't leave its pass rule behind.
     pub async fn apply_ha_rules(&self) -> Result<()> {
         let mut pf_rules = Vec::new();
 
@@ -745,8 +812,14 @@ impl ClusterEngine {
         if let Some(pfsync) = self.get_pfsync().await? {
             pf_rules.extend(pfsync.to_pf_rules());
         }
+        pf_rules.dedup();
 
-        if !pf_rules.is_empty() {
+        if pf_rules.is_empty() {
+            self.pf
+                .flush_rules(&self.anchor)
+                .await
+                .map_err(|e| AifwError::Pf(e.to_string()))?;
+        } else {
             tracing::info!(count = pf_rules.len(), "applying HA pf rules");
             self.pf
                 .load_rules(&self.anchor, &pf_rules)
@@ -756,6 +829,92 @@ impl ClusterEngine {
 
         Ok(())
     }
+}
+
+/// Outcome of [`ClusterEngine::reconcile_kernel_state`].
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct ReconcileReport {
+    /// CARP vhids configured / retuned
+    pub applied: u32,
+    /// Stale CARP addresses removed
+    pub removed: u32,
+    /// Steps that failed (also logged)
+    pub errors: Vec<String>,
+}
+
+/// CARP addresses present in the kernel but absent from the DB.
+fn stale_carp_addrs<'a>(
+    view: &'a crate::carp::KernelCarpView,
+    vips: &[CarpVip],
+) -> Vec<&'a crate::carp::KernelCarpAddr> {
+    view.addrs
+        .iter()
+        .filter(|k| {
+            !vips
+                .iter()
+                .any(|v| v.interface.0 == k.interface && v.virtual_ip == k.addr)
+        })
+        .collect()
+}
+
+/// Validate a CARP VIP before it is stored (shared by add/update/restore).
+pub fn validate_carp_vip(vip: &CarpVip) -> Result<()> {
+    if vip.vhid == 0 {
+        return Err(AifwError::Validation("VHID must be > 0".to_string()));
+    }
+    if vip.password.is_empty() {
+        return Err(AifwError::Validation("CARP password required".to_string()));
+    }
+    if vip
+        .password
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(AifwError::Validation(
+            "CARP password must not contain whitespace or control characters".to_string(),
+        ));
+    }
+    let max_prefix = if vip.virtual_ip.is_ipv4() { 32 } else { 128 };
+    if vip.prefix > max_prefix {
+        return Err(AifwError::Validation(format!(
+            "prefix /{} is out of range for {}",
+            vip.prefix, vip.virtual_ip
+        )));
+    }
+    let iface = &vip.interface.0;
+    if iface.is_empty()
+        || iface.len() > 15
+        || iface.starts_with('-')
+        || !iface
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        return Err(AifwError::Validation(format!(
+            "invalid interface name: {iface:?}"
+        )));
+    }
+    Ok(())
+}
+
+async fn read_rc_cluster_role() -> Option<ClusterRole> {
+    let out = tokio::process::Command::new("sysrc")
+        .args(["-n", "aifw_cluster_role"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    ClusterRole::parse(String::from_utf8_lossy(&out.stdout).trim()).ok()
+}
+
+async fn local_hostname() -> Option<String> {
+    let out = tokio::process::Command::new("hostname")
+        .output()
+        .await
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 // ============================================================
@@ -826,34 +985,6 @@ pub fn sha256_hex(s: &str) -> String {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
     hex::encode(h.finalize())
-}
-
-// ============================================================
-// Kernel helpers (called at daemon startup for state recovery)
-// ============================================================
-
-/// Execute an argv vector via tokio::process::Command (no shell).
-/// `argv[0]` is the executable; the rest are arguments.
-async fn run_argv(argv: &[String]) -> std::io::Result<()> {
-    if argv.is_empty() {
-        return Ok(());
-    }
-    let status = tokio::process::Command::new(&argv[0])
-        .args(&argv[1..])
-        .status()
-        .await?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "command {:?} exited with {}",
-            argv, status
-        )))
-    }
-}
-
-async fn read_local_role() -> aifw_common::ClusterRole {
-    current_local_role().await
 }
 
 // ============================================================
@@ -1057,13 +1188,13 @@ mod tests {
     use crate::Database;
 
     #[tokio::test]
-    async fn recover_kernel_state_standalone_is_noop() {
+    async fn reconcile_kernel_state_standalone_is_noop() {
         let db = Database::new_in_memory().await.unwrap();
         let pf: Arc<dyn PfBackend> = Arc::new(aifw_pf::PfMock::new());
         let engine = ClusterEngine::new(db.pool().clone(), pf);
         engine.migrate().await.unwrap();
         let result = engine
-            .recover_kernel_state_for_role(aifw_common::ClusterRole::Standalone)
+            .reconcile_kernel_state_for_role(aifw_common::ClusterRole::Standalone)
             .await;
         assert!(result.is_ok());
     }
@@ -1127,71 +1258,8 @@ mod tests {
         );
     }
 
-    // ============================================================
-    // E8 — redact_password_in_argv
-    // ============================================================
-
-    #[test]
-    fn redact_password_in_argv_basic() {
-        let argv = vec![
-            "ifconfig".to_string(),
-            "igb0".to_string(),
-            "vhid".to_string(),
-            "10".to_string(),
-            "advskew".to_string(),
-            "100".to_string(),
-            "advbase".to_string(),
-            "1".to_string(),
-            "pass".to_string(),
-            "secret123".to_string(),
-            "inet".to_string(),
-            "10.0.0.1/24".to_string(),
-            "alias".to_string(),
-        ];
-        let redacted = ClusterEngine::redact_password_in_argv(&argv);
-        let pass_pos = redacted.iter().position(|s| s == "pass").unwrap();
-        assert_eq!(
-            redacted[pass_pos + 1],
-            "<redacted>",
-            "password token not redacted"
-        );
-        assert_eq!(redacted[0], "ifconfig", "first arg changed");
-        assert_eq!(redacted[redacted.len() - 1], "alias", "last arg changed");
-    }
-
-    #[test]
-    fn redact_password_in_argv_no_pass_keyword() {
-        // pfsync commands have no "pass" keyword — should pass through unchanged
-        let argv = vec![
-            "ifconfig".to_string(),
-            "pfsync0".to_string(),
-            "syncdev".to_string(),
-            "igb1".to_string(),
-            "defer".to_string(),
-            "up".to_string(),
-        ];
-        let redacted = ClusterEngine::redact_password_in_argv(&argv);
-        assert_eq!(redacted, argv, "no-pass argv should be unchanged");
-    }
-
-    #[test]
-    fn redact_password_in_argv_pass_at_end_no_value() {
-        // Malformed argv with "pass" as the last element (no value) — must not panic
-        let argv = vec![
-            "ifconfig".to_string(),
-            "igb0".to_string(),
-            "pass".to_string(),
-        ];
-        let redacted = ClusterEngine::redact_password_in_argv(&argv);
-        // No panic, and the argv is returned as-is since there is no value to redact
-        assert_eq!(
-            redacted, argv,
-            "malformed argv with trailing pass should be unchanged"
-        );
-    }
-
     #[tokio::test]
-    async fn recover_kernel_state_threads_profile_through() {
+    async fn reconcile_kernel_state_threads_profile_through() {
         use aifw_common::{CarpLatencyProfile, CarpVip, ClusterRole, Interface, PfsyncConfig};
 
         let db = Database::new_in_memory().await.unwrap();
@@ -1212,16 +1280,16 @@ mod tests {
         );
         engine.add_carp_vip(vip).await.unwrap();
 
-        // recover_kernel_state_for_role shells out to ifconfig/sysctl which won't
+        // reconcile_kernel_state_for_role shells out to sudo/ifconfig which won't
         // succeed on Linux/WSL, but failures are warn-logged and swallowed; the
         // call should still return Ok(()). The intent is to exercise the
-        // get_pfsync -> profile.timing_for(role) -> to_ifconfig_argv path.
+        // get_pfsync -> profile.timing_for(role) -> aifw-sudo-carp vip-set path.
         let result = engine
-            .recover_kernel_state_for_role(ClusterRole::Secondary)
+            .reconcile_kernel_state_for_role(ClusterRole::Secondary)
             .await;
         assert!(
             result.is_ok(),
-            "recover_kernel_state_for_role returned {result:?}"
+            "reconcile_kernel_state_for_role returned {result:?}"
         );
     }
 }

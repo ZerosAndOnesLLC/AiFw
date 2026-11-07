@@ -79,6 +79,7 @@ pub fn write_routes() -> Router<AppState> {
         )
         .route("/api/v1/cluster/promote", post(promote))
         .route("/api/v1/cluster/demote", post(demote))
+        .route("/api/v1/cluster/maintenance", put(set_maintenance))
         .route("/api/v1/cluster/snapshot", put(snapshot_put))
         .route("/api/v1/cluster/snapshot/force", post(snapshot_force))
         .route("/api/v1/cluster/cert-push", post(cert_push))
@@ -273,10 +274,50 @@ struct CarpReq {
     pub password: String,
 }
 
+/// Error shape for HA writes: status + a message the UI can show.
+type HaError = (StatusCode, String);
+
+fn ha_engine_error(e: aifw_common::AifwError) -> HaError {
+    let msg = e.to_string();
+    (crate::routes::engine_error(e), msg)
+}
+
+/// After any HA config write: reload the `aifw-ha` anchor, push the change
+/// into the kernel (pfsync0, CARP vhids) and keep the rc.conf cluster
+/// switches in step. Kernel failures are reported to the caller — the DB
+/// change is kept, and the daemon re-reconciles on its next start.
+async fn apply_ha_change(s: &AppState) -> Result<(), HaError> {
+    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
+        tracing::error!(error = %e, "cluster: failed to apply HA pf rules");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("saved, but loading the HA pf rules failed: {e}"),
+        )
+    })?;
+    if let Err(e) = s.cluster_engine.sync_rc_conf().await {
+        tracing::warn!(error = %e, "cluster: rc.conf sync failed");
+    }
+    let report = s
+        .cluster_engine
+        .reconcile_kernel_state()
+        .await
+        .map_err(ha_engine_error)?;
+    if !report.errors.is_empty() {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "saved, but applying to the kernel failed: {}",
+                report.errors.join("; ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
 async fn create_carp(
     State(s): State<AppState>,
     Json(r): Json<CarpReq>,
-) -> Result<Json<CarpVip>, StatusCode> {
+) -> Result<Json<CarpVip>, HaError> {
     let vip = CarpVip::new(
         r.vhid,
         r.virtual_ip,
@@ -284,14 +325,18 @@ async fn create_carp(
         Interface(r.interface),
         r.password,
     );
-    let vip = s.cluster_engine.add_carp_vip(vip).await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to add CARP VIP");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to apply HA rules after adding CARP VIP");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let existing = s
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(ha_engine_error)?;
+    check_vip_conflicts(&existing, &vip)?;
+    let vip = s
+        .cluster_engine
+        .add_carp_vip(vip)
+        .await
+        .map_err(ha_engine_error)?;
+    apply_ha_change(&s).await?;
     Ok(Json(vip))
 }
 
@@ -299,7 +344,7 @@ async fn update_carp(
     State(s): State<AppState>,
     Path(id): Path<Uuid>,
     Json(r): Json<CarpReq>,
-) -> Result<Json<CarpVip>, StatusCode> {
+) -> Result<Json<CarpVip>, HaError> {
     let mut vip = CarpVip::new(
         r.vhid,
         r.virtual_ip,
@@ -308,31 +353,60 @@ async fn update_carp(
         r.password,
     );
     vip.id = id;
+    let existing = s
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(ha_engine_error)?;
+    check_vip_conflicts(&existing, &vip)?;
     s.cluster_engine
         .update_carp_vip(&vip)
         .await
-        .map_err(|e| match e {
-            aifw_common::AifwError::NotFound(_) => StatusCode::NOT_FOUND,
-            _ => {
-                tracing::warn!(?e, "update_carp_vip failed");
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        })?;
-    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to apply HA rules after updating CARP VIP");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+        .map_err(ha_engine_error)?;
+    apply_ha_change(&s).await?;
     Ok(Json(vip))
 }
 
-async fn delete_carp(State(s): State<AppState>, Path(id): Path<Uuid>) -> StatusCode {
-    match s.cluster_engine.delete_carp_vip(id).await {
-        Ok(_) => {
-            let _ = s.cluster_engine.apply_ha_rules().await;
-            StatusCode::NO_CONTENT
+/// Reject a VIP that would collide with another one: same VHID on the same
+/// interface (two different keys/addresses fighting over one vhid), or the
+/// same address twice. `vip.id` itself is ignored so updates pass.
+fn check_vip_conflicts(existing: &[CarpVip], vip: &CarpVip) -> Result<(), HaError> {
+    for other in existing.iter().filter(|o| o.id != vip.id) {
+        if other.virtual_ip == vip.virtual_ip {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "{} is already a CARP VIP (vhid {})",
+                    vip.virtual_ip, other.vhid
+                ),
+            ));
         }
-        Err(_) => StatusCode::NOT_FOUND,
+        if other.vhid == vip.vhid
+            && other.interface == vip.interface
+            && other.password != vip.password
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "vhid {} on {} already uses a different password",
+                    vip.vhid, vip.interface
+                ),
+            ));
+        }
     }
+    Ok(())
+}
+
+async fn delete_carp(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, HaError> {
+    s.cluster_engine
+        .delete_carp_vip(id)
+        .await
+        .map_err(ha_engine_error)?;
+    apply_ha_change(&s).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_pfsync(State(s): State<AppState>) -> Result<Json<Option<PfsyncConfig>>, StatusCode> {
@@ -360,15 +434,12 @@ struct PfsyncReq {
 async fn update_pfsync(
     State(s): State<AppState>,
     Json(r): Json<PfsyncReq>,
-) -> Result<Json<PfsyncConfig>, StatusCode> {
+) -> Result<Json<PfsyncConfig>, HaError> {
     let mut p = s
         .cluster_engine
         .get_pfsync()
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "cluster: failed to get pfsync config");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
+        .map_err(ha_engine_error)?
         .unwrap_or_else(|| PfsyncConfig::new(Interface(r.sync_interface.clone())));
     p.sync_interface = Interface(r.sync_interface);
     p.sync_peer = r.sync_peer;
@@ -381,14 +452,26 @@ async fn update_pfsync(
     if let Some(v) = r.wg_deconfigure_on_backup {
         p.wg_deconfigure_on_backup = v;
     }
-    let p = s.cluster_engine.set_pfsync(p).await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to set pfsync config");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    s.cluster_engine.apply_ha_rules().await.map_err(|e| {
-        tracing::error!(error = %e, "cluster: failed to apply HA rules after pfsync update");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let vips = s
+        .cluster_engine
+        .list_carp_vips()
+        .await
+        .map_err(ha_engine_error)?;
+    if let Some(v) = vips.iter().find(|v| v.interface == p.sync_interface) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{} carries CARP VIP {}; pfsync needs a dedicated link",
+                p.sync_interface, v.virtual_ip
+            ),
+        ));
+    }
+    let p = s
+        .cluster_engine
+        .set_pfsync(p)
+        .await
+        .map_err(ha_engine_error)?;
+    apply_ha_change(&s).await?;
     Ok(Json(p))
 }
 
@@ -424,6 +507,7 @@ async fn create_node(
         tracing::error!(error = %e, "cluster: failed to add node");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    sync_role(&s).await;
     Ok(Json(node))
 }
 
@@ -448,13 +532,32 @@ async fn update_node(
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         })?;
+    sync_role(&s).await;
     Ok(Json(n))
 }
 
 async fn delete_node(State(s): State<AppState>, Path(id): Path<Uuid>) -> StatusCode {
     match s.cluster_engine.delete_node(id).await {
-        Ok(_) => StatusCode::NO_CONTENT,
-        Err(_) => StatusCode::NOT_FOUND,
+        Ok(_) => {
+            sync_role(&s).await;
+            StatusCode::NO_CONTENT
+        }
+        Err(e) => crate::routes::engine_error(e),
+    }
+}
+
+/// A node's own role changed (or its row appeared): the rc.conf role and
+/// therefore the CARP advskew must follow.
+async fn sync_role(s: &AppState) {
+    if let Err(e) = s.cluster_engine.sync_rc_conf().await {
+        tracing::warn!(error = %e, "cluster: rc.conf sync failed");
+    }
+    match s.cluster_engine.reconcile_kernel_state().await {
+        Ok(r) if !r.errors.is_empty() => {
+            tracing::warn!(errors = ?r.errors, "cluster: kernel reconcile after node change")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "cluster: kernel reconcile after node change"),
     }
 }
 
@@ -630,42 +733,71 @@ async fn delete_health(State(s): State<AppState>, Path(id): Path<Uuid>) -> Statu
     }
 }
 
-async fn promote(State(s): State<AppState>) -> StatusCode {
-    let ok = tokio::process::Command::new("sysctl")
-        .arg("net.inet.carp.demotion=0")
-        .status()
+/// Clear this node's operator demotion (manual demote and maintenance
+/// mode). With preemption on, a node whose advskew beats the peer's takes
+/// MASTER back within one advertisement; a secondary stays BACKUP while the
+/// primary is healthy — promote does not force MASTER over a better peer.
+async fn promote(State(s): State<AppState>) -> Result<StatusCode, HaError> {
+    use aifw_core::carp::{self, DemoteReason};
+    carp::undemote(DemoteReason::Manual)
         .await
-        .map(|st| st.success())
-        .unwrap_or(false);
-    if !ok {
-        tracing::warn!("ha: failed to set net.inet.carp.demotion=0 (promote)");
-        return StatusCode::INTERNAL_SERVER_ERROR;
-    }
-    s.cluster_events.emit(ClusterEvent::RoleChanged {
-        from: aifw_common::ClusterRole::Secondary.to_string(),
-        to: aifw_common::ClusterRole::Primary.to_string(),
-        vhid: 0,
-    });
-    StatusCode::NO_CONTENT
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    carp::set_maintenance(false)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    record_operator_event(&s, "operator_promote").await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
-async fn demote(State(s): State<AppState>) -> StatusCode {
-    let ok = tokio::process::Command::new("sysctl")
-        .arg("net.inet.carp.demotion=240")
-        .status()
+/// Demote this node until promote or reboot: adds one demotion step, so the
+/// peer takes the VIPs (preemption is on). For a hold that survives a
+/// reboot use `PUT /cluster/maintenance`.
+async fn demote(State(s): State<AppState>) -> Result<StatusCode, HaError> {
+    aifw_core::carp::demote(aifw_core::carp::DemoteReason::Manual)
         .await
-        .map(|st| st.success())
-        .unwrap_or(false);
-    if !ok {
-        tracing::warn!("ha: failed to set net.inet.carp.demotion=240 (demote)");
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    record_operator_event(&s, "operator_demote").await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct MaintenanceReq {
+    enabled: bool,
+}
+
+/// Persistent CARP maintenance mode: the node stays demoted (BACKUP) across
+/// reboots until turned off — use it for hardware work or upgrades.
+async fn set_maintenance(
+    State(s): State<AppState>,
+    Json(r): Json<MaintenanceReq>,
+) -> Result<StatusCode, HaError> {
+    aifw_core::carp::set_maintenance(r.enabled)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    record_operator_event(
+        &s,
+        if r.enabled {
+            "maintenance_on"
+        } else {
+            "maintenance_off"
+        },
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Operator actions go into the failover history so the timeline explains
+/// the role change that follows. The role change itself is reported by the
+/// daemon's RoleWatcher when the kernel actually transitions.
+async fn record_operator_event(s: &AppState, cause: &str) {
+    let role = aifw_core::carp::kernel_view().await.aggregate_state();
+    if let Err(e) = s
+        .cluster_engine
+        .record_failover_event(role, role, cause, None)
+        .await
+    {
+        tracing::warn!(error = %e, cause, "cluster: could not record operator event");
     }
-    s.cluster_events.emit(ClusterEvent::RoleChanged {
-        from: aifw_common::ClusterRole::Primary.to_string(),
-        to: aifw_common::ClusterRole::Secondary.to_string(),
-        vhid: 0,
-    });
-    StatusCode::NO_CONTENT
 }
 
 // ============================================================

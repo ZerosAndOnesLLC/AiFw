@@ -1256,30 +1256,6 @@ mod tests {
     }
 
     #[test]
-    fn test_carp_ifconfig_cmds() {
-        let vip = CarpVip::new(
-            5,
-            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
-            24,
-            Interface("em0".to_string()),
-            "pass123".to_string(),
-        );
-        // Use Conservative profile + Standalone role
-        let timing = CarpLatencyProfile::Conservative.timing_for(ClusterRole::Standalone);
-        let cmds = vip.to_ifconfig_argv(timing);
-        assert_eq!(cmds.len(), 1);
-        let argv = &cmds[0];
-        assert!(argv.contains(&"vhid".to_string()));
-        assert!(argv.contains(&"5".to_string()));
-        assert!(argv.contains(&"pass".to_string()));
-        assert!(argv.contains(&"pass123".to_string()));
-        assert!(argv.contains(&"192.168.1.100/24".to_string()));
-        assert!(argv.contains(&"inet".to_string()));
-        // Ensure the password is a discrete argument, not embedded in a shell string
-        assert!(!argv[0].contains("sh"));
-    }
-
-    #[test]
     fn test_carp_pf_rules() {
         let vip = CarpVip::new(
             1,
@@ -1295,28 +1271,9 @@ mod tests {
     }
 
     #[test]
-    fn test_pfsync_ifconfig_cmds() {
-        let mut config = PfsyncConfig::new(Interface("em1".to_string()));
-        config.sync_peer = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
-
-        let cmds = config.to_ifconfig_cmds();
-        assert_eq!(cmds.len(), 2);
-        // First argv: ifconfig pfsync0 create
-        assert_eq!(cmds[0], vec!["ifconfig", "pfsync0", "create"]);
-        // Second argv: ifconfig pfsync0 syncdev em1 syncpeer 10.0.0.2 defer up
-        let config_argv = &cmds[1];
-        assert!(config_argv.contains(&"syncdev".to_string()));
-        assert!(config_argv.contains(&"em1".to_string()));
-        assert!(config_argv.contains(&"syncpeer".to_string()));
-        assert!(config_argv.contains(&"10.0.0.2".to_string()));
-        assert!(config_argv.contains(&"defer".to_string()));
-    }
-
-    #[test]
     fn test_pfsync_disabled() {
         let mut config = PfsyncConfig::new(Interface("em1".to_string()));
         config.enabled = false;
-        assert!(config.to_ifconfig_cmds().is_empty());
         assert!(config.to_pf_rules().is_empty());
     }
 
@@ -1379,52 +1336,34 @@ mod tests {
 
     #[test]
     fn carp_advskew_renders_per_role() {
-        use crate::{CarpLatencyProfile, CarpVip, ClusterRole, Interface};
-        use std::net::IpAddr;
+        use crate::{CarpLatencyProfile, ClusterRole};
 
-        let vip = CarpVip::new(
-            10,
-            "192.0.2.1".parse::<IpAddr>().unwrap(),
-            24,
-            Interface("igb0".into()),
-            "secret".into(),
-        );
-
-        let primary =
-            vip.to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Primary));
-        let secondary = vip
-            .to_ifconfig_argv(CarpLatencyProfile::Conservative.timing_for(ClusterRole::Secondary));
-
-        let primary_skew =
-            primary[0][primary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
-        let secondary_skew =
-            secondary[0][secondary[0].iter().position(|s| s == "advskew").unwrap() + 1].clone();
-
-        assert_eq!(primary_skew, "0");
-        assert_eq!(secondary_skew, "100"); // Conservative profile's secondary skew
+        let primary = CarpLatencyProfile::Conservative.timing_for(ClusterRole::Primary);
+        let secondary = CarpLatencyProfile::Conservative.timing_for(ClusterRole::Secondary);
+        assert_eq!(primary.advskew, 0);
+        assert_eq!(secondary.advskew, 100); // Conservative profile's secondary skew
+        assert_eq!(primary.advbase, 1);
     }
 
     #[test]
-    fn ifconfig_argv_uses_profile_timing() {
-        use crate::{CarpLatencyProfile, CarpVip, ClusterRole, Interface};
+    fn profile_timing_tight_secondary() {
+        use crate::{CarpLatencyProfile, ClusterRole};
 
-        let vip = CarpVip::new(
-            10,
-            "10.0.0.1".parse().unwrap(),
-            24,
-            Interface("igb0".into()),
-            "abc12345".into(),
+        let t = CarpLatencyProfile::Tight.timing_for(ClusterRole::Secondary);
+        assert_eq!(t.advbase, 1);
+        assert_eq!(t.advskew, 20); // Tight secondary skew
+    }
+
+    #[test]
+    fn pfsync_pass_rule_is_quick() {
+        use crate::{Interface, PfsyncConfig};
+        // The base pf.conf ends in `block in log all`; a non-quick pass in
+        // the aifw-ha anchor would be overridden by it (#712).
+        let rules = PfsyncConfig::new(Interface("em2".into())).to_pf_rules();
+        assert!(
+            rules.iter().all(|r| r.starts_with("pass quick ")),
+            "{rules:?}"
         );
-
-        let tight_secondary = CarpLatencyProfile::Tight.timing_for(ClusterRole::Secondary);
-        let argv = vip.to_ifconfig_argv(tight_secondary);
-        let argv = &argv[0];
-
-        let advbase_pos = argv.iter().position(|s| s == "advbase").unwrap();
-        let advskew_pos = argv.iter().position(|s| s == "advskew").unwrap();
-
-        assert_eq!(argv[advbase_pos + 1], "1");
-        assert_eq!(argv[advskew_pos + 1], "20"); // Tight secondary skew
     }
 
     #[test]

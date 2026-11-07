@@ -1,4 +1,5 @@
 mod cluster_replicator;
+mod ha_boot;
 mod health_prober;
 mod role_watcher;
 
@@ -395,10 +396,9 @@ async fn async_main() -> anyhow::Result<()> {
         info!("SLA aggregation loop started");
     }
 
-    // HA kernel-state recovery — idempotent; re-runs ifconfig commands for
-    // pfsync and CARP VIPs if they are absent after a reboot. Logs a warning
-    // and continues on failure so a misconfigured HA setup never prevents the
-    // daemon from coming up.
+    // HA kernel-state reconcile — idempotent; configures pfsync and the CARP
+    // vhids through aifw-sudo-carp. Logs and continues on failure so a
+    // misconfigured HA setup never prevents the daemon from coming up.
     //
     // cluster_engine is kept alive past this block so the ACME scheduler can
     // use it for master-only renewal and cert-push to peers (Commit 9 #222).
@@ -407,9 +407,9 @@ async fn async_main() -> anyhow::Result<()> {
         if let Err(e) = cluster_engine.migrate().await {
             tracing::warn!(error = %e, "ha: cluster migrate failed; continuing");
         }
-        if let Err(e) = cluster_engine.recover_kernel_state().await {
-            tracing::warn!(error = %e, "ha: kernel-state recovery failed; continuing");
-        }
+        // Load the aifw-ha anchor, reconcile pfsync/CARP into the kernel and
+        // release the boot demotion hold once state sync is ready (#712).
+        ha_boot::start(cluster_engine.clone()).await;
 
         // Cluster background tasks — active only when AIFW_LOOPBACK_API_KEY is set.
         // RoleWatcher: 1s CARP role polling → /cluster/internal/role-changed

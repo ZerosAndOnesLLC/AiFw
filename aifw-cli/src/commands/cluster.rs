@@ -310,13 +310,27 @@ pub async fn cluster_health_run() -> anyhow::Result<()> {
 
 pub async fn cluster_promote() -> anyhow::Result<()> {
     api_post("/api/v1/cluster/promote", &serde_json::json!({})).await?;
-    println!("Promoted (sysctl carp.demotion=0)");
+    println!("Operator demotion and maintenance mode cleared");
     Ok(())
 }
 
 pub async fn cluster_demote() -> anyhow::Result<()> {
     api_post("/api/v1/cluster/demote", &serde_json::json!({})).await?;
-    println!("Demoted (sysctl carp.demotion=240)");
+    println!("Demoted — the peer takes the VIPs; `aifw cluster promote` undoes it");
+    Ok(())
+}
+
+pub async fn cluster_maintenance(on: bool) -> anyhow::Result<()> {
+    api_put(
+        "/api/v1/cluster/maintenance",
+        &serde_json::json!({ "enabled": on }),
+    )
+    .await?;
+    if on {
+        println!("Maintenance mode on — this node stays BACKUP, across reboots, until turned off");
+    } else {
+        println!("Maintenance mode off");
+    }
     Ok(())
 }
 

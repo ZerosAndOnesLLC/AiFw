@@ -1760,6 +1760,12 @@ async fn async_main() -> anyhow::Result<()> {
     } else {
         tracing::info!("VPN pf rules applied on startup");
     }
+    // CARP / pfsync pass rules. pf anchors are not persisted across a
+    // reboot, and the base pf.conf ends in `block in log all`, so without
+    // this the sync link and CARP on WAN are dropped after every boot (#712).
+    if let Err(e) = state.cluster_engine.apply_ha_rules().await {
+        tracing::error!("Failed to apply HA pf rules on startup: {e}");
+    }
     match state.vpn_engine.start_active_tunnels().await {
         Ok(n) if n > 0 => tracing::info!(count = n, "WireGuard tunnels restarted on startup"),
         Ok(_) => {}

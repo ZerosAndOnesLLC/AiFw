@@ -15,6 +15,8 @@ pub mod acme_export;
 pub mod alias;
 /// Append-only audit log of configuration changes
 pub mod audit;
+/// CARP / pfsync kernel control (via `aifw-sudo-carp`) and kernel-state reads
+pub mod carp;
 /// Persisted system configuration types (console, SSH access, firewall policy)
 pub mod config;
 /// [`ConfigManager`] — loads and saves the persisted system configuration
@@ -77,7 +79,7 @@ pub use db::Database;
 pub use engine::RuleEngine;
 pub use error::{CoreError, Result};
 pub use geoip::GeoIpEngine;
-pub use ha::{ClusterEngine, current_local_role, is_local_master, sha256_hex};
+pub use ha::{ClusterEngine, ReconcileReport, current_local_role, is_local_master, sha256_hex};
 pub use ipsec::{
     IkeControl, IpsecConfStore, IpsecEngine, MemConfStore, MockIkeControl, SwanctlControl,
     SystemConfStore, create_conf_store, create_ike_control, render_swanctl_conf,

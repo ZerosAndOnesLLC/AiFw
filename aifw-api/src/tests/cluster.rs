@@ -356,3 +356,132 @@ async fn cluster_node_api_port_and_wg_backup_flag_round_trip() {
         .await;
     assert_eq!(resp.json::<Value>()["wg_deconfigure_on_backup"], true);
 }
+
+/// #712: VIP writes are validated (whitespace in the CARP key, duplicate
+/// address, same vhid with a different key) and pfsync refuses to share an
+/// interface with a VIP. Removing the last VIP flushes the aifw-ha anchor.
+#[tokio::test]
+async fn carp_vip_validation_and_dedicated_sync_link() {
+    let state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let pf = state.pf.clone();
+    let server = TestServer::new(crate::build_router(state, None, "*", false));
+    let token = create_user_and_login(&server).await;
+
+    let vip = |vhid: u8, ip: &str, iface: &str, pw: &str| json!({"vhid": vhid, "virtual_ip": ip, "prefix": 24, "interface": iface, "password": pw});
+
+    let resp = server
+        .post("/api/v1/cluster/carp")
+        .authorization_bearer(&token)
+        .json(&vip(1, "10.0.0.1", "em1", "has space"))
+        .await;
+    resp.assert_status(StatusCode::BAD_REQUEST);
+
+    let resp = server
+        .post("/api/v1/cluster/carp")
+        .authorization_bearer(&token)
+        .json(&vip(1, "10.0.0.1", "em1", "s3cretkey"))
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    let id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
+    let rules = pf.get_rules("aifw-ha").await.unwrap();
+    assert!(rules.iter().any(|r| r.contains("carp-vhid-1")), "{rules:?}");
+
+    // same address again
+    let resp = server
+        .post("/api/v1/cluster/carp")
+        .authorization_bearer(&token)
+        .json(&vip(2, "10.0.0.1", "em1", "s3cretkey"))
+        .await;
+    resp.assert_status(StatusCode::CONFLICT);
+    // same vhid + interface, different key
+    let resp = server
+        .post("/api/v1/cluster/carp")
+        .authorization_bearer(&token)
+        .json(&vip(1, "10.0.0.9", "em1", "otherkey"))
+        .await;
+    resp.assert_status(StatusCode::CONFLICT);
+
+    // pfsync on the VIP's interface is refused
+    let pfsync = |iface: &str| {
+        json!({"sync_interface": iface, "sync_peer": null, "defer": false, "enabled": true,
+               "latency_profile": "conservative", "heartbeat_iface": null,
+               "heartbeat_interval_ms": null, "dhcp_link": false})
+    };
+    let resp = server
+        .put("/api/v1/cluster/pfsync")
+        .authorization_bearer(&token)
+        .json(&pfsync("em1"))
+        .await;
+    resp.assert_status(StatusCode::BAD_REQUEST);
+    let resp = server
+        .put("/api/v1/cluster/pfsync")
+        .authorization_bearer(&token)
+        .json(&pfsync("em2"))
+        .await;
+    assert!(resp.status_code().is_success(), "{}", resp.text());
+    let rules = pf.get_rules("aifw-ha").await.unwrap();
+    assert!(
+        rules
+            .iter()
+            .any(|r| r.starts_with("pass quick on em2 proto pfsync")),
+        "{rules:?}"
+    );
+
+    // deleting the VIP keeps only the pfsync rule
+    server
+        .delete(&format!("/api/v1/cluster/carp/{id}"))
+        .authorization_bearer(&token)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let rules = pf.get_rules("aifw-ha").await.unwrap();
+    assert!(
+        !rules.iter().any(|r| r.contains("carp-vhid-1")),
+        "{rules:?}"
+    );
+}
+
+/// #712: maintenance / promote / demote record operator events in the
+/// failover history instead of emitting synthetic role changes.
+#[tokio::test]
+async fn operator_demotion_endpoints_record_history() {
+    let state = crate::create_app_state_in_memory(plain_auth_settings())
+        .await
+        .unwrap();
+    let server = TestServer::new(crate::build_router(state, None, "*", false));
+    let token = create_user_and_login(&server).await;
+
+    for (method, path, body) in [
+        (
+            "put",
+            "/api/v1/cluster/maintenance",
+            json!({"enabled": true}),
+        ),
+        ("post", "/api/v1/cluster/demote", json!({})),
+        ("post", "/api/v1/cluster/promote", json!({})),
+    ] {
+        let req = if method == "put" {
+            server.put(path)
+        } else {
+            server.post(path)
+        };
+        req.authorization_bearer(&token)
+            .json(&body)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+    let resp = server
+        .get("/api/v1/cluster/failover-history")
+        .authorization_bearer(&token)
+        .await;
+    resp.assert_status_ok();
+    let causes: Vec<String> = resp
+        .json::<Vec<Value>>()
+        .iter()
+        .map(|e| e["cause"].as_str().unwrap_or_default().to_string())
+        .collect();
+    for c in ["maintenance_on", "operator_demote", "operator_promote"] {
+        assert!(causes.iter().any(|x| x == c), "{c} missing from {causes:?}");
+    }
+}

@@ -311,29 +311,16 @@ pub async fn apply(config: &SetupConfig, tuning_items: &[TuningItem]) -> Result<
         if let Some(c) = &config.cluster {
             warn_on_err("", run_sysrc("aifw_cluster_role", &c.role.to_string()));
             warn_on_err("", run_sysrc("pfsync_enable", "YES"));
-            let pfsync_args = format!("syncdev {} defer up", c.pfsync_iface);
+            // pfsync0 comes up from rc.d/pfsync before pf; `defer` stays off
+            // (it stalls the first packet of every new connection until the
+            // peer acks). aifw-daemon re-applies the stored config on start.
+            let pfsync_args = format!("syncdev {} up", c.pfsync_iface);
             warn_on_err("", run_sysrc("ifconfig_pfsync0", &pfsync_args));
-            // Setup writes Conservative timing to rc.conf as the boot-time default.
-            // At runtime, aifw-daemon's recover_kernel_state_for_role re-applies
-            // the actual stored profile via ifconfig, so any operator change via
-            // the cluster API takes effect on next service restart. rc.conf is
-            // rewritten only when re-running setup. TODO(#217): when the cluster
-            // API changes the profile, have it also rewrite the rc.conf
-            // aliases so reboot doesn't briefly fall back to Conservative.
-            let timing = aifw_common::CarpLatencyProfile::default().timing_for(c.role);
-            for vip in &c.vips {
-                let key = format!("ifconfig_{}_aliases", vip.interface);
-                let alias = format!(
-                    "inet vhid {} advskew {} advbase {} pass {} {}/{}",
-                    vip.vhid,
-                    timing.advskew,
-                    timing.advbase,
-                    shell_quote_for_rcconf(&c.password),
-                    vip.virtual_ip,
-                    vip.prefix,
-                );
-                warn_on_err("", run_sysrc_append(&key, &alias));
-            }
+            // CARP VIPs are NOT written to rc.conf (#712): that brought them
+            // up in netif — before pf, pfsync and the boot demotion hold —
+            // and left the CARP password in world-readable rc.conf.
+            // aifw-daemon creates them from the DB through aifw-sudo-carp,
+            // under the boot hold set by rc.d/aifw_carp_demote.
             warn_on_err("", run_sysrc("aifw_carp_demote_enable", "YES"));
             warn_on_err("", run_sysrc("aifw_demote_on_shutdown_enable", "YES"));
         } else {

@@ -284,39 +284,6 @@ pub(super) fn run_sysrc(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Append a value to a sysrc list key (space-separated, FreeBSD only).
-#[cfg(target_os = "freebsd")]
-pub(super) fn run_sysrc_append(key: &str, value: &str) -> Result<(), String> {
-    let existing = std::process::Command::new("sysrc")
-        .arg("-n")
-        .arg(key)
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
-    let combined = if existing.is_empty() {
-        value.to_string()
-    } else {
-        format!("{existing} {value}")
-    };
-    run_sysrc(key, &combined)
-}
-
-/// Single-quote-wrap a string for safe inclusion in /etc/rc.conf values, which
-/// are sourced by /bin/sh at boot. Returns the value wrapped in single quotes
-/// with any inner single quotes escaped as `'\''`. Caller embeds the result
-/// directly into the larger value string.
-#[cfg(target_os = "freebsd")]
-pub(super) fn shell_quote_for_rcconf(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
 pub(super) fn write_config_file(config: &SetupConfig) -> Result<(), String> {
     let json = serde_json::to_string_pretty(config).map_err(|e| format!("serialize error: {e}"))?;
     write_file(&format!("{}/aifw.conf", config.config_dir), &json)
